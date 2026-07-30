@@ -94,13 +94,13 @@ def test_research_file_check_uses_cold_start_timeout_floor(monkeypatch):
     assert lean_command_timeout.effective_command_timeout_s(command) == 120
 
     monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
-    assert lean_command_timeout.effective_command_timeout_s(command) == 300
+    assert lean_command_timeout.effective_command_timeout_s(command) == 900
 
     monkeypatch.setenv("LEANFLOW_LEAN_COMMAND_TIMEOUT_S", "240")
-    assert lean_command_timeout.effective_command_timeout_s(command) == 300
+    assert lean_command_timeout.effective_command_timeout_s(command) == 900
 
-    monkeypatch.setenv("LEANFLOW_LEAN_COMMAND_TIMEOUT_S", "480")
-    assert lean_command_timeout.effective_command_timeout_s(command) == 480
+    monkeypatch.setenv("LEANFLOW_LEAN_COMMAND_TIMEOUT_S", "1200")
+    assert lean_command_timeout.effective_command_timeout_s(command) == 1200
 
 
 def test_research_timeout_floor_applies_to_run_command(monkeypatch, tmp_path):
@@ -134,8 +134,8 @@ def test_research_timeout_floor_applies_to_run_command(monkeypatch, tmp_path):
     )
 
     assert code == 1
-    assert process.observed_timeout == 300
-    assert "timed out after 300 seconds" in output
+    assert process.observed_timeout == 900
+    assert "timed out after 900 seconds" in output
 
 
 def test_diagnostics_fallback_uses_project_admission_before_local_lean(monkeypatch, tmp_path):
@@ -1307,6 +1307,36 @@ def test_lean_axioms_can_skip_sibling_prefetch_for_exact_gate(monkeypatch, tmp_p
     assert report.inspection_succeeded is True
     assert report.axioms == ["propext", "sorryAx"]
     assert report.ok is False
+
+
+def test_lean_axioms_exact_gate_does_not_repeat_failed_cold_check(monkeypatch, tmp_path):
+    """Do not run the same single-target axiom compile twice after a timeout."""
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text("theorem first : True := by trivial\n", encoding="utf-8")
+    calls: list[str] = []
+
+    monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (project, ""))
+    lean_services._clear_axiom_batch_cache_for_tests()
+
+    def fake_run(cmd, cwd=None):
+        calls.append(Path(cmd[-1]).read_text(encoding="utf-8"))
+        return 1, "Command timed out after 900 seconds"
+
+    monkeypatch.setattr(lean_services, "_run_command", fake_run)
+
+    report = lean_services.lean_axioms(
+        "first",
+        cwd=project,
+        file_path=str(target),
+        prefetch_siblings=False,
+    )
+
+    assert len(calls) == 1
+    assert calls[0].count("#print axioms") == 1
+    assert report.inspection_succeeded is False
+    assert "timed out" in report.note
 
 
 def test_lean_axioms_many_returns_exact_profiles_from_one_harness(monkeypatch, tmp_path):
@@ -2814,11 +2844,12 @@ def test_lean_multi_attempt_resolves_blank_immediately_after_tactic_proof(monkey
     )
 
     assert calls[0]["line"] == 2
-    assert calls[0]["column"] is None
+    assert calls[0]["column"] == 3
     assert payload["line"] == 2
+    assert payload["column"] == 3
     assert payload["requested_line"] == 3
     assert payload["requested_column"] == 11
-    assert payload["line_adjustment"] == "previous_tactic_line_after_blank"
+    assert payload["line_adjustment"] == "trailing_placeholder"
 
 
 def test_lean_multi_attempt_resolves_inline_sorry_tactic_column(monkeypatch, tmp_path):
@@ -2878,6 +2909,74 @@ def test_lean_multi_attempt_resolves_inline_sorry_tactic_column(monkeypatch, tmp
     assert calls[1]["column"] == 10
     assert explicit_payload["column"] == 10
     assert "column_adjustment" not in explicit_payload
+
+
+def test_lean_multi_attempt_requires_exact_target_check_for_probe_success(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text("theorem target : True := by\n  sorry\n", encoding="utf-8")
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={"multi_attempt": "mcp_lean_lsp_lean_multi_attempt"},
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda _tool_name, _arguments: {
+            "result": {
+                "success": True,
+                "items": [
+                    {
+                        "snippet": "nlinarith",
+                        "diagnostics": [],
+                        "goals": [],
+                        "timed_out": False,
+                    }
+                ],
+            }
+        },
+    )
+    exact_calls: list[dict[str, object]] = []
+
+    def reject_exact_candidate(**kwargs):
+        exact_calls.append(dict(kwargs))
+        return {
+            "success": True,
+            "target_verified": False,
+            "status": "failed",
+            "error": "linarith failed to find a contradiction",
+        }
+
+    monkeypatch.setattr(lean_incremental, "lean_incremental_check", reject_exact_candidate)
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: None)
+
+    payload = lean_services.lean_multi_attempt(
+        "Main.lean",
+        1,
+        ["nlinarith", "ring"],
+        cwd=project,
+    )
+
+    assert exact_calls[0]["theorem_id"] == "target"
+    assert exact_calls[0]["replacement"] == "theorem target : True := by\n  nlinarith"
+    assert payload["backend_success"] is True
+    assert payload["success"] is False
+    assert payload["target_verified"] is False
+    assert payload["status"] == "screened_no_verified_candidate"
+    assert payload["verified_attempts"] == []
+    assert payload["items"][0]["probe_closed_goal"] is True
+    assert payload["items"][0]["verified"] is False
+    assert "provisional" in payload["action_required"]
 
 
 def test_lean_multi_attempt_rejects_invalid_candidate_count_before_backend_call(

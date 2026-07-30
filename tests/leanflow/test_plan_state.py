@@ -53,6 +53,26 @@ def test_everything_noops_when_flag_off(tmp_path, monkeypatch):
     assert not state_dir.exists()
 
 
+def test_render_plan_keeps_deferred_theorem_visible():
+    rendered = plan_state.render_plan_md(
+        _demo_blueprint(),
+        {
+            "deferred_queue_items": [
+                {
+                    "target_symbol": "unique_index_exists",
+                    "active_file": "IMO2026/P1.lean",
+                    "reason": "direct route exhausted",
+                    "return_condition": "verified graph progress",
+                }
+            ]
+        },
+    )
+
+    assert "## Deferred queue items (still pending)" in rendered
+    assert "`unique_index_exists`" in rendered
+    assert "verified graph progress" in rendered
+
+
 def test_blueprint_round_trip_and_revision_bump(enabled):
     bp = _demo_blueprint()
 
@@ -319,6 +339,50 @@ def test_reconcile_refreshes_clean_proved_declaration_snapshot_and_source_revisi
     assert events == []
 
 
+def test_reconcile_retires_absent_generated_stub_from_frontier(enabled):
+    target = GraphNode(
+        id=plan_state.node_id_for("result", "A.lean"),
+        name="result",
+        file="A.lean",
+        status="proving",
+    )
+    stale = GraphNode(
+        id=plan_state.node_id_for("generated_helper", "A.lean"),
+        name="generated_helper",
+        file="A.lean",
+        status="stated",
+        generated_by="decomposer",
+    )
+    bp = Blueprint(
+        nodes=(target, stale),
+        edges=(
+            GraphEdge(stale.id, target.id, "split_of"),
+            GraphEdge(target.id, stale.id, "depends_on"),
+        ),
+    )
+
+    updated, events = plan_state.reconcile(
+        bp,
+        {
+            ("A.lean", "result"): DeclTruth(present=True, has_sorry=True),
+            ("A.lean", "generated_helper"): DeclTruth(present=False, has_sorry=False),
+        },
+    )
+
+    assert updated.node_by_id(stale.id).status == "conjectured"
+    assert stale.id not in {node.id for node in updated.frontier()}
+    assert events == [
+        {
+            "event": "plan-graph-reconcile",
+            "node_id": stale.id,
+            "name": "generated_helper",
+            "file": "A.lean",
+            "from": "stated",
+            "to": "conjectured",
+        }
+    ]
+
+
 def test_render_plan_md_sections_and_notes_preservation(enabled):
     bp = _demo_blueprint()
     summary = {
@@ -336,6 +400,7 @@ def test_render_plan_md_sections_and_notes_preservation(enabled):
         "## Current state",
         "## Frontier",
         "## Grounding",
+        "## Exploration outcomes",
         "## Decision log",
         "## Dead ends & proven false",
         "## Final report",
@@ -349,6 +414,34 @@ def test_render_plan_md_sections_and_notes_preservation(enabled):
     path.write_text(edited, encoding="utf-8")
     plan_state.save_plan_md(bp, summary)
     assert "KEEP THIS HUMAN NOTE" in path.read_text(encoding="utf-8")
+
+
+def test_render_plan_dead_ends_include_rejected_attempts(enabled):
+    plan_state.append_journal_event(
+        {
+            "event": "proof-attempt-rejected",
+            "name": "main_thm",
+            "file": "Demo.lean",
+            "proof_shape": "exact stale_route",
+            "reason": "unknown constant stale_route",
+        }
+    )
+    summary = {
+        "queue_manager_state": {
+            "current_queue_assignment": {
+                "target_symbol": "main_thm",
+                "active_file": "Demo.lean",
+            }
+        }
+    }
+
+    rendered = plan_state.render_plan_md(_demo_blueprint(), summary)
+    dead = rendered.split("## Dead ends & proven false", 1)[1].split("## Final report", 1)[0]
+
+    assert "[rejected_by_kernel attempt]" in dead
+    assert "exact stale_route" in dead
+    assert "unknown constant stale_route" in dead
+    assert "- [none]" not in dead
 
 
 def test_plan_render_surfaces_current_route_and_recent_route_decisions(enabled):
@@ -811,6 +904,80 @@ def test_frontier_digest_exposes_only_the_current_assignment_route(enabled):
 
     assert "current route: `plan` for `new_target`" in fresh_digest
     assert "solved_target" not in fresh_digest
+
+
+def test_exploration_outcomes_are_typed_and_assignment_scoped(enabled):
+    bp = _demo_blueprint()
+    assignment = {"target_symbol": "main_thm", "active_file": "Demo.lean"}
+    plan_state.save_blueprint(bp)
+    plan_state.save_queue_manager_state({"current_queue_assignment": assignment})
+    plan_state.append_journal_event(
+        {
+            "event": "proof-attempt-rejected",
+            "name": "main_thm",
+            "file": "Demo.lean",
+            "proof_shape": "omega",
+            "reason": "kernel type mismatch",
+        }
+    )
+    plan_state.append_journal_event(
+        {
+            "event": "proof-attempt-rejected",
+            "name": "other_thm",
+            "file": "Other.lean",
+            "proof_shape": "simp",
+            "reason": "unrelated failure",
+        }
+    )
+    plan_state.append_journal_event(
+        {
+            "event": "node-status",
+            "node_id": "n-helper",
+            "name": "helper",
+            "from": "proving",
+            "to": "proved",
+            "via_gate": True,
+            "why": "exact helper gate passed",
+        }
+    )
+
+    outcomes = plan_state.recent_exploration_outcomes(bp, assignment)
+
+    assert [outcome["type"] for outcome in outcomes] == [
+        "rejected_by_kernel",
+        "proved",
+    ]
+    assert [outcome["subject"] for outcome in outcomes] == ["main_thm", "helper"]
+    rendered = plan_state.render_plan_md(bp, plan_state.load_summary())
+    assert "[rejected_by_kernel] `main_thm`" in rendered
+    assert "[proved] `helper`" in rendered
+    assert "other_thm" not in rendered
+
+
+def test_frontier_digest_includes_typed_dead_branch(enabled):
+    plan_state.save_blueprint(_demo_blueprint())
+    plan_state.save_queue_manager_state(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "main_thm",
+                "active_file": "Demo.lean",
+            }
+        }
+    )
+    plan_state.append_journal_event(
+        {
+            "event": "proof-attempt-rejected",
+            "name": "main_thm",
+            "file": "Demo.lean",
+            "proof_shape": "linarith",
+            "reason": "declaration is hidden by source order",
+        }
+    )
+
+    digest = plan_state.frontier_digest_block()
+
+    assert "outcome [blocked_by_source_order] `main_thm`" in digest
+    assert len(digest.splitlines()) <= 10
 
 
 def test_node_id_is_stable_across_path_spellings(tmp_path):

@@ -1,10 +1,4 @@
-"""Queue-item classification predicates for the native runner.
-
-Leaf module: pure predicates over inspection/queue items (sorry vs diagnostic blockers,
-current-item/status selection, attempted-proof shape). Extracted verbatim from native_runner.py
-and re-exported there; imports only stdlib and the lean_services / lean_diagnostic_feedback /
-native_utils / queue_manager leaves, so it introduces no import cycle.
-"""
+"""Classify native-runner queue items and attempted proof shapes."""
 
 from __future__ import annotations
 

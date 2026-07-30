@@ -862,6 +862,68 @@ def test_invalid_batch_identity_does_not_trigger_repeated_sequential_checks(monk
     assert validation["lean_check_count"] == 1
 
 
+def test_prior_environment_failure_uses_canonical_full_source_fallback(monkeypatch, tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    exact_sources: list[str] = []
+
+    def broken_incremental(**kwargs):
+        return {
+            "success": False,
+            "ok": False,
+            "tool": "lean_probe",
+            "action": "check_target",
+            "file": str(target.resolve()),
+            "target": "demo",
+            "replacement_matches_target": True,
+            "verification_scope": "target_candidate",
+            "error_code": "prior_decl_failed",
+            "error": (
+                "failed to build env before target at Move.half: "
+                "line 66:0 error: unexpected end of input"
+            ),
+        }
+
+    def exact_source_check(source, **kwargs):
+        exact_sources.append(source)
+        return {
+            "success": True,
+            "ok": True,
+            "timed_out": False,
+            "retryable": False,
+            "failure_kind": "",
+            "output": "Demo.lean:2:0: warning: declaration uses `sorry`",
+            "messages": [],
+        }
+
+    monkeypatch.setattr(lean_experts, "lean_incremental_check", broken_incremental)
+    monkeypatch.setattr(lean_experts, "lean_ephemeral_source_check", exact_source_check)
+
+    helpers, validation = lean_experts._validate_helper_skeletons(
+        helpers=[
+            {
+                "name": f"demo_helper_{index}",
+                "lean_skeleton": f"private lemma demo_helper_{index} : True := by\n  sorry",
+            }
+            for index in range(2)
+        ],
+        theorem_statement="theorem demo : True := by",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(tmp_path),
+        timeout_s=30,
+    )
+
+    assert len(exact_sources) == 1
+    assert exact_sources[0].index("demo_helper_0") < exact_sources[0].index("theorem demo")
+    assert exact_sources[0].index("demo_helper_1") < exact_sources[0].index("theorem demo")
+    assert all(helper["check_status"] == "ok" for helper in helpers)
+    assert validation["validation_mode"] == "batch"
+    assert validation["lean_check_count"] == 1
+    assert validation["canonical_fallback_count"] == 1
+    assert validation["ready_to_prove_count"] == 2
+
+
 def test_decompose_tool_uses_resolved_source_statement_over_caller_text(monkeypatch, tmp_path):
     """Exact file identity makes the source signature authoritative end to end."""
     target = tmp_path / "Demo.lean"
@@ -903,6 +965,7 @@ def test_decompose_tool_uses_resolved_source_statement_over_caller_text(monkeypa
     def exact_source_check(**kwargs):
         replacement = str(kwargs["replacement"])
         replacements.append(replacement)
+        assert kwargs["allow_placeholders_for_elaboration"] is True
         assert "theorem demo : True := by\n  sorry" in replacement
         assert "theorem demo : False" not in replacement
         return {

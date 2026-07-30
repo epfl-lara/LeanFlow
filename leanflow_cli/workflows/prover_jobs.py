@@ -1,4 +1,4 @@
-"""Prover job shape A — nested file-scoped ``/prove`` (Phase 5 §5.7).
+"""Run dispatched prover jobs as nested file-scoped ``/prove`` workflows.
 
 The dispatch service's spawn backend: a stub file is discharged by a full
 nested native run (``spawn_workflow`` subprocess — the queue, the manager
@@ -10,7 +10,7 @@ artifacts through the parent's own gate — never from the child transcript.
 
 Env hygiene (the child inherits ``os.environ`` wholesale, so the wrapper
 must neutralize parent-run state): fresh run id (blank => the child mints
-its own), ``LEANFLOW_WORKFLOW_PARENT_RUN_ID`` for the N3 lineage edge,
+its own), ``LEANFLOW_WORKFLOW_PARENT_RUN_ID`` for the lineage edge,
 ``LEANFLOW_DISPATCH_JOB_ID``/``LEANFLOW_JOB_LINEAGE``, the job budget as
 ``AGENT_MAX_TURNS``, a blanked ``LEANFLOW_NATIVE_RUNNER_OWNER`` (the
 child's exit must never release the parent's file locks), and blanked

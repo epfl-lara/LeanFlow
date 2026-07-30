@@ -1,23 +1,8 @@
-"""Workflow-state and checkpoint persistence helpers for the native managed runner.
+"""Persist, replay, and roll back native workflow checkpoints.
 
-Extracted verbatim from ``native_runner.py`` (refactor Phase 2). This module owns the
-closed-under-"calls" cluster that reads and writes the on-disk ``.leanflow/workflow-state``
-journal (the ``index.json`` checkpoint list and ``current.json`` pointer) plus the small
-JSON file helpers and the in-memory checkpoint replay/rollback builders.
-
-The cluster is a fixpoint closure under "calls": every moved function's only non-stdlib
-callees are other moved functions or already-extracted modules
-(``native_config._project_root`` / ``_managed_home`` / ``_workflow_kind`` / ``_read_native_env``
-and ``native_utils._message_text``), or ``run_agent.AIAgent`` (used only as the
-type of the object carrying ``agent._checkpoint_mgr``, never native_runner state). None of these
-functions read or mutate native_runner module-level state, declare ``global``, or touch the
-Lean-services / queue backends. ``WORKFLOW_CHECKPOINT_PREFIX`` is the only constant in the closure
-(used by ``_workflow_replay_message``) and moves with them.
-
-``AIAgent`` is imported only while type checking so checkpoint reads remain provider- and
-MCP-free. This module deliberately does NOT import ``native_runner``. The names are re-exported
-from ``native_runner`` for backwards compatibility so every caller and test keeps resolving them
-as ``native_runner.<name>``.
+The helpers maintain the workflow-state journal, checkpoint index, and current
+pointer. ``AIAgent`` is imported only while type checking so persistence remains
+provider- and MCP-independent.
 """
 
 from __future__ import annotations

@@ -58,6 +58,71 @@ _SOURCE_THREAD_LOCKS: dict[str, threading.RLock] = {}
 _SOURCE_LOCK_LOCAL = threading.local()
 _ACTIVE_TRANSACTION_LOCK = threading.Lock()
 _ACTIVE_TRANSACTIONS: set[str] = set()
+_CANONICAL_INCREMENTAL_FALLBACK_TIMEOUT_S = 300
+
+
+def _incremental_environment_failure(check: Mapping[str, Any] | None) -> bool:
+    """Return whether an incremental check failed before reaching its target."""
+    if not check:
+        return False
+    error_code = str(check.get("error_code", "") or "").strip().lower()
+    detail = " ".join(
+        str(check.get(key, "") or "") for key in ("error", "output", "message", "hint")
+    ).lower()
+    return bool(
+        error_code
+        in {
+            "header_failed",
+            "prior_decl_failed",
+            "prior_declaration_failed",
+        }
+        or "failed to build env before target" in detail
+    )
+
+
+def canonical_source_fallback_for_incremental_failure(
+    check: Mapping[str, Any] | None,
+    *,
+    source: str,
+    cwd: str,
+) -> dict[str, Any]:
+    """Use exact-project full-source validation after a prefix-build failure.
+
+    LeanProbe may segment valid syntax incorrectly while rebuilding the
+    environment preceding a target. Preserve real incremental diagnostics,
+    but replace that infrastructure result with one canonical system-temporary
+    ``lake env lean`` check of the exact candidate source.
+    """
+    incremental = dict(check or {})
+    if not _incremental_environment_failure(incremental):
+        return incremental
+    from leanflow_cli.lean.lean_ephemeral import lean_ephemeral_source_check
+
+    canonical = dict(
+        lean_ephemeral_source_check(
+            source,
+            cwd=cwd or ".",
+            timeout_s=_CANONICAL_INCREMENTAL_FALLBACK_TIMEOUT_S,
+        )
+        or {}
+    )
+    canonical_ok = canonical.get("success") is True and canonical.get("ok") is True
+    incremental_detail = str(
+        incremental.get("error", "")
+        or incremental.get("output", "")
+        or incremental.get("message", "")
+        or ""
+    )
+    return {
+        **canonical,
+        "backend": "lean_exact_ephemeral",
+        "tool": "lake_env_lean",
+        "action": "check_source",
+        "has_errors": not canonical_ok,
+        "canonical_fallback": True,
+        "incremental_fallback_error_code": str(incremental.get("error_code", "") or ""),
+        "incremental_fallback_reason": incremental_detail[:1000],
+    }
 
 
 @dataclass(frozen=True)
@@ -827,10 +892,19 @@ def _validate_pending_helpers_in_place(
             theorem_id=name,
             cwd=cwd,
         )
+        check = canonical_source_fallback_for_incremental_failure(
+            check,
+            source=current_source,
+            cwd=cwd,
+        )
         if not check.get("success", False) or check.get("has_errors"):
             raise ValueError(f"pending helper {name} failed in-place validation")
         if read_source_bytes(operation) != current_bytes:
             raise OSError("source changed during pending helper validation")
+        if check.get("canonical_fallback") is True:
+            # A clean canonical elaboration validates the whole exact
+            # after-source, including every recorded helper, in one pass.
+            return names
     return names
 
 

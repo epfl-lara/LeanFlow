@@ -1,19 +1,8 @@
-"""Pure path-based Lean declaration indexing / lookup helpers for lean_services.
+"""Index and locate top-level declarations in Lean source files.
 
-Extracted verbatim from ``lean_services.py`` (refactor Phase 5 — the path-based declaration
-cluster). These helpers read a ``.lean`` file from disk and turn it into a line-indexed list of
-top-level declarations (``theorem``/``lemma``/``example``/``def``/``instance``/``class``/
-``structure``) with their source-text regions, then locate a declaration / its line / its
-neighbours by name, and slice a declaration's statement vs. proof. They depend only on the
-standard library (``re``, ``pathlib``, ``typing``) and on each other — no ``lean_services`` module
-state, env readers, Lean MCP / subprocess backends, or REPL invocation. They live here and are
-re-exported from ``lean_services`` for backwards compatibility, so every caller still resolves them
-as ``lean_services.<name>``.
-
-This is distinct from ``lean_parsing.py``, whose declaration parsers operate on already-loaded
-*text* strings (extracted from native_runner); these operate on a filesystem ``Path``. The module
-imports ONLY stdlib and does NOT import ``lean_services`` or ``native_runner``, so the re-export
-introduces no import cycle.
+Unlike the string-oriented helpers in ``lean_parsing``, these functions read a
+filesystem path and return line-indexed declaration regions. They remain
+re-exported from ``lean_services`` for compatibility.
 """
 
 from __future__ import annotations

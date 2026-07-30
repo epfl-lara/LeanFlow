@@ -22,7 +22,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from agent.providers.auxiliary_client import (
     AuxiliaryCallIdentity,
@@ -298,6 +298,8 @@ def run_isolated_auxiliary_text(
     timeout: float,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    progress_callback: Callable[[float, float], None] | None = None,
+    heartbeat_s: float = 30.0,
     _worker_command: Sequence[str] | None = None,
 ) -> AuxiliaryTextResponse:
     """Run one text-only auxiliary call under a hard wall-clock deadline.
@@ -344,6 +346,9 @@ def run_isolated_auxiliary_text(
         ) from exc
 
     deadline = time.monotonic() + timeout_s
+    started_at = time.monotonic()
+    normalized_heartbeat_s = max(1.0, float(heartbeat_s or 30.0))
+    next_heartbeat_at = normalized_heartbeat_s
     communicate_input: str | None = json.dumps(request, ensure_ascii=False)
     last_timeout: subprocess.TimeoutExpired | None = None
     try:
@@ -366,6 +371,12 @@ def run_isolated_auxiliary_text(
                 # full buffered output on every supported Python version.
                 communicate_input = None
                 last_timeout = exc
+                elapsed_s = max(0.0, time.monotonic() - started_at)
+                if progress_callback is not None and elapsed_s >= next_heartbeat_at:
+                    with contextlib.suppress(Exception):
+                        progress_callback(elapsed_s, timeout_s)
+                    while next_heartbeat_at <= elapsed_s:
+                        next_heartbeat_at += normalized_heartbeat_s
                 continue
             raise_if_interrupted("isolated auxiliary call interrupted")
             break

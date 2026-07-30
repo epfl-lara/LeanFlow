@@ -58,6 +58,28 @@ ERDOS_NARROW_DIVISOR_HELPER = """private lemma erdos_242_mod_five_two_divisor
     ∃ d : ℕ, d ∣ (168 * q + 25) := by
   sorry"""
 
+PHYSICAL_PIECES_PARENT = """private lemma exists_realization
+    {n : ℕ} (s : Strategy n) (fine : List ℝ) :
+    ∃ xiangPoints : Finset (Set.Ioo (0 : ℝ) 1),
+      Disjoint s.points xiangPoints ∧
+      physicalPieces s xiangPoints = fine := by
+  sorry"""
+
+PHYSICAL_PIECES_UNSAFE_BRIDGE = """private lemma pieces_of_ends
+    {n : ℕ} (s : Strategy n)
+    (xiangPoints : Finset (Set.Ioo (0 : ℝ) 1)) (fine : List ℝ)
+    (hends : s.playEnds xiangPoints = fine) :
+    physicalPieces s xiangPoints = fine := by
+  sorry"""
+
+PHYSICAL_PIECES_SAFE_BRIDGE = """private lemma pieces_of_ends
+    {n : ℕ} (s : Strategy n)
+    (xiangPoints : Finset (Set.Ioo (0 : ℝ) 1)) (fine : List ℝ)
+    (hd : Disjoint s.points xiangPoints)
+    (hends : s.playEnds xiangPoints = fine) :
+    physicalPieces s xiangPoints = fine := by
+  sorry"""
+
 
 def test_exact_erdos_singleton_is_rejected_but_real_decompositions_survive():
     rejected = decomposer_admission.assess_helper_admission(
@@ -83,6 +105,52 @@ def test_exact_erdos_singleton_is_rejected_but_real_decompositions_survive():
     assert parameterized.accepted is True
     assert alpha_parameterized.accepted is True
     assert structural.accepted is True
+
+
+def test_play_ends_bridge_must_preserve_required_disjointness():
+    unsafe = decomposer_admission.assess_helper_admission(
+        PHYSICAL_PIECES_PARENT,
+        PHYSICAL_PIECES_UNSAFE_BRIDGE,
+    )
+    safe = decomposer_admission.assess_helper_admission(
+        PHYSICAL_PIECES_PARENT,
+        PHYSICAL_PIECES_SAFE_BRIDGE,
+    )
+
+    assert unsafe.accepted is False
+    assert unsafe.reason_code == "dropped_required_disjointness"
+    assert "overlapping cut points" in unsafe.reason
+    assert safe.accepted is True
+
+
+def test_advisor_rejects_dropped_disjointness_before_lean_check(monkeypatch):
+    calls: list[object] = []
+    monkeypatch.setattr(
+        lean_experts,
+        "lean_incremental_check",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    helpers, validation = lean_experts._validate_helper_skeletons(
+        helpers=[
+            {
+                "name": "pieces_of_ends",
+                "lean_skeleton": PHYSICAL_PIECES_UNSAFE_BRIDGE,
+            }
+        ],
+        theorem_statement=PHYSICAL_PIECES_PARENT,
+        file_path="Demo.lean",
+        theorem_id="exists_realization",
+        cwd="",
+        timeout_s=30,
+    )
+
+    assert calls == []
+    assert helpers[0]["check_status"] == "rejected_admission"
+    assert helpers[0]["ready_for_managed_placement"] is False
+    assert helpers[0]["lean_skeleton"] == ""
+    assert helpers[0]["admission_reason_code"] == "dropped_required_disjointness"
+    assert validation["lean_check_count"] == 0
 
 
 def test_near_identical_parenthesized_singleton_is_still_rejected():

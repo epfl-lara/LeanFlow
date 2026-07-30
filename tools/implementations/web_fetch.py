@@ -33,6 +33,10 @@ from tools.implementations.web_tools import (
     process_content_with_llm,
 )
 from tools.response import dumps, error
+from tools.utilities.repository_research_policy import (
+    repository_url_block_reason,
+    solution_research_url_block_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,13 @@ DEFAULT_MAX_CHARS = 5000
 MAX_ALLOWED_CHARS = 20000
 
 _FETCH_USER_AGENT = "LeanFlow/0.3 web-fetch (+https://github.com/leanflow)"
+_DIRECT_TEXT_HOSTS = frozenset(
+    {
+        "gist.githubusercontent.com",
+        "raw.githubusercontent.com",
+        "raw.github.com",
+    }
+)
 
 
 class _TextExtractor(HTMLParser):
@@ -150,7 +161,16 @@ def _fallback_fetch(url: str) -> str:
             "PDF fetch requires the Jina Reader backend, which was unavailable; "
             "retry later or supply an HTML source URL."
         )
+    if content_type.startswith(("text/plain", "application/json")) or (
+        (urlparse(url).hostname or "").lower() in _DIRECT_TEXT_HOSTS
+    ):
+        return response.text or ""
     return _html_to_text(response.text or "")
+
+
+def _prefer_direct_text_fetch(url: str) -> bool:
+    """Return whether a known raw-text host should bypass Jina conversion."""
+    return (urlparse(url).hostname or "").lower() in _DIRECT_TEXT_HOSTS
 
 
 async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
@@ -166,6 +186,9 @@ async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
         return error("web_fetch requires a non-empty 'url'")
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
+    blocked = repository_url_block_reason(url) or solution_research_url_block_reason(url)
+    if blocked:
+        return error(blocked)
 
     try:
         bound = int(max_chars)
@@ -178,21 +201,31 @@ async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
     if is_interrupted():
         return error("Interrupted")
 
-    backend = "jina"
+    backend = "direct" if _prefer_direct_text_fetch(url) else "jina"
     jina_error: str | None = None
-    try:
-        text = _jina_fetch(url)
-    except Exception as jina_exc:
-        jina_error = str(jina_exc)
-        logger.info("Jina Reader failed for %s (%s); falling back to direct fetch", url, jina_error)
-        backend = "fallback"
+    if backend == "direct":
         try:
             text = _fallback_fetch(url)
-        except Exception as fallback_exc:
-            return error(
-                f"Failed to fetch {url}: jina error: {jina_error}; "
-                f"fallback error: {fallback_exc}"
+        except Exception as direct_exc:
+            return error(f"Failed to fetch {url} directly: {direct_exc}")
+    else:
+        try:
+            text = _jina_fetch(url)
+        except Exception as jina_exc:
+            jina_error = str(jina_exc)
+            logger.info(
+                "Jina Reader failed for %s (%s); falling back to direct fetch",
+                url,
+                jina_error,
             )
+            backend = "fallback"
+            try:
+                text = _fallback_fetch(url)
+            except Exception as fallback_exc:
+                return error(
+                    f"Failed to fetch {url}: jina error: {jina_error}; "
+                    f"fallback error: {fallback_exc}"
+                )
 
     text = clean_base64_images(text or "").strip()
     if not text:
@@ -261,6 +294,9 @@ def web_download_tool(url: str, filename: str = "", max_bytes: int = WEB_DOWNLOA
         return error("web_download requires a non-empty 'url'")
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
+    blocked = repository_url_block_reason(url) or solution_research_url_block_reason(url)
+    if blocked:
+        return error(blocked)
     try:
         cap = int(max_bytes)
     except (TypeError, ValueError):

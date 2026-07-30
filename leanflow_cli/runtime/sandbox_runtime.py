@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as _dt
+import errno
+import hashlib
 import json
 import os
 import shutil
@@ -14,11 +16,21 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from core.filesystem import ensure_directory
 from leanflow_cli.config import get_leanflow_home, load_config
 from leanflow_cli.workflows.project import LeanFlowProject, discover_leanflow_project
+from tools.utilities.repository_research_policy import (
+    CLEAN_ROOM_TASK_LABELS_ENV,
+    DISABLE_REPOSITORY_RESEARCH_ENV,
+    DISABLE_SOLUTION_RESEARCH_ENV,
+    clean_room_task_labels,
+    repository_research_disabled,
+    solution_research_disabled,
+)
 
 DEFAULT_SANDBOX_IMAGE = "leanflow/sandbox:local"
 DEFAULT_CONTAINERFILE = "containers/leanflow-sandbox.Containerfile"
+SANDBOX_BASE_IMAGE_ENV = "LEANFLOW_SANDBOX_BASE_IMAGE"
 WORKFLOW_ALIASES = {
     "draft",
     "review",
@@ -48,6 +60,7 @@ LEANFLOW_EXCLUDES = {
     "cache",
     "runtime",
     "workflow-state",
+    "workspace",
 }
 
 
@@ -316,6 +329,9 @@ def build_sandbox_image(
         command.append("--no-cache")
     extras = "mcp,lean-explore" if local_lean_explore else "mcp"
     command.extend(["--build-arg", f"LEANFLOW_SANDBOX_EXTRAS={extras}"])
+    base_image = str(os.getenv(SANDBOX_BASE_IMAGE_ENV, "") or "").strip()
+    if base_image:
+        command.extend(["--build-arg", f"LEANFLOW_SANDBOX_BASE={base_image}"])
     command.append(str(repo))
     return subprocess.call(command)
 
@@ -324,6 +340,113 @@ def _mount_arg(source: Path, target: str, *, read_only: bool = False) -> list[st
     source = source.expanduser().resolve()
     mode = ",readonly" if read_only else ""
     return ["--mount", f"type=bind,src={source},dst={target}{mode}"]
+
+
+def _sandbox_package_overlay_root(
+    settings: SandboxSettings,
+    project: LeanFlowProject,
+) -> Path:
+    """Return a dependency-revision-specific container package cache root."""
+    fingerprint = hashlib.sha256()
+    fingerprint.update(b"leanflow-sandbox-package-overlay-v2")
+    fingerprint.update(str(project.root.resolve()).encode())
+    for filename in ("lean-toolchain", "lake-manifest.json"):
+        path = project.root / filename
+        try:
+            fingerprint.update(path.read_bytes())
+        except OSError:
+            continue
+    return ensure_directory(
+        settings.cache_dir.expanduser().resolve()
+        / "lake-package-overlays"
+        / fingerprint.hexdigest()[:20]
+    )
+
+
+def _sandbox_package_needs_overlay(package: Path) -> bool:
+    """Return whether a package needs writable container-native build state."""
+    return package.name.casefold() == "repl" or not (package / ".lake").is_dir()
+
+
+def _prepare_sandbox_package_overlay(package: Path, cache_root: Path) -> Path:
+    """Copy immutable package source once, excluding host VCS and build state."""
+    destination = cache_root / package.name
+    if destination.is_dir():
+        return destination
+    temporary = cache_root / f".{package.name}.{uuid.uuid4().hex}.tmp"
+    shutil.copytree(
+        package,
+        temporary,
+        symlinks=True,
+        # Lake uses the dependency repository metadata to verify that the
+        # manifest URL/revision still matches. Retain the small package-local
+        # `.git`; clean-room policy still denies model Git commands.
+        ignore=shutil.ignore_patterns(".lake", "__pycache__"),
+    )
+    try:
+        temporary.rename(destination)
+    except OSError as exc:
+        if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY} or not destination.is_dir():
+            raise
+        shutil.rmtree(temporary, ignore_errors=True)
+    return destination
+
+
+def _append_sandbox_package_overlays(
+    command: list[str],
+    *,
+    settings: SandboxSettings,
+    project: LeanFlowProject,
+    project_packages: Path,
+) -> None:
+    """Overlay runtime packages with source-only, container-writable copies."""
+    cache_root = _sandbox_package_overlay_root(settings, project)
+    for package in sorted(project_packages.iterdir(), key=lambda path: path.name):
+        if (
+            not package.is_dir()
+            or "," in package.name
+            or not _sandbox_package_needs_overlay(package)
+        ):
+            continue
+        package_overlay = _prepare_sandbox_package_overlay(package, cache_root)
+        command.extend(
+            _mount_arg(
+                package_overlay,
+                f"/workspace/.lake/packages/{package.name}",
+            )
+        )
+
+
+def _command_requests_codex(command: Sequence[str]) -> bool:
+    """Return whether a sandbox workflow explicitly selects the Codex provider."""
+    for index, token in enumerate(command[:-1]):
+        if token == "--provider" and command[index + 1].strip().lower() in {
+            "codex",
+            "openai-codex",
+        }:
+            return True
+    return False
+
+
+def _append_codex_auth_mounts(command: list[str], workflow_command: Sequence[str]) -> None:
+    """Mount only Codex auth/config files for an explicitly Codex-backed sandbox."""
+    if not _command_requests_codex(workflow_command):
+        return
+    configured = str(os.getenv("CODEX_HOME", "") or "").strip()
+    codex_home = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else (Path.home() / ".codex").resolve()
+    )
+    mounted = False
+    for filename in ("auth.json", "config.toml"):
+        source = codex_home / filename
+        if not source.is_file():
+            continue
+        command.extend(_mount_arg(source, f"/opt/leanflow/{filename}", read_only=True))
+        mounted = True
+    if mounted:
+        command.extend(["--env", "CODEX_HOME=/opt/leanflow"])
 
 
 def container_run_command(
@@ -340,9 +463,13 @@ def container_run_command(
     cache_dir = settings.cache_dir.expanduser().resolve()
     home_dir = (default_sandbox_root() / "home").expanduser().resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "tmp").mkdir(parents=True, exist_ok=True)
     home_dir.mkdir(parents=True, exist_ok=True)
 
-    command = [engine, "run", "--rm", "-i"]
+    # Lean and REPL subprocesses may outlive the direct worker that launched
+    # them during cancellation. Give the container a real PID 1 reaper so
+    # exited descendants cannot accumulate as zombies during long campaigns.
+    command = [engine, "run", "--rm", "--init", "-i"]
     use_tty = bool(tty) if tty is not None else sys.stdin.isatty()
     if use_tty:
         command.append("-t")
@@ -351,11 +478,35 @@ def container_run_command(
         command.append("--read-only")
     command.extend(["--workdir", "/workspace"])
     command.extend(_mount_arg(sandbox_run.worktree, "/workspace"))
+    project_packages = sandbox_run.project.root / ".lake" / "packages"
+    if project_packages.is_dir():
+        # Reuse only third-party Lake dependencies. Project build output stays
+        # excluded so a sandbox cannot inherit compiled target declarations.
+        # Runtime packages such as `repl` are overlaid below with source-only,
+        # container-writable copies so host executables are never reused as
+        # Linux ones.
+        command.extend(_mount_arg(project_packages, "/workspace/.lake/packages", read_only=True))
+        _append_sandbox_package_overlays(
+            command,
+            settings=settings,
+            project=sandbox_run.project,
+            project_packages=project_packages,
+        )
     command.extend(_mount_arg(sandbox_run.run_dir, "/sandbox-run"))
     command.extend(_mount_arg(cache_dir, "/leanflow-cache"))
     command.extend(_mount_arg(home_dir, "/leanflow-home"))
+    _append_codex_auth_mounts(command, sandbox_run.command)
     command.extend(["--tmpfs", "/tmp:rw,nosuid,nodev,size=1g"])
     command.extend(["--tmpfs", "/run:rw,nosuid,nodev,noexec,size=128m"])
+    command.extend(
+        [
+            "--tmpfs",
+            (
+                "/opt/leanflow/.venv/lib/python3.12/site-packages/lean_interact/cache:"
+                "rw,nosuid,nodev,noexec,size=256m,mode=1777"
+            ),
+        ]
+    )
     command.extend(["--env", "LEANFLOW_HOME=/leanflow-home"])
     command.extend(["--env", "HOME=/leanflow-home"])
     command.extend(["--env", "LEANFLOW_SANDBOX=1"])
@@ -363,8 +514,21 @@ def container_run_command(
     command.extend(["--env", "ELAN_HOME=/leanflow-cache/elan"])
     command.extend(["--env", "XDG_CACHE_HOME=/leanflow-cache/xdg"])
     command.extend(["--env", "PIP_CACHE_DIR=/leanflow-cache/pip"])
+    command.extend(["--env", "TMPDIR=/leanflow-cache/tmp"])
     if settings.env_file.exists():
         command.extend(["--env-file", str(settings.env_file.expanduser().resolve())])
+    # Append clean-room policy after the user env file so it cannot be weakened
+    # accidentally by a stale setting in that file.
+    if repository_research_disabled():
+        command.extend(["--env", f"{DISABLE_REPOSITORY_RESEARCH_ENV}=1"])
+        command.extend(["--env", "GIT_CONFIG_COUNT=1"])
+        command.extend(["--env", "GIT_CONFIG_KEY_0=protocol.allow"])
+        command.extend(["--env", "GIT_CONFIG_VALUE_0=never"])
+    if solution_research_disabled():
+        command.extend(["--env", f"{DISABLE_SOLUTION_RESEARCH_ENV}=1"])
+        labels = "|".join(clean_room_task_labels())
+        if labels:
+            command.extend(["--env", f"{CLEAN_ROOM_TASK_LABELS_ENV}={labels}"])
     if not settings.network:
         command.extend(["--network", "none"])
     if engine == "podman":
@@ -373,13 +537,23 @@ def container_run_command(
         command.extend(["--user", f"{uid}:{gid}"])
     command.extend(["--cap-drop=ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512"])
 
-    bootstrap = ""
-    if settings.bootstrap_mcp:
-        bootstrap = (
-            'if [ ! -f "$LEANFLOW_HOME/.sandbox-bootstrap-ok" ]; then '
-            '/opt/leanflow/.venv/bin/leanflow mcp bootstrap lean && touch "$LEANFLOW_HOME/.sandbox-bootstrap-ok"; '
+    bootstrap_parts = ["set -e; "]
+    if (project_packages / "repl").is_dir():
+        bootstrap_parts.append(
+            'if [ ! -x ".lake/packages/repl/.lake/build/bin/repl" ]; then '
+            "echo 'Preparing sandbox-local Lean REPL...'; "
+            "lake build repl; "
             "fi; "
         )
+    if settings.bootstrap_mcp:
+        bootstrap_parts.append(
+            'if [ ! -f "$LEANFLOW_HOME/.sandbox-bootstrap-ok" ]; then '
+            "/opt/leanflow/.venv/bin/leanflow mcp bootstrap lean "
+            "|| { status=$?; echo 'LeanFlow sandbox MCP bootstrap failed.' >&2; exit \"$status\"; }; "
+            'touch "$LEANFLOW_HOME/.sandbox-bootstrap-ok"; '
+            "fi; "
+        )
+    bootstrap = "".join(bootstrap_parts)
     command.extend(
         [
             image,

@@ -1,10 +1,4 @@
-"""Pure environment/config readers for the native managed runner.
-
-Extracted verbatim from ``native_runner.py`` (refactor Phase 2, step 1 — the true-leaf cluster).
-These helpers depend only on the standard library and each other, so they live here and are
-re-exported from ``native_runner`` for backwards compatibility. They resolve the LeanFlow env
-namespace in one place.
-"""
+"""Resolve native-runner configuration from the ``LEANFLOW_`` environment."""
 
 from __future__ import annotations
 

@@ -400,6 +400,117 @@ def test_runner_precedence_prefers_current_assignment_split_dependency(
     assert selected.label == "current_target_helper"
 
 
+def test_runner_precedence_keeps_blocked_current_assignment_ahead_of_downstream_sorry(
+    enabled, monkeypatch, tmp_path
+):
+    """A stalled route cannot hand a downstream theorem an upstream sorry."""
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active_file = str(tmp_path / "Demo.lean")
+    current_id = plan_state.node_id_for("hard_parent", active_file)
+    downstream_id = plan_state.node_id_for("result", active_file)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=current_id,
+                    name="hard_parent",
+                    file=active_file,
+                    status="blocked",
+                ),
+                plan_state.GraphNode(
+                    id=downstream_id,
+                    name="result",
+                    file=active_file,
+                    status="stated",
+                ),
+            )
+        )
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "hard_parent",
+            "active_file": active_file,
+        },
+        "theorem_outcomes": {
+            f"{active_file}::hard_parent": {
+                "target_symbol": "hard_parent",
+                "active_file": active_file,
+                "status": "deferred",
+                "note": "current route exhausted",
+            }
+        },
+    }
+    queue = (
+        QueueItem(label="hard_parent", reasons=("contains sorry",)),
+        QueueItem(label="result", reasons=("contains sorry",)),
+    )
+
+    precedence = runner._graph_frontier_precedence(
+        autonomy_state,
+        active_file=active_file,
+        queue_labels=("hard_parent", "result"),
+    )
+
+    assert precedence is not None
+    assert precedence("hard_parent") == -2
+    assert precedence("result") == 0
+    selected = select_next_item(
+        queue,
+        is_present_in_file=lambda _label: True,
+        precedence=precedence,
+    )
+    assert selected is not None
+    assert selected.label == "hard_parent"
+
+
+def test_runner_precedence_selects_unresolved_answer_before_result_consumer(
+    enabled, monkeypatch, tmp_path
+):
+    """A known graph node cannot jump over an earlier pending source dependency."""
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active = tmp_path / "P4.lean"
+    active.write_text(
+        "def answer : Set Nat := sorry\n\n"
+        "theorem result : {n : Nat | n > 0} = answer := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    result_id = plan_state.node_id_for("result", str(active))
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=result_id,
+                    name="result",
+                    file=str(active),
+                    status="stated",
+                ),
+            )
+        )
+    )
+    queue = (
+        QueueItem(label="answer", reasons=("contains sorry",)),
+        QueueItem(label="result", reasons=("contains sorry",)),
+    )
+
+    precedence = runner._graph_frontier_precedence(
+        {},
+        active_file=str(active),
+        queue_labels=("answer", "result"),
+    )
+
+    assert precedence is not None
+    assert precedence("answer") == 1
+    assert precedence("result") == 2
+    selected = select_next_item(
+        queue,
+        is_present_in_file=lambda _label: True,
+        precedence=precedence,
+    )
+    assert selected is not None
+    assert selected.label == "answer"
+
+
 def test_runner_precedence_keeps_split_family_focused_through_parent_handback(
     enabled, monkeypatch, tmp_path
 ):
@@ -504,6 +615,158 @@ def test_runner_precedence_keeps_split_family_focused_through_parent_handback(
         order_key=lambda label: 0 if label == "short_unrelated" else 100,
     )
     assert selected is not None and selected.label == "parent"
+
+
+def test_runner_precedence_assigns_source_dependency_before_downstream_parent(
+    enabled, monkeypatch, tmp_path
+):
+    """Do not keep a parent assigned while its generated source helper has sorry."""
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active_file = str(tmp_path / "Demo.lean")
+    parent_id = plan_state.node_id_for("parent", active_file)
+    helper_id = plan_state.node_id_for("source_helper", active_file)
+    planned_id = plan_state.node_id_for("planned_subhelper", active_file)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=parent_id,
+                    name="parent",
+                    file=active_file,
+                    status="proving",
+                ),
+                plan_state.GraphNode(
+                    id=helper_id,
+                    name="source_helper",
+                    file=active_file,
+                    status="stated",
+                    generated_by="decomposer",
+                ),
+                plan_state.GraphNode(
+                    id=planned_id,
+                    name="planned_subhelper",
+                    file=active_file,
+                    status="conjectured",
+                    generated_by="decomposer",
+                ),
+            ),
+            edges=(
+                plan_state.GraphEdge(source=helper_id, target=parent_id, kind="split_of"),
+                plan_state.GraphEdge(source=parent_id, target=helper_id, kind="depends_on"),
+                plan_state.GraphEdge(
+                    source=helper_id,
+                    target=planned_id,
+                    kind="depends_on",
+                ),
+            ),
+        )
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "parent",
+            "active_file": active_file,
+        }
+    }
+    queue = tuple(
+        QueueItem(label=label, reasons=("contains sorry",)) for label in ("source_helper", "parent")
+    )
+
+    precedence = runner._graph_frontier_precedence(
+        autonomy_state,
+        active_file=active_file,
+        queue_labels=("source_helper", "parent"),
+    )
+
+    assert precedence is not None
+    assert precedence("source_helper") == -1
+    assert precedence("parent") == 1
+    selected = select_next_item(
+        queue,
+        is_present_in_file=lambda _label: True,
+        precedence=precedence,
+        order_key=lambda label: 0 if label == "parent" else 100,
+    )
+    assert selected is not None and selected.label == "source_helper"
+
+
+def test_runner_precedence_keeps_source_helper_with_graph_only_child(
+    enabled, monkeypatch, tmp_path
+):
+    """A planning-only child cannot oscillate its source helper with the parent."""
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active_file = str(tmp_path / "Demo.lean")
+    parent_id = plan_state.node_id_for("parent", active_file)
+    helper_id = plan_state.node_id_for("source_helper", active_file)
+    planned_id = plan_state.node_id_for("planned_subhelper", active_file)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=parent_id,
+                    name="parent",
+                    file=active_file,
+                    status="proving",
+                ),
+                plan_state.GraphNode(
+                    id=helper_id,
+                    name="source_helper",
+                    file=active_file,
+                    status="blocked",
+                    generated_by="decomposer",
+                ),
+                plan_state.GraphNode(
+                    id=planned_id,
+                    name="planned_subhelper",
+                    file=active_file,
+                    status="conjectured",
+                    generated_by="decomposer",
+                ),
+            ),
+            edges=(
+                plan_state.GraphEdge(source=helper_id, target=parent_id, kind="split_of"),
+                plan_state.GraphEdge(source=parent_id, target=helper_id, kind="depends_on"),
+                plan_state.GraphEdge(
+                    source=helper_id,
+                    target=planned_id,
+                    kind="depends_on",
+                ),
+            ),
+        )
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "source_helper",
+            "active_file": active_file,
+        },
+        "theorem_outcomes": {
+            f"{active_file}::source_helper": {
+                "target_symbol": "source_helper",
+                "active_file": active_file,
+                "status": "deferred",
+                "note": "current route exhausted",
+            }
+        },
+    }
+    queue = tuple(
+        QueueItem(label=label, reasons=("contains sorry",)) for label in ("parent", "source_helper")
+    )
+
+    precedence = runner._graph_frontier_precedence(
+        autonomy_state,
+        active_file=active_file,
+        queue_labels=("parent", "source_helper"),
+    )
+
+    assert precedence is not None
+    assert precedence("source_helper") == -2
+    assert precedence("parent") == 2
+    selected = select_next_item(
+        queue,
+        is_present_in_file=lambda _label: True,
+        precedence=precedence,
+        order_key=lambda label: 0 if label == "parent" else 100,
+    )
+    assert selected is not None and selected.label == "source_helper"
 
 
 def test_runner_precedence_hands_verified_source_absent_child_to_direct_parent(

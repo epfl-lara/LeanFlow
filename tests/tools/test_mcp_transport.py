@@ -53,10 +53,12 @@ class TestReExportIdentity:
 class TestBuildSafeEnv:
     def test_filters_unsafe_keys(self, monkeypatch):
         monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("ELAN_HOME", "/leanflow-cache/elan")
         monkeypatch.setenv("SECRET_TOKEN", "ghp_should_not_leak")
         monkeypatch.setenv("XDG_DATA_HOME", "/x")
         result = mcp_transport._build_safe_env(None)
         assert result.get("PATH") == "/usr/bin"
+        assert result.get("ELAN_HOME") == "/leanflow-cache/elan"
         assert result.get("XDG_DATA_HOME") == "/x"
         assert "SECRET_TOKEN" not in result
 

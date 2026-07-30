@@ -43,6 +43,16 @@ from tools.utilities.workflow_artifact_guard import (
 
 _RG_FIELD_SEPARATOR = ":::LEANFLOW-RG-FIELD:::"
 
+
+def _explicit_package_dependency_search(path: str) -> bool:
+    """Return whether a search root explicitly enters Lake's package cache."""
+    parts = Path(os.path.normpath(os.path.expanduser(str(path or "")))).parts
+    return any(
+        parts[index] == ".lake" and parts[index + 1] == "packages"
+        for index in range(len(parts) - 1)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Write-path deny list — blocks writes to sensitive system/credential files
 # ---------------------------------------------------------------------------
@@ -990,7 +1000,11 @@ class ShellFileOperations(FileOperations):
         # sort -rn sorts by timestamp descending (newest first)
         state_prune = ""
         if not diagnostic_workflow_file_access_enabled():
-            state_prune = "-type d -name '.leanflow' -prune -o "
+            state_prune = (
+                "\\( -type d -path '*/.leanflow/workflow-state' "
+                "-o -type d -path '*/.leanflow/cache' "
+                "-o -type d -path '*/.leanflow/downloads' \\) -prune -o "
+            )
         cmd = (
             f"find {self._escape_shell_arg(path)} {state_prune}"
             f"-type f -name {self._escape_shell_arg(search_pattern)} "
@@ -1077,9 +1091,29 @@ class ShellFileOperations(FileOperations):
         context: int,
     ) -> SearchResult:
         """Search using ripgrep."""
-        cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
+        cmd_parts = [
+            "rg",
+            "--hidden",
+            "--line-number",
+            "--no-heading",
+            "--with-filename",
+        ]
+        explicit_package_search = _explicit_package_dependency_search(path)
+        if explicit_package_search:
+            # Lake package roots are intentionally ignored by the project
+            # checkout. An explicit lookup there must override ignore rules
+            # and follow a package symlink instead of silently returning zero.
+            cmd_parts.extend(["--no-ignore", "--follow"])
         if not diagnostic_workflow_file_access_enabled():
-            cmd_parts.extend(["--glob", self._escape_shell_arg("!**/.leanflow/**")])
+            for excluded in (
+                "!**/.git/**",
+                "!**/.leanflow/workflow-state/**",
+                "!**/.leanflow/cache/**",
+                "!**/.leanflow/downloads/**",
+            ):
+                cmd_parts.extend(["--glob", self._escape_shell_arg(excluded)])
+            if not explicit_package_search:
+                cmd_parts.extend(["--glob", self._escape_shell_arg("!**/.lake/**")])
 
         # Ripgrep normally separates context records as ``path-line-content``. Absolute paths and
         # checkout names routinely contain ``-<digits>-`` themselves, so parsing that format with
@@ -1184,7 +1218,13 @@ class ShellFileOperations(FileOperations):
         """Fallback search using grep."""
         cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
         if not diagnostic_workflow_file_access_enabled():
-            cmd_parts.append("--exclude-dir=.leanflow")
+            cmd_parts.extend(
+                [
+                    "--exclude-dir=workflow-state",
+                    "--exclude-dir=cache",
+                    "--exclude-dir=downloads",
+                ]
+            )
 
         # Add context if requested
         if context > 0:

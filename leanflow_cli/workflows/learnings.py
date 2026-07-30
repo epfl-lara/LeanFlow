@@ -1,13 +1,12 @@
-"""Cross-run learnings — knowledge that survives the scope (Phase 5).
+"""Persist compact, prompt-only learnings across workflow runs.
 
 ``learnings.md`` lives in the project's workflow-state root, spanning
 RUNS: every terminal scope exit — verified ones included — appends one
 compact machine-written entry (what was proved, what blocked, which
 routes fired THIS run), and the next run's scope entry gets the tail of
-that record as priors — the roadmap's "knowledge: per-scope -> +
-cross-run learnings.md + priors" row.
+that record as priors.
 
-Dark behind ``LEANFLOW_LEARNINGS`` (default off). Fail-open everywhere:
+Opt-in through ``LEANFLOW_LEARNINGS``. Fail-open everywhere:
 a learnings failure can never affect a stop or a prompt. Writes are
 sanitized (single-line, backtick-stripped, capped) and serialized under
 the shared sidecar lock with atomic replacement; the priors READER

@@ -1,9 +1,4 @@
-"""LLM routing layer over the deterministic orchestrator floor (specs §4.4).
-
-Phase 4 ships the PLUMBING only: prompt composition, a fence-tolerant JSON
-decision parser, and the upgrade-only guard. The enable flag
-(``LEANFLOW_ORCHESTRATOR_LLM_ENABLED``) flips in Phase 6 after the Phase E
-gate; until then no production call happens.
+"""Refine eligible deterministic routes with bounded LLM advice.
 
 Non-negotiables: the LLM may REFINE the floor's route but never downgrade a
 working route to park/escalate (upgrade-only rule — a park/escalate answer
@@ -76,7 +71,7 @@ _TERMINAL_ROUTES = frozenset({"park", "escalate"})
 #: evidence, ask-human a fidelity stop only a human may clear.
 _PROTECTED_FLOOR_ROUTES = _TERMINAL_ROUTES | {"ask-human"}
 
-#: The §4.4 decision vocabulary. ``ask-human`` is deliberately absent: it is
+#: Model-selectable decisions. ``ask-human`` is deliberately absent: it is
 #: the runtime's own conversion (fail-closed ACK gate), never an LLM choice.
 _LLM_ROUTES = frozenset(ROUTES) - {"ask-human"}
 

@@ -1507,8 +1507,8 @@ def test_unrelated_reused_legacy_pid_releases_once_and_persists(service, monkeyp
     assert second["report_key"] == first["report_key"]
 
 
-def test_legacy_capacity_release_never_admits_modern_exact_identity(service, monkeypatch):
-    """Token-bound workers retain the exact-process no-overlap boundary."""
+def test_reused_modern_identity_releases_only_after_live_identity_mismatch(service, monkeypatch):
+    """A token mismatch plus unrelated argv proves a reused modern PID."""
     entry = LedgerEntry(
         spec=_spec("run.planner.ds-modern-killed", archetype="deep_search"),
         state="killed",
@@ -1520,6 +1520,7 @@ def test_legacy_capacity_release_never_admits_modern_exact_identity(service, mon
     )
     service._save_entry(entry)
     monkeypatch.setattr(ds, "_dispatch_process_identity_has_exited", lambda _entry: False)
+    monkeypatch.setattr(ds, "_dispatch_process_identity_is_live", lambda _entry: False)
     monkeypatch.setattr(
         ds,
         "_read_process_argv",
@@ -1528,10 +1529,12 @@ def test_legacy_capacity_release_never_admits_modern_exact_identity(service, mon
 
     outcome = service.release_legacy_killed_process_capacity(entry)
 
-    assert outcome == {"released": False, "newly_released": False, "reason": ""}
+    assert outcome["released"] is True
+    assert outcome["newly_released"] is True
+    assert outcome["reason"] == "process-command-mismatch"
     persisted = service._entry(entry.spec.job_id)
-    assert persisted.process_released_at == ""
-    assert persisted.process_release_reason == ""
+    assert persisted.process_released_at
+    assert persisted.process_release_reason == "process-command-mismatch"
 
 
 @pytest.mark.parametrize(
@@ -1680,8 +1683,12 @@ def test_kill_does_not_misclassify_requested_termination_artifact(service, monke
         )
         return True
 
-    monkeypatch.setattr(ds, "_terminate_process_group", terminate_with_worker_artifact)
-    monkeypatch.setattr(ds, "_reap_process", lambda _pid, *, block: True)
+    monkeypatch.setattr(ds, "_dispatch_process_identity_has_exited", lambda _entry: False)
+    monkeypatch.setattr(
+        ds,
+        "_terminate_dispatch_process_and_wait",
+        lambda entry: terminate_with_worker_artifact(entry.process_id),
+    )
 
     outcome = service.kill(entry.spec.job_id, requester_job_id="run")
 
@@ -1707,8 +1714,7 @@ def test_kill_ignores_prepublished_keyboard_interrupt_artifact(service, monkeypa
         '{"ok": false, "error": "KeyboardInterrupt: "}',
         encoding="utf-8",
     )
-    monkeypatch.setattr(ds, "_reap_process", lambda _pid, *, block: True)
-    monkeypatch.setattr(ds, "_dispatch_process_identity_is_live", lambda _entry: False)
+    monkeypatch.setattr(ds, "_dispatch_process_identity_has_exited", lambda _entry: True)
 
     outcome = service.kill(entry.spec.job_id, requester_job_id="run")
 

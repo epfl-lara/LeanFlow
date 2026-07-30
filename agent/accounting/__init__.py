@@ -1,1 +1,1 @@
-"""agent.accounting subpackage (Phase II restructure)."""
+"""Track model usage, pricing, redaction, and error logs."""

@@ -1043,6 +1043,22 @@ def test_main_loads_leanflow_dotenv_before_provider_resolution(monkeypatch, tmp_
     assert captured["api_key"] == "or-from-dotenv"
 
 
+def test_provider_command_accepts_provider_alias(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def _fake_render_provider_panel(console, *, resolved, requested, targets):
+        captured["requested"] = str(requested or "")
+
+    monkeypatch.setattr("leanflow_cli.main.render_provider_panel", _fake_render_provider_panel)
+    monkeypatch.setattr(
+        "leanflow_cli.main.resolve_runtime_provider",
+        lambda requested=None: {"provider": requested or "auto"},
+    )
+
+    assert main(["provider", "--provider", "codex"]) == 0
+    assert captured["requested"] == "codex"
+
+
 def test_main_prefers_leanflow_scoped_env_names(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir(parents=True)

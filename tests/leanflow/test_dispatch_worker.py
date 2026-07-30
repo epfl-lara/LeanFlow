@@ -569,8 +569,10 @@ def test_worker_delegate_search_callback_reaches_assignment_boundary(monkeypatch
     }
     assert agent.interrupt_messages == []
     assert "search_progress" not in agent._managed_autonomy_state
-    assert child.interrupt_messages == [native_runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert child.interrupt_messages == []
+    assert state["search_progress"]["synthesis_grace_pending"] is True
     assert any("SEARCH ROUTE BOUNDARY" in appendix for appendix in child.appendices)
+    assert any("do not call another tool" in appendix for appendix in child.appendices)
     route_events = [details for args, details in events if args[0] == "search-route-change"]
     assert len(route_events) == 1
     assert route_events[0]["agent_session_id"] == "worker-deep-search-lane"

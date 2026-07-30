@@ -1,10 +1,4 @@
-"""Workflow activity-event emission helpers for the agent.
-
-Leaf module: emits managed-workflow activity events (gated on the workflow-project env) and
-shapes per-agent event detail payloads. Extracted verbatim from run_agent.py and re-exported
-there for the historical run_agent._emit_workflow_event / _workflow_agent_event_details surface
-(bare-name callers + tests). workflow_state is imported lazily inside the emitter, so no cycle.
-"""
+"""Emit managed-workflow activity events and per-agent detail payloads."""
 
 from __future__ import annotations
 

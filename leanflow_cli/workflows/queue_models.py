@@ -1,13 +1,4 @@
-"""Pure value types and mapping/classification helpers for the theorem queue.
-
-Extracted verbatim from ``leanflow_cli.workflows.queue_manager`` so the bookkeeping
-class can stay focused on runtime state. Everything here is intentionally
-pure: frozen dataclasses, enums, legacy dict<->typed mappers, and stateless
-helpers with no I/O, no logging, and no module-level mutable state. The
-``TheoremQueueManager`` class in ``queue_manager`` imports these names back,
-and ``queue_manager`` re-exports them so existing callers and tests keep
-resolving ``leanflow_cli.workflows.queue_manager.<name>``.
-"""
+"""Define immutable theorem-queue values and classification helpers."""
 
 from __future__ import annotations
 

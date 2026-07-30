@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+PLANNER_TERMINAL_OBSTACLE_STATE_KEY = "planner_terminal_obstacle"
+
 
 @dataclass(frozen=True)
 class RouteExecution:
@@ -96,6 +98,36 @@ class RouteExecution:
         )
 
     @classmethod
+    def obstacle(
+        cls,
+        *,
+        route: str,
+        target_symbol: str,
+        active_file: str,
+        outcome: str,
+        reason: str,
+        explicit_request: bool = False,
+    ) -> RouteExecution:
+        """Complete a route whose exact-scope deterministic action cannot proceed.
+
+        The persisted obstacle is route evidence, not mathematical evidence. It
+        retires the selected strategy so a fresh route can run instead of
+        replaying the same unsupported action across campaign epochs.
+        """
+        normalized_route = str(route or "").strip().lower()
+        if not normalized_route:
+            raise ValueError("route obstacle requires a route")
+        return cls.recorded(
+            route=normalized_route,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            outcome=outcome,
+            reason=reason,
+            evidence_kind=f"{normalized_route}-route-obstacle",
+            explicit_request=explicit_request,
+        )
+
+    @classmethod
     def from_payload(cls, payload: Any) -> RouteExecution | None:
         """Rebuild a validated execution result from process-local state."""
         if not isinstance(payload, dict):
@@ -137,6 +169,119 @@ class RouteExecution:
             "probe_recorded": self.probe_recorded,
             "promotion_recorded": self.promotion_recorded,
         }
+
+
+def record_planner_terminal_obstacle(
+    autonomy_state: dict[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    target_signature_sha256: str,
+    target_declaration_sha256: str = "",
+    outcome: str,
+    reason: str,
+) -> dict[str, str]:
+    """Persist a terminal planner obstacle against the assigned declaration.
+
+    Whole-file revisions are deliberately excluded: integrating a helper
+    above an unchanged target must not authorize the same expensive planner
+    route again.
+    """
+    payload = {
+        "target_symbol": str(target_symbol or "").strip(),
+        "active_file": str(active_file or "").strip(),
+        "target_signature_sha256": str(target_signature_sha256 or "").strip(),
+        "target_declaration_sha256": str(target_declaration_sha256 or "").strip(),
+        "outcome": str(outcome or "").strip(),
+        "reason": str(reason or "").strip(),
+    }
+    autonomy_state[PLANNER_TERMINAL_OBSTACLE_STATE_KEY] = payload
+    return payload
+
+
+def planner_terminal_obstacle_blocks_request(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    target_signature_sha256: str,
+    target_declaration_sha256: str = "",
+) -> bool:
+    """Return whether an unchanged target must first run a distinct route."""
+    raw = autonomy_state.get(PLANNER_TERMINAL_OBSTACLE_STATE_KEY)
+    obstacle = raw if isinstance(raw, Mapping) else {}
+    signature = str(target_signature_sha256 or "").strip()
+    assignment_matches = bool(
+        signature
+        and str(obstacle.get("target_symbol", "") or "").strip() == str(target_symbol or "").strip()
+        and _same_file(obstacle.get("active_file", ""), active_file)
+        and str(obstacle.get("target_signature_sha256", "") or "").strip() == signature
+    )
+    if not assignment_matches:
+        return False
+    recorded_declaration = str(obstacle.get("target_declaration_sha256", "") or "").strip()
+    if not recorded_declaration:
+        return True
+    current_declaration = str(target_declaration_sha256 or "").strip()
+    return not current_declaration or recorded_declaration == current_declaration
+
+
+def clear_planner_terminal_obstacle_after_target_change(
+    autonomy_state: dict[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    target_signature_sha256: str,
+    target_declaration_sha256: str = "",
+) -> bool:
+    """Clear planner cooldown when the assigned declaration materially changes."""
+    raw = autonomy_state.get(PLANNER_TERMINAL_OBSTACLE_STATE_KEY)
+    obstacle = raw if isinstance(raw, Mapping) else {}
+    scope_changed = bool(
+        str(obstacle.get("target_symbol", "") or "").strip() != str(target_symbol or "").strip()
+        or not _same_file(obstacle.get("active_file", ""), active_file)
+    )
+    if scope_changed or not str(target_signature_sha256 or "").strip():
+        return False
+    recorded_declaration = str(obstacle.get("target_declaration_sha256", "") or "").strip()
+    if recorded_declaration:
+        current_declaration = str(target_declaration_sha256 or "").strip()
+        if not current_declaration or recorded_declaration == current_declaration:
+            return False
+    elif (
+        str(obstacle.get("target_signature_sha256", "") or "").strip()
+        == str(target_signature_sha256 or "").strip()
+    ):
+        return False
+    autonomy_state.pop(PLANNER_TERMINAL_OBSTACLE_STATE_KEY, None)
+    return True
+
+
+def clear_planner_terminal_obstacle_after_distinct_route(
+    autonomy_state: dict[str, Any],
+    execution: RouteExecution,
+) -> bool:
+    """Clear planner cooldown after durable work on another route."""
+    if not execution.completed or execution.route == "plan":
+        return False
+    raw = autonomy_state.get(PLANNER_TERMINAL_OBSTACLE_STATE_KEY)
+    obstacle = raw if isinstance(raw, Mapping) else {}
+    if str(obstacle.get("outcome", "") or "").strip() in {
+        "planner-completed",
+        "advisor-completed",
+    }:
+        # Completed planner advice stays active until the assigned declaration
+        # itself changes. Banking another helper or consulting a different
+        # route is not evidence that the concrete plan was attempted.
+        return False
+    if str(
+        obstacle.get("target_symbol", "") or ""
+    ).strip() != execution.target_symbol or not _same_file(
+        obstacle.get("active_file", ""), execution.active_file
+    ):
+        return False
+    autonomy_state.pop(PLANNER_TERMINAL_OBSTACLE_STATE_KEY, None)
+    return True
 
 
 def _activity_time(value: Any) -> datetime | None:

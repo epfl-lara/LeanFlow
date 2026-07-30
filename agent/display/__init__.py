@@ -1,1 +1,1 @@
-"""agent.display.display subpackage (Phase II restructure)."""
+"""Render agent progress, logs, and usage information."""

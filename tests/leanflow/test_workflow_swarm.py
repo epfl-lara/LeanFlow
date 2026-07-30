@@ -194,6 +194,7 @@ def test_resolve_workflow_request_uses_inline_provider_override(monkeypatch, tmp
     assert plan.workflow.workflow_args == "Main.lean"
     assert plan.runtime["provider"] == "openai-codex"
     assert plan.child_env["LEANFLOW_NATIVE_REASONING_EFFORT"] == "xhigh"
+    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_PROVIDER"] == "codex"
 
 
 def test_resolve_research_profile_activates_complete_child_env(monkeypatch, tmp_path):

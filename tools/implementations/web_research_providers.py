@@ -1,21 +1,19 @@
-"""Free academic / code web-search providers (arXiv, Semantic Scholar, Crossref, Sourcegraph).
+"""Search academic and code sources and normalize provider results."""
 
-Leaf module: the per-provider HTTP search functions, result normalization, and the
-query-based provider-ordering router, plus their endpoint/timeout/stopword constants. Extracted
-verbatim from tools/web_tools.py and re-exported there; imports only stdlib + requests (no
-web_tools import), so there is no cycle. web_search_tool stays in web_tools and drives these
-via the re-exported names (provider-tuple identity preserved for tests).
-"""
-
+import base64
 import html as _html
 import os
 import re
+import threading
+import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 from typing import Any
 from urllib.parse import urljoin
 
 import requests
+
+from tools.utilities.repository_research_policy import repository_research_disabled
 
 RESEARCH_SEARCH_USER_AGENT = "LeanFlow/0.3 free-research-search"
 RESEARCH_SEARCH_TIMEOUT_SECONDS = 12
@@ -25,12 +23,86 @@ SEMANTIC_SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/se
 CROSSREF_SEARCH_URL = "https://api.crossref.org/works"
 SOURCEGRAPH_GRAPHQL_URL = "https://sourcegraph.com/.api/graphql"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+EXA_SEARCH_URL = "https://api.exa.ai/search"
 DUCKDUCKGO_HTML_URL = "https://html.duckduckgo.com/html/"
+BING_SEARCH_URL = "https://www.bing.com/search"
+GITHUB_REPOSITORY_SEARCH_URL = "https://api.github.com/search/repositories"
 # DuckDuckGo's HTML endpoint rejects obvious bot user-agents, so present a browser-like one.
 _GENERAL_WEB_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+# Bing selects a script-heavy shell for a full Chrome UA but serves its parseable,
+# server-rendered result list to a minimal standards-compatible client.
+_BING_USER_AGENT = "Mozilla/5.0"
+_BING_RELEVANCE_NOISE = {
+    "api",
+    "article",
+    "best",
+    "configure",
+    "current",
+    "docs",
+    "documentation",
+    "guide",
+    "how",
+    "information",
+    "install",
+    "installation",
+    "latest",
+    "manual",
+    "news",
+    "official",
+    "page",
+    "release",
+    "search",
+    "setup",
+    "site",
+    "version",
+    "web",
+    "website",
+    "what",
+}
+_BING_RETRY_NOISE = {
+    "current",
+    "docs",
+    "documentation",
+    "information",
+    "latest",
+    "official",
+    "page",
+    "search",
+    "site",
+    "web",
+    "website",
+}
+_GITHUB_QUERY_NOISE = _BING_RELEVANCE_NOISE | {
+    "reference",
+    "tutorial",
+}
+_GITHUB_RESEARCH_SIGNALS = (
+    " api",
+    " code",
+    " coq",
+    " docs",
+    " documentation",
+    " formalisation",
+    " formalization",
+    " git",
+    " github",
+    " install",
+    " lean",
+    " library",
+    " package",
+    " programming",
+    " proof",
+    " repository",
+    " rocq",
+    " software",
+    " theorem",
+)
+_GITHUB_CACHE_TTL_SECONDS = 300
+_GITHUB_CACHE_LOCK = threading.Lock()
+_GITHUB_SEARCH_CACHE: dict[tuple[str, int, bool], tuple[float, dict[str, Any]]] = {}
 CODE_SEARCH_STOPWORDS = {
     "lean",
     "coq",
@@ -355,6 +427,99 @@ def _parse_duckduckgo_html(html_text: str, limit: int) -> list[dict[str, Any]]:
     return results
 
 
+def _decode_bing_href(href: str) -> str:
+    """Return the target URL from either a direct or Bing redirect result link."""
+    href = _html.unescape(str(href or "").strip())
+    parsed = urllib.parse.urlparse(href)
+    if (parsed.hostname or "").lower().endswith("bing.com") and parsed.path == "/ck/a":
+        encoded = (urllib.parse.parse_qs(parsed.query).get("u") or [""])[0]
+        if encoded.startswith("a1"):
+            token = encoded[2:]
+            token += "=" * (-len(token) % 4)
+            try:
+                decoded = base64.urlsafe_b64decode(token).decode("utf-8")
+            except Exception:
+                decoded = ""
+            if decoded.startswith(("http://", "https://")):
+                return decoded
+    return href if href.startswith(("http://", "https://")) else ""
+
+
+def _parse_bing_html(html_text: str, limit: int) -> list[dict[str, Any]]:
+    """Parse Bing's public HTML result list into normalized web records."""
+    block_re = re.compile(
+        r'<li[^>]+class="[^"]*\bb_algo\b[^"]*"[^>]*>(.*?)</li>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    anchor_re = re.compile(
+        r'<h2[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    snippet_re = re.compile(r"<p[^>]*>(.*?)</p>", re.DOTALL | re.IGNORECASE)
+    results: list[dict[str, Any]] = []
+    for block in block_re.findall(html_text):
+        if len(results) >= limit:
+            break
+        anchor = anchor_re.search(block)
+        if anchor is None:
+            continue
+        url = _decode_bing_href(anchor.group(1))
+        title = _strip_html(anchor.group(2))
+        snippet_match = snippet_re.search(block)
+        snippet = _strip_html(snippet_match.group(1)) if snippet_match else ""
+        if not url or not title:
+            continue
+        results.append(
+            {
+                "provider": "bing",
+                "kind": "web",
+                "title": title,
+                "url": url,
+                "snippet": _truncate_text(snippet),
+            }
+        )
+    return results
+
+
+def _bing_relevance_terms(query: str) -> list[str]:
+    """Return entity-bearing terms that Bing results should mention."""
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.+-]*", query.casefold())
+    return [
+        token
+        for token in tokens
+        if (len(token) >= 2 or token.isdigit()) and token not in _BING_RELEVANCE_NOISE
+    ][:8]
+
+
+def _filter_bing_results(results: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    """Reject generic Bing pages that do not mention the query's entity terms."""
+    terms = _bing_relevance_terms(query)
+    if not terms:
+        return results
+    minimum_matches = min(2, len(terms))
+    return [
+        result
+        for result in results
+        if sum(
+            term in haystack
+            for term in terms
+            for haystack in (
+                " ".join(
+                    str(result.get(field) or "").casefold() for field in ("title", "url", "snippet")
+                ),
+            )
+        )
+        >= minimum_matches
+    ]
+
+
+def _bing_retry_query(query: str) -> str:
+    """Build one less noisy retry while preserving product and topic terms."""
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.+-]*", query)
+    kept = [token for token in tokens if token.casefold() not in _BING_RETRY_NOISE]
+    return " ".join(kept) or _normalize_whitespace(query)
+
+
 def _search_tavily(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
     """General web search via the Tavily API (used when TAVILY_API_KEY is configured)."""
     api_key = (os.getenv("TAVILY_API_KEY") or "").strip()
@@ -399,6 +564,64 @@ def _search_tavily(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
     return results, ""
 
 
+def _search_exa(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
+    """Search the live web through Exa when ``EXA_API_KEY`` is configured."""
+    api_key = (os.getenv("EXA_API_KEY") or "").strip()
+    if not api_key:
+        return [], "Exa API key not configured"
+    try:
+        response = requests.post(
+            EXA_SEARCH_URL,
+            json={
+                "query": query,
+                "numResults": max(1, min(limit, 10)),
+                "type": "auto",
+                "contents": {"highlights": True},
+            },
+            headers={
+                "x-api-key": api_key,
+                "Content-Type": "application/json",
+                "User-Agent": RESEARCH_SEARCH_USER_AGENT,
+            },
+            timeout=RESEARCH_SEARCH_TIMEOUT_SECONDS,
+        )
+        if response.status_code == 429:
+            return [], "Exa search throttled; retry later"
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return [], f"Exa search unavailable: {exc}"
+
+    results: list[dict[str, Any]] = []
+    for item in (payload.get("results") or [])[:limit]:
+        if not isinstance(item, dict):
+            continue
+        title = _normalize_whitespace(item.get("title"))
+        url = _normalize_whitespace(item.get("url"))
+        if not (title or url):
+            continue
+        raw_highlights = item.get("highlights")
+        highlights = raw_highlights if isinstance(raw_highlights, list) else []
+        snippet = next(
+            (_normalize_whitespace(value) for value in highlights if _normalize_whitespace(value)),
+            "",
+        )
+        snippet = snippet or _normalize_whitespace(item.get("summary") or item.get("text"))
+        results.append(
+            {
+                "provider": "exa",
+                "kind": "web",
+                "title": title,
+                "url": url,
+                "snippet": _truncate_text(snippet),
+                "source": "Exa",
+                "author": _normalize_whitespace(item.get("author")),
+                "published": _normalize_whitespace(item.get("publishedDate")),
+            }
+        )
+    return results, ""
+
+
 def _search_duckduckgo_html(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
     """General web search by scraping DuckDuckGo's HTML endpoint (no API key required)."""
     try:
@@ -413,20 +636,214 @@ def _search_duckduckgo_html(query: str, limit: int) -> tuple[list[dict[str, Any]
         response.raise_for_status()
     except Exception as exc:
         return [], f"DuckDuckGo search unavailable: {exc}"
-    results = _parse_duckduckgo_html(response.text or "", limit)
+    response_text = response.text or ""
+    lowered = response_text.lower()
+    if response.status_code == 202 and any(
+        marker in lowered for marker in ("anomaly-modal", "challenge-form", "bots use duckduckgo")
+    ):
+        return [], "DuckDuckGo blocked this anonymous search with an anti-bot challenge"
+    results = _parse_duckduckgo_html(response_text, limit)
     if not results:
         return [], "DuckDuckGo returned no parseable results"
     return results, ""
 
 
+def _search_bing_html(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
+    """Search Bing's public HTML page with one relevance-guarded retry."""
+
+    def fetch(search_query: str) -> tuple[list[dict[str, Any]], str]:
+        try:
+            response = requests.get(
+                BING_SEARCH_URL,
+                # An explicit neutral market prevents Bing from returning a generic
+                # Microsoft navigation page for container IPs with no locale history.
+                params={"q": search_query, "setlang": "en", "cc": "us"},
+                headers={
+                    "User-Agent": _BING_USER_AGENT,
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                timeout=RESEARCH_SEARCH_TIMEOUT_SECONDS,
+            )
+            if response.status_code == 429:
+                return [], "Bing search throttled; retry later"
+            response.raise_for_status()
+        except Exception as exc:
+            return [], f"Bing search unavailable: {exc}"
+        parsed = _parse_bing_html(response.text or "", limit)
+        return _filter_bing_results(parsed, query), ""
+
+    results, error = fetch(query)
+    if results or error:
+        return results, error
+    retry_query = _bing_retry_query(query)
+    if retry_query.casefold() != _normalize_whitespace(query).casefold():
+        results, error = fetch(retry_query)
+        if results or error:
+            return results, error
+    return [], "Bing returned no relevant parseable results"
+
+
+def _github_repository_queries(query: str) -> tuple[str, ...]:
+    """Return bounded software-focused GitHub repository query formulations."""
+    lowered = f" {query.casefold()}"
+    if not any(signal in lowered for signal in _GITHUB_RESEARCH_SIGNALS):
+        return ()
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.+-]*", query)
+    primary_tokens = [token for token in tokens if token.casefold() not in _GITHUB_QUERY_NOISE][:8]
+    if not primary_tokens:
+        return ()
+    primary = " ".join(primary_tokens)
+    without_version = " ".join(
+        token for token in primary_tokens if not any(char.isdigit() for char in token)
+    )
+    return tuple(
+        candidate
+        for index, candidate in enumerate((primary, without_version))
+        if candidate
+        and candidate.casefold()
+        not in {previous.casefold() for previous in (primary, without_version)[:index] if previous}
+    )
+
+
+def _search_github_repositories(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
+    """Search public GitHub repositories when repository research is allowed."""
+    if repository_research_disabled():
+        return [], "GitHub repository search disabled by clean-room policy"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": RESEARCH_SEARCH_USER_AGENT,
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    api_key = (os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    errors: list[str] = []
+    candidates: list[tuple[dict[str, Any], int, int]] = []
+    queries = _github_repository_queries(query)
+    if not queries:
+        return [], "GitHub repository search not applicable to this query"
+    for query_index, search_query in enumerate(queries):
+        per_page = max(1, min(limit, 5))
+        cache_key = (search_query.casefold(), per_page, bool(api_key))
+        with _GITHUB_CACHE_LOCK:
+            now = time.monotonic()
+            cached = _GITHUB_SEARCH_CACHE.get(cache_key)
+            if cached and now - cached[0] <= _GITHUB_CACHE_TTL_SECONDS:
+                payload = cached[1]
+            else:
+                try:
+                    response = requests.get(
+                        GITHUB_REPOSITORY_SEARCH_URL,
+                        params={"q": search_query, "per_page": per_page},
+                        headers=headers,
+                        timeout=RESEARCH_SEARCH_TIMEOUT_SECONDS,
+                    )
+                    if response.status_code in {403, 429}:
+                        return [], "GitHub repository search throttled; retry later"
+                    response.raise_for_status()
+                    payload = response.json()
+                except Exception as exc:
+                    errors.append(f"GitHub repository search unavailable: {exc}")
+                    continue
+                if isinstance(payload, dict):
+                    _GITHUB_SEARCH_CACHE[cache_key] = (now, payload)
+        if not isinstance(payload, dict):
+            errors.append("GitHub repository search returned an invalid response")
+            continue
+        for result_index, item in enumerate(payload.get("items", [])[:limit]):
+            if not isinstance(item, dict):
+                continue
+            full_name = _normalize_whitespace(item.get("full_name"))
+            url = _normalize_whitespace(item.get("html_url"))
+            if not full_name or not url:
+                continue
+            candidates.append(
+                (
+                    {
+                        "provider": "github",
+                        "kind": "repository",
+                        "title": full_name,
+                        "url": url,
+                        "snippet": _truncate_text(item.get("description")),
+                        "source": "GitHub",
+                        "clone_url": _normalize_whitespace(item.get("clone_url")),
+                        "default_branch": _normalize_whitespace(item.get("default_branch")),
+                        "language": _normalize_whitespace(item.get("language")),
+                        "stars": item.get("stargazers_count"),
+                        "updated": _normalize_whitespace(item.get("updated_at")),
+                    },
+                    query_index,
+                    result_index,
+                )
+            )
+    signal_terms = _bing_relevance_terms(query)
+
+    def score(candidate: tuple[dict[str, Any], int, int]) -> tuple[int, int, int, str]:
+        result, query_index, result_index = candidate
+        title = str(result.get("title") or "").casefold()
+        snippet = str(result.get("snippet") or "").casefold()
+        title_hits = sum(term in title for term in signal_terms)
+        snippet_hits = sum(term in snippet for term in signal_terms)
+        try:
+            stars = max(0, int(result.get("stars") or 0))
+        except (TypeError, ValueError):
+            stars = 0
+        return (
+            -(5 * title_hits + snippet_hits),
+            -min(stars, 100_000),
+            query_index * 100 + result_index,
+            title,
+        )
+
+    ranked: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for result, _, _ in sorted(candidates, key=score):
+        url = str(result.get("url") or "")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        ranked.append(result)
+        if len(ranked) >= limit:
+            break
+    return ranked, "; ".join(errors)
+
+
 def _search_general_web(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
-    """General-purpose web search: Tavily when keyed (reliable), else DuckDuckGo HTML (free)."""
+    """Search keyed providers, keyless engines, then public repositories."""
     if (os.getenv("TAVILY_API_KEY") or "").strip():
         results, err = _search_tavily(query, limit)
         if results or not err:
             return results, err
-        # Tavily is configured but failed this call — fall back to the free path.
-    return _search_duckduckgo_html(query, limit)
+        # A configured provider failed this call; continue through other keyed/free paths.
+    if (os.getenv("EXA_API_KEY") or "").strip():
+        results, err = _search_exa(query, limit)
+        if results or not err:
+            return results, err
+    duckduckgo_results, duckduckgo_error = _search_duckduckgo_html(query, limit)
+    if duckduckgo_results:
+        return duckduckgo_results, duckduckgo_error
+    bing_results, bing_error = _search_bing_html(query, limit)
+    if bing_results:
+        degraded = (
+            f"{duckduckgo_error}; Bing fallback succeeded"
+            if duckduckgo_error
+            else "Bing fallback succeeded"
+        )
+        return bing_results, degraded
+    github_results, github_error = _search_github_repositories(query, limit)
+    if github_results:
+        failures = "; ".join(reason for reason in (duckduckgo_error, bing_error) if reason)
+        degraded = (
+            f"{failures}; GitHub repository fallback succeeded"
+            if failures
+            else "GitHub repository fallback succeeded"
+        )
+        return github_results, degraded
+    failures = "; ".join(
+        reason for reason in (duckduckgo_error, bing_error, github_error) if reason
+    )
+    return [], failures
 
 
 def _web_search_provider_order(query: str) -> tuple:
@@ -448,12 +865,31 @@ def _web_search_provider_order(query: str) -> tuple:
             "formalisation",
         )
     )
+    has_general_web_signal = any(
+        token in lowered
+        for token in (
+            " api ",
+            " changelog",
+            " configure",
+            " documentation",
+            " docs",
+            " error ",
+            " how to ",
+            " install",
+            " latest",
+            " release",
+            " setup",
+            " version",
+        )
+    )
     # General web search is always appended so the model can research arbitrary topics (docs,
     # installation, math background), not only papers/code. Specialists stay routed by signal.
     if has_code_signal and not has_paper_signal:
         return (_search_sourcegraph_code, _search_general_web)
     if has_identifier and not has_paper_signal:
         return (_search_sourcegraph_code, _search_general_web)
+    if has_general_web_signal and not has_paper_signal:
+        return (_search_general_web,)
     return (
         _search_arxiv,
         _search_semantic_scholar,

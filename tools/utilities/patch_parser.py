@@ -224,6 +224,38 @@ def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], str | Non
     return operations, None
 
 
+def preview_v4a_update(
+    patch_content: str,
+    current_content: str,
+) -> tuple[str | None, str | None]:
+    """Return the exact in-memory result of one V4A update operation.
+
+    Use the strict hunk matcher so policy preflights can compare semantic source
+    regions without writing the file or accepting a fuzzy relocation. Unknown,
+    multi-file, and non-update patches return an error for the caller to handle
+    conservatively.
+    """
+    from tools.utilities.fuzzy_match import STRICT_CONFIG
+
+    operations, error = parse_v4a_patch(patch_content)
+    if error:
+        return None, error
+    if len(operations) != 1 or operations[0].operation != OperationType.UPDATE:
+        return None, "preview requires exactly one V4A update operation"
+
+    new_content = current_content
+    for hunk in operations[0].hunks:
+        patched, hunk_error, _strategy, _similarity = _apply_hunk(
+            new_content,
+            hunk,
+            STRICT_CONFIG,
+        )
+        if patched is None:
+            return None, hunk_error or "could not apply update hunk"
+        new_content = patched
+    return new_content, None
+
+
 def apply_v4a_operations(
     operations: list[PatchOperation], file_ops: Any, *, strict: bool = False
 ) -> "PatchResult":

@@ -1,1 +1,1 @@
-"""leanflow_cli.workflows subpackage (Phase II restructure)."""
+"""Coordinate proof queues, verification, research, and durable state."""

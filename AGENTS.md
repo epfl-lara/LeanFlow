@@ -93,13 +93,12 @@ When you want to understand or change something, this is where it is written dow
 
 - **`README.md`** — product overview: what LeanFlow is, install, the core workflows.
 - **`AGENTS.md`** (this file) — how to work in the repo: standards, the quality gate, layout, anti-patterns.
-- **`ARCHITECTURE.md`** — the authoritative module map, the subpackage layout, the refactoring history, and
-  the load-bearing invariants (public imports, the run_conversation result schema, the tool self-registration
-  contract). **Update it whenever modules move or the public surface changes.**
+- **`ARCHITECTURE.md`** — the authoritative current module map, package boundaries, execution paths,
+  and load-bearing invariants (public imports, the `run_conversation` result schema, and tool
+  self-registration). **Update it whenever module ownership or the public surface changes.**
 - **`CONTRIBUTING.md`** — contribution basics and the skill-vs-tool decision.
 - **In-code docstrings** — the per-module / per-function reference (the primary source of truth for behavior).
-- **`docs/`** — deeper operational references (`product-reference.md`, `native-lean-workflow-surface.md`,
-  `sandbox-runtime.md`).
+- **`docs/`** — deeper operational references (`product-reference.md` and `sandbox-runtime.md`).
 
 ## Main Active Codepaths
 
@@ -119,31 +118,22 @@ The shared kernel (session store, clock, constants, tool registry API, toolsets,
 `core/`. Top-level `model_tools` / `toolsets` / `utils` are thin re-export shims that keep
 `from model_tools import …` etc. working.
 
-A completed decomposition (now on `refactor/leanflow-cores-2`) split the historical monoliths into
-single-responsibility leaf modules and then grouped them into subpackages. The entry points and public
-surface are unchanged — see `ARCHITECTURE.md` for the full module map and the subpackage layout
-(`agent/{accounting,execution,prompting,providers,…}/`, `leanflow_cli/{lean,native,formalization,workflows,cli,runtime}/`,
-`tools/{implementations,utilities,mcp,environments}/`). The leaf-module names below now live inside
-those subpackages. The key structures to know:
+The runtime is organized into single-responsibility leaf modules under
+`agent/{accounting,compression,display,execution,prompting,providers,runtime}/`,
+`leanflow_cli/{cli,formalization,lean,native,runtime,workflows}/`, and
+`tools/{environments,implementations,mcp,utilities}/`. Entry points and compatibility shims remain
+stable; see `ARCHITECTURE.md` for the current map and invariants. The key structures are:
 
-- `agent/` holds the `AIAgent` **collaborators** extracted from `run_agent.py`: `token_accounting`,
-  `provider_client`, `tool_executor`, `conversation_manager`, `interrupt_controller`,
-  `response_normalizer`, `reasoning_processor`, `prompt_manager`, `api_caller`,
-  `compression_policy`, and `anthropic_messages`. `AIAgent` delegates to these via thin wrappers,
-  `@property` shims, and lazy `_resolve_*` accessors (now collected in
-  `agent/collaborator_resolvers.py`), so existing imports and monkeypatch targets still resolve.
-  Provider routing for the auxiliary client lives in `agent/auxiliary_adapters.py`, and model
-  metadata + pricing are unified behind `agent/model_capabilities.py`.
-- `leanflow_cli/` holds leaf modules carved out of `native_runner.py` (e.g. `native_config`,
-  `lean_parsing`, `native_state`, `native_utils`, `native_checkpoints`, `proof_state_builder`,
-  `manager_verification`, `project_prove_manager`, `lean_module_paths`), out of `lean_services.py`
-  (`lean_diagnostics`, `lean_declarations`, `lean_search_providers`, `lean_automation`,
-  `lean_attempt_helpers`, `lean_sorry_stats`, plus the `lean_backend` `LeanBackend` wrapper), out of
-  `main.py` (`cli_handlers`, `shell_ui`; slash-command routing unified in `commands.py` behind
-  `COMMAND_REGISTRY`), out of `formalization_documents.py` (`document_extraction`), and out of
-  `workflow_state.py` (`activity_preview`).
-- `tools/` gained `lean_experts` + `lean_patch` (from `lean_tool.py`) and `mcp_transport` +
-  `mcp_sampling` (from `mcp_tool.py`).
+- `agent/` holds `AIAgent` collaborators. For example, accounting is under
+  `agent/accounting/`, context management under `agent/compression/`, tool execution under
+  `agent/execution/`, prompt shaping under `agent/prompting/`, and provider routing under
+  `agent/providers/`. `AIAgent` delegates through thin wrappers, properties, and lazy accessors in
+  `agent/execution/collaborator_resolvers.py`, preserving public imports and patch targets.
+- `leanflow_cli/` separates CLI handling, source formalization, Lean services, native process
+  lifecycle, provider/sandbox runtime, and persistent workflow coordination into their named
+  subpackages.
+- `tools/` separates callable implementations from deterministic utilities, MCP transport, and
+  execution environments.
 
 When adding behavior, prefer the smaller extracted module over growing the original monolith again.
 
@@ -156,7 +146,7 @@ When adding behavior, prefer the smaller extracted module over growing the origi
 - `leanflow_cli/workflows/workflow_state.py` persists activity, checkpoints, logs, and status (status shaping in `workflows/activity_preview.py`)
 - `leanflow_cli/runtime/file_locks.py` handles cross-agent file reservations
 - `leanflow_cli/runtime/skill_core.py` resolves builtin, user, and project skill overlays
-- `agent/prompt_builder.py` injects skill guidance into the agent prompt
+- `agent/prompting/prompt_builder.py` injects skill guidance into the agent prompt
 - `run_agent.py` hosts `AIAgent`; its responsibilities are delegated to the `agent/` collaborators listed above (the `run_conversation` loop itself is not yet extracted)
 
 ## Contribution Priorities
@@ -206,5 +196,5 @@ python -m leanflow_cli.main --help
 When changing workflow UX or runner behavior, also smoke-test the installed wrapper:
 
 ```bash
-/Users/$USER/.local/bin/leanflow --help
+~/.local/bin/leanflow --help
 ```

@@ -50,7 +50,7 @@ def _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
             },
         ],
     )
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
 
     agent = run_agent.AIAgent(

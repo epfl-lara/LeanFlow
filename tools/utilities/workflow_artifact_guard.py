@@ -42,7 +42,11 @@ def is_workflow_state_path(path: str) -> bool:
 
 def is_leanflow_internal_path(path: str) -> bool:
     """Return whether a path traverses LeanFlow's project-local metadata tree."""
-    return ".leanflow" in _normalized_parts(path)
+    parts = _normalized_parts(path)
+    for index in range(max(0, len(parts) - 2)):
+        if parts[index : index + 3] == (".leanflow", "workspace", "repos"):
+            return False
+    return ".leanflow" in parts
 
 
 def is_live_workflow_log_path(path: str) -> bool:

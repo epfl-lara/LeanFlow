@@ -85,6 +85,11 @@ def test_llm_decompose_states_stubs_end_to_end(rigged, monkeypatch):
     monkeypatch.setattr(
         runner.decomposer, "refresh_queue_edit_guard", lambda agent: guard_refreshes.append(agent)
     )
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda _active_file, _target_symbol: {"ok": False},
+    )
     events: list[tuple] = []
     monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: events.append((a, k)))
 
@@ -111,6 +116,60 @@ def test_llm_decompose_states_stubs_end_to_end(rigged, monkeypatch):
     assert placed_calls[0]["target_symbol"] == "goal"
     assert guard_refreshes  # the prover's guard snapshots were refreshed
     assert any(a[0] == "decomposer" and "LLM-decision stubs" in a[1] for a, _k in events)
+
+
+def test_decompose_suppressed_for_kernel_clean_assignment(rigged, monkeypatch):
+    active = rigged / "Demo.lean"
+    active.write_text("theorem goal : True := by\n  trivial\n", encoding="utf-8")
+    route = runner.orchestrator_floor.OrchestratorRoute(
+        route="decompose",
+        reason="split the goal",
+        target={
+            "statements_to_state": [
+                {"name": "goal_helper", "statement": "lemma goal_helper : True := by sorry"}
+            ]
+        },
+        source="llm",
+    )
+    placed_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        runner.decomposer,
+        "place_helpers",
+        lambda **kwargs: placed_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda _active_file, target_symbol: {"ok": True, "target": target_symbol},
+    )
+    events: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    history: list[dict[str, str]] = []
+    autonomy_state: dict[str, Any] = {
+        "_orchestrator_last_ctx": {
+            "target_symbol": "goal",
+            "active_file": str(active),
+        },
+        "current_queue_assignment": {
+            "target_symbol": "goal",
+            "active_file": str(active),
+        },
+    }
+
+    action = runner._orchestrator_apply_route(
+        route,
+        history,
+        autonomy_state,
+        {"target_symbol": "goal", "active_file": str(active)},
+        agent=None,
+    )
+
+    assert action == "continue"
+    assert placed_calls == []
+    assert any(args[0] == "decomposer-clean-target-suppressed" for args, _kwargs in events)
+    assert any("CLEAN-TARGET RECONCILIATION" in entry["content"] for entry in history)
 
 
 def test_llm_decompose_rejects_exact_erdos_singleton_before_placement(rigged, monkeypatch):

@@ -86,7 +86,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """Build the argument parser with all CLI subcommands and options. Constructs a hierarchical parser for version, status, config, doctor, mcp, project, workflow, sandbox, provider, and models commands, each with their own nested subparsers and flags."""
     parser = argparse.ArgumentParser(
         prog="leanflow",
-        description="LeanFlow Lean AI for Math shell",
+        description="Lean-first AI automation for Lean 4",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -183,7 +183,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sandbox_run.add_argument("args", nargs=argparse.REMAINDER)
 
     provider_parser = subparsers.add_parser("provider", help="Show the resolved runtime provider")
-    provider_parser.add_argument("--requested", default=None)
+    provider_parser.add_argument("--requested", "--provider", dest="requested", default=None)
 
     model_parser = subparsers.add_parser("models", help="Manage local model runtimes")
     model_sub = model_parser.add_subparsers(dest="models_command")

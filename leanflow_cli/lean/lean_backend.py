@@ -1,12 +1,7 @@
-"""Thin backend wrapper around the Lean tool/Lake primitives used by lean_services.
+"""Wrap the Lean tool and Lake primitives used by ``lean_services``.
 
-Phase 5 (#4 lean backend): ``LeanBackend`` is a minimal façade over the two Lean
-backend primitives that live in :mod:`leanflow_cli.lean.lean_services` — the managed
-LSP/MCP JSON tool invoker (``_invoke_json_tool``) and the Lake/subprocess runner
-(``_run_command``) — plus a tiny capability-availability reader over a
-``LeanCapabilityReport``. It deliberately does NOT own any backend state, discover
-tools, or change any behaviour: every method forwards verbatim to the existing
-primitive.
+``LeanBackend`` does not own backend state or discover tools; each method
+forwards to the existing service primitive.
 
 Monkeypatch safety: the gate tests patch ``lean_services._invoke_json_tool`` and
 ``lean_services._run_command`` to stub the backend. So the wrapper resolves those

@@ -1,20 +1,4 @@
-"""Manager-verification / verification-decision helpers extracted from native_runner (Phase 2).
-
-This module holds the cleanly-pure, closed-under-"calls" subset of the manager-verification and
-verification-decision cluster. Each function here depends only on the standard library, on
-already-extracted modules (``native_config``, ``queue_manager``, ``verification_providers``,
-``config``), or on other functions in this module. In particular it does NOT import
-``native_runner``, so re-exporting these names from there introduces no import cycle.
-
-Left behind in ``native_runner`` (and still resolving the moved names via the re-export) is the bulk
-of the cluster, because those helpers reach native_runner-only utilities — the shared text/logging
-helpers ``_single_line``, ``_record_activity``, ``_relative_file_label``, ``_extract_json_payload``,
-``_bounded_verifier_response``, ``_diagnostic_counts_from_messages``, ``_store_last_verification`` and
-the queue-manager plumbing (``_queue_manager_from_state`` / ``_flush_queue_manager`` / ``_queue_key``).
-Notably ``_verification_status_text`` stays in native_runner (it calls ``_single_line``); its behavior
-is unchanged, so the autonomous stall-signature fix that relies on it keeps working through the
-re-export.
-"""
+"""Normalize manager-verification decisions and provider policy."""
 
 from __future__ import annotations
 

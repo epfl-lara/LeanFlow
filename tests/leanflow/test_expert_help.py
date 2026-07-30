@@ -45,6 +45,21 @@ def _wait_for_pid_pair(path, *, timeout_s: float = 5.0) -> tuple[int, int]:
     return int(leader), int(child)
 
 
+def test_sandbox_codex_expert_falls_back_to_model_adapter_when_cli_missing(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_SANDBOX", "1")
+    monkeypatch.setattr(expert_help.shutil, "which", lambda _command: None)
+
+    assert expert_help.is_command_expert_provider("codex") is False
+    assert expert_help.is_command_expert_provider("codex-cli") is False
+
+
+def test_regular_codex_expert_remains_command_backed(monkeypatch):
+    monkeypatch.delenv("LEANFLOW_SANDBOX", raising=False)
+    monkeypatch.setattr(expert_help.shutil, "which", lambda _command: None)
+
+    assert expert_help.is_command_expert_provider("codex") is True
+
+
 def test_advisor_interrupt_before_launch_does_not_spawn(monkeypatch, tmp_path):
     spawned: list[bool] = []
     set_interrupt(True)

@@ -1,17 +1,8 @@
-"""Pure struggle-signal classifier for the /prove manager (Phase 2, specs §1).
+"""Classify existing ``/prove`` runtime signals into escalation levels.
 
-Adds ZERO collection code: every input is a value the runner already tracks
-(failed attempts, retry signatures, the search-progress tracker, stall
-counters, budget ratios, blocker summaries). This module only classifies a
-snapshot of them into deterministic signals — in the `queue_manager` style:
-no I/O, no logging, no MCP calls, stdlib + queue-model imports only.
-
-The severity ladder feeds the (dark-launched) LLM-manager and, later, the
-orchestrator: NUDGE summons message-shaping only; REROUTE is the future
-routing input (Phase 2 only logs it); BREAKPOINT is mapped directly by the
-exhaustion paths, never inferred here. A happy-path context must classify
-to NONE — that is the structural guarantee that the LLM-manager is never
-summoned on the happy path.
+Callers provide already-recorded attempts, retry signatures, search progress,
+stall counters, budgets, and blocker summaries. The classifier performs no
+I/O, logging, or routing.
 """
 
 from __future__ import annotations

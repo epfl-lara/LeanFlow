@@ -34,11 +34,28 @@ def test_resolve_multi_attempt_location_preserves_explicit_column(tmp_path):
     assert location._resolve_multi_attempt_location(target, 3, 10) == (3, 10, None)
 
 
-def test_resolve_multi_attempt_location_keeps_multiline_tactic_line_only(tmp_path):
+def test_resolve_multi_attempt_location_targets_multiline_trailing_sorry(tmp_path):
     target = tmp_path / "Demo.lean"
     target.write_text("theorem target : True := by\n  sorry\n", encoding="utf-8")
 
-    assert location._resolve_multi_attempt_location(target, 2, None) == (2, None, None)
+    assert location._resolve_multi_attempt_location(target, 2, None) == (
+        2,
+        3,
+        "trailing_placeholder",
+    )
+
+
+def test_resolve_multi_attempt_location_advances_to_next_line_trailing_sorry(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "theorem target : True := by\n  have h : True := trivial\n  sorry\n", encoding="utf-8"
+    )
+
+    assert location._resolve_multi_attempt_location(target, 2, None) == (
+        3,
+        3,
+        "trailing_placeholder",
+    )
 
 
 def test_resolve_multi_attempt_location_corrects_blank_after_multiline_proof(tmp_path):
@@ -50,8 +67,8 @@ def test_resolve_multi_attempt_location_corrects_blank_after_multiline_proof(tmp
 
     assert location._resolve_multi_attempt_location(target, 3, 11) == (
         2,
-        None,
-        "previous_tactic_line_after_blank",
+        3,
+        "trailing_placeholder",
     )
 
 
@@ -75,3 +92,13 @@ def test_resolve_multi_attempt_location_does_not_infer_term_proof_column(tmp_pat
     target.write_text("theorem target : True := sorry\n", encoding="utf-8")
 
     assert location._resolve_multi_attempt_location(target, 1, None) == (1, None, None)
+
+
+def test_multi_attempt_replacement_candidate_builds_complete_declaration(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text("theorem target : True := by\n  sorry\n", encoding="utf-8")
+
+    assert location._multi_attempt_replacement_candidate(target, 2, 3, "exact True.intro") == (
+        "target",
+        "theorem target : True := by\n  exact True.intro",
+    )

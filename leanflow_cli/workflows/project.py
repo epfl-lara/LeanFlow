@@ -413,9 +413,10 @@ def load_leanflow_project(target: str | Path) -> LeanFlowProject:
 
 
 def discover_leanflow_project(start: str | Path) -> LeanFlowProject:
+    """Return the nearest ancestor carrying a complete LeanFlow manifest."""
     resolved = Path(start).expanduser().resolve()
     for candidate in (resolved, *resolved.parents):
-        if (candidate / LEANFLOW_PROJECT_DIRNAME).exists():
+        if _project_manifest_path(candidate).is_file():
             return load_leanflow_project(candidate)
     raise ProjectNotFoundError(
         "No active LeanFlow project found. Use `leanflow project init` first."

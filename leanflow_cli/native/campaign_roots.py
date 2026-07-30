@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 
+from core.utils import atomic_json_write
 from leanflow_cli.lean.lean_parsing import _declaration_line_index_from_text
 from leanflow_cli.workflows import (
     campaign_root_registry,
@@ -15,6 +19,7 @@ from leanflow_cli.workflows import (
     negation_promotion,
     plan_state,
 )
+from leanflow_cli.workflows.workflow_json_io import read_json_file
 
 CampaignRootRegistryAudit = campaign_root_registry.CampaignRootRegistryAudit
 audit_campaign_root_registry = campaign_root_registry.audit_campaign_root_registry
@@ -32,6 +37,16 @@ class CampaignRootSetup:
 
 
 @dataclass(frozen=True)
+class CampaignScopeTransition:
+    """Report an archived task-boundary reset before a new campaign starts."""
+
+    transitioned: bool
+    prior_campaign_id: str = ""
+    archive_dir: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class _RootCandidate:
     """Bind one named open theorem to its leased source declaration."""
 
@@ -45,6 +60,15 @@ class _RootCandidate:
 _CAMPAIGN_ROOTS_FIELD = campaign_root_registry.CAMPAIGN_ROOTS_FIELD
 _CAMPAIGN_ROOT_REGISTRATION_OPEN_FIELD = (
     campaign_root_registry.CAMPAIGN_ROOT_REGISTRATION_OPEN_FIELD
+)
+_SCOPE_TRANSITION_MARKER = "scope-transition.json"
+_SCOPE_ARCHIVE_DIR = "campaign-archives"
+_SCOPE_ARTIFACT_NAMES = (
+    "blueprint.json",
+    "summary.json",
+    "plan.md",
+    "journal.jsonl",
+    "current.json",
 )
 
 
@@ -295,3 +319,129 @@ def source_files_for_scope(
             path = root / path
         return (path,)
     return tuple(Path(path) for path in project_files)
+
+
+def _write_empty_text(path: Path) -> None:
+    """Crash-durably truncate one text artifact after its archive is sealed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _scope_archive_name(campaign_id: str) -> str:
+    """Return a filesystem-safe, collision-resistant campaign archive label."""
+    safe_campaign = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "-"
+        for character in campaign_id
+    ).strip("-")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"{timestamp}-{safe_campaign or 'campaign'}"
+
+
+def _archive_scope_artifacts(
+    *,
+    state_root: Path,
+    campaign_id: str,
+    requested_file: str,
+    registered_files: Sequence[str],
+) -> Path:
+    """Snapshot task-scoped resume artifacts before resetting their authority."""
+    archive_dir = state_root / _SCOPE_ARCHIVE_DIR / _scope_archive_name(campaign_id)
+    archive_dir.mkdir(parents=True, exist_ok=False)
+    for name in _SCOPE_ARTIFACT_NAMES:
+        source = state_root / name
+        if source.is_file():
+            shutil.copy2(source, archive_dir / name)
+    metadata = {
+        "version": 1,
+        "prior_campaign_id": campaign_id,
+        "requested_file": requested_file,
+        "registered_files": list(registered_files),
+        "archived_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+    }
+    atomic_json_write(
+        archive_dir / "scope-transition.json",
+        metadata,
+        sort_keys=True,
+    )
+    return archive_dir
+
+
+def _finish_scope_transition(state_root: Path) -> None:
+    """Reset cross-task authorities, completing an interrupted reset idempotently."""
+    atomic_json_write(state_root / "blueprint.json", {}, sort_keys=True)
+    _write_empty_text(state_root / "journal.jsonl")
+    _write_empty_text(state_root / "plan.md")
+    atomic_json_write(state_root / "current.json", {}, sort_keys=True)
+    # Reset summary last: until this write, the old campaign identity makes a
+    # partial transition detectable and retryable from the durable marker.
+    atomic_json_write(state_root / "summary.json", {}, sort_keys=True)
+    marker_path = state_root / _SCOPE_TRANSITION_MARKER
+    marker_path.unlink(missing_ok=True)
+
+
+def prepare_requested_campaign_scope(
+    *,
+    project_root: str | Path,
+    explicit_file: str,
+) -> CampaignScopeTransition:
+    """Archive and reset a sealed file campaign when the requested file changes.
+
+    Plan, queue, route, and checkpoint state are task-scoped even though their
+    files share one project directory. A different explicit file must start a
+    new campaign; otherwise prior helper nodes and research can silently steer
+    the new theorem. The previous artifacts remain available under
+    ``campaign-archives`` and the transaction marker makes a crash mid-reset
+    retryable before any provider starts.
+    """
+    if not plan_state.plan_state_enabled() or not explicit_file:
+        return CampaignScopeTransition(False)
+    state_root = plan_state.plan_state_paths().summary_json.parent
+    marker_path = state_root / _SCOPE_TRANSITION_MARKER
+    if marker_path.is_file():
+        marker = read_json_file(marker_path)
+        _finish_scope_transition(state_root)
+        return CampaignScopeTransition(
+            True,
+            prior_campaign_id=str(marker.get("prior_campaign_id", "") or ""),
+            archive_dir=str(marker.get("archive_dir", "") or ""),
+            reason="completed interrupted task-boundary reset",
+        )
+
+    campaign = plan_state.load_summary().get("campaign")
+    audit = audit_campaign_root_registry(campaign)
+    if not audit.ok:
+        return CampaignScopeTransition(False)
+    root = Path(project_root).expanduser().resolve()
+    requested_path = Path(explicit_file).expanduser()
+    if not requested_path.is_absolute():
+        requested_path = root / requested_path
+    requested_file = str(requested_path.resolve(strict=True))
+    registered_files = sorted({str(root_record["operation_path"]) for root_record in audit.roots})
+    if not registered_files or registered_files == [requested_file]:
+        return CampaignScopeTransition(False)
+
+    archive_dir = _archive_scope_artifacts(
+        state_root=state_root,
+        campaign_id=audit.campaign_id,
+        requested_file=requested_file,
+        registered_files=registered_files,
+    )
+    marker = {
+        "version": 1,
+        "prior_campaign_id": audit.campaign_id,
+        "archive_dir": str(archive_dir),
+        "requested_file": requested_file,
+        "registered_files": registered_files,
+    }
+    atomic_json_write(marker_path, marker, sort_keys=True)
+    _finish_scope_transition(state_root)
+    return CampaignScopeTransition(
+        True,
+        prior_campaign_id=audit.campaign_id,
+        archive_dir=str(archive_dir),
+        reason="requested explicit file differs from sealed campaign scope",
+    )

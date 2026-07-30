@@ -1,8 +1,10 @@
 # LeanFlow Product Reference
 
-This is the detailed operational reference for LeanFlow. It preserves the deeper workflow, skill, provider, runtime, and verification notes that previously made the main README hard to scan.
+This reference covers LeanFlow's workflows, skills, providers, runtime
+configuration, persistence model, and verification contracts.
 
-LeanFlow is a Lean AI for Math shell focused on automated Lean coding agents. The command you install and run is still `leanflow`, so existing local setup and scripts stay stable.
+LeanFlow is a Lean-first automation shell for proof repair and mathematical
+formalization. The installed command is `leanflow`.
 
 The product is optimized for two main jobs:
 
@@ -13,14 +15,17 @@ Internally, `/prove` and `/autoprove` normalize to the same native workflow, and
 
 It installs as `leanflow`, uses `~/.leanflow` for user-level config, and keeps project-owned workflow state in `.leanflow/`.
 
-This fork removes the old managed `claude-code` and `codex` backend flow. LeanFlow now runs Lean workflows through its own internal `leanflow-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
+LeanFlow runs managed workflows through its internal `leanflow-native` runtime.
+Inference can use a Codex OAuth session, direct provider APIs,
+OpenAI-compatible endpoints, or local runtimes such as vLLM, Ollama, and
+llama.cpp.
 
 ## Product Direction
 
 LeanFlow is intentionally Lean-first and automation-first.
 
 - The default shell and workflow UX are built around Lean proving and formalization, not generic assistant chat.
-- Autonomous workflows are judged by strict Lean verification, not by partial progress:
+- Proof workflows are judged by strict Lean verification, not by partial progress:
   - explicit successful build
   - clean diagnostics
   - no open goals
@@ -33,7 +38,9 @@ LeanFlow is intentionally Lean-first and automation-first.
 
 LeanFlow ships with a small curated skill core for Lean workflows. Skills are not a side feature here; they are part of how the agent is steered toward proving, diagnostics, formalization, resume, and user-approved swarm behavior.
 
-Skills are now the routing/index layer over native workflow and worker specs in `leanflow_specs/`. The canonical Lean contract lives in those markdown-backed specs; skills point the agent at the right spec and tool order for the current workflow state.
+Skills are the routing layer over the native workflow and worker specs in
+`leanflow_specs/`. The specs define the canonical Lean contract; skills select
+the relevant contract and tool order for the current workflow state.
 
 Built-in skills:
 
@@ -48,7 +55,9 @@ Built-in skills:
   - emphasizes: current blockers, open goals, verification state, and project-wide remaining `sorry`
 - `lean-formalization`
   - formalization and declaration-building skill for `formalize` and `draft`
-  - emphasizes: source-document inspection, blueprint planning, source comments, small verifiable steps, dependency order, and zero build errors / zero `sorry`
+  - emphasizes source inspection, blueprint planning, traceable declarations,
+    buildable statement drafts, and an explicit handoff of intentional proof
+    holes to `prove`
 - `lean-search`
   - unified search helper used before editing proofs, covering both local-project context and Mathlib/semantic discovery
   - emphasizes: nearby declarations, imports, naming/style reuse, theorem-name discovery, statement inspection, and reducing proof guessing
@@ -126,7 +135,7 @@ Use `/skills` to see what the agent can currently load and where each skill came
 
 ## Native Workflow Contract
 
-LeanFlow now treats native markdown specs as the canonical Lean workflow contract.
+Native Markdown specs are the canonical Lean workflow contract.
 
 Spec roots:
 
@@ -159,9 +168,10 @@ These specs are the source of truth for:
 - route decisions
 - contract validation in tests
 
-Skills remain important, but they are now the routing layer that points to these specs instead of carrying the whole operational contract alone.
+Skills select these specs without duplicating the full operational contract.
 
-For a developer-oriented summary of the native workflow/tool surface, see [native-lean-workflow-surface.md](native-lean-workflow-surface.md).
+For package boundaries and the native execution path, see
+[`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## What Ships
 
@@ -184,9 +194,9 @@ For a developer-oriented summary of the native workflow/tool surface, see [nativ
   - `leanflow models local logs`
   - `leanflow models local use`
 
-## Kernel-Only Scope
+## Product Scope
 
-This repo is now intentionally trimmed to the Lean workflow kernel.
+The supported repository surface is limited to the Lean workflow kernel.
 
 Supported product surface:
 
@@ -401,7 +411,7 @@ replaces them, so startup visibility does not claim that historical mathematical
 The shell status panel labels those retained fields as a prior durable snapshot pending
 reconciliation.
 
-`/exit` now asks the current project's managed runner to shut down cleanly first and waits briefly
+`/exit` asks the current project's managed runner to shut down cleanly first and waits briefly
 for that exit request to land. Any later direct interrupt requires the live process to match the
 per-launch ownership-token fingerprint plus its recorded process-group/session identity. Historical
 PID-only records are never signaled, so PID reuse cannot redirect cleanup at an unrelated process.
@@ -419,7 +429,7 @@ What the autonomous runner tries to do:
 - continue until the target is verified or the main statement is authoritatively disproved;
   concrete blockers trigger route changes rather than mathematical stops
 
-What counts as success:
+What counts as success for `prove`:
 
 1. the relevant Lean code builds successfully
 2. diagnostics are clean
@@ -427,7 +437,11 @@ What counts as success:
 4. there are no `sorry` in the active target
 5. there are no remaining `sorry` elsewhere in the project outside dependencies
 
-Autonomous workflows are intentionally stricter than a local file-only loop. `prove` and `formalize` should keep going until the project is clean, not merely until the current theorem looks finished.
+`prove` is intentionally stricter than a local file-only loop: it continues
+until the requested scope is clean, not merely until the current theorem looks
+finished. `formalize` has a different terminal contract: it produces a
+buildable, source-reviewed statement draft with intentional proof holes, then
+waits for an explicit `prove` handoff.
 
 ### Relentless Proving And Research Mode
 
@@ -505,8 +519,51 @@ partial profile. Environment-only activation applies the complete defaults while
 deliberate per-feature overrides for advanced diagnostics. In either form, an unavailable or
 disabled orchestrator cannot make `stalled`, `blocked`, `budget-breakpoint`, or `parked` terminal.
 
+External research is enabled by default. `web_search` routes current/documentation queries to the
+general web and formal-mathematics queries across arXiv, Semantic Scholar, Crossref, Sourcegraph,
+and the general web. Independent provider requests run concurrently with bounded provider
+timeouts; a throttled or timed-out backend is reported but cannot discard surviving results.
+`search_depth=deep` plus up to three `alternate_queries` provides a bounded multi-formulation
+portfolio in one tool call. The merge canonicalizes arXiv/DOI/URL duplicates, ranks query overlap,
+diversifies sources, assigns stable `source_id` values, preserves `matched_queries`, and returns
+per-provider status and maximum latency for the workflow log. Tavily and Exa are optional reliable
+general-web providers (Tavily has precedence and Exa is its keyed fallback); Semantic Scholar and
+Jina keys improve their respective paper/read quotas. The keyless route tries DuckDuckGo and then
+Bing, reporting the failed branch even when the second engine succeeds. The Bing fallback rejects
+generic pages that fail entity-term coverage and performs at most one cleaner retry. An empty
+software/documentation search then tries GitHub's public repository API and returns clone metadata;
+successful GitHub query payloads are cached for five minutes to conserve its search quota.
+Clean-room mode skips that request before network access. An empty portfolio returns
+`status=no_results`, `success=false`, and `retryable=true`, so the agent cannot mistake a
+reachable-but-unhelpful backend for completed research.
+Search snippets are discovery only: planner and deep-search workers must inspect promising primary
+sources with `web_fetch`, clone concrete public proof developments when allowed, and retain the
+queries, providers, sources read, and rejected branches before they may report research exhausted.
+
+For a clean-room benchmark, set `LEANFLOW_DISABLE_REPOSITORY_RESEARCH=1`. Repository cloning,
+repository-host web results and fetches, Sourcegraph code search, and Git/repository-host terminal
+commands are then denied. Model file tools are also confined to `LEANFLOW_PROJECT_ROOT`, with
+canonical path and symlink checks. `leanflow sandbox run` propagates the flag into the container,
+whose worktree supplies the stronger host-filesystem boundary. This flag is intentionally off by
+default; normal open-problem campaigns keep repository research because reusing public
+formalizations can save substantial time.
+
+To prohibit prior solutions while retaining general research, also set
+`LEANFLOW_DISABLE_SOLUTION_RESEARCH=1` and provide pipe-separated task spellings
+through `LEANFLOW_CLEAN_ROOM_TASK_LABELS` (for example,
+`Benchmark Problem 6|BP6`). Queries, results, URLs, and terminal commands
+that name the task then fail closed. Sandbox clean-room runs also deny Git
+transports process-wide and reuse only read-only third-party `.lake/packages`;
+project build output is not mounted.
+
+Sandbox builds use `python:3.12-bookworm` by default. When that registry is unavailable and a
+compatible Debian image already exists locally, set `LEANFLOW_SANDBOX_BASE_IMAGE` to its local tag;
+the image build installs Python and reuses an existing Elan installation when present.
+An explicitly `--provider codex` sandbox mounts only the host Codex `auth.json` and `config.toml`
+read-only; it does not mount the rest of `CODEX_HOME`.
+
 Canonical `lake env lean FILE` gates normally use a 120-second subprocess timeout. Research mode
-raises that gate to a deterministic 300-second cold-start floor, matching the incremental checker;
+raises that gate to a deterministic 900-second cold-start floor, matching the incremental checker;
 otherwise a kernel-valid edit in a large fixture can be written and then labeled `check_failed`
 solely because the broad file check has a shorter budget. `LEANFLOW_LEAN_COMMAND_TIMEOUT_S` is a
 bounded expert override, but it cannot lower the research floor.
@@ -650,10 +707,11 @@ Headless outcome codes are truthful:
 An unresolved requested scope can never exit `0`.
 Provider/API infrastructure pauses force a deterministic, provider-free filesystem checkpoint
 after owned workers quiesce and before file locks are released, so an edit completed immediately
-before provider failure is present in the exit-`2` resume handoff. A transient failure is retried
-three times with interruptible 5/15/45-second backoff (four total provider attempts). Each wait is
-recorded as `provider-retry-scheduled`; exhaustion is recorded as `provider-retry-exhausted` before
-the runner enters the infrastructure-pause path.
+before provider failure is present in the exit-`2` resume handoff. Ordinary transient failures use
+three managed 5/15/45-second backoffs. If the provider client exhausts its complete inner retry
+window, the manager retains the same unfinished turn and resumes it indefinitely at a quiet,
+at-most-60-second cadence; a provider-owned account reset time remains a durable infrastructure
+pause and is never hammered by this retry path.
 Signal exit `130` uses the same post-quiescence ordering and refreshes the current durable queue
 assignment plus source-derived `sorry` counts before writing status and checkpoint metadata; it does
 not start a new Lean or provider process during cleanup.
@@ -681,7 +739,9 @@ Expected document-prep completion is a buildable statement/source-approved draft
 
 LeanFlow writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.leanflow/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
-That state now also includes structured capability snapshots and route decisions in `.leanflow/workflow-state/outcomes.jsonl`, so resumed runs can reuse prior blocker classification instead of starting blind.
+Workflow state also includes structured capability snapshots and route decisions in
+`.leanflow/workflow-state/outcomes.jsonl`, so resumed runs can reuse prior
+blocker classification instead of starting blind.
 
 ### Project-Scoped `/prove`
 
@@ -792,7 +852,8 @@ The inspection split is intentional:
 
 ## Native Lean Tool Surface
 
-The agent now has a repo-owned Lean tool surface instead of relying on prompt text and shell heuristics alone. These tools are available through the `lean`, `leanflow-native`, and `leanflow-native-swarm` toolsets.
+LeanFlow exposes a typed Lean tool surface through the `lean`,
+`leanflow-native`, and `leanflow-native-swarm` toolsets.
 
 - `lean_capabilities`
   - probe project validity, Lean/Lake/Elan binaries, MCP/LSP tools, search providers, helper availability, worker availability, and degraded-mode reasons
@@ -1043,7 +1104,9 @@ Queue handoff invariants:
 
 ## Routing And Specialist Workers
 
-The queue remains the center of autonomous Lean execution, but the runner now makes route decisions from structured workflow state instead of a single hard-coded skill switch.
+The queue is the center of autonomous Lean execution. The runner makes route
+decisions from structured workflow state rather than a single hard-coded skill
+switch.
 
 The router currently consumes:
 
@@ -1064,7 +1127,7 @@ Route decisions are persisted into workflow state so later cycles can reuse them
 
 ## Reasoning / Thinking Policy
 
-LeanFlow now defaults to:
+Default agent settings:
 
 ```yaml
 agent:
@@ -1153,7 +1216,7 @@ Recommended use:
 
 ## Project Model
 
-LeanFlow currently exposes two project commands:
+LeanFlow exposes three project commands:
 
 - `leanflow project init [path] [--name NAME]`
 - `leanflow project create <path> [--template-source SOURCE] [--name NAME]`
@@ -1172,6 +1235,21 @@ LeanFlow writes:
 - `.leanflow/cache/`
 - `.leanflow/workflows/`
 
+Projects can explicitly deliver durable, target-scoped proof handoffs by adding
+`workflow_guidance` entries to `.leanflow/project.yaml`:
+
+```yaml
+workflow_guidance:
+  - path: proof-guidance.md
+    targets: [result]
+    active_files: [Algebra/Main.lean]
+```
+
+Each project-relative Markdown file is bounded, confined to the project root,
+and reattached after a restart or compaction only when its content hash is
+absent from the active conversation. This keeps supervisor or research
+findings available without source-code comments or manual prompt steering.
+
 During `project init`, LeanFlow prints visible REPL setup progress:
 
 - inspect Lean project
@@ -1186,7 +1264,7 @@ Long Lake commands print status before and after execution, including elapsed ti
 
 ## Skills And Overlays
 
-LeanFlow ships a curated Lean-first skill core. It does not use the old broad marketplace-style catalog in the supported product.
+LeanFlow ships a curated Lean-first skill core.
 
 Builtin skills live in:
 
@@ -1287,7 +1365,7 @@ leanflow provider --requested custom
 
 LeanFlow supports three provider classes:
 
-1. Direct provider APIs
+1. Codex OAuth and direct provider APIs
 2. OpenAI-compatible remote endpoints
 3. Managed local runtimes
 
@@ -1295,12 +1373,21 @@ LeanFlow supports three provider classes:
 
 Supported direct providers include:
 
+- `codex`
 - `zai`
 - `kimi-coding`
 - `minimax`
 - `minimax-cn`
 - `deepseek`
 - `anthropic`
+
+The `codex` route reuses an existing Codex CLI login and sends requests through
+the Codex Responses endpoint:
+
+```bash
+codex login
+leanflow config set model.provider codex
+```
 
 Example:
 
@@ -1365,7 +1452,7 @@ Other supported runtimes:
 
 ## Workflow Tool Surfaces
 
-There are now three important internal workflow surfaces:
+There are four important internal workflow surfaces:
 
 - `lean`
   - shared typed Lean capability surface
@@ -1511,6 +1598,9 @@ leanflow config set agent.min_p 'null'
 deep theorem advisor. Its default response budget is `64000` tokens so hard
 proof advice is not prematurely clipped; override with
 `LEANFLOW_LEAN_REASONING_HELP_MAX_TOKENS` when a provider needs a lower cap.
+Reasoning and decomposition advisor requests use a `360`-second default whole
+request deadline so an auxiliary route cannot silently occupy the foreground
+for twenty minutes.
 Main model calls wait up to `1200` seconds by default before LeanFlow treats the
 provider request as timed out; override with `LEANFLOW_API_TIMEOUT` if needed.
 Model and command responses pass through the same persistence guard: accurate
@@ -1588,7 +1678,8 @@ Supported doctor modes:
 - `migrate`
 - `cleanup`
 
-`doctor` is now non-throwing and uses the same capability layer as the Lean workflows. It reports:
+`doctor` is non-throwing and uses the same capability layer as the Lean
+workflows. It reports:
 
 - `git`
 - `rg`
@@ -1603,7 +1694,8 @@ Supported doctor modes:
 - available native workers
 - degraded-mode reasons
 
-LeanFlow now treats MCP as default backend infrastructure for native Lean tools, not as a separate user-facing workflow.
+MCP is backend infrastructure for native Lean tools, not a separate
+user-facing workflow.
 
 Installer/bootstrap-managed default Lean MCP backends:
 
@@ -1619,7 +1711,7 @@ Installer/bootstrap-managed default Lean MCP backends:
 - `lean-proof-auto-mcp@v0.4.0`
   - secondary automation/context backend
   - theorem-local context and automation helpers such as `get_proof_context`, `probe`, `search_automated_proof`, and `try_automated_proof`
-  - LeanFlow uses it through native wrappers and now degrades cleanly when backend lookup misses a declaration that exists in the local file
+  - LeanFlow uses it through native wrappers and degrades cleanly when backend lookup misses a declaration that exists in the local file
 - `lean-explore`
   - optional semantic declaration-search backend
   - `lean_search` prefers the local backend when `lean-explore[local]` is installed and `lean-explore data fetch` has prepared the index
@@ -1632,7 +1724,11 @@ The install script bootstraps these backends by default under `~/.leanflow/mcp/v
 leanflow mcp bootstrap lean
 ```
 
-`leanflow mcp status` now shows server role labels, whether a server is LeanFlow-managed, whether it is configured/installed, local Loogle/REPL power-mode status, public remote fallback policy, and whether bootstrap is recommended. The same surfaces are available in the interactive shell through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
+`leanflow mcp status` shows server role labels, whether a server is
+LeanFlow-managed, whether it is configured or installed, local Loogle/REPL
+power-mode status, public remote fallback policy, and whether bootstrap is
+recommended. The same information is available in the interactive shell
+through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
 
 Local Loogle requires Unix-like systems (Linux, macOS, or WSL), `git`, `lake`/`elan`, and roughly 2GB of disk. The first local Loogle build can take 5-10 minutes; later starts are fast. If local Loogle is unavailable, LeanFlow allows public remote Lean search fallbacks. Paid or API-key backends are never required by the installer.
 
@@ -1704,15 +1800,8 @@ Console scripts:
 - `leanflow`
 - `leanflow-agent`
 
-## Verification Notes
-
-Current verified behavior from this repo:
-
-- focused LeanFlow test suite passes
-- standalone install works with a separate LeanFlow home
-- workflow request resolution works against `.leanflow/project.yaml`
-- RCP remote smoke succeeded with `google/gemma-3-27b-it`
-- dead gateway/cron/voice/data-generation/website/community-skill directories have been removed from the repo tree
+The wheel also includes the curated `leanflow_skills` guidance and
+`leanflow_specs` workflow contracts used at runtime.
 
 ## Development
 

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
+from core.filesystem import ensure_directory
 from core.runtime_modes import dispatch_worker_enabled
 
 try:  # ``flock`` is the cross-process authority on the supported POSIX hosts.
@@ -315,7 +316,7 @@ def _try_exclusive_flock(handle: TextIO) -> bool:
 def _priority_state_lock(root: Path) -> Iterator[None]:
     """Serialize marker creation, stale cleanup, and foreground checks."""
     path = _priority_state_lock_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     handle = path.open("a+", encoding="utf-8")
     acquired = False
     try:
@@ -335,7 +336,7 @@ def _register_foreground_waiter(root: Path) -> _ForegroundWaiter | None:
     if fcntl is None:
         return None
     waiter_root = _priority_waiter_root(root)
-    waiter_root.mkdir(parents=True, exist_ok=True)
+    ensure_directory(waiter_root)
     # A project used only by the parent may never run a background scan. Keep
     # its bounded handoff markers from accumulating across many Lean calls.
     _foreground_waiter_exists(root)
@@ -624,7 +625,7 @@ def project_lean_heavy_admission(
             existing.depth -= 1
         return
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     gate = _process_gate(path)
     started = time.monotonic()
     background = dispatch_worker_enabled()

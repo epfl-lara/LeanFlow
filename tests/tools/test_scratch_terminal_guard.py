@@ -530,3 +530,25 @@ def test_ordinary_foreground_terminal_keeps_mutating_command_authority(monkeypat
 
     assert payload["exit_code"] == 0
     assert calls == ["cp A.lean B.lean"]
+
+
+def test_clean_room_terminal_denies_git_before_environment_creation(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1")
+    monkeypatch.setattr(terminal_module, "_get_env_config", lambda: _terminal_config(str(tmp_path)))
+    monkeypatch.setattr(
+        terminal_module,
+        "_create_environment",
+        lambda **_kwargs: pytest.fail("denied Git command created an environment"),
+    )
+
+    payload = json.loads(
+        terminal_module.terminal_tool(
+            "git clone https://example.com/repo.git",
+            task_id="clean-room",
+            force=True,
+        )
+    )
+
+    assert payload["status"] == "repository_research_denied"
+    assert payload["exit_code"] == -1
+    assert "Git commands are disabled" in payload["error"]

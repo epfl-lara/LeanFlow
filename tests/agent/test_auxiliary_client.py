@@ -11,6 +11,7 @@ import pytest
 from agent.providers.auxiliary_adapters import _CodexCompletionsAdapter
 from agent.providers.auxiliary_client import (
     _build_call_kwargs,
+    _compatible_explicit_model,
     _get_auxiliary_provider,
     _get_cached_client,
     _read_codex_access_token,
@@ -73,6 +74,77 @@ def _clean_env(monkeypatch):
         "LEANFLOW_DISPATCH_WORKER",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+def test_codex_provider_drops_openrouter_model_slug():
+    assert _compatible_explicit_model("openai-codex", "google/gemini-3-flash-preview") is None
+    assert _compatible_explicit_model("openai-codex", "gpt-5.6-sol") == "gpt-5.6-sol"
+
+
+def test_explicit_codex_provider_allows_cli_auth_store(monkeypatch):
+    """An explicit Codex auxiliary route must match the main runtime's auth policy."""
+    token_calls: list[bool | None] = []
+    client = SimpleNamespace(
+        api_key="codex-token",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._read_codex_access_token",
+        lambda *, allow_legacy_store=None: (
+            token_calls.append(allow_legacy_store) or "codex-token"
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client.OpenAI",
+        lambda **_kwargs: client,
+    )
+
+    resolved_client, model = _get_cached_client("openai-codex", "gpt-5.6-sol")
+
+    assert resolved_client is not None
+    assert model == "gpt-5.6-sol"
+    assert token_calls == [True]
+
+
+def test_explicit_codex_provider_inherits_main_runtime_model(monkeypatch):
+    """A selected Codex lane must not fall back to an obsolete auxiliary model."""
+    client = SimpleNamespace(
+        api_key="codex-token",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._read_codex_access_token",
+        lambda *, allow_legacy_store=None: "codex-token",
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client.resolve_runtime_provider",
+        lambda **_kwargs: {"model": "gpt-5.6-sol"},
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client.OpenAI",
+        lambda **_kwargs: client,
+    )
+
+    _resolved_client, model = _get_cached_client("openai-codex")
+
+    assert model == "gpt-5.6-sol"
+
+
+def test_get_cached_client_preserves_provider_resolved_model(monkeypatch):
+    """The cache wrapper must not resurrect a rejected provider model."""
+    client = object()
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client.resolve_provider_client",
+        lambda *_args, **_kwargs: (client, "gpt-5.6-sol"),
+    )
+
+    resolved_client, model = _get_cached_client(
+        "openai-codex",
+        "google/gemini-3-flash-preview",
+    )
+
+    assert resolved_client is client
+    assert model == "gpt-5.6-sol"
 
 
 def test_auxiliary_call_reuses_delegated_actor_capacity(monkeypatch, tmp_path):
@@ -624,6 +696,40 @@ class TestAuxiliaryMaxTokensParam:
 
 
 class TestAsyncAuxiliaryLifecycle:
+    def test_codex_responses_adapter_repairs_empty_final_from_stream_delta(self):
+        class _Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def __iter__(self):
+                return iter(
+                    (
+                        SimpleNamespace(
+                            type="response.output_text.delta",
+                            delta="PASS",
+                        ),
+                    )
+                )
+
+            def get_final_response(self):
+                return SimpleNamespace(output=[], usage=None)
+
+        class _Responses:
+            def stream(self, **_kwargs):
+                return _Stream()
+
+        class _Client:
+            responses = _Responses()
+
+        adapter = _CodexCompletionsAdapter(_Client(), "codex-model")
+
+        result = adapter.create(messages=[{"role": "user", "content": "review"}])
+
+        assert result.choices[0].message.content == "PASS"
+
     def test_codex_responses_adapter_forwards_timeout(self):
         captured: dict = {}
 

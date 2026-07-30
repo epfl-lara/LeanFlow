@@ -169,6 +169,55 @@ class TestPlacement:
         assert outcome.placed == names
         assert calls == [names[-1]]
 
+    def test_batch_prefix_environment_failure_uses_canonical_source_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        active = _file(tmp_path)
+        stubs = [
+            "private lemma prefix_step : True := by sorry",
+            "private lemma tail_step : True := by sorry",
+        ]
+        exact_sources: list[str] = []
+
+        monkeypatch.setattr(
+            "leanflow_cli.lean.lean_incremental.lean_incremental_check",
+            lambda **_kwargs: {
+                "success": False,
+                "has_errors": True,
+                "error_code": "prior_decl_failed",
+                "error": (
+                    "failed to build env before target at Move.half: "
+                    "line 66:0 error: unexpected end of input"
+                ),
+            },
+        )
+
+        def exact_source_check(source, **_kwargs):
+            exact_sources.append(source)
+            return {
+                "success": True,
+                "ok": True,
+                "output": "warning: declaration uses `sorry`",
+            }
+
+        monkeypatch.setattr(
+            "leanflow_cli.lean.lean_ephemeral.lean_ephemeral_source_check",
+            exact_source_check,
+        )
+
+        outcome = place_helpers(
+            active_file=str(active),
+            target_symbol="demo",
+            skeletons=stubs,
+            allowed_axioms=("propext",),
+            cwd=str(tmp_path),
+        )
+
+        assert outcome.ok
+        assert outcome.placed == ("prefix_step", "tail_step")
+        assert len(exact_sources) == 1
+        assert exact_sources[0] == active.read_text(encoding="utf-8")
+
     def test_batch_tail_failure_reports_the_prior_declaration_and_reverts(
         self, monkeypatch, tmp_path
     ):
@@ -190,6 +239,14 @@ class TestPlacement:
             "leanflow_cli.lean.lean_incremental.lean_incremental_check",
             fail_on_prior,
         )
+        monkeypatch.setattr(
+            "leanflow_cli.lean.lean_ephemeral.lean_ephemeral_source_check",
+            lambda *_args, **_kwargs: {
+                "success": False,
+                "ok": False,
+                "error": "type mismatch in inserted helper batch",
+            },
+        )
 
         outcome = place_helpers(
             active_file=str(active),
@@ -202,8 +259,7 @@ class TestPlacement:
         )
 
         assert not outcome.ok
-        assert first in outcome.reason
-        assert "prior_declaration_failed" in outcome.reason
+        assert "type mismatch" in outcome.reason
         assert "write reverted" in outcome.reason
         assert active.read_bytes() == before
 
@@ -1515,6 +1571,47 @@ class TestSourceTransactions:
 
         assert recovered == {"committed": 1, "reverted": 0, "quarantined": 0}
         assert calls == ["abs_step"]
+        stored = next(
+            item
+            for item in plan_state.load_summary()["decomposition_provenance"]
+            if item["transaction_id"] == record["transaction_id"]
+        )
+        assert stored["state"] == "committed"
+
+    def test_pending_recovery_uses_canonical_fallback_for_prefix_failure(
+        self, monkeypatch, tmp_path, plan_enabled
+    ):
+        active = _file(tmp_path)
+        record, before, after = _begin_test_transaction(active)
+        assert decomposition_provenance.compare_and_swap_source(
+            active,
+            expected_bytes=before,
+            replacement_bytes=after,
+        )
+        monkeypatch.setattr(
+            "leanflow_cli.lean.lean_incremental.lean_incremental_check",
+            lambda **_kwargs: {
+                "success": False,
+                "has_errors": True,
+                "error_code": "prior_decl_failed",
+                "error": "failed to build env before target at Move.half",
+            },
+        )
+        checked_sources: list[str] = []
+
+        def exact_source_check(source, **_kwargs):
+            checked_sources.append(source)
+            return {"success": True, "ok": True, "output": ""}
+
+        monkeypatch.setattr(
+            "leanflow_cli.lean.lean_ephemeral.lean_ephemeral_source_check",
+            exact_source_check,
+        )
+
+        recovered = decomposition_provenance.recover_pending_decompositions(cwd=str(tmp_path))
+
+        assert recovered == {"committed": 1, "reverted": 0, "quarantined": 0}
+        assert checked_sources == [after.decode("utf-8")]
         stored = next(
             item
             for item in plan_state.load_summary()["decomposition_provenance"]

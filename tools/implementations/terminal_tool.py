@@ -39,6 +39,10 @@ from pathlib import Path
 from typing import Any
 
 from core.runtime_modes import scratch_only_dispatch_worker_enabled
+from tools.utilities.repository_research_policy import (
+    repository_command_block_reason,
+    solution_research_command_block_reason,
+)
 from tools.utilities.scratch_terminal_guard import validate_scratch_terminal_command
 
 logger = logging.getLogger(__name__)
@@ -883,6 +887,29 @@ def terminal_tool(
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
+
+        repository_denial = repository_command_block_reason(command)
+        if repository_denial:
+            return json.dumps(
+                {
+                    "output": "",
+                    "exit_code": -1,
+                    "error": repository_denial,
+                    "status": "repository_research_denied",
+                },
+                ensure_ascii=False,
+            )
+        solution_denial = solution_research_command_block_reason(command)
+        if solution_denial:
+            return json.dumps(
+                {
+                    "output": "",
+                    "exit_code": -1,
+                    "error": solution_denial,
+                    "status": "clean_room_solution_research_denied",
+                },
+                ensure_ascii=False,
+            )
 
         # Scratch research workers share the foreground checkout. Enforce their
         # read-only contract before environment creation and independently of

@@ -1,20 +1,4 @@
-"""Pure proof-state text/snapshot shaping helpers extracted from native_runner (Phase 2).
-
-``_build_live_proof_state`` itself stays in ``native_runner`` because it reaches excluded
-collaborators (``lean_inspect`` / ``probe_capabilities`` / ``route_workflow_step`` backend
-calls, the ``TheoremQueueManager``, env readers, and workflow-state mutation). This module
-collects only the movable, side-effect-free sub-helpers it bottlenecks on: the declaration
-line-index lookups (``_declaration_line_index`` / ``_find_declaration_entry`` /
-``_line_in_declaration``) and the queue-horizon text shapers (``_queue_horizon_summary`` /
-``_diagnostics_for_queue_horizon`` / ``_proof_status_lines_for_queue_horizon``).
-
-Each function here is the fixpoint closure under "calls": its only non-stdlib callees are
-other functions in this module or already-extracted modules
-(``lean_parsing._declaration_line_index_from_text``, ``lean_services.diagnostic_items``,
-``native_utils._format_diagnostic_for_model``). None read native_runner module-mutable state
-or any symbol tests monkeypatch on native_runner, and this module does NOT import
-``native_runner`` — so re-exporting these names back from there introduces no import cycle.
-"""
+"""Shape declaration snapshots and queue-horizon proof-state summaries."""
 
 from __future__ import annotations
 

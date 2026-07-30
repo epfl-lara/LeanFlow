@@ -17,6 +17,7 @@ from tools.implementations.file_operations import (
     SearchResult,
     ShellFileOperations,
     WriteResult,
+    _explicit_package_dependency_search,
     _is_write_denied,
 )
 from tools.utilities.workflow_artifact_guard import WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV
@@ -56,6 +57,13 @@ class TestIsWriteDenied:
 
     def test_tilde_expansion(self):
         assert _is_write_denied("~/.ssh/authorized_keys") is True
+
+
+def test_explicit_package_dependency_search():
+    assert _explicit_package_dependency_search(".lake/packages/mathlib") is True
+    assert _explicit_package_dependency_search("/tmp/Demo/.lake/packages/mathlib/Mathlib") is True
+    assert _explicit_package_dependency_search(".lake/build/lib") is False
+    assert _explicit_package_dependency_search(".") is False
 
 
 # =========================================================================
@@ -381,6 +389,26 @@ class TestSearchPathValidation:
         assert result.error is None
         assert [Path(match.path).name for match in result.matches] == ["Source.lean"]
 
+    def test_explicit_lake_package_search_overrides_project_ignore(self, tmp_path):
+        packages = tmp_path / ".lake" / "packages" / "mathlib" / "Mathlib"
+        packages.mkdir(parents=True)
+        source = packages / "Independent.lean"
+        source.write_text(
+            "lemma eq_zero_of_affineCombination_mem_affineSpan : True := by trivial\n",
+            encoding="utf-8",
+        )
+        (tmp_path / ".gitignore").write_text(".lake/\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.search(
+            "eq_zero_of_affineCombination_mem_affineSpan",
+            path=str(packages),
+            file_glob="*.lean",
+        )
+
+        assert result.error is None
+        assert [Path(match.path).name for match in result.matches] == ["Independent.lean"]
+
     def test_repository_file_search_excludes_workflow_state(self, tmp_path, monkeypatch):
         """Prune .leanflow when the agent uses search_files as a recursive file listing."""
         monkeypatch.delenv(WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV, raising=False)
@@ -394,6 +422,26 @@ class TestSearchPathValidation:
 
         assert result.error is None
         assert [Path(path).name for path in result.files] == ["ordinary.log"]
+
+    def test_repository_search_includes_cloned_research_sources(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV, raising=False)
+        checkout = tmp_path / ".leanflow" / "workspace" / "repos" / "proofs"
+        checkout.mkdir(parents=True)
+        source = checkout / "solution.lean"
+        source.write_text("theorem cloned : True := by trivial\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        files = ops.search("*.lean", path=str(tmp_path), target="files")
+        content = ops.search(
+            "theorem cloned",
+            path=str(tmp_path),
+            file_glob="*.lean",
+        )
+
+        assert files.error is None
+        assert source.resolve() in {Path(path).resolve() for path in files.files}
+        assert content.error is None
+        assert source.resolve() in {Path(match.path).resolve() for match in content.matches}
 
     def test_explicit_workflow_state_search_is_blocked(self, tmp_path, monkeypatch):
         monkeypatch.delenv(WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV, raising=False)

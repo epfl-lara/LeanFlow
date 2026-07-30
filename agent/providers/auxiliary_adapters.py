@@ -153,6 +153,7 @@ class _CodexCompletionsAdapter:
 
         # Stream and collect the response
         text_parts: list[str] = []
+        streamed_text_parts: list[str] = []
         tool_calls_raw: list[Any] = []
         usage = None
 
@@ -166,8 +167,15 @@ class _CodexCompletionsAdapter:
                 # own retries even begin.
                 request_client = with_options(max_retries=0)
             with request_client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
-                    pass
+                for event in stream:
+                    # The ChatGPT Codex endpoint may emit complete text deltas
+                    # while returning an empty final ``output`` envelope.
+                    # Retain deltas as a repair source instead of silently
+                    # translating a valid response into ``no_answer``.
+                    if getattr(event, "type", None) == "response.output_text.delta":
+                        delta = getattr(event, "delta", "")
+                        if delta:
+                            streamed_text_parts.append(str(delta))
                 final = stream.get_final_response()
 
             # Extract text and tool calls from the Responses output
@@ -201,7 +209,7 @@ class _CodexCompletionsAdapter:
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
 
-        content = "".join(text_parts).strip() or None
+        content = ("".join(text_parts) or "".join(streamed_text_parts)).strip() or None
 
         # Build a response that looks like chat.completions
         message = SimpleNamespace(

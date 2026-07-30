@@ -1,6 +1,8 @@
 # LeanFlow
 
-**LeanFlow is a Lean-first AI automation tool.** It drives a language model inside a real Lean 4 project to repair proofs, formalize mathematics from source documents, and verify a whole project until no `sorry` remains.
+**LeanFlow is a Lean-first AI automation tool.** It drives a language model
+inside a real Lean 4 project to repair proofs, formalize mathematics from source
+documents, and complete proof workflows until no `sorry` remains.
 
 Point it at a Lean file or project and it inspects diagnostics and goals, edits proofs, re-verifies with Lean after every step, and keeps going — with workflow logs, checkpoints, and resumable state — until the target actually builds clean.
 
@@ -16,7 +18,11 @@ leanflow workflow prove Main.lean --provider codex --research
 - **Formalization** — turns a LaTeX/PDF source document or TeX project into a buildable, statement-verified Lean draft with source-linked declarations, then hands off to proof repair.
 - **Whole-project verification** — scans a project for remaining `sorry`s, ranks the files by dependency and difficulty, and works them in order until the project is clean.
 - **Resumable** — every run records activity, logs, checkpoints, file locks, and its work queue under the project, so long sessions resume without starting blind.
-- **Flexible providers** — OpenAI-compatible endpoints, a Codex CLI login, or local model runtimes (vLLM / Ollama / llama.cpp).
+- **Grounded research** — research mode combines Lean and mathlib search with
+  bounded exploration of local code, public repositories, papers, and the web;
+  failed routes and reusable findings remain in durable workflow state.
+- **Flexible providers** — Codex OAuth, direct provider APIs,
+  OpenAI-compatible endpoints, and local runtimes (vLLM, Ollama, or llama.cpp).
 - **Host isolation** — an optional sandbox runs the agent in a container and exports the result as a patch, never touching your working tree.
 - **Opt-in multi-agent** — file-lock-aware swarm mode for concurrent work, off by default.
 
@@ -83,13 +89,13 @@ LeanFlow reaches that by working in small, Lean-verified steps rather than one b
 
 - **`prove <file>`** drives the model one declaration at a time, re-checking with Lean after every edit and advancing only when the target is clean. Failed attempts are recorded and the original `sorry` is restored, so the file always stays buildable.
 - **`prove`** (no file) scans the project for remaining `sorry`s, ranks the files, and works them one at a time. Parallel agents stay off unless you opt into swarm mode.
-- **`prove --research`** keeps the foreground prover moving while two process-isolated research
-  workers explore grounding and alternate routes. That worker count is also the shared live-actor
-  cap for process jobs and in-process planner lanes, so a planner wave cannot silently add three
-  more resident conversations. Rejected turns receive a non-authoritative persistence coach, and
-  cycle/route ceilings roll durable campaign epochs instead of stopping. Foreground `lean-lsp`
-  stays enabled, but its additional multi-gigabyte local Loogle index is off for this profile;
-  set `LEANFLOW_RESEARCH_LOCAL_LOOGLE=1` only for a memory-provisioned campaign.
+- **`prove --research`** keeps the foreground prover moving while a bounded
+  portfolio explores grounding, counterexamples, decompositions, and alternate
+  routes. Research findings remain advisory until they pass the same Lean
+  verification gates as foreground work, and exhausted branches are retained
+  instead of rediscovered. Repository and prior-solution research can be
+  disabled for clean-room benchmarks; see the
+  [product reference](docs/product-reference.md#relentless-proving-and-research-mode).
 - **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
 
 Headless proof outcomes are explicit: `0` means verified, `3` means an authoritatively promoted
@@ -178,12 +184,10 @@ LeanFlow keeps user-level state separate from per-project workflow state:
 - user config: `~/.leanflow/config.yaml`  ·  user env: `~/.leanflow/.env`
 - project manifest: `.leanflow/project.yaml`  ·  project workflow state: `.leanflow/workflow-state/`
 
-Workflow state holds activity, logs, checkpoints, file locks, route decisions, failed-attempt
-history, provider-turn identities, project prove-manager plans, and outcomes — this is what lets
-long Lean runs resume. Provider/infrastructure pauses take a final deterministic source checkpoint
-before exit, including edits made immediately before the provider became unavailable. Transient
-provider failures receive three interruptible retries after 5, 15, and 45 seconds; only exhaustion
-of that full recovery window produces the resumable exit-`2` pause.
+Workflow state holds activity, logs, checkpoints, file locks, route decisions,
+failed-attempt history, research findings, project plans, and outcomes. Safe
+provider or infrastructure pauses checkpoint current source and return a
+resumable status instead of discarding progress.
 
 ## Skills and specs
 
@@ -200,7 +204,6 @@ the linked spec and have the skill point to it rather than duplicating the proce
 
 - [Product reference](docs/product-reference.md) — the full feature documentation.
 - [Sandbox runtime](docs/sandbox-runtime.md) — the isolated container runtime, patch export, and update flow.
-- [Native Lean workflow surface](docs/native-lean-workflow-surface.md) — the native Lean workflow and tool contract.
 - [Architecture](ARCHITECTURE.md) — the module map and internals.
 - [Contributing / agent guide](AGENTS.md) — coding standards, the quality gate, and the repo's gotchas.
 

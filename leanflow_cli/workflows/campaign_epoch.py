@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 import uuid
@@ -39,6 +40,8 @@ EPOCH_NEGATION_REFRESH_RETRIES_STATE_KEY = "campaign_epoch_negation_refresh_retr
 PLANNER_CAPACITY_RESERVATION_STATE_KEY = "campaign_planner_capacity_reservation"
 PLANNER_CAPACITY_RESERVATION_FIELD = "planner_capacity_reservation"
 PLANNER_CAPACITY_RESERVATION_VERSION = 1
+PLANNER_TERMINAL_OBSTACLE_STATE_KEY = "planner_terminal_obstacle"
+PLANNER_TERMINAL_OBSTACLE_FIELD = "planner_terminal_obstacle"
 INFLIGHT_ROUTE_FIELD = "inflight_route"
 INFLIGHT_ROUTE_VERSION = 1
 _CAMPAIGN_HYDRATED_PROCESS_KEY = "_campaign_hydrated_process_nonce"
@@ -179,6 +182,30 @@ def _canonical_route_file(value: Any) -> str:
     if not text:
         return ""
     return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(text))))
+
+
+def _planner_terminal_obstacle(value: Any) -> dict[str, str]:
+    """Return one valid exact-target terminal planner obstacle."""
+    raw = value if isinstance(value, Mapping) else {}
+    payload = {
+        "target_symbol": str(raw.get("target_symbol", "") or "").strip(),
+        "active_file": str(raw.get("active_file", "") or "").strip(),
+        "target_signature_sha256": str(raw.get("target_signature_sha256", "") or "").strip(),
+        "target_declaration_sha256": str(raw.get("target_declaration_sha256", "") or "").strip(),
+        "outcome": str(raw.get("outcome", "") or "").strip(),
+        "reason": str(raw.get("reason", "") or "").strip(),
+    }
+    if not all(
+        (
+            payload["target_symbol"],
+            payload["active_file"],
+            payload["target_signature_sha256"],
+            payload["outcome"],
+            payload["reason"],
+        )
+    ):
+        return {}
+    return payload
 
 
 def _inflight_route_from_campaign(campaign: Mapping[str, Any]) -> dict[str, Any]:
@@ -972,6 +999,11 @@ def ensure_campaign(
         autonomy_state[INFLIGHT_ROUTE_STATE_KEY] = inflight_route
     else:
         autonomy_state.pop(INFLIGHT_ROUTE_STATE_KEY, None)
+    planner_obstacle = _planner_terminal_obstacle(campaign.get(PLANNER_TERMINAL_OBSTACLE_FIELD))
+    if planner_obstacle:
+        autonomy_state[PLANNER_TERMINAL_OBSTACLE_STATE_KEY] = planner_obstacle
+    else:
+        autonomy_state.pop(PLANNER_TERMINAL_OBSTACLE_STATE_KEY, None)
     _hydrate_planner_capacity_reservation(autonomy_state, campaign)
     if route_streak >= route_limit:
         request_rollover(autonomy_state, ROUTE_NO_PROGRESS_ROLLOVER_REASON)
@@ -981,6 +1013,56 @@ def ensure_campaign(
 def rehydrate_campaign(autonomy_state: dict[str, Any]) -> dict[str, Any]:
     """Force one same-process reload from the durable campaign summary."""
     return ensure_campaign(autonomy_state, force_reload=True)
+
+
+def record_planner_terminal_obstacle(
+    autonomy_state: dict[str, Any],
+    payload: Mapping[str, Any],
+) -> dict[str, str]:
+    """Persist an exact-target planner cooldown across process restarts."""
+    obstacle = _planner_terminal_obstacle(payload)
+    if not obstacle:
+        raise ValueError("planner terminal obstacle requires complete exact-target evidence")
+    campaign = ensure_campaign(autonomy_state)
+
+    def mutate(summary: dict[str, Any]) -> dict[str, str]:
+        current = dict(summary.get("campaign") or campaign)
+        current[PLANNER_TERMINAL_OBSTACLE_FIELD] = obstacle
+        current["updated_at"] = _now_iso()
+        summary["campaign"] = current
+        return obstacle
+
+    persisted = dict(update_json_file(_summary_path(), mutate) or {})
+    autonomy_state[PLANNER_TERMINAL_OBSTACLE_STATE_KEY] = persisted
+    return persisted
+
+
+def clear_planner_terminal_obstacle(
+    autonomy_state: dict[str, Any],
+    expected: Mapping[str, Any],
+) -> bool:
+    """Clear one exact persisted planner cooldown without racing a newer row."""
+    obstacle = _planner_terminal_obstacle(expected)
+    if not obstacle:
+        return False
+    campaign = ensure_campaign(autonomy_state)
+
+    def mutate(summary: dict[str, Any]) -> bool:
+        current = dict(summary.get("campaign") or campaign)
+        persisted = _planner_terminal_obstacle(current.get(PLANNER_TERMINAL_OBSTACLE_FIELD))
+        if persisted != obstacle:
+            return False
+        current.pop(PLANNER_TERMINAL_OBSTACLE_FIELD, None)
+        current["updated_at"] = _now_iso()
+        summary["campaign"] = current
+        return True
+
+    cleared = bool(update_json_file(_summary_path(), mutate))
+    if cleared:
+        local = _planner_terminal_obstacle(autonomy_state.get(PLANNER_TERMINAL_OBSTACLE_STATE_KEY))
+        if local == obstacle:
+            autonomy_state.pop(PLANNER_TERMINAL_OBSTACLE_STATE_KEY, None)
+    return cleared
 
 
 def reserve_planner_capacity(
@@ -2868,6 +2950,72 @@ def record_status(autonomy_state: dict[str, Any], status: str, *, reason: str = 
             str(requested.get("route", "") or "").strip().lower() == "plan"
         ):
             autonomy_state.pop("prover_requested_route", None)
+
+
+def record_provider_availability_probe_success(
+    autonomy_state: dict[str, Any],
+    *,
+    provider: str,
+) -> bool:
+    """Resume a matching usage-limit pause after an authenticated provider call succeeds.
+
+    Callers must invoke this only after the paused provider completed a fresh
+    model turn. The transaction clears only the usage-limit-owned pause and
+    restores any unrelated infrastructure pause that preceded it.
+    """
+    normalized_provider = str(provider or "").strip()
+    if not normalized_provider:
+        return False
+    cleared: dict[str, Any] = {}
+
+    def mutate(summary: dict[str, Any]) -> bool:
+        current = dict(summary.get("campaign") or {})
+        raw_pause = current.get(PROVIDER_USAGE_LIMIT_PAUSE_FIELD)
+        if not isinstance(raw_pause, Mapping):
+            return False
+        paused_provider = str(raw_pause.get("provider", "") or "").strip()
+        if paused_provider and paused_provider != normalized_provider:
+            return False
+        prior_status = str(raw_pause.get("prior_campaign_status", "") or "")
+        prior_reason = str(raw_pause.get("prior_campaign_status_reason", "") or "")
+        current.pop(PROVIDER_USAGE_LIMIT_PAUSE_FIELD, None)
+        if prior_status == "paused_infrastructure":
+            current["status"] = prior_status
+            if prior_reason:
+                current["status_reason"] = prior_reason
+            else:
+                current.pop("status_reason", None)
+        else:
+            current["status"] = "running"
+            current.pop("status_reason", None)
+        current["updated_at"] = _now_iso()
+        summary["campaign"] = current
+        cleared.update(
+            {
+                "campaign_id": str(current.get("campaign_id", "") or ""),
+                "provider": normalized_provider,
+                "restored_pause": prior_status == "paused_infrastructure",
+            }
+        )
+        return True
+
+    changed = bool(update_json_file(_summary_path(), mutate))
+    if not changed:
+        return False
+    autonomy_state.pop("operational_pause", None)
+    autonomy_state.pop("infrastructure_pause_reason", None)
+    autonomy_state.pop("provider_retry_after", None)
+    autonomy_state.pop("provider_pause_owner", None)
+    autonomy_state["campaign_status"] = (
+        "paused_infrastructure" if cleared.get("restored_pause") else "running"
+    )
+    with contextlib.suppress(Exception):
+        append_workflow_activity(
+            "provider-usage-limit-probe-recovered",
+            "Fresh authenticated provider turn succeeded; resumed campaign admission",
+            **cleared,
+        )
+    return True
 
 
 def record_provider_usage_limit_pause(

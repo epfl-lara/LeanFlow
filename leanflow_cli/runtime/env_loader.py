@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from leanflow_cli.config import get_leanflow_home
+
+NATIVE_AUXILIARY_PROVIDER_ENV = "LEANFLOW_NATIVE_AUXILIARY_PROVIDER"
+NATIVE_AUXILIARY_PROVIDER_TARGETS = (
+    "AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER",
+    "AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER",
+    "AUXILIARY_COMPRESSION_PROVIDER",
+    "AUXILIARY_LEAN_DECOMPOSE_HELPERS_PROVIDER",
+    "AUXILIARY_LEAN_REASONING_PROVIDER",
+    "AUXILIARY_MANAGER_NUDGE_PROVIDER",
+    "AUXILIARY_ORCHESTRATION_PROVIDER",
+    "AUXILIARY_PLANNER_SYNTHESIS_PROVIDER",
+    "AUXILIARY_PROVE_MANAGER_PROVIDER",
+    "AUXILIARY_STATEMENT_FIDELITY_PROVIDER",
+    "AUXILIARY_WEB_EXTRACT_PROVIDER",
+    "CONTEXT_COMPRESSION_PROVIDER",
+)
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
@@ -36,3 +53,19 @@ def load_leanflow_dotenv(
         loaded.append(project_env_path)
 
     return loaded
+
+
+def reassert_native_auxiliary_provider() -> str:
+    """Force every model-backed native-workflow lane onto one launch provider.
+
+    Native foreground and dispatch-worker processes reload the user dotenv at
+    import time. Reapply this explicit per-launch override afterwards so blank
+    or independently configured ``AUXILIARY_*`` entries cannot silently route
+    a nested proving lane through another provider.
+    """
+    provider = str(os.getenv(NATIVE_AUXILIARY_PROVIDER_ENV, "") or "").strip()
+    if not provider:
+        return ""
+    for name in NATIVE_AUXILIARY_PROVIDER_TARGETS:
+        os.environ[name] = provider
+    return provider

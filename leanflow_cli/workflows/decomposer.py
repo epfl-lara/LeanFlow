@@ -1,22 +1,16 @@
-"""Mechanical decomposer for the /prove redesign (Phase 4 §4.2).
+"""Materialize mechanically validated proof decompositions.
 
-Executes the orchestrator's ``decompose`` route between prover turns: asks
-the existing helper-decomposition backend for managed-placement skeletons,
-guards them (stub shape, forbidden-axiom scan, instantiated-parent rejection,
-anti-sorry-offloading), writes them into the target file immediately BEFORE the
-target declaration, validates the contiguous stub batch in place via LeanProbe,
-records the split in the dependency graph, and journals every action. The next
-queue cycle picks the stubs up naturally — they precede the target in file order,
-so the file-order selector assigns them first.
+The orchestrator's ``decompose`` route asks the helper backend for managed
+skeletons, guards their shape and trust profile, places them immediately before
+the target, validates the contiguous batch with LeanProbe, records the split in
+the dependency graph, and journals each action. File order makes the queue
+assign the new helpers before their parent.
 
-Writes use a byte-exact source compare-and-swap — this is a runner-level actor
-acting strictly between prover turns, not a prover tool call. Non-negotiable
-invariants (roadmap §4.5/§4.11, audit hole-1): every write passes the SAME
-forbidden-axiom scan as prover edits, a stated stub is
-``theorem/lemma … := by sorry`` and nothing else, and any in-place validation
-error reverts the whole write. After a successful write the caller must
-refresh the prover's queue-edit guard caches (:func:`refresh_queue_edit_guard`)
-or the guard will false-positive-restore the new stubs.
+Writes use byte-exact source compare-and-swap between prover turns. Every write
+passes the same forbidden-axiom scan as prover edits; a stated stub is exactly
+``theorem/lemma … := by sorry``; and any validation error reverts the batch.
+After success the caller must refresh queue-edit guard caches via
+``refresh_queue_edit_guard``.
 """
 
 from __future__ import annotations
@@ -69,8 +63,8 @@ def _positive_limit(value: Any, default: int) -> int:
 
 
 #: Similarity above which a child statement counts as absorbing the parent's
-#: whole difficulty (anti-sorry-offloading, roadmap §4.11 — structural check,
-#: because prompting alone demonstrably does not fix this).
+#: whole difficulty. This structural check prevents offloading the goal to a
+#: near-duplicate helper.
 _OFFLOADING_SIMILARITY = 0.92
 
 #: Numerals 0 and 1 are structural constants used pervasively in harmless
@@ -504,6 +498,11 @@ def _place_helpers_under_lease(
             action="check_target",
             file_path=str(path),
             theorem_id=validation_target,
+            cwd=cwd,
+        )
+        check = decomposition_provenance.canonical_source_fallback_for_incremental_failure(
+            check,
+            source=after_text,
             cwd=cwd,
         )
     except CooperativeInterrupt:
@@ -1686,7 +1685,10 @@ def run_decomposer(
     for helper in helpers:
         name = str(helper.get("name", "") or "")
         skeleton = str(helper.get("lean_skeleton", "") or "")
-        if str(helper.get("check_status", "") or "") == "rejected_instantiated_parent":
+        if str(helper.get("check_status", "") or "") in {
+            "rejected_instantiated_parent",
+            "rejected_admission",
+        }:
             skipped.append(name or "[instantiated-parent]")
             reported_guard = helper.get("admission_guard")
             if not isinstance(reported_guard, Mapping):
@@ -1696,9 +1698,14 @@ def run_decomposer(
             guard_fields = decomposer_admission.bounded_journal_fields(
                 reported_guard,
             )
+            event = (
+                "decomposer-instantiated-parent-rejected"
+                if guard_fields.get("reason_code") == "closed_literal_parent_instantiation"
+                else "decomposer-admission-rejected"
+            )
             plan_state.append_journal_event(
                 {
-                    "event": "decomposer-instantiated-parent-rejected",
+                    "event": event,
                     "helper": name,
                     "target": target_symbol,
                     **guard_fields,
@@ -1719,9 +1726,14 @@ def run_decomposer(
         admission = decomposer_admission.assess_helper_admission(statement, skeleton)
         if not admission.accepted:
             skipped.append(name or "[instantiated-parent]")
+            event = (
+                "decomposer-instantiated-parent-rejected"
+                if admission.reason_code == "closed_literal_parent_instantiation"
+                else "decomposer-admission-rejected"
+            )
             plan_state.append_journal_event(
                 {
-                    "event": "decomposer-instantiated-parent-rejected",
+                    "event": event,
                     "helper": name,
                     "target": target_symbol,
                     **admission.journal_fields(),

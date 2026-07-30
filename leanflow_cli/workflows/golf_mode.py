@@ -1,20 +1,7 @@
-"""Managed-/golf substrate (Phase 6 §6.9 overhaul; runtime wiring deferred).
+"""Discover golf candidates and measure Lean declaration size.
 
-The runner wiring (a flag admitting golf/refactor to the managed loop) is
-a dedicated follow-on: review established it needs drain-to-done queue
-lifecycle, baseline capture AT ASSIGNMENT (queue-item extras do not
-survive ``QueueItem`` serialization), and metrics recorded on CLASSIFIED
-acceptance rather than raw gate ok. No flag ships until that wiring does.
-This leaf owns the settled substrate the follow-on composes from:
-
-- the queue: every DECLARED, sorry-free theorem/lemma in scope becomes an
-  item with the ``golf candidate`` reason (a third selection bucket after
-  diagnostics and sorries — prove queues never emit it, so prove
-  selection is byte-identical). This is a structural read, not an
-  elaboration: the deferred runtime applies the compile filter at
-  assignment (where it elaborates for the baseline anyway);
-- ``declaration_chars`` — the baseline/after-size primitive the metrics
-  artifact will be built from at assignment/acceptance time.
+The helpers enumerate declared, sorry-free theorems and lemmas without
+modifying project files.
 """
 
 from __future__ import annotations
@@ -105,10 +92,9 @@ def golf_declaration_queue(active_file: str, *, project_root: str = "") -> list[
     literals, so a `-- sorry` note never masks a finished proof and a real
     `by sorry` is never missed. Open work stays with ``prove``.
 
-    This leaf does NOT elaborate, so it cannot prove a candidate actually
-    compiles; the deferred runtime applies the compile filter at
-    assignment (where it elaborates for the baseline anyway). Never
-    raises: an unreadable file is an empty queue.
+    This structural scan does not elaborate, so callers must compile-check a
+    candidate before accepting it. Never raises: an unreadable file is an
+    empty queue.
     """
     try:
         root = Path(project_root or ".")

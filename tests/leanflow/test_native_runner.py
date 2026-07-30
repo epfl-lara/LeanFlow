@@ -4216,6 +4216,20 @@ def test_shutdown_post_tool_callback_never_refills_portfolio(monkeypatch):
     runner._poll_research_portfolio_after_tool_result(_Agent(), "lean_inspect")
 
 
+def test_stopped_research_portfolio_cannot_refill(monkeypatch):
+    """Final-target quiescence is durable across later maintenance callbacks."""
+    state = {"_native_research_portfolio_stopped": True}
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_research_portfolio_poll_request",
+        lambda *_args, **_kwargs: pytest.fail("stopped portfolio was polled"),
+    )
+
+    assert runner._research_portfolio_refill_allowed(state) is False
+    runner._maintain_research_portfolio(state, {"target_symbol": "result"})
+
+
 def test_completed_worker_is_reaped_during_slow_foreground_tool(monkeypatch, tmp_path):
     """The process-owning main thread polls while the conversation thread blocks."""
     reaped = threading.Event()
@@ -4846,8 +4860,8 @@ def test_planner_race_keeps_unconfirmed_replacement_counted(monkeypatch):
     assert state[runner._RESEARCH_PORTFOLIO_LAST_LAUNCH_KEY]["launched"] == [job_id]
 
 
-def test_portfolio_poll_persists_active_provider_reset(monkeypatch):
-    """A background worker reset pauses campaign admission in the parent."""
+def test_portfolio_poll_keeps_background_provider_reset_lane_local(monkeypatch):
+    """A background reset must not interrupt a healthy foreground provider turn."""
     now = 1_700_000_000
     state: dict = {}
     request = runner._ResearchPortfolioPollRequest(
@@ -4858,22 +4872,18 @@ def test_portfolio_poll_persists_active_provider_reset(monkeypatch):
         attempt_count=3,
         workers=2,
     )
-    calls: list[dict] = []
+    events: list[tuple[tuple, dict]] = []
     monkeypatch.setattr(runner.time, "time", lambda: now)
-
-    def persist(autonomy_state, retry_after, **_kwargs):
-        calls.append(dict(retry_after))
-        autonomy_state.update(
-            {
-                "operational_pause": "paused_infrastructure",
-                "provider_pause_owner": "provider_usage_limit",
-            }
-        )
 
     monkeypatch.setattr(
         runner.campaign_epoch,
         "record_provider_usage_limit_pause",
-        persist,
+        lambda *args, **kwargs: pytest.fail("background reset became a campaign pause"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
     )
 
     runner._finalize_research_portfolio_poll(
@@ -4893,8 +4903,9 @@ def test_portfolio_poll_persists_active_provider_reset(monkeypatch):
         },
     )
 
-    assert calls[0]["unavailable_until_epoch"] == now + 600
-    assert state["operational_pause"] == "paused_infrastructure"
+    assert "operational_pause" not in state
+    assert events[0][0][0] == "research-provider-usage-limit"
+    assert events[0][1]["provider_retry_after"]["unavailable_until_epoch"] == now + 600
 
 
 def test_portfolio_poll_ignores_expired_provider_reset(monkeypatch):
@@ -5049,6 +5060,7 @@ def test_pending_research_event_closes_safe_tool_boundary_once(monkeypatch):
         def interrupt(self, message):
             self.interrupt_messages.append(message)
 
+    monkeypatch.setenv("LEANFLOW_RESEARCH_EVENT_PREEMPTION", "1")
     agent = _Agent()
     finding_scans: list[str] = []
     scope = runner._orchestrator_event_scope(agent._managed_autonomy_state)
@@ -5094,6 +5106,51 @@ def test_pending_research_event_closes_safe_tool_boundary_once(monkeypatch):
     assert finding_scans == ["scan"]
     assert agent._post_tool_result_appendix == "[fresh research finding]"
     assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+
+
+def test_pending_research_event_stages_without_preempting_by_default(monkeypatch):
+    """Completed research stays pending until the prover reaches a natural turn boundary."""
+
+    class _Agent(_ManagedRunAgentStub):
+        is_interrupted = False
+        _managed_step_boundary_closed = False
+
+        def __init__(self):
+            self.interrupt_messages: list[str] = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                },
+                "research_portfolio_last_tool_poll": time.monotonic(),
+            }
+
+        def interrupt(self, message):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.delenv("LEANFLOW_RESEARCH_EVENT_PREEMPTION", raising=False)
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt_locked", lambda *_: "[finding]")
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    agent = _Agent()
+    scope = runner._orchestrator_event_scope(agent._managed_autonomy_state)
+    runner.orchestrator_event_watermark.publish_once(
+        agent._managed_autonomy_state,
+        scope=scope,
+        source="research-finding:campaign.ds-001::demo",
+        reason="completed research job campaign.ds-001",
+    )
+
+    runner._poll_research_portfolio_after_tool_result(agent, "lean_search")
+
+    assert agent.interrupt_messages == []
+    assert agent._managed_step_boundary_closed is False
+    assert agent._post_tool_result_appendix == "[finding]"
+    assert runner.orchestrator_event_watermark.has_pending(
+        agent._managed_autonomy_state,
+        scope=scope,
+    )
 
 
 def test_safe_tool_callback_skips_delivery_scan_without_pending_event(monkeypatch):
@@ -5214,6 +5271,7 @@ def test_foreground_grace_harvests_and_stages_without_consecutive_interrupt(monk
         def interrupt(self, message):
             self.interrupt_messages.append(message)
 
+    monkeypatch.setenv("LEANFLOW_RESEARCH_EVENT_PREEMPTION", "1")
     agent = _Agent()
     state = agent._managed_autonomy_state
     scope = runner._orchestrator_event_scope(state)
@@ -5675,6 +5733,57 @@ def test_pending_research_event_never_interrupts_state_changing_boundary(
     monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
     monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    runner._poll_research_portfolio_after_tool_result(agent, function_name)
+
+    assert agent.interrupt_messages == []
+    assert agent._managed_step_boundary_closed is False
+    assert runner.orchestrator_event_watermark.has_pending(
+        agent._managed_autonomy_state,
+        scope=scope,
+    )
+
+
+@pytest.mark.parametrize(
+    "function_name",
+    [
+        "lean_capabilities",
+        "lean_inspect",
+        "lean_outline",
+        "read_file",
+        "skill_view",
+        "skills_list",
+    ],
+)
+def test_pending_research_event_does_not_preempt_orientation_read(monkeypatch, function_name):
+    """Startup inspection may stage findings but must reach substantive work."""
+
+    class _Agent(_ManagedRunAgentStub):
+        is_interrupted = False
+        _managed_step_boundary_closed = False
+
+        def __init__(self):
+            self.interrupt_messages: list[str] = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                }
+            }
+
+        def interrupt(self, message):
+            self.interrupt_messages.append(message)
+
+    agent = _Agent()
+    scope = runner._orchestrator_event_scope(agent._managed_autonomy_state)
+    runner.orchestrator_event_watermark.publish_once(
+        agent._managed_autonomy_state,
+        scope=scope,
+        source="research-finding:campaign.ds-001::demo",
+        reason="completed research job campaign.ds-001",
+    )
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
 
     runner._poll_research_portfolio_after_tool_result(agent, function_name)
 
@@ -6177,32 +6286,63 @@ def test_managed_conversation_does_not_retry_nontransient_failure(monkeypatch):
     assert len(calls) == 1
 
 
-def test_managed_conversation_does_not_multiply_exhausted_provider_retries(monkeypatch):
-    """AIAgent's complete 5/15/45 schedule must be the only provider retry budget."""
+def test_managed_conversation_resumes_after_exhausted_provider_retry_window(monkeypatch):
+    """An unfinished turn must survive complete transient provider windows."""
+    results = iter(
+        [
+            {
+                "failed": True,
+                "error": "503 service unavailable after provider retries",
+                "provider_retries_exhausted": True,
+                "messages": [],
+            },
+            {
+                "failed": True,
+                "error": "503 service unavailable after provider retries",
+                "provider_retries_exhausted": True,
+                "messages": [],
+            },
+            {"completed": True, "messages": [], "final_response": "working"},
+        ]
+    )
     calls: list[int] = []
+    activities: list[tuple[str, dict]] = []
+    monkeypatch.setenv("LEANFLOW_PROVIDER_EXHAUSTION_BACKOFFS", "0")
     monkeypatch.setattr(
         runner,
         "_run_managed_conversation",
-        lambda *args, **kwargs: calls.append(1)
-        or {
-            "failed": True,
-            "error": "503 service unavailable after provider retries",
-            "provider_retries_exhausted": True,
-            "messages": [],
-        },
+        lambda *args, **kwargs: calls.append(1) or next(results),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda activity_type, _message, **details: activities.append((activity_type, details)),
     )
 
     result = runner._run_managed_conversation_with_retries(_ManagedRunAgentStub())
 
-    assert result["failed"] is True
-    assert result["provider_retries_exhausted"] is True
-    assert len(calls) == 1
+    assert result["completed"] is True
+    assert len(calls) == 3
+    assert [activity[0] for activity in activities] == [
+        "provider-exhaustion-resume",
+        "provider-exhaustion-resume",
+    ]
+    assert [activity[1]["retry_number"] for activity in activities] == [1, 2]
+
+
+def test_provider_exhaustion_backoff_repeats_and_caps_at_one_minute(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_PROVIDER_EXHAUSTION_BACKOFFS", "5,120")
+
+    assert runner._provider_exhaustion_retry_delay(1) == 5
+    assert runner._provider_exhaustion_retry_delay(2) == 60
+    assert runner._provider_exhaustion_retry_delay(20) == 60
 
 
 def test_managed_conversation_usage_limit_pauses_without_outer_retry(monkeypatch):
     """A reset-aware failure is a single resumable pause, not a 5/15/45 loop."""
     calls: list[int] = []
     state: dict = {}
+    monkeypatch.setattr(runner.time, "time", lambda: 1_784_496_783)
 
     class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = state
@@ -7271,6 +7411,21 @@ def test_terminal_lean_check_only_counts_for_assigned_file():
         {"command": "lake build"},
         active_file="/tmp/project/Demo/Main.lean",
     )
+    assert runner._tool_result_counts_as_theorem_feedback(
+        "lean_verify",
+        {"target": "Demo/Main.lean", "mode": "file_exact"},
+        active_file="/tmp/project/Demo/Main.lean",
+    )
+    assert not runner._tool_result_counts_as_theorem_feedback(
+        "lean_verify",
+        {"target": "Demo/Scratch.lean", "mode": "file_exact"},
+        active_file="/tmp/project/Demo/Main.lean",
+    )
+    assert runner._tool_result_counts_as_theorem_feedback(
+        "lean_verify",
+        {"mode": "project"},
+        active_file="/tmp/project/Demo/Main.lean",
+    )
 
 
 def test_handle_managed_tool_result_nudges_repeated_successful_search(monkeypatch, tmp_path):
@@ -7509,8 +7664,10 @@ def test_web_search_only_loop_requests_route_and_interrupts_once(monkeypatch, tm
         "target_symbol": "demo",
         "active_file": str(active),
     }
-    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
-    assert agent._managed_step_boundary_closed is True
+    assert agent.interrupt_messages == []
+    assert not bool(getattr(agent, "_managed_step_boundary_closed", False))
+    assert agent._managed_autonomy_state["search_progress"]["synthesis_grace_pending"] is True
+    assert "do not call another tool" in agent._post_tool_result_appendix
     route_events = [event for event in events if event[0][0] == "search-route-change"]
     assert len(route_events) == 1
     assert route_events[0][1]["search_count"] == 3
@@ -7522,8 +7679,8 @@ def test_web_search_only_loop_requests_route_and_interrupts_once(monkeypatch, tm
         "web_download",
     }
 
-    # The callback may observe another already-completed result while the
-    # interruption propagates. It must not fire the same boundary twice.
+    # A further tool call spends the one reserved no-tool synthesis response
+    # and closes the inner turn without emitting another route decision.
     runner._handle_managed_tool_result(
         agent,
         "web_search",
@@ -7531,7 +7688,11 @@ def test_web_search_only_loop_requests_route_and_interrupts_once(monkeypatch, tm
         json.dumps({"success": True, "query": "another query"}),
     )
     assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_step_boundary_closed is True
     assert len([event for event in events if event[0][0] == "search-route-change"]) == 1
+    assert (
+        len([event for event in events if event[0][0] == "search-synthesis-grace-exhausted"]) == 1
+    )
 
 
 def test_search_progress_nudge_records_originating_agent(monkeypatch, tmp_path):
@@ -7631,7 +7792,8 @@ def test_rejected_terminal_does_not_hide_web_search_only_loop(monkeypatch, tmp_p
         {"url": "https://example.test/third"},
         json.dumps({"success": True, "url": "https://example.test/third"}),
     )
-    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent.interrupt_messages == []
+    assert agent._managed_autonomy_state["search_progress"]["synthesis_grace_pending"] is True
 
 
 def test_successful_concrete_terminal_progress_resets_search_streak(monkeypatch, tmp_path):
@@ -7757,7 +7919,8 @@ def test_guard_restored_patch_does_not_reset_search_streak(monkeypatch, tmp_path
         {"url": "https://example.test/third"},
         json.dumps({"success": True, "url": "https://example.test/third"}),
     )
-    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent.interrupt_messages == []
+    assert agent._managed_autonomy_state["search_progress"]["synthesis_grace_pending"] is True
 
 
 def test_support_file_patch_does_not_reset_search_streak(monkeypatch, tmp_path):
@@ -7838,7 +8001,70 @@ def test_support_file_patch_does_not_reset_search_streak(monkeypatch, tmp_path):
         {"url": "https://example.test/third"},
         json.dumps({"success": True, "url": "https://example.test/third"}),
     )
-    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent.interrupt_messages == []
+    assert agent._managed_autonomy_state["search_progress"]["synthesis_grace_pending"] is True
+
+
+def test_verified_patch_rejects_stale_explicit_target_before_edit(monkeypatch, tmp_path):
+    """Never verify a revision that the current queue guard must restore."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "private lemma helper : True := by",
+                "  trivial",
+                "",
+                "theorem result : True := by",
+                "  trivial",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "helper",
+                    "active_file": str(active),
+                    "slice": "private lemma helper : True := by\n  trivial",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    agent = _Agent()
+    agent._managed_queue_edit_snapshot = {"target_symbol": "stale"}
+
+    result = runner._managed_pre_tool_call(
+        agent,
+        "apply_verified_patch",
+        {
+            "path": str(active),
+            "theorem_id": "result",
+            "patch": "*** Begin Patch\n*** End Patch\n",
+        },
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "queue_assignment_mismatch"
+    assert payload["target_symbol"] == "helper"
+    assert payload["requested_target"] == "result"
+    assert payload["patch_applied"] is False
+    assert "theorem_id=helper" in payload["error"]
+    assert "verification anchor" in payload["error"]
+    assert active.read_text(encoding="utf-8").endswith("  trivial\n")
+    assert not hasattr(agent, "_managed_queue_edit_snapshot")
+    assert events[0][0][1] == "verified-patch-assignment-mismatch-blocked"
 
 
 def test_malformed_edit_snapshot_emits_no_unknown_finalization_event(monkeypatch):
@@ -8248,6 +8474,37 @@ def test_generate_checkpoint_summary_falls_back_on_interrupted_error(monkeypatch
 
     assert "manual" in summary
     assert "exit" in summary
+
+
+def test_managed_snapshot_prompt_preserves_strongest_verified_route(monkeypatch):
+    prompts: list[str] = []
+
+    class _Message:
+        content = "## Goal\ncontinue"
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        choices = [_Choice()]
+
+    def fake_call_llm(**kwargs):
+        prompts.append(kwargs["messages"][0]["content"])
+        return _Response()
+
+    monkeypatch.setattr(runner, "call_llm", fake_call_llm)
+
+    summary = runner._generate_managed_snapshot(
+        _FakeCompressor(),
+        [{"role": "assistant", "content": "Kernel-verified helper: strongest_route"}],
+    )
+
+    assert summary is not None
+    prompt = prompts[0]
+    assert "Rank and preserve the strongest kernel-verified candidate" in prompt
+    assert "Never demote a kernel-verified or operator-approved route" in prompt
+    assert "produce new Lean evidence that rejects it" in prompt
+    assert "deferred, interrupted, or not yet attempted" in prompt
 
 
 def test_handle_managed_tool_result_ignores_failed_patch_result(monkeypatch):
@@ -9031,6 +9288,52 @@ def test_incremental_unrelated_replacement_is_scratch_not_theorem_feedback(monke
     assert "not verification of the assigned declaration" in agent._post_tool_result_appendix
     assert any(args[0] == "queue-scratch-replacement-checked" for args, _kwargs in events)
     assert not any(args[0] == "queue-theorem-candidate-ready" for args, _kwargs in events)
+
+
+def test_failing_scratch_file_verification_does_not_consume_target_attempt(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    scratch = tmp_path / "Scratch.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    scratch.write_text("#check missingName\n", encoding="utf-8")
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "exploring"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    agent = _Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_verify",
+        {"target": str(scratch), "mode": "file_exact"},
+        json.dumps(
+            {
+                "success": False,
+                "ok": False,
+                "target": str(scratch),
+                "output": "error: unknown identifier 'missingName'",
+            }
+        ),
+    )
+
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert "EXPLORATORY FILE CHECK" in agent._post_tool_result_appendix
+    assert "does not consume an assigned-theorem attempt" in agent._post_tool_result_appendix
+    assert any(args[0] == "queue-scratch-verification-checked" for args, _kwargs in events)
+    assert not any(args[0] == "queue-step-boundary" for args, _kwargs in events)
 
 
 def test_incremental_helper_check_cannot_verify_assigned_theorem(monkeypatch, tmp_path, capsys):
@@ -9910,6 +10213,53 @@ def test_scope_entry_non_negate_keeps_portfolio_and_finding_order(monkeypatch, t
     assert "route: direct-prove" in prompt
 
 
+def test_scope_entry_warning_cleanup_skips_all_research_work(monkeypatch, tmp_path):
+    """Do not spend research capacity after the mathematical queue is clean."""
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.scope_entry_admission,
+        "arm",
+        lambda *_args, **_kwargs: pytest.fail("warning cleanup armed research admission"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_sync_plan_state",
+        lambda *_args, **_kwargs: pytest.fail("warning cleanup synchronized the graph"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args: pytest.fail("warning cleanup refreshed research"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_take_research_findings_prompt",
+        lambda *_args: pytest.fail("warning cleanup staged research findings"),
+    )
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    state = {}
+    live_state = {
+        "active_file": str(active),
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "sorry_count": 0,
+        "diagnostics": f"{active}:2:3: warning: try 'simp' instead of 'simpa'",
+        "final_sweep_warning_cleanup_pending": True,
+    }
+
+    prompt = runner._research_scope_entry_setup(
+        "[warning cleanup prompt]",
+        state,
+        live_state,
+        agent=object(),
+        apply_route=True,
+    )
+
+    assert prompt == "[warning cleanup prompt]"
+    assert state["orchestrator_scope_entered"] is True
+
+
 def test_scope_entry_checked_target_candidate_preempts_decompose(monkeypatch, tmp_path):
     """A staged exact checked replacement owns the next foreground turn."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
@@ -10287,8 +10637,23 @@ def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_sea
     }
     disguised = json.loads(runner._managed_pre_tool_call(_Agent(), "patch", removal_disguise))
     assert disguised["status"] == "checked_helper_integration_required"
-    assert runner._managed_pre_tool_call(_Agent(), "patch", exact_patch) is None
-    assert runner._managed_pre_tool_call(_Agent(), "patch", exact_patch) is None
+    blocked_unverified = json.loads(runner._managed_pre_tool_call(_Agent(), "patch", exact_patch))
+    assert blocked_unverified["status"] == "checked_helper_verified_patch_required"
+    verified_patch = {
+        "path": str(active),
+        "theorem_id": "demo",
+        "patch": (
+            "*** Begin Patch\n"
+            f"*** Update File: {active}\n"
+            "@@\n"
+            f"+{declaration.replace(chr(10), chr(10) + '+')}\n"
+            "+\n"
+            " theorem demo : True := by\n"
+            "*** End Patch\n"
+        ),
+    }
+    assert runner._managed_pre_tool_call(_Agent(), "apply_verified_patch", verified_patch) is None
+    assert runner._managed_pre_tool_call(_Agent(), "apply_verified_patch", verified_patch) is None
     assert (
         runner.research_helper_candidate_priority.load(state).integration_attempts
         == runner.research_helper_candidate_priority.MAX_INTEGRATION_ATTEMPTS
@@ -10304,6 +10669,184 @@ def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_sea
         is None
     )
     assert runner.research_helper_candidate_priority.load(state) is not None
+
+
+def test_helper_pretool_guard_rejects_same_name_source_collision(monkeypatch, tmp_path):
+    """Never allow a ready insertion candidate to duplicate a current declaration."""
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    active = tmp_path / "Main.lean"
+    target = "theorem demo : True := by\n  sorry"
+    active.write_text(target + "\n", encoding="utf-8")
+    declaration = "private lemma checked_family : True := by\n  trivial"
+    finding = {
+        "job_id": "campaign.orchestrator.ds-collision",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "semantic_novelty": {
+            "version": 9,
+            "classification": "novel",
+            "progress_anchor_eligible": True,
+            "progress_anchor_reason": "new_mathematical_semantics",
+            "has_checked_helper": True,
+        },
+        "deliverable": {
+            "checked_helper_route_disposition": "advance_current_route",
+            "checked_helper_dependency_advanced": "demo dependency",
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "active_file": str(active),
+                    "anchor_target_symbol": "demo",
+                    "declaration": declaration,
+                    "declaration_sha256": runner.hashlib.sha256(declaration.encode()).hexdigest(),
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["checked_family"],
+                    },
+                }
+            ],
+        },
+    }
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    pending = runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert pending is not None
+    ready = runner.research_helper_candidate_priority.mark_parent_recheck(
+        state,
+        candidate_id=pending.candidate_id,
+        status="accepted",
+        source_revision_sha256=runner.research_helper_candidate_priority.source_revision_sha256(
+            str(active)
+        ),
+        detail="test parent check",
+    )
+    assert ready is not None and ready.integration_fence_active
+    source = "private lemma checked_family : False := by\n  sorry\n\n" + target + "\n"
+    active.write_text(source, encoding="utf-8")
+
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = state
+    result = runner._managed_pre_tool_call(
+        agent,
+        "patch",
+        {
+            "path": str(active),
+            "old_string": target,
+            "new_string": declaration + "\n\n" + target,
+        },
+    )
+
+    assert result is None
+    assert runner.research_helper_candidate_priority.load(state) is None
+    assert active.read_text(encoding="utf-8") == source
+
+
+def test_helper_recheck_rejects_same_name_source_collision_before_prompt(monkeypatch, tmp_path):
+    """Do not recover or prompt a stale helper whose name is already in source."""
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    active = tmp_path / "Main.lean"
+    target = "theorem demo : True := by\n  sorry"
+    active.write_text(target + "\n", encoding="utf-8")
+    declaration = "theorem checked_family : True := by\n  trivial"
+    finding = {
+        "job_id": "campaign.orchestrator.ds-recheck-collision",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "semantic_novelty": {
+            "version": 9,
+            "classification": "novel",
+            "progress_anchor_eligible": True,
+            "progress_anchor_reason": "new_mathematical_semantics",
+            "has_checked_helper": True,
+        },
+        "deliverable": {
+            "checked_helper_route_disposition": "advance_current_route",
+            "checked_helper_dependency_advanced": "demo dependency",
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "active_file": str(active),
+                    "anchor_target_symbol": "demo",
+                    "declaration": declaration,
+                    "declaration_sha256": runner.hashlib.sha256(declaration.encode()).hexdigest(),
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["checked_family"],
+                    },
+                }
+            ],
+        },
+    }
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    pending = runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert pending is not None
+    source = "theorem checked_family : True := by\n  exact True.intro\n\n" + target + "\n"
+    active.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(
+        runner,
+        "lean_incremental_check",
+        lambda **_kwargs: pytest.fail("same-name source coverage must precede parent recheck"),
+    )
+
+    prompt = runner._recheck_pending_research_helper_if_due(
+        state,
+        state["current_queue_assignment"],
+        agent=None,
+    )
+
+    assert prompt == ""
+    assert runner.research_helper_candidate_priority.load(state) is None
+    resolved = state[runner.research_helper_candidate_priority.RESOLVED_STATE_KEY]
+    assert resolved[-1]["candidate_id"] == pending.candidate_id
+    assert resolved[-1]["disposition"] == "covered_same_name_current_source"
+    assert active.read_text(encoding="utf-8") == source
 
 
 def test_scope_entry_binds_state_before_recovering_helper_already_in_source(monkeypatch, tmp_path):
@@ -10412,6 +10955,359 @@ def test_scope_entry_binds_state_before_recovering_helper_already_in_source(monk
         kwargs for args, kwargs in events if args[0] == "research-helper-candidate-integrated"
     )
     assert integrated["integration_path"] == "source_recovery"
+
+
+def test_integrated_helper_consumption_allows_target_work_before_next_priority(
+    monkeypatch, tmp_path
+):
+    """A second checked helper must not preempt an unchanged assigned proof."""
+
+    def checked_finding(*, helper_name: str, declaration: str, job_id: str) -> dict:
+        return {
+            "job_id": job_id,
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "semantic_novelty": {
+                "version": 9,
+                "classification": "novel",
+                "progress_anchor_eligible": True,
+                "progress_anchor_reason": "new_mathematical_semantics",
+                "has_checked_helper": True,
+            },
+            "deliverable": {
+                "checked_helper_status": "worker_checked_parent_recheck_required",
+                "parent_recheck_required": True,
+                "checked_helpers": [
+                    {
+                        "active_file": str(active),
+                        "anchor_target_symbol": "demo",
+                        "declaration": declaration,
+                        "declaration_sha256": runner.hashlib.sha256(
+                            declaration.encode()
+                        ).hexdigest(),
+                        "parent_recheck_required": True,
+                        "worker_check": {
+                            "tool": "lean_incremental_check",
+                            "action": "check_helper",
+                            "valid_without_sorry": True,
+                            "has_errors": False,
+                            "has_sorry": False,
+                            "verification_scope": "helper_candidate",
+                            "replacement_matches_target": False,
+                            "replacement_declarations": [helper_name],
+                        },
+                    }
+                ],
+            },
+        }
+
+    active = tmp_path / "Main.lean"
+    target = "theorem demo : True := by\n  sorry"
+    active.write_text(target + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        runner.decomposer,
+        "prover_edit_evidence_helper_names",
+        lambda **_kwargs: (),
+    )
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    first_finding = checked_finding(
+        helper_name="first_helper",
+        declaration="private lemma first_helper : True := by\n  trivial",
+        job_id="campaign.orchestrator.ds-first",
+    )
+    first = runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (first_finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert first is not None
+    active.write_text(first.declaration + "\n\n" + target + "\n", encoding="utf-8")
+    runner.research_helper_candidate_priority.resolve(
+        state,
+        disposition="integrated_managed_edit",
+    )
+    second_finding = checked_finding(
+        helper_name="second_helper",
+        declaration="private lemma second_helper (n : Nat) : n = n := by\n  rfl",
+        job_id="campaign.orchestrator.ds-second",
+    )
+    second = runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (second_finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert second is not None
+    runner.research_helper_candidate_priority.mark_parent_recheck(
+        state,
+        candidate_id=second.candidate_id,
+        status="accepted",
+        source_revision_sha256=(
+            runner.research_helper_candidate_priority.source_revision_sha256(str(active))
+        ),
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+        def is_interrupted(self):
+            return False
+
+    releases: list[str] = []
+    monkeypatch.setattr(
+        runner.helper_integration_admission,
+        "release",
+        lambda _agent, *, reason: releases.append(reason) or True,
+    )
+    monkeypatch.setattr(
+        runner.helper_integration_admission,
+        "ensure",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "lean_incremental_check",
+        lambda **_kwargs: pytest.fail("unchanged target must work before another helper recheck"),
+    )
+    agent = _Agent()
+
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "lean_search",
+            {"query": "consume prior helper", "file_path": str(active)},
+        )
+        is None
+    )
+    blocked_decompose = json.loads(
+        runner._managed_pre_tool_call(
+            agent,
+            "lean_decompose_helpers",
+            {"theorem_id": "demo", "file_path": str(active)},
+        )
+    )
+    assert blocked_decompose["status"] == "target_proof_consumption_required"
+    assert blocked_decompose["blocked_tool"] == "lean_decompose_helpers"
+    blocked_helper_edit = json.loads(
+        runner._managed_pre_tool_call(
+            agent,
+            "patch",
+            {
+                "path": str(active),
+                "mode": "replace",
+                "old_string": first.declaration,
+                "new_string": (
+                    first.declaration + "\n\nprivate lemma third_helper : True := by\n  trivial"
+                ),
+            },
+        )
+    )
+    assert blocked_helper_edit["status"] == "target_proof_consumption_required"
+    active.write_text(
+        first.declaration + "\n\n" + "/-- Assigned theorem documentation. -/\n" + target + "\n",
+        encoding="utf-8",
+    )
+    blocked_verified_helper_edit = json.loads(
+        runner._managed_pre_tool_call(
+            agent,
+            "apply_verified_patch",
+            {
+                "path": str(active),
+                "theorem_id": "demo",
+                "patch": (
+                    "*** Begin Patch\n"
+                    f"*** Update File: {active}\n"
+                    "@@\n"
+                    "   trivial\n"
+                    " \n"
+                    "+private lemma adjacent_helper : True := by\n"
+                    "+  trivial\n"
+                    "+\n"
+                    " /-- Assigned theorem documentation. -/\n"
+                    "*** End Patch\n"
+                ),
+            },
+        )
+    )
+    assert blocked_verified_helper_edit["status"] == "target_proof_consumption_required"
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "apply_verified_patch",
+            {
+                "path": str(active),
+                "theorem_id": "demo",
+                "patch": (
+                    "*** Begin Patch\n"
+                    f"*** Update File: {active}\n"
+                    "@@ theorem demo : True := by\n"
+                    " theorem demo : True := by\n"
+                    "-  sorry\n"
+                    "+  trivial\n"
+                    "*** End Patch\n"
+                ),
+            },
+        )
+        is None
+    )
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "patch",
+            {
+                "path": str(active),
+                "mode": "replace",
+                "old_string": "  sorry",
+                "new_string": "  trivial",
+            },
+        )
+        is None
+    )
+    active.write_text(
+        first.declaration
+        + "\n\n"
+        + "theorem demo : True := by\n  have h := first_helper\n  sorry\n",
+        encoding="utf-8",
+    )
+    next_priority = json.loads(
+        runner._managed_pre_tool_call(
+            agent,
+            "lean_decompose_helpers",
+            {"theorem_id": "demo", "file_path": str(active)},
+        )
+    )
+    assert next_priority["status"] == "checked_helper_integration_required"
+    assert next_priority["helper_symbol"] == "second_helper"
+    active.write_text(
+        first.declaration + "\n\n" + "theorem demo : True := by\n  trivial\n",
+        encoding="utf-8",
+    )
+    unverified_placeholder_removal = json.loads(
+        runner._managed_pre_tool_call(
+            agent,
+            "lean_decompose_helpers",
+            {"theorem_id": "demo", "file_path": str(active)},
+        )
+    )
+    assert unverified_placeholder_removal["status"] == "checked_helper_integration_required"
+    assert unverified_placeholder_removal["helper_symbol"] == "second_helper"
+    assert releases
+
+
+def test_scope_entry_skips_portfolio_refresh_while_target_must_consume_helper(
+    monkeypatch, tmp_path
+):
+    """Do not gate a deterministic target repair behind more research work."""
+    active = tmp_path / "Main.lean"
+    target = "theorem demo : True := by\n  sorry"
+    declaration = "private lemma checked_family : True := by\n  trivial"
+    active.write_text(target + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    finding = {
+        "job_id": "campaign.orchestrator.ds-checked",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "semantic_novelty": {
+            "version": 9,
+            "classification": "novel",
+            "progress_anchor_eligible": True,
+            "has_checked_helper": True,
+        },
+        "deliverable": {
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "active_file": str(active),
+                    "anchor_target_symbol": "demo",
+                    "declaration": declaration,
+                    "declaration_sha256": runner.hashlib.sha256(declaration.encode()).hexdigest(),
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["checked_family"],
+                    },
+                }
+            ],
+        },
+    }
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    candidate = runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert candidate is not None
+    active.write_text(declaration + "\n\n" + target + "\n", encoding="utf-8")
+    runner.research_helper_candidate_priority.resolve(
+        state,
+        disposition="integrated_managed_edit",
+    )
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_queued_decomposition_helper_priority_prompt",
+        lambda *_args, **_kwargs: "",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args, **_kwargs: pytest.fail("target consumption must bypass portfolio refresh"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_take_research_findings_prompt",
+        lambda *_args, **_kwargs: pytest.fail("target consumption must not inject more findings"),
+    )
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: False)
+
+    prompt = runner._research_scope_entry_setup(
+        "",
+        state,
+        {"target_symbol": "demo", "active_file": str(active)},
+    )
+
+    assert "[LEANFLOW TARGET-PROOF CONSUMPTION REQUIRED]" in prompt
+    assert "checked_family" in prompt
 
 
 def test_active_anchored_followup_defers_source_without_acknowledging_it(monkeypatch, tmp_path):
@@ -12830,6 +13726,103 @@ def test_handle_managed_tool_result_fires_cleanup_from_incremental_check_structu
     assert "Queue step boundary" not in output
 
 
+def test_unchanged_warning_recheck_keeps_cleanup_edit_open(monkeypatch, tmp_path, capsys):
+    """A plain recheck cannot spend the one edit-oriented cleanup opportunity."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "theorem demo : True := by\n  have unused : True := by trivial\n  trivial\n",
+        encoding="utf-8",
+    )
+    manager_check = {
+        "ok": True,
+        "mode": "incremental_target",
+        "action": "check_target",
+        "target": "demo",
+        "output": "warning: Variable name `unused` is not explicitly referenced.",
+        "messages": [
+            {
+                "severity": "warning",
+                "message": "Variable name `unused` is not explicitly referenced.",
+                "line": 2,
+                "column": 8,
+            }
+        ],
+        "incremental": {"success": True, "ok": True},
+    }
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Main.lean",
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo", "reasons": ["warning cleanup"]},
+        "current_queue_item_slice": active.read_text(encoding="utf-8"),
+        "declaration_scope": "file",
+        "declaration_queue_total": 1,
+        "diagnostics": manager_check["output"],
+        "goals": "no goals",
+        "build_status": "ok",
+    }
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": active.read_text(encoding="utf-8"),
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+            self.appendix = ""
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+        def set_tool_result_appendix(self, value):
+            self.appendix = value
+
+        def clear_tool_result_appendix(self):
+            self.appendix = ""
+
+    monkeypatch.setattr(runner, "_queue_decide_authority_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: dict(live_state),
+    )
+    monkeypatch.setattr(runner, "_record_manager_verification", lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner, "_enforce_manager_axiom_profile", lambda *args: dict(args[-1]))
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    agent = _Agent()
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file=str(active),
+        verification_tool="patch",
+        manager_verification=dict(manager_check),
+    )
+    assert "one focused warning-cleanup edit is now open" in agent.appendix
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file=str(active),
+        verification_tool="lean_incremental_check",
+        manager_verification=dict(manager_check),
+    )
+
+    assert agent.interrupt_messages == []
+    assert "rechecked an unchanged declaration" in agent.appendix
+    assert "another unchanged verification call will not advance the queue" in agent.appendix
+    output = capsys.readouterr().out
+    assert "unchanged recheck detected" in output
+
+
 def test_declaration_diagnostic_feedback_reason_prefers_structured_items_over_text(tmp_path):
     """Pin the helper contract: a structured warning inside the assigned
     declaration's range wins over text-form parsing, so `lean_interact`
@@ -13150,7 +14143,7 @@ def test_handle_managed_tool_result_yields_after_hard_retry_limit(monkeypatch, t
 
     output = capsys.readouterr().out
     text = active.read_text(encoding="utf-8")
-    assert "Local feedback window complete for demo" in output
+    assert "Intermediate turn incomplete for demo" in output
     assert "campaign continues on a new route" in output
     assert "recorded this as unresolved" not in output
     assert "-- LeanFlow failed attempt preserved after API step budget exhaustion." in text
@@ -13401,6 +14394,88 @@ def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(
     assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
     output = capsys.readouterr().out
     assert "file verification still has remaining blockers" in output
+
+
+def test_handle_managed_tool_result_keeps_target_for_post_edit_file_error_on_command_trivia(
+    monkeypatch, tmp_path, capsys
+):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem helper : True := by",
+                "  trivial",
+                "",
+                "/-- Attached target documentation. -/",
+                "theorem demo : True := by",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        quiet_mode = False
+
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "candidate"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": False,
+            "command": "lake env lean Main.lean",
+            "output": (
+                "file failed | errors: 1 | error near line 4: "
+                "(deterministic) timeout at `whnf`, "
+                "maximum number of heartbeats has been reached"
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "helper",
+            "active_file": str(active),
+            "active_file_label": "Main.lean",
+            "current_queue_item": {
+                "label": "helper",
+                "reasons": ["diagnostics unresolved"],
+            },
+            "diagnostics": "error near line 4: timeout",
+            "goals": "no goals",
+            "build_status": "failed",
+            "blocker_summary": "timeout",
+        },
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+
+    assert agent.interrupt_messages == []
+    appendix = str(getattr(agent, "_post_tool_result_appendix", "") or "")
+    assert "- declaration: demo" in appendix
+    assert "- status: still blocked; continue the same theorem turn" in appendix
+    assert "timeout at `whnf`" in appendix
+    assert "feeding manager note back into the same theorem turn" in capsys.readouterr().out
 
 
 def test_handle_managed_tool_result_supports_interrupted_property(monkeypatch):
@@ -14150,7 +15225,7 @@ def test_review_agent_final_report_rejects_claim_with_manager_feedback(
     assert "continue the same theorem" in result["messages"][-1]["content"]
     output = capsys.readouterr().out
     assert "needs work" in output
-    assert "Queue step boundary: demo needs manager feedback" in output
+    assert "Queue step boundary: demo intermediate turn incomplete; queue continues" in output
 
 
 def test_review_agent_surrender_response_is_verified_and_rerouted(monkeypatch, tmp_path, capsys):
@@ -14474,6 +15549,305 @@ def test_review_agent_explicit_route_request_survives_verified_partial_progress(
     assert len(route_events) == 1
     assert route_events[0][1]["route"] == "plan"
     assert route_events[0][1]["reason"] == f"{marker}\n{reason}"
+
+
+def test_review_agent_records_live_continuation_route_wording(monkeypatch, tmp_path):
+    """Persist the natural continuation marker emitted by managed prover turns."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item_transaction",
+        lambda *args, **kwargs: pytest.fail(
+            "the source placeholder gate must reject this unresolved report"
+        ),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    marker = (
+        "Requested continuation route: `decompose`, beginning with the finite "
+        "subset-sum spacing lemma."
+    )
+    runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": marker,
+            "messages": [],
+        },
+        autonomy_state,
+    )
+
+    assert autonomy_state["prover_requested_route"] == {
+        "route": "decompose",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "reason": marker,
+    }
+
+
+def test_review_agent_suppresses_repeated_plan_after_helper_only_progress(monkeypatch, tmp_path):
+    """Keep a terminal planner cooldown bound to the unchanged theorem statement."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    target_signature = runner.research_helper_candidate_priority.target_signature_sha256(
+        str(active),
+        "demo",
+    )
+    runner.route_execution.record_planner_terminal_obstacle(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+        target_signature_sha256=target_signature,
+        outcome="timeout",
+        reason="synthesizer unavailable (timeout)",
+    )
+    active.write_text(
+        "private lemma helper : True := by trivial\n\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": False,
+            "command": "lake env lean Main.lean",
+            "output": "warning: declaration uses 'sorry'",
+        },
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "Progress made.\nRequested route: plan",
+            "messages": [],
+        },
+        autonomy_state,
+    )
+
+    assert (
+        runner.research_helper_candidate_priority.target_signature_sha256(
+            str(active),
+            "demo",
+        )
+        == target_signature
+    )
+    assert "prover_requested_route" not in autonomy_state
+    assert any(event[0][0] == "prover-plan-request-suppressed" for event in events)
+    assert not any(event[0][0] == "prover-route-requested" for event in events)
+
+
+def test_review_agent_suppresses_replan_until_target_body_attempted(monkeypatch, tmp_path):
+    """Reject a new plan request when only helpers changed after completed advice."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    signature = runner.research_helper_candidate_priority.target_signature_sha256(
+        str(active),
+        "demo",
+    )
+    declaration = runner._target_declaration_sha256(str(active), "demo")
+    runner.route_execution.record_planner_terminal_obstacle(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+        target_signature_sha256=signature,
+        target_declaration_sha256=declaration,
+        outcome="planner-completed",
+        reason="use the signed tangent helper",
+    )
+    active.write_text(
+        "private lemma wrapper : True := by trivial\n\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": False,
+            "command": "lake env lean Main.lean",
+            "output": "warning: declaration uses 'sorry'",
+        },
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "Wrapper banked.\nRequested route: plan",
+            "messages": [],
+        },
+        autonomy_state,
+    )
+
+    assert "prover_requested_route" not in autonomy_state
+    suppressed = [
+        (args, kwargs) for args, kwargs in events if args[0] == "prover-plan-request-suppressed"
+    ]
+    assert len(suppressed) == 1
+    assert suppressed[0][1]["outcome"] == "planner-completed"
+
+
+def test_reasoning_help_records_advice_pending_and_blocks_repeat(monkeypatch, tmp_path):
+    """Persist successful advisor work and require a target-level attempt."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent:
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    persisted: list[dict[str, str]] = []
+    cleared: list[dict[str, str]] = []
+    advisor_evidence: list[dict] = []
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner.environment_memory,
+        "observe_terminal_result",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        runner.advisor_route_facts,
+        "record_managed_advisor_result",
+        lambda **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        runner.planner_evidence,
+        "record_advisor_evidence",
+        lambda **kwargs: advisor_evidence.append(dict(kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_planner_terminal_obstacle",
+        lambda _state, payload: persisted.append(dict(payload)) or dict(payload),
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "clear_planner_terminal_obstacle",
+        lambda _state, expected: cleared.append(dict(expected)) or True,
+    )
+
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_reasoning_help",
+        {"theorem_id": "demo", "file_path": str(active)},
+        json.dumps({"success": True, "status": "answered", "advice": "try tangent signs"}),
+    )
+
+    marker = dict(
+        agent._managed_autonomy_state[runner.route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY]
+    )
+    assert marker["outcome"] == "advisor-completed"
+    assert marker["target_declaration_sha256"] == runner._target_declaration_sha256(
+        str(active),
+        "demo",
+    )
+    assert persisted == [marker]
+    assert advisor_evidence[0]["target_symbol"] == "demo"
+    assert advisor_evidence[0]["active_file"] == str(active)
+    assert "try tangent signs" in advisor_evidence[0]["result_text"]
+
+    blocked = runner._planner_advice_pre_tool_guard(
+        agent,
+        "lean_reasoning_help",
+        {"theorem_id": "demo", "file_path": str(active)},
+        agent._managed_autonomy_state,
+    )
+    assert blocked is not None
+    assert json.loads(blocked)["status"] == "completed_advice_pending"
+
+    active.write_text(
+        "theorem demo : True := by\n  have h : True := trivial\n  sorry\n",
+        encoding="utf-8",
+    )
+    assert (
+        runner._planner_advice_pre_tool_guard(
+            agent,
+            "lean_reasoning_help",
+            {"theorem_id": "demo", "file_path": str(active)},
+            agent._managed_autonomy_state,
+        )
+        is None
+    )
+    assert cleared == [marker]
+
+
+def test_target_knowledge_includes_current_planner_evidence(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner.target_handoff,
+        "target_knowledge_block",
+        lambda **_kwargs: "[ordinary target handoff]",
+    )
+    monkeypatch.setattr(
+        runner.planner_evidence,
+        "matching_advisor_evidence",
+        lambda **_kwargs: (
+            {
+                "source": "exact_solved_writeup",
+                "text": "Use adjacent subset sums and common refinement.",
+            },
+        ),
+    )
+
+    rendered = runner._target_knowledge_for_assignment(
+        {},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        },
+    )
+
+    assert "[ordinary target handoff]" in rendered
+    assert "[LEANFLOW RECOVERED EXACT-TARGET EVIDENCE]" in rendered
+    assert "adjacent subset sums and common refinement" in rendered
 
 
 def test_review_agent_records_reverse_route_request_phrase(monkeypatch, tmp_path):
@@ -14957,6 +16331,11 @@ def test_prepare_queue_assignment_reassigns_earlier_incremental_blocker(monkeypa
     events = []
     monkeypatch.setattr(runner, "_manager_prepare_incremental_queue_item", fake_prepare)
     monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda _active_file, _target_symbol: {"ok": False},
+    )
+    monkeypatch.setattr(
         runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
     )
     autonomy_state = {}
@@ -14974,6 +16353,100 @@ def test_prepare_queue_assignment_reassigns_earlier_incremental_blocker(monkeypa
     assert live_state["target_symbol"] == "broken"
     assert live_state["current_queue_item"]["label"] == "broken"
     assert any(args[0] == "queue-prerequisite-reassigned" for args, _kwargs in events)
+
+
+def test_prepare_queue_assignment_rejects_kernel_clean_incremental_blocker(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "private lemma clean : True := by\n  trivial\n\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    calls: list[tuple[str, str]] = []
+
+    def fake_prepare(active_file, target_symbol):
+        calls.append((active_file, target_symbol))
+        return {
+            "success": False,
+            "ok": False,
+            "error": "failed to build env before target at clean: unexpected end of input",
+        }
+
+    events = []
+    monkeypatch.setattr(runner, "_manager_prepare_incremental_queue_item", fake_prepare)
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda _active_file, target_symbol: {
+            "ok": target_symbol == "clean",
+            "target": target_symbol,
+        },
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    autonomy_state = {}
+    live_state = {
+        "active_file": str(active),
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo"},
+        "current_queue_item_slice": "theorem demo : True := by\n  sorry",
+    }
+
+    runner._prepare_queue_assignment_state(autonomy_state, live_state)
+
+    assert calls == [(str(active), "demo")]
+    assert autonomy_state["current_queue_assignment"]["target_symbol"] == "demo"
+    assert live_state["target_symbol"] == "demo"
+    assert live_state["current_queue_item"]["label"] == "demo"
+    assert any(args[0] == "queue-prerequisite-attribution-rejected" for args, _kwargs in events)
+    assert not any(args[0] == "queue-prerequisite-reassigned" for args, _kwargs in events)
+
+
+def test_prepare_queue_assignment_bounds_repeated_prerequisite_reassignment(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "private lemma clean : True := by\n  trivial\n\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+
+    def fake_prepare(_active_file, target_symbol):
+        if target_symbol == "demo":
+            return {
+                "success": False,
+                "ok": False,
+                "error": "failed to build env before target at clean: unexpected end of input",
+            }
+        return {"success": False, "ok": False, "error": "unexpected end of input"}
+
+    events = []
+    monkeypatch.setattr(runner, "_manager_prepare_incremental_queue_item", fake_prepare)
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda _active_file, _target_symbol: {"ok": False},
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    autonomy_state = {}
+
+    def live_state():
+        return {
+            "active_file": str(active),
+            "target_symbol": "demo",
+            "current_queue_item": {"label": "demo"},
+            "current_queue_item_slice": "theorem demo : True := by\n  sorry",
+        }
+
+    first = live_state()
+    runner._prepare_queue_assignment_state(autonomy_state, first)
+    assert first["target_symbol"] == "clean"
+
+    second = live_state()
+    runner._prepare_queue_assignment_state(autonomy_state, second)
+
+    assert second["target_symbol"] == "demo"
+    assert any(args[0] == "queue-prerequisite-reassignment-bounded" for args, _kwargs in events)
 
 
 def test_transition_handoff_retargets_after_prerequisite_reassignment(tmp_path):
@@ -15018,6 +16491,88 @@ def test_transition_handoff_retargets_after_prerequisite_reassignment(tmp_path):
     assert runner._refresh_theorem_transition_handoff(history, live_state, autonomy_state)
     assert "- declaration: broken" in history[0]["content"]
     assert "- declaration: later" not in history[0]["content"]
+
+
+def test_transition_stabilization_rebuilds_after_plan_sync(monkeypatch):
+    """Publish the dependency-first snapshot produced after graph reconciliation."""
+    events: list[str] = []
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "finished",
+            "active_file": "/tmp/Main.lean",
+        }
+    }
+    initial = {
+        "target_symbol": "downstream",
+        "active_file": "/tmp/Main.lean",
+        "current_queue_item": {"label": "downstream"},
+    }
+    refreshed = {
+        "target_symbol": "prerequisite",
+        "active_file": "/tmp/Main.lean",
+        "current_queue_item": {"label": "prerequisite"},
+    }
+
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_maybe_sync_plan_state",
+        lambda *_args, **_kwargs: events.append("sync"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_journal_status",
+        lambda: events.append("journal") or {"status": "fresh"},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *_args, **_kwargs: events.append("rebuild") or dict(refreshed),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified_compat",
+        lambda state, _autonomy: events.append("promote") or state,
+    )
+
+    result = runner._stabilize_live_state_before_theorem_transition(
+        [],
+        {},
+        autonomy_state,
+        initial,
+    )
+
+    assert result["target_symbol"] == "prerequisite"
+    assert events == ["sync", "journal", "rebuild", "promote"]
+
+
+def test_transition_stabilization_is_noop_for_same_assignment(monkeypatch):
+    live_state = {
+        "target_symbol": "current",
+        "active_file": "/tmp/Main.lean",
+        "current_queue_item": {"label": "current"},
+    }
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "current",
+            "active_file": "/tmp/Main.lean",
+        }
+    }
+    monkeypatch.setattr(
+        runner,
+        "_maybe_sync_plan_state",
+        lambda *_args, **_kwargs: pytest.fail("stable assignment must not resync"),
+    )
+
+    assert (
+        runner._stabilize_live_state_before_theorem_transition(
+            [],
+            {},
+            autonomy_state,
+            live_state,
+        )
+        == live_state
+    )
 
 
 def test_startup_negation_migration_reports_repairs(monkeypatch, tmp_path):
@@ -15228,6 +16783,76 @@ def test_manager_incremental_heartbeat_timeout_falls_back_to_file(monkeypatch):
     assert checked == file_verification
     assert tool == "lean_verify"
     assert any(args[0] == "manager-incremental-file-fallback" for args, _ in events)
+
+
+def test_manager_file_fallback_scopes_unrelated_sorry_away_from_clean_helper(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma support_demo : True := by\n"
+        "  trivial\n\n"
+        "theorem demo : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda *_args: {
+            "ok": False,
+            "output": "error: maximum number of heartbeats has been reached",
+            "incremental": {
+                "success": True,
+                "ok": False,
+                "has_errors": True,
+                "timed_out": True,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda _path: {
+            "ok": True,
+            "mode": "file_exact",
+            "has_errors": False,
+            "has_sorry": True,
+            "errors": 0,
+            "warnings": 1,
+            "sorry": 1,
+            "messages": [
+                {
+                    "severity": "warning",
+                    "line": 5,
+                    "message": "declaration uses 'sorry'",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda *_args: ([], ""),
+    )
+
+    checked, tool = runner._manager_check_queue_item(str(active), "support_demo")
+    record = runner._verification_record_from_check(
+        str(active),
+        "support_demo",
+        checked,
+        tool,
+    )
+
+    assert checked["ok"] is True
+    assert checked["verification_scope"] == "target"
+    assert checked["has_sorry"] is False
+    assert checked["sorry"] == 0
+    assert checked["file_sorry_count"] == 1
+    assert checked["axiom_profile_checked"] is True
+    assert record["scope"] == "target:support_demo"
+    assert record["sorry"] == 0
+    assert runner._verification_accepts_theorem_outcome(record, "support_demo") is True
 
 
 def test_manager_incremental_ordinary_rejection_stays_incremental(monkeypatch):
@@ -16526,16 +18151,24 @@ def test_rejected_priority_singleton_is_retired_after_source_rollback(monkeypatc
     assert ready is not None and ready.ready
     args = {
         "path": str(active),
-        "old_string": "theorem demo (s : Nat) : True := by\n  sorry",
-        "new_string": declaration + "\n\ntheorem demo (s : Nat) : True := by\n  sorry",
+        "theorem_id": "demo",
+        "patch": (
+            "*** Begin Patch\n"
+            f"*** Update File: {active}\n"
+            "@@\n"
+            f"+{declaration.replace(chr(10), chr(10) + '+')}\n"
+            "+\n"
+            " theorem demo (s : Nat) : True := by\n"
+            "*** End Patch\n"
+        ),
     }
     agent = _Agent()
 
-    assert runner._managed_pre_tool_call(agent, "patch", args) is None
+    assert runner._managed_pre_tool_call(agent, "apply_verified_patch", args) is None
     active.write_text(declaration + "\n\n" + before, encoding="utf-8")
     verdict = runner._finalize_managed_queue_edit_details(
         agent,
-        "patch",
+        "apply_verified_patch",
         json.dumps({"success": True}),
     )
 
@@ -16643,11 +18276,19 @@ def test_priority_singleton_restore_failure_keeps_candidate_pending(monkeypatch,
     )
     args = {
         "path": str(active),
-        "old_string": "theorem demo (s : Nat) : True := by\n  sorry",
-        "new_string": declaration + "\n\ntheorem demo (s : Nat) : True := by\n  sorry",
+        "theorem_id": "demo",
+        "patch": (
+            "*** Begin Patch\n"
+            f"*** Update File: {active}\n"
+            "@@\n"
+            f"+{declaration.replace(chr(10), chr(10) + '+')}\n"
+            "+\n"
+            " theorem demo (s : Nat) : True := by\n"
+            "*** End Patch\n"
+        ),
     }
     agent = _Agent()
-    assert runner._managed_pre_tool_call(agent, "patch", args) is None
+    assert runner._managed_pre_tool_call(agent, "apply_verified_patch", args) is None
     after = declaration + "\n\n" + before
     active.write_text(after, encoding="utf-8")
     original_write_text = runner.Path.write_text
@@ -16661,7 +18302,7 @@ def test_priority_singleton_restore_failure_keeps_candidate_pending(monkeypatch,
 
     verdict = runner._finalize_managed_queue_edit_details(
         agent,
-        "patch",
+        "apply_verified_patch",
         json.dumps({"success": True}),
     )
 
@@ -18527,9 +20168,15 @@ def test_exact_parent_checked_helper_edit_retires_priority_without_closing_targe
         queue_edit_accepted=True,
         queue_assignment_changed=False,
         queue_helper_candidates=("checked_family",),
+        queue_evidence_helpers=("checked_family",),
     )
 
     assert runner.research_helper_candidate_priority.load(state) is None
+    assert runner.research_helper_candidate_priority.target_consumption_pending(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
     assert "orchestrator_scope_entered" not in state
     assert "theorem demo : True := by\n  sorry" in active.read_text(encoding="utf-8")
     integrated = next(
@@ -19790,7 +21437,8 @@ def test_delegated_search_callback_uses_child_identity_and_lane_local_state(monk
     assert len(route_events) == 1
     assert route_events[0][1]["agent_session_id"] == "planner-lane"
     assert route_events[0][1]["parent_agent_session_id"] == "managed-owner"
-    assert child.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert child.interrupt_messages == []
+    assert child._managed_autonomy_state["search_progress"]["synthesis_grace_pending"] is True
 
 
 def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkeypatch):
@@ -20842,8 +22490,13 @@ def test_verified_startup_preflight_uses_exact_gate_without_capability_probe(mon
     monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "file")
     monkeypatch.setattr(
         runner,
+        "_run_exact_file_verification",
+        lambda path: (True, "lake env lean Main.lean succeeded", ""),
+    )
+    monkeypatch.setattr(
+        runner,
         "_promote_live_state_to_verified_compat",
-        lambda state, autonomy: dict(promoted),
+        lambda state, autonomy, **kwargs: dict(promoted),
     )
     monkeypatch.setattr(
         runner,
@@ -20854,6 +22507,164 @@ def test_verified_startup_preflight_uses_exact_gate_without_capability_probe(mon
     result = runner._verified_startup_preflight([], {}, {})
 
     assert result == promoted
+
+
+def test_verified_startup_preflight_preserves_pending_warning_cleanup(monkeypatch):
+    """A granted cleanup turn must reach startup instead of a stale verified exit."""
+    clean_file = "/tmp/project/Main.lean"
+    pending = {
+        "active_file": clean_file,
+        "declaration_scope": "file",
+        "diagnostics": "Main.lean:2:3: warning: unused variable",
+        "goals": "no goals",
+        "sorry_count": 0,
+        "project_sorry_count": 5,
+        "verification_ok": False,
+        "final_sweep_warning_cleanup_pending": True,
+        "final_sweep_warning_count": 1,
+        "last_verification": {"ok": True},
+    }
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_resolve_active_file", lambda *args, **kwargs: clean_file)
+    monkeypatch.setattr(runner, "_count_sorries", lambda path: 0)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "file")
+    monkeypatch.setattr(
+        runner,
+        "_run_exact_file_verification",
+        lambda path: (
+            True,
+            "lake env lean Main.lean succeeded",
+            (
+                "warning: Main.lean:2:3: unused variable\n"
+                "Note: This linter can be disabled with an option\n"
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified_compat",
+        lambda state, autonomy, **kwargs: (
+            dict(pending)
+            if "warning: Main.lean:2:3: unused variable" in state["diagnostics"]
+            else pytest.fail("startup preflight discarded exact verification warnings")
+        ),
+    )
+
+    result = runner._verified_startup_preflight([], {}, {})
+
+    assert result == pending
+
+
+def test_revalidation_uses_provider_free_exact_scope_without_capability_probe(monkeypatch):
+    """Terminal verification must not start LSP or MCP after writers quiesce."""
+    expected = {
+        "active_file": "/tmp/project/Main.lean",
+        "declaration_scope": "file",
+        "verification_ok": True,
+    }
+    observed: list[dict[str, object]] = []
+
+    def exact_state(history, checkpoint, autonomy, *, expected_live_state=None):
+        observed.append(dict(expected_live_state or {}))
+        return dict(expected)
+
+    monkeypatch.setattr(runner, "_provider_free_exact_scope_state", exact_state)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: pytest.fail("terminal revalidation started capability services"),
+    )
+
+    result = runner._revalidate_verified_scope_after_quiescence(
+        [],
+        {},
+        {},
+        expected_live_state=expected,
+    )
+
+    assert result == expected
+    assert observed == [expected]
+
+
+def test_provider_free_exact_scope_reuses_single_lean_result(monkeypatch):
+    """The fast gate must not compile the same file twice in one verification pass."""
+    clean_file = "/tmp/project/Main.lean"
+    exact_calls: list[str] = []
+    focused_results: list[tuple[bool, str] | None] = []
+
+    monkeypatch.setattr(runner, "_resolve_active_file", lambda *args, **kwargs: clean_file)
+    monkeypatch.setattr(runner, "_count_sorries", lambda path: 0)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "file")
+    monkeypatch.setattr(
+        runner,
+        "_run_exact_file_verification",
+        lambda path: (
+            exact_calls.append(path) or True,
+            "lake env lean Main.lean succeeded",
+            "",
+        ),
+    )
+
+    def promote(state, autonomy, *, focused_verification=None):
+        focused_results.append(focused_verification)
+        return dict(state, verification_ok=True)
+
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified_compat", promote)
+
+    result = runner._provider_free_exact_scope_state([], {}, {})
+
+    assert result["verification_ok"] is True
+    assert exact_calls == [clean_file]
+    assert focused_results == [(True, "lake env lean Main.lean succeeded")]
+
+
+def test_active_file_warning_summary_parses_plain_lake_output():
+    count, summary = runner._active_file_warning_summary(
+        {
+            "diagnostics": (
+                "⚠ [12/12] Replayed Demo.Main\n"
+                "warning: Demo/Main.lean:7:4: try 'simp' instead of 'simpa'\n"
+                "\nNote: This linter can be disabled with an option\n"
+                "Demo/Main.lean:11:2: warning: unused variable `h`\n"
+                "info: Demo/Main.lean:11:2: Try this: simp\n"
+            )
+        }
+    )
+
+    assert count == 2
+    assert "line 7: try 'simp' instead of 'simpa'" in summary
+    assert "line 11: unused variable `h`" in summary
+
+
+def test_start_final_sweep_warning_cleanup_turn_is_one_shot(monkeypatch):
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    autonomy_state: dict[str, object] = {}
+    live_state = {
+        "active_file": "/tmp/project/Main.lean",
+        "final_sweep_warning_cleanup_pending": True,
+        "final_sweep_warning_count": 4,
+    }
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+
+    assert runner._start_final_sweep_warning_cleanup_turn(autonomy_state, live_state) is True
+    assert runner._start_final_sweep_warning_cleanup_turn(autonomy_state, live_state) is False
+
+    assert autonomy_state["final_sweep_cleanup_turn_started"] is True
+    assert recorded == [
+        (
+            "final-sweep-warning-cleanup-started",
+            "Started final-sweep warning cleanup model turn",
+            {
+                "active_file": "/tmp/project/Main.lean",
+                "warning_count": 4,
+            },
+        )
+    ]
 
 
 def test_background_control_loop_handles_keyboard_interrupt_cleanly(monkeypatch):
@@ -21593,6 +23404,38 @@ def test_declaration_ranges_do_not_include_next_declaration_doc_comment(tmp_path
     assert first["end_line"] == 2
     assert "Doc comment for the next theorem" not in first["text"]
     assert runner._diagnostic_reason_for_entry(first, [4]) == ""
+
+
+def test_declaration_work_queue_keeps_gap_diagnostic_file_scoped(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem helper : True := by",
+                "  trivial",
+                "",
+                "/-- Attached target documentation. -/",
+                "theorem result : True := by",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    queue = runner._declaration_work_queue(
+        str(active),
+        f"{active}:4:1: error: deterministic timeout at whnf",
+        scope="file",
+    )
+
+    assert queue == [
+        {
+            "file": str(active),
+            "label": "[file-level blocker]",
+            "kind": "",
+            "reasons": ["diagnostics unresolved"],
+        }
+    ]
 
 
 def test_declaration_work_queue_scans_project_when_scope_is_project(monkeypatch, tmp_path):
@@ -22542,6 +24385,9 @@ def test_queue_assignment_block_mentions_only_assigned_theorem():
     assert "current blocker: type mismatch in `simpa using h`" in text
     assert "helper decomposition is a standard strategy" in text
     assert "do not start solving unrelated future queue items" in text
+    assert "a verified helper is a checkpoint, not a turn-completion condition" in text
+    assert "do not end an unresolved turn merely because one safe edit succeeded" in text
+    assert "after a meaningful edit, stop" not in text
     assert "Verification for this queue item:" in text
     assert "`lake env lean ProveDemo/RealTheorems-homework.lean`" in text
     assert "do not treat `lake build`, `grep`, `head`, or truncated output" in text
@@ -24910,6 +26756,46 @@ def test_promote_live_state_accepts_warning_only_final_file_sweep(monkeypatch, t
     assert runner._queue_needs_final_file_sweep(promoted) is False
 
 
+def test_promote_live_state_accepts_unnecessary_simpa_without_model_cleanup(monkeypatch, tmp_path):
+    """A cosmetic linter recommendation cannot reopen a proved file."""
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda _root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (
+            True,
+            "lake env lean Demo/Main.lean succeeded",
+        ),
+    )
+    autonomy_state: dict[str, object] = {}
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": (
+                f"{active}:2:3: warning: try 'simp' instead of 'simpa'\n"
+                "Note: This linter can be disabled with an option"
+            ),
+            "goals": "no goals",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert promoted["verification_ok"] is True
+    assert promoted["warning_cleanup_status"] == "accepted"
+    assert promoted["warning_cleanup_attempted"] is False
+    assert "final_sweep_warning_cleanup_pending" not in promoted
+    assert "final_sweep_baseline" not in autonomy_state
+
+
 def test_live_state_is_verified_blocks_when_warning_cleanup_pending():
     """Regression: in a multi-file project workflow, the project-prove
     manager calls ``_advance_project_prove_manager_if_needed`` after every
@@ -25831,6 +27717,40 @@ def test_explicit_verification_build_uses_lake_env_lean_for_non_module_file(monk
     assert captured["cwd"] == str(project)
     assert captured["mode"] == "file_exact"
     assert status == "lake build Demo.RealTheorems-homework succeeded"
+
+
+def test_explicit_verification_build_uses_exact_gate_for_importable_module(monkeypatch, tmp_path):
+    """A valid module name must not turn a file-scoped gate into ``lake build``."""
+    project = tmp_path / "Demo"
+    module_dir = project / "IMO2026"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "P6.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        runner,
+        "lean_verify",
+        lambda target="", cwd="", mode="project": (
+            captured.update({"target": target, "cwd": cwd, "mode": mode})
+            or type(
+                "_Result",
+                (),
+                {
+                    "ok": True,
+                    "command": "lake env lean IMO2026/P6.lean",
+                    "output": "",
+                },
+            )()
+        ),
+    )
+
+    ok, status = runner._run_explicit_verification_build(str(active), full_project=False)
+
+    assert ok is True
+    assert captured["mode"] == "file_exact"
+    assert status == "lake env lean IMO2026/P6.lean succeeded"
 
 
 def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_path):

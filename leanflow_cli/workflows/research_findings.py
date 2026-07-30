@@ -17,7 +17,7 @@ from leanflow_cli.workflows import (
     research_delivery_gate,
     research_route_context,
 )
-from leanflow_cli.workflows.dispatch_models import LedgerEntry
+from leanflow_cli.workflows.dispatch_models import SOURCE_REVISION_INPUT_KEY, LedgerEntry
 from leanflow_cli.workflows.dispatch_service import (
     CHECKED_HELPER_STATUS,
     CHECKED_HELPERS_KEY,
@@ -80,6 +80,7 @@ _ADMINISTRATIVE_FINDING_KEYS = frozenset(
         "parent_recheck_required",
     }
 )
+_CHECKED_HELPER_ROUTE_DISPOSITIONS = frozenset({"advance_current_route", "evidence_only"})
 
 
 @dataclass(frozen=True)
@@ -938,6 +939,9 @@ def _finding_record_base(
             "objective": entry.spec.objective,
             "target_symbol": str(entry.spec.inputs.get("target_symbol", "") or ""),
             "active_file": str(entry.spec.inputs.get("active_file", "") or ""),
+            "source_revision_sha256": str(
+                entry.spec.inputs.get(SOURCE_REVISION_INPUT_KEY, "") or ""
+            ),
             "deliverable": deliverable,
             "artifact_paths": _finding_artifact_paths(result, deliverable),
             "plan_delta": list(result.get("plan_delta") or []),
@@ -1012,6 +1016,7 @@ _MATERIALIZED_EVIDENCE_KEYS = (
     "objective",
     "target_symbol",
     "active_file",
+    "source_revision_sha256",
     "deliverable",
     "artifact_paths",
     "plan_delta",
@@ -1288,6 +1293,7 @@ def recover_finding_provenance(summary: dict[str, Any]) -> int:
             "target_symbol": str(inputs.get("target_symbol", "") or ""),
             "active_file": str(inputs.get("active_file", "") or ""),
             "campaign_id": _campaign_id_from_spec(spec),
+            "source_revision_sha256": str(inputs.get(SOURCE_REVISION_INPUT_KEY, "") or ""),
         }
         for key, value in additions.items():
             if value and not str(finding.get(key, "") or ""):
@@ -2846,6 +2852,15 @@ def _partial_coverage_without_completion(finding: Mapping[str, Any]) -> bool:
 
 def foreground_use_reason(finding: Mapping[str, Any]) -> str:
     """Return the deterministic reason governing foreground actionability."""
+    expected_revision = str(finding.get("source_revision_sha256", "") or "").strip()
+    active_file = str(finding.get("active_file", "") or "").strip()
+    if expected_revision and active_file:
+        try:
+            current_revision = sha256(Path(active_file).read_bytes()).hexdigest()
+        except OSError:
+            current_revision = ""
+        if current_revision and current_revision != expected_revision:
+            return "stale_active_file_revision"
     novelty = finding.get("semantic_novelty")
     if isinstance(novelty, Mapping):
         try:
@@ -2856,6 +2871,27 @@ def foreground_use_reason(finding: Mapping[str, Any]) -> str:
             return "stale_semantic_novelty_version"
     if isinstance(novelty, Mapping) and novelty.get("progress_anchor_eligible") is False:
         return str(novelty.get("progress_anchor_reason", "") or "semantic_progress_ineligible")
+    deliverable = finding.get("deliverable")
+    if isinstance(deliverable, Mapping) and canonical_checked_helpers(finding):
+        disposition = str(deliverable.get("checked_helper_route_disposition", "") or "").strip()
+        if disposition and disposition not in _CHECKED_HELPER_ROUTE_DISPOSITIONS:
+            return "malformed_checked_helper_route_disposition"
+        if disposition == "evidence_only":
+            return "checked_helper_declared_evidence_only"
+        # Older worker reports predate the structured disposition. Preserve
+        # their ordinary behavior except for an explicit, unambiguous statement
+        # that the captured helper does not advance the assigned target.
+        interpretation = str(deliverable.get("interpretation", "") or "").casefold()
+        if not disposition and any(
+            phrase in interpretation
+            for phrase in (
+                "does not advance",
+                "doesn't advance",
+                "does not contribute to",
+                "not needed by the current route",
+            )
+        ):
+            return "legacy_checked_helper_explicitly_nonadvancing"
     if _declared_finite_evidence_without_target_completion(finding):
         return "declared_finite_evidence_only"
     if _partial_coverage_without_completion(finding):
@@ -2873,6 +2909,14 @@ def foreground_use_role(finding: Mapping[str, Any]) -> str:
     designed to prevent. Legacy findings without this metadata retain their
     historical actionable behavior.
     """
+    use_reason = foreground_use_reason(finding)
+    if use_reason in {
+        "stale_active_file_revision",
+        "checked_helper_declared_evidence_only",
+        "legacy_checked_helper_explicitly_nonadvancing",
+        "malformed_checked_helper_route_disposition",
+    }:
+        return "evidence_only"
     novelty = finding.get("semantic_novelty")
     if isinstance(novelty, Mapping):
         try:

@@ -67,6 +67,58 @@ def test_segment_file_keeps_doc_comment_with_declaration():
     assert segments[1].start_line == 7
 
 
+def test_segment_file_attaches_set_option_wrapper_to_private_theorem():
+    header, segments = li._segment_file(
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "theorem first : True := by",
+                "  trivial",
+                "",
+                "set_option maxRecDepth 10000 in",
+                "private theorem wrapped : True := by",
+                "  trivial",
+                "",
+                "theorem last : True := by",
+                "  trivial",
+                "",
+            ]
+        )
+    )
+
+    assert header == "import Mathlib\n"
+    assert [segment.name for segment in segments] == ["first", "wrapped", "last"]
+    assert "set_option" not in segments[0].text
+    assert segments[1].text.startswith("set_option maxRecDepth 10000 in")
+
+
+def test_segment_file_attaches_variable_wrapper_to_scoped_declaration():
+    header, segments = li._segment_file(
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "theorem first : True := by",
+                "  trivial",
+                "",
+                "variable (P : Type) in",
+                "abbrev Scoped := P",
+                "",
+                "theorem last : True := by",
+                "  trivial",
+                "",
+            ]
+        )
+    )
+
+    assert header == "import Mathlib\n"
+    assert [segment.name for segment in segments] == ["first", "Scoped", "last"]
+    assert "variable (P : Type) in" not in segments[0].text
+    assert segments[1].text.startswith("variable (P : Type) in")
+    assert segments[1].declaration_start > segments[1].start
+
+
 def test_segment_file_ignores_declaration_keywords_inside_comments_and_strings():
     header, segments = li._segment_file(
         "\n".join(
@@ -248,6 +300,66 @@ def test_check_target_delegates_to_leanprobe_and_preserves_leanflow_action(monke
             },
         )
     ]
+
+
+def test_check_target_uses_canonical_fallback_after_prefix_build_failure(monkeypatch, tmp_path):
+    project, target = _write_project(
+        tmp_path,
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "theorem prior : True := by",
+                "  trivial",
+                "",
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+            ]
+        ),
+    )
+    checked_sources = []
+
+    class _FakeProbe:
+        def check_target(self, *args, **kwargs):
+            return {
+                "success": False,
+                "ok": False,
+                "error_code": "prior_decl_failed",
+                "error": "failed to build env before target at prior",
+            }
+
+    monkeypatch.setattr(li, "_probe", lambda: _FakeProbe())
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    def exact_check(source, **kwargs):
+        checked_sources.append(source)
+        return {
+            "success": True,
+            "ok": True,
+            "output": "",
+            "messages": [],
+        }
+
+    monkeypatch.setattr(li, "lean_ephemeral_source_check", exact_check)
+
+    payload = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+    )
+
+    assert checked_sources
+    assert "theorem demo : True := by\n  trivial" in checked_sources[0]
+    assert payload["success"] is True
+    assert payload["ok"] is True
+    assert payload["canonical_fallback"] is True
+    assert payload["backend"] == "lean_exact_ephemeral"
+    assert payload["incremental_fallback_error_code"] == "prior_decl_failed"
 
 
 def test_check_target_can_return_complete_inline_axiom_profile(monkeypatch, tmp_path):
@@ -527,7 +639,7 @@ def test_failed_scratch_close_retains_project_slot_truthfully(monkeypatch, tmp_p
     ("requested_timeout_s", "expected_timeout_s", "adjusted"),
     [
         (60, li.DISPATCH_WORKER_INCREMENTAL_TIMEOUT_FLOOR_S, True),
-        (600, 600, False),
+        (1200, 1200, False),
     ],
 )
 def test_dispatch_worker_applies_cold_start_timeout_floor(
@@ -579,7 +691,7 @@ def test_dispatch_worker_applies_cold_start_timeout_floor(
     ("requested_timeout_s", "expected_timeout_s", "adjusted"),
     [
         (60, li.RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S, True),
-        (600, 600, False),
+        (1200, 1200, False),
     ],
 )
 def test_foreground_research_applies_cold_start_timeout_floor(
@@ -1135,6 +1247,52 @@ def test_check_target_rejects_placeholder_before_starting_lean(monkeypatch, tmp_
     assert payload["leanflow_timing"]["probe_call_s"] == 0.0
 
 
+def test_check_target_can_elaborate_placeholder_template_for_decomposition(monkeypatch, tmp_path):
+    """Let internal decomposition parse templates without weakening acceptance."""
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  sorry\n",
+    )
+    calls: list[dict[str, object]] = []
+
+    class FakeProbe:
+        def check_target(self, *args, **kwargs):
+            kwargs["args"] = args
+            calls.append(kwargs)
+            return {
+                "success": True,
+                "ok": False,
+                "errors": 0,
+                "sorry": 1,
+                "tool": "lean_probe",
+                "action": "check_target",
+                "file": str(target.resolve()),
+                "target": "demo",
+            }
+
+    monkeypatch.setattr(li, "_probe", FakeProbe)
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        replacement="theorem demo : True := by\n  sorry",
+        allow_placeholders_for_elaboration=True,
+        timeout_s=120,
+    )
+
+    assert len(calls) == 1
+    assert payload["success"] is True
+    assert payload["ok"] is False
+    assert payload["replacement_matches_target"] is True
+    assert payload["verification_scope"] == "target_candidate"
+
+
 def test_check_target_placeholder_scan_ignores_comments_and_strings(monkeypatch, tmp_path):
     """Preserve valid candidates that only mention placeholder words as data."""
     project, target = _write_project(
@@ -1328,3 +1486,34 @@ def test_normalize_payload_only_bounds_feedback(monkeypatch):
     # Non-feedback actions are never trimmed.
     check = li._normalize_payload({"ok": False, "tactics": list(big)}, "check_target")
     assert "tactics_truncated" not in check
+
+
+def test_failed_helper_check_bounds_replayed_diagnostics():
+    import json
+
+    payload = {
+        "ok": False,
+        "action": "check_helper",
+        "messages": [{"severity": "error", "message": "m" * 5000} for _ in range(20)],
+        "tactics": [{"goals": "g" * 3000, "proof_state": "p" * 3000} for _ in range(30)],
+        "feedback_lean": "source\n" * 8000,
+        "output": "output\n" * 2000,
+    }
+
+    bounded = li._bound_failed_check_payload(payload, max_chars=12_000)
+
+    assert len(json.dumps(bounded, ensure_ascii=False)) <= 12_000
+    assert bounded["diagnostic_payload_truncated"] is True
+    assert bounded["messages_truncated"] == {"kept": 4, "total": 20}
+    assert bounded["tactics_truncated"]["total"] == 30
+    assert "diagnostic text truncated" in bounded["feedback_lean"]
+
+
+def test_successful_check_keeps_complete_evidence():
+    payload = {
+        "ok": True,
+        "action": "check_helper",
+        "feedback_lean": "verified helper source",
+    }
+
+    assert li._bound_failed_check_payload(payload, max_chars=10) == payload

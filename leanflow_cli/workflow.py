@@ -23,6 +23,7 @@ from leanflow_cli.formalization.formalization_documents import (
     ensure_formalization_blueprint_skill,
     prepare_formalization_document_context,
 )
+from leanflow_cli.runtime.env_loader import NATIVE_AUXILIARY_PROVIDER_ENV
 from leanflow_cli.runtime.runtime_provider import resolve_runtime_provider
 from leanflow_cli.runtime.skill_core import default_workflow_skill
 from leanflow_cli.workflows.plan_state import plan_state_enabled, plan_state_paths
@@ -552,6 +553,11 @@ def resolve_workflow_request(
             "LEANFLOW_NATIVE_ACTIVE_FILE": normalized_active_file,
         }
     )
+    explicit_provider = str(requested_provider or workflow.provider_override or "").strip()
+    if explicit_provider:
+        # An explicit workflow provider is an all-lanes user choice. Preserve
+        # it across dotenv reloads in foreground and dispatch-worker processes.
+        child_env[NATIVE_AUXILIARY_PROVIDER_ENV] = explicit_provider
     if workflow.research_mode:
         child_env["LEANFLOW_RESEARCH_MODE"] = "1"
         apply_research_profile_env(

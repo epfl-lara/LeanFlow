@@ -1,10 +1,4 @@
-"""Typed data + error classes for the formalization-document layer.
-
-Leaf module (frozen dataclasses + the FormalizationDocumentError exception). Extracted from
-formalization_documents.py so the document module and the TeX-discovery leaf share one set of
-definitions without an import cycle; re-exported from formalization_documents for the historical
-`from leanflow_cli.formalization.formalization_documents import FormalizationDocument*` surface.
-"""
+"""Define immutable data and errors for document formalization."""
 
 from __future__ import annotations
 

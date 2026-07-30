@@ -173,7 +173,16 @@ def test_planner_synthesis_uses_pinned_timeout(enabled, monkeypatch):
 
     assert outcome.ok
     assert synth_calls[0]["task"] == planner_phase.PLANNER_SYNTHESIS_TASK
-    assert synth_calls[0]["timeout_s"] == planner_phase.PLANNER_SYNTHESIS_TIMEOUT_S == 900
+    assert synth_calls[0]["timeout_s"] == planner_phase.PLANNER_SYNTHESIS_TIMEOUT_S == 300
+
+
+def test_planner_synthesis_timeout_is_configurable_and_bounded(enabled, monkeypatch):
+    monkeypatch.setenv("LEANFLOW_PLANNER_SYNTHESIS_TIMEOUT_S", "480")
+    assert planner_phase.planner_synthesis_timeout_s() == 480
+    monkeypatch.setenv("LEANFLOW_PLANNER_SYNTHESIS_TIMEOUT_S", "5000")
+    assert planner_phase.planner_synthesis_timeout_s() == 600
+    monkeypatch.setenv("LEANFLOW_PLANNER_SYNTHESIS_TIMEOUT_S", "1")
+    assert planner_phase.planner_synthesis_timeout_s() == 30
 
 
 def test_false_affine_synthesis_is_rejected_before_any_planner_state_mutation(enabled, monkeypatch):
@@ -888,6 +897,35 @@ def test_lane_and_synthesis_prompts_embed_phase_fragments(enabled, monkeypatch):
     assert "[PHASE SPEC: phase-draft]" in synth_prompt
 
 
+def test_synthesis_preserves_prior_exact_target_evidence(enabled, monkeypatch):
+    """A later plan turn must receive the full recovered construction."""
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    synth_calls = _fake_synth(monkeypatch)
+    _fake_place(monkeypatch)
+
+    planner_phase.run_planner_phase(
+        goal="g",
+        target_symbol="demo",
+        active_file="Demo.lean",
+        agent=object(),
+        prior_evidence=(
+            {
+                "source": "lean_reasoning_help",
+                "text": (
+                    "Use adjacent subset sums, cancel the intersection, "
+                    "then common-refine the two disjoint subfamilies."
+                ),
+            },
+        ),
+    )
+
+    prompt = synth_calls[0]["prompt"]
+    assert "Previously recovered exact-target evidence" in prompt
+    assert "adjacent subset sums" in prompt
+    assert "common-refine the two disjoint subfamilies" in prompt
+    assert "do not replace it with a vaguer rediscovery plan" in prompt
+
+
 def test_lane_prompts_are_scoped_to_the_exact_active_assignment(enabled, monkeypatch):
     """Planner fan-out must not silently fall back to the whole-file prompt."""
     delegate_calls = _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
@@ -934,6 +972,33 @@ def test_lane_prompts_are_scoped_to_the_exact_active_assignment(enabled, monkeyp
     assert "erdos_242_residual_mod_seven_eq_five" in synth_prompt
     assert "168 * (k / 7) + 121" in synth_prompt
     assert '"search_count":12' in synth_prompt
+
+
+def test_clean_room_web_lane_forbids_repository_solutions(enabled, monkeypatch):
+    monkeypatch.setenv("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1")
+    monkeypatch.setenv("LEANFLOW_DISABLE_SOLUTION_RESEARCH", "1")
+    monkeypatch.setenv(
+        "LEANFLOW_CLEAN_ROOM_TASK_LABELS",
+        "IMO 2026 Problem 6|IMO2026 P6",
+    )
+    delegate_calls = _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch)
+    _fake_place(monkeypatch)
+
+    planner_phase.run_planner_phase(
+        goal="/prove IMO2026/P6.lean",
+        target_symbol="result",
+        active_file="IMO2026/P6.lean",
+        declaration_slice="theorem result : True := by sorry",
+        agent=object(),
+    )
+
+    web_prompt = delegate_calls[0]["tasks"][0]["goal"]
+    assert "clean-room run" in web_prompt
+    assert "do not search, fetch, clone, or cite source-code repositories" in web_prompt
+    assert "do not search for, fetch, cite, or use any existing or official solution" in web_prompt
+    assert "IMO 2026 Problem 6" in web_prompt
+    assert "Clone promising proof developments" not in web_prompt
 
 
 def test_sibling_file_statements_defer_to_conjectures(enabled, monkeypatch):

@@ -334,6 +334,210 @@ def test_capacity_deferred_plan_keeps_fresh_selection_for_exact_replay(
     assert not completed_campaign.get("inflight_route")
 
 
+def test_timed_out_plan_retires_fresh_selection_for_new_route(enabled, monkeypatch, tmp_path):
+    """A bounded synthesis timeout must not replay the same planner forever."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "fresh-plan-timeout")
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(runner.planner_phase, "planner_enabled", lambda: True)
+    events = _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = _autonomy_state(str(active))
+    runner.campaign_epoch.record_route_decision(
+        state,
+        route="direct-prove",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    runner.campaign_epoch.roll_epoch(
+        state,
+        reason="context-pressure",
+        cycle=1,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    monkeypatch.setattr(
+        runner.orchestrator_floor,
+        "orchestrator_route",
+        lambda _ctx: OrchestratorRoute(route="plan", reason="fresh planner route"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_planner_phase_with_parent_maintenance",
+        lambda *_args, **_kwargs: runner.planner_phase.PlannerOutcome(
+            ok=False,
+            reason="synthesizer unavailable (timeout)",
+            synthesis_status="timeout",
+        ),
+    )
+
+    selected = runner._orchestrator_consult("scope-entry", state, {})
+    assert selected is not None and selected.route == "plan"
+    assert runner._apply_orchestrator_route_with_completion(selected, [], state, {}) == "continue"
+
+    assert runner.campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY not in state
+    campaign = runner.campaign_epoch.campaign_snapshot()
+    assert campaign["epoch_route_refresh"]["required"] is False
+    execution = runner._current_orchestrator_route_execution(state)
+    assert execution is not None and execution.completed
+    assert execution.evidence_kind == "plan-route-obstacle"
+    target_signature = runner.research_helper_candidate_priority.target_signature_sha256(
+        str(active),
+        "demo",
+    )
+    assert runner.route_execution.planner_terminal_obstacle_blocks_request(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+        target_signature_sha256=target_signature,
+    )
+    resumed_state: dict[str, Any] = {}
+    runner.campaign_epoch.rehydrate_campaign(resumed_state)
+    assert runner.route_execution.planner_terminal_obstacle_blocks_request(
+        resumed_state,
+        target_symbol="demo",
+        active_file=str(active),
+        target_signature_sha256=target_signature,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_planner_phase_with_parent_maintenance",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an unchanged target must not launch the cooled-down planner"
+        ),
+    )
+    assert (
+        runner._orchestrator_apply_route(
+            OrchestratorRoute(route="plan", reason="replayed planner request"),
+            [],
+            state,
+            {},
+            agent=None,
+        )
+        == "continue"
+    )
+    assert any(event[0] == "planner-route-suppressed" for event, _details in events)
+    active.write_text(
+        "private lemma helper : True := by trivial\n\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    assert (
+        runner.research_helper_candidate_priority.target_signature_sha256(
+            str(active),
+            "demo",
+        )
+        == target_signature
+    )
+    assert runner.route_execution.planner_terminal_obstacle_blocks_request(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+        target_signature_sha256=target_signature,
+    )
+    runner._record_orchestrator_route_execution(
+        state,
+        runner.route_execution.RouteExecution.recorded(
+            route="decompose",
+            target_symbol="demo",
+            active_file=str(active),
+            outcome="helper integrated",
+            evidence_kind="decomposition-helper",
+        ),
+    )
+    assert runner.route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY not in state
+    assert (
+        runner.campaign_epoch.PLANNER_TERMINAL_OBSTACLE_FIELD
+        not in runner.campaign_epoch.campaign_snapshot()
+    )
+    assert any(event[0] == "planner-route-obstacle" for event, _details in events)
+
+
+def test_completed_plan_requires_target_edit_before_replanning(enabled, monkeypatch, tmp_path):
+    """Keep concrete planner advice active across helper-only and route-only progress."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "completed-plan-advice")
+    monkeypatch.setattr(runner.planner_phase, "planner_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = _autonomy_state(str(active))
+    state["_orchestrator_last_ctx"] = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+    }
+    monkeypatch.setattr(
+        runner,
+        "_run_planner_phase_with_parent_maintenance",
+        lambda *_args, **_kwargs: runner.planner_phase.PlannerOutcome(
+            ok=True,
+            reason="use the checked tangent route",
+            synthesis_status="completed",
+        ),
+    )
+
+    assert (
+        runner._orchestrator_apply_route(
+            OrchestratorRoute(route="plan", reason="request exact advice"),
+            [],
+            state,
+            {},
+            agent=None,
+        )
+        == "continue"
+    )
+    marker = dict(state[runner.route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY])
+    assert marker["outcome"] == "planner-completed"
+    assert marker["target_declaration_sha256"] == runner._target_declaration_sha256(
+        str(active),
+        "demo",
+    )
+    resumed_state: dict[str, Any] = {}
+    runner.campaign_epoch.rehydrate_campaign(resumed_state)
+    assert resumed_state[runner.route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY] == marker
+
+    active.write_text(
+        "private lemma helper : True := by trivial\n\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    signature = runner.research_helper_candidate_priority.target_signature_sha256(
+        str(active),
+        "demo",
+    )
+    declaration = runner._target_declaration_sha256(str(active), "demo")
+    assert runner.route_execution.planner_terminal_obstacle_blocks_request(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+        target_signature_sha256=signature,
+        target_declaration_sha256=declaration,
+    )
+    runner._record_orchestrator_route_execution(
+        state,
+        runner.route_execution.RouteExecution.recorded(
+            route="decompose",
+            target_symbol="demo",
+            active_file=str(active),
+            outcome="helper integrated",
+            evidence_kind="decomposition-helper",
+        ),
+    )
+    assert state[runner.route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY] == marker
+
+    active.write_text(
+        "private lemma helper : True := by trivial\n\n"
+        "theorem demo : True := by\n  have h : True := trivial\n  sorry\n",
+        encoding="utf-8",
+    )
+    assert runner.route_execution.clear_planner_terminal_obstacle_after_target_change(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+        target_signature_sha256=signature,
+        target_declaration_sha256=runner._target_declaration_sha256(str(active), "demo"),
+    )
+
+
 def test_hydrated_fresh_selection_is_event_due_without_volatile_replay_token(
     enabled, monkeypatch, tmp_path
 ):
@@ -2083,10 +2287,10 @@ def test_spent_scratch_budget_still_recovers_verified_source_negation(
     assert "terminal_outcome" not in state
 
 
-def test_spent_scratch_budget_without_source_promotion_defers_nonterminally(
+def test_spent_scratch_budget_without_source_promotion_retires_route_nonterminally(
     enabled, monkeypatch, tmp_path
 ):
-    """Evidence routing remains open when neither promotion nor scratch is available."""
+    """An exhausted evidence route yields to a fresh strategy without terminating."""
     monkeypatch.setenv("LEANFLOW_NEGATION_PROBE_BUDGET", "1")
     _events(monkeypatch)
     active = tmp_path / "Demo.lean"
@@ -2140,10 +2344,11 @@ def test_spent_scratch_budget_without_source_promotion_defers_nonterminally(
 
     assert context.negation_probe_budget_remaining == 0
     assert route.route == "negate"
-    assert runner._orchestrator_apply_route(route, [], state, {}) == "deferred"
+    assert runner._orchestrator_apply_route(route, [], state, {}) == "continue"
     execution = state["_negation_route_execution"]
-    assert execution["status"] == "deferred"
+    assert execution["status"] == "completed"
     assert execution["outcome"] == "budget_exhausted"
+    assert execution["evidence_kind"] == "negate-route-obstacle"
     assert "terminal_outcome" not in state
 
 

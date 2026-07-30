@@ -84,17 +84,6 @@ Avoid:
 
 Do not accept a refactor on aesthetics alone. The resulting proof must still verify cleanly.
 
-## Managed Mode (planned)
-
-A managed mode is specced (§6.9): the golf queue as its own selection
-bucket, kernel-gate acceptance per declaration, and a measured
-`{before_chars, after_chars, before_elapsed_s, after_elapsed_s}` metrics
-artifact. The substrate (`golf_mode.py`, the `golf candidate` queue
-bucket) is in the tree and tested; the runner wiring lands as a
-dedicated follow-on once its queue-lifecycle semantics (drain-to-done
-instead of exit-on-verified, baseline capture at assignment, metrics on
-classified acceptance) are built and reviewed.
-
 ## Stop Conditions
 
 Stop when:

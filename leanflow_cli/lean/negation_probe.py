@@ -1,4 +1,4 @@
-"""Negation feasibility probe (Phase 3, specs Part II §5).
+"""Build and evaluate bounded Lean negation probes without modifying project files.
 
 The Hilbert-loop feasibility engine's Lean-facing leaf: mechanically build
 ``¬P`` for a stuck declaration, run the `plausible` counterexample pre-probe
@@ -7,7 +7,7 @@ proof), then try a cheap tactic ladder on the negation in LeanProbe scratch.
 ``negation_proved`` requires ok=true AND ``#print axioms`` inside the
 standard set — and even then a scratch verdict is only routing evidence:
 flipping a project node to ``false`` requires promotion through the
-authoritative gate (roadmap §4.11); the probe never writes a project file.
+authoritative verification gate; the probe never writes a project file.
 """
 
 from __future__ import annotations
@@ -305,7 +305,7 @@ def run_negation_attempt(
 
 
 # ---------------------------------------------------------------------------
-# Pipeline: budgeted probe with recorded outcomes (specs §5 d/e)
+# Budgeted probe pipeline with recorded outcomes.
 # ---------------------------------------------------------------------------
 
 
@@ -574,7 +574,7 @@ def run_negation_probe(
     not count); outcomes are recorded in summary.json.negation_probes and the
     outcomes stream. A ``negation_proved`` result carries a plan_delta
     PROPOSAL — flipping the node to false still requires promotion through
-    the authoritative gate (§4.11); the probe itself never writes a project
+    the authoritative gate; the probe itself never writes a project
     file and is never an acceptance authority.
     """
     import uuid
@@ -745,7 +745,7 @@ def run_negation_probe(
         "probe_entry": entry,
     }
     if negation.get("verdict") == "negation_proved":
-        # Proposal only: §4.11 promotion through the gate flips the node.
+        # Proposal only: promotion through the gate flips the node.
         result["plan_delta"] = [
             {
                 "node_id": node_id_for(theorem_id, file_path),

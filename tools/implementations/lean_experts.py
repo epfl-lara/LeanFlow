@@ -35,6 +35,8 @@ from leanflow_cli.cli.expert_help import (
     run_command_expert_help,
 )
 from leanflow_cli.lean.lean_decomposition_shape import inspect_helper_skeleton
+from leanflow_cli.lean.lean_ephemeral import lean_ephemeral_source_check
+from leanflow_cli.lean.lean_helper_ephemeral import build_integrated_helper_source
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
 from leanflow_cli.lean.lean_parsing import _find_assignment_marker_for_statement
 from tools.utilities import (
@@ -48,7 +50,7 @@ from tools.utilities.advisor_persistence import (
     guard_reasoning_advice,
 )
 
-LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S = 1200
+LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S = 360
 LEAN_REASONING_HELP_MIN_TIMEOUT_S = 10
 LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S = LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S
 LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S = LEAN_REASONING_HELP_MIN_TIMEOUT_S
@@ -437,6 +439,123 @@ def _validation_diagnostics(payload: dict[str, Any]) -> str:
     return "\n".join(messages)[:2000]
 
 
+def _incremental_environment_failure(payload: dict[str, Any] | None) -> bool:
+    """Return whether LeanProbe failed before checking the replacement."""
+    if not payload:
+        return False
+    error_code = str(payload.get("error_code", "") or "").strip().lower()
+    text = " ".join(
+        str(payload.get(key, "") or "") for key in ("error", "output", "message", "hint")
+    ).lower()
+    return bool(
+        error_code in {"header_failed", "prior_decl_failed"}
+        or "failed to build env before target" in text
+    )
+
+
+def _canonical_skeleton_fallback(
+    *,
+    helper_source: str,
+    file_path: str,
+    theorem_id: str,
+    cwd: str,
+    timeout_s: int,
+) -> dict[str, Any]:
+    """Check helper skeletons in an exact-project full-source harness.
+
+    LeanProbe can occasionally segment a valid source file but fail while
+    rebuilding its prefix environment. Insert the proposed helpers before the
+    unchanged target in a system-temporary full-source copy and ask canonical
+    ``lake env lean`` instead. A completed Lean elaboration failure is reported
+    as a valid check result with errors, while infrastructure failures remain
+    fail-closed.
+    """
+    root = Path(cwd or ".").expanduser().resolve()
+    target = Path(file_path).expanduser()
+    if not target.is_absolute():
+        target = root / target
+    try:
+        source = target.resolve().read_text(encoding="utf-8")
+    except OSError as exc:
+        return {
+            "success": False,
+            "ok": False,
+            "backend": "lean_exact_ephemeral",
+            "tool": "lake_env_lean",
+            "action": "check_target",
+            "file": str(target.resolve()),
+            "target": theorem_id,
+            "replacement_matches_target": True,
+            "verification_scope": "target_candidate",
+            "error": str(exc)[:500],
+            "error_code": "source_read_failed",
+            "output": "",
+            "messages": [],
+        }
+    integrated = build_integrated_helper_source(source, helper_source, theorem_id)
+    if not integrated:
+        return {
+            "success": False,
+            "ok": False,
+            "backend": "lean_exact_ephemeral",
+            "tool": "lake_env_lean",
+            "action": "check_target",
+            "file": str(target.resolve()),
+            "target": theorem_id,
+            "replacement_matches_target": True,
+            "verification_scope": "target_candidate",
+            "error": "could not build exact pre-target helper harness",
+            "error_code": "source_segmentation_failed",
+            "output": "",
+            "messages": [],
+        }
+    checked = dict(
+        lean_ephemeral_source_check(
+            integrated,
+            cwd=root,
+            timeout_s=max(1, int(timeout_s or 1)),
+        )
+        or {}
+    )
+    infrastructure_failure = bool(
+        checked.get("timed_out") is True
+        or checked.get("retryable") is True
+        or str(checked.get("failure_kind", "") or "").strip().lower()
+        in {
+            "infrastructure_timeout",
+            "infrastructure_unavailable",
+            "project_environment_unavailable",
+            "resource_admission_retained",
+        }
+    )
+    elaborated = bool(checked.get("ok") is True)
+    output = str(checked.get("output", "") or "")
+    return {
+        **checked,
+        # Match LeanProbe's two-level contract: the check ran successfully
+        # even when Lean rejected a proposed skeleton.
+        "success": not infrastructure_failure,
+        "ok": elaborated,
+        "backend": "lean_exact_ephemeral",
+        "tool": "lake_env_lean",
+        "action": "check_target",
+        "file": str(target.resolve()),
+        "target": theorem_id,
+        "replacement_matches_target": True,
+        "verification_scope": "target_candidate",
+        "has_errors": not elaborated,
+        "errors": 0 if elaborated else 1,
+        "error": "" if elaborated else str(checked.get("error", "") or output)[:500],
+        "error_code": (
+            ""
+            if elaborated
+            else (str(checked.get("error_code", "") or "") if infrastructure_failure else "")
+        ),
+        "messages": list(checked.get("messages") or []),
+        "canonical_fallback": True,
+    }
+
+
 def _validate_helper_skeletons(
     *,
     helpers: list[dict[str, Any]],
@@ -491,6 +610,7 @@ def _validate_helper_skeletons(
     shape_rejected_count = 0
     dependency_blocked_count = 0
     lean_check_count = 0
+    canonical_fallback_count = 0
     unavailable_helper_names: set[str] = set()
     prepared: list[tuple[int, dict[str, Any], str, bool, bool]] = []
 
@@ -524,7 +644,11 @@ def _validate_helper_skeletons(
             helper_name = str(helper.get("name", "") or "").strip()
             if helper_name:
                 unavailable_helper_names.add(helper_name)
-            helper["check_status"] = "rejected_instantiated_parent"
+            helper["check_status"] = (
+                "rejected_instantiated_parent"
+                if admission.reason_code == "closed_literal_parent_instantiation"
+                else "rejected_admission"
+            )
             helper["ready_to_prove"] = False
             helper["ready_to_insert"] = False
             helper["ready_for_managed_placement"] = False
@@ -582,6 +706,7 @@ def _validate_helper_skeletons(
         if str(helper.get("check_status", "") or "") in {
             "rejected_shape",
             "rejected_instantiated_parent",
+            "rejected_admission",
             "rejected_source_conflict",
         }:
             continue
@@ -619,8 +744,12 @@ def _validate_helper_skeletons(
             (index, helper, skeleton, has_placeholder, bool(helper.get("exact_sorry_stub")))
         )
 
-    def run_check(replacement: str) -> tuple[dict[str, Any] | None, str]:
+    def run_check(
+        replacement: str,
+        helper_source: str,
+    ) -> tuple[dict[str, Any] | None, str]:
         nonlocal lean_check_count
+        nonlocal canonical_fallback_count
         check_timeout_s = max(1, int(timeout_s or 1))
         if deadline is not None:
             remaining_s = _remaining_request_timeout_s(deadline)
@@ -640,15 +769,37 @@ def _validate_helper_skeletons(
                 include_tactics=False,
                 timeout_s=check_timeout_s,
                 timeout_ceiling_s=(check_timeout_s if deadline is not None else None),
+                allow_placeholders_for_elaboration=True,
             )
         except Exception as exc:
             return None, f"{type(exc).__name__}: {exc}"
-        return dict(check), ""
+        check = dict(check)
+        if not _incremental_environment_failure(check):
+            return check, ""
+        if deadline is not None:
+            remaining_s = _remaining_request_timeout_s(deadline)
+            if remaining_s <= 0:
+                return check, ""
+            check_timeout_s = min(check_timeout_s, remaining_s)
+        canonical_fallback_count += 1
+        fallback = _canonical_skeleton_fallback(
+            helper_source=helper_source,
+            file_path=file_path,
+            theorem_id=theorem_id,
+            cwd=cwd,
+            timeout_s=check_timeout_s,
+        )
+        fallback["incremental_fallback_reason"] = _validation_diagnostics(check)
+        return fallback, ""
 
     def check_identity_matches(check: dict[str, Any] | None) -> bool:
         if check is None:
             return False
-        if str(check.get("tool", "") or "").strip() != "lean_probe":
+        tool = str(check.get("tool", "") or "").strip()
+        backend = str(check.get("backend", "") or "").strip()
+        if tool != "lean_probe" and not (
+            tool == "lake_env_lean" and backend == "lean_exact_ephemeral"
+        ):
             return False
         if str(check.get("action", "") or "").strip() != "check_target":
             return False
@@ -715,7 +866,10 @@ def _validate_helper_skeletons(
         batch_replacement = "\n\n".join(
             [*(skeleton for _, _, skeleton, _, _ in prepared), target_skeleton]
         )
-        batch_check, batch_error = run_check(batch_replacement)
+        batch_check, batch_error = run_check(
+            batch_replacement,
+            "\n\n".join(skeleton for _, _, skeleton, _, _ in prepared),
+        )
         if check_succeeded(batch_check):
             assert batch_check is not None
             validated_count = len(prepared)
@@ -779,7 +933,10 @@ def _validate_helper_skeletons(
         accepted_prefix: list[str] = []
         for _, helper, skeleton, has_placeholder, managed_stub in prepared:
             replacement = "\n\n".join([*accepted_prefix, skeleton, target_skeleton])
-            check, check_error = run_check(replacement)
+            check, check_error = run_check(
+                replacement,
+                "\n\n".join([*accepted_prefix, skeleton]),
+            )
             if check is not None:
                 validated_count += 1
             if check_succeeded(check):
@@ -814,6 +971,7 @@ def _validate_helper_skeletons(
         "shape_rejected_count": shape_rejected_count,
         "dependency_blocked_count": dependency_blocked_count,
         "lean_check_count": lean_check_count,
+        "canonical_fallback_count": canonical_fallback_count,
         "validation_mode": validation_mode,
         "deadline_exhausted": bool(
             deadline is not None and _remaining_request_timeout_s(deadline) <= 0

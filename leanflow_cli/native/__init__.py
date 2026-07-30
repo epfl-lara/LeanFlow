@@ -1,1 +1,1 @@
-"""leanflow_cli.native subpackage (Phase II restructure)."""
+"""Run managed Lean workflows and coordinate lifecycle transitions."""

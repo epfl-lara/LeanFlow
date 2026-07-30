@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -11,8 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from leanflow_cli.lean.lean_parsing import _declaration_line_index_from_text
+from leanflow_cli.lean.lean_parsing import (
+    _declaration_line_index_from_text,
+    _strip_lean_comments_and_strings,
+)
 from leanflow_cli.workflows import (
+    decomposition_provenance,
     plan_state,
     queue_edit_guard,
     research_findings,
@@ -26,7 +31,9 @@ STATE_KEY = "pending_research_helper_candidate"
 SUMMARY_KEY = "pending_research_helper_candidate"
 RESOLVED_STATE_KEY = "resolved_research_helper_candidates"
 RESOLVED_SUMMARY_KEY = "resolved_research_helper_candidates"
-SCHEMA_VERSION = 2
+CONSUMPTION_STATE_KEY = "research_helper_target_consumption"
+CONSUMPTION_SUMMARY_KEY = "research_helper_target_consumption"
+SCHEMA_VERSION = 4
 MAX_RESOLVED_CANDIDATES = 128
 MAX_DECLARATION_CHARS = 16_000
 MAX_INTEGRATION_ATTEMPTS = 2
@@ -40,6 +47,10 @@ _HYDRATION_KEY = "_research_helper_candidate_hydration_token"
 _PROCESS_HYDRATION_TOKEN = uuid.uuid4().hex
 _UNSET = object()
 _PARENT_RECHECK_EVIDENCE_VERSION = "parent-helper-recheck-v1"
+_EVIDENCE_ONLY_HELPER_NAME_RE = re.compile(
+    r"(?:^|_)(?:counterexample|probe|obstruction|not_universal|without_universal|"
+    r"false_of)(?:_|$)|(?:^|_)(?:do|does)_not(?:_|$)"
+)
 
 
 def _now_iso() -> str:
@@ -63,6 +74,18 @@ def _same_file(left: object, right: object) -> bool:
 def _sha256(text: str) -> str:
     """Return the stable SHA-256 identity for exact source text."""
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+
+
+def _helper_name_is_evidence_only(name: str) -> bool:
+    """Return whether a checked declaration is named as route evidence.
+
+    Scratch probes, counterexamples, and explicit method obstructions may be
+    kernel-valid while remaining unsuitable for mandatory production-source
+    integration. Keep them available to the research graph without letting an
+    incorrect worker disposition preempt the foreground proof.
+    """
+    short_name = str(name or "").strip().rsplit(".", 1)[-1].casefold()
+    return bool(short_name and _EVIDENCE_ONLY_HELPER_NAME_RE.search(short_name))
 
 
 def _normalized_axioms(values: Sequence[object]) -> tuple[str, ...]:
@@ -107,6 +130,87 @@ def source_revision_sha256(active_file: str) -> str:
 def target_signature_sha256(active_file: str, target_symbol: str) -> str:
     """Return the current assigned declaration statement identity."""
     return declaration_signature_sha256(target_symbol, active_file)
+
+
+def target_declaration_sha256(active_file: str, target_symbol: str) -> str:
+    """Return the exact assigned declaration identity, including its proof body."""
+    try:
+        source = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    declaration = decomposition_provenance.declaration_slice(source, target_symbol)
+    return declaration.declaration_sha256 if declaration is not None else ""
+
+
+def target_placeholder_count(active_file: str, target_symbol: str) -> int | None:
+    """Return the assigned declaration's source placeholder count."""
+    try:
+        source = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    declaration = decomposition_provenance.declaration_slice(source, target_symbol)
+    if declaration is None:
+        return None
+    stripped = _strip_lean_comments_and_strings(declaration.text)
+    return len(re.findall(r"\b(?:sorry|admit)\b", stripped))
+
+
+def _target_body_consumes_helper(record: Mapping[str, str]) -> bool:
+    """Return whether the assigned proof now makes concrete use of its helper."""
+    active_file = str(record.get("active_file", "") or "")
+    target_symbol = str(record.get("target_symbol", "") or "")
+    current_declaration = target_declaration_sha256(active_file, target_symbol)
+    if not current_declaration or current_declaration == record.get(
+        "target_declaration_sha256", ""
+    ):
+        return False
+    try:
+        source = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    declaration = decomposition_provenance.declaration_slice(source, target_symbol)
+    if declaration is None:
+        return False
+    helper_name = str(record.get("helper_name", "") or "").strip().split(".")[-1]
+    if not helper_name:
+        return False
+    stripped = _strip_lean_comments_and_strings(declaration.text)
+    return re.search(rf"(?<![\w.]){re.escape(helper_name)}(?![\w.])", stripped) is not None
+
+
+def _consumption_record(raw: object) -> dict[str, str]:
+    """Return one valid helper-consumption marker or an empty mapping."""
+    if not isinstance(raw, Mapping):
+        return {}
+    target_symbol = str(raw.get("target_symbol", "") or "").strip()
+    active_file = _canonical_file(raw.get("active_file"))
+    target_signature = str(raw.get("target_signature_sha256", "") or "").strip()
+    target_declaration = str(raw.get("target_declaration_sha256", "") or "").strip()
+    candidate_id = str(raw.get("candidate_id", "") or "").strip()
+    helper_name = str(raw.get("helper_name", "") or "").strip()
+    try:
+        target_placeholders = max(0, int(raw.get("target_placeholder_count", 1) or 0))
+    except (TypeError, ValueError):
+        target_placeholders = 1
+    if (
+        not TheoremKey.make(target_symbol, active_file).is_valid()
+        or len(target_signature) != 64
+        or len(target_declaration) != 64
+        or target_placeholders < 1
+        or not candidate_id.startswith("rhcp-")
+        or not helper_name
+    ):
+        return {}
+    return {
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "target_signature_sha256": target_signature,
+        "target_declaration_sha256": target_declaration,
+        "target_placeholder_count": str(target_placeholders),
+        "candidate_id": candidate_id,
+        "helper_name": helper_name,
+        "integrated_at": str(raw.get("integrated_at", "") or "").strip(),
+    }
 
 
 def _candidate_id(
@@ -339,6 +443,7 @@ def _update_durable_state(
     *,
     pending: object = _UNSET,
     resolved: object = _UNSET,
+    consumption: object = _UNSET,
 ) -> None:
     """Atomically update owner-controlled candidate keys in summary state."""
     if not plan_state.plan_state_enabled():
@@ -349,6 +454,8 @@ def _update_durable_state(
             summary[SUMMARY_KEY] = dict(pending) if isinstance(pending, Mapping) else {}
         if resolved is not _UNSET:
             summary[RESOLVED_SUMMARY_KEY] = [dict(entry) for entry in _resolved_entries(resolved)]
+        if consumption is not _UNSET:
+            summary[CONSUMPTION_SUMMARY_KEY] = _consumption_record(consumption)
         summary["version"] = 1
         summary["updated_at"] = _now_iso()
 
@@ -374,6 +481,18 @@ def _set_memory_resolved(
     autonomy_state[RESOLVED_STATE_KEY] = [dict(entry) for entry in _resolved_entries(entries)]
 
 
+def _set_memory_consumption(
+    autonomy_state: dict[str, Any],
+    record: Mapping[str, str] | None,
+) -> None:
+    """Mirror one target-consumption marker into process state."""
+    normalized = _consumption_record(record)
+    if normalized:
+        autonomy_state[CONSUMPTION_STATE_KEY] = normalized
+    else:
+        autonomy_state.pop(CONSUMPTION_STATE_KEY, None)
+
+
 def _persist(
     autonomy_state: dict[str, Any],
     record: PendingResearchHelperCandidate | None,
@@ -396,9 +515,11 @@ def _hydrate_state(autonomy_state: dict[str, Any]) -> None:
         else None
     )
     memory_resolved = _resolved_entries(autonomy_state.get(RESOLVED_STATE_KEY))
+    memory_consumption = _consumption_record(autonomy_state.get(CONSUMPTION_STATE_KEY))
     if not plan_state.plan_state_enabled():
         _set_memory_pending(autonomy_state, memory_pending)
         _set_memory_resolved(autonomy_state, memory_resolved)
+        _set_memory_consumption(autonomy_state, memory_consumption)
         autonomy_state[_HYDRATION_KEY] = _PROCESS_HYDRATION_TOKEN
         return
 
@@ -410,6 +531,7 @@ def _hydrate_state(autonomy_state: dict[str, Any]) -> None:
         else None
     )
     disk_resolved = _resolved_entries(summary.get(RESOLVED_SUMMARY_KEY))
+    disk_consumption = _consumption_record(summary.get(CONSUMPTION_SUMMARY_KEY))
     resolved = _merge_resolved_entries(memory_resolved, disk_resolved)
     resolved_ids = {entry["candidate_id"] for entry in resolved}
     pending: PendingResearchHelperCandidate | None
@@ -431,13 +553,21 @@ def _hydrate_state(autonomy_state: dict[str, Any]) -> None:
         SUMMARY_KEY in summary and disk_pending_payload != desired_pending
     )
     resolved_changed = [dict(entry) for entry in disk_resolved] != desired_resolved
-    if pending_changed or resolved_changed:
+    if CONSUMPTION_SUMMARY_KEY in summary:
+        consumption = disk_consumption
+    else:
+        # One-time migration for checkpoints written before the owner key.
+        consumption = memory_consumption
+    consumption_changed = CONSUMPTION_SUMMARY_KEY not in summary and bool(consumption)
+    if pending_changed or resolved_changed or consumption_changed:
         _update_durable_state(
             pending=desired_pending if pending_changed else _UNSET,
             resolved=desired_resolved if resolved_changed else _UNSET,
+            consumption=consumption if consumption_changed else _UNSET,
         )
     _set_memory_pending(autonomy_state, pending)
     _set_memory_resolved(autonomy_state, resolved)
+    _set_memory_consumption(autonomy_state, consumption)
     autonomy_state[_HYDRATION_KEY] = _PROCESS_HYDRATION_TOKEN
 
 
@@ -474,11 +604,87 @@ def matching(
     return record if record is not None and record.matches(target_symbol, active_file) else None
 
 
+def target_consumption_pending(
+    autonomy_state: dict[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> bool:
+    """Return whether an integrated helper still awaits assigned-proof use.
+
+    Whole-file growth and unrelated target edits are ignored. The marker
+    clears after the assigned proof body concretely references the integrated
+    helper, the manager accepts the target, or the theorem statement changes.
+    """
+    _hydrate_state(autonomy_state)
+    record = _consumption_record(autonomy_state.get(CONSUMPTION_STATE_KEY))
+    if not record:
+        return False
+    if str(record.get("target_symbol", "") or "").strip() != str(
+        target_symbol or ""
+    ).strip() or not _same_file(record.get("active_file", ""), active_file):
+        return False
+    current_signature = target_signature_sha256(active_file, target_symbol)
+    if not current_signature:
+        return True
+    if current_signature != record["target_signature_sha256"]:
+        _update_durable_state(consumption={})
+        _set_memory_consumption(autonomy_state, None)
+        autonomy_state[_HYDRATION_KEY] = _PROCESS_HYDRATION_TOKEN
+        return False
+    if _target_body_consumes_helper(record):
+        _update_durable_state(consumption={})
+        _set_memory_consumption(autonomy_state, None)
+        autonomy_state[_HYDRATION_KEY] = _PROCESS_HYDRATION_TOKEN
+        return False
+    return True
+
+
+def release_target_consumption_after_verified_target(
+    autonomy_state: dict[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> bool:
+    """Release helper consumption after the manager accepts the exact target."""
+    _hydrate_state(autonomy_state)
+    record = _consumption_record(autonomy_state.get(CONSUMPTION_STATE_KEY))
+    if not record:
+        return False
+    if str(record.get("target_symbol", "") or "").strip() != str(
+        target_symbol or ""
+    ).strip() or not _same_file(record.get("active_file", ""), active_file):
+        return False
+    _update_durable_state(consumption={})
+    _set_memory_consumption(autonomy_state, None)
+    autonomy_state[_HYDRATION_KEY] = _PROCESS_HYDRATION_TOKEN
+    return True
+
+
+def target_consumption_record(
+    autonomy_state: dict[str, Any],
+) -> dict[str, str]:
+    """Return the current helper-consumption marker for observability."""
+    _hydrate_state(autonomy_state)
+    return _consumption_record(autonomy_state.get(CONSUMPTION_STATE_KEY))
+
+
 def exact_source_duplicate(
     record: PendingResearchHelperCandidate,
 ) -> research_helper_source_coverage.ExactSourceDuplicate | None:
     """Return an exact current-source declaration duplicate."""
     return research_helper_source_coverage.exact_source_duplicate(
+        record.declaration,
+        target_symbol=record.target_symbol,
+        active_file=record.active_file,
+    )
+
+
+def source_name_collision(
+    record: PendingResearchHelperCandidate,
+) -> research_helper_source_coverage.ExactSourceDuplicate | None:
+    """Return a same-name current-source declaration blocking insertion."""
+    return research_helper_source_coverage.source_name_collision(
         record.declaration,
         target_symbol=record.target_symbol,
         active_file=record.active_file,
@@ -542,13 +748,19 @@ def remember_from_findings(
                 or declaration_hash != _sha256(declaration)
             ):
                 continue
-            if (
-                research_helper_source_coverage.exact_source_duplicate(
+            if _helper_name_is_evidence_only(names[0]):
+                continue
+            if any(
+                detector(
                     declaration,
                     target_symbol=target_symbol,
                     active_file=canonical_file,
                 )
                 is not None
+                for detector in (
+                    research_helper_source_coverage.exact_source_duplicate,
+                    research_helper_source_coverage.source_name_collision,
+                )
             ):
                 continue
             candidate_id = _candidate_id(
@@ -774,23 +986,59 @@ def resolve(
     autonomy_state: dict[str, Any],
     *,
     disposition: str,
+    require_target_consumption: bool = True,
 ) -> PendingResearchHelperCandidate | None:
     """Retire and archive one candidate after an authoritative disposition."""
     existing = load(autonomy_state)
     if existing is None:
         return None
+    normalized_disposition = str(disposition or "resolved").strip()[:80]
     entries = list(_load_resolved_entries(autonomy_state))
     entries = [entry for entry in entries if entry["candidate_id"] != existing.candidate_id]
     entries.append(
         {
             "candidate_id": existing.candidate_id,
-            "disposition": str(disposition or "resolved").strip()[:80],
+            "disposition": normalized_disposition,
             "resolved_at": _now_iso(),
         }
     )
     payload = [dict(entry) for entry in _resolved_entries(entries)]
-    _update_durable_state(pending={}, resolved=payload)
+    consumption: object = _UNSET
+    if normalized_disposition.startswith("integrated") and require_target_consumption:
+        declaration_hash = target_declaration_sha256(
+            existing.active_file,
+            existing.target_symbol,
+        )
+        placeholder_count = target_placeholder_count(
+            existing.active_file,
+            existing.target_symbol,
+        )
+        current_signature = target_signature_sha256(
+            existing.active_file,
+            existing.target_symbol,
+        )
+        if (
+            declaration_hash
+            and placeholder_count
+            and current_signature == existing.target_signature_sha256
+        ):
+            consumption = {
+                "target_symbol": existing.target_symbol,
+                "active_file": existing.active_file,
+                "target_signature_sha256": current_signature,
+                "target_declaration_sha256": declaration_hash,
+                "target_placeholder_count": str(placeholder_count),
+                "candidate_id": existing.candidate_id,
+                "helper_name": existing.helper_name,
+                "integrated_at": _now_iso(),
+            }
+    _update_durable_state(pending={}, resolved=payload, consumption=consumption)
     _set_memory_resolved(autonomy_state, payload)
     _set_memory_pending(autonomy_state, None)
+    if consumption is not _UNSET:
+        _set_memory_consumption(
+            autonomy_state,
+            consumption if isinstance(consumption, Mapping) else None,
+        )
     autonomy_state[_HYDRATION_KEY] = _PROCESS_HYDRATION_TOKEN
     return existing

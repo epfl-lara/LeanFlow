@@ -25,7 +25,12 @@ from core.process_identity import process_identity_from_mapping, process_identit
 from core.provider_availability import normalize_provider_retry_after
 from core.runtime_modes import low_memory_mode_enabled
 from tools.utilities import decomposer_admission
+from tools.utilities.patch_parser import preview_v4a_update
 from tools.utilities.process_tree import terminate_process_tree
+from tools.utilities.repository_research_policy import (
+    clean_room_task_labels,
+    solution_research_disabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,17 +78,24 @@ from leanflow_cli.native import (
     campaign_roots,
     candidate_commit_priority,
     checkpoint_handoff,
+    companion_module_policy,
+    completion_policy,
+    determine_answer_policy,
     final_report_failure_reuse,
     helper_integration_admission,
     parent_helper_verification_reuse,
     process_artifact_cleanup,
+    queue_source_dependencies,
     route_execution,
     scope_entry_admission,
     source_only_startup,
+    source_order_dependency_guard,
     source_placeholder_guard,
     terminal_authority,
+    transition_visibility,
     verification_batch_admission,
     verified_patch_batch_reuse,
+    warning_cleanup_guard,
 )
 from leanflow_cli.native.parent_maintenance import (
     quiesce_parent_maintained_actions,
@@ -129,7 +141,9 @@ from leanflow_cli.workflows import (
     orchestrator_event_watermark,
     orchestrator_llm,
     plan_state,
+    planner_evidence,
     planner_phase,
+    project_guidance,
     queued_helper_handoff,
     research_delivery_gate,
     research_delivery_observability,
@@ -205,6 +219,7 @@ from leanflow_cli.workflows.queue_manager_live import (
 from leanflow_cli.workflows.verification_providers import (
     AUTOFORMALIZER_VERIFICATION_TASK,
     BLUEPRINT_VERIFICATION_TASK,
+    advisory_verification_timeout_s,
     is_command_verification_provider,
     is_local_verification_provider,
     resolve_verification_provider,
@@ -317,8 +332,7 @@ _FINAL_SWEEP_AUTONOMY_KEYS = frozenset(
     }
 )
 
-# Leaf modules extracted from native_runner (refactor Phase 2) are re-exported here for
-# backwards compatibility — these names are referenced throughout this module and by tests.
+# Leaf helpers are re-exported here for compatibility with existing imports and tests.
 # lean_parsing.py holds the pure Lean source-text/declaration parsers (plus
 # LEAN_DECLARATION_PREAMBLE_RE); native_config.py holds the pure env/config readers;
 # native_state.py holds the module-level mutable de-dup caches (mutated in place, so the names
@@ -387,7 +401,7 @@ from leanflow_cli.lean.lean_diagnostic_feedback import (  # noqa: E402
     _diagnostics_indicate_queue_blocker,
     _goals_still_open,
     _is_anonymous_declaration_label,
-    _nearest_declaration_name,
+    _nearest_declaration_name,  # noqa: F401
     _queue_diagnostic_items,
     _queue_diagnostic_line_numbers,
 )
@@ -1180,8 +1194,18 @@ def _revalidate_verified_scope_after_quiescence(
     history: list[dict[str, Any]],
     checkpoint_state: Mapping[str, Any] | None,
     autonomy_state: dict[str, Any],
+    *,
+    expected_live_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Rebuild and kernel-verify the exact requested Lean scope after writers stop."""
+    """Kernel-verify the exact requested Lean scope after writers stop."""
+    exact = _provider_free_exact_scope_state(
+        history,
+        checkpoint_state,
+        autonomy_state,
+        expected_live_state=expected_live_state,
+    )
+    if exact:
+        return exact
     fresh = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
     return _promote_live_state_to_verified_compat(fresh, autonomy_state)
 
@@ -1719,6 +1743,7 @@ def _finalize_native_run(
                 history,
                 checkpoint_state,
                 autonomy_state,
+                expected_live_state=outcome.get("live_state"),
             )
         except (NativeTerminationSignal, KeyboardInterrupt):
             raise
@@ -2192,6 +2217,12 @@ def _swarm_enabled() -> bool:
 
 def _runner_lean_prompt_enabled() -> bool:
     raw = _read_text_env("LEANFLOW_RUNNER_LEAN_PROMPT", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _research_event_preemption_enabled() -> bool:
+    """Return whether completed research may interrupt an active prover turn."""
+    raw = _read_text_env("LEANFLOW_RESEARCH_EVENT_PREEMPTION", "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -3662,7 +3693,21 @@ def _tool_result_counts_as_theorem_feedback(
         # as a queue gate fabricates a new proof attempt without any edit.
         # Exact-target candidate checks remain authoritative boundaries.
         return action.strip().lower().replace("-", "_") == "check_target"
-    if function_name in {"lean_verify", "apply_verified_patch"}:
+    if function_name == "lean_verify":
+        arguments = dict(args or {})
+        mode = str(arguments.get("mode", "") or "").strip().lower()
+        if mode == "project":
+            return True
+        target = str(
+            arguments.get("target", "")
+            or arguments.get("file_path", "")
+            or arguments.get("path", "")
+            or ""
+        ).strip()
+        if target and active_file:
+            return _same_active_file(target, active_file)
+        return True
+    if function_name == "apply_verified_patch":
         return True
     if function_name != "terminal":
         return False
@@ -3976,7 +4021,7 @@ def _request_step_boundary_interrupt(agent: Any) -> None:
 
 def _print_queue_step_separator(target_symbol: str, *, accepted: bool = True) -> None:
     label = str(target_symbol or "[unknown]").strip()
-    status = "verified" if accepted else "needs manager feedback"
+    status = "verified" if accepted else "intermediate turn incomplete; queue continues"
     line = "=" * 72
     print("")
     print(line)
@@ -4090,6 +4135,82 @@ def _manager_incremental_check_queue_item(active_file: str, target_symbol: str) 
     }
 
 
+def _scope_successful_file_check_to_declaration(
+    active_file: str,
+    target_symbol: str,
+    manager_check: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Scope a clean canonical file fallback to one sorry-free declaration.
+
+    A successful whole-file elaboration proves that every declaration elaborated,
+    even when another intentionally open declaration emitted a ``sorry`` warning.
+    Preserve the file diagnostics for audit, but do not attribute that unrelated
+    placeholder to the requested helper.
+    """
+    checked = dict(manager_check or {})
+    if not bool(checked.get("ok")) or bool(checked.get("has_errors")):
+        return checked
+    entry = _find_declaration_entry(active_file, target_symbol)
+    if not entry or bool(entry.get("has_sorry")):
+        return checked
+    start = int(entry.get("line", 0) or 0)
+    end = int(entry.get("end_line", 0) or 0)
+    original_output = str(checked.get("output", "") or "")
+    file_messages = list(checked.get("messages") or diagnostic_items(original_output))
+    file_errors, file_warnings, file_sorries = _diagnostic_counts_from_messages(
+        output=original_output,
+        messages=file_messages,
+    )
+    scoped_messages = [
+        dict(message)
+        for message in file_messages
+        if isinstance(message, Mapping)
+        and isinstance(message.get("line"), int)
+        and start <= int(message["line"]) <= end
+        and "declaration uses 'sorry'" not in str(message.get("message", "") or "").lower()
+    ]
+    scoped_errors, scoped_warnings, _scoped_sorries = _diagnostic_counts_from_messages(
+        messages=scoped_messages,
+    )
+    checked.update(
+        {
+            "mode": "target_from_file",
+            "verification_scope": "target",
+            "target": target_symbol,
+            "messages": scoped_messages,
+            "has_errors": scoped_errors > 0,
+            "has_sorry": False,
+            "errors": scoped_errors,
+            "warnings": scoped_warnings,
+            "sorry": 0,
+            "output": _manager_file_verification_preview(
+                (
+                    original_output
+                    or (
+                        "canonical file verification succeeded; requested declaration "
+                        f"`{target_symbol}` is sorry-free"
+                    )
+                ),
+                scoped_messages,
+            ),
+            "file_messages": file_messages,
+            "file_error_count": max(
+                file_errors,
+                int(checked.get("errors", 0) or 0),
+            ),
+            "file_warning_count": max(
+                file_warnings,
+                int(checked.get("warnings", 0) or 0),
+            ),
+            "file_sorry_count": max(
+                file_sorries,
+                int(checked.get("sorry", 0) or 0),
+            ),
+        }
+    )
+    return checked
+
+
 def _manager_prepare_incremental_queue_item(active_file: str, target_symbol: str) -> dict[str, Any]:
     path = str(active_file or "").strip()
     target = str(target_symbol or "").strip()
@@ -4168,6 +4289,12 @@ def _manager_check_queue_item(active_file: str, target_symbol: str) -> tuple[dic
     if low_memory_mode_enabled():
         phase_started = time.monotonic()
         check = _manager_verify_queue_file(active_file)
+        check = _scope_successful_file_check_to_declaration(
+            active_file,
+            target_symbol,
+            check,
+        )
+        check = _enforce_manager_axiom_profile(active_file, target_symbol, check)
         phase_seconds["canonical_file_check"] = max(0.0, time.monotonic() - phase_started)
         return finish(check, "lean_verify", route="low-memory-file")
     if target_symbol and active_file:
@@ -4213,6 +4340,12 @@ def _manager_check_queue_item(active_file: str, target_symbol: str) -> tuple[dic
             )
     phase_started = time.monotonic()
     check = _manager_verify_queue_file(active_file)
+    check = _scope_successful_file_check_to_declaration(
+        active_file,
+        target_symbol,
+        check,
+    )
+    check = _enforce_manager_axiom_profile(active_file, target_symbol, check)
     phase_seconds["canonical_file_fallback"] = max(0.0, time.monotonic() - phase_started)
     return finish(check, "lean_verify", route="canonical-file-fallback")
 
@@ -4375,7 +4508,8 @@ def _verification_record_from_check(
         scope = f"target:{target_symbol or check.get('target', '') or '[unknown]'}"
         tool = manager_tool
     elif (
-        manager_tool == "lean_incremental_check"
+        str(check.get("verification_scope", "") or "").strip().lower() == "target"
+        or manager_tool == "lean_incremental_check"
         or str(check.get("mode", "")) == "incremental_target"
     ):
         scope = f"target:{target_symbol or check.get('target', '') or '[unknown]'}"
@@ -4432,9 +4566,37 @@ def _active_file_warning_summary(live_state: Mapping[str, Any] | None) -> tuple[
     if not diagnostics_text:
         return 0, ""
     items = diagnostic_items(diagnostics_text)
-    warnings = [
+    warnings: list[dict[str, Any]] = [
         item for item in items if str(item.get("severity", "") or "").strip().lower() == "warning"
     ]
+    # Exact startup verification returns ordinary Lean/lake text rather than
+    # the structured diagnostic payload produced by lean_inspect. Parse only
+    # canonical warning headers; continuation and "Note:" lines must not
+    # inflate the warning count. Prefer the complete plain-text parse when
+    # present because diagnostic_items may recognize only one of Lean's two
+    # textual warning layouts.
+    prefixed_warning = re.compile(
+        r"^warning:\s+.+?:(?P<line>\d+):(?P<column>\d+):\s*(?P<message>.*)$"
+    )
+    suffixed_warning = re.compile(
+        r"^.+?:(?P<line>\d+):(?P<column>\d+):\s*warning:\s*(?P<message>.*)$"
+    )
+    plain_warnings: list[dict[str, Any]] = []
+    for line_text in diagnostics_text.splitlines():
+        match = prefixed_warning.match(line_text.strip()) or suffixed_warning.match(
+            line_text.strip()
+        )
+        if match is None:
+            continue
+        plain_warnings.append(
+            {
+                "severity": "warning",
+                "line": int(match.group("line")),
+                "message": match.group("message").strip(),
+            }
+        )
+    if plain_warnings:
+        warnings = plain_warnings
     if not warnings:
         return 0, ""
     summary_lines = []
@@ -5371,6 +5533,19 @@ def _source_revision_sha256(active_file: str) -> str:
     return final_report_failure_reuse.source_sha256(path) if path is not None else ""
 
 
+def _target_declaration_sha256(active_file: str, target_symbol: str) -> str:
+    """Return the exact assigned declaration identity, including its proof body."""
+    path = _resolve_project_path(active_file)
+    if path is None:
+        return ""
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    declaration = decomposition_provenance.declaration_slice(source, target_symbol)
+    return declaration.declaration_sha256 if declaration is not None else ""
+
+
 def _inject_exact_candidate_axiom_profile(
     function_name: str,
     args: Mapping[str, Any] | None,
@@ -6181,6 +6356,49 @@ def _review_agent_final_report(
                 counterexample_evidence
             )
     if isinstance(autonomy_state, dict):
+        target_signature = research_helper_candidate_priority.target_signature_sha256(
+            active_file,
+            target_symbol,
+        )
+        target_declaration = _target_declaration_sha256(active_file, target_symbol)
+        prior_planner_obstacle = dict(
+            autonomy_state.get(route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY) or {}
+        )
+        planner_obstacle_cleared = (
+            route_execution.clear_planner_terminal_obstacle_after_target_change(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                target_signature_sha256=target_signature,
+                target_declaration_sha256=target_declaration,
+            )
+        )
+        if planner_obstacle_cleared:
+            campaign_epoch.clear_planner_terminal_obstacle(
+                autonomy_state,
+                prior_planner_obstacle,
+            )
+        if requested_route == "plan" and route_execution.planner_terminal_obstacle_blocks_request(
+            autonomy_state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            target_signature_sha256=target_signature,
+            target_declaration_sha256=target_declaration,
+        ):
+            obstacle = dict(
+                autonomy_state.get(route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY) or {}
+            )
+            _record_activity(
+                "prover-plan-request-suppressed",
+                (f"Suppressed repeated planner request for unchanged target " f"{target_symbol}"),
+                target_symbol=target_symbol,
+                active_file=active_file,
+                target_signature_sha256=target_signature,
+                outcome=str(obstacle.get("outcome", "") or ""),
+                reason=str(obstacle.get("reason", "") or ""),
+            )
+            requested_route = ""
+            requested_route_reason = ""
         if ok:
             _clear_pending_plan_capacity(autonomy_state)
         elif requested_route:
@@ -6824,6 +7042,26 @@ def _track_search_progress(
             "unique_queries": [],
             "used_tools": {},
         }
+    elif bool(tracker.get("synthesis_grace_pending")):
+        # Reserve one provider turn after the cap for a no-tool synthesis so
+        # the final successful fetch can enter the lane's durable report.
+        # A further tool call spends that grace and closes the inner turn.
+        tracker["synthesis_grace_pending"] = False
+        autonomy_state["search_progress"] = tracker
+        _record_agent_activity(
+            agent,
+            "search-synthesis-grace-exhausted",
+            f"Search synthesis grace for {target_symbol} was spent on another tool call",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            latest_tool=function_name,
+            latest_query=query,
+        )
+        with contextlib.suppress(Exception):
+            agent._managed_pending_theorem_feedback = None
+            agent._managed_step_boundary_closed = True
+        _request_step_boundary_interrupt(agent)
+        return True
     search_count = int(tracker.get("search_count", 0) or 0) + 1
     same_query_streak = (
         int(tracker.get("same_query_streak", 0) or 0) + 1
@@ -6860,6 +7098,7 @@ def _track_search_progress(
         route = "plan"
         tracker["hard_route_requested"] = True
         tracker["hard_route"] = route
+        tracker["synthesis_grace_pending"] = True
         autonomy_state["search_progress"] = tracker
         _set_prover_requested_route(
             autonomy_state,
@@ -6876,7 +7115,10 @@ def _track_search_progress(
                     f"- observed: {search_count} research/search calls without a successful edit or check",
                     f"- route requested: {route}",
                     "- this is a strategy handoff, not a mathematical failure or success",
-                    "- the outer orchestrator will preserve findings and start a distinct route",
+                    "- do not call another tool; use the next response to synthesize the",
+                    "  strongest concrete findings, fetched sources, dead branches, and next helpers",
+                    "- after that final report, the outer orchestrator will preserve the evidence",
+                    "  and start the distinct route",
                 ]
             ),
         )
@@ -6893,16 +7135,12 @@ def _track_search_progress(
             latest_query=query,
             used_tools=used_tools,
         )
-        with contextlib.suppress(Exception):
-            agent._managed_pending_theorem_feedback = None
-            agent._managed_step_boundary_closed = True
         if not bool(getattr(agent, "quiet_mode", False)):
             print(
                 f"\n↻ Search-only turn reached {search_count} calls for {target_symbol}; "
-                f"yielding to orchestrator route {route}."
+                "reserving one no-tool synthesis response before the route handoff."
             )
-        _request_step_boundary_interrupt(agent)
-        return True
+        return False
 
     nudge_reason = ""
     if same_query_streak >= SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT:
@@ -7246,6 +7484,54 @@ def _tool_proposed_edit_text(function_name: str, args: Mapping[str, Any] | None)
     return ""
 
 
+def _proposed_edit_changes_assigned_declaration(
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    *,
+    active_file: str,
+    target_symbol: str,
+) -> bool:
+    """Return whether a deterministic proposed edit changes the assigned declaration.
+
+    Unknown patch forms are allowed through for the normal post-edit queue guard.
+    This preflight only rejects helper-only edits when their before/after source can
+    be reconstructed exactly without running the editing tool.
+    """
+
+    def target_text(source: str) -> str | None:
+        """Return the exact unambiguous assigned declaration text."""
+        matches = [
+            str(entry.get("text", "") or "")
+            for entry in _declaration_line_index_from_text(source)
+            if _declaration_matches_target(entry, target_symbol)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    try:
+        before = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return True
+    data = dict(args or {})
+    after: str | None = None
+    if function_name == "write_file":
+        after = str(data.get("content", "") or "")
+    elif function_name == "patch" and str(data.get("mode", "replace") or "replace") == "replace":
+        old = str(data.get("old_string", "") or "")
+        new = str(data.get("new_string", "") or "")
+        if old and before.count(old) == 1:
+            after = before.replace(old, new, 1)
+    elif function_name == "apply_verified_patch":
+        after, _preview_error = preview_v4a_update(
+            str(data.get("patch", "") or ""),
+            before,
+        )
+    if after is None:
+        return True
+    before_target = target_text(before)
+    after_target = target_text(after)
+    return before_target is None or after_target is None or before_target != after_target
+
+
 def _tool_edit_removes_sorry(function_name: str, args: Mapping[str, Any] | None) -> bool:
     data = dict(args or {})
     if function_name in {"patch", "apply_verified_patch"}:
@@ -7465,7 +7751,97 @@ def _decompose_route_repeat_pre_tool_guard(
     )
 
 
-_TARGET_KNOWLEDGE_CONTEXT_CAP = 28_000
+def _planner_advice_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: dict[str, Any],
+) -> str | None:
+    """Require a target-proof edit before repeating successful advisor help."""
+    if function_name != "lean_reasoning_help":
+        return None
+    marker = dict(autonomy_state.get(route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY) or {})
+    if str(marker.get("outcome", "") or "").strip() not in {
+        "planner-completed",
+        "advisor-completed",
+    }:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    arguments = dict(args or {})
+    requested_target = str(
+        arguments.get("theorem_id", "") or arguments.get("target_symbol", "") or target_symbol or ""
+    ).strip()
+    requested_file = str(
+        arguments.get("file_path", "") or arguments.get("active_file", "") or active_file or ""
+    ).strip()
+    if (
+        not target_symbol
+        or not active_file
+        or requested_target != target_symbol
+        or not _same_active_file(requested_file, active_file)
+    ):
+        return None
+    target_signature = research_helper_candidate_priority.target_signature_sha256(
+        active_file,
+        target_symbol,
+    )
+    target_declaration = _target_declaration_sha256(active_file, target_symbol)
+    prior_marker = dict(marker)
+    if route_execution.clear_planner_terminal_obstacle_after_target_change(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+        target_signature_sha256=target_signature,
+        target_declaration_sha256=target_declaration,
+    ):
+        with contextlib.suppress(Exception):
+            campaign_epoch.clear_planner_terminal_obstacle(
+                autonomy_state,
+                prior_marker,
+            )
+        return None
+    if not route_execution.planner_terminal_obstacle_blocks_request(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+        target_signature_sha256=target_signature,
+        target_declaration_sha256=target_declaration,
+    ):
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "planner-advice-repeat-blocked",
+            "Blocked repeated reasoning help until the assigned proof attempts prior advice",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            outcome=str(marker.get("outcome", "") or ""),
+            reason=str(marker.get("reason", "") or ""),
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "completed_advice_pending",
+            "blocked_by": "planner_advice_pending_guard",
+            "error": (
+                "A successful planner/advisor result already supplied concrete next work for "
+                "this unchanged declaration. Do not request another plan or reasoning pass yet. "
+                "Attempt the recorded construction in the target proof, search for its exact "
+                "dependencies, or kernel-check the proposed helper. A helper-only wrapper does "
+                "not discharge this obligation; continue until the target declaration itself "
+                "changes or the verification gate passes."
+            ),
+            "prior_advice": str(marker.get("reason", "") or ""),
+            "next_required_step": "attempt concrete advice in the assigned declaration",
+        },
+        ensure_ascii=False,
+    )
+
+
+_TARGET_KNOWLEDGE_CONTEXT_CAP = 42_000
 
 
 def _target_knowledge_for_assignment(
@@ -7484,9 +7860,32 @@ def _target_knowledge_for_assignment(
     if not target_symbol or not active_file:
         return ""
     try:
-        return target_handoff.target_knowledge_block(
+        handoff = target_handoff.target_knowledge_block(
             target_symbol=target_symbol,
             active_file=active_file,
+        )
+        evidence = planner_evidence.matching_advisor_evidence(
+            target_symbol=target_symbol,
+            active_file=active_file,
+            target_declaration_sha256=_target_declaration_sha256(
+                active_file,
+                target_symbol,
+            ),
+        )
+        if not evidence:
+            return handoff
+        recovered = "\n".join(
+            [
+                "[LEANFLOW RECOVERED EXACT-TARGET EVIDENCE]",
+                "- authority: advisory mathematics; current Lean source and kernel checks remain final",
+                "- persistence: preserve the concrete construction, dead branches, and helper split",
+                planner_evidence.prompt_payload(evidence),
+            ]
+        )
+        return _merge_target_knowledge_context(
+            handoff,
+            recovered,
+            max_chars=_TARGET_KNOWLEDGE_CONTEXT_CAP,
         )
     except Exception:
         logger.debug("target knowledge handoff rendering failed", exc_info=True)
@@ -7663,7 +8062,140 @@ def _research_helper_candidate_pre_tool_guard(
             target_symbol=target_symbol,
             active_file=active_file,
         )
-    if candidate is None or not candidate.integration_fence_active:
+    consumption_record = research_helper_candidate_priority.target_consumption_record(
+        autonomy_state
+    )
+    consumption_helper = str(consumption_record.get("helper_name", "") or "").strip()
+    if consumption_helper:
+        evidence_helpers = decomposer.prover_edit_evidence_helper_names(
+            target_symbol=target_symbol,
+            active_file=active_file,
+            helper_names=(consumption_helper,),
+            assigned_changed=False,
+        )
+        if consumption_helper in evidence_helpers:
+            released = (
+                research_helper_candidate_priority.release_target_consumption_after_verified_target(
+                    autonomy_state,
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                )
+            )
+            if released:
+                with contextlib.suppress(Exception):
+                    _record_agent_activity(
+                        agent,
+                        "research-helper-evidence-consumption-exempted",
+                        f"Released target-consumption fence for evidence helper {consumption_helper}",
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        helper_symbol=consumption_helper,
+                        campaign_progress=False,
+                    )
+    consumption_pending = research_helper_candidate_priority.target_consumption_pending(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if (
+        consumption_pending
+        and function_name in _MANAGED_SOURCE_EDIT_TOOLS
+        and _managed_edit_targets_assignment(
+            args,
+            active_file,
+            function_name=function_name,
+        )
+        and not _proposed_edit_changes_assigned_declaration(
+            function_name,
+            args,
+            active_file=active_file,
+            target_symbol=target_symbol,
+        )
+    ):
+        return json.dumps(
+            {
+                "success": False,
+                "status": "target_proof_consumption_required",
+                "blocked_tool": function_name,
+                "target_symbol": target_symbol,
+                "required_action": (
+                    "Apply the checked idea inside the assigned declaration. Standalone "
+                    "helper-only source growth is paused until the manager verifies the "
+                    "assigned target."
+                ),
+                "reason": (
+                    "This exact edit leaves the assigned declaration unchanged and would "
+                    "continue the helper-only loop."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if consumption_pending and function_name in {
+        "lean_decompose_helpers",
+        "lean_reasoning_help",
+    }:
+        record = research_helper_candidate_priority.target_consumption_record(autonomy_state)
+        return json.dumps(
+            {
+                "success": False,
+                "status": "target_proof_consumption_required",
+                "blocked_tool": function_name,
+                "target_symbol": target_symbol,
+                "previous_helper": record.get("helper_name", ""),
+                "required_action": (
+                    "Use the previously integrated helper in the assigned declaration, "
+                    "and keep editing or checking the proof until the manager accepts an "
+                    "exact on-disk verification."
+                ),
+                "reason": (
+                    "Another planning or decomposition pass would recreate a helper-only "
+                    "loop before the assigned proof made deterministic obligation progress."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if candidate is None or not candidate.integration_fence_active or consumption_pending:
+        return None
+    try:
+        name_collision = research_helper_candidate_priority.source_name_collision(candidate)
+    except Exception:
+        logger.debug("pending research-helper name collision check unavailable", exc_info=True)
+        name_collision = None
+    if name_collision is not None:
+        retired = research_helper_candidate_priority.resolve(
+            autonomy_state,
+            disposition="covered_same_name_current_source",
+            require_target_consumption=False,
+        )
+        with contextlib.suppress(Exception):
+            _sync_research_helper_integration_admission(
+                agent,
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
+        with contextlib.suppress(Exception):
+            _record_agent_activity(
+                agent,
+                "research-helper-candidate-covered",
+                (
+                    f"Skipped checked helper {candidate.helper_name}; current source "
+                    "already declares that name"
+                ),
+                candidate_id=candidate.candidate_id,
+                job_id=candidate.job_id,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                helper_symbol=candidate.helper_name,
+                covering_symbol=name_collision.existing_symbol,
+                reason=name_collision.reason,
+                retired=retired is not None,
+                campaign_progress=False,
+            )
+        # Collision detection resolves the stale priority fence completely.
+        # Let the already-requested inspection/search/proof tool run in this
+        # same API step instead of charging the model one rejected batch only
+        # to repeat it on its next response.
         return None
     arguments = dict(args or {})
     safe_inspection_tools = {
@@ -7697,8 +8229,13 @@ def _research_helper_candidate_pre_tool_guard(
             return None
     if function_name in _MANAGED_SOURCE_EDIT_TOOLS:
         proposed_text = _tool_proposed_edit_text(function_name, arguments)
+        added_patch_text = "\n".join(
+            line[1:]
+            for line in proposed_text.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
         contains_exact_candidate = bool(
-            candidate.declaration in proposed_text
+            (candidate.declaration in proposed_text or candidate.declaration in added_patch_text)
             and _managed_edit_targets_assignment(
                 arguments,
                 active_file,
@@ -7706,6 +8243,45 @@ def _research_helper_candidate_pre_tool_guard(
             )
         )
         if contains_exact_candidate:
+            if function_name != "apply_verified_patch":
+                with contextlib.suppress(Exception):
+                    _record_agent_activity(
+                        agent,
+                        "research-helper-unverified-edit-blocked",
+                        (
+                            f"Blocked non-transactional insertion of checked helper "
+                            f"{candidate.helper_name}"
+                        ),
+                        candidate_id=candidate.candidate_id,
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        helper_symbol=candidate.helper_name,
+                        blocked_tool=function_name,
+                        required_tool="apply_verified_patch",
+                        campaign_progress=False,
+                    )
+                return json.dumps(
+                    {
+                        "success": False,
+                        "status": "checked_helper_verified_patch_required",
+                        "blocked_tool": function_name,
+                        "candidate_id": candidate.candidate_id,
+                        "helper_symbol": candidate.helper_name,
+                        "target_symbol": target_symbol,
+                        "required_tool": "apply_verified_patch",
+                        "required_action": (
+                            "Insert the exact parent-checked helper with "
+                            "`apply_verified_patch`, using the current assigned theorem id. "
+                            "That tool verifies the integrated file and rolls the edit back "
+                            "atomically if source scope, syntax, elaboration, or axiom checks fail."
+                        ),
+                        "reason": (
+                            "An ordinary source edit cannot preserve the parent check's "
+                            "scoped-command context or guarantee rollback after integration."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
             research_helper_candidate_priority.note_integration_attempt(
                 autonomy_state,
                 candidate_id=candidate.candidate_id,
@@ -7733,7 +8309,8 @@ def _research_helper_candidate_pre_tool_guard(
             "target_symbol": target_symbol,
             "required_action": (
                 "Insert the exact parent-checked helper declaration from the active priority "
-                "message once immediately before the assigned declaration using patch."
+                "message once immediately before the assigned declaration using "
+                "`apply_verified_patch`."
             ),
             "reason": (
                 "A worker-checked helper passed the parent gate but has not yet received its "
@@ -7823,6 +8400,14 @@ def _managed_pre_tool_call(
             args,
             autonomy_state,
         )
+        advice_guard = _planner_advice_pre_tool_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if advice_guard:
+            return advice_guard
         decompose_guard = _decompose_route_repeat_pre_tool_guard(
             agent,
             function_name,
@@ -7881,6 +8466,49 @@ def _managed_pre_tool_call(
     active_file = str(assignment.get("active_file", "") or "").strip()
     if not target_symbol or not active_file:
         return None
+    if function_name == "apply_verified_patch" and _managed_edit_targets_assignment(
+        args,
+        active_file,
+        function_name=function_name,
+    ):
+        requested_target = str(dict(args or {}).get("theorem_id", "") or "").strip()
+        if requested_target and requested_target != target_symbol:
+            with contextlib.suppress(Exception):
+                _record_agent_activity(
+                    agent,
+                    "verified-patch-assignment-mismatch-blocked",
+                    (
+                        f"Blocked verified patch for {requested_target} while "
+                        f"{target_symbol} owns the theorem turn"
+                    ),
+                    target_symbol=target_symbol,
+                    requested_target=requested_target,
+                    active_file=active_file,
+                    campaign_progress=False,
+                )
+            return json.dumps(
+                {
+                    "success": False,
+                    "status": "queue_assignment_mismatch",
+                    "blocked_by": "managed_queue_assignment",
+                    "target_symbol": target_symbol,
+                    "requested_target": requested_target,
+                    "active_file": active_file,
+                    "patch_applied": False,
+                    "check_passed": False,
+                    "error": (
+                        f"`apply_verified_patch` requested `{requested_target}`, but the current "
+                        f"managed queue assignment is `{target_symbol}`. The patch was not applied "
+                        "or verified, so no successful source revision can be rolled back by the "
+                        "queue guard. If this patch inserts or changes a helper for the assigned "
+                        f"proof, retry the same patch with `theorem_id={target_symbol}`; that "
+                        "argument names the manager-owned verification anchor, not the helper "
+                        "being inserted. Otherwise finish the assigned declaration or wait for "
+                        "the next queue refresh before editing another queued theorem."
+                    ),
+                },
+                ensure_ascii=False,
+            )
     if function_name == "terminal":
         return json.dumps(
             {
@@ -7916,14 +8544,23 @@ def _managed_pre_tool_call(
             assigned_statement_signature = _queue_edit_assigned_statement_signature(
                 before_text, target_symbol
             )
+        protected_declarations = _queue_edit_protected_declarations(before_text, target_symbol)
+        autonomy_state = getattr(agent, "_managed_autonomy_state", {}) or {}
+        editable_answers = determine_answer_policy.editable_answer_names(
+            autonomy_state,
+            consumer_target=target_symbol,
+            consumer_file=active_file,
+        )
+        protected_declarations = determine_answer_policy.without_editable_answers(
+            protected_declarations,
+            editable_answers,
+        )
         guard_state = {
             "key": guard_key,
             "target_symbol": target_symbol,
             "active_file": active_file,
             "assigned_statement_signature": assigned_statement_signature,
-            "protected_declarations": _queue_edit_protected_declarations(
-                before_text, target_symbol
-            ),
+            "protected_declarations": protected_declarations,
         }
         agent._managed_queue_edit_guard_state = guard_state
     agent._managed_queue_edit_snapshot = {
@@ -9500,6 +10137,7 @@ def _finish_queue_step_boundary(
     cleanup_feedback_reason = ""
     feedback_kind = ""
     warning_retry_accepted = False
+    warning_cleanup_waiting_for_edit = False
     hard_retry_exhausted = False
     hard_retry_limit = 0
     hard_retry_count = 0
@@ -9627,6 +10265,45 @@ def _finish_queue_step_boundary(
                     and integration_target_entry
                     and not bool(integration_target_entry.get("has_sorry"))
                 )
+                target_gate_accepted = bool(
+                    _verification_accepts_theorem_outcome(
+                        verification_record,
+                        pending_target,
+                    )
+                    and integration_target_entry
+                    and not bool(integration_target_entry.get("has_sorry"))
+                )
+                if target_gate_accepted and isinstance(autonomy_state, dict):
+                    released_consumption = research_helper_candidate_priority.release_target_consumption_after_verified_target(
+                        autonomy_state,
+                        target_symbol=pending_target,
+                        active_file=pending_file,
+                    )
+                    if released_consumption:
+                        _record_activity(
+                            "research-helper-target-consumption-verified",
+                            f"Released helper-consumption fence after verified target {pending_target}",
+                            target_symbol=pending_target,
+                            active_file=pending_file,
+                            verification_tool=verification_tool,
+                        )
+                    source_sorry_count = _count_sorries(pending_file)
+                    if completion_policy.should_quiesce_research_after_target(
+                        target_gate_accepted=True,
+                        declaration_scope=_declaration_queue_scope(),
+                        source_sorry_count=source_sorry_count,
+                    ):
+                        _shutdown_campaign_research(
+                            autonomy_state,
+                            reason=f"verified final file target {pending_target}",
+                        )
+                        _record_activity(
+                            "research-portfolio-stopped-after-final-target",
+                            f"Stopped research after verified final target {pending_target}",
+                            target_symbol=pending_target,
+                            active_file=pending_file,
+                            source_sorry_count=source_sorry_count,
+                        )
                 manager_feedback_reason = str(
                     manager_check.get("output", "") or manager_check.get("error", "") or ""
                 ).strip() or _verification_status_text(verification_record)
@@ -9708,7 +10385,46 @@ def _finish_queue_step_boundary(
             str(manager_check.get("error", "") or ""),
             structured_items=manager_check.get("messages") or (),
         )
+        # A source-edit gate belongs to the declaration that triggered it even
+        # when the refreshed diagnostic lands on attached command trivia (for
+        # example a doc comment or ``set_option`` immediately before the
+        # theorem).  In that case the live queue may no longer contain the
+        # now-sorry-free target, but advancing would lose the exact file-level
+        # error that rejected its edit.  Preserve hard failures on the current
+        # turn; warning-only failures remain eligible for the final sweep.
+        if (
+            post_edit_verification
+            and not cleanup_feedback_reason
+            and not bool(manager_check.get("ok"))
+        ):
+            post_edit_feedback_kind = _manager_feedback_kind(
+                pending_file,
+                pending_target,
+                manager_check,
+            )
+            rendered_gate_failure = str(
+                manager_check.get("output", "") or manager_check.get("error", "") or ""
+            )
+            if not post_edit_feedback_kind and _diagnostics_indicate_hard_failure(
+                rendered_gate_failure
+            ):
+                post_edit_feedback_kind = "error"
+            if post_edit_feedback_kind in {"error", "sorry"}:
+                feedback_kind = post_edit_feedback_kind
         shadow_cleanup_reason = cleanup_feedback_reason
+        cleanup_source_slice = (
+            _declaration_slice_text(pending_file, pending_target) if cleanup_feedback_reason else ""
+        )
+        cleanup_source_unchanged = bool(
+            cleanup_feedback_reason
+            and isinstance(autonomy_state, dict)
+            and warning_cleanup_guard.unchanged_since_grant(
+                autonomy_state,
+                target_symbol=pending_target,
+                active_file=pending_file,
+                declaration=cleanup_source_slice,
+            )
+        )
         _a_decision = None
         if (
             not candidate_pending_commit
@@ -9811,23 +10527,43 @@ def _finish_queue_step_boundary(
             elif _a_decision.accepted_after_warning_limit:
                 manager_check["feedback_retry_count"] = _a_pre_count
                 manager_check["feedback_retry_limit"] = _a_decision.retry_limit
-                warning_retry_accepted = True
-                manager_check["accepted_after_warning_retry_limit"] = True
-                manager_check["acceptance_note"] = (
-                    "accepted after one warning-only cleanup opportunity; unrelated warnings cannot stall the theorem queue"
-                )
-                cleanup_feedback_reason = ""
-                feedback_kind = ""
-                _clear_manager_feedback_retries(
-                    autonomy_state,
-                    target_symbol=pending_target,
-                    active_file=pending_file,
-                )
+                if cleanup_source_unchanged and not post_edit_verification:
+                    warning_cleanup_waiting_for_edit = True
+                    feedback_kind = "warning"
+                    manager_check["cleanup_source_unchanged"] = True
+                    manager_check["acceptance_note"] = (
+                        "cleanup recheck did not edit the assigned declaration; "
+                        "the cleanup opportunity remains open"
+                    )
+                else:
+                    warning_retry_accepted = True
+                    manager_check["accepted_after_warning_retry_limit"] = True
+                    manager_check["acceptance_note"] = (
+                        "accepted after one warning-only cleanup opportunity; unrelated warnings cannot stall the theorem queue"
+                    )
+                    cleanup_feedback_reason = ""
+                    feedback_kind = ""
+                    warning_cleanup_guard.clear_grant(
+                        autonomy_state,
+                        target_symbol=pending_target,
+                        active_file=pending_file,
+                    )
+                    _clear_manager_feedback_retries(
+                        autonomy_state,
+                        target_symbol=pending_target,
+                        active_file=pending_file,
+                    )
             elif _a_decision.action == "continue_same_theorem" and feedback_kind == "warning":
                 # First warning-cleanup pass: keep the cleanup turn, consume one
                 # warning retry (legacy path).
                 manager_check["feedback_retry_count"] = _a_pre_count
                 manager_check["feedback_retry_limit"] = _a_decision.retry_limit
+                warning_cleanup_guard.remember_grant(
+                    autonomy_state,
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                    declaration=cleanup_source_slice,
+                )
                 _increment_manager_feedback_retry(
                     autonomy_state,
                     target_symbol=pending_target,
@@ -9911,14 +10647,31 @@ def _finish_queue_step_boundary(
                 manager_check["feedback_retry_count"] = retry_count
                 manager_check["feedback_retry_limit"] = MANAGER_WARNING_RETRY_LIMIT
                 if retry_count >= MANAGER_WARNING_RETRY_LIMIT:
-                    warning_retry_accepted = True
-                    manager_check["accepted_after_warning_retry_limit"] = True
-                    manager_check["acceptance_note"] = (
-                        "accepted after one warning-only cleanup opportunity; unrelated warnings cannot stall the theorem queue"
-                    )
-                    cleanup_feedback_reason = ""
-                    feedback_kind = ""
-                    if isinstance(autonomy_state, dict):
+                    if (
+                        cleanup_source_unchanged
+                        and not post_edit_verification
+                        and isinstance(autonomy_state, dict)
+                    ):
+                        warning_cleanup_waiting_for_edit = True
+                        manager_check["cleanup_source_unchanged"] = True
+                        manager_check["acceptance_note"] = (
+                            "cleanup recheck did not edit the assigned declaration; "
+                            "the cleanup opportunity remains open"
+                        )
+                    else:
+                        warning_retry_accepted = True
+                        manager_check["accepted_after_warning_retry_limit"] = True
+                        manager_check["acceptance_note"] = (
+                            "accepted after one warning-only cleanup opportunity; unrelated warnings cannot stall the theorem queue"
+                        )
+                        cleanup_feedback_reason = ""
+                        feedback_kind = ""
+                    if isinstance(autonomy_state, dict) and warning_retry_accepted:
+                        warning_cleanup_guard.clear_grant(
+                            autonomy_state,
+                            target_symbol=pending_target,
+                            active_file=pending_file,
+                        )
                         _clear_manager_feedback_retries(
                             autonomy_state,
                             target_symbol=pending_target,
@@ -9926,6 +10679,12 @@ def _finish_queue_step_boundary(
                         )
                 else:
                     if isinstance(autonomy_state, dict):
+                        warning_cleanup_guard.remember_grant(
+                            autonomy_state,
+                            target_symbol=pending_target,
+                            active_file=pending_file,
+                            declaration=cleanup_source_slice,
+                        )
                         _increment_manager_feedback_retry(
                             autonomy_state,
                             target_symbol=pending_target,
@@ -10098,6 +10857,7 @@ def _finish_queue_step_boundary(
             cleanup_feedback_reason=cleanup_feedback_reason,
             feedback_kind=feedback_kind,
             warning_retry_accepted=warning_retry_accepted,
+            warning_cleanup_waiting_for_edit=warning_cleanup_waiting_for_edit,
             hard_retry_exhausted=hard_retry_exhausted,
             hard_retry_count=hard_retry_count,
             hard_retry_limit=hard_retry_limit,
@@ -10133,9 +10893,17 @@ def _finish_queue_step_boundary(
                 )
             if cleanup_feedback_reason:
                 feedback_lines.append(f"- local cleanup: {cleanup_feedback_reason}")
-                feedback_lines.append(
-                    "- cleanup opportunity: this consumes the assigned declaration's one focused warning-cleanup opportunity; if the next manager check still sees only warnings here, the queue advances"
-                )
+                if warning_cleanup_waiting_for_edit:
+                    feedback_lines.append(
+                        "- cleanup opportunity: the last verification rechecked an unchanged declaration, so it did not consume or close the cleanup edit"
+                    )
+                    feedback_lines.append(
+                        "- next action: make one safe edit in the flagged declaration, or inspect it and use the explicit final-report bail clause; another unchanged verification call will not advance the queue"
+                    )
+                else:
+                    feedback_lines.append(
+                        "- cleanup opportunity: one focused warning-cleanup edit is now open; a changed declaration will be checked once, then the queue advances even if warning-only evidence remains"
+                    )
                 feedback_lines.append(
                     "- expected effort: attempt at least one safe edit before bailing — low-risk fixes include "
                     "removing a `try { ... }`/`<;> try { ... }` whose tactic is reported as never executed, "
@@ -10254,15 +11022,21 @@ def _finish_queue_step_boundary(
                         manager_check.get("feedback_retry_limit", MANAGER_WARNING_RETRY_LIMIT)
                         or MANAGER_WARNING_RETRY_LIMIT
                     )
-                    used = max(1, retry_count + 1)
+                    used = min(retry_limit, max(1, retry_count + 1))
                     print(
                         f"\n🟡 Cleanup feedback for {pending_target}: "
                         f"{_single_line(cleanup_feedback_reason, 220)}"
                     )
-                    print(
-                        f"   focused warning-cleanup opportunity granted "
-                        f"({used}/{retry_limit}); agent gets one more edit on this declaration"
-                    )
+                    if warning_cleanup_waiting_for_edit:
+                        print(
+                            "   unchanged recheck detected; cleanup remains open until a safe edit "
+                            "or explicit final-report bail"
+                        )
+                    else:
+                        print(
+                            f"   focused warning-cleanup opportunity granted "
+                            f"({used}/{retry_limit}); agent gets one more edit on this declaration"
+                        )
                 elif still_blocked:
                     print(
                         f"\n↻ Verification did not clear {pending_target}; "
@@ -10290,8 +11064,9 @@ def _finish_queue_step_boundary(
                 _print_queue_step_separator(pending_target)
             elif hard_retry_exhausted:
                 print(
-                    f"\n↻ Local feedback window complete for {pending_target}; "
-                    "safe state checkpointed and the campaign continues on a new route."
+                    f"\n↻ Intermediate turn incomplete for {pending_target}; "
+                    "safe state checkpointed, the declaration remains pending, and the campaign "
+                    "continues on a new route."
                 )
                 _print_queue_step_separator(pending_target, accepted=False)
             elif manager_check and not bool(manager_check.get("ok")):
@@ -10309,6 +11084,11 @@ def _finish_queue_step_boundary(
         with contextlib.suppress(Exception):
             agent.clear_tool_result_appendix()
         if isinstance(autonomy_state, dict):
+            warning_cleanup_guard.clear_grant(
+                autonomy_state,
+                target_symbol=pending_target,
+                active_file=pending_file,
+            )
             with contextlib.suppress(Exception):
                 queue_scope = _queue_key(pending_target, pending_file)
                 if queue_scope.is_valid():
@@ -10561,6 +11341,60 @@ def _handle_managed_tool_result(
                     )
                 except Exception:
                     logger.debug("advisor route-fact persistence failed", exc_info=True)
+                payload = _json_tool_result_payload(_result)
+                if _managed_tool_result_succeeded(_result) and str(
+                    payload.get("status", "") or ""
+                ).strip().lower() in {"answered", "completed", "success"}:
+                    target_declaration_sha256 = _target_declaration_sha256(
+                        active_file,
+                        target_symbol,
+                    )
+                    with contextlib.suppress(Exception):
+                        planner_evidence.record_advisor_evidence(
+                            result_text=_result,
+                            payload=payload,
+                            target_symbol=target_symbol,
+                            active_file=active_file,
+                            target_declaration_sha256=target_declaration_sha256,
+                        )
+                    advice_marker = route_execution.record_planner_terminal_obstacle(
+                        autonomy_state,
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        target_signature_sha256=(
+                            research_helper_candidate_priority.target_signature_sha256(
+                                active_file,
+                                target_symbol,
+                            )
+                        ),
+                        target_declaration_sha256=target_declaration_sha256,
+                        outcome="advisor-completed",
+                        reason=(
+                            "successful lean_reasoning_help advice must be attempted in "
+                            "the assigned declaration before another planning request"
+                        ),
+                    )
+                    if advice_marker.get("target_declaration_sha256"):
+                        with contextlib.suppress(Exception):
+                            campaign_epoch.record_planner_terminal_obstacle(
+                                autonomy_state,
+                                advice_marker,
+                            )
+                    with contextlib.suppress(Exception):
+                        _record_agent_activity(
+                            agent,
+                            "planner-advice-pending",
+                            (
+                                "Recorded successful reasoning advice; require a target-proof "
+                                "attempt before replanning"
+                            ),
+                            target_symbol=target_symbol,
+                            active_file=active_file,
+                            target_declaration_sha256=str(
+                                advice_marker.get("target_declaration_sha256", "") or ""
+                            ),
+                            campaign_progress=False,
+                        )
     if not _single_queue_item_turn_enabled() or _agent_interrupted(agent):
         return
     # A completed background finding may have arrived while the model was in
@@ -10726,6 +11560,11 @@ def _handle_managed_tool_result(
                         retired = research_helper_candidate_priority.resolve(
                             managed_autonomy,
                             disposition="integrated_managed_edit",
+                            # Every foreground-priority helper consumes one
+                            # source-growth slot. A graph "evidence" label must
+                            # not reopen an unlimited helper-only loop while
+                            # the assigned theorem remains unchanged.
+                            require_target_consumption=True,
                         )
                         autonomy_state = getattr(agent, "_managed_autonomy_state", {}) or {}
                         if isinstance(autonomy_state, dict):
@@ -11010,6 +11849,35 @@ def _handle_managed_tool_result(
         args,
         active_file=pending_file,
     ):
+        if function_name == "lean_verify" and pending_target and pending_file:
+            checked_file = str(
+                dict(args or {}).get("target", "")
+                or dict(args or {}).get("file_path", "")
+                or dict(args or {}).get("path", "")
+                or ""
+            ).strip()
+            if checked_file:
+                _record_activity(
+                    "queue-scratch-verification-checked",
+                    f"Checked exploratory file while assigned to {pending_target}",
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                    checked_file=checked_file,
+                    checked_ok=_managed_tool_result_succeeded(_result),
+                    campaign_progress=False,
+                )
+                with contextlib.suppress(Exception):
+                    agent.set_tool_result_appendix(
+                        "\n".join(
+                            [
+                                "[LEANFLOW-NATIVE EXPLORATORY FILE CHECK]",
+                                f"- checked file: {checked_file}",
+                                f"- assigned declaration: {pending_target}",
+                                "- scope: scratch/ad-hoc verification only; this result does not consume an assigned-theorem attempt",
+                                "- next action: use any useful diagnostic as evidence, then continue or exact-check the assigned declaration",
+                            ]
+                        )
+                    )
         return
     if not pending_target or not pending_file:
         return
@@ -11746,8 +12614,13 @@ def _declaration_work_queue(
                     kind=str(entry.get("kind", "") or ""),
                 )
         if not queue and diagnostics_active and diagnostic_lines:
-            fallback = _nearest_declaration_name(active_file, next(iter(diagnostic_lines), None))
-            _append(active_file, fallback or "[file-level blocker]", ["diagnostics unresolved"])
+            # A diagnostic between parsed declaration ranges is not evidence
+            # against the preceding declaration.  Lean commonly reports
+            # command-elaboration failures on attached doc comments,
+            # attributes, or options immediately before the actual theorem.
+            # Keep this visibly file-scoped instead of silently reassigning a
+            # proved helper.
+            _append(active_file, "[file-level blocker]", ["diagnostics unresolved"])
         return queue
 
     root = project_root or _project_root()
@@ -11806,6 +12679,11 @@ def _prepare_queue_assignment_state(
     ).strip()
     slice_text = str(current.get("current_queue_item_slice", "") or "").strip()
     mgr = _queue_manager_from_state(autonomy_state, current)
+    _recover_provisional_determine_answer_assignment(
+        autonomy_state,
+        target_symbol=label,
+        active_file=active_file,
+    )
     if not label or not active_file:
         mgr.clear_assignment()
         _flush_queue_manager(autonomy_state, mgr)
@@ -11868,36 +12746,98 @@ def _prepare_queue_assignment_state(
                 or int(blocking_entry.get("line", 0) or 0) < int(assigned_entry.get("line", 0) or 0)
             ):
                 original_label = label
-                label = blocking_label
-                slice_text = _declaration_slice_text(active_file, label)
-                item = {
-                    "label": label,
-                    "file": active_file,
-                    "kind": str(blocking_entry.get("kind", "") or ""),
-                    "line": int(blocking_entry.get("line", 0) or 0),
-                    "end_line": int(blocking_entry.get("end_line", 0) or 0),
-                    "reasons": [f"incremental environment blocker before {original_label}"],
-                    "blocker_signature": f"incremental-prerequisite:{label}",
-                    "search_hints": [label, str(blocking_entry.get("kind", "") or "")],
-                    "verification_gate": _canonical_file_verification_command(active_file),
+                reassignment_signature = hashlib.sha256(
+                    "\x1f".join(
+                        (
+                            os.path.realpath(active_file),
+                            original_label,
+                            blocking_label,
+                            str(prepare_dict.get("error", "") or ""),
+                        )
+                    ).encode("utf-8")
+                ).hexdigest()
+                prior_reassignments = {
+                    str(value)
+                    for value in (
+                        autonomy_state.get("incremental_prerequisite_reassignments") or []
+                    )
                 }
-                prepare_dict = _manager_prepare_incremental_queue_item(active_file, label)
-                prepare = PrepareState.from_mapping(prepare_dict)
-                autonomy_state.pop("orchestrator_scope_entered", None)
-                if isinstance(live_state, dict):
-                    live_state["current_queue_item"] = dict(item)
-                    live_state["target_symbol"] = label
-                    live_state["current_queue_item_slice"] = slice_text
-                _record_activity(
-                    "queue-prerequisite-reassigned",
-                    f"Queue reassigned from {original_label} to prerequisite {label}",
-                    target_symbol=label,
-                    blocked_target_symbol=original_label,
-                    active_file=active_file,
-                    success=bool(prepare_dict.get("success")),
-                    error=str(prepare_dict.get("error", "") or ""),
-                )
-                print(f"Queue prerequisite reassigned to {label}")
+                if reassignment_signature in prior_reassignments:
+                    _record_activity(
+                        "queue-prerequisite-reassignment-bounded",
+                        (
+                            f"Kept {original_label} assigned after repeated incremental "
+                            f"prerequisite attribution to {blocking_label}"
+                        ),
+                        target_symbol=original_label,
+                        attributed_prerequisite=blocking_label,
+                        active_file=active_file,
+                        error=str(prepare_dict.get("error", "") or ""),
+                    )
+                    print(
+                        "Queue prerequisite reassignment bounded: "
+                        f"{blocking_label} remains diagnostic context for {original_label}"
+                    )
+                else:
+                    blocking_check = _manager_incremental_check_queue_item(
+                        active_file,
+                        blocking_label,
+                    )
+                    prior_reassignments.add(reassignment_signature)
+                    autonomy_state["incremental_prerequisite_reassignments"] = sorted(
+                        prior_reassignments
+                    )[-128:]
+                    if bool(blocking_check.get("ok")):
+                        _record_activity(
+                            "queue-prerequisite-attribution-rejected",
+                            (
+                                f"Kept {original_label} assigned because claimed prerequisite "
+                                f"{blocking_label} is kernel-clean"
+                            ),
+                            target_symbol=original_label,
+                            attributed_prerequisite=blocking_label,
+                            active_file=active_file,
+                            check=dict(blocking_check),
+                            error=str(prepare_dict.get("error", "") or ""),
+                        )
+                        print(
+                            "Queue prerequisite attribution rejected: "
+                            f"{blocking_label} is kernel-clean; keeping {original_label}"
+                        )
+                    else:
+                        label = blocking_label
+                        slice_text = _declaration_slice_text(active_file, label)
+                        item = {
+                            "label": label,
+                            "file": active_file,
+                            "kind": str(blocking_entry.get("kind", "") or ""),
+                            "line": int(blocking_entry.get("line", 0) or 0),
+                            "end_line": int(blocking_entry.get("end_line", 0) or 0),
+                            "reasons": [f"incremental environment blocker before {original_label}"],
+                            "blocker_signature": f"incremental-prerequisite:{label}",
+                            "search_hints": [
+                                label,
+                                str(blocking_entry.get("kind", "") or ""),
+                            ],
+                            "verification_gate": _canonical_file_verification_command(active_file),
+                        }
+                        prepare_dict = _manager_prepare_incremental_queue_item(active_file, label)
+                        prepare = PrepareState.from_mapping(prepare_dict)
+                        autonomy_state.pop("orchestrator_scope_entered", None)
+                        if isinstance(live_state, dict):
+                            live_state["current_queue_item"] = dict(item)
+                            live_state["target_symbol"] = label
+                            live_state["current_queue_item_slice"] = slice_text
+                        _record_activity(
+                            "queue-prerequisite-reassigned",
+                            f"Queue reassigned from {original_label} to prerequisite {label}",
+                            target_symbol=label,
+                            blocked_target_symbol=original_label,
+                            active_file=active_file,
+                            success=bool(prepare_dict.get("success")),
+                            error=str(prepare_dict.get("error", "") or ""),
+                        )
+                        print(f"Queue prerequisite reassigned to {label}")
     mgr.assign(
         QueueItem.from_mapping({**item, "label": label}),
         active_file=active_file,
@@ -11930,7 +12870,7 @@ def _inject_premise_hints(
     target_symbol: str,
     active_file: str,
 ) -> list[str]:
-    """Premise retrieval at queue assignment (roadmap §4.6, flag-gated).
+    """Retrieve premise suggestions once per queue assignment.
 
     Runs `lean_lemma_suggest` ONCE per assignment (cached per theorem key in
     the non-manager-owned 'premise_hints' autonomy key, so it survives queue
@@ -12366,11 +13306,15 @@ def _queue_assignment_block(
         "",
         "Focus:",
         f"- solve `{label}`",
-        "- helper decomposition is a standard strategy: state helper lemmas scoped to this theorem, prove each, and assemble; a new helper's `sorry` is normal work-in-progress during the turn",
+        "- helper decomposition is a standard strategy: check each complete helper ephemerally, "
+        "then bank it through `apply_verified_patch`; never leave a new helper `sorry` in source",
         "- do not start solving unrelated future queue items",
         "- future queued `sorry` warnings are queue state only; do not edit those declarations in this turn",
         "- if the assigned declaration verifies and only unrelated queued declarations remain, stop and let the manager hand off the next item",
-        "- after a meaningful edit, stop and let the manager re-check the queue (a decompose-and-insert helper batch counts as one meaningful edit)",
+        "- a verified helper is a checkpoint, not a turn-completion condition: immediately continue "
+        "repairing and checking the assigned declaration in this same turn",
+        "- do not end an unresolved turn merely because one safe edit succeeded; keep iterating while "
+        "there is a concrete local edit, check, search, or decomposition step available",
         "- for this file-scoped theorem turn, use `lean_incremental_check(check_target)` as the fast queue-step acceptance check; `lean_verify(mode=file_exact)` is reserved for final Lake sweeps, fallback, or explicit canonical verification",
         "- use Lean tools for normal verification so the manager can classify the assigned declaration; terminal-based Lake checks are emergency/manual fallback only",
     ]
@@ -12410,6 +13354,26 @@ def _queue_assignment_block(
         parts.extend(["", "Disabled this run:", f"- {', '.join(disabled_tools)}"])
     if search_hints:
         parts.extend(["", "Search hints:", f"- {', '.join(search_hints[:4])}"])
+    companion_advice = companion_module_policy.companion_module_advice(
+        active_file,
+        project_root=_project_root(),
+    )
+    if companion_advice:
+        parts.extend(["", companion_advice])
+    source_order_advice = source_order_dependency_guard.source_order_dependency_advice(
+        plan_state.load_blueprint(),
+        target_symbol=label,
+        active_file=active_file,
+    )
+    if source_order_advice:
+        parts.extend(["", source_order_advice])
+    determine_answer_advice = determine_answer_policy.prompt(
+        autonomy_state,
+        consumer_target=label,
+        consumer_file=active_file,
+    )
+    if determine_answer_advice:
+        parts.extend(["", determine_answer_advice])
     premise_hints = _premise_hints_for(autonomy_state, target_symbol=label, active_file=active_file)
     if premise_hints:
         parts.extend(
@@ -12629,13 +13593,276 @@ def _record_theorem_outcome(autonomy_state: dict[str, Any], outcome: Mapping[str
         )
 
 
+def _ensure_determine_answer_exact_gate(
+    autonomy_state: dict[str, Any],
+    dependency: determine_answer_policy.DetermineAnswerDependency,
+) -> dict[str, Any]:
+    """Return a fresh exact answer gate instead of inheriting consumer sorries."""
+    existing = _last_verification_record(autonomy_state)
+    if _determine_answer_elaboration_gate_accepts(
+        existing,
+        dependency.answer_target,
+        dependency.answer_file,
+    ):
+        return existing
+    manager_check, manager_tool = _manager_check_queue_item(
+        dependency.answer_file,
+        dependency.answer_target,
+    )
+    verification = _record_manager_verification(
+        autonomy_state,
+        dependency.answer_file,
+        dependency.answer_target,
+        manager_check,
+        manager_tool,
+    )
+    if (
+        not _determine_answer_elaboration_gate_accepts(
+            verification,
+            dependency.answer_target,
+            dependency.answer_file,
+        )
+        and bool(verification.get("ok"))
+        and int(verification.get("errors", 0) or 0) == 0
+        and str(verification.get("scope", "") or "") in {"file", "file_exact"}
+    ):
+        entry = _find_declaration_entry(
+            dependency.answer_file,
+            dependency.answer_target,
+        )
+        answer_source = str((entry or {}).get("text", "") or "")
+        if answer_source and not _text_has_sorry(answer_source):
+            verification = {
+                "scope": f"target:{dependency.answer_target}",
+                "ok": True,
+                "tool": "determine_answer_elaboration",
+                "target": dependency.answer_target,
+                "active_file": dependency.answer_file,
+                "errors": 0,
+                "warnings": 0,
+                "sorry": 0,
+                "summary": (
+                    "projected from a clean file elaboration while only later queue "
+                    "declarations retain placeholders; provisional authority only"
+                ),
+            }
+            _store_last_verification(autonomy_state, verification)
+    _record_activity(
+        "determine-answer-exact-transition-gate",
+        (
+            f"Checked {dependency.answer_target} exactly before handing off to "
+            f"{dependency.consumer_target}"
+        ),
+        target_symbol=dependency.answer_target,
+        active_file=dependency.answer_file,
+        consumer_target_symbol=dependency.consumer_target,
+        accepted=_determine_answer_elaboration_gate_accepts(
+            verification,
+            dependency.answer_target,
+            dependency.answer_file,
+        ),
+        verification=verification,
+    )
+    return verification
+
+
+def _determine_answer_elaboration_gate_accepts(
+    verification: Mapping[str, Any] | None,
+    answer_target: str,
+    answer_file: str,
+) -> bool:
+    """Accept exact proof evidence or a provisional-only elaboration projection."""
+    record = dict(verification or {})
+    if _verification_accepts_theorem_outcome(record, answer_target):
+        return True
+    if (
+        str(record.get("tool", "") or "") != "determine_answer_elaboration"
+        or not bool(record.get("ok"))
+        or int(record.get("errors", 0) or 0) != 0
+        or int(record.get("sorry", 0) or 0) != 0
+        or not _verification_record_targets_symbol(record, answer_target)
+    ):
+        return False
+    entry = _find_declaration_entry(answer_file, answer_target)
+    source = str((entry or {}).get("text", "") or "")
+    return bool(source) and not _text_has_sorry(source)
+
+
+def _recover_provisional_determine_answer_assignment(
+    autonomy_state: dict[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> bool:
+    """Recover answer/result coupling when a run resumes directly on the result."""
+    if not target_symbol or not active_file:
+        return False
+    if determine_answer_policy.entries_for_consumer(
+        autonomy_state,
+        consumer_target=target_symbol,
+        consumer_file=active_file,
+    ):
+        return False
+    dependency = determine_answer_policy.discover_for_consumer(
+        active_file,
+        target_symbol,
+    )
+    if dependency is None:
+        return False
+    verification = _ensure_determine_answer_exact_gate(
+        autonomy_state,
+        dependency,
+    )
+    if not _determine_answer_elaboration_gate_accepts(
+        verification,
+        dependency.answer_target,
+        dependency.answer_file,
+    ):
+        return False
+    determine_answer_policy.register(
+        autonomy_state,
+        dependency,
+        verification=verification,
+    )
+    mgr = _queue_manager_from_state(autonomy_state)
+    mgr.record_outcome_for(
+        _queue_key(dependency.answer_target, dependency.answer_file),
+        status="provisional",
+        note=(
+            f"{dependency.answer_target} elaborates, but its proposed value remains "
+            f"provisional until {dependency.consumer_target} verifies."
+        ),
+        verification=verification_from_mapping(verification),
+    )
+    _flush_queue_manager(autonomy_state, mgr)
+    _record_activity(
+        "determine-answer-provisional-recovered",
+        (
+            f"Recovered provisional {dependency.answer_target} coupling before "
+            f"resuming {dependency.consumer_target}"
+        ),
+        target_symbol=dependency.answer_target,
+        active_file=dependency.answer_file,
+        consumer_target_symbol=dependency.consumer_target,
+    )
+    return True
+
+
+def _reconcile_determine_answer_outcome(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+    outcome: Mapping[str, Any],
+) -> None:
+    """Persist provisional answers and promote them only with their solved consumer."""
+    status = str(outcome.get("status", "") or "").strip().lower()
+    if status == "provisional":
+        dependency = determine_answer_policy.detect_transition(
+            dict(autonomy_state.get("current_queue_assignment") or {}),
+            live_state,
+        )
+        if dependency is None:
+            return
+        determine_answer_policy.register(
+            autonomy_state,
+            dependency,
+            verification=dict(outcome.get("last_verification") or {}),
+        )
+        _record_activity(
+            "determine-answer-provisional",
+            (
+                f"Kept {dependency.answer_target} provisional until "
+                f"{dependency.consumer_target} verifies"
+            ),
+            target_symbol=dependency.answer_target,
+            active_file=dependency.answer_file,
+            consumer_target_symbol=dependency.consumer_target,
+            consumer_active_file=dependency.consumer_file,
+        )
+        return
+    if status != "solved":
+        return
+    consumer_target = str(outcome.get("target_symbol", "") or "").strip()
+    consumer_file = str(outcome.get("active_file", "") or "").strip()
+    coupled = determine_answer_policy.entries_for_consumer(
+        autonomy_state,
+        consumer_target=consumer_target,
+        consumer_file=consumer_file,
+    )
+    if not coupled:
+        return
+    checked_entries: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for entry in coupled:
+        answer_target = str(entry.get("answer_target", "") or "").strip()
+        answer_file = str(entry.get("answer_file", "") or "").strip()
+        manager_check, manager_tool = _manager_check_queue_item(
+            answer_file,
+            answer_target,
+        )
+        verification = _verification_record_from_check(
+            answer_file,
+            answer_target,
+            manager_check,
+            manager_tool,
+        )
+        if not _verification_accepts_theorem_outcome(verification, answer_target):
+            _record_activity(
+                "determine-answer-promotion-blocked",
+                (
+                    f"Kept {answer_target} provisional because its current exact "
+                    f"kernel recheck failed after {consumer_target} verified"
+                ),
+                target_symbol=answer_target,
+                active_file=answer_file,
+                consumer_target_symbol=consumer_target,
+                verification=verification,
+            )
+            return
+        checked_entries.append((entry, verification))
+    resolved = determine_answer_policy.resolve_for_consumer(
+        autonomy_state,
+        consumer_target=consumer_target,
+        consumer_file=consumer_file,
+    )
+    if len(resolved) != len(checked_entries):
+        return
+    mgr = _queue_manager_from_state(autonomy_state)
+    promoted: list[str] = []
+    for entry, verification in checked_entries:
+        answer_target = str(entry.get("answer_target", "") or "").strip()
+        answer_file = str(entry.get("answer_file", "") or "").strip()
+        if not answer_target or not answer_file:
+            continue
+        mgr.record_outcome_for(
+            _queue_key(answer_target, answer_file),
+            status="solved",
+            note=(
+                f"{answer_target} promoted only after its characterizing theorem "
+                f"{consumer_target} passed the kernel gate."
+            ),
+            verification=verification_from_mapping(verification),
+        )
+        promoted.append(answer_target)
+    _flush_queue_manager(autonomy_state, mgr)
+    if promoted:
+        _record_activity(
+            "determine-answer-promoted",
+            (
+                f"Promoted {', '.join(promoted)} after the characterizing theorem "
+                f"{consumer_target} verified"
+            ),
+            target_symbols=promoted,
+            active_file=consumer_file,
+            consumer_target_symbol=consumer_target,
+        )
+
+
 def _remember_transition_failed_attempt(
     autonomy_state: dict[str, Any],
     outcome: Mapping[str, Any],
 ) -> None:
     current = dict(outcome or {})
     status = str(current.get("status", "") or "").strip().lower()
-    if not status or status == "solved":
+    if not status or status in {"solved", "provisional"}:
         return
     target_symbol = str(current.get("target_symbol", "") or "").strip()
     active_file = str(current.get("active_file", "") or "").strip()
@@ -12890,6 +14117,10 @@ def _summarize_theorem_transition_outcome(
     )
     pending = _theorem_is_still_pending(live_state, previous_target)
     last_verification = _last_verification_record(autonomy_state, live_state)
+    determine_dependency = determine_answer_policy.detect_transition(
+        dict(autonomy_state.get("current_queue_assignment") or {}),
+        live_state,
+    )
     if pending and ("reverted to `sorry`" in recent_text or "reverted to sorry" in lowered):
         status = "reverted-to-sorry"
         note = (
@@ -12906,6 +14137,16 @@ def _summarize_theorem_transition_outcome(
     elif pending:
         status = "skipped"
         note = f"{previous_target} remains pending in the declaration queue."
+    elif determine_dependency is not None and _determine_answer_elaboration_gate_accepts(
+        last_verification,
+        determine_dependency.answer_target,
+        determine_dependency.answer_file,
+    ):
+        status = "provisional"
+        note = (
+            f"{previous_target} elaborates, but its proposed value remains provisional "
+            f"until the characterizing theorem {determine_dependency.consumer_target} verifies."
+        )
     elif _verification_accepts_theorem_outcome(last_verification, previous_target):
         status = "solved"
         note = f"{previous_target} no longer appears in the pending declaration queue."
@@ -13200,8 +14441,15 @@ def _rebuild_history_for_theorem_transition(
     transition = _queue_assignment_transition(autonomy_state, live_state)
     if not transition:
         return None, None
+    dependency = determine_answer_policy.detect_transition(
+        dict(autonomy_state.get("current_queue_assignment") or {}),
+        live_state,
+    )
+    if dependency is not None:
+        _ensure_determine_answer_exact_gate(autonomy_state, dependency)
     outcome = _summarize_theorem_transition_outcome(autonomy_state, live_state, history)
     _record_theorem_outcome(autonomy_state, outcome)
+    _reconcile_determine_answer_outcome(autonomy_state, live_state, outcome)
     _remember_transition_failed_attempt(autonomy_state, outcome)
     if str(outcome.get("status", "") or "").strip().lower() == "solved":
         _clear_failed_attempts_for_theorem(
@@ -13284,6 +14532,7 @@ def _maybe_record_drain_theorem_outcome(
         autonomy_state, live_state, history, previous_target=target, previous_file=file
     )
     _record_theorem_outcome(autonomy_state, outcome)
+    _reconcile_determine_answer_outcome(autonomy_state, live_state, outcome)
     if str(outcome.get("status", "") or "").strip().lower() == "solved":
         _clear_failed_attempts_for_theorem(autonomy_state, target_symbol=target, active_file=file)
     return True
@@ -13307,6 +14556,33 @@ def _print_theorem_transition_handoff(history: list[dict[str, Any]]) -> None:
     print("Queue handoff for next model turn:")
     for line in handoff.splitlines():
         print(f"  {line}" if line else "")
+
+
+def _stabilize_live_state_before_theorem_transition(
+    history: list[dict[str, Any]],
+    checkpoint_state: Mapping[str, Any] | None,
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Reconcile planning state before publishing a changed queue assignment.
+
+    A just-verified dependency can change graph precedence after the first live
+    snapshot. Rebuild once after plan synchronization so the handoff never
+    advertises a downstream parent and then silently retargets its prerequisite.
+    """
+    current = dict(live_state or {})
+    if not plan_state_enabled() or _queue_assignment_transition(autonomy_state, current) is None:
+        return current
+    _maybe_sync_plan_state(autonomy_state, current)
+    refreshed_checkpoint = dict(checkpoint_state or {})
+    with contextlib.suppress(Exception):
+        refreshed_checkpoint = _journal_status()
+    refreshed = _build_live_proof_state_compat(
+        history,
+        refreshed_checkpoint,
+        autonomy_state,
+    )
+    return _promote_live_state_to_verified_compat(refreshed, autonomy_state)
 
 
 def _queue_needs_final_file_sweep(live_state: Mapping[str, Any] | None) -> bool:
@@ -13633,7 +14909,7 @@ def _run_advisory_verification_review(
             task=task,
             prompt=prompt,
             cwd=_project_root(),
-            timeout_s=1200,
+            timeout_s=advisory_verification_timeout_s(),
         )
     else:
         result = run_model_verification_review(
@@ -13641,7 +14917,7 @@ def _run_advisory_verification_review(
             task=task,
             prompt=prompt,
             system_prompt=_verification_review_system_prompt(task),
-            timeout_s=1200,
+            timeout_s=advisory_verification_timeout_s(),
         )
     payload = _verification_review_result_payload(result)
     _record_activity(
@@ -15297,9 +16573,10 @@ def _recommended_verification_command(active_file: str) -> str:
 def _run_explicit_verification_build(
     active_file: str = "", *, full_project: bool = False
 ) -> tuple[bool, str]:
-    mode = "project"
-    if not full_project and active_file:
-        mode = "module" if _module_name_for_file(active_file) else "file_exact"
+    if not full_project:
+        ok, status, _output = _run_exact_file_verification(active_file)
+        return ok, status
+    mode = completion_policy.focused_verification_mode(full_project=full_project)
     result = lean_verify(target=active_file, cwd=_project_root(), mode=mode)
     if result.ok:
         return True, f"{result.command} succeeded"
@@ -15307,36 +16584,57 @@ def _run_explicit_verification_build(
     return False, f"{result.command} reported errors: {detail[:280]}"
 
 
-def _verified_startup_preflight(
+def _run_exact_file_verification(active_file: str) -> tuple[bool, str, str]:
+    """Run one exact-file Lean check and return status plus complete diagnostics."""
+    result = lean_verify(target=active_file, cwd=_project_root(), mode="file_exact")
+    output = str(result.output or "")
+    if result.ok:
+        return True, f"{result.command} succeeded", output
+    detail = output.strip() or "verification failed"
+    return False, f"{result.command} reported errors: {detail[:280]}", output
+
+
+def _provider_free_exact_scope_state(
     history: list[dict[str, Any]],
     checkpoint_state: Mapping[str, Any] | None,
     autonomy_state: dict[str, Any],
+    *,
+    expected_live_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return a verified file state without starting capability backends.
+    """Build and verify the requested scope without starting capability services."""
+    expected = dict(expected_live_state or {})
+    expected_file = str(expected.get("active_file", "") or "").strip()
+    resolved_file = _resolve_active_file(history, checkpoint_state)
+    if expected_file and resolved_file:
+        if Path(expected_file).expanduser().resolve() != Path(resolved_file).expanduser().resolve():
+            raise RuntimeError(
+                "terminal active file changed between provisional and exact verification"
+            )
+    active_file = expected_file or resolved_file
+    if not active_file:
+        return {}
 
-    A zero-sorry file is cheap to check with the exact Lean command.  Running
-    this gate before the comprehensive proof-state builder avoids starting the
-    LSP, Loogle, and proof-automation MCP processes merely to discover that a
-    resumed campaign is already complete.  Any uncertainty or failed check
-    falls through to the normal capability-rich startup path.
-    """
-    if _workflow_kind() != "prove":
-        return {}
-    active_file = _resolve_active_file(history, checkpoint_state)
-    if not active_file or _count_sorries(active_file) != 0:
-        return {}
-    declaration_scope = _declaration_queue_scope()
+    sorry_count = _count_sorries(active_file)
+    diagnostics = ""
+    focused_verification: tuple[bool, str] | None = None
+    if sorry_count == 0:
+        ok, status, diagnostics = _run_exact_file_verification(active_file)
+        focused_verification = (ok, status)
+    else:
+        diagnostics = f"source scan found {sorry_count} unresolved sorry placeholder(s)"
+
+    declaration_scope = str(expected.get("declaration_scope", "") or _declaration_queue_scope())
     active_file_label = _relative_file_label(active_file) or active_file
     candidate = {
         "active_file": active_file,
         "active_file_label": active_file_label,
-        "target_symbol": "",
-        "diagnostics": "",
-        "goals": "no goals",
+        "target_symbol": str(expected.get("target_symbol", "") or ""),
+        "diagnostics": diagnostics,
+        "goals": "no goals" if sorry_count == 0 else str(expected.get("goals", "") or ""),
         "build_status": "",
         "last_verification": _last_verification_record(autonomy_state),
         "declaration_scope": declaration_scope,
-        "declaration_queue_total": 0,
+        "declaration_queue_total": int(expected.get("declaration_queue_total", 0) or 0),
         "declaration_queue": [],
         "declaration_queue_preview": [],
         "declaration_queue_summary": "[empty]",
@@ -15345,7 +16643,7 @@ def _verified_startup_preflight(
         "current_queue_item_slice": "",
         "current_blocker": "",
         "queue_needs_final_file_sweep": declaration_scope == "file",
-        "sorry_count": 0,
+        "sorry_count": sorry_count,
         "project_sorry_count": None,
         "project_sorry_files": [],
         "blocker_summary": "",
@@ -15355,12 +16653,45 @@ def _verified_startup_preflight(
         "document_formalization_handoff": {},
         "message": "",
     }
+    return _promote_live_state_to_verified_compat(
+        candidate,
+        autonomy_state,
+        focused_verification=focused_verification,
+    )
+
+
+def _verified_startup_preflight(
+    history: list[dict[str, Any]],
+    checkpoint_state: Mapping[str, Any] | None,
+    autonomy_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a resolved file state without starting capability backends.
+
+    A zero-sorry file is cheap to check with the exact Lean command.  Running
+    this gate before the comprehensive proof-state builder avoids starting the
+    LSP, Loogle, and proof-automation MCP processes merely to discover that a
+    resumed campaign is already complete. Preserve a granted final-sweep
+    warning-cleanup state too, so startup can initialize the model for that
+    single pending turn instead of losing the state and taking a stale
+    verified-exit path. Any uncertainty or failed check falls through to the
+    normal capability-rich startup path.
+    """
+    if _workflow_kind() != "prove":
+        return {}
     try:
-        promoted = _promote_live_state_to_verified_compat(candidate, autonomy_state)
+        promoted = _provider_free_exact_scope_state(
+            history,
+            checkpoint_state,
+            autonomy_state,
+        )
     except Exception:
         logger.debug("verified startup preflight failed", exc_info=True)
         return {}
-    return promoted if _live_state_is_verified(promoted) else {}
+    if _live_state_is_verified(promoted) or bool(
+        promoted.get("final_sweep_warning_cleanup_pending")
+    ):
+        return promoted
+    return {}
 
 
 def _build_source_only_startup_snapshot(
@@ -15594,6 +16925,8 @@ def _log_manager_verification(
 def _promote_live_state_to_verified(
     live_state: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any] | None = None,
+    *,
+    focused_verification: tuple[bool, str] | None = None,
 ) -> dict[str, Any]:
     """Elevate a live-proof state to verified by running explicit Lean builds (file and optionally project scope) and processing document-formalization gates, final-sweep warning cleanup, and goal/sorry cleanup checks."""
     normalized = dict(live_state or {})
@@ -15656,7 +16989,10 @@ def _promote_live_state_to_verified(
     project_sorry_count, project_sorry_files = _count_project_sorries(_project_root())
     normalized["project_sorry_count"] = project_sorry_count
     normalized["project_sorry_files"] = project_sorry_files
-    ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
+    if focused_verification is None:
+        ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
+    else:
+        ok, build_status = focused_verification
     record = _record_manager_verification(
         autonomy_state,
         active_file,
@@ -15673,10 +17009,11 @@ def _promote_live_state_to_verified(
     project_scope_ready = isinstance(project_sorry_count, int) and project_sorry_count == 0
     if declaration_scope != "file" and not project_scope_ready:
         verification_ok = False
-    needs_full_project_build = (
-        verification_ok
-        and project_scope_ready
-        and (declaration_scope != "file" or bool(_module_name_for_file(active_file)))
+    needs_full_project_build = completion_policy.requires_project_verification(
+        focused_ok=verification_ok,
+        project_sorry_count=project_sorry_count,
+        declaration_scope=declaration_scope,
+        workflow_kind=_workflow_kind(),
     )
     if needs_full_project_build:
         verification_ok, build_status = _run_explicit_verification_build(
@@ -15736,7 +17073,29 @@ def _promote_live_state_to_verified(
         and declaration_queue_total == 0
     ):
         warning_count, warning_summary = _active_file_warning_summary(normalized)
-        if warning_count > 0 and isinstance(autonomy_state, dict):
+        if warning_count > 0 and not completion_policy.warning_cleanup_worth_model_turn(
+            warning_summary
+        ):
+            normalized = _with_warning_cleanup_state(
+                normalized,
+                status="accepted",
+                proof_solved=True,
+                warning_count=warning_count,
+                warning_summary=warning_summary,
+                diagnostics=(
+                    "low-value linter recommendations accepted without another model turn"
+                ),
+                attempted=False,
+                verified=True,
+            )
+            _record_activity(
+                "final-sweep-warning-cleanup-not-needed",
+                "Accepted low-value final warnings without another model turn",
+                active_file=active_file,
+                warning_count=warning_count,
+                warning_summary=warning_summary,
+            )
+        elif warning_count > 0 and isinstance(autonomy_state, dict):
             if _capture_final_sweep_baseline(autonomy_state, active_file):
                 autonomy_state["final_sweep_cleanup_attempted"] = True
                 autonomy_state["final_sweep_warning_summary"] = warning_summary
@@ -15974,11 +17333,39 @@ def _promote_live_state_to_verified(
 def _promote_live_state_to_verified_compat(
     live_state: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any] | None = None,
+    *,
+    focused_verification: tuple[bool, str] | None = None,
 ) -> dict[str, Any]:
     try:
-        return _promote_live_state_to_verified(live_state, autonomy_state)
+        return _promote_live_state_to_verified(
+            live_state,
+            autonomy_state,
+            focused_verification=focused_verification,
+        )
     except TypeError:
-        return _promote_live_state_to_verified(live_state)
+        try:
+            return _promote_live_state_to_verified(live_state, autonomy_state)
+        except TypeError:
+            return _promote_live_state_to_verified(live_state)
+
+
+def _start_final_sweep_warning_cleanup_turn(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any],
+) -> bool:
+    """Mark the granted final-sweep cleanup as spent immediately before its model call."""
+    if not bool(live_state.get("final_sweep_warning_cleanup_pending")) or bool(
+        autonomy_state.get("final_sweep_cleanup_turn_started")
+    ):
+        return False
+    autonomy_state["final_sweep_cleanup_turn_started"] = True
+    _record_activity(
+        "final-sweep-warning-cleanup-started",
+        "Started final-sweep warning cleanup model turn",
+        active_file=str(live_state.get("active_file", "") or ""),
+        warning_count=int(live_state.get("final_sweep_warning_count", 0) or 0),
+    )
+    return True
 
 
 def _fallback_checkpoint_summary(
@@ -16048,6 +17435,9 @@ Requirements:
 - Mention the workflow kind and workflow command.
 - Preserve the active project root and any files or declarations being edited.
 - Keep concrete Lean diagnostics, proof goals, theorem names, and blockers when available.
+- Rank and preserve the strongest kernel-verified candidate, target-local checked fact, exact failed-goal diagnostic, advisor conclusion, and explicit route commitment. Include its exact name or proof shape and the concrete next edit it supports.
+- Never demote a kernel-verified or operator-approved route to optional/likely unnecessary merely because the recent transcript discusses another route. Require the continuation to apply its next edit or produce new Lean evidence that rejects it.
+- Distinguish routes that were kernel-rejected or genuinely exhausted from routes that were only deferred, interrupted, or not yet attempted. Do not silently revive rejected routes or discard unattempted concrete advice.
 - Mention important tool usage and results only if they matter for the next steps.
 - Focus on what is already done and what the next assistant should do next.
 - Do not add preamble or markdown fences.
@@ -16877,8 +18267,15 @@ def _run_managed_conversation(
         messages = list(
             getattr(agent, "_session_messages", []) or kwargs.get("conversation_history") or []
         )
+        provider_retries_exhausted = bool(getattr(error, "provider_retries_exhausted", False))
         print("")
-        print(f"⚠️  Managed workflow stopped after provider/API error: {summary}")
+        if provider_retries_exhausted:
+            print(
+                "⚠️  Provider attempts exhausted for this request; "
+                f"the managed workflow will resume the same turn: {summary}"
+            )
+        else:
+            print(f"⚠️  Managed workflow stopped after provider/API error: {summary}")
         return {
             "messages": messages,
             "api_calls": 0,
@@ -16887,7 +18284,7 @@ def _run_managed_conversation(
             "partial": True,
             "error": summary,
             "final_response": f"Managed workflow stopped after provider/API error: {summary}",
-            "provider_retries_exhausted": bool(getattr(error, "provider_retries_exhausted", False)),
+            "provider_retries_exhausted": provider_retries_exhausted,
         }
 
     result = result_holder.get("result")
@@ -16911,6 +18308,36 @@ def _provider_retry_delays() -> tuple[float, ...]:
     return tuple(delays) or (5.0, 15.0, 45.0)
 
 
+def _provider_exhaustion_retry_delays() -> tuple[float, ...]:
+    """Return the repeating backoffs after one complete provider retry window."""
+    raw = str(os.getenv("LEANFLOW_PROVIDER_EXHAUSTION_BACKOFFS", "60") or "60")
+    delays: list[float] = []
+    for token in raw.split(","):
+        try:
+            # A foreground manager heartbeat must remain observable at least
+            # once per minute while the provider is overloaded.
+            delays.append(min(60.0, max(0.0, float(token.strip()))))
+        except ValueError:
+            continue
+    return tuple(delays) or (60.0,)
+
+
+def _provider_exhaustion_retry_delay(retry_number: int) -> float:
+    """Return a capped delay, repeating the final configured value forever."""
+    delays = _provider_exhaustion_retry_delays()
+    index = min(max(1, int(retry_number)) - 1, len(delays) - 1)
+    return delays[index]
+
+
+def _provider_retry_window_exhausted(result: Mapping[str, Any] | None) -> bool:
+    """Return whether an unfinished turn exhausted only transient attempts."""
+    return bool(
+        _managed_conversation_failed(result)
+        and bool(dict(result or {}).get("provider_retries_exhausted"))
+        and not normalize_provider_retry_after(dict(result or {}).get("provider_retry_after"))
+    )
+
+
 def _transient_provider_failure(result: Mapping[str, Any] | None) -> bool:
     """Return whether a managed-conversation failure is safe to retry."""
     if not _managed_conversation_failed(result):
@@ -16920,9 +18347,9 @@ def _transient_provider_failure(result: Mapping[str, Any] | None) -> bool:
         # retries would only hammer the same exhausted account.
         return False
     if bool((result or {}).get("provider_retries_exhausted")):
-        # ``AIAgent`` already spent the authoritative 5/15/45 retry budget.
-        # Retrying the whole conversation here would multiply four provider
-        # attempts into sixteen and delay the resumable infrastructure pause.
+        # Exhausted inner windows use their own unbounded, low-frequency
+        # managed retry path. Keep this bounded classifier for ordinary
+        # transport failures that did not traverse AIAgent's retry schedule.
         return False
     error = str((result or {}).get("error", "") or "").lower()
     return any(
@@ -17018,18 +18445,61 @@ def _run_managed_conversation_with_retries(
             user_message=str(kwargs.get("user_message", "") or ""),
             conversation_history=list(kwargs.get("conversation_history") or []),
         )
+    if isinstance(autonomy_state, dict):
+        assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+        original_message = str(kwargs.get("user_message", "") or "")
+        guided_message = project_guidance.attach_project_guidance(
+            project_root=_project_root(),
+            target_symbol=str(assignment.get("target_symbol", "") or "").strip(),
+            active_file=str(assignment.get("active_file", "") or "").strip(),
+            user_message=original_message,
+            conversation_history=list(kwargs.get("conversation_history") or []),
+        )
+        if guided_message != original_message:
+            kwargs["user_message"] = guided_message
+            _record_activity(
+                "project-guidance-attached",
+                "Attached project-owned guidance to the current managed assignment",
+                target_symbol=str(assignment.get("target_symbol", "") or "").strip(),
+                active_file=str(assignment.get("active_file", "") or "").strip(),
+            )
     result = _run_managed_conversation(agent, on_interrupt=on_interrupt, **kwargs)
     _persist_provider_usage_limit_pause(agent, result)
-    for retry_number, delay in enumerate(_provider_retry_delays(), start=1):
-        if not _transient_provider_failure(result):
+    transient_delays = _provider_retry_delays()
+    transient_retry_number = 0
+    exhaustion_retry_number = 0
+    while True:
+        exhausted_window = _provider_retry_window_exhausted(result)
+        if exhausted_window:
+            exhaustion_retry_number += 1
+            delay = _provider_exhaustion_retry_delay(exhaustion_retry_number)
+            activity_type = "provider-exhaustion-resume"
+            message = (
+                "Resuming the same unfinished turn after a complete provider "
+                f"retry window ({exhaustion_retry_number}) in {delay:g}s"
+            )
+            retry_number = exhaustion_retry_number
+        elif _transient_provider_failure(result) and transient_retry_number < len(transient_delays):
+            delay = transient_delays[transient_retry_number]
+            transient_retry_number += 1
+            activity_type = "provider-retry"
+            message = (
+                "Retrying transient provider failure "
+                f"({transient_retry_number}/{len(transient_delays)}) after {delay:g}s"
+            )
+            retry_number = transient_retry_number
+        else:
             break
         _record_activity(
-            "provider-retry",
-            f"Retrying transient provider failure ({retry_number}/3) after {delay:g}s",
+            activity_type,
+            message,
             retry_number=retry_number,
             delay_seconds=delay,
+            retry_window_exhausted=exhausted_window,
             error=str(result.get("error", "") or "")[:500],
         )
+        print("")
+        print(f"↻ {message}.")
         if delay:
             time.sleep(delay)
         result = _run_managed_conversation(agent, on_interrupt=on_interrupt, **kwargs)
@@ -17861,6 +19331,18 @@ def _managed_system_prompt() -> str:
                 "Use delegate_task only for concrete bounded subgoals with clear ownership.",
                 "Child agents must not edit the same Lean file concurrently.",
                 "Require file reservations before editing shared files and keep one path focused on final verification.",
+            ]
+        )
+    if solution_research_disabled():
+        labels = ", ".join(clean_room_task_labels()) or "[active task]"
+        sections.extend(
+            [
+                "",
+                "## Clean-room solution policy",
+                "Do not search for, fetch, cite, or reconstruct any existing or official solution to the active task.",
+                f"Never put these task labels into web or terminal searches: {labels}.",
+                "General mathematical literature, theorem-name research, Mathlib search, and independent computation remain allowed.",
+                "If a result appears to identify the active task or its solution, do not open or use it; continue from independent reasoning.",
             ]
         )
     if context_text:
@@ -19462,8 +20944,27 @@ def _maybe_sync_plan_state(
                     if bp != before_reopen:
                         bp = plan_state.save_blueprint(bp)
                         graph_changed = True
-        if graph_changed:
-            summary = plan_state.load_summary()
+        summary = plan_state.load_summary()
+        active_assignment_key = (
+            plan_state.node_id_for(target_symbol, active_file)
+            if target_symbol and active_file
+            else ""
+        )
+        deferred_queue_items = [
+            {
+                "target_symbol": symbol,
+                "active_file": file,
+                "reason": str(outcome.get("note", "") or "route cooled down"),
+                "return_condition": "a distinct route or verified graph progress",
+            }
+            for symbol, file, outcome in _outcome_entries()
+            if str(outcome.get("status", "") or "").strip().lower() == "deferred"
+            and plan_state.node_id_for(symbol, file) != active_assignment_key
+        ]
+        summary_changed = summary.get("deferred_queue_items") != deferred_queue_items
+        if summary_changed:
+            summary["deferred_queue_items"] = deferred_queue_items
+        if graph_changed or summary_changed:
             summary["counters"] = plan_state.status_counters(bp)
             if not summary.get("goal") and (bp.goal or goal):
                 summary["goal"] = bp.goal or goal
@@ -20247,6 +21748,23 @@ def _maybe_negation_probe(
                 )
         return execution
 
+    def obstacle(reason: str, *, verdict: str) -> route_execution.RouteExecution:
+        """Persist a deterministic route obstacle and allow another strategy."""
+        execution = route_execution.RouteExecution.obstacle(
+            route="negate",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            outcome=verdict,
+            reason=reason,
+            explicit_request=force,
+        )
+        _record_activity(
+            "negation-route-obstacle",
+            f"Negation route for {target_symbol} completed with obstacle: {reason}",
+            **execution.to_payload(),
+        )
+        return execution
+
     if not target_symbol or not active_file or not isinstance(autonomy_state, dict):
         return deferred("missing exact target scope")
     if not negation_probe.negation_probe_enabled():
@@ -20310,7 +21828,7 @@ def _maybe_negation_probe(
                 explicit_request=force,
             )
         if source_recovery_only:
-            return deferred(
+            return obstacle(
                 "no exact verified source negation promoted and scratch-probe budget is exhausted",
                 verdict="budget_exhausted",
             )
@@ -20450,6 +21968,12 @@ def _maybe_negation_probe(
             reused_after_budget_exhaustion=bool(outcome.get("reused_after_budget_exhaustion")),
         )
         if not probe_recorded and not promotion_recorded:
+            if verdict in {"budget_exhausted", "error", "ill_formed"}:
+                return obstacle(
+                    "the exact-target negation action produced no promotable probe entry; "
+                    "select a materially different route",
+                    verdict=verdict,
+                )
             return deferred(
                 "no exact-target probe entry or promotion was persisted",
                 verdict=verdict,
@@ -20520,9 +22044,9 @@ def _maybe_generate_final_report(
     *,
     post_quiescence: bool = False,
 ) -> None:
-    """N1 instrumentation (specs Part II section 6): every TERMINAL
-    non-verified exit leaves the machine-written account. A pause/interrupt
-    is deliberately NOT a scope end — the run resumes and N1 applies when it
+    """Write a report for every terminal non-verified exit.
+
+    A pause or interrupt is deliberately not a scope end; the run resumes and the report applies when it
     actually terminates. Idempotent per run, fail-open — the generator can
     never turn a clean stop into a crash."""
     if stop_reason == "disproved" and not post_quiescence:
@@ -20645,6 +22169,10 @@ def _graph_frontier_precedence(
     pending_queue_labels = {
         str(label or "").strip() for label in (queue_labels or ()) if str(label or "").strip()
     }
+    source_dependencies = queue_source_dependencies.pending_source_dependencies(
+        selected_file,
+        tuple(pending_queue_labels),
+    )
 
     def _file_identity(value: str) -> str:
         """Return a project-rooted absolute identity for graph file matching."""
@@ -20689,21 +22217,29 @@ def _graph_frontier_precedence(
         key = _node_key(name, selected_file_identity)
         is_deferred = key in deferred_keys if key else deferred_names.get(name, 0) == 1
         if is_deferred and base < 3:
-            return max(base, 2)
+            base = max(base, 2)
+        if source_dependencies.get(name) and base < 3:
+            base = max(base, 2)
         return base
 
     frontier_on = _graph_frontier_selection_enabled()
     if not plan_state_enabled():
-        return (lambda label: _deferred_rank(label)) if deferred_keys else None
+        return (
+            (lambda label: _deferred_rank(label)) if deferred_keys or source_dependencies else None
+        )
     if not frontier_on and not orchestrator_floor.orchestrator_enabled() and not deferred_keys:
         return None
     try:
         bp = plan_state.load_blueprint()
     except Exception:
         logger.debug("frontier precedence unavailable", exc_info=True)
-        return (lambda label: _deferred_rank(label)) if deferred_keys else None
+        return (
+            (lambda label: _deferred_rank(label)) if deferred_keys or source_dependencies else None
+        )
     if not bp.nodes:
-        return (lambda label: _deferred_rank(label)) if deferred_keys else None
+        return (
+            (lambda label: _deferred_rank(label)) if deferred_keys or source_dependencies else None
+        )
 
     nodes_by_key: dict[str, list[Any]] = {}
     nodes_by_name: dict[str, list[Any]] = {}
@@ -20840,6 +22376,28 @@ def _graph_frontier_precedence(
         visit(node_id)
         return invalid, blocked, cyclic
 
+    source_visible_family_dependencies: set[str] = set()
+    if current_node is not None and current_target in pending_queue_labels:
+        source_visible_family_dependencies = {
+            node.id
+            for node in bp.nodes
+            if node.id != current_node.id
+            and node.id in assignment_family_ids
+            and node.name in pending_queue_labels
+            and (not selected_file_identity or _file_identity(node.file) == selected_file_identity)
+        }
+        # Prefer the deepest source-visible dependency. Graph-only conjectures
+        # below it are planning detail, not permission to keep attacking a
+        # downstream source declaration that can only close through sorryAx.
+        source_visible_family_dependencies = {
+            node_id
+            for node_id in source_visible_family_dependencies
+            if not any(
+                dependency_id in source_visible_family_dependencies
+                for dependency_id in dependencies.get(node_id, ())
+            )
+        }
+
     rank_by_id: dict[str, int] = {}
     for node in bp.nodes:
         if node.status in {"parked", "false"}:
@@ -20865,7 +22423,54 @@ def _graph_frontier_precedence(
                 rank = 1
         if node.id in excluded_handback_family_ids:
             rank = 3
-        if rank == 0 and current_node is not None and node.id == current_node.id:
+        dependency_invalid, _dependency_blocked, dependency_cyclic = _dependency_hazards(node.id)
+        if (
+            node.id in source_visible_family_dependencies
+            and not dependency_invalid
+            and not dependency_cyclic
+            and node.status not in {"parked", "false"}
+        ):
+            rank = -1
+        elif (
+            current_node is not None
+            and node.id == current_node.id
+            and current_target in pending_queue_labels
+            and node.status not in {"parked", "false"}
+        ):
+            # Keep unresolved ownership sticky across route exhaustion. A
+            # graph-level ``blocked`` status means the current proof shape
+            # stalled; it is not permission to jump to a later theorem that
+            # can consume this declaration through ``sorry``. Yield only to
+            # an actual unresolved dependency/split helper.
+            if not source_visible_family_dependencies:
+                # Graph-only children describe routes inside this source
+                # declaration. They may steer decomposition, but cannot hand
+                # ownership to a downstream source theorem. Otherwise a
+                # current source helper with a conjectured child ranks 1,
+                # its parent selects the helper on the next refresh, and the
+                # queue oscillates forever without starting a model turn.
+                rank = -2
+            else:
+                invalid_dependency, blocked_dependency, cyclic_dependency = _dependency_hazards(
+                    node.id
+                )
+                dependency_nodes = [
+                    by_id.get(dependency_id)
+                    for dependency_id in dependencies.get(node.id, ())
+                    if dependency_id not in handback_satisfied_dependencies.get(node.id, ())
+                ]
+                if invalid_dependency:
+                    rank = 3
+                elif blocked_dependency or cyclic_dependency:
+                    rank = 2
+                elif dependency_nodes and not all(
+                    dependency is not None and dependency.status == "proved"
+                    for dependency in dependency_nodes
+                ):
+                    rank = 1
+                else:
+                    rank = -2
+        elif rank == 0 and current_node is not None and node.id == current_node.id:
             rank = -2
         elif rank == 0 and node.id in assignment_family_ids:
             # A fresh dependency/split edge revives the family member from an
@@ -20912,7 +22517,7 @@ def _maybe_statement_fidelity_audit(
     autonomy_state: Mapping[str, Any] | None,
     live_state: Mapping[str, Any] | None,
 ) -> str:
-    """Statement-fidelity audit at scope entry (roadmap §4.11, flag-gated).
+    """Run the optional statement-fidelity audit once per declaration revision.
 
     Kernel-verified-but-wrong-statement is the largest silent failure mode
     for open problems: before proving starts, an advisory reviewer checks
@@ -21046,7 +22651,7 @@ def _maybe_statement_fidelity_audit(
 
 
 def _orchestrator_research_cadence() -> int:
-    """Research-mode reflection cadence in cycles (roadmap §4.4); 0 = off."""
+    """Return the research-mode reflection cadence; zero disables it."""
     return _read_int_env("LEANFLOW_ORCHESTRATOR_CADENCE_CYCLES", 8, minimum=0)
 
 
@@ -21446,30 +23051,21 @@ def _finalize_research_portfolio_poll(
         and now_epoch < float(provider_retry_after["unavailable_until_epoch"])
         and bool(result.get("provider_unavailable"))
     ):
-        provider = str(_read_native_env("PROVIDER") or "unknown")
-        try:
-            campaign_epoch.record_provider_usage_limit_pause(
-                autonomy_state,
-                provider_retry_after,
-                provider=provider,
-                base_url=str(_read_native_env("BASE_URL") or ""),
-                now_epoch=now_epoch,
-            )
-        except Exception:
-            # Even if durable state is temporarily unavailable, do not admit
-            # another background or foreground provider call in this process.
-            logger.debug("research provider pause persistence failed", exc_info=True)
-            autonomy_state.update(
-                {
-                    "operational_pause": "paused_infrastructure",
-                    "infrastructure_pause_reason": (
-                        f"provider {provider} usage limit active until epoch "
-                        f"{provider_retry_after['unavailable_until_epoch']}"
-                    ),
-                    "provider_retry_after": provider_retry_after,
-                    "provider_pause_owner": (campaign_epoch.PROVIDER_USAGE_LIMIT_PAUSE_OWNER),
-                }
-            )
+        # A process-isolated research worker can use a different Codex surface
+        # or capacity pool from the foreground Responses turn. Its exact
+        # retry-after already suppresses portfolio relaunches; escalating it
+        # to a campaign-wide pause would interrupt a healthy foreground turn.
+        # If the foreground provider is also unavailable, its own callback
+        # persists the authoritative campaign pause.
+        _record_activity(
+            "research-provider-usage-limit",
+            "Background research provider unavailable; foreground admission unchanged",
+            campaign_id=request.campaign_id,
+            target_symbol=request.target_symbol,
+            active_file=request.active_file,
+            provider=str(_read_native_env("PROVIDER") or "unknown"),
+            provider_retry_after=provider_retry_after,
+        )
     generation = int(autonomy_state.get(_RESEARCH_PORTFOLIO_GENERATION_KEY, 0) or 0) + 1
     autonomy_state[_RESEARCH_PORTFOLIO_GENERATION_KEY] = generation
     launched = [str(job_id) for job_id in (result.get("launched") or []) if str(job_id)]
@@ -21657,6 +23253,8 @@ def _research_portfolio_refill_allowed(
     active_file: str = "",
 ) -> bool:
     """Return whether background workers may occupy newly freed actor slots."""
+    if bool(autonomy_state.get("_native_research_portfolio_stopped")):
+        return False
     if str(autonomy_state.get("operational_pause", "") or "") == ("paused_infrastructure"):
         return False
     if bool(autonomy_state.get("_planner_capacity_reserved")) or bool(
@@ -21928,6 +23526,12 @@ def _build_research_portfolio_parent_poll(
                 refreshed_request,
                 _execute_research_portfolio_poll(refreshed_request),
             )
+            autonomy_state["research_portfolio"] = status
+            transition_visibility.report_research_portfolio_progress(
+                autonomy_state,
+                status,
+                target_symbol=refreshed_request.target_symbol,
+            )
             if not campaign_epoch.pending_worker_refresh(campaign_id=refreshed_request.campaign_id):
                 autonomy_state.pop(campaign_epoch.EPOCH_WORKER_REFRESH_STATE_KEY, None)
             _publish_research_portfolio_completion_events(
@@ -22013,24 +23617,63 @@ def _run_planner_phase_with_parent_maintenance(
                 autonomy_state.pop("_planner_capacity_reserved", None)
 
 
+def _live_state_is_warning_cleanup_only(
+    live_state: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether exact verification left only the one-shot warning cleanup."""
+    current = dict(live_state or {})
+    return bool(
+        current.get("final_sweep_warning_cleanup_pending")
+        and str(current.get("declaration_scope", "") or "") == "file"
+        and int(current.get("declaration_queue_total", 0) or 0) == 0
+        and int(current.get("sorry_count", 0) or 0) == 0
+        and not _diagnostics_indicate_hard_failure(str(current.get("diagnostics", "") or ""))
+    )
+
+
 def _maintain_research_portfolio(
     autonomy_state: dict[str, Any],
     live_state: Mapping[str, Any] | None,
 ) -> None:
     """Poll and refill the process-isolated research portfolio."""
-    if not research_mode.research_mode_enabled():
+    if not research_mode.research_mode_enabled() or bool(
+        autonomy_state.get("_native_research_portfolio_stopped")
+    ):
         return
-    if _live_state_is_verified(live_state) or autonomy_state.get("terminal_outcome") == "disproved":
+    if (
+        _live_state_is_verified(live_state)
+        or _live_state_is_warning_cleanup_only(live_state)
+        or autonomy_state.get("terminal_outcome") == "disproved"
+    ):
         return
     try:
         with _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK:
             request = _research_portfolio_poll_request(autonomy_state, live_state)
+            scope_label = request.target_symbol or "[project scope]"
             status = _finalize_research_portfolio_poll(
                 autonomy_state,
                 request,
-                _execute_research_portfolio_poll(request),
+                transition_visibility.run_with_slow_notice(
+                    lambda: _execute_research_portfolio_poll(request),
+                    start_message=(
+                        "⏳ Research portfolio refresh is still running for "
+                        f"{scope_label}; foreground queue transition is waiting."
+                    ),
+                    finish_message=lambda result, elapsed: (
+                        "✓ Research portfolio refresh finished for "
+                        f"{scope_label} in {elapsed:.1f}s "
+                        f"(active {int(dict(result or {}).get('active', 0) or 0)}, "
+                        f"consumed {len(dict(result or {}).get('consumed') or [])}, "
+                        f"launched {len(dict(result or {}).get('launched') or [])})."
+                    ),
+                ),
             )
             autonomy_state["research_portfolio"] = status
+            transition_visibility.report_research_portfolio_progress(
+                autonomy_state,
+                status,
+                target_symbol=request.target_symbol,
+            )
             if not campaign_epoch.pending_worker_refresh(campaign_id=request.campaign_id):
                 autonomy_state.pop(campaign_epoch.EPOCH_WORKER_REFRESH_STATE_KEY, None)
             _publish_research_portfolio_completion_events(
@@ -22105,6 +23748,23 @@ def _poll_research_portfolio_after_tool_result(agent: Any, function_name: str) -
         autonomy_state,
         scope=event_scope,
     ):
+        return
+
+    # Orientation reads are safe for harvesting but too cheap to justify
+    # throwing away the foreground model's setup work. Keep the finding staged
+    # and let a substantive search/reasoning result or the natural turn
+    # boundary trigger the orchestrator.
+    if not orchestrator_event_watermark.is_routing_post_tool_boundary(function_name):
+        return
+
+    if not _research_event_preemption_enabled():
+        _record_activity(
+            "research-findings-staged-no-preemption",
+            f"Staged research after {function_name} without interrupting the foreground prover",
+            function_name=function_name,
+            target_symbol=live_state["target_symbol"],
+            active_file=live_state["active_file"],
+        )
         return
 
     # Do not run an orchestrator from inside a tool callback. Close this safe,
@@ -22538,10 +24198,22 @@ def _sync_research_helper_integration_admission(
             **dict(details),
         )
 
-    if candidate is None or not candidate.ready:
+    consumption_pending = (
+        candidate is not None
+        and research_helper_candidate_priority.target_consumption_pending(
+            autonomy_state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+    )
+    if candidate is None or not candidate.ready or consumption_pending:
         helper_integration_admission.release(
             agent,
-            reason="no matching ready helper candidate",
+            reason=(
+                "assigned proof must consume the previously integrated helper"
+                if consumption_pending
+                else "no matching ready helper candidate"
+            ),
         )
         return False
     reservation = helper_integration_admission.ensure(
@@ -22567,7 +24239,7 @@ def _research_helper_priority_prompt(
             f"- parent exact check accepted helper: {candidate.helper_name}",
             "- required next action: insert this exact declaration once before the entire "
             "assigned declaration preamble, including any `/-- ... -/` doc comment and "
-            "`@[...]` attributes, using the ordinary managed patch path",
+            "`@[...]` attributes, using `apply_verified_patch` with the current assigned theorem id",
             "- never insert the helper between an attached doc comment or attribute and the "
             "assigned declaration",
             "- use one atomic patch/replacement for the complete insertion or relocation; never "
@@ -22579,6 +24251,34 @@ def _research_helper_priority_prompt(
             "```lean",
             candidate.declaration,
             "```",
+        ]
+    )
+
+
+def _research_helper_consumption_prompt(
+    autonomy_state: dict[str, Any],
+    candidate: research_helper_candidate_priority.PendingResearchHelperCandidate | None,
+) -> str:
+    """Require target-proof work before another checked-helper integration."""
+    record = research_helper_candidate_priority.target_consumption_record(autonomy_state)
+    return "\n".join(
+        [
+            "[LEANFLOW TARGET-PROOF CONSUMPTION REQUIRED]",
+            f"- previously integrated helper: {record.get('helper_name', 'checked helper')}",
+            *(
+                [f"- deferred checked helper: {candidate.helper_name}"]
+                if candidate is not None
+                else []
+            ),
+            (
+                f"- assigned declaration remains unresolved: "
+                f"{candidate.target_symbol if candidate is not None else record.get('target_symbol', '')}"
+            ),
+            "- helper-only source growth cannot preempt the assigned proof indefinitely",
+            "- use the previously banked helper in the assigned declaration, or make another "
+            "concrete proof-body edit that tests its route, before integrating this candidate",
+            "- the deferred candidate remains durable and will regain priority after the assigned "
+            "target passes manager verification",
         ]
     )
 
@@ -22672,6 +24372,11 @@ def _recheck_pending_research_helper_if_due(
         target_symbol=target_symbol,
         active_file=active_file,
     )
+    consumption_pending = research_helper_candidate_priority.target_consumption_pending(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
     if candidate is None:
         existing = research_helper_candidate_priority.load(autonomy_state)
         if existing is not None and (target_symbol or active_file):
@@ -22694,7 +24399,9 @@ def _recheck_pending_research_helper_if_due(
                 target_symbol=target_symbol,
                 active_file=active_file,
             )
-        return ""
+        return (
+            _research_helper_consumption_prompt(autonomy_state, None) if consumption_pending else ""
+        )
     current_signature = research_helper_candidate_priority.target_signature_sha256(
         active_file,
         target_symbol,
@@ -22720,6 +24427,15 @@ def _recheck_pending_research_helper_if_due(
                 active_file=active_file,
             )
         return ""
+    if consumption_pending:
+        with contextlib.suppress(Exception):
+            _sync_research_helper_integration_admission(
+                agent,
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
+        return _research_helper_consumption_prompt(autonomy_state, candidate)
     try:
         source_duplicate = research_helper_candidate_priority.exact_source_duplicate(candidate)
     except Exception:
@@ -22814,6 +24530,43 @@ def _recheck_pending_research_helper_if_due(
                         active_file=active_file,
                     )
                 return ""
+        try:
+            name_collision = research_helper_candidate_priority.source_name_collision(candidate)
+        except Exception:
+            logger.debug(
+                "recovered research-helper name collision check unavailable", exc_info=True
+            )
+            name_collision = None
+        if name_collision is not None:
+            retired = research_helper_candidate_priority.resolve(
+                autonomy_state,
+                disposition="covered_same_name_current_source",
+                require_target_consumption=False,
+            )
+            if retired is not None:
+                _record_activity(
+                    "research-helper-candidate-covered",
+                    (
+                        f"Skipped checked helper {retired.helper_name}; current source "
+                        "already declares that name"
+                    ),
+                    candidate_id=retired.candidate_id,
+                    job_id=retired.job_id,
+                    target_symbol=retired.target_symbol,
+                    active_file=retired.active_file,
+                    helper_symbol=retired.helper_name,
+                    covering_symbol=name_collision.existing_symbol,
+                    reason=name_collision.reason,
+                    campaign_progress=False,
+                )
+            with contextlib.suppress(Exception):
+                _sync_research_helper_integration_admission(
+                    agent,
+                    autonomy_state,
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                )
+            return ""
         with contextlib.suppress(Exception):
             _sync_research_helper_integration_admission(
                 agent,
@@ -22822,6 +24575,41 @@ def _recheck_pending_research_helper_if_due(
                 active_file=active_file,
             )
         return _research_helper_priority_prompt(candidate)
+    try:
+        name_collision = research_helper_candidate_priority.source_name_collision(candidate)
+    except Exception:
+        logger.debug("pending research-helper name collision check unavailable", exc_info=True)
+        name_collision = None
+    if name_collision is not None:
+        retired = research_helper_candidate_priority.resolve(
+            autonomy_state,
+            disposition="covered_same_name_current_source",
+            require_target_consumption=False,
+        )
+        if retired is not None:
+            _record_activity(
+                "research-helper-candidate-covered",
+                (
+                    f"Skipped checked helper {retired.helper_name}; current source "
+                    "already declares that name"
+                ),
+                candidate_id=retired.candidate_id,
+                job_id=retired.job_id,
+                target_symbol=retired.target_symbol,
+                active_file=retired.active_file,
+                helper_symbol=retired.helper_name,
+                covering_symbol=name_collision.existing_symbol,
+                reason=name_collision.reason,
+                campaign_progress=False,
+            )
+        with contextlib.suppress(Exception):
+            _sync_research_helper_integration_admission(
+                agent,
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
+        return ""
 
     current_revision = research_helper_candidate_priority.source_revision_sha256(active_file)
     if candidate.ready and candidate.rechecked_source_revision_sha256 == current_revision:
@@ -23097,6 +24885,12 @@ def _research_scope_entry_setup(
         # falling through to an unrelated route on process resume.
         with contextlib.suppress(Exception):
             agent._managed_autonomy_state = autonomy_state
+    if _live_state_is_warning_cleanup_only(live_state):
+        # The mathematical queue is already kernel-clean. Preserve the
+        # dedicated cleanup prompt and avoid research admission, graph/model
+        # refresh, or stale finding delivery for a purely stylistic edit.
+        autonomy_state["orchestrator_scope_entered"] = True
+        return initial_message
     if agent is not None and apply_route:
         # Publish foreground intent before portfolio maintenance launches the
         # required concurrent grounding job. The marker spans parent-owned
@@ -23136,6 +24930,12 @@ def _research_scope_entry_setup(
         # until the resulting assignment has been reconciled.
         _maybe_statement_fidelity_audit(autonomy_state, live_state)
     _migrate_research_findings_for_assignment(autonomy_state, live_state)
+    target_symbol, active_file = _research_helper_assignment(autonomy_state, live_state)
+    target_consumption_pending = research_helper_candidate_priority.target_consumption_pending(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
     queued_helper_priority_prompt = ""
     if not reusable_negate_due:
         queued_helper_priority_prompt = _queued_decomposition_helper_priority_prompt(
@@ -23151,12 +24951,15 @@ def _research_scope_entry_setup(
             part for part in (initial_message, queued_helper_priority_prompt) if part
         )
     findings_prompt = ""
-    if not reusable_negate_due:
+    if not reusable_negate_due and not target_consumption_pending:
         # Do not refill workers or consume deliverables ahead of an exact
         # crash-durable negation transaction. Promotion can invalidate this
         # assignment, so both actions would spend capacity on stale work and
         # make findings unavailable to the replanned scope. Ordinary routes
-        # retain the established maintain-then-consume ordering.
+        # retain the established maintain-then-consume ordering. An integrated
+        # helper awaiting assigned-proof use also bypasses refresh: the next
+        # foreground action is already deterministic, and more findings would
+        # only gate or distract that local repair.
         _maintain_research_portfolio(autonomy_state, live_state)
         findings_prompt = _take_research_findings_prompt(autonomy_state, live_state)
     helper_priority_prompt = ""
@@ -23653,6 +25456,18 @@ def _record_orchestrator_route_execution(
 ) -> route_execution.RouteExecution:
     """Store one process-local route result for exact-boundary accounting."""
     autonomy_state[_ROUTE_EXECUTION_STATE_KEY] = execution.to_payload()
+    prior_planner_obstacle = dict(
+        autonomy_state.get(route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY) or {}
+    )
+    planner_obstacle_cleared = route_execution.clear_planner_terminal_obstacle_after_distinct_route(
+        autonomy_state,
+        execution,
+    )
+    if planner_obstacle_cleared:
+        campaign_epoch.clear_planner_terminal_obstacle(
+            autonomy_state,
+            prior_planner_obstacle,
+        )
     return execution
 
 
@@ -24135,8 +25950,8 @@ def _orchestrator_apply_route(
         _resume_after_breakpoint()
         return "continue"
     if route.route == "re-state" and target_symbol and active_file:
-        # Main-statement changes require human ACK (roadmap §0.16/§4.5):
-        # ONLY a graph-confirmed sub-lemma may re-state autonomously. A
+        # Main-statement changes require human acknowledgement. Only a
+        # graph-confirmed sublemma may be restated autonomously. A
         # missing or unreadable graph fails CLOSED — unknown scope converts
         # to ask-human rather than risking an autonomous main re-statement.
         confirmed_sublemma = False
@@ -24210,10 +26025,100 @@ def _orchestrator_apply_route(
         return "continue"
     if route.route in {"decompose", "plan", "re-state"}:
         _decide_packet("split" if route.route == "decompose" else route.route)
+        if route.route == "decompose" and target_symbol and active_file:
+            clean_target_check = _manager_incremental_check_queue_item(
+                active_file,
+                target_symbol,
+            )
+            if bool(clean_target_check.get("ok")):
+                _record_activity(
+                    "decomposer-clean-target-suppressed",
+                    (f"Suppressed decomposition for kernel-clean target " f"{target_symbol}"),
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    check=dict(clean_target_check),
+                )
+                _record_orchestrator_route_execution(
+                    autonomy_state,
+                    route_execution.RouteExecution.recorded(
+                        route="decompose",
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        outcome="target already kernel-clean",
+                        evidence_kind="exact-target-check",
+                    ),
+                )
+                history.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(
+                            [
+                                "[LEANFLOW CLEAN-TARGET RECONCILIATION]",
+                                f"- `{target_symbol}` already passes its exact kernel gate.",
+                                "- do not edit or decompose this declaration",
+                                "- reconcile the queue with the downstream unresolved target",
+                            ]
+                        ),
+                    }
+                )
+                _resume_after_breakpoint()
+                return "continue"
         mechanical_placed: tuple[str, ...] = ()
         mechanical_fallback: decomposer.DecomposeOutcome | None = None
         planner_route_enabled = route.route == "plan" and planner_phase.planner_enabled()
-        if route.route == "plan" and not planner_route_enabled:
+        planner_route_cooled_down = bool(
+            planner_route_enabled
+            and target_symbol
+            and active_file
+            and route_execution.planner_terminal_obstacle_blocks_request(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                target_signature_sha256=(
+                    research_helper_candidate_priority.target_signature_sha256(
+                        active_file,
+                        target_symbol,
+                    )
+                ),
+                target_declaration_sha256=_target_declaration_sha256(
+                    active_file,
+                    target_symbol,
+                ),
+            )
+        )
+        if planner_route_cooled_down:
+            planner_route_enabled = False
+            _clear_pending_plan_capacity(autonomy_state)
+            planner_marker = dict(
+                autonomy_state.get(route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY) or {}
+            )
+            completed_advice_pending = (
+                str(planner_marker.get("outcome", "") or "").strip() == "planner-completed"
+            )
+            cooldown_reason = (
+                "completed planner advice must be attempted in the assigned declaration "
+                "before replanning"
+                if completed_advice_pending
+                else "unchanged target must complete a distinct route before replanning"
+            )
+            _record_orchestrator_route_execution(
+                autonomy_state,
+                route_execution.RouteExecution.obstacle(
+                    route="plan",
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    outcome="terminal-obstacle-cooldown",
+                    reason=cooldown_reason,
+                ),
+            )
+            _record_activity(
+                "planner-route-suppressed",
+                f"Suppressed planner execution for unchanged target {target_symbol}",
+                target_symbol=target_symbol,
+                active_file=active_file,
+                reason=cooldown_reason,
+            )
+        elif route.route == "plan" and not planner_route_enabled:
             # A disabled mechanical planner cannot consume the reserved actor
             # slot. Retire the obligation before falling back to text guidance.
             _clear_pending_plan_capacity(autonomy_state)
@@ -24233,9 +26138,9 @@ def _orchestrator_apply_route(
             and active_file
             and multi_direction.directions_from_statements(route_statements)
         ):
-            # Phase 5 (5/6): rival direction files discharged as shape-A
-            # jobs. Dark by construction — direction tags only come from the
-            # (Phase 6) LLM decision and jobs need LEANFLOW_DISPATCH_ENABLED.
+            # Rival direction files are discharged as nested prover jobs.
+            # Direction tags come from the model decision and jobs require
+            # LEANFLOW_DISPATCH_ENABLED.
             try:
                 md_outcome = multi_direction.run_multi_direction(
                     goal_symbol=target_symbol,
@@ -24289,9 +26194,8 @@ def _orchestrator_apply_route(
             and active_file
             and route_statements
         ):
-            # Phase 6: an LLM decompose decision carries its OWN statements
-            # (§4.4 acceptance: a rigged stall + LLM decompose answer states
-            # stubs end-to-end). They enter through the same guarded door as
+            # A model decompose decision carries its own statements. They
+            # enter through the same guarded door as
             # every other stub — shape check, axiom scan, in-place
             # validation, all-or-nothing revert; name binding applies.
             try:
@@ -24317,9 +26221,14 @@ def _orchestrator_apply_route(
                         if not admission.accepted:
                             helper_name = parsed or claimed
                             admission_fields = admission.journal_fields()
+                            rejection_event = (
+                                "decomposer-instantiated-parent-rejected"
+                                if admission.reason_code == "closed_literal_parent_instantiation"
+                                else "decomposer-admission-rejected"
+                            )
                             plan_state.append_journal_event(
                                 {
-                                    "event": "decomposer-instantiated-parent-rejected",
+                                    "event": rejection_event,
                                     "helper": helper_name,
                                     "target": target_symbol,
                                     "source": "orchestrator-llm",
@@ -24327,9 +26236,9 @@ def _orchestrator_apply_route(
                                 }
                             )
                             _record_activity(
-                                "decomposer-instantiated-parent-rejected",
+                                rejection_event,
                                 f"Rejected LLM-decision helper {helper_name or '[unnamed]'}: "
-                                "closed literal instance of the parameterized parent",
+                                f"{admission.reason}",
                                 target_symbol=target_symbol,
                                 active_file=active_file,
                                 helper=helper_name,
@@ -24507,6 +26416,14 @@ def _orchestrator_apply_route(
                     search_signature=str(planner_context.get("search_signature", "") or ""),
                     cwd=_project_root(),
                     allowed_axioms=sorted(_allowed_axioms()),
+                    prior_evidence=planner_evidence.matching_advisor_evidence(
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        target_declaration_sha256=_target_declaration_sha256(
+                            active_file,
+                            target_symbol,
+                        ),
+                    ),
                     lane_keys=[
                         str(dict(probe).get("archetype", "") or "")
                         for probe in (dict(route.target or {}).get("probes") or [])
@@ -24554,6 +26471,31 @@ def _orchestrator_apply_route(
                     )
                     return "stop:source-quarantine"
                 if plan_outcome.ok:
+                    planner_advice = route_execution.record_planner_terminal_obstacle(
+                        autonomy_state,
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        target_signature_sha256=(
+                            research_helper_candidate_priority.target_signature_sha256(
+                                active_file,
+                                target_symbol,
+                            )
+                        ),
+                        target_declaration_sha256=_target_declaration_sha256(
+                            active_file,
+                            target_symbol,
+                        ),
+                        outcome="planner-completed",
+                        reason=(
+                            plan_outcome.reason
+                            or "planner produced durable advice for the unchanged target"
+                        ),
+                    )
+                    if planner_advice.get("target_declaration_sha256"):
+                        campaign_epoch.record_planner_terminal_obstacle(
+                            autonomy_state,
+                            planner_advice,
+                        )
                     _record_orchestrator_route_execution(
                         autonomy_state,
                         route_execution.RouteExecution.recorded(
@@ -24580,20 +26522,54 @@ def _orchestrator_apply_route(
                             "inventory truth.",
                         ]
                     )
-                elif plan_outcome.synthesis_status == "capacity-deferred":
-                    # The durable route reservation above retries at the next
-                    # safe boundary without freezing this foreground tick.
+                elif plan_outcome.synthesis_status in {
+                    "capacity-deferred",
+                    planner_phase.PLANNER_EVIDENCE_INTERRUPTED_STATUS,
+                }:
+                    # Capacity and incomplete evidence can change at the next
+                    # safe boundary, so preserve the exact route reservation.
                     pass
                 else:
+                    obstacle_reason = plan_outcome.reason or "planner produced no durable result"
+                    planner_obstacle = route_execution.record_planner_terminal_obstacle(
+                        autonomy_state,
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        target_signature_sha256=(
+                            research_helper_candidate_priority.target_signature_sha256(
+                                active_file,
+                                target_symbol,
+                            )
+                        ),
+                        target_declaration_sha256=_target_declaration_sha256(
+                            active_file,
+                            target_symbol,
+                        ),
+                        outcome=plan_outcome.synthesis_status,
+                        reason=obstacle_reason,
+                    )
+                    if planner_obstacle.get("target_signature_sha256"):
+                        campaign_epoch.record_planner_terminal_obstacle(
+                            autonomy_state,
+                            planner_obstacle,
+                        )
                     _record_orchestrator_route_execution(
                         autonomy_state,
-                        route_execution.RouteExecution.deferred(
+                        route_execution.RouteExecution.obstacle(
                             route="plan",
                             target_symbol=target_symbol,
                             active_file=active_file,
-                            reason=plan_outcome.reason or "planner produced no durable result",
+                            reason=obstacle_reason,
                             outcome=plan_outcome.synthesis_status,
                         ),
+                    )
+                    _record_activity(
+                        "planner-route-obstacle",
+                        f"Retired planner route after deterministic outcome: {obstacle_reason}",
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        outcome=plan_outcome.synthesis_status,
+                        reason=obstacle_reason,
                     )
             except Exception as exc:
                 logger.debug("planner phase failed", exc_info=True)
@@ -24890,14 +26866,7 @@ def _budget_breakpoint_enabled() -> bool:
 
 
 def _research_mode_enabled() -> bool:
-    """Research-profile flag (roadmap §4.7) — the Phase 1 skeleton.
-
-    Phase 1 semantics: the per-theorem budget ceiling defaults off (N5:
-    token cost is not the constraint; difficulty is a routing signal). The
-    full profile (unconditional orchestrator consultation, ceiling/stall as
-    invocations, thrift caps lifted, context-rich prompts) lands with
-    Phases 4-6; helpers gate on this flag as those phases arrive.
-    """
+    """Return whether the relentless-research workflow profile is active."""
     return research_mode.research_mode_enabled()
 
 
@@ -24997,8 +26966,8 @@ def _maybe_trigger_budget_breakpoint(
         "consecutive_exhausted": streak,
         "error_signatures": error_signatures,
         "last_verification": last_verification,
-        # Phase 2 (§4.4): >=2 genuine failures deterministically proposes a
-        # feasibility probe into the packet; the orchestrator confirms/vetoes.
+        # Two genuine failures propose a feasibility probe; the orchestrator
+        # confirms or vetoes it.
         "negation_status": "probe-proposed" if len(attempts) >= 2 else "not-attempted",
         "options": ["split", "plan", "negate", "park", "re-state", "abort"],
         "decision": None,
@@ -25316,6 +27285,12 @@ def _drive_autonomous_followups_inner(
             checkpoint_state = _journal_status()
             live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
             live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
+        live_state = _stabilize_live_state_before_theorem_transition(
+            history,
+            checkpoint_state,
+            autonomy_state,
+            live_state,
+        )
         rebuilt_history, transition = _rebuild_history_for_theorem_transition(
             history,
             compaction_state,
@@ -25334,6 +27309,29 @@ def _drive_autonomous_followups_inner(
                 current_file=transition["current_file"],
                 previous_status=str(previous_outcome.get("status", "") or "unknown"),
             )
+            if str(previous_outcome.get("status", "") or "").strip().lower() == "deferred":
+                deferred_target = str(
+                    previous_outcome.get("target_symbol", "")
+                    or transition.get("previous_target", "")
+                    or "[unknown]"
+                )
+                deferred_reason = _single_line(
+                    str(previous_outcome.get("note", "") or "current route exhausted"),
+                    260,
+                )
+                print(
+                    "⚠️  Queue deferred (still pending): "
+                    f"{deferred_target} — {deferred_reason}. "
+                    "Return condition: a distinct route or verified graph progress."
+                )
+                _record_activity(
+                    "queue-item-deferred-visible",
+                    f"Deferred theorem remains pending: {deferred_target}",
+                    target_symbol=deferred_target,
+                    active_file=str(previous_outcome.get("active_file", "") or ""),
+                    reason=deferred_reason,
+                    return_condition="a distinct route or verified graph progress",
+                )
             _record_activity(
                 "theorem-context-cleared",
                 f"Cleared theorem-local context for {transition['previous_target']}",
@@ -25623,16 +27621,6 @@ def _drive_autonomous_followups_inner(
         _record_queue_assignment(live_state, cycle=cycle, phase="autonomous")
         _prepare_queue_assignment_state(autonomy_state, live_state)
         _refresh_theorem_transition_handoff(history, live_state, autonomy_state)
-        if bool(live_state.get("final_sweep_warning_cleanup_pending")) and not bool(
-            autonomy_state.get("final_sweep_cleanup_turn_started")
-        ):
-            autonomy_state["final_sweep_cleanup_turn_started"] = True
-            _record_activity(
-                "final-sweep-warning-cleanup-started",
-                "Started final-sweep warning cleanup model turn",
-                active_file=str(live_state.get("active_file", "") or ""),
-                warning_count=int(live_state.get("final_sweep_warning_count", 0) or 0),
-            )
         scope_entry_prompt = ""
         if _research_mode_enabled() and not autonomy_state.get("orchestrator_scope_entered"):
             # Planning or a research-only final can change the live queue item
@@ -25718,6 +27706,7 @@ def _drive_autonomous_followups_inner(
                 phase="paused_infrastructure",
             )
             return history, compaction_state, checkpoint_state, live_state
+        _start_final_sweep_warning_cleanup_turn(autonomy_state, live_state)
         result = _run_managed_conversation_with_retries(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -25867,7 +27856,20 @@ def main() -> int:
             _reconcile_stale_workflow_file_locks()
         _persist_startup_live_status("reconciling")
         if _workflow_kind() == "prove":
+            scope_transition = campaign_roots.prepare_requested_campaign_scope(
+                project_root=_project_root(),
+                explicit_file=_read_native_env("ACTIVE_FILE", "").strip(),
+            )
             campaign_epoch.ensure_campaign(autonomy_state)
+            if scope_transition.transitioned:
+                _record_activity(
+                    "campaign-scope-transition",
+                    "Archived the prior file campaign and started a clean task scope",
+                    prior_campaign_id=scope_transition.prior_campaign_id,
+                    archive_dir=scope_transition.archive_dir,
+                    reason=scope_transition.reason,
+                    active_file=_read_native_env("ACTIVE_FILE", "").strip(),
+                )
             with contextlib.suppress(Exception):
                 resume_projection_reconciliation.reconcile_provider_free_resume_projections(
                     autonomy_state
@@ -26379,6 +28381,7 @@ def main() -> int:
                 live_state=live_state,
                 reason=_campaign_root_pause_reason(autonomy_state),
             )
+        _start_final_sweep_warning_cleanup_turn(autonomy_state, live_state)
         if _workflow_kind() == "prove":
             autonomy_state["current_cycle"] = campaign_epoch.record_managed_cycle(autonomy_state)
         result = _run_managed_conversation_with_retries(

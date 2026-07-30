@@ -67,6 +67,29 @@ def test_derive_queries_rejects_binder_only_erdos_goal_and_uses_statement_semant
     assert any("erdos_242_residual_five_mod_five_eq_one" in query for query in queries)
 
 
+def test_derive_queries_rejects_existential_binders_in_periodicity_goal():
+    statement = (
+        "theorem result {a : ℕ → ℕ} "
+        "(one_lt_gcd : ∀ n, IsLeast {m | a n < m ∧ "
+        "∀ i ≤ n, 1 < Nat.gcd m (a i)} (a (n + 1))) : "
+        "∃ (T L : ℕ), 0 < T ∧ 0 < L ∧ ∀ n, a (n + T) = a n + L := by"
+    )
+
+    queries = lls.derive_queries(
+        goal="",
+        hypotheses=[
+            "a : ℕ → ℕ",
+            (
+                "one_lt_gcd : ∀ n, IsLeast {m | a n < m ∧ "
+                "∀ i ≤ n, 1 < Nat.gcd m (a i)} (a (n + 1))"
+            ),
+        ],
+        statement=statement,
+    )
+
+    assert queries == ["IsLeast Nat.gcd"]
+
+
 def test_rank_candidates_orders_by_goal_symbol_overlap():
     goal_symbols = ["List.length", "Nat"]
     raw_hits = [

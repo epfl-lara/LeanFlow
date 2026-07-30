@@ -1,10 +1,10 @@
-"""Phase E scorer over the /prove redesign's plan-state artifacts.
+"""Score persisted proof-workflow artifacts against release criteria.
 
 Scores what the runs already persist — the dependency graph, summary,
-journal, decision packets — against the concrete-result guarantee (N1) and
-the kernel-truth invariants. Model-free by design: capability suites (T2/T3)
-reuse these scoring primitives over their run outputs; this module never
-launches runs itself. See evals/README.md for the suite/gate map.
+journal, and decision packets — against concrete-result and kernel-truth
+invariants. The scorer is model-free: capability suites reuse these primitives
+over completed run outputs, and this module never launches runs itself. See
+``evals/README.md`` for the suite and promotion criteria.
 """
 
 from __future__ import annotations

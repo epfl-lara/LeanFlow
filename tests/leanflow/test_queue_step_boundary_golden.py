@@ -1,9 +1,7 @@
-"""Characterization tests pinning `_finish_queue_step_boundary` (native_runner.py).
+"""Pin `_finish_queue_step_boundary` behavior in the native runner.
 
-Phase 0 of the /prove redesign (docs/prove-redesign-implementation-specs.md P0.5)
-unifies four drifting verdict paths behind `TheoremQueueManager.decide()`. This
-boundary path had no direct tests; these goldens pin its CURRENT behavior —
-including load-bearing quirks the unification must preserve byte-for-byte:
+The boundary unifies verdict paths behind `TheoremQueueManager.decide()`.
+These goldens preserve its load-bearing behavior:
 
 - D2: post-edit triggers consume hard retries against the limit of 8;
   verification-tool triggers (lean_verify etc.) consume NOTHING.
@@ -28,10 +26,9 @@ from leanflow_cli.native import native_runner as runner
 def _decide_authority(request, monkeypatch):
     """Run every boundary golden under BOTH verdict sources.
 
-    Phase 0 rollout: these goldens pin the LEGACY behavior; the
-    decide()-authoritative flip (LEANFLOW_QUEUE_DECIDE_AUTHORITY) must
-    reproduce every one of them byte-for-byte on the same_assignment domain.
-    Parametrizing here makes the parity a permanent CI invariant.
+    The decide-authoritative feature flag must reproduce every legacy verdict
+    on the same-assignment domain. Parametrizing here makes that parity a
+    permanent CI invariant.
     """
     if request.param:
         monkeypatch.setenv("LEANFLOW_QUEUE_DECIDE_AUTHORITY", "1")

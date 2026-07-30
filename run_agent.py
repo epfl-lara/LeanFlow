@@ -43,16 +43,25 @@ from core.home import leanflow_home
 
 # Load .env from the active LeanFlow home first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from leanflow_cli.runtime.env_loader import load_leanflow_dotenv
+from leanflow_cli.runtime.env_loader import (
+    load_leanflow_dotenv,
+    reassert_native_auxiliary_provider,
+)
 
 _leanflow_home = leanflow_home()
 _project_env = Path(__file__).parent / ".env"
 _loaded_env_paths = load_leanflow_dotenv(leanflow_home=_leanflow_home, project_env=_project_env)
+_native_auxiliary_provider = reassert_native_auxiliary_provider()
 if _loaded_env_paths:
     for _env_path in _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)
 else:
     logger.info("No .env file found. Using system environment variables.")
+if _native_auxiliary_provider:
+    logger.info(
+        "Forced native auxiliary model lanes onto provider %s",
+        _native_auxiliary_provider,
+    )
 
 
 # Import our tool system
@@ -711,7 +720,7 @@ class AIAgent:
 
         # Check tool requirements
         if self.tools and not self.quiet_mode:
-            requirements = check_toolset_requirements()
+            requirements = check_toolset_requirements(enabled_toolsets)
             missing_reqs = [name for name, available in requirements.items() if not available]
             enabled_toolset_names = {str(name) for name in (enabled_toolsets or [])}
             native_lean_only = bool(

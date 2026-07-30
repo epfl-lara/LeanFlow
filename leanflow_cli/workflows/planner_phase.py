@@ -1,6 +1,6 @@
-"""Planner phase — research fan-out + synthesis + graph merge (Phase 5 §5.5).
+"""Run research fan-out, synthesis, and graph updates for the planner route.
 
-The ``plan`` orchestrator route's mechanical arm (dark behind
+The ``plan`` orchestrator route's mechanical arm (opt-in through
 ``LEANFLOW_PLANNER_ENABLED``): run up to three research sub-agents
 (web/literature, mathlib, empirical) via capacity-bounded ``delegate_task``
 waves with isolated budgets, synthesize their JSON deliverables into a plan with one
@@ -10,11 +10,11 @@ state validated stubs through ``decomposer.place_helpers`` — every guard
 (stub shape, forbidden axioms, in-place validation, all-or-nothing revert)
 applies to planner stubs exactly as to decomposer stubs.
 
-N1: no lane result is ever lost — every lane lands in the outcome payload
+Every lane result lands in the outcome payload
 and the journal, parse failures included. Kernel truth: nothing here can
 mark a node proved/false; apply_delta derives statuses and the queue gate
 is untouched. Premise retrieval intentionally has no wiring here: it rides
-the Phase 1 assignment-time mechanism (``LEANFLOW_PREMISE_RETRIEVAL``).
+the assignment-time mechanism (``LEANFLOW_PREMISE_RETRIEVAL``).
 Queue pickup is the runner's loop-bottom rescan: placed stubs precede the
 target in file order and carry sorries, so they become the next
 assignments without a separate seeding path.
@@ -42,16 +42,22 @@ from leanflow_cli.workflows import (
     orchestrator_arithmetic_preflight,
     plan_state,
     planner_candidate_admission,
+    planner_evidence,
     research_mode,
 )
 from leanflow_cli.workflows.verification_providers import run_model_verification_review
 from tools.implementations.delegate_tool import delegate_task
 from tools.utilities.interrupt import CooperativeInterrupt, raise_if_interrupted
+from tools.utilities.repository_research_policy import (
+    clean_room_task_labels,
+    repository_research_disabled,
+    solution_research_disabled,
+)
 
 logger = logging.getLogger(__name__)
 
 PLANNER_SYNTHESIS_TASK = "planner_synthesis"
-PLANNER_SYNTHESIS_TIMEOUT_S = 900
+PLANNER_SYNTHESIS_TIMEOUT_S = 300
 PLANNER_ARITHMETIC_REJECTION_STATUS = "arithmetic-preflight-rejected"
 PLANNER_EVIDENCE_INTERRUPTED_STATUS = "evidence-interrupted"
 
@@ -89,6 +95,28 @@ _SYNTH_SYSTEM_PROMPT = (
 def planner_enabled() -> bool:
     raw = str(os.getenv("LEANFLOW_PLANNER_ENABLED", "") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def planner_synthesis_timeout_s() -> int:
+    """Return the bounded planner synthesis deadline.
+
+    Planner lane evidence is durable before synthesis starts. A silent
+    control-plane call must fall back promptly instead of freezing the active
+    proof for fifteen minutes.
+    """
+    try:
+        requested = int(
+            str(
+                os.getenv(
+                    "LEANFLOW_PLANNER_SYNTHESIS_TIMEOUT_S",
+                    PLANNER_SYNTHESIS_TIMEOUT_S,
+                )
+                or PLANNER_SYNTHESIS_TIMEOUT_S
+            )
+        )
+    except (TypeError, ValueError):
+        requested = PLANNER_SYNTHESIS_TIMEOUT_S
+    return max(30, min(requested, 600))
 
 
 def planner_max_subagents() -> int:
@@ -153,14 +181,20 @@ _LANES: tuple[_Lane, ...] = (
         goal_template=(
             "Research the mathematical literature and the web for prior art, "
             "known results, and proof strategies relevant to this Lean 4 goal: "
-            "{goal}. Clone promising proof developments with repo_clone when "
-            "concrete."
+            "{goal}. Start with a deep web_search portfolio containing materially "
+            "different formulations. Treat snippets only as discovery: inspect "
+            "promising primary sources with web_fetch, and clone promising proof "
+            "developments with repo_clone when concrete. If a provider fails or a "
+            "query is empty, continue through surviving providers and reformulations. "
+            "Record rejected sources and dead branches; set exhausted=true only after "
+            "the query portfolio and source reads are genuinely exhausted."
         ),
         deliverable_hint=(
             '{"findings": [{"claim": "...", "source": "url or path", '
             '"relevance": "...", "candidate_lemmas": ["..."]}], '
-            '"providers_tried": ["web_search", "unavailable:lean_search"], '
-            '"exhausted": false}'
+            '"queries_tried": ["..."], "providers_tried": ["..."], '
+            '"sources_read": ["url or path"], '
+            '"dead_ends": [{"route": "...", "reason": "..."}], "exhausted": false}'
         ),
     ),
     _Lane(
@@ -304,8 +338,25 @@ def _lane_prompt(
         if target_symbol and active_file
         else target_symbol or goal
     )
+    lane_goal = lane.goal_template.format(goal=subject)
+    if lane.key == "web" and (repository_research_disabled() or solution_research_disabled()):
+        restrictions: list[str] = []
+        if repository_research_disabled():
+            restrictions.append("do not search, fetch, clone, or cite source-code repositories")
+        if solution_research_disabled():
+            labels = ", ".join(clean_room_task_labels()) or "[active task]"
+            restrictions.append(
+                "do not search for, fetch, cite, or use any existing or official solution "
+                f"to the active task, and never put these labels into a web query: {labels}"
+            )
+        lane_goal = (
+            "Research only general mathematical literature and non-prohibited web sources "
+            f"for proof strategies relevant to this Lean 4 goal: {subject}. "
+            f"This is a clean-room run: {'; '.join(restrictions)}. "
+            "Record only independently useful mathematical guidance."
+        )
     parts = [
-        lane.goal_template.format(goal=subject),
+        lane_goal,
         "",
         _assignment_scope_block(
             campaign_goal=goal,
@@ -513,6 +564,7 @@ def _synthesis_prompt(
     failed_route_signature: str,
     search_signature: str,
     bp: plan_state.Blueprint,
+    prior_evidence: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     nodes_digest = [
         f"- `{node.name}` [{node.status}] ({node.file})" for node in bp.nodes[:30] if node.name
@@ -531,6 +583,17 @@ def _synthesis_prompt(
         "",
         "Current graph:",
         *(nodes_digest or ["- [empty]"]),
+    ]
+    if prior_evidence:
+        lines += [
+            "",
+            "Previously recovered exact-target evidence:",
+            planner_evidence.prompt_payload(prior_evidence),
+            "This evidence survived an earlier advisor/search turn. Preserve its concrete",
+            "construction, failed branches, and helper split unless current Lean evidence",
+            "directly refutes them; do not replace it with a vaguer rediscovery plan.",
+        ]
+    lines += [
         "",
         "Research deliverables:",
         json.dumps(dict(deliverables), ensure_ascii=False, sort_keys=True)[:12000],
@@ -755,6 +818,7 @@ def run_planner_phase(
     cwd: str = "",
     allowed_axioms: Sequence[str] = ("propext", "Classical.choice", "Quot.sound"),
     lane_keys: Sequence[str] = (),
+    prior_evidence: Sequence[Mapping[str, Any]] = (),
 ) -> PlannerOutcome:
     """One full planner phase; never raises.
 
@@ -843,9 +907,10 @@ def run_planner_phase(
                 failed_route_signature=failed_route_signature,
                 search_signature=search_signature,
                 bp=bp,
+                prior_evidence=prior_evidence,
             ),
             system_prompt=_SYNTH_SYSTEM_PROMPT,
-            timeout_s=PLANNER_SYNTHESIS_TIMEOUT_S,
+            timeout_s=planner_synthesis_timeout_s(),
             max_tokens=8000,
         )
         raise_if_interrupted("planner phase interrupted after synthesis review")

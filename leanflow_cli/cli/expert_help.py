@@ -6,6 +6,7 @@ import contextlib
 import os
 import secrets
 import shlex
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -100,7 +101,18 @@ def normalize_expert_provider(value: str) -> str:
 
 
 def is_command_expert_provider(value: str) -> bool:
-    return normalize_expert_provider(value) in set(DEFAULT_COMMAND_TEMPLATES)
+    normalized = normalize_expert_provider(value)
+    if (
+        normalized == "codex"
+        and str(os.getenv("LEANFLOW_SANDBOX", "") or "").strip().lower()
+        in {"1", "true", "yes", "on"}
+        and shutil.which("codex") is None
+    ):
+        # The sandbox intentionally carries Codex OAuth credentials but not
+        # the desktop Codex executable. Let model-backed advisor callers route
+        # the same explicit provider through the Responses API adapter.
+        return False
+    return normalized in set(DEFAULT_COMMAND_TEMPLATES)
 
 
 def _fallback_task(task: str) -> str:

@@ -1,1 +1,1 @@
-"""leanflow_cli.runtime subpackage (Phase II restructure)."""
+"""Resolve providers, skills, locks, and sandbox execution."""

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from leanflow_cli.cli.doctor import DOCTOR_MODES, run_doctor
+from leanflow_cli.cli.doctor import DOCTOR_MODES, _web_search_payload, run_doctor
 
 
 def test_run_doctor_json_is_structured_in_degraded_mode(monkeypatch, tmp_path):
@@ -207,6 +207,26 @@ def test_run_doctor_web_search_mode_uses_real_tool_surface(monkeypatch, tmp_path
     assert payload["web_search"]["available"] is True
     assert "Lean-first guidance: yes" in text
     assert "sourcegraph" in text
+
+
+def test_web_search_doctor_accepts_case_insensitive_lean_first_guidance(monkeypatch):
+    from tools.implementations import web_tools
+
+    monkeypatch.setattr(
+        web_tools,
+        "web_search_tool",
+        lambda query, limit=5: (
+            '{"success":true,"data":{"web":[{"provider":"arxiv","kind":"paper",'
+            '"title":"A Formal Proof","url":"https://arxiv.org/abs/2501.00001"}]},'
+            '"degraded_reasons":[]}'
+        ),
+    )
+
+    payload, issues = _web_search_payload()
+
+    assert payload["lean_search_guidance"] is True
+    assert payload["available"] is True
+    assert issues == []
 
 
 @pytest.mark.parametrize(

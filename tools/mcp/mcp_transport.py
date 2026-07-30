@@ -40,6 +40,7 @@ _SAFE_ENV_KEYS = frozenset(
         "TERM",
         "SHELL",
         "TMPDIR",
+        "ELAN_HOME",
     }
 )
 _LOOGLE_STALE_ARTIFACT_SCAN_LIMIT = 80

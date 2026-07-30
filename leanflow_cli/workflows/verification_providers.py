@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from agent.providers.isolated_auxiliary import (
     IsolatedAuxiliaryError,
     IsolatedAuxiliaryTimeout,
     IsolatedAuxiliaryUnavailable,
+    resolve_auxiliary_call_identity,
     run_isolated_auxiliary_text,
     sanitize_auxiliary_error,
 )
@@ -31,6 +33,9 @@ VERIFICATION_TASKS = {
     BLUEPRINT_VERIFICATION_TASK,
     AUTOFORMALIZER_VERIFICATION_TASK,
 }
+ADVISORY_VERIFICATION_TIMEOUT_ENV = "LEANFLOW_ADVISORY_VERIFICATION_TIMEOUT_S"
+ADVISORY_VERIFICATION_TIMEOUT_DEFAULT_S = 180
+ADVISORY_VERIFICATION_TIMEOUT_MAX_S = 300
 
 LOCAL_VERIFIER_ALIASES = {
     "deterministic",
@@ -94,6 +99,15 @@ def is_local_verification_provider(provider: str) -> bool:
 
 def is_command_verification_provider(provider: str) -> bool:
     return is_command_expert_provider(normalize_verification_provider(provider))
+
+
+def advisory_verification_timeout_s() -> int:
+    """Return the bounded deadline for non-authoritative verifier advice."""
+    try:
+        configured = int(str(os.getenv(ADVISORY_VERIFICATION_TIMEOUT_ENV, "") or "").strip())
+    except (TypeError, ValueError):
+        configured = ADVISORY_VERIFICATION_TIMEOUT_DEFAULT_S
+    return max(5, min(configured, ADVISORY_VERIFICATION_TIMEOUT_MAX_S))
 
 
 def _record_verification_activity(event_type: str, message: str, **details: Any) -> None:
@@ -208,6 +222,35 @@ def run_model_verification_review(
     timed_out = False
     resolved_provider = normalized
     try:
+        identity = resolve_auxiliary_call_identity(
+            task=task,
+            provider=effective_provider,
+        )
+    except Exception:
+        identity = None
+    heartbeat_provider = str(getattr(identity, "provider", "") or "").strip() or normalized
+    heartbeat_model = str(getattr(identity, "model", "") or "").strip()
+
+    def heartbeat(elapsed_s: float, deadline_s: float) -> None:
+        message = (
+            f"Verification review still waiting on {heartbeat_provider}"
+            f"{f'/{heartbeat_model}' if heartbeat_model else ''} "
+            f"({elapsed_s:.0f}s elapsed, {deadline_s:.0f}s deadline)"
+        )
+        print(f"   ⏳ {message}", flush=True)
+        _record_verification_activity(
+            "verification-review-heartbeat",
+            message,
+            review_id=review_id,
+            task=task,
+            provider=heartbeat_provider,
+            model=heartbeat_model,
+            mode="model",
+            timeout_s=deadline_s,
+            elapsed_s=elapsed_s,
+        )
+
+    try:
         response = run_isolated_auxiliary_text(
             task=task,
             provider=effective_provider,
@@ -215,6 +258,7 @@ def run_model_verification_review(
             temperature=0.1,
             max_tokens=max_tokens,
             timeout=max(1, int(timeout_s or 0)),
+            progress_callback=heartbeat,
         )
         raise_if_interrupted("verification model review interrupted after provider return")
         content = response.content.strip()

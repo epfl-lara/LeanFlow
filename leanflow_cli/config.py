@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from core.filesystem import ensure_directory
 from core.home import DEFAULT_HOME, HOME_ENV, leanflow_home
 
 logger = logging.getLogger(__name__)
@@ -480,12 +481,11 @@ def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, 
 
 def ensure_leanflow_home() -> Path:
     home = get_leanflow_home()
-    home.mkdir(parents=True, exist_ok=True)
+    ensure_directory(home)
     _secure_dir(home)
     _ensure_default_soul_md(home)
     for subdir in ("sessions", "logs", "memories", "workflow-state", "local-models"):
-        target = home / subdir
-        target.mkdir(parents=True, exist_ok=True)
+        target = ensure_directory(home / subdir)
         _secure_dir(target)
     _ensure_default_config_file(home)
     _ensure_default_env_file(home)

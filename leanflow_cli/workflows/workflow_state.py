@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from core.filesystem import ensure_directory
 from core.process_identity import (
     ProcessIdentity,
     current_process_identity,
@@ -54,6 +55,7 @@ from leanflow_cli.workflows.workflow_json_io import (  # noqa: F401
     update_json_file_if_changed,
     write_json_file,
 )
+from leanflow_cli.workflows.workflow_outcome_retention import append_outcome_entry
 from leanflow_cli.workflows.workflow_state_paths import (  # noqa: F401
     PROJECT_STATE_DIRNAME,
     _discover_project_root,
@@ -132,7 +134,7 @@ def _record_slow_append(
         "write_s": round(max(0.0, write_s), 3),
     }
     try:
-        latency_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(latency_path.parent)
         with _APPEND_LATENCY_LOCK, latency_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
             handle.flush()
@@ -147,7 +149,7 @@ def _locked_append(path: Path, text: str) -> None:
     local_lock_wait_s = 0.0
     cross_process_lock_wait_s = 0.0
     write_s = 0.0
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     local_lock_started = time.monotonic()
     with _APPEND_LOCK:
         local_lock_wait_s = max(0.0, time.monotonic() - local_lock_started)
@@ -183,7 +185,7 @@ def _locked_append(path: Path, text: str) -> None:
 def _workflow_run_log_flock() -> Iterator[None]:
     """Serialize console-log ownership without sharing the activity lock."""
     lock_path = workflow_state_root() / ".run-log.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(lock_path.parent)
     with lock_path.open("a+b") as handle:
         locked = False
         if fcntl is not None:
@@ -215,7 +217,7 @@ def _workflow_run_log_owner_token(run_id: str) -> str:
 
 def _append_plain_text(path: Path, text: str) -> None:
     """Append and flush plain console text while the dedicated lock is held."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(text)
         handle.flush()
@@ -237,8 +239,7 @@ WORKFLOW_RUN_SCOPE_BACKGROUND = "background-session"
 
 def ensure_workflow_state_root() -> Path:
     root = workflow_state_root()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return ensure_directory(root)
 
 
 def workflow_index_path() -> Path:
@@ -873,7 +874,7 @@ def append_workflow_outcome(kind: str, payload: Mapping[str, Any]) -> None:
         "payload": dict(payload or {}),
     }
     path = workflow_outcomes_path()
-    _locked_append(path, json.dumps(entry, sort_keys=True) + "\n")
+    append_outcome_entry(path, entry, append=_locked_append)
 
 
 def write_verified_patch_checkpoint(
@@ -1208,7 +1209,7 @@ def enqueue_workflow_agent_message(
     if not message:
         return {"success": False, "error": "Message is empty.", "agent_id": agent_id}
     path = workflow_agent_inbox_path(agent_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     seq = len(read_workflow_agent_inbox(agent_id)) + 1
     entry = {
         "seq": seq,
@@ -2009,8 +2010,8 @@ def terminate_project_workflow_agents(
 
 def reset_workflow_run_log() -> Path:
     path = workflow_run_log_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    workflow_runs_root().mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
+    ensure_directory(workflow_runs_root())
     run_id = _workflow_run_id()
     os.environ["LEANFLOW_WORKFLOW_RUN_ID"] = run_id
     owner_path = _workflow_run_log_owner_path()
@@ -2052,9 +2053,9 @@ def append_workflow_run_log(text: str) -> None:
         return
     run_id = _workflow_run_id()
     path = workflow_run_log_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     timestamped_path = workflow_timestamped_run_log_path()
-    timestamped_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(timestamped_path.parent)
     owner_path = _workflow_run_log_owner_path()
     owner_token = _workflow_run_log_owner_token(run_id)
     with _RUN_LOG_APPEND_LOCK, _workflow_run_log_flock():

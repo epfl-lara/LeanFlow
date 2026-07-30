@@ -5970,6 +5970,54 @@ def test_terminal_modern_killed_process_bypasses_legacy_release_transaction(
     assert retired == [modern.spec.job_id]
 
 
+def test_terminal_modern_killed_reused_pid_releases_on_command_mismatch(
+    monkeypatch,
+    tmp_path,
+):
+    """A reused PID/group/session triple cannot pin a killed modern worker."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    campaign_id = "campaign-modern-reused-pid"
+    service = dispatch_service.DispatchService(root_job_id=campaign_id)
+    modern = replace(
+        _seed_legacy_killed_process(
+            service,
+            campaign_id=campaign_id,
+            target_symbol="old_target",
+            active_file=str(tmp_path / "Main.lean"),
+        ),
+        launch_nonce="modern-launch",
+        process_group_id=4242,
+        process_session_id=4242,
+        process_token_sha256="a" * 64,
+    )
+    service._save_entry(modern)
+    monkeypatch.setattr(
+        dispatch_service,
+        "_dispatch_process_identity_has_exited",
+        lambda _entry: False,
+    )
+    monkeypatch.setattr(
+        dispatch_service,
+        "_dispatch_process_identity_is_live",
+        lambda _entry: False,
+    )
+    monkeypatch.setattr(
+        dispatch_service,
+        "_read_process_argv",
+        lambda _process_id, **_kwargs: ("/usr/bin/unrelated-service",),
+    )
+    monkeypatch.setattr(
+        dispatch_service,
+        "_terminate_dispatch_process_and_wait",
+        lambda _entry: False,
+    )
+
+    assert research_portfolio._terminal_killed_process_released(modern, service=service)
+    persisted = service._entry(modern.spec.job_id)
+    assert persisted.process_release_reason == "process-command-mismatch"
+    assert persisted.process_released_at
+
+
 def test_release_activity_append_marker_crash_deduplicates_on_retry(monkeypatch, tmp_path):
     """An append-success/marker-crash window is repaired without a duplicate."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))

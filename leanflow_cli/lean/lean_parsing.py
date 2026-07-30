@@ -1,12 +1,8 @@
-"""Pure Lean source-text and declaration parsing helpers for the native managed runner.
+"""Parse Lean source text without invoking the compiler.
 
-Extracted verbatim from ``native_runner.py`` (refactor Phase 2, step 2 — the pure-parsing
-cluster). These helpers operate purely on strings/Lean source text (comment/string stripping,
-declaration-name/signature/kind extraction, ``theorem``/``lemma``/``example`` detection, sorry
-scanning over text, declaration line indexing and region trimming) and depend only on the
-standard library and on each other — no ``native_runner`` module-level state, env readers, Lean
-services, or queue objects. They live here and are re-exported from ``native_runner`` for
-backwards compatibility; the names are referenced throughout that module and by tests.
+The helpers strip comments and strings, identify declarations, split statements
+from proofs, and scan declaration regions for placeholders. They remain
+re-exported from ``native_runner`` for compatibility.
 """
 
 from __future__ import annotations

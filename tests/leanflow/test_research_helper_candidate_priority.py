@@ -31,6 +31,8 @@ def _finding(active_file: str, *, job_id: str = "campaign.orchestrator.em-1"):
             "has_checked_helper": True,
         },
         "deliverable": {
+            "checked_helper_route_disposition": "advance_current_route",
+            "checked_helper_dependency_advanced": "demo's reflexive core",
             "checked_helper_status": "worker_checked_parent_recheck_required",
             "parent_recheck_required": True,
             "checked_helpers": [
@@ -106,6 +108,85 @@ def test_registers_one_exact_assignment_candidate_and_deduplicates(monkeypatch, 
     assert first.helper_name == "checked_helper"
     assert first.delivery_markers == ("marker-1",)
     assert priority.load(state) == first
+
+
+def test_declared_evidence_only_helper_is_not_registered(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    finding = _finding(str(active))
+    finding["deliverable"]["checked_helper_route_disposition"] = "evidence_only"
+    finding["deliverable"]["checked_helper_dependency_advanced"] = ""
+
+    remembered = priority.remember_from_findings(
+        {},
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert remembered is None
+    assert research_findings.foreground_use_reason(finding) == (
+        "checked_helper_declared_evidence_only"
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "pointwise_counterplays_do_not_swap_quantifiers",
+        "double_angle_trigger_not_universal_at_pi_div_four",
+        "exists_bounded_of_natRank_descent_probe",
+    ],
+)
+def test_evidence_named_helper_is_not_registered_despite_worker_disposition(
+    monkeypatch, tmp_path, name
+):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    finding = _finding(str(active))
+    declaration = f"private theorem {name} : True := by\n  trivial"
+    finding["deliverable"]["checked_helpers"] = [
+        _checked_helper(str(active), name=name, declaration=declaration)
+    ]
+
+    assert research_findings.foreground_use_role(finding) == "actionable"
+    assert (
+        priority.remember_from_findings(
+            {},
+            (finding,),
+            campaign_id="campaign",
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        is None
+    )
+
+
+def test_legacy_explicitly_nonadvancing_helper_is_not_registered(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    finding = _finding(str(active))
+    finding["deliverable"].pop("checked_helper_route_disposition")
+    finding["deliverable"][
+        "interpretation"
+    ] = "This checked arithmetic helper does not advance the missing construction."
+
+    remembered = priority.remember_from_findings(
+        {},
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert remembered is None
+    assert research_findings.foreground_use_reason(finding) == (
+        "legacy_checked_helper_explicitly_nonadvancing"
+    )
 
 
 def test_checked_finite_singleton_is_not_registered(monkeypatch, tmp_path):
@@ -287,6 +368,94 @@ def test_exact_source_signature_is_deduplicated_without_semantic_authority(monke
     assert remembered is not None
     assert remembered.helper_name == "useful_delta"
     assert remembered.declaration == useful
+
+
+def test_alpha_equivalent_source_signature_is_deduplicated(monkeypatch, tmp_path):
+    """Ignore hypothesis-name changes when the checked proposition already exists."""
+    active = tmp_path / "Demo.lean"
+    existing = "private theorem existing_helper {θ : Nat} (hθpos : 0 < θ) : θ = θ := by\n" "  rfl"
+    target = "theorem demo : True := by\n  sorry"
+    active.write_text("\n\n".join((existing, target)) + "\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    file = str(active)
+    duplicate = (
+        "private theorem renamed_helper {x : Nat} (hx : 0 < x) : x = x := by\n" "  exact rfl"
+    )
+    useful = "private lemma useful_delta : True := by\n  trivial"
+    finding = _finding(file, job_id="campaign.orchestrator.ds-alpha-duplicate")
+    finding["deliverable"]["checked_helpers"] = [
+        _checked_helper(file, name="renamed_helper", declaration=duplicate),
+        _checked_helper(file, name="useful_delta", declaration=useful),
+    ]
+
+    remembered = priority.remember_from_findings(
+        {},
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=file,
+    )
+
+    assert remembered is not None
+    assert remembered.helper_name == "useful_delta"
+
+
+def test_same_name_source_declaration_is_detected_before_insertion(monkeypatch, tmp_path):
+    """Detect a checked helper name already present before the target."""
+    active = tmp_path / "Demo.lean"
+    target = "theorem demo : True := by\n  sorry"
+    active.write_text(target + "\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    file = str(active)
+    collision = "theorem checked_helper (n : Nat) : n = n := by\n  exact n"
+    finding = _finding(file, job_id="campaign.orchestrator.ds-name-collision")
+    finding["deliverable"]["checked_helpers"] = [
+        _checked_helper(file, name="checked_helper", declaration=collision),
+    ]
+
+    remembered = priority.remember_from_findings(
+        {},
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=file,
+    )
+
+    assert remembered is not None
+    active.write_text(
+        "theorem checked_helper (n : Nat) : n = n := by\n  rfl\n\n" + target + "\n",
+        encoding="utf-8",
+    )
+    detected = priority.source_name_collision(remembered)
+    assert detected is not None
+    assert detected.existing_symbol == "checked_helper"
+    assert detected.reason == "same_name_current_source"
+
+
+def test_preexisting_same_name_source_declaration_is_not_staged(monkeypatch, tmp_path):
+    """Reject a stale worker helper before it enters parent priority state."""
+    active = tmp_path / "Demo.lean"
+    active.write_text(
+        "\n\n".join(
+            (
+                "theorem checked_helper (n : Nat) : n = n := by\n  rfl",
+                "theorem demo : True := by\n  sorry",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+
+    remembered = priority.remember_from_findings(
+        {},
+        (_finding(str(active)),),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert remembered is None
 
 
 def test_preexisting_pending_eventual_candidate_is_not_retired_from_graph_status(
@@ -540,6 +709,247 @@ def test_resolved_candidate_cannot_be_registered_again(monkeypatch, tmp_path):
             active_file=str(active),
         )
         is None
+    )
+
+
+def test_integrated_helper_requires_target_body_consumption_before_next_priority(
+    monkeypatch, tmp_path
+):
+    """Helper-only source edits must not allow an endless priority chain."""
+    active = tmp_path / "Demo.lean"
+    target = "theorem demo : True := by\n  sorry"
+    active.write_text(target + "\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    state: dict = {}
+    first_finding = _finding(str(active), job_id="campaign.orchestrator.ds-first")
+    first = priority.remember_from_findings(
+        state,
+        (first_finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert first is not None
+    active.write_text(first.declaration + "\n\n" + target + "\n", encoding="utf-8")
+
+    priority.resolve(state, disposition="integrated_managed_edit")
+
+    assert priority.target_consumption_pending(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    second_finding = _finding(str(active), job_id="campaign.orchestrator.ds-second")
+    second_helper = second_finding["deliverable"]["checked_helpers"][0]
+    second_declaration = "private lemma second_helper : True := by\n  trivial"
+    second_helper["declaration"] = second_declaration
+    second_helper["declaration_sha256"] = hashlib.sha256(second_declaration.encode()).hexdigest()
+    second_helper["worker_check"]["replacement_declarations"] = ["second_helper"]
+    second = priority.remember_from_findings(
+        state,
+        (second_finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert second is not None
+
+    # More source growth above an unchanged target does not release priority.
+    active.write_text(
+        first.declaration
+        + "\n\nprivate lemma unrelated : True := by\n  trivial\n\n"
+        + target
+        + "\n",
+        encoding="utf-8",
+    )
+    assert priority.target_consumption_pending(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    # A placeholder-preserving edit that does not use the helper is still not
+    # obligation progress.
+    active.write_text(
+        first.declaration
+        + "\n\n"
+        + "theorem demo : True := by\n  have : True := trivial\n  sorry\n",
+        encoding="utf-8",
+    )
+    assert priority.target_consumption_pending(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    # Concrete use in the assigned proof releases the research gate even while
+    # a residual placeholder remains. The advisor may now help with that
+    # residual obligation instead of deadlocking behind the banked helper.
+    active.write_text(
+        first.declaration
+        + "\n\n"
+        + "theorem demo : True := by\n  have h := checked_helper\n  sorry\n",
+        encoding="utf-8",
+    )
+    assert not priority.target_consumption_pending(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    # Recreate the marker to retain coverage of manager-verified release.
+    active.write_text(target + "\n", encoding="utf-8")
+    state = {}
+    first = priority.remember_from_findings(
+        state,
+        (first_finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert first is not None
+    active.write_text(first.declaration + "\n\n" + target + "\n", encoding="utf-8")
+    priority.resolve(state, disposition="integrated_managed_edit")
+
+    # Removing the assigned placeholder is only a candidate edit. It cannot
+    # release priority before the manager accepts the exact target.
+    active.write_text(
+        first.declaration + "\n\n" + "theorem demo : True := by\n  trivial\n",
+        encoding="utf-8",
+    )
+    assert priority.target_consumption_pending(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert priority.release_target_consumption_after_verified_target(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert not priority.target_consumption_pending(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+
+def test_target_consumption_marker_survives_summary_hydration(monkeypatch, tmp_path):
+    """Restart must preserve the target-body gate after helper integration."""
+    active = tmp_path / "Demo.lean"
+    target = "theorem demo : True := by\n  sorry"
+    active.write_text(target + "\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "state"))
+    state: dict = {}
+    record = priority.remember_from_findings(
+        state,
+        (_finding(str(active)),),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert record is not None
+    active.write_text(record.declaration + "\n\n" + target + "\n", encoding="utf-8")
+    priority.resolve(state, disposition="integrated_managed_edit")
+    resumed = {priority._HYDRATION_KEY: "prior-process"}
+
+    assert priority.target_consumption_pending(
+        resumed,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    summary = priority.read_json_file(priority.plan_state.plan_state_paths().summary_json)
+    assert summary[priority.CONSUMPTION_SUMMARY_KEY]["candidate_id"] == record.candidate_id
+
+    active.write_text(
+        record.declaration
+        + "\n\n"
+        + "theorem demo : True := by\n  have : True := trivial\n  sorry\n",
+        encoding="utf-8",
+    )
+    assert priority.target_consumption_pending(
+        resumed,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    active.write_text(
+        record.declaration
+        + "\n\n"
+        + "theorem demo : True := by\n  have h := checked_helper\n  sorry\n",
+        encoding="utf-8",
+    )
+    assert not priority.target_consumption_pending(
+        resumed,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    # Rehydrate another integrated marker for the verified-target path.
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "state-verified"))
+    active.write_text(target + "\n", encoding="utf-8")
+    state = {}
+    record = priority.remember_from_findings(
+        state,
+        (_finding(str(active)),),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert record is not None
+    active.write_text(record.declaration + "\n\n" + target + "\n", encoding="utf-8")
+    priority.resolve(state, disposition="integrated_managed_edit")
+    resumed = {priority._HYDRATION_KEY: "prior-process-verified"}
+    active.write_text(
+        record.declaration + "\n\n" + "theorem demo : True := by\n  trivial\n",
+        encoding="utf-8",
+    )
+    assert priority.target_consumption_pending(
+        resumed,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert priority.release_target_consumption_after_verified_target(
+        resumed,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert not priority.target_consumption_pending(
+        resumed,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    summary = priority.read_json_file(priority.plan_state.plan_state_paths().summary_json)
+    assert summary[priority.CONSUMPTION_SUMMARY_KEY] == {}
+
+
+def test_integrated_evidence_helper_does_not_require_target_consumption(monkeypatch, tmp_path):
+    """Evidence may remain banked without forcing a dummy parent reference."""
+    active = tmp_path / "Demo.lean"
+    target = "theorem demo : True := by\n  sorry"
+    active.write_text(target + "\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    state: dict = {}
+    record = priority.remember_from_findings(
+        state,
+        (_finding(str(active)),),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert record is not None
+    active.write_text(record.declaration + "\n\n" + target + "\n", encoding="utf-8")
+
+    priority.resolve(
+        state,
+        disposition="integrated_managed_edit",
+        require_target_consumption=False,
+    )
+
+    assert not priority.target_consumption_pending(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
     )
 
 

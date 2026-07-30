@@ -1,1 +1,1 @@
-"""agent.compression subpackage (Phase II restructure)."""
+"""Manage conversation persistence, compression, and summary handoff."""

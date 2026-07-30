@@ -1,12 +1,4 @@
-"""Interactive REPL shell for the `leanflow` CLI.
-
-Houses ``InteractiveShell`` (the prompt-toolkit REPL, slash-command dispatch, workflow
-launch/monitor, and status rendering), extracted verbatim from ``main.py`` so that module
-stays a thin argparse dispatcher. ``main.py`` re-exports ``InteractiveShell`` for the
-historical ``from leanflow_cli.main import InteractiveShell`` surface. Tests that drive shell
-methods patch collaborators on ``leanflow_cli.shell``; tests driving ``main()`` patch them on
-``leanflow_cli.main`` — both modules import the same names independently.
-"""
+"""Run the prompt-toolkit LeanFlow shell and its workflow controls."""
 
 from __future__ import annotations
 

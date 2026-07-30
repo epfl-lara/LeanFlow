@@ -1,18 +1,18 @@
-# Phase E — Evaluation Harness
+# Evaluation Harness
 
-The /prove redesign's evaluation harness (roadmap §4.13; audit Part B §5).
-It gates promotion of the relentless-prover behavior. The frozen inventories
-live in `corpus_manifest.json`; scoring reads `blueprint.json`, `summary.json`,
-`journal.jsonl`, decision packets, coach coverage, campaign epochs, and the
-dispatch ledger. Results append to `results.jsonl`.
+This harness measures regression safety, proof capability, and research-mode
+persistence. Frozen benchmark inventories live in `corpus_manifest.json`.
+Scoring reads the workflow's `blueprint.json`, `summary.json`, `journal.jsonl`,
+decision packets, coach coverage, campaign epochs, and dispatch ledger.
+Generated results append to the untracked `evals/results.jsonl`.
 
 ## Suites
 
-- **T1 Regression (every phase):** the demo projects
+- **T1 Regression:** the demo projects
   (`testdata/workflow_projects/ProveDemo` IMOMath1–3, RealTheorems;
   `DocFormalizationDemo`) must stay green, and flags-off runs must be
-  byte-identical on the hot path (extends Phase 0's shadow-compare into a
-  permanent gate). `harness.t1_fixture_projects()` is the inventory.
+  byte-identical on the hot path. `harness.t1_fixture_projects()` is the
+  inventory.
 - **T2 Capability:** 40 exact Lean 4 declarations: 20 from the pinned
   Google DeepMind miniF2F test file and 20 from pinned PutnamBench.
 - **T3 Research-grade:** ten multi-hour campaigns: the isolated IMOMath3
@@ -21,34 +21,25 @@ dispatch ledger. Results append to `results.jsonl`.
 - **Adversarial fixtures:** four local Lean files covering a false leaf,
   false decomposition, vacuity, and nonstandard-axiom temptation.
 
-## Per-phase gates
+## Promotion Criteria
 
-| Phase | Gate |
-|---|---|
-| P1 | kill -9 at a random point, resume, zero verified-work loss, graph reconciles (10/10 drills — `harness.reconcile_drill`) |
-| P2 | coach coverage 100%, zero strategy/verdict authority, surrendering model output rejected |
-| P3 | adversarial fixtures + ledger: zero lost jobs across 100 dispatches |
-| P4 | T2 uplift vs the Phase-2 baseline + fixtures (b)(c)(d) |
-| P5 | T3 first runs: 100% terminal-artifact compliance |
-| P6 | T3 with research mode on: give-up-termination rate 0 and unresolved-success exit rate 0 |
+- forced-stop/resume drills lose no verified work and reconcile the proof graph
+- persistence-coach coverage is 100%, with no strategy or verification authority
+- adversarial fixtures cannot pass through false statements or forbidden axioms
+- background dispatch loses no completed jobs
+- research runs produce complete terminal artifacts
+- voluntary-give-up and unresolved-success rates are both zero
 
 ## Protocol
 
-Frozen suites, pinned toolchain/mathlib per suite version. Every
-phase-enable PR runs T1 + its gate tier with flags off AND on; results
-append to `evals/results.jsonl` via `harness.append_result` (one JSON object
-per line: suite, phase, flags, metrics, timestamp). Any T1 regression or a
-T2 solve-rate drop >1σ blocks the flag default-flip.
+Each suite version pins its toolchain and mathlib revision. Compare flags-off
+and flags-on runs against the same frozen corpus. `harness.append_result`
+writes one JSON object per line with the suite, experiment label, flags,
+metrics, and timestamp. Any T1 regression or statistically meaningful T2
+solve-rate drop blocks promotion.
 
 `python -m pytest tests/leanflow/test_eval_harness.py` exercises the scorer
 itself; live-run scoring is invoked with
 `harness.score_terminal_artifacts(<workflow-state root>)` and
 `harness.score_campaign_metrics(<workflow-state root>)`. Aggregate a frozen
-suite with `harness.aggregate_campaign_metrics(reports)`. Promotion targets
-are:
-
-- voluntary-give-up termination rate: `0`
-- unresolved-success exit rate: `0`
-- coach coverage: `100%`
-- reported route/proof-shape diversity, job launched/consumed/replaced counts,
-  verified graph progress, and epoch rollover counts
+suite with `harness.aggregate_campaign_metrics(reports)`.

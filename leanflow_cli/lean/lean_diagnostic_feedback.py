@@ -1,19 +1,4 @@
-"""Pure diagnostic / goal text parsers extracted from native_runner (Phase 2).
-
-This module collects the side-effect-free helpers that read declaration slices and turn
-Lean diagnostic / goal text (or structured ``diagnostic_items`` payloads) into the per-theorem
-feedback signals the runner consumes: whether diagnostics indicate a queue blocker / hard
-failure, whether goals are still open, and the per-declaration diagnostic feedback reason.
-
-Each function here is the fixpoint closure under "calls": its only non-stdlib callees are other
-functions in this module or already-extracted modules
-(``lean_services.diagnostic_items`` / ``diagnostics_indicate_actionable_failure``,
-``native_utils._single_line`` / ``_extract_diagnostic_line_numbers``,
-``proof_state_builder._declaration_line_index`` / ``_find_declaration_entry``). None of them read
-native_runner module-mutable globals, declare ``global``, or mutate shared state, and none are
-monkeypatched on native_runner by the test suite. This module does NOT import ``native_runner`` —
-so re-exporting these names back from there introduces no import cycle.
-"""
+"""Convert Lean diagnostics and goals into per-declaration feedback signals."""
 
 from __future__ import annotations
 

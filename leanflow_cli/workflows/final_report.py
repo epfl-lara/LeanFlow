@@ -1,4 +1,4 @@
-"""End-of-scope final report (Phase 3, specs Part II §6) — N1 mechanized.
+"""Render a complete end-of-scope report for managed workflows.
 
 Every non-verified exit from the autonomous loop must leave a rigorous,
 machine-written account: what was proved, what was tried, what was learned,
@@ -116,8 +116,7 @@ def _graph_sections() -> tuple[list[str], list[str]]:
     """(graph inventory, ranked open subgoals) from the dependency graph.
 
     Ranked = frontier-ready first (stated/audited, dependencies proved),
-    then waiting-on-dependencies, then blocked/parked with their notes —
-    the §4.12 'open subgoals ranked · recommended next attack' input.
+    then waiting-on-dependencies, then blocked/parked with their notes.
     Empty lists when plan-state is off or the graph is empty.
     """
     from leanflow_cli.workflows import plan_state
@@ -264,8 +263,7 @@ def generate_final_report(
         )
     else:
         lines.append("- none — every dispatched job reached a terminal state")
-    # §4.12 scope-exit additions (Phase 4): graph inventory, route history
-    # from the lab notebook, and the RANKED open-subgoal frontier.
+    # Include graph inventory, route history, and the ranked open frontier.
     graph_lines, subgoal_lines = _graph_sections()
     if graph_lines:
         lines.extend(["", "## Graph inventory", "", *graph_lines])
@@ -284,7 +282,7 @@ def generate_final_report(
     if outcome.kind == "disproved":
         recommendations.append(
             "- promote the scratch disproof through the authoritative gate, then re-state "
-            "or retire the affected statement (§4.11)."
+            "or retire the affected statement."
         )
     if stop_reason == "budget-breakpoint":
         recommendations.append(

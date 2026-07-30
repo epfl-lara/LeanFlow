@@ -24,6 +24,9 @@ DECOMPOSITION_ADMISSION_PROMPT_CONTRACT = (
     "a strictly smaller obligation than the parent: do not replace the parent's witnesses "
     "with an equally broad or larger bundle of existential witnesses and atomic constraints. "
     "Instead isolate the missing divisor, witness, or coverage fact as the narrower helper. "
+    "Never drop a side condition that makes a proposed helper sound. In particular, a helper "
+    "relating `playEnds` to `physicalPieces` must retain the `Disjoint` hypothesis required to "
+    "prevent overlapping cut points from changing the physical-piece cardinality. "
 )
 
 _SLICE_HEADER_RE = re.compile(r"^Assigned declaration slice[^\n]*:\s*\n", re.IGNORECASE)
@@ -51,6 +54,7 @@ _CANONICAL_TOKENS = {
 }
 _NEAR_IDENTICAL_SIMILARITY = 0.96
 _REASON_CODE = "closed_literal_parent_instantiation"
+_DROPPED_DISJOINTNESS_REASON_CODE = "dropped_required_disjointness"
 _NONREDUCING_WRAPPER_REASON_CODE = "nonreducing_existential_wrapper"
 _EXISTENTIAL_BINDER_RE = re.compile(r"(?:∃|\bexists\b)\s+([^,:]+?)\s*:", re.IGNORECASE)
 _LOGICAL_CONNECTIVES = frozenset({"∧", "∨"})
@@ -279,7 +283,7 @@ def bounded_journal_fields(value: object) -> dict[str, object]:
     """Return only bounded admission fields from a serialized advisor result."""
     raw = value if isinstance(value, Mapping) else {}
     reason_code = str(raw.get("reason_code", "") or "")
-    if reason_code != _REASON_CODE:
+    if reason_code not in {_REASON_CODE, _DROPPED_DISJOINTNESS_REASON_CODE}:
         reason_code = _REASON_CODE
     parameters: list[dict[str, str]] = []
     raw_parameters = raw.get("instantiated_parameters", [])
@@ -312,12 +316,13 @@ def assess_helper_admission(
     parent_statement: str,
     helper_skeleton: str,
 ) -> HelperAdmissionAssessment:
-    """Reject a closed numeral instance of a single-parameter parent conclusion.
+    """Reject known unsound or non-reducing decomposition shapes.
 
-    Fail open unless both declarations have an unambiguous shape and exactly one
-    explicit natural-number parent parameter occurs in the result. This narrow
-    boundary catches the observed singleton-residue offload without classifying
-    alpha-renamed or parameterized residue helpers as closed instances.
+    The side-condition guard catches the concrete unsafe bridge from
+    ``playEnds`` to ``physicalPieces`` when ``Disjoint`` was discarded. The
+    remaining check fails open unless both declarations have an unambiguous
+    shape and exactly one explicit natural-number parent parameter occurs in
+    the result. This keeps structural decompositions admissible.
     """
     parent = _declaration_parts(parent_statement)
     helper = _declaration_parts(helper_skeleton)
@@ -326,6 +331,29 @@ def assess_helper_admission(
 
     parent_tokens = _tokens(parent.conclusion)
     helper_tokens = _tokens(helper.conclusion)
+    helper_signature_tokens = _tokens(_signature_text(helper_skeleton))
+    uses_play_ends = any(
+        token == "playEnds" or token.endswith(".playEnds") for token in helper_signature_tokens
+    )
+    if (
+        "Disjoint" in parent_tokens
+        and "physicalPieces" in parent_tokens
+        and "physicalPieces" in helper_tokens
+        and uses_play_ends
+        and "Disjoint" not in helper_signature_tokens
+    ):
+        return HelperAdmissionAssessment(
+            accepted=False,
+            reason_code=_DROPPED_DISJOINTNESS_REASON_CODE,
+            reason=(
+                "helper drops the Disjoint side condition required when deriving "
+                "physicalPieces from playEnds; overlapping cut points can change the "
+                "physical-piece cardinality"
+            ),
+            parent_conclusion_sha256=_sha256(" ".join(parent_tokens)),
+            helper_conclusion_sha256=_sha256(" ".join(helper_tokens)),
+        )
+
     parent_nat_names = _nat_binder_names(parent)
     relevant_parameters = tuple(name for name in parent_nat_names if name in parent_tokens)
     if len(relevant_parameters) != 1:

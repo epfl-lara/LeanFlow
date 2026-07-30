@@ -513,7 +513,11 @@ def render_workflow_status_panel(
         table.add_row(
             "Warning cleanup", f"{warning_cleanup_status}; {attempted}; warnings {warning_count}"
         )
-    table.add_row("Project sorries", str(status.get("project_sorry_count", "[unknown]")))
+    project_sorries = status.get("project_sorry_count")
+    table.add_row(
+        "Project sorries",
+        str(project_sorries) if isinstance(project_sorries, int) else "[unknown]",
+    )
     table.add_row("Checkpoint", str(status.get("latest_checkpoint_label", "[none]")))
     table.add_row("Locks", str(status.get("held_locks", 0)))
     if stale_snapshot:

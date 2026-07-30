@@ -306,9 +306,28 @@ def get_available_toolsets() -> dict[str, dict]:
     return registry.get_available_toolsets()
 
 
-def check_toolset_requirements() -> dict[str, bool]:
-    """Return {toolset: available_bool} for every registered toolset."""
-    return registry.check_toolset_requirements()
+def check_toolset_requirements(
+    enabled_toolsets: list[str] | None = None,
+) -> dict[str, bool]:
+    """Return availability only for direct toolsets selected by this session.
+
+    Meta-toolsets expand into tools owned by several registry toolsets. Check
+    those concrete owners so a foreground prover does not warn about an
+    empirical-only capability it never requested.
+    """
+    requirements = registry.check_toolset_requirements()
+    if not enabled_toolsets:
+        return requirements
+    selected_tools: set[str] = set()
+    for toolset_name in enabled_toolsets:
+        if validate_toolset(toolset_name):
+            selected_tools.update(resolve_toolset(toolset_name))
+        else:
+            selected_tools.update(_LEGACY_TOOLSET_MAP.get(toolset_name, ()))
+    selected_owners = {
+        owner for name in selected_tools if (owner := registry.get_toolset_for_tool(name))
+    }
+    return {name: available for name, available in requirements.items() if name in selected_owners}
 
 
 def check_tool_availability(quiet: bool = False) -> tuple[list[str], list[dict]]:

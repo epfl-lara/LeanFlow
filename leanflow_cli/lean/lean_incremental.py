@@ -8,6 +8,7 @@ agent-facing workflow contract.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -22,6 +23,7 @@ from core.project_resource_admission import (
     project_lean_service_reclaim_enabled,
 )
 from core.runtime_modes import dispatch_worker_enabled, low_memory_mode_enabled
+from leanflow_cli.lean.lean_ephemeral import lean_ephemeral_source_check
 from leanflow_cli.lean.lean_helper_ephemeral import check_helper_ephemerally
 from leanflow_cli.lean.lean_incremental_axioms import (
     InlineAxiomQuery,
@@ -43,9 +45,9 @@ LOCAL_REPL_CANDIDATES = (
 )
 LOCAL_REPL_MISSING = "project-local Lean REPL binary not found; run `leanflow project init`"
 LEAN_INCREMENTAL_TIMEOUT_DEFAULT_S: Final[int] = 60
-DISPATCH_WORKER_INCREMENTAL_TIMEOUT_FLOOR_S: Final[int] = 300
-RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S: Final[int] = 300
-PROFILED_HELPER_TIMEOUT_FLOOR_S: Final[int] = 300
+DISPATCH_WORKER_INCREMENTAL_TIMEOUT_FLOOR_S: Final[int] = 900
+RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S: Final[int] = 900
+PROFILED_HELPER_TIMEOUT_FLOOR_S: Final[int] = 900
 
 _PROBE: Any | None = None
 
@@ -67,7 +69,186 @@ LeanProbe, LeanIncrementalSegment, _probe_segment_file, _LEAN_PROBE_IMPORT_ERROR
 def _segment_file(text: str) -> tuple[str, list[Any]]:
     if _probe_segment_file is None:
         raise RuntimeError(_LEAN_PROBE_IMPORT_ERROR)
-    return _probe_segment_file(text)
+    header, segments = _probe_segment_file(text)
+    return _repair_option_wrapped_segments(text, header, list(segments))
+
+
+_SCOPED_COMMAND_WRAPPER_BEFORE_DECL_RE = re.compile(
+    r"(?m)(^[ \t]*(?:set_option|variable)[^\n]*\bin[ \t]*\n[ \t]*)$"
+)
+
+
+def _rebuilt_segment(segment: Any, text: str, *, start: int, end: int) -> Any:
+    """Return one segment rebuilt over an exact source range."""
+    segment_text = text[start:end]
+    return LeanIncrementalSegment(
+        index=int(segment.index),
+        kind=str(segment.kind),
+        name=str(segment.name),
+        start=start,
+        end=end,
+        declaration_start=int(getattr(segment, "declaration_start", start) or start),
+        start_line=text.count("\n", 0, start) + 1,
+        end_line=max(text.count("\n", 0, end), text.count("\n", 0, start) + 1),
+        text=segment_text,
+        text_hash=hashlib.sha256(segment_text.encode("utf-8")).hexdigest(),
+    )
+
+
+def _repair_option_wrapped_segments(
+    text: str,
+    header: str,
+    segments: list[Any],
+) -> tuple[str, list[Any]]:
+    """Attach a preceding scoped command such as ``variable ... in`` to its declaration.
+
+    LeanProbe's generic segmenter otherwise places the wrapper in the header
+    or previous declaration. Incremental replay then elaborates a dangling
+    ``in`` and reports an unexpected EOF against the wrong prerequisite.
+    """
+    if LeanIncrementalSegment is None or not segments:
+        return header, segments
+    repaired = list(segments)
+    repaired_header = header
+    for index, segment in enumerate(tuple(repaired)):
+        start = int(getattr(segment, "start", 0) or 0)
+        prefix = text[:start]
+        match = _SCOPED_COMMAND_WRAPPER_BEFORE_DECL_RE.search(prefix)
+        if match is None:
+            continue
+        wrapper_start = match.start(1)
+        if index == 0:
+            repaired_header = text[:wrapper_start]
+        else:
+            previous = repaired[index - 1]
+            previous_start = int(getattr(previous, "start", 0) or 0)
+            repaired[index - 1] = _rebuilt_segment(
+                previous,
+                text,
+                start=previous_start,
+                end=wrapper_start,
+            )
+        repaired[index] = _rebuilt_segment(
+            segment,
+            text,
+            start=wrapper_start,
+            end=int(getattr(segment, "end", start) or start),
+        )
+    return repaired_header, repaired
+
+
+def _incremental_environment_failure(payload: Mapping[str, Any] | None) -> bool:
+    """Return whether LeanProbe failed while rebuilding the pre-target environment."""
+    if not payload:
+        return False
+    error_code = str(payload.get("error_code", "") or "").strip().lower()
+    detail = " ".join(
+        str(payload.get(key, "") or "") for key in ("error", "output", "message", "hint")
+    ).lower()
+    return bool(
+        error_code
+        in {
+            "header_failed",
+            "prior_decl_failed",
+            "prior_declaration_failed",
+        }
+        or "failed to build env before target" in detail
+    )
+
+
+def _target_replaced_source(
+    source_text: str,
+    *,
+    theorem_id: str,
+    replacement: str,
+) -> tuple[str, bool] | None:
+    """Return exact full source with only the assigned declaration replaced."""
+    try:
+        _header, segments = _segment_file(source_text)
+    except Exception:
+        return None
+    segment = _find_segment(segments, theorem_id)
+    if segment is None:
+        return None
+    declaration_start = int(getattr(segment, "declaration_start", -1))
+    end = int(getattr(segment, "end", -1))
+    if not 0 <= declaration_start <= end <= len(source_text):
+        return None
+    candidate = str(replacement or "").strip()
+    original = str(getattr(segment, "text", "") or "")
+    target_source = candidate or original
+    if not target_source:
+        return None
+    integrated = (
+        source_text[:declaration_start] + target_source.rstrip() + "\n\n" + source_text[end:]
+    )
+    return integrated, _replacement_has_placeholder(target_source)
+
+
+def _canonical_target_fallback(
+    incremental: Mapping[str, Any],
+    *,
+    source_text: str,
+    theorem_id: str,
+    replacement: str,
+    resolved: Path,
+    project_root: Path,
+    timeout_s: int,
+) -> dict[str, Any]:
+    """Replace a prefix-build failure with one canonical exact-source target check."""
+    candidate = _target_replaced_source(
+        source_text,
+        theorem_id=theorem_id,
+        replacement=replacement,
+    )
+    if candidate is None:
+        return dict(incremental)
+    integrated_source, target_has_placeholder = candidate
+    checked = dict(
+        lean_ephemeral_source_check(
+            integrated_source,
+            cwd=project_root,
+            timeout_s=max(1, int(timeout_s or 1)),
+        )
+        or {}
+    )
+    backend_ok = checked.get("success") is True and checked.get("ok") is True
+    elaboration_ran = backend_ok or (
+        not bool(checked.get("timed_out"))
+        and str(checked.get("failure_kind", "") or "") == "lean_elaboration"
+    )
+    target_ok = backend_ok and not target_has_placeholder
+    incremental_detail = str(
+        incremental.get("error", "")
+        or incremental.get("output", "")
+        or incremental.get("message", "")
+        or ""
+    )
+    return {
+        **checked,
+        "success": elaboration_ran,
+        "ok": target_ok,
+        "backend": "lean_exact_ephemeral",
+        "tool": "lake_env_lean",
+        "action": "check_target",
+        "file": str(resolved),
+        "target": theorem_id,
+        "has_errors": elaboration_ran and not backend_ok,
+        "has_sorry": target_has_placeholder,
+        "valid_without_sorry": target_ok,
+        "canonical_fallback": True,
+        "incremental_fallback_error_code": str(incremental.get("error_code", "") or ""),
+        "incremental_fallback_reason": incremental_detail[:1000],
+        "error_code": (
+            ""
+            if target_ok
+            else (
+                "target_placeholder"
+                if target_has_placeholder and backend_ok
+                else str(checked.get("error_code", "") or "canonical_elaboration_failed")
+            )
+        ),
+    }
 
 
 def _find_segment(segments: list[Any], theorem_id: str) -> Any | None:
@@ -129,8 +310,8 @@ def _probe() -> Any:
 def lean_scratch_check(code: str, *, cwd: str = "", timeout_s: int = 90) -> dict[str, Any]:
     """Run a standalone Lean snippet through the warm LeanProbe REPL.
 
-    The scratch surface for probes/experiments (roadmap: "LeanProbe is the
-    guy"): returns the probe's normalized payload (``success`` = the tool
+    The scratch surface for probes and experiments returns the normalized
+    LeanProbe payload (``success`` = the tool
     ran; ``ok`` = elaborated with no errors and no sorry; ``messages``).
     Never touches the project tree; never an acceptance authority.
     """
@@ -308,6 +489,117 @@ def _bound_feedback_payload(result: dict[str, Any], max_chars: int) -> dict[str,
     trimmed["tactics"] = tactics[:1]
     trimmed["tactics_truncated"] = {"kept": 1, "total": len(tactics)}
     return trimmed
+
+
+def _truncate_diagnostic_text(value: Any, max_chars: int) -> str:
+    """Return bounded diagnostic text while preserving its beginning and end."""
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    marker = "\n...[diagnostic text truncated]...\n"
+    available = max(0, max_chars - len(marker))
+    head = max(1, (available * 2) // 3)
+    tail = max(0, available - head)
+    return text[:head] + marker + (text[-tail:] if tail else "")
+
+
+def _bound_failed_check_payload(result: dict[str, Any], max_chars: int) -> dict[str, Any]:
+    """Bound failed target/helper diagnostics before replaying them to the model.
+
+    LeanProbe can return the whole annotated declaration plus a tactic state
+    for every line. The replacement is already present in the tool request, so
+    retain the first errors and a small proof-state sample instead of replaying
+    a second declaration-sized trace on every later API call.
+    """
+    if result.get("ok") is not False or str(result.get("action", "") or "") not in {
+        "check_target",
+        "check_helper",
+    }:
+        return result
+    try:
+        if len(json.dumps(result, ensure_ascii=False)) <= max_chars:
+            return result
+    except (TypeError, ValueError):
+        return result
+
+    bounded = _bound_feedback_payload(dict(result), max_chars)
+    tactics = bounded.get("tactics")
+    if isinstance(tactics, list) and len(tactics) > 2:
+        bounded["tactics"] = tactics[:2]
+        bounded["tactics_truncated"] = {"kept": 2, "total": len(tactics)}
+
+    feedback = bounded.get("feedback_lean")
+    if feedback:
+        bounded["feedback_lean"] = _truncate_diagnostic_text(
+            feedback,
+            max(1200, max_chars // 3),
+        )
+
+    messages = bounded.get("messages")
+    if isinstance(messages, list):
+        compact_messages: list[Any] = []
+        for message in messages[:8]:
+            if not isinstance(message, dict):
+                compact_messages.append(message)
+                continue
+            compact = dict(message)
+            if "message" in compact:
+                compact["message"] = _truncate_diagnostic_text(compact["message"], 1600)
+            compact_messages.append(compact)
+        bounded["messages"] = compact_messages
+        if len(messages) > len(compact_messages):
+            bounded["messages_truncated"] = {
+                "kept": len(compact_messages),
+                "total": len(messages),
+            }
+
+    for field in ("error", "output"):
+        if bounded.get(field):
+            bounded[field] = _truncate_diagnostic_text(bounded[field], 2400)
+
+    try:
+        still_oversized = len(json.dumps(bounded, ensure_ascii=False)) > max_chars
+    except (TypeError, ValueError):
+        still_oversized = False
+    if still_oversized:
+        tactics = bounded.pop("tactics", None)
+        if isinstance(tactics, list):
+            previous = dict(bounded.get("tactics_truncated") or {})
+            bounded["tactics_truncated"] = {
+                "kept": 0,
+                "total": int(previous.get("total", len(tactics)) or len(tactics)),
+            }
+        if bounded.get("feedback_lean"):
+            bounded["feedback_lean"] = _truncate_diagnostic_text(
+                bounded["feedback_lean"],
+                1200,
+            )
+        messages = bounded.get("messages")
+        if isinstance(messages, list):
+            total_messages = int(
+                dict(bounded.get("messages_truncated") or {}).get("total", len(messages))
+                or len(messages)
+            )
+            compact_messages = []
+            for message in messages[:4]:
+                if not isinstance(message, dict):
+                    compact_messages.append(message)
+                    continue
+                compact = dict(message)
+                if "message" in compact:
+                    compact["message"] = _truncate_diagnostic_text(compact["message"], 800)
+                compact_messages.append(compact)
+            bounded["messages"] = compact_messages
+            bounded["messages_truncated"] = {
+                "kept": len(compact_messages),
+                "total": total_messages,
+            }
+        for field in ("error", "output"):
+            if bounded.get(field):
+                bounded[field] = _truncate_diagnostic_text(bounded[field], 800)
+    bounded["diagnostic_payload_truncated"] = True
+    bounded["diagnostic_payload_max_chars"] = max_chars
+    return bounded
 
 
 def _normalize_payload(payload: dict[str, Any], action: str) -> dict[str, Any]:
@@ -774,6 +1066,7 @@ def lean_incremental_check(
     include_axiom_profile: bool = False,
     timeout_s: int = LEAN_INCREMENTAL_TIMEOUT_DEFAULT_S,
     timeout_ceiling_s: int | None = None,
+    allow_placeholders_for_elaboration: bool = False,
 ) -> dict[str, Any]:
     """Dispatch an incremental Lean check through the appropriate exact backend.
 
@@ -785,6 +1078,10 @@ def lean_incremental_check(
     ``timeout_ceiling_s`` is an internal parent-deadline cap. It is deliberately
     absent from the model-facing tool schema so only authoritative callers can
     shorten cold-start floors.
+
+    ``allow_placeholders_for_elaboration`` is likewise internal. Decomposition
+    uses it to distinguish a placeholder template that elaborates from a
+    complete proof candidate; ordinary acceptance checks remain fail-closed.
     """
     operation_started = time.monotonic()
     leanflow_action = _leanflow_action(action)
@@ -931,7 +1228,11 @@ def lean_incremental_check(
             replacement,
             theorem_id,
         )
-        if leanflow_action == "check_target" and _replacement_has_placeholder(replacement):
+        if (
+            leanflow_action == "check_target"
+            and _replacement_has_placeholder(replacement)
+            and not allow_placeholders_for_elaboration
+        ):
             return _placeholder_rejection_payload(
                 action=leanflow_action,
                 file_path=resolved,
@@ -1045,6 +1346,41 @@ def lean_incremental_check(
                     )
     postprocess_started = time.monotonic()
     result = _normalize_payload(payload, leanflow_action)
+    if _incremental_environment_failure(result):
+        if leanflow_action == "check_helper":
+            result = _normalize_profiled_helper_payload(
+                check_helper_ephemerally(
+                    source_text=source_text,
+                    helper_source=replacement,
+                    theorem_id=theorem_id,
+                    file_path=resolved,
+                    project_root=project_root,
+                    anchor_skeleton=anchor_skeleton,
+                    timeout_s=effective_timeout_s,
+                )
+            )
+            result.update(
+                {
+                    "canonical_fallback": True,
+                    "incremental_fallback_error_code": str(payload.get("error_code", "") or ""),
+                    "incremental_fallback_reason": str(
+                        payload.get("error", "")
+                        or payload.get("output", "")
+                        or payload.get("message", "")
+                        or ""
+                    )[:1000],
+                }
+            )
+        elif leanflow_action == "check_target" and inline_axiom_query is None:
+            result = _canonical_target_fallback(
+                result,
+                source_text=source_text,
+                theorem_id=theorem_id,
+                replacement=replacement,
+                resolved=resolved,
+                project_root=project_root,
+                timeout_s=effective_timeout_s,
+            )
     if inline_axiom_query is not None:
         result = _attach_inline_axiom_profile(result, inline_axiom_query)
     if leanflow_action == "check_helper":
@@ -1077,4 +1413,4 @@ def lean_incremental_check(
         "session_reclaim_s": round(session_reclaim_s, 3),
         "postprocess_s": round(postprocess_s, 3),
     }
-    return result
+    return _bound_failed_check_payload(result, _feedback_max_chars())

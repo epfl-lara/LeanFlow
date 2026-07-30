@@ -1,10 +1,4 @@
-"""Active-file / target-symbol resolution and sorry counting for the native runner.
-
-Leaf module: resolves the active Lean file and target symbol from conversation history +
-workflow env, and counts sorries per file and across the project tree. Extracted verbatim from
-native_runner.py and re-exported there; imports only stdlib and the native_config /
-native_utils / lean_parsing leaves, so it introduces no import cycle.
-"""
+"""Resolve active Lean targets and count project placeholders."""
 
 from __future__ import annotations
 

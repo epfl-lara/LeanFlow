@@ -52,6 +52,15 @@ def _clone_local(src: Path, monkeypatch, **kwargs) -> dict:
     return json.loads(rc.repo_clone_tool(str(src), **kwargs))
 
 
+def test_repo_clone_is_unavailable_in_clean_room(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1")
+
+    out = json.loads(rc.repo_clone_tool("https://example.com/repo.git"))
+
+    assert "disabled for this clean-room run" in out["error"]
+    assert rc.check_repo_clone_available() is False
+
+
 def test_repo_clone_lands_in_workspace(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     src = _make_fixture_repo(tmp_path)

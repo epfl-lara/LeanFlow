@@ -1,1 +1,1 @@
-"""agent.prompting subpackage (Phase II restructure)."""
+"""Build prompts and normalize model reasoning and responses."""

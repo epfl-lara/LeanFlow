@@ -11,7 +11,10 @@ from leanflow_cli.lean.lean_parsing import (
     _strip_lean_comments_and_strings,
 )
 
-__all__ = ["_resolve_multi_attempt_location"]
+__all__ = [
+    "_multi_attempt_replacement_candidate",
+    "_resolve_multi_attempt_location",
+]
 
 
 def _resolve_tactic_line_after_blank(path: Path, requested_line: int) -> int:
@@ -121,6 +124,89 @@ def _resolve_inline_tactic_column(path: Path, requested_line: int) -> int | None
     return tactic_start - line_start + 1
 
 
+def _resolve_trailing_placeholder(
+    path: Path,
+    requested_line: int,
+) -> tuple[int, int] | None:
+    """Return a nearby standalone trailing placeholder inside the same declaration."""
+    line = int(requested_line)
+    if line <= 0:
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    entries = [
+        entry
+        for entry in _declaration_index(path)
+        if int(entry.get("line", 0) or 0) <= line <= int(entry.get("end_line", 0) or 0) + 1
+    ]
+    if not entries:
+        return None
+    entry = entries[0]
+    start = int(entry.get("line", 0) or 0)
+    end = int(entry.get("end_line", 0) or 0)
+    declaration = str(entry.get("text", "") or "")
+    marker = _find_assignment_marker_for_statement(declaration)
+    proof = (
+        _strip_lean_comments_and_strings(declaration[marker + 2 :]).lstrip() if marker >= 0 else ""
+    )
+    if not re.match(r"by\b", proof):
+        return None
+    for candidate_line in (line, line + 1, line - 1):
+        if candidate_line < start or candidate_line > end or candidate_line > len(lines):
+            continue
+        match = re.match(
+            r"^(?P<indent>\s*)(?:sorry|admit)\b(?:\s*--.*)?\s*$",
+            lines[candidate_line - 1],
+        )
+        if match is not None:
+            return candidate_line, len(match.group("indent")) + 1
+    return None
+
+
+def _multi_attempt_replacement_candidate(
+    path: Path,
+    line: int,
+    column: int | None,
+    snippet: str,
+) -> tuple[str, str] | None:
+    """Build a complete declaration replacing the selected placeholder with one tactic."""
+    if column is None:
+        return None
+    entry = next(
+        (
+            candidate
+            for candidate in _declaration_index(path)
+            if int(candidate.get("line", 0) or 0)
+            <= int(line)
+            <= int(candidate.get("end_line", 0) or 0)
+        ),
+        None,
+    )
+    if entry is None:
+        return None
+    start = int(entry.get("line", 0) or 0)
+    relative_line = int(line) - start
+    declaration_lines = str(entry.get("text", "") or "").splitlines()
+    if relative_line < 0 or relative_line >= len(declaration_lines):
+        return None
+    source_line = declaration_lines[relative_line]
+    start_column = max(0, int(column) - 1)
+    placeholder = re.match(r"(?:sorry|admit)\b", source_line[start_column:])
+    if placeholder is None:
+        return None
+    declaration_lines[relative_line] = (
+        source_line[:start_column]
+        + str(snippet).strip()
+        + source_line[start_column + placeholder.end() :]
+    )
+    name = str(entry.get("name", "") or "").strip()
+    if not name:
+        return None
+    return name, "\n".join(declaration_lines)
+
+
 def _resolve_multi_attempt_location(
     path: Path,
     requested_line: int,
@@ -135,9 +221,15 @@ def _resolve_multi_attempt_location(
     line = int(requested_line)
     resolved_line = _resolve_tactic_line_after_blank(path, line)
     if resolved_line != line:
+        placeholder = _resolve_trailing_placeholder(path, resolved_line)
+        if placeholder is not None:
+            return placeholder[0], placeholder[1], "trailing_placeholder"
         return resolved_line, None, "previous_tactic_line_after_blank"
     if requested_column is not None:
         return line, requested_column, None
+    placeholder = _resolve_trailing_placeholder(path, line)
+    if placeholder is not None:
+        return placeholder[0], placeholder[1], "trailing_placeholder"
     inline_column = _resolve_inline_tactic_column(path, line)
     if inline_column is not None:
         return line, inline_column, "inline_tactic_body"

@@ -196,6 +196,44 @@ def test_usage_limit_pause_blocks_resume_until_reset_then_clears_its_own_pause(
     assert "provider_retry_after" not in recovered_state
 
 
+def test_successful_provider_probe_clears_matching_usage_pause_early(monkeypatch, tmp_path):
+    """A fresh authenticated turn may recover before the reported reset epoch."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "usage-limit-probe-recovery")
+    now = 1_700_000_000
+    state: dict = {}
+    campaign_epoch.ensure_campaign(state)
+    campaign_epoch.record_provider_usage_limit_pause(
+        state,
+        {
+            "kind": "usage_limit_reached",
+            "retry_after_seconds": 3600,
+            "unavailable_until_epoch": now + 3600,
+        },
+        provider="openai-codex",
+        now_epoch=now,
+    )
+
+    assert not campaign_epoch.record_provider_availability_probe_success(
+        state,
+        provider="openrouter",
+    )
+    assert campaign_epoch.record_provider_availability_probe_success(
+        state,
+        provider="openai-codex",
+    )
+
+    snapshot = campaign_epoch.campaign_snapshot()
+    assert snapshot["status"] == "running"
+    assert campaign_epoch.PROVIDER_USAGE_LIMIT_PAUSE_FIELD not in snapshot
+    assert "operational_pause" not in state
+    assert "provider_retry_after" not in state
+    assert not campaign_epoch.record_provider_availability_probe_success(
+        state,
+        provider="openai-codex",
+    )
+
+
 def test_usage_limit_pause_keeps_latest_deadline_across_worker_order(monkeypatch, tmp_path):
     """A stale worker result cannot shorten a later account reset."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))

@@ -86,6 +86,10 @@ _STOPWORD_IDENTS = frozenset(
 )
 
 _DECLARATION_NAME_RE = re.compile(r"\b(?:theorem|lemma|example|def)\s+([A-Za-z_][A-Za-z0-9_'.-]*)")
+_TYPED_BINDER_RE = re.compile(
+    r"[\(\{\[]\s*((?:[A-Za-z_][A-Za-z0-9_']*\s+)*[A-Za-z_][A-Za-z0-9_']*)\s*:"
+)
+_QUANTIFIED_BINDER_RE = re.compile(r"[∀∃]\s+([^,]+),")
 
 
 def _proof_context(file_path: str, theorem_id: str, cwd: str | None) -> Mapping[str, Any]:
@@ -155,9 +159,21 @@ def _conclusion_fragment(goal: str) -> str:
     if "⊢" in snippet:
         snippet = snippet.rsplit("⊢", 1)[-1]
     elif ":" in snippet:
-        # A statement like `theorem foo (a : T) : Concl` — the conclusion is after the LAST colon,
-        # so the theorem name / binders aren't mistaken for the head symbol.
-        snippet = snippet.rsplit(":", 1)[-1]
+        # Select the declaration separator, not a later type annotation inside
+        # the conclusion such as `∃ (T L : ℕ), ...`.
+        depth = 0
+        separator = -1
+        for index, char in enumerate(snippet):
+            if char in "({[":
+                depth += 1
+            elif char in ")}]":
+                depth = max(0, depth - 1)
+            elif char == ":" and depth == 0:
+                separator = index
+        if separator >= 0:
+            snippet = snippet[separator + 1 :]
+        else:
+            snippet = snippet.rsplit(":", 1)[-1]
     # Prefer the conclusion of the top-level arrow chain; the last `→`/`->` segment is the target.
     for arrow in ("→", "->"):
         if arrow in snippet:
@@ -200,6 +216,23 @@ def _hypothesis_binder_names(hypotheses: list[str]) -> set[str]:
     return names
 
 
+def _conclusion_binder_names(conclusion: str) -> set[str]:
+    """Return theorem-local names introduced inside the target conclusion.
+
+    Existential and universal binders such as ``∃ (T L : ℕ), ...`` are not
+    library symbols. Excluding them prevents expensive semantic searches for
+    generic names like ``T`` and ``L`` while preserving namespaced constants
+    from the actual proposition.
+    """
+    names: set[str] = set()
+    for match in _TYPED_BINDER_RE.finditer(conclusion):
+        names.update(_IDENT_RE.findall(match.group(1)))
+    for match in _QUANTIFIED_BINDER_RE.finditer(conclusion):
+        binder_text = match.group(1).split(":", 1)[0]
+        names.update(_IDENT_RE.findall(binder_text))
+    return names
+
+
 def _hypothesis_type_fragment(hypothesis: str) -> str:
     """Return a hypothesis's type without its low-signal local binder names."""
     return hypothesis.split(":", 1)[-1].strip() if ":" in hypothesis else hypothesis.strip()
@@ -236,7 +269,7 @@ def _statement_semantic_queries(statement: str, hypotheses: list[str]) -> list[s
 
 def _goal_symbols(*, conclusion: str, hypotheses: list[str], statement: str = "") -> list[str]:
     """Collect searchable goal symbols while excluding theorem-local binder names."""
-    binder_names = _hypothesis_binder_names(hypotheses)
+    binder_names = _hypothesis_binder_names(hypotheses) | _conclusion_binder_names(conclusion)
     symbols: list[str] = [
         ident for ident in _significant_idents(conclusion) if ident not in binder_names
     ]
@@ -260,7 +293,7 @@ def derive_queries(*, goal: str, hypotheses: list[str], statement: str) -> list[
     can spend its rate-limited search budget on the most promising probes first.
     """
     conclusion = _conclusion_fragment(goal) or _conclusion_fragment(statement)
-    binder_names = _hypothesis_binder_names(hypotheses)
+    binder_names = _hypothesis_binder_names(hypotheses) | _conclusion_binder_names(conclusion)
     concl_idents = [ident for ident in _significant_idents(conclusion) if ident not in binder_names]
     concl_ops = _operators_in(conclusion)
     queries: list[str] = []

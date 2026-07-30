@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import threading
+import time
 
 from agent.accounting.redact import redact_sensitive_text
 from core.runtime_modes import scratch_only_dispatch_worker_enabled
@@ -17,6 +18,7 @@ from tools.utilities.read_freshness import (
     note_write,
     record_read,
 )
+from tools.utilities.repository_research_policy import clean_room_path_block_reason
 from tools.utilities.workflow_artifact_guard import (
     diagnostic_workflow_file_access_enabled,
     is_managed_plan_path,
@@ -51,6 +53,42 @@ _file_ops_cache: dict = {}
 #   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
+
+
+def _clean_room_path_denial(path: str) -> str | None:
+    """Return a serialized clean-room denial for one escaped file path."""
+    reason = clean_room_path_block_reason(path)
+    if not reason:
+        return None
+    return dumps(
+        {
+            "success": False,
+            "status": "clean_room_path_denied",
+            "path": path,
+            "error": reason,
+        }
+    )
+
+
+def _clean_room_patch_denial(mode: str, path: str | None, patch: str | None) -> str | None:
+    """Return a denial when any patch source or destination escapes the project."""
+    if mode == "replace":
+        return _clean_room_path_denial(path) if path else None
+    if mode != "patch" or not patch:
+        return None
+
+    from tools.utilities.patch_parser import OperationType, parse_v4a_patch
+
+    operations, _parse_error = parse_v4a_patch(patch)
+    for operation in operations or []:
+        candidates = [operation.file_path]
+        if operation.operation == OperationType.MOVE and operation.new_path:
+            candidates.append(operation.new_path)
+        for candidate in candidates:
+            denial = _clean_room_path_denial(candidate)
+            if denial:
+                return denial
+    return None
 
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
@@ -191,6 +229,9 @@ def clear_file_ops_cache(task_id: str = None):
 def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
+        clean_room_denial = _clean_room_path_denial(path)
+        if clean_room_denial:
+            return clean_room_denial
         guard_error = workflow_log_read_error(path)
         if guard_error:
             return dumps({"error": guard_error, "path": path, "workflow_log_blocked": True})
@@ -208,6 +249,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             return dumps({"error": plan_error, "path": path, "workflow_plan_blocked": True})
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
+        if is_managed_plan_path(path) and getattr(result, "error", None):
+            # Plan regeneration is an atomic replace, but the first route can
+            # advertise the path just before its initial materialization.
+            # Bridge that bounded startup transition instead of telling the
+            # model the managed plan disappeared.
+            for _attempt in range(3):
+                time.sleep(0.05)
+                result = file_ops.read_file(path, offset, limit)
+                if not getattr(result, "error", None):
+                    break
         if result.content:
             result.content = managed_plan_read_view(path, redact_sensitive_text(result.content))
         plan_view_applied = (
@@ -345,6 +396,9 @@ def _guard_file_lock(path: str, owner_id: str, purpose: str) -> dict | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default", owner_id: str = "") -> str:
     """Write content to a file."""
+    clean_room_denial = _clean_room_path_denial(path)
+    if clean_room_denial:
+        return clean_room_denial
     if scratch_only_dispatch_worker_enabled():
         return dumps(
             {
@@ -435,6 +489,9 @@ def patch_tool(
     `strict` makes the edit exact-or-fail (no fuzzy/whitespace relocation) — for
     high-risk edits where applying to a merely-similar region would be wrong.
     """
+    clean_room_denial = _clean_room_patch_denial(mode, path, patch)
+    if clean_room_denial:
+        return clean_room_denial
     if scratch_only_dispatch_worker_enabled():
         return dumps(
             {
@@ -586,6 +643,9 @@ def search_tool(
 ) -> str:
     """Search for content or files."""
     try:
+        clean_room_denial = _clean_room_path_denial(path)
+        if clean_room_denial:
+            return clean_room_denial
         guard_error = workflow_state_search_error(path)
         if guard_error:
             return dumps(

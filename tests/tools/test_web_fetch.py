@@ -114,6 +114,83 @@ def test_web_fetch_falls_back_to_direct_get_on_jina_error(monkeypatch):
     assert calls["n"] == 2  # one Jina attempt + one fallback
 
 
+def test_web_fetch_uses_direct_get_for_raw_github_text(monkeypatch):
+    captured = {}
+    source = "import Mathlib\n\ntheorem demo : True := by\n  trivial\n"
+
+    def fake_get(url, *, headers=None, timeout=None):
+        captured["url"] = url
+        return FakeResponse(text=source, headers={"Content-Type": "text/plain"})
+
+    monkeypatch.setattr(web_fetch.requests, "get", fake_get)
+
+    result = json.loads(
+        _run(
+            web_fetch.web_fetch_tool(
+                "https://raw.githubusercontent.com/example/repo/main/Demo.lean"
+            )
+        )
+    )
+
+    assert result["success"] is True
+    assert result["backend"] == "direct"
+    assert result["content"] == source.strip()
+    assert captured["url"].startswith("https://raw.githubusercontent.com/")
+
+
+def test_web_fetch_blocks_repository_urls_in_clean_room(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1")
+    monkeypatch.setattr(
+        web_fetch.requests,
+        "get",
+        lambda *_args, **_kwargs: pytest.fail("blocked repository URL reached requests"),
+    )
+
+    result = json.loads(
+        _run(
+            web_fetch.web_fetch_tool(
+                "https://raw.githubusercontent.com/example/repo/main/Demo.lean"
+            )
+        )
+    )
+
+    assert "Repository-backed research is disabled" in result["error"]
+
+
+def test_web_download_blocks_repository_urls_in_clean_room(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1")
+    monkeypatch.setattr(
+        web_fetch.requests,
+        "get",
+        lambda *_args, **_kwargs: pytest.fail("blocked repository URL reached requests"),
+    )
+
+    result = json.loads(
+        web_fetch.web_download_tool("https://github.com/example/repo/archive/main.zip")
+    )
+
+    assert "Repository-backed research is disabled" in result["error"]
+
+
+def test_web_fetch_blocks_active_problem_url_in_clean_room(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_DISABLE_SOLUTION_RESEARCH", "1")
+    monkeypatch.setenv(
+        "LEANFLOW_CLEAN_ROOM_TASK_LABELS",
+        "IMO 2026 Problem 6|IMO2026 P6",
+    )
+    monkeypatch.setattr(
+        web_fetch.requests,
+        "get",
+        lambda *_args, **_kwargs: pytest.fail("blocked solution URL reached requests"),
+    )
+
+    result = json.loads(
+        _run(web_fetch.web_fetch_tool("https://example.org/olympiads/imo-2026-problem-6-solution"))
+    )
+
+    assert "Prior-solution research is disabled" in result["error"]
+
+
 def test_fallback_refuses_pdf_without_jina(monkeypatch):
     def fake_get(url, *, headers=None, timeout=None):
         if url.startswith("https://r.jina.ai/"):

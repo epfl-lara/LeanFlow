@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+from core.filesystem import ensure_directory
 from core.home import leanflow_home
 
 BACKGROUND_PROVIDER_CAPACITY_ENV = "LEANFLOW_BACKGROUND_PROVIDER_CAPACITY"
@@ -98,8 +99,7 @@ def _capacity_namespace() -> str:
 
 def _slot_root(namespace: str) -> Path:
     root = leanflow_home() / "runtime" / "provider-capacity" / namespace
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return ensure_directory(root)
 
 
 def _local_semaphore(namespace: str, capacity: int) -> threading.BoundedSemaphore:

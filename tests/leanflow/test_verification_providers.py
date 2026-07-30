@@ -39,6 +39,40 @@ def test_model_review_uses_normalized_isolated_result(monkeypatch):
     assert result.timed_out is False
 
 
+def test_model_review_emits_progress_heartbeat(monkeypatch):
+    events: list[tuple[str, dict]] = []
+
+    def fake_call(**kwargs):
+        kwargs["progress_callback"](31.0, 180.0)
+        return AuxiliaryTextResponse(content="PASS", model="gpt-5.6-sol")
+
+    monkeypatch.setattr(verification_providers, "run_isolated_auxiliary_text", fake_call)
+    monkeypatch.setattr(
+        verification_providers,
+        "resolve_auxiliary_call_identity",
+        lambda **_kwargs: SimpleNamespace(provider="openai-codex", model="gpt-5.6-sol"),
+    )
+    monkeypatch.setattr(
+        verification_providers,
+        "_record_verification_activity",
+        lambda event, _message, **details: events.append((event, details)),
+    )
+
+    result = verification_providers.run_model_verification_review(
+        provider="codex",
+        task="blueprint_verification",
+        prompt="review",
+        timeout_s=180,
+    )
+
+    assert result.status == "ok"
+    heartbeat = next(
+        details for event, details in events if event == "verification-review-heartbeat"
+    )
+    assert heartbeat["provider"] == "openai-codex"
+    assert heartbeat["elapsed_s"] == 31.0
+
+
 def test_model_review_does_not_translate_cooperative_interrupt_to_provider_error(monkeypatch):
     calls: list[bool] = []
     monkeypatch.setattr(

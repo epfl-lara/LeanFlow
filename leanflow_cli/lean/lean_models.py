@@ -1,9 +1,4 @@
-"""Typed result/report dataclasses for the Lean services layer.
-
-Pure-data leaf module (frozen dataclasses + ``to_dict`` via ``asdict``). Extracted from
-``lean_services.py`` so the services module and ``lean_backend`` share one definition;
-imported back into ``lean_services`` for the historical ``from ... import Lean*`` surface.
-"""
+"""Define immutable result and capability records for Lean services."""
 
 from __future__ import annotations
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "leanflow-agent"
 version = "0.3.0"
-description = "LeanFlow is a Lean AI for Math shell shipped through the standalone leanflow CLI and native runtime."
+description = "Lean-first AI automation for verified proving and mathematical formalization."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "LeanFlow contributors" }]
@@ -59,9 +59,21 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "core", "core.*", "leanflow_cli", "leanflow_cli.*", "tools", "tools.*", "leanflow_specs"]
+include = [
+  "agent",
+  "agent.*",
+  "core",
+  "core.*",
+  "leanflow_cli",
+  "leanflow_cli.*",
+  "tools",
+  "tools.*",
+  "leanflow_skills",
+  "leanflow_specs",
+]
 
 [tool.setuptools.package-data]
+leanflow_skills = ["**/*.md"]
 leanflow_specs = ["**/*.md"]
 
 [tool.pytest.ini_options]
@@ -111,6 +123,7 @@ ignore_missing_imports = true
 # modules are extracted/cleaned. mypy needs explicit targets — overrides alone do not select.
 files = [
   "core/constants.py",
+  "core/filesystem.py",
   "core/process_identity.py",
   "core/project_resource_admission.py",
   "core/provider_availability.py",
@@ -151,7 +164,9 @@ files = [
   "tools/implementations/lean_patch.py",
   "tools/implementations/empirical_compute.py",
   "tools/implementations/repo_clone.py",
+  "tools/implementations/web_search_orchestration.py",
   "tools/utilities/process_tree.py",
+  "tools/utilities/repository_research_policy.py",
   "tools/utilities/scratch_terminal_guard.py",
   "tools/utilities/empirical_compute_runtime.py",
   "agent/runtime/managed_run.py",
@@ -162,11 +177,19 @@ files = [
   "leanflow_cli/native/banked_helper_inspection.py",
   "leanflow_cli/native/checkpoint_handoff.py",
   "leanflow_cli/native/native_lean_files.py",
+  "leanflow_cli/workflows/project_guidance.py",
   "leanflow_cli/native/process_artifact_cleanup.py",
   "leanflow_cli/native/source_only_startup.py",
   "leanflow_cli/native/source_placeholder_guard.py",
   "leanflow_cli/native/scope_entry_admission.py",
   "leanflow_cli/native/helper_integration_admission.py",
+  "leanflow_cli/native/warning_cleanup_guard.py",
+  "leanflow_cli/native/transition_visibility.py",
+  "leanflow_cli/native/companion_module_policy.py",
+  "leanflow_cli/native/completion_policy.py",
+  "leanflow_cli/native/determine_answer_policy.py",
+  "leanflow_cli/native/source_order_dependency_guard.py",
+  "leanflow_cli/native/queue_source_dependencies.py",
   "leanflow_cli/native/verification_batch_admission.py",
   "leanflow_cli/native/parent_helper_verification_reuse.py",
   "leanflow_cli/native/verified_patch_batch_reuse.py",
@@ -207,6 +230,7 @@ files = [
   "leanflow_cli/workflows/verified_transition_reconciliation.py",
   "leanflow_cli/workflows/planner_arithmetic_reconciliation.py",
   "leanflow_cli/workflows/planner_candidate_admission.py",
+  "leanflow_cli/workflows/planner_evidence.py",
   "leanflow_cli/workflows/planner_graph_identity.py",
   "leanflow_cli/workflows/advisor_route_facts.py",
   "leanflow_cli/workflows/target_handoff.py",
@@ -281,6 +305,7 @@ files = [
   "leanflow_cli/workflows/activity_preview.py",
   "leanflow_cli/workflows/workflow_activity_reader.py",
   "leanflow_cli/workflows/workflow_activity_retention.py",
+  "leanflow_cli/workflows/workflow_outcome_retention.py",
   "leanflow_cli/proof_state_builder.py",
   "leanflow_cli/workflows/project_prove_manager.py",
   "leanflow_cli/workflows/verification_review.py",

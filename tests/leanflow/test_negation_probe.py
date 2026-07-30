@@ -427,7 +427,9 @@ def test_spent_budget_reuses_compatible_probe_and_retires_exact_route(
     assert probe_events[0]["reused_after_budget_exhaustion"] is True
 
 
-def test_spent_budget_stale_signature_keeps_exact_route_pending(probe_env, monkeypatch, tmp_path):
+def test_spent_budget_stale_signature_retires_route_without_reusing_old_probe(
+    probe_env, monkeypatch, tmp_path
+):
     """Old probe evidence cannot discharge a route after statement drift."""
     from leanflow_cli.native import native_runner as runner
     from leanflow_cli.workflows.orchestrator import OrchestratorRoute
@@ -475,9 +477,12 @@ def test_spent_budget_stale_signature_keeps_exact_route_pending(probe_env, monke
             state,
             {},
         )
-        == "deferred"
+        == "continue"
     )
-    assert runner.campaign_epoch.campaign_snapshot()["inflight_route"]["token"] == marker["token"]
+    assert marker["token"]
+    assert not runner.campaign_epoch.campaign_snapshot().get("inflight_route")
+    assert state["_negation_route_execution"]["probe_recorded"] is False
+    assert state["_negation_route_execution"]["evidence_kind"] == "negate-route-obstacle"
 
 
 def test_reused_negation_proof_still_runs_authoritative_promotion(probe_env, monkeypatch, tmp_path):
@@ -756,8 +761,11 @@ def test_outcome_append_failure_replays_exact_persisted_probe_once(
     assert "inflight_route" not in runner.campaign_epoch.campaign_snapshot()
     assert state["_negation_route_execution"]["probe_recorded"] is True
     # With the durable selection consumed, an old spent row cannot masquerade
-    # as fresh work for a second application.
-    assert runner._apply_orchestrator_route_with_completion(route, [], state, {}) == "deferred"
+    # as fresh work for a second application. The exhausted action retires as a
+    # route obstacle instead of remaining an in-flight replay forever.
+    assert runner._apply_orchestrator_route_with_completion(route, [], state, {}) == "continue"
+    assert state["_negation_route_execution"]["probe_recorded"] is False
+    assert state["_negation_route_execution"]["evidence_kind"] == "negate-route-obstacle"
 
 
 def test_bare_crashed_reservation_surfaces_infrastructure_pause(probe_env, monkeypatch, tmp_path):
@@ -922,6 +930,75 @@ def test_explicit_negation_probe_exception_is_structured_deferred(monkeypatch, t
     assert execution.completed is False
     assert execution.reason == "probe execution raised RuntimeError"
     assert events == ["negation-probe-deferred"]
+
+
+def test_ill_formed_probe_retires_route_and_releases_rollover(probe_env, monkeypatch, tmp_path):
+    """A deterministic unsupported probe must not replay across every epoch."""
+    from leanflow_cli.native import native_runner as runner
+    from leanflow_cli.workflows.orchestrator import OrchestratorRoute
+
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "ill-formed-negate-route")
+    monkeypatch.setenv("LEANFLOW_NEGATION_PROBE", "1")
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.negation_probe,
+        "run_negation_probe",
+        lambda *_args, **_kwargs: {
+            "verdict": "ill_formed",
+            "detail": "section variables are unavailable in scratch",
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event, _message, **details: events.append((event, details)),
+    )
+    state: dict[str, Any] = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "_orchestrator_last_ctx": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    runner.campaign_epoch.record_route_decision(
+        state,
+        route="negate",
+        target_symbol="demo",
+        active_file=str(active),
+        trigger="event",
+        reserve_inflight=True,
+    )
+    runner.campaign_epoch.request_rollover(
+        state,
+        runner.campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON,
+    )
+
+    action = runner._apply_orchestrator_route_with_completion(
+        OrchestratorRoute(route="negate", reason="test feasibility"),
+        [],
+        state,
+        {},
+    )
+
+    assert action == "continue"
+    assert not runner.campaign_epoch.campaign_snapshot().get("inflight_route")
+    assert runner._consume_ready_campaign_rollover(state, {}) == (
+        runner.campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON
+    )
+    execution = state["_negation_route_execution"]
+    assert execution["status"] == "completed"
+    assert execution["outcome"] == "ill_formed"
+    assert execution["evidence_kind"] == "negate-route-obstacle"
+    assert [event for event, _details in events] == [
+        "negation-probe",
+        "negation-route-obstacle",
+    ]
 
 
 def test_runner_negation_probe_keeps_parent_portfolio_maintenance_alive(monkeypatch, tmp_path):

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import os
 
-from leanflow_cli.runtime.env_loader import load_leanflow_dotenv
+from leanflow_cli.runtime.env_loader import (
+    NATIVE_AUXILIARY_PROVIDER_ENV,
+    NATIVE_AUXILIARY_PROVIDER_TARGETS,
+    load_leanflow_dotenv,
+    reassert_native_auxiliary_provider,
+)
 
 
 def _clean_env(monkeypatch, *names: str) -> None:
@@ -98,3 +103,30 @@ def test_load_leanflow_dotenv_accepts_explicit_home_kwarg(monkeypatch, tmp_path)
 
     assert loaded == [explicit_home / ".env"]
     assert os.environ["EXPLICIT_ONLY_KEY"] == "yes"
+
+
+def test_reassert_native_auxiliary_provider_wins_after_dotenv_reload(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text(
+        "AUXILIARY_ORCHESTRATION_PROVIDER=auto\n" "AUXILIARY_LEAN_REASONING_PROVIDER=\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(NATIVE_AUXILIARY_PROVIDER_ENV, "codex")
+
+    load_leanflow_dotenv(leanflow_home=home)
+    provider = reassert_native_auxiliary_provider()
+
+    assert provider == "codex"
+    for name in NATIVE_AUXILIARY_PROVIDER_TARGETS:
+        assert os.environ[name] == "codex"
+
+
+def test_reassert_native_auxiliary_provider_is_noop_without_override(monkeypatch):
+    monkeypatch.delenv(NATIVE_AUXILIARY_PROVIDER_ENV, raising=False)
+    monkeypatch.setenv("AUXILIARY_ORCHESTRATION_PROVIDER", "custom")
+
+    provider = reassert_native_auxiliary_provider()
+
+    assert provider == ""
+    assert os.environ["AUXILIARY_ORCHESTRATION_PROVIDER"] == "custom"

@@ -10,6 +10,7 @@ import re
 import threading
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from agent.providers.isolated_auxiliary import sanitize_auxiliary_error
@@ -29,6 +30,7 @@ from leanflow_cli.workflows.dispatch_models import (
     ASSIGNMENT_REVISION_INPUT_KEY,
     MATHEMATICAL_DELTA_SIGNATURE_INPUT_KEY,
     SCRATCH_ISOLATION_VERSION,
+    SOURCE_REVISION_INPUT_KEY,
     JobBudget,
     JobSpec,
     LedgerEntry,
@@ -477,6 +479,7 @@ def _job_spec(
     route_context: Mapping[str, Any] | None = None,
     campaign_epoch_number: int = 0,
     assignment_revision: str = "",
+    source_revision: str = "",
     forbidden_delta_signatures: frozenset[str] = frozenset(),
     universal_obstruction: research_obstruction_dominance.UniversalObstruction | None = None,
 ) -> JobSpec:
@@ -583,6 +586,8 @@ def _job_spec(
         inputs["campaign_epoch"] = int(campaign_epoch_number)
     if assignment_revision:
         inputs[ASSIGNMENT_REVISION_INPUT_KEY] = str(assignment_revision)
+    if source_revision:
+        inputs[SOURCE_REVISION_INPUT_KEY] = str(source_revision)
     if scoped_route_context is not None:
         inputs[research_route_context.ROUTE_CONTEXT_INPUT_KEY] = scoped_route_context
         inputs[research_route_context.ROUTE_CONTEXT_SHA256_INPUT_KEY] = (
@@ -658,6 +663,14 @@ def _assignment_revision(
     if node is None or not str(node.statement or "").strip():
         return ""
     return hashlib.sha256(str(node.statement).encode("utf-8")).hexdigest()
+
+
+def _source_revision(active_file: str) -> str:
+    """Return the current active-file digest for stale-result suppression."""
+    try:
+        return hashlib.sha256(Path(active_file).read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def _job_matches_assignment(
@@ -2487,13 +2500,24 @@ def _terminal_killed_process_released(
         return True
     if entry.launch_nonce or entry.process_identity().verifiable:
         # Modern workers carry an exact launch identity. The legacy release
-        # authority cannot admit them, and invoking it would still rewrite the
-        # complete summary transaction before returning false. Go directly to
-        # the existing exact-identity retirement boundary instead.
+        # authority is only a fallback after direct exact-identity retirement.
         try:
-            return dispatch_runtime._terminate_dispatch_process_and_wait(entry)
+            if dispatch_runtime._terminate_dispatch_process_and_wait(entry):
+                return True
         except Exception:
-            return False
+            pass
+        # A long-dead worker's PID, process group, and session may all be
+        # reused together. If the launch token no longer matches, persist
+        # exact argv/spec mismatch evidence instead of pinning the campaign.
+        try:
+            release = service.release_legacy_killed_process_capacity(entry)
+        except Exception:
+            release = {}
+        if release.get("released"):
+            with contextlib.suppress(Exception):
+                _report_terminal_process_release(entry, service=service, release=release)
+            return True
+        return False
     try:
         release = service.release_legacy_killed_process_capacity(entry)
     except Exception:
@@ -3048,6 +3072,7 @@ def _maintain_portfolio_once(
         target_symbol=target_symbol,
         active_file=active_file,
     )
+    source_revision = _source_revision(active_file)
     semantic_cooldowns = _semantic_lane_cooldowns(
         entries,
         target_symbol=target_symbol,
@@ -3191,6 +3216,7 @@ def _maintain_portfolio_once(
             ),
             campaign_epoch_number=campaign_epoch_number,
             assignment_revision=assignment_revision,
+            source_revision=source_revision,
             forbidden_delta_signatures=active_delta_signatures,
             universal_obstruction=universal_obstruction,
         )

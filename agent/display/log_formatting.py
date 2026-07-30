@@ -1,9 +1,7 @@
-"""Pure helpers for rendering tool arguments and tool results into log lines.
+"""Render tool arguments and results as bounded, readable log lines.
 
-Extracted verbatim from ``run_agent.py`` (refactor Phase 1). These are pure functions with
-no dependency on ``AIAgent`` or any ``run_agent`` module state, so they live here and are
-re-exported from ``run_agent`` for backwards compatibility (``run_agent._wrap_log_text`` etc.
-remain valid — several tests reference them by that path).
+The helpers are independent of ``AIAgent`` state and remain re-exported from
+``run_agent`` for compatibility with existing integrations.
 """
 
 from __future__ import annotations

@@ -1,10 +1,4 @@
-"""Markdown rendering for formalization-document planner context.
-
-Leaf module: renders preflight metadata (theorem blocks, sections, TeX-project discovery,
-source excerpt) into the planner context Markdown. Extracted from formalization_documents.py
-and re-exported there for the historical private call sites; imports only the document_extraction
-leaf, so it introduces no import cycle.
-"""
+"""Render document metadata and source excerpts for planner context."""
 
 from __future__ import annotations
 

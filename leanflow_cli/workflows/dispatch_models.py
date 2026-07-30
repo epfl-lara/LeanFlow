@@ -1,16 +1,8 @@
-"""Pure value types for the dispatch service (Phase 3, specs Part II §4).
+"""Define immutable value types and lineage helpers for dispatched jobs.
 
-Mirrors the ``queue_models``/``queue_manager`` split: frozen dataclasses,
-legacy dict<->typed mappers, lineage helpers — no I/O, no logging, no
-module-level mutable state. The lifecycle/ledger machinery lives in
-``dispatch_service``.
-
-Locked decisions encoded here: dispatched jobs carry INDEPENDENT budgets
-(api_steps + wall_clock, owner N?/audit A#9 — never the prover's shared
-iteration budget); every job id is a dotted lineage chain (owner N3) so
-every ancestor can list, track, and kill its descendants; the manager and
-prover are NOT dispatch roles (owner N2 — the nudger suggests, the prover
-escalates).
+Jobs carry independent API-step and wall-clock budgets. Dotted job identifiers
+preserve ancestry so each owner can list, track, and terminate descendants.
+Lifecycle and ledger behavior lives in ``dispatch_service``.
 """
 
 from __future__ import annotations
@@ -40,6 +32,7 @@ DELIVERABLES = (
 )
 SCRATCH_ISOLATION_VERSION = 2
 ASSIGNMENT_REVISION_INPUT_KEY = "assignment_statement_sha256"
+SOURCE_REVISION_INPUT_KEY = "active_file_sha256"
 MATHEMATICAL_DELTA_SIGNATURE_INPUT_KEY = "mathematical_delta_signature"
 
 _ARCHETYPE_TAGS = {

@@ -1,24 +1,8 @@
-"""Stateless Lean search-provider helpers for lean_services.
+"""Normalize and route stateless Lean search-provider requests.
 
-Extracted verbatim from ``lean_services.py`` (refactor Phase 5 — the search-provider cluster). These
-helpers back the Lean ``lean_search`` fallback chain: they read the LeanExplore backend preference /
-API key / local cache from the environment and filesystem, probe local-backend availability, query the
-remote LeanExplore API, and normalise / shape raw search payloads (nested-result decoding, per-item
-formatting, fragment extraction, model-to-dict coercion) into the ``provider`` / ``match`` records the
-search result surface expects.
-
-They depend only on stdlib (``contextlib``/``importlib``/``io``/``json``/``os``/``re``/``pathlib``/
-``typing``) plus the module-level ``SEARCH_PROVIDER_LABELS`` / ``_LEANEXPLORE_LOCAL_REQUIRED_ENTRIES``
-constants that live here, and they do NOT read or mutate any cross-module state, invoke a Lean backend
-(``_invoke_json_tool`` / ``_run_command``), or touch the warm LeanExplore local service singleton. That
-stateful local-service trio (the ``_LEANEXPLORE_LOCAL_SERVICE`` / ``_LEANEXPLORE_LOCAL_RERANK_DISABLED``
-globals plus ``_leanexplore_local_service`` / ``_leanexplore_local_search``) stays in lean_services so
-its ``global`` rebinds and the tests' ``monkeypatch.setattr(lean_services, ...)`` keep resolving in one
-namespace. ``_rg_search`` also stays because it calls the lean_services-only ``_run_command``.
-
-This module does NOT import lean_services or native_runner, so the re-export shim in lean_services
-introduces no import cycle. ``SEARCH_PROVIDER_LABELS`` is re-exported there because the lean_services
-orchestrators (``lean_search`` / ``probe_capabilities``) still reference it by bare name.
+The helpers configure LeanExplore backends, probe local availability, query
+the remote service, and shape raw results for ``lean_search``. Stateful local
+service management remains in ``lean_services``.
 """
 
 from __future__ import annotations

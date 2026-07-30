@@ -1,12 +1,12 @@
-"""Repository acquisition tool (prove-redesign Phase 5, specs §5.6).
+"""Acquire bounded repositories for managed research workflows.
 
-Shallow-clones a git repository into ``<cwd>/.leanflow/workspace/repos/`` so
-deep-search and planner sub-agents can grep real proof developments locally.
-Mirrors the ``web_download`` sandbox contract: sanitized destination name,
-symlink-escape refusal, size cap with abort-and-cleanup, JSON responses.
+Shallow-clone a repository into ``<cwd>/.leanflow/workspace/repos/`` so
+research workers can inspect concrete proof developments locally. The tool
+uses sanitized destinations, rejects symlink escapes, enforces a post-clone
+size cap, cleans up failed acquisitions, and returns normalized JSON.
 
 Layering: stdlib + ``tools.response`` + ``tools.registry`` only — no
-``leanflow_cli`` imports (tools/ layer rule, same as web_fetch).
+``leanflow_cli`` imports.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from tools.response import dumps, error
+from tools.utilities.repository_research_policy import repository_research_disabled
 
 REPO_CLONE_DIRNAME = ".leanflow/workspace/repos"
 REPO_CLONE_MAX_BYTES = 500 * 1024 * 1024  # post-clone size cap (bytes)
@@ -65,6 +66,8 @@ def repo_clone_tool(
     url: str, name: str = "", ref: str = "", max_bytes: int = REPO_CLONE_MAX_BYTES
 ) -> str:
     """Shallow single-branch clone into the project's repos workspace."""
+    if repository_research_disabled():
+        return error("Repository cloning is disabled for this clean-room run")
     url = (url or "").strip()
     if not url:
         return error("repo_clone requires a non-empty 'url'")
@@ -190,7 +193,7 @@ def _git_out(repo_dir: Path, *args: str) -> str:
 
 def check_repo_clone_available() -> bool:
     """repo_clone needs a working git binary."""
-    return shutil.which("git") is not None
+    return not repository_research_disabled() and shutil.which("git") is not None
 
 
 # ---------------------------------------------------------------------------

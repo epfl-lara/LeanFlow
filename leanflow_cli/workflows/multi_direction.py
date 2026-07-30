@@ -1,7 +1,7 @@
-"""Multi-direction proving — N4 (Phase 5 §5.8).
+"""Run and reconcile several independent attack directions for one goal.
 
 Several rival attack directions on one goal, each a stub FILE discharged
-by a shape-A prover job (§5.7), run sequentially under the dispatch cap.
+by a nested prover job, run sequentially under the dispatch cap.
 No new machinery: direction files are stated like decomposer stubs (same
 shape guard, same in-place validation, all-or-nothing), the graph gets
 ``stated`` nodes with ``split_of`` edges to the goal via ``apply_delta``,
@@ -10,13 +10,13 @@ and jobs flow through the DispatchService ledger.
 Merge protocol (mechanical, graph-only): the first direction whose FULL
 declaration set passes the parent gate wins — the goal's ``depends_on``
 edges rewire to the winning stubs, sibling directions' unproved nodes are
-``parked`` (their files are kept: they are documentation, N1), and the
+``parked`` (their files are kept as documentation), and the
 choice lands in the decision log. If every direction exhausts, each has a
 decision packet as the rigorous account and the orchestrator's normal
 negate/park routes take over.
 
-Dark by construction: direction-tagged ``statements_to_state`` only come
-from the (Phase 6) orchestrator-LLM decision, and jobs require
+Direction-tagged ``statements_to_state`` come from the orchestrator's model
+decision, and jobs require
 ``LEANFLOW_DISPATCH_ENABLED`` — with either off this module never runs.
 """
 
@@ -35,7 +35,7 @@ from leanflow_cli.workflows.dispatch_models import JobBudget, JobSpec
 
 logger = logging.getLogger(__name__)
 
-#: Ceiling on rival directions per goal (roadmap D2: sequential v1, cap 3).
+#: Ceiling on rival directions explored for one goal.
 DEFAULT_MAX_PROVE_DIRECTIONS = 3
 
 #: Per-direction child budget (turns for the nested /prove).

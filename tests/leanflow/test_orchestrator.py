@@ -345,6 +345,25 @@ def test_fresh_epoch_diversity_never_overrides_fidelity_pause():
     [
         ("Requested route: plan.", "plan", "Requested route: plan."),
         ("Requested next route = decompose", "decompose", "Requested next route = decompose"),
+        (
+            "Requested continuation route: `decompose`, beginning with the finite "
+            "subset-sum spacing lemma.",
+            "decompose",
+            "Requested continuation route: `decompose`, beginning with the finite "
+            "subset-sum spacing lemma.",
+        ),
+        (
+            "Requested continuing route: `decompose`, beginning with the finite "
+            "subset-sum spacing lemma.",
+            "decompose",
+            "Requested continuing route: `decompose`, beginning with the finite "
+            "subset-sum spacing lemma.",
+        ),
+        (
+            "Requested next route: `plan`, centered on the geometric " "board-construction lemma.",
+            "plan",
+            "Requested next route: `plan`, centered on the geometric " "board-construction lemma.",
+        ),
         ("Route requested: `negate`", "negate", "Route requested: `negate`"),
         (
             "Blocked — requested route: plan/statement revision.",
@@ -606,6 +625,48 @@ def test_verified_exact_target_counterexample_evidence_routes_negate(tmp_path, m
     assert route.target["verified_counterexample_evidence"] == [helper_id]
     assert route.target["source_negation_recovery_only"] is True
     assert route.target["target_symbol"] == "demo"
+
+
+def test_negative_characterization_is_not_counterexample_evidence(tmp_path):
+    """A theorem about `not target` does not prove the target false."""
+    active = str(tmp_path / "Demo.lean")
+    target_id = node_id_for("demo", active)
+    helper_id = node_id_for("not_demo_iff_condition", active)
+    blueprint = Blueprint(
+        nodes=(
+            GraphNode(
+                id=target_id,
+                name="demo",
+                file=active,
+                statement="theorem demo : True := by\n  sorry",
+                status="proving",
+            ),
+            GraphNode(
+                id=helper_id,
+                name="not_demo_iff_condition",
+                file=active,
+                statement=(
+                    "private lemma not_demo_iff_condition : " "(¬ True) ↔ False := by\n  simp"
+                ),
+                status="proved",
+            ),
+        ),
+        edges=(GraphEdge(source=helper_id, target=target_id, kind="evidence"),),
+    )
+
+    ctx = build_route_context(
+        trigger="event",
+        autonomy_state={
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": active,
+            }
+        },
+        blueprint=blueprint,
+    )
+
+    assert ctx.verified_counterexample_evidence == ()
+    assert orchestrator_route(ctx).route == "direct-prove"
 
 
 def test_explicit_negate_with_verified_evidence_survives_spent_scratch_budget():

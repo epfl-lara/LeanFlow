@@ -41,6 +41,7 @@ from leanflow_cli.lean.lean_attempt_helpers import (  # noqa: E402
     _summarize_attempt_diagnostics,
 )
 from leanflow_cli.lean.lean_attempt_location import (  # noqa: E402
+    _multi_attempt_replacement_candidate,
     _resolve_multi_attempt_location,
 )
 
@@ -1457,6 +1458,7 @@ def _invoke_native_mcp_wrapper(
     unavailable_reason: str,
     outcome_kind: str,
     extra: Mapping[str, Any] | None = None,
+    append_outcome: bool = True,
 ) -> dict[str, Any]:
     if not tool_name:
         payload = _wrapper_unavailable_result(
@@ -1465,7 +1467,8 @@ def _invoke_native_mcp_wrapper(
             unavailable_reason=unavailable_reason,
             extra=extra,
         )
-        append_workflow_outcome(outcome_kind, payload)
+        if append_outcome:
+            append_workflow_outcome(outcome_kind, payload)
         return payload
     raw = _BACKEND.invoke_tool(tool_name, arguments)
     if raw.get("error"):
@@ -1492,7 +1495,8 @@ def _invoke_native_mcp_wrapper(
         payload["degraded_reasons"] = list(
             dict.fromkeys([*payload.get("degraded_reasons", []), lifecycle_reason])
         )
-        append_workflow_outcome(outcome_kind, payload)
+        if append_outcome:
+            append_workflow_outcome(outcome_kind, payload)
         return payload
     parsed = _decode_nested_result(raw)
     payload: dict[str, Any] = {
@@ -1511,7 +1515,8 @@ def _invoke_native_mcp_wrapper(
         tool_name=tool_name,
         cwd=report.cwd,
     )
-    append_workflow_outcome(outcome_kind, payload)
+    if append_outcome:
+        append_workflow_outcome(outcome_kind, payload)
     return payload
 
 
@@ -2026,18 +2031,18 @@ def lean_multi_attempt(
         "column": resolved_column,
         "attempts": normalized_attempts,
     }
-    if adjustment == "previous_tactic_line_after_blank":
+    if adjustment in {"previous_tactic_line_after_blank", "trailing_placeholder"}:
         location_details.update(
             {
                 "requested_line": requested_line,
-                "line_adjustment": "previous_tactic_line_after_blank",
+                "line_adjustment": adjustment,
             }
         )
         if column is not None:
             location_details["requested_column"] = column
     if adjustment == "inline_tactic_body":
         location_details["column_adjustment"] = adjustment
-    return _invoke_native_mcp_wrapper(
+    payload = _invoke_native_mcp_wrapper(
         report.mcp_tools.get("multi_attempt", ""),
         {
             "file_path": canonical_file_path,
@@ -2049,7 +2054,90 @@ def lean_multi_attempt(
         unavailable_reason="lean multi-attempt MCP unavailable",
         outcome_kind="lean-multi-attempt",
         extra=location_details,
+        append_outcome=False,
     )
+    items = payload.get("items")
+    exact_checks: list[dict[str, Any]] = []
+    verified_attempts: list[str] = []
+    if isinstance(items, list):
+        from leanflow_cli.lean.lean_incremental import lean_incremental_check
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            diagnostics = item.get("diagnostics")
+            has_error = isinstance(diagnostics, list) and any(
+                isinstance(diagnostic, Mapping)
+                and str(diagnostic.get("severity", "") or "").strip().lower() == "error"
+                for diagnostic in diagnostics
+            )
+            goals = item.get("goals")
+            probe_closed_goal = (
+                not bool(item.get("timed_out"))
+                and not has_error
+                and isinstance(goals, list)
+                and not goals
+            )
+            item["probe_closed_goal"] = probe_closed_goal
+            snippet = str(item.get("snippet", "") or "").strip()
+            replacement = (
+                _multi_attempt_replacement_candidate(
+                    Path(canonical_file_path),
+                    resolved_line,
+                    resolved_column,
+                    snippet,
+                )
+                if probe_closed_goal and snippet
+                else None
+            )
+            if replacement is None:
+                item["verified"] = False
+                continue
+            theorem_id, declaration = replacement
+            check = lean_incremental_check(
+                action="check_target",
+                file_path=canonical_file_path,
+                theorem_id=theorem_id,
+                cwd=str(cwd or report.cwd),
+                replacement=declaration,
+            )
+            check_ok = bool(check.get("success")) and bool(
+                check.get(
+                    "target_verified", check.get("verified", check.get("check_passed", False))
+                )
+            )
+            item["verified"] = check_ok
+            item["exact_check"] = {
+                "success": bool(check.get("success")),
+                "target_verified": check_ok,
+                "status": str(check.get("status", "") or ""),
+                "error": str(check.get("error", "") or ""),
+                "error_code": str(check.get("error_code", "") or ""),
+            }
+            exact_checks.append(
+                {
+                    "snippet": snippet,
+                    "theorem_id": theorem_id,
+                    **item["exact_check"],
+                }
+            )
+            if check_ok:
+                verified_attempts.append(snippet)
+    payload["backend_success"] = bool(payload.get("success"))
+    payload["success"] = bool(verified_attempts)
+    payload["target_verified"] = bool(verified_attempts)
+    payload["verified_attempts"] = verified_attempts
+    payload["exact_checks"] = exact_checks
+    payload["status"] = (
+        "verified_candidate" if verified_attempts else "screened_no_verified_candidate"
+    )
+    if not verified_attempts:
+        payload["action_required"] = (
+            "No tactic is exact-target verified. Treat empty-goal probe results as provisional; "
+            "patch a complete target replacement and run an exact target check."
+        )
+    append_workflow_outcome("lean-multi-attempt", payload)
+    return payload
 
 
 def lean_auto_probe(
@@ -2502,6 +2590,25 @@ def lean_axioms(
                 )
                 append_workflow_outcome("lean-axioms", report.to_dict())
                 return report
+        elif batch_code != 0 and not prefetch_siblings:
+            # The exact manager gate requested only this declaration, so the
+            # historical single-target harness would repeat the same failed
+            # cold compilation. Preserve the fail-closed verdict without
+            # paying a second full timeout.
+            report = LeanAxiomReport(
+                target=target,
+                file_path=str(target_file),
+                ok=False,
+                axioms=[],
+                custom_axioms=[],
+                classical=False,
+                choice=False,
+                note=batch_output[:600]
+                or f"Lean axiom inspection exited with status {batch_code}.",
+                inspection_succeeded=False,
+            )
+            append_workflow_outcome("lean-axioms", report.to_dict())
+            return report
 
     # A batch is an optimization only. If sibling queries cannot elaborate,
     # output markers are unavailable, or the source/import revision moved while

@@ -1,17 +1,4 @@
-"""Pure presentation helpers for the LeanFlow InteractiveShell.
-
-Phase 3 extraction: these are the side-effect-free formatters that turn already-gathered
-shell state (workflow-status payloads, label strings) into the display strings rendered in
-the prompt and bottom toolbar. They take plain values rather than the shell instance, so
-they reach no mutable shell state and are not the names tests monkeypatch on
-``InteractiveShell`` (tests patch the data-gathering accessors — ``_workflow_status_payload``,
-``_workflow_activity``, ``_workflow_agents`` — which stay on the shell). ``InteractiveShell``
-gathers state then delegates to these functions through thin method wrappers, so output is
-byte-for-byte identical.
-
-This module imports ONLY stdlib plus prompt_toolkit's ``FormattedText`` and does NOT import
-``leanflow_cli.main``, so the re-use introduces no import cycle.
-"""
+"""Render prompt and toolbar state for the LeanFlow interactive shell."""
 
 from __future__ import annotations
 

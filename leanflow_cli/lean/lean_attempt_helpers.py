@@ -1,17 +1,7 @@
-"""Pure multi-attempt / path / comment text helpers extracted from lean_services (Phase 5).
+"""Validate multi-attempt candidates and normalize Lean source text.
 
-This module collects the side-effect-free leaf helpers that lean_services uses to validate
-``lean_multi_attempt`` candidates, summarize attempt diagnostics, strip Lean comments/strings,
-and normalize diff-style path prefixes. Each function here is the fixpoint closure under "calls":
-its only non-stdlib callees are other functions in this module (``_multi_attempt_validation_reasons``
-calls ``_strip_comments_and_strings`` and reads the ``MULTI_ATTEMPT_*`` bounds, both defined here).
-Nothing here invokes a Lean backend (MCP / REPL / Lake), touches the filesystem, or reads
-module-mutable state — those callers stay in ``lean_services`` and reach these helpers through the
-re-export shim.
-
-Because this module imports ONLY stdlib (``re``, ``typing``) and does NOT import ``lean_services``
-or ``native_runner``, re-exporting these names back from ``lean_services`` introduces no import
-cycle. Existing callers keep resolving them as ``lean_services.<name>`` unchanged.
+These side-effect-free helpers summarize diagnostics, strip comments and
+strings, and normalize diff-style paths for ``lean_services``.
 """
 
 from __future__ import annotations

@@ -1,21 +1,16 @@
-"""Deterministic orchestrator floor for the /prove redesign (Phase 4, specs §4.1).
+"""Select deterministic routes for managed proof workflows.
 
-Pure leaf: a frozen :class:`RouteContext` snapshot plus an ordered route
-table that turns what used to be terminal stops (stall, budget breakpoint,
-retry exhaustion) into routing decisions. No I/O beyond the state handed in;
-the exec layer and the runner own every side effect.
+This pure leaf applies an ordered route table to a frozen ``RouteContext``.
+Stalls, budget breakpoints, and retry exhaustion become route decisions; the
+execution layer and runner own every side effect.
 
-The floor consumes the EXISTING deterministic classifier output
-(``route_workflow_step`` → ``live_state["route_decision"]``) — it extends
-those outputs, it does not build a new classifier. The LLM routing layer is
-spec'd separately (§4.4) and stays disabled until Phase 6; on easy runs the
-floor's first row is a byte-identical no-op passthrough (``direct-prove``)
-and no extra model call ever happens.
+The floor consumes the existing classifier output from
+``route_workflow_step`` and extends it without duplicating classification.
+The optional LLM layer may refine eligible routes separately. Easy runs retain
+the no-op ``direct-prove`` path.
 
-Route vocabulary note: the Part III function-level enum is the seven values
-below minus ``ask-human``; ``ask-human`` is the roadmap-v3 addition (§0.16).
-The floor emits it deterministically for one case: a fidelity-suspect MAIN
-goal — non-blocking (park the node, continue elsewhere on the frontier).
+``ask-human`` is emitted only for a fidelity-suspect main goal. That route
+parks the affected node while independent frontier work may continue.
 """
 
 from __future__ import annotations
@@ -50,7 +45,7 @@ ROUTES = (
     "park",
     "re-state",
     "escalate",
-    "ask-human",  # roadmap-v3 addition; emitted by a later sub-step, never by this table
+    "ask-human",  # Human review for ambiguous scope or statement-fidelity concerns.
 )
 TRIGGERS = ("scope-entry", "stall", "budget-breakpoint", "retry-exhausted", "event")
 
@@ -75,7 +70,7 @@ SEMANTIC_REFRESH_ROUTE = "refresh-portfolio"
 _PROVER_ROUTE_MARKER_RE = re.compile(
     r"^\s*(?:[-+*]\s+)?"
     r"(?:(?:blocked|stalled)\s*(?:[:\-\u2013\u2014]\s*))?"
-    r"(?:requested\s+(?:next\s+)?route|route\s+requested)"
+    r"(?:requested\s+(?:(?:next|continuation|continuing)\s+)?route|route\s+requested)"
     r"\s*(?::|=|is\b|[-\u2013\u2014])\s*"
     r"[`*_]{0,2}(?P<route>decompose|plan|negate)\b[`*_]{0,2}"
     r"(?P<suffix>.*)$",
@@ -155,7 +150,7 @@ def orchestrator_max_routes() -> int:
 
 @dataclass(frozen=True)
 class RouteContext:
-    """Everything one orchestrator invocation knows (specs §4.1 RouteContext)."""
+    """Capture all inputs available to one orchestrator invocation."""
 
     trigger: str = "scope-entry"
     workflow_kind: str = "prove"
@@ -304,7 +299,10 @@ def _route_marker_suffix_is_explicit(suffix: str) -> bool:
     if trailing.startswith("/"):
         detail = trailing[1:].strip()
     else:
-        detail_match = re.match(r"^(?:[;:]|[-\u2013\u2014])\s*(?P<detail>\S.*)$", trailing)
+        detail_match = re.match(
+            r"^(?:[,;:]|[-\u2013\u2014])\s*(?P<detail>\S.*)$",
+            trailing,
+        )
         if detail_match is None:
             return False
         detail = str(detail_match.group("detail") or "").strip()
@@ -441,10 +439,50 @@ def _declaration_result_type(statement: str) -> str:
     return ""
 
 
+def _strip_result_type_outer_parens(result_type: str) -> str:
+    """Remove parentheses only when they enclose the complete result type."""
+    current = str(result_type or "").strip()
+    while current.startswith("(") and current.endswith(")"):
+        depth = 0
+        encloses_all = True
+        for index, character in enumerate(current):
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0 and index != len(current) - 1:
+                    encloses_all = False
+                    break
+        if not encloses_all or depth != 0:
+            break
+        current = current[1:-1].strip()
+    return current
+
+
+def _result_type_has_top_level_conditional(result_type: str) -> bool:
+    """Return whether the result only characterizes a negative proposition."""
+    current = _strip_result_type_outer_parens(result_type)
+    depth = 0
+    for index, character in enumerate(current):
+        if character in "([{":
+            depth += 1
+            continue
+        if character in ")]}":
+            depth = max(0, depth - 1)
+            continue
+        if depth:
+            continue
+        if character in {"→", "↔"}:
+            return True
+        if current.startswith("->", index) or current.startswith("<->", index):
+            return True
+    return False
+
+
 def _declaration_is_counterexample_evidence(statement: str) -> bool:
     """Return whether a proved declaration has an explicit negative result."""
     result_type = _declaration_result_type(statement)
-    if not result_type:
+    if not result_type or _result_type_has_top_level_conditional(result_type):
         return False
     if "¬" in result_type or "≠" in result_type:
         return True
@@ -933,12 +971,9 @@ def build_route_context(
 
 
 def strategy_directive(route: OrchestratorRoute, ctx: RouteContext) -> str:
-    """Render the prompt-level strategy directive for a routing decision.
+    """Render fallback guidance when a route does not place work mechanically.
 
-    Until the mechanical decomposer lands, decompose/plan/re-state execute as
-    explicit prover-facing directives (the roadmap's breakpoint-decider-lite:
-    a strategy CHANGE, never a silent restart). Mechanical routes
-    (negate/park/escalate/direct-prove) return '' — the runner acts directly.
+    Routes handled entirely by the runner return an empty string.
     """
     if route.route == "decompose":
         return "\n".join(
@@ -978,7 +1013,7 @@ def strategy_directive(route: OrchestratorRoute, ctx: RouteContext) -> str:
 
 
 def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> OrchestratorRoute:
-    """The Phase-4 deterministic route table (specs §4.1, eight ordered rows).
+    """Apply the deterministic ordered route policy without mutating state.
 
     Pure: reads the context, never mutates state; the campaign epoch layer owns
     the durable ``orchestrator_routes_used`` streak and the runner owns every route's execution. The
@@ -1023,8 +1058,8 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
             target={"target_symbol": ctx.target_symbol, "active_file": ctx.active_file},
         )
 
-    # ask-human (roadmap v3, §0.16): the statement-fidelity audit marked the
-    # MAIN goal suspect — burning budget on a possibly-wrong statement is the
+    # The statement-fidelity audit marked the main goal suspect. Spending
+    # budget on a possibly wrong statement is the
     # one failure the kernel cannot catch. Non-blocking: park and continue.
     if (
         ctx.fidelity_suspect

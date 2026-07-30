@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -58,6 +60,63 @@ def test_explicit_file_roots_are_materialized_and_sealed_once(monkeypatch, tmp_p
     )
     assert resumed.ok is True
     assert resumed.reason == "requested campaign roots are registered"
+
+
+def test_same_explicit_file_preserves_sealed_campaign(monkeypatch, tmp_path):
+    source = tmp_path / "Same.lean"
+    source.write_text("theorem same : True := by\n  sorry\n", encoding="utf-8")
+    state = _fresh_campaign(monkeypatch, tmp_path, run_id="same-scope")
+    assert campaign_roots.initialize_campaign_roots(
+        campaign_id=state["campaign_id"],
+        project_root=tmp_path,
+        source_files=(source,),
+    ).ok
+
+    transition = campaign_roots.prepare_requested_campaign_scope(
+        project_root=tmp_path,
+        explicit_file=str(source),
+    )
+
+    assert transition.transitioned is False
+    assert plan_state.load_summary()["campaign"]["campaign_id"] == state["campaign_id"]
+    assert plan_state.load_blueprint().node_by_id(plan_state.node_id_for("same", str(source)))
+
+
+def test_changed_explicit_file_archives_and_resets_task_authority(monkeypatch, tmp_path):
+    first = tmp_path / "First.lean"
+    second = tmp_path / "Second.lean"
+    first.write_text("theorem first : True := by\n  sorry\n", encoding="utf-8")
+    second.write_text("theorem second : True := by\n  sorry\n", encoding="utf-8")
+    state = _fresh_campaign(monkeypatch, tmp_path, run_id="first-scope")
+    assert campaign_roots.initialize_campaign_roots(
+        campaign_id=state["campaign_id"],
+        project_root=tmp_path,
+        source_files=(first,),
+    ).ok
+    paths = plan_state.plan_state_paths()
+    paths.plan_md.write_text("# First plan\n", encoding="utf-8")
+    paths.journal_jsonl.write_text('{"event":"first"}\n', encoding="utf-8")
+    current = paths.summary_json.parent / "current.json"
+    current.write_text('{"checkpoint_id":"first"}\n', encoding="utf-8")
+
+    transition = campaign_roots.prepare_requested_campaign_scope(
+        project_root=tmp_path,
+        explicit_file=str(second),
+    )
+
+    assert transition.transitioned is True
+    assert transition.prior_campaign_id == state["campaign_id"]
+    archive = Path(transition.archive_dir)
+    assert archive.is_dir()
+    assert (archive / "summary.json").is_file()
+    assert (archive / "blueprint.json").is_file()
+    assert (archive / "plan.md").read_text(encoding="utf-8") == "# First plan\n"
+    assert plan_state.load_summary() == {}
+    assert plan_state.load_blueprint().nodes == ()
+    assert paths.plan_md.read_text(encoding="utf-8") == ""
+    assert paths.journal_jsonl.read_text(encoding="utf-8") == ""
+    assert json.loads(current.read_text(encoding="utf-8")) == {}
+    assert not (paths.summary_json.parent / "scope-transition.json").exists()
 
 
 def test_project_input_seals_only_files_selected_by_native_scope(monkeypatch, tmp_path):

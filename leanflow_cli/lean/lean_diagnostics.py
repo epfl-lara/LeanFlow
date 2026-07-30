@@ -1,21 +1,4 @@
-"""Pure Lean diagnostic / blocker / goal text parsers extracted from lean_services (Phase 5).
-
-This module collects the side-effect-free text parsers that turn raw Lean tool / build output
-(JSON payloads or human-readable ``file:line:col: severity:`` lines) into structured diagnostic
-records, plus the small classifiers built on top of them (actionable-failure detection, blocker
-kind). Each function here is the fixpoint closure under "calls": its only non-stdlib callees are
-other functions in this module. Nothing here invokes a Lean backend (MCP / REPL / Lake), touches
-the filesystem, or reads module-mutable state — those callers stay in ``lean_services`` and reach
-these helpers through the re-export shim.
-
-Because this module imports ONLY stdlib (``re``, ``json``, ``typing``) and does NOT import
-``lean_services`` or ``native_runner``, re-exporting these names back from ``lean_services``
-introduces no import cycle. The many existing importers (``lean_tool``, ``native_runner``,
-``native_utils``, ``doctor``, tests) keep resolving them as ``lean_services.<name>`` unchanged.
-
-``diagnostic_items`` carries a recently-fixed anchored (``^...$`` + ``MULTILINE``) regex that
-prevents catastrophic backtracking on long no-match lines; it is moved here VERBATIM.
-"""
+"""Parse Lean output and classify diagnostics, blockers, and open goals."""
 
 from __future__ import annotations
 

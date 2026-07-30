@@ -24,6 +24,27 @@ _VALID_WORKER_CHECK = {
 }
 
 
+def test_changed_active_file_downgrades_late_candidate_to_evidence(tmp_path):
+    active = tmp_path / "Demo.lean"
+    original = "theorem demo : True := by\n  sorry\n"
+    active.write_text(original, encoding="utf-8")
+    finding = {
+        "active_file": str(active),
+        "source_revision_sha256": sha256(original.encode()).hexdigest(),
+        "semantic_novelty": {
+            "version": research_route_context.SEMANTIC_NOVELTY_VERSION,
+            "progress_anchor_eligible": True,
+        },
+    }
+    active.write_text(
+        "private lemma helper : True := by trivial\n\n" + original,
+        encoding="utf-8",
+    )
+
+    assert research_findings.foreground_use_role(finding) == "evidence_only"
+    assert research_findings.foreground_use_reason(finding) == "stale_active_file_revision"
+
+
 def test_foreground_route_identity_ignores_operational_rewording_and_nonces(tmp_path):
     """Counters, job ids, and optimistic prose cannot make the same hypothesis novel."""
     first = research_semantic_identity.route_semantic_identity(

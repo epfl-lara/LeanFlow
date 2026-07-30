@@ -1,21 +1,7 @@
-"""Argparse subcommand handlers and JSON/print helpers for the leanflow CLI.
+"""Handle state-free CLI subcommands and format their output.
 
-Phase 3 extraction: these top-level handler/formatter functions were lifted verbatim out of
-``leanflow_cli.main`` to shrink the CLI entrypoint module. They are the cohesive,
-state-free subset of the argparse dispatch surface whose only callees are already-extracted
-sibling modules (``config``, ``local_models``, ``sandbox_runtime``) plus the two leaf helpers
-(``_parse_config_value`` / ``_print_json``) that move alongside them.
-
-Handlers that reference names patched in tests via ``leanflow_cli.main.<name>`` (e.g.
-``_handle_project`` -> ``setup_project_power_modes``, ``_handle_mcp`` / ``_mcp_status_payload``
--> ``get_mcp_status`` / ``bootstrap_lean_mcp``, ``_handle_status`` ->
-``load_workflow_live_status``) deliberately stay in ``main`` so the monkeypatch targets keep
-resolving in main's namespace. The argparse wiring (``_build_parser``) and the ``main()``
-entrypoint also stay in ``main``.
-
-``main`` re-imports every name defined here (``from leanflow_cli.cli.cli_handlers import ...``) so
-``main.<name>`` references and tests keep working. This module does NOT import ``main``, so the
-re-export introduces no import cycle.
+Handlers that depend on patchable entrypoint state remain in ``leanflow_cli.main``.
+The functions here are re-exported there for compatibility.
 """
 
 from __future__ import annotations

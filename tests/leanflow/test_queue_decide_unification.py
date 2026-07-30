@@ -1,11 +1,8 @@
-"""Golden table for the unified `decide()`/`apply_decision()` verdict policy.
+"""Pin the unified `decide()` and `apply_decision()` verdict policy.
 
-Phase 0 of the /prove redesign (docs/prove-redesign-implementation-specs.md
-P0.2): `decide(DecisionContext)` must reproduce every legacy verdict branch,
-source-tagged, as pure evaluation; `apply_decision()` commits the retry side
-effects. The grid here is the drift matrix D1-D9 made executable — each row
-matches the behavior pinned by the characterization suites
-(test_queue_step_boundary_golden.py, test_native_runner.py review tests).
+`decide(DecisionContext)` is pure, while `apply_decision()` commits retry side
+effects. Each row covers a source-tagged verdict branch and matches the
+queue-boundary characterization tests.
 """
 
 from __future__ import annotations
@@ -37,7 +34,7 @@ def _manager(tmp_path) -> TheoremQueueManager:
 
 
 def test_decide_is_pure(tmp_path):
-    """P0.6 acceptance criterion 4: decide() has no I/O and no mutation."""
+    """Verify that `decide()` performs no I/O or mutation."""
     mgr = _manager(tmp_path)
     ctx = DecisionContext(source=DecisionSource.POST_EDIT, check=HARD_CHECK, signature="sig-1")
 

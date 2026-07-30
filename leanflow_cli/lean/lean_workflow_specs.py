@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # leanflow_cli/lean/X
 SPEC_ROOT = REPO_ROOT / "leanflow_specs"
 VALID_SPEC_KINDS = {"workflow", "worker", "helper", "phase"}
 
-#: The actors a phase fragment may declare as consumers (Phase 6 §6.9).
+#: Actors that may consume a workflow-phase fragment.
 KNOWN_PHASE_CONSUMERS = ("orchestrator", "planner", "decomposer", "prover")
 
 
@@ -164,7 +164,7 @@ def load_lean_specs() -> dict[str, LeanSpecRecord]:
 
 
 def phase_fragment_text(spec_id: str, *, include_schema: bool = True) -> str:
-    """Phase-fragment prompt text (§6.9); '' when absent or not a phase.
+    """Return phase-fragment prompt text, or ``""`` when unavailable.
 
     ``include_schema=False`` embeds the BODY only — for prompts whose own
     reply contract must not compete with the fragment's deliverable schema

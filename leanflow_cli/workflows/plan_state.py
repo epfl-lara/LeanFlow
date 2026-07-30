@@ -1,24 +1,18 @@
-"""Living plan-state artifacts for the /prove redesign (Phase 1, specs P1.1).
+"""Persist proof plans, dependency graphs, summaries, and journal events.
 
-Owns the documentation-driven proving substrate: the dependency graph
-(``blueprint.json`` — machine authority; "dependency graph", never bare
-"blueprint", to avoid colliding with the formalization ``Blueprint.md``),
-the machine summary (``summary.json``), the human render (``plan.md``,
-regenerated sections + a preserved free-form Notes tail), and the append-only
-lab notebook (``journal.jsonl`` — the source of truth; snapshots are
-rebuildable from it).
+The machine authority is ``blueprint.json`` (called the dependency graph to
+distinguish it from formalization ``Blueprint.md`` files). ``summary.json`` is
+the machine summary, ``plan.md`` is the generated human view with a preserved
+free-form Notes tail, and ``journal.jsonl`` is the append-only source of truth
+from which snapshots can be rebuilt.
 
-Everything here no-ops (or returns empty state) unless ``LEANFLOW_PLAN_STATE``
-is truthy, so the flag-off hot path is byte-identical. Writes are crash-atomic
-(``core.utils.atomic_json_write``); the blueprint ``revision`` check turns an
-accidental second writer into a loud conflict instead of a lost update
-(Phase 1 invariant: single writer = the native runner process).
+The module returns empty state unless ``LEANFLOW_PLAN_STATE`` is enabled.
+Writes are crash-atomic, and revision checks turn an accidental second writer
+into a conflict instead of a lost update.
 
-Kernel-truth rules enforced here: ``proved`` is writable only through the
-gate-accept sync path (``via_gate=True``); ``false`` only through negation
-promotion (Phase 3 — the status ships now so the schema doesn't churn);
-``reconcile`` is the anti-drift pass and may downgrade ``proved`` when the
-on-disk declaration regressed, but never promotes to ``proved``.
+Kernel-truth rules allow ``proved`` only through gate acceptance and ``false``
+only through promoted negation evidence. Reconciliation may downgrade a
+regressed declaration but never promote one to ``proved``.
 """
 
 from __future__ import annotations
@@ -620,6 +614,155 @@ def recent_orchestrator_routes(limit: int = _RECENT_ROUTE_LIMIT) -> tuple[dict[s
     return tuple(routes)
 
 
+def _recent_journal_events() -> tuple[dict[str, Any], ...]:
+    """Return decoded events from the bounded journal tail in chronological order."""
+    if not plan_state_enabled():
+        return ()
+    path = plan_state_paths().journal_jsonl
+    try:
+        size = path.stat().st_size
+        start = max(0, size - _JOURNAL_TAIL_MAX_BYTES)
+        with path.open("rb") as handle:
+            handle.seek(start)
+            payload = handle.read(_JOURNAL_TAIL_MAX_BYTES)
+    except OSError:
+        return ()
+    if start:
+        _partial, separator, payload = payload.partition(b"\n")
+        if not separator:
+            return ()
+    events: list[dict[str, Any]] = []
+    for raw_line in payload.splitlines():
+        try:
+            event = json.loads(raw_line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(event, Mapping):
+            events.append(dict(event))
+    return tuple(events)
+
+
+def _assignment_graph_names(
+    bp: Blueprint,
+    assignment: Mapping[str, Any],
+) -> set[str]:
+    """Return names in the current assignment's transitive dependency family."""
+    normalized = _normalized_queue_assignment(assignment)
+    if not normalized:
+        return {node.name for node in bp.nodes}
+    target_id = node_id_for(normalized["target_symbol"], normalized["active_file"])
+    if bp.node_by_id(target_id) is None:
+        matching_target = next(
+            (
+                node
+                for node in bp.nodes
+                if node.name == normalized["target_symbol"]
+                and (not normalized["active_file"] or node.file == normalized["active_file"])
+            ),
+            None,
+        )
+        if matching_target is not None:
+            target_id = matching_target.id
+    related_ids = {target_id}
+    changed = True
+    while changed:
+        changed = False
+        for edge in bp.edges:
+            dependency_id = ""
+            if edge.kind == "depends_on" and edge.source in related_ids:
+                dependency_id = edge.target
+            elif edge.kind == "split_of" and edge.target in related_ids:
+                dependency_id = edge.source
+            if dependency_id and dependency_id not in related_ids:
+                related_ids.add(dependency_id)
+                changed = True
+    names = {
+        node.name for node in bp.nodes if node.id in related_ids and str(node.name or "").strip()
+    }
+    names.add(normalized["target_symbol"])
+    return names
+
+
+def recent_exploration_outcomes(
+    bp: Blueprint,
+    assignment: Mapping[str, Any],
+    *,
+    limit: int = 8,
+) -> tuple[dict[str, str], ...]:
+    """Summarize typed outcomes for the current theorem from the journal tail.
+
+    Keep raw history in ``journal.jsonl`` while exposing a small operational
+    account of proved, repaired, rejected, invalidated, and superseded routes.
+    This prevents useful dead-branch knowledge from disappearing into logs or
+    leaking into the next theorem's prompt.
+    """
+    if limit <= 0:
+        return ()
+    allowed_names = _assignment_graph_names(bp, assignment)
+    outcomes: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for event in reversed(_recent_journal_events()):
+        event_name = str(event.get("event", "") or "").strip()
+        subject = str(
+            event.get("name") or event.get("target_symbol") or event.get("parent_target") or ""
+        ).strip()
+        if allowed_names and subject and subject not in allowed_names:
+            continue
+        outcome_type = ""
+        detail = ""
+        if event_name == "proof-attempt-rejected":
+            reason = str(event.get("reason", "") or "").strip()
+            lowered = reason.lower()
+            outcome_type = (
+                "blocked_by_source_order"
+                if "source order" in lowered or "declared before" in lowered
+                else "rejected_by_kernel"
+            )
+            proof_shape = str(event.get("proof_shape", "") or "").strip()
+            detail = " — ".join(part for part in (proof_shape, reason) if part)
+        elif event_name == "node-status":
+            from_status = str(event.get("from", "") or "").strip()
+            to_status = str(event.get("to", "") or "").strip()
+            why = str(event.get("why", "") or "").strip()
+            if to_status == "proved":
+                repaired = from_status in {"false", "parked"} or any(
+                    token in why.lower() for token in ("repair", "reconcile", "retry")
+                )
+                outcome_type = "proved_after_repair" if repaired else "proved"
+            elif to_status == "false":
+                outcome_type = "rejected_by_kernel"
+            elif to_status == "parked":
+                outcome_type = "superseded"
+            elif from_status == "proved":
+                outcome_type = "invalidated"
+            detail = why or f"{from_status or '?'} -> {to_status or '?'}"
+        elif event_name.endswith("-rejected"):
+            outcome_type = "rejected_by_admission"
+            detail = str(event.get("reason") or event.get("detail") or event_name).strip()
+        elif "superseded" in event_name:
+            outcome_type = "superseded"
+            detail = str(event.get("reason") or event.get("detail") or event_name).strip()
+        if not outcome_type or not subject:
+            continue
+        key = (outcome_type, subject, detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        outcomes.append(
+            {
+                "type": outcome_type,
+                "subject": subject,
+                "detail": detail,
+                "ts": str(event.get("ts", "") or ""),
+                "event": event_name,
+            }
+        )
+        if len(outcomes) >= limit:
+            break
+    outcomes.reverse()
+    return tuple(outcomes)
+
+
 # ---------------------------------------------------------------------------
 # Graph mutations (journaled)
 # ---------------------------------------------------------------------------
@@ -759,7 +902,7 @@ def upsert_node_for_assignment(
         status="proving" if existing.status not in {"proved", "false"} else existing.status,
         owner=owner or existing.owner,
     )
-    if updated != existing:
+    if updated.status != existing.status:
         append_journal_event(
             {
                 "event": "node-status",
@@ -839,7 +982,7 @@ def record_decision_packet(packet: Mapping[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Planner delta merge (Phase 5 §5.5)
+# Planner delta merge.
 # ---------------------------------------------------------------------------
 
 #: Ceiling on nodes accepted from one delta — bounds runaway synthesizer output.
@@ -1237,6 +1380,16 @@ def reconcile(
             new_status = "conjectured"
         elif node.status == "proved" and (not present or dirty):
             new_status = "stated" if present else "conjectured"
+        elif (
+            not present
+            and node.generated_by.strip().lower() in {"planner", "decomposer"}
+            and node.status in {"stated", "audited", "proving", "blocked"}
+        ):
+            # Planner/decomposer nodes can outlive a rolled-back or interrupted
+            # source transaction. An absent generated declaration is only an
+            # advisory conjecture; leaving it stated makes a nonexistent stub
+            # reappear as the active dependency frontier after restart.
+            new_status = "conjectured"
         elif node.status == "conjectured" and present and not explicitly_uncertain_advisory:
             new_status = "stated"
         refreshed_statement = (
@@ -1562,10 +1715,35 @@ def render_plan_md(
         lines.extend(f"- `{_line(node.name)}` ({_line(node.file)})" for node in frontier[:20])
     else:
         lines.append("- [empty]")
+    deferred_items = [
+        dict(item)
+        for item in (summary.get("deferred_queue_items") or [])
+        if isinstance(item, Mapping)
+    ]
+    lines.extend(["", "## Deferred queue items (still pending)", ""])
+    if deferred_items:
+        for item in deferred_items[:20]:
+            lines.append(
+                f"- `{_line(item.get('target_symbol', '[unknown]'))}` "
+                f"({_line(item.get('active_file', '[unknown]'))}) — "
+                f"{_line(item.get('reason', 'route cooled down'))}; return when "
+                f"{_line(item.get('return_condition', 'a distinct route is available'))}"
+            )
+    else:
+        lines.append("- [none]")
     lines.extend(["", "## Grounding", ""])
     findings = list(summary.get("grounding_findings") or [])
     if findings:
         lines.extend(f"- {_line(finding)}" for finding in findings[:20])
+    else:
+        lines.append("- [none yet]")
+    lines.extend(["", "## Exploration outcomes", ""])
+    outcomes = recent_exploration_outcomes(bp, assignment, limit=12)
+    if outcomes:
+        for outcome in outcomes:
+            detail = _bounded_line(outcome.get("detail", ""), 500)
+            suffix = f" — {detail}" if detail else ""
+            lines.append(f"- [{_line(outcome['type'])}] `{_line(outcome['subject'])}`{suffix}")
     else:
         lines.append("- [none yet]")
     lines.extend(["", "## Decision log", ""])
@@ -1589,7 +1767,26 @@ def render_plan_md(
         lines.extend(
             f"- `{_line(node.name)}` [{node.status}] ({_line(node.file)})" for node in dead
         )
-    else:
+    dead_outcomes = [
+        outcome
+        for outcome in outcomes
+        if outcome["type"]
+        in {
+            "blocked_by_source_order",
+            "invalidated",
+            "rejected_by_admission",
+            "rejected_by_kernel",
+            "superseded",
+        }
+    ]
+    if dead_outcomes:
+        for outcome in dead_outcomes[-8:]:
+            detail = _bounded_line(outcome.get("detail", ""), 500)
+            suffix = f" — {detail}" if detail else ""
+            lines.append(
+                f"- `{_line(outcome['subject'])}` " f"[{_line(outcome['type'])} attempt]{suffix}"
+            )
+    if not dead and not dead_outcomes:
         lines.append("- [none]")
     lines.extend(["", "## Final report", ""])
     final_report = dict(summary.get("final_report") or {})
@@ -1728,6 +1925,13 @@ def frontier_digest_block() -> str:
     route = _current_route_decision(summary, recent_orchestrator_routes(limit=1))
     if route and (not assignment or _route_matches_assignment(route, assignment)):
         lines.append(f"- current route: {_route_summary(route)}")
+    for outcome in recent_exploration_outcomes(bp, assignment, limit=2):
+        detail = _bounded_line(outcome.get("detail", ""), 180)
+        suffix = f": {detail}" if detail else ""
+        lines.append(
+            f"- outcome [{_bounded_line(outcome['type'], 40)}] "
+            f"`{_bounded_line(outcome['subject'], 120)}`{suffix}"
+        )
     frontier = _assignment_dependency_frontier(bp, assignment)
     for node in frontier[:8]:
         label = "dependency frontier" if assignment else "frontier"

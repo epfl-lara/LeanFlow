@@ -1,10 +1,4 @@
-"""TeX-project discovery + path resolution for formalization-document requests.
-
-Leaf module: resolves a requested document path within a project, discovers the TeX entrypoint
-and its include/asset closure, and scores candidate entrypoints. Extracted verbatim from
-formalization_documents.py and re-exported there; imports only stdlib and the formalization_models
-leaf, so it introduces no import cycle.
-"""
+"""Resolve formalization sources and discover TeX entrypoint dependencies."""
 
 from __future__ import annotations
 

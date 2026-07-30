@@ -108,11 +108,30 @@ _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 # Codex fallback: uses the Responses API (the only endpoint the Codex
-# OAuth token can access) with a fast model for auxiliary tasks.
-# ChatGPT-backed Codex accounts currently reject some newer Codex model slugs
-# for these auxiliary flows, while this default remains broadly available.
+# OAuth token can access). Explicit Codex routes inherit the main runtime's
+# configured model; auto-routing retains this conservative standalone fallback.
 _CODEX_AUX_MODEL = CODEX_AUX_DEFAULT_MODEL
 _CODEX_AUX_BASE_URL = CODEX_BASE_URL
+
+
+def _compatible_explicit_model(provider: str, model: str | None) -> str | None:
+    """Return a provider-compatible explicit model override.
+
+    OpenRouter-style vendor/model slugs are invalid on the ChatGPT Codex
+    Responses endpoint. An all-lanes provider override must fall back to the
+    Codex auxiliary default instead of retaining the old provider's model.
+    """
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_model = str(model or "").strip()
+    if normalized_provider in {"codex", "openai-codex"} and "/" in normalized_model:
+        logger.info(
+            "Dropping incompatible auxiliary model %r for provider %s",
+            normalized_model,
+            normalized_provider,
+        )
+        return None
+    return normalized_model or None
+
 
 # ── Provider client adapters ───────────────────────────────────────────────
 # The OpenAI-client-compatible adapters for Codex (Responses API) and native
@@ -150,16 +169,25 @@ from agent.providers.auxiliary_nous import (  # noqa: E402,F401
 )
 
 
-def _read_codex_access_token() -> str | None:
+def _read_codex_access_token(*, allow_legacy_store: bool | None = None) -> str | None:
     """Read a valid Codex OAuth access token from LeanFlow auth state.
 
     LeanFlow's auth.json is authoritative when present. Legacy ``~/.codex``
     fallback is opt-in to avoid unrelated desktop auth state silently changing
     auxiliary routing and tests.
     """
-    tokens = _read_codex_tokens()
+    tokens = _read_codex_tokens(allow_legacy_store=allow_legacy_store)
     access_token = tokens.get("access_token", "")
     return access_token or None
+
+
+def _explicit_codex_model() -> str:
+    """Return the main Codex runtime model for an explicitly selected Codex lane."""
+    try:
+        runtime = resolve_runtime_provider(requested="codex")
+    except Exception:
+        return _CODEX_AUX_MODEL
+    return str(runtime.get("model", "") or "").strip() or _CODEX_AUX_MODEL
 
 
 def _load_runtime_config() -> dict[str, Any]:
@@ -353,13 +381,20 @@ def _try_custom_endpoint() -> tuple[OpenAI | None, str | None]:
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 
-def _try_codex() -> tuple[Any | None, str | None]:
-    codex_token = _read_codex_access_token()
+def _try_codex(*, allow_legacy_store: bool | None = None) -> tuple[Any | None, str | None]:
+    # Keep the no-argument call shape for the auto-routing patch surface.
+    # Explicit Codex routes pass True and intentionally opt into CLI auth.
+    codex_token = (
+        _read_codex_access_token()
+        if allow_legacy_store is None
+        else _read_codex_access_token(allow_legacy_store=allow_legacy_store)
+    )
     if not codex_token:
         return None, None
-    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
+    codex_model = _explicit_codex_model() if allow_legacy_store else _CODEX_AUX_MODEL
+    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", codex_model)
     real_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
-    return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
+    return CodexAuxiliaryClient(real_client, codex_model), codex_model
 
 
 def _try_anthropic() -> tuple[Any | None, str | None]:
@@ -511,6 +546,7 @@ def resolve_provider_client(
         provider = "openai-codex"
     if provider == "main":
         provider = "custom"
+    model = _compatible_explicit_model(provider, model)
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
@@ -560,18 +596,18 @@ def resolve_provider_client(
         if raw_codex:
             # Return the raw OpenAI client for callers that need direct
             # access to responses.stream() (e.g., the main agent loop).
-            codex_token = _read_codex_access_token()
+            codex_token = _read_codex_access_token(allow_legacy_store=True)
             if not codex_token:
                 logger.warning(
                     "resolve_provider_client: openai-codex requested "
                     "but no Codex OAuth token found (run: codex login)"
                 )
                 return None, None
-            final_model = model or _CODEX_AUX_MODEL
+            final_model = model or _explicit_codex_model()
             raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
-        client, default = _try_codex()
+        client, default = _try_codex(allow_legacy_store=True)
         if client is None:
             logger.warning(
                 "resolve_provider_client: openai-codex requested "
@@ -794,7 +830,8 @@ def _get_cached_client(
     cache_key = (provider, async_mode, base_url or "", api_key or "")
     if use_cache and cache_key in _client_cache:
         cached_client, cached_default = _client_cache[cache_key]
-        return cached_client, model or cached_default
+        compatible_model = _compatible_explicit_model(provider, model)
+        return cached_client, compatible_model or cached_default
     client, default_model = resolve_provider_client(
         provider,
         model,
@@ -804,7 +841,10 @@ def _get_cached_client(
     )
     if use_cache and client is not None:
         _client_cache[cache_key] = (client, default_model)
-    return client, model or default_model
+    # ``resolve_provider_client`` already applied the explicit override or
+    # rejected it as incompatible. Returning the raw input here would
+    # resurrect a model slug that the provider deliberately replaced.
+    return client, default_model
 
 
 def _canonical_auxiliary_provider(provider: str, client: Any | None) -> str:

@@ -112,7 +112,7 @@ class DispatchLaunchAdmissionDeferred(RuntimeError):
     """Report that a policy-neutral launch guard rejected process creation."""
 
 
-# Patience policy (specs §4): stuck ONLY when BOTH the wall clock is well past
+# A job is stuck only when both the wall clock is well past
 # the declared budget AND the activity stream has gone quiet — the second
 # clause protects a long Lake build whose events keep the stream fresh.
 PATIENCE_WALL_CLOCK_FACTOR = 1.5
@@ -149,6 +149,8 @@ SAFE_LEGACY_PROCESS_RELEASE_REASONS = frozenset(
         "legacy-process-exited",
         "legacy-process-command-mismatch",
         "legacy-dispatch-worker-spec-mismatch",
+        "process-command-mismatch",
+        "dispatch-worker-spec-mismatch",
     }
 )
 DARWIN_UNAMBIGUOUS_PROCESS_ARG_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,\-]+$")
@@ -612,16 +614,21 @@ def _legacy_process_exit_evidence(entry: LedgerEntry) -> dict[str, str]:
 
 
 def _legacy_terminal_process_release_evidence(entry: LedgerEntry) -> dict[str, str]:
-    """Return fail-closed evidence that one legacy killed worker is gone.
+    """Return fail-closed evidence that one killed worker no longer owns its PID.
 
-    Process absence is authoritative. For a live legacy PID, only an exact
+    Process absence is authoritative. For a reused live PID, only an exact
     command-line mismatch from this job's known dispatch-worker invocation is
-    authoritative. A start timestamp is retained solely as diagnostic context.
+    authoritative. Modern token-bound rows reach this fallback only after the
+    token no longer matches, so an unrelated process reusing the same PID,
+    process group, and session cannot pin a killed campaign forever.
     """
-    if entry.state != "killed" or entry.launch_nonce or entry.process_identity().verifiable:
+    if entry.state != "killed":
         return {}
     if _dispatch_process_identity_has_exited(entry):
         return _legacy_process_exit_evidence(entry)
+    modern_identity = bool(entry.launch_nonce or entry.process_identity().verifiable)
+    if modern_identity and _dispatch_process_identity_is_live(entry):
+        return {}
 
     expected_spec_path = _dispatch_job_spec_path(entry.spec.job_id)
     argv = _read_process_argv(
@@ -640,11 +647,14 @@ def _legacy_terminal_process_release_evidence(entry: LedgerEntry) -> dict[str, s
     if dispatch_worker and observed_spec_path == expected_spec_path:
         return {}
 
-    reason = (
-        "legacy-dispatch-worker-spec-mismatch"
-        if dispatch_worker
-        else "legacy-process-command-mismatch"
-    )
+    if modern_identity:
+        reason = "dispatch-worker-spec-mismatch" if dispatch_worker else "process-command-mismatch"
+    else:
+        reason = (
+            "legacy-dispatch-worker-spec-mismatch"
+            if dispatch_worker
+            else "legacy-process-command-mismatch"
+        )
     observed_started = _process_started_at_utc(entry.process_id)
     observed_started_at = observed_started.isoformat() if observed_started is not None else ""
     evidence = {
@@ -1800,11 +1810,12 @@ class DispatchService:
         return self._transaction(mutate)
 
     def release_legacy_killed_process_capacity(self, entry: LedgerEntry) -> dict[str, Any]:
-        """Persist proof that one legacy killed worker no longer owns capacity.
+        """Persist proof that one killed worker no longer owns its recorded PID.
 
         The transaction rechecks the exact ledger row and release evidence.
-        A modern token-bound identity is never admitted here, preserving its
-        existing exact-process termination and no-overlap contract.
+        Modern token-bound identities enter only after direct retirement fails
+        and their token no longer matches; exact command/spec mismatch must
+        then prove that the live PID belongs to another process.
         """
 
         def mutate(ledger: list[dict[str, Any]]):
@@ -1823,9 +1834,6 @@ class DispatchService:
                 or current.process_identity() != entry.process_identity()
             ):
                 return {"released": False, "newly_released": False, "reason": ""}, []
-            if current.launch_nonce:
-                return {"released": False, "newly_released": False, "reason": ""}, []
-
             if (
                 current.process_released_at
                 and current.process_release_reason in SAFE_LEGACY_PROCESS_RELEASE_REASONS
@@ -3462,6 +3470,13 @@ class DispatchService:
                         "The parent captures successful calls automatically in canonical "
                         "checked_helpers; do not fabricate, summarize, or copy checked_helpers "
                         "into your final JSON.",
+                        "If any checked helper was captured, your final JSON must include "
+                        "checked_helper_route_disposition as exactly advance_current_route or "
+                        "evidence_only, plus checked_helper_dependency_advanced naming the exact "
+                        "open dependency it discharges. Use advance_current_route only when the "
+                        "helper advances the current live route; helpers for rejected routes, "
+                        "counterexamples to abandoned methods, and standalone obstructions are "
+                        "evidence_only even when they elaborate.",
                     ]
                 )
             if spec.archetype == "empirical":
@@ -3521,6 +3536,18 @@ class DispatchService:
             if spec.archetype == "deep_search" or spec.deliverable == "findings_report":
                 context_lines.extend(
                     [
+                        "Research completion contract: use a query portfolio with materially "
+                        "different formulations, and prefer web_search search_depth=deep with "
+                        "alternate_queries when web research is relevant. Search snippets are "
+                        "discovery only: inspect promising primary sources with web_fetch and "
+                        "search/inspect cloned source when repository access is available. A "
+                        "single empty, throttled, or timed-out backend is not exhaustion; continue "
+                        "with surviving providers and reformulated queries.",
+                        "The compact report must preserve queries_tried, providers_tried, "
+                        "sources_read, and dead_ends with a reason for each rejected route. Set "
+                        "exhausted=true only after those routes are genuinely exhausted. Do not "
+                        "discard a useful partial construction merely because it does not close "
+                        "the full target; report its exact mathematical delta and next check.",
                         "If you claim a replacement for the assigned dispatched target was "
                         "kernel/Lean checked, the report MUST include this exact schema:",
                         CHECKED_REPLACEMENT_CONTRACT,
@@ -3685,7 +3712,7 @@ class DispatchService:
                     logger.debug("dispatch lock release failed", exc_info=True)
 
     def _run_spawn_job(self, spec: JobSpec) -> dict[str, Any]:
-        """Prover shape A: a nested file-scoped /prove (Phase 5 §5.7).
+        """Run a prover job as a nested file-scoped ``/prove`` workflow.
 
         prover_jobs owns the whole contract — hygienic child env, stub-file
         lock, synchronous wall-clock wait with kill escalation, and the

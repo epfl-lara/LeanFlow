@@ -50,6 +50,28 @@ _SAFE_POST_TOOL_BOUNDARIES = frozenset(
     }
 )
 
+# Basic orientation reads are safe places to harvest completed research, but
+# ending a fresh prover turn after one of them wastes the model's setup work.
+# Only substantive search/reasoning results justify an immediate reroute. A
+# pending event observed after an orientation read stays staged and will be
+# consumed at the next routing boundary or the natural end of the turn.
+_ROUTING_POST_TOOL_BOUNDARIES = frozenset(
+    {
+        "formalization_document_inspect",
+        "lean_auto_search",
+        "lean_decompose_helpers",
+        "lean_lemma_suggest",
+        "lean_multi_attempt",
+        "lean_reasoning_help",
+        "lean_search",
+        "read_pdf",
+        "search_files",
+        "session_search",
+        "web_fetch",
+        "web_search",
+    }
+)
+
 
 @dataclass(frozen=True)
 class EventCapture:
@@ -67,6 +89,17 @@ def is_safe_post_tool_boundary(function_name: str) -> bool:
     protocol before its owner reaches the corresponding cleanup/commit step.
     """
     return str(function_name or "").strip() in _SAFE_POST_TOOL_BOUNDARIES
+
+
+def is_routing_post_tool_boundary(function_name: str) -> bool:
+    """Return whether a completed tool produced enough work to end the turn.
+
+    This is deliberately narrower than :func:`is_safe_post_tool_boundary`.
+    Capability discovery, source inspection, and plain file reads may harvest
+    and stage research but must not preempt the prover before its first actual
+    proof or research attempt.
+    """
+    return str(function_name or "").strip() in _ROUTING_POST_TOOL_BOUNDARIES
 
 
 def _counter(value: Any) -> int:

@@ -1,26 +1,8 @@
-"""Queue-edit guard helpers for the native managed runner.
+"""Protect assigned and future Lean declarations from out-of-scope edits.
 
-Extracted from ``native_runner.py`` (refactor Phase 2, step 4 — the queue-edit-guard cluster).
-During a single-queue-item prover turn the runner protects the assigned declaration (and any
-pre-existing "future queue" declarations in the same file) against out-of-scope edits: it
-snapshots the source statement and the surrounding protected declarations before a file-editing
-tool runs, then detects and restores any out-of-scope change afterwards. The cleanly-pure parts
-of that machinery live here.
-
-These helpers operate purely on Lean source text and the small dicts the runner derives from it:
-a per-(symbol, file) guard key, the initial declaration-key set cached on the agent, the assigned
-statement signature, the protected-declaration inventory, the protected-declaration diff between a
-snapshot and the current text, and the two text-restoration routines. They depend only on the
-standard library and on the already-extracted pure-parsing helpers in ``lean_parsing`` — no
-``native_runner`` module-level state, env readers, Lean services, or queue objects. They live here
-and are re-exported from ``native_runner`` for backwards compatibility; the names are referenced
-within that module and by tests, so this module must NOT import ``native_runner`` (that would
-create a circular import).
-
-Conservatively left in ``native_runner`` (this wave): ``_queue_edit_protect_assigned_statement``
-and ``_document_formalization_source_declaration_names`` (they reach into the document-formalization
-blueprint helpers), and ``_restore_out_of_scope_queue_edit`` (it calls ``_find_declaration_entry``,
-a Lean-services-backed helper). Those still resolve the names moved here via the re-export.
+The pure helpers snapshot statements, compare protected declaration inventories,
+and restore changed source text. They remain independent of runner state and are
+re-exported from ``native_runner`` for compatibility.
 """
 
 from __future__ import annotations
@@ -325,10 +307,36 @@ def _queue_edit_changed_protected_declarations(
         if current is None:
             changed.append({"reason": "missing", "protected": dict(protected)})
             continue
-        if (
-            str(current.get("text", "") or "").strip()
-            != str(protected.get("text", "") or "").strip()
-        ):
+        current_source = str(current.get("text", "") or "").strip()
+        protected_source = str(protected.get("text", "") or "").strip()
+        if current_source == protected_source:
+            continue
+        # The lightweight declaration index starts a declaration at its
+        # ``theorem``/``lemma`` keyword. Lean's declaration-local commands
+        # therefore appear as a suffix of the preceding declaration:
+        #
+        #   theorem old ... := ...
+        #   open scoped Classical in
+        #   theorem helper ... := ...
+        #
+        # Treat that exact appended command as the next declaration's scope
+        # prefix. Otherwise the guard "restores" ``old`` by deleting the
+        # prefix after a successful whole-file verification, leaving the
+        # newly banked helper in a source state that was never checked.
+        appended = (
+            current_source[len(protected_source) :].strip()
+            if current_source.startswith(protected_source)
+            else ""
+        )
+        declaration_local_prefix = bool(
+            appended
+            and all(
+                re.fullmatch(r"(?:open(?:\s+scoped)?|include|omit)\b.*\bin", line.strip())
+                for line in appended.splitlines()
+                if line.strip()
+            )
+        )
+        if not declaration_local_prefix:
             changed.append({"reason": "changed", "protected": dict(protected), "current": current})
     return changed
 

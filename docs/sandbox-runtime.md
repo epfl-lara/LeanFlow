@@ -56,7 +56,9 @@ to keep the image portable and quick to build. Passing `--with-local-lean-explor
 builds the image with `leanflow[mcp,lean-explore]`, which includes
 `lean-explore[local]` and its embedding dependencies. Managed MCP bootstrap still
 installs the configured Lean backends in the sandbox home on first run in both
-modes.
+modes. The image caches third-party Python dependencies before copying LeanFlow
+source, so ordinary source changes do not redownload the full dependency set on
+the next build.
 
 The sandbox image includes the same baseline external workflow tools as the host
 installer: `ripgrep` for local search and Poppler utilities for PDF inspection.
@@ -131,6 +133,12 @@ If a provider endpoint runs on the host at `127.0.0.1`, configure it for the
 container-visible host address used by your engine, such as
 `host.docker.internal` on Docker Desktop.
 
+For an explicitly Codex-backed workflow, the sandbox mounts the minimal Codex
+OAuth files read-only. Because the image intentionally does not install the
+desktop `codex` executable, Codex reasoning and decomposition advisors use the
+same Responses API adapter there; regular local mode retains command-backed
+Codex expert behavior.
+
 ## Filesystem Boundary
 
 The container receives these writable mounts:
@@ -138,11 +146,26 @@ The container receives these writable mounts:
 - `/workspace`: copied LeanFlow project worktree for this run
 - `/sandbox-run`: run metadata, status JSON, exported patch
 - `/leanflow-home`: sandbox-specific LeanFlow home and managed MCP backends
-- `/leanflow-cache`: Lean, Lake, pip, and XDG cache data
+- `/leanflow-cache`: Lean, Lake, pip, XDG, and large installer-temporary data
+
+When the source project already has `.lake/packages`, that third-party dependency
+directory is mounted read-only at `/workspace/.lake/packages`. Project
+`.lake/build` output is never mounted, so compiled target declarations cannot
+cross into the run. Runtime packages that must create native executables
+(notably `repl`) are overlaid with source-only, writable sandbox copies keyed by
+the project, toolchain, and dependency manifest. This prevents macOS/host
+executables from being reused inside Linux while retaining warm container
+builds across runs; ordinary dependency `.olean` data stays shared read-only.
 
 The container root filesystem is read-only by default, with tmpfs mounts for
-`/tmp` and `/run`. Docker runs as the host UID/GID when available. Rootless
-Podman uses `--userns=keep-id`.
+`/tmp` and `/run`. LeanInteract also receives a bounded 256 MiB, mode-1777 tmpfs
+at its package-local `cache/` directory because the upstream package creates that
+path at import time; the unprivileged workflow user can write there while
+installed package code remains read-only. Dependency installers
+use `/leanflow-cache/tmp` instead of the bounded `/tmp` tmpfs so large local
+semantic-search wheels cannot exhaust the temporary filesystem during first-run
+MCP bootstrap. Docker runs as the host UID/GID when available. Rootless Podman
+uses `--userns=keep-id`.
 
 The project copy excludes common host-only state:
 
@@ -153,10 +176,26 @@ The project copy excludes common host-only state:
 - `.leanflow/workflow-state`
 - `.leanflow/runtime`
 - `.leanflow/cache`
+- `.leanflow/workspace` (including prior repository-research clones)
 - Python/tool caches
 
 The project manifest and project-local skills under `.leanflow/` are preserved
 so workflow resolution inside the sandbox sees the same LeanFlow project shape.
+
+Repository, paper, code, and article research are enabled by default. For a
+clean-room benchmark that excludes prior solutions, combine:
+
+```bash
+export LEANFLOW_DISABLE_REPOSITORY_RESEARCH=1
+export LEANFLOW_DISABLE_SOLUTION_RESEARCH=1
+export LEANFLOW_CLEAN_ROOM_TASK_LABELS="Benchmark Problem 6|BP6"
+```
+
+The repository flag denies Git, repository clones, repository-host fetches,
+Sourcegraph, and repository-network terminal commands. The solution flag and
+labels deny task-identifying queries, results, URLs, and network commands.
+Unrelated mathematical, paper, and Mathlib research remains available.
+`leanflow sandbox run` propagates all three values into the container.
 
 ## Outputs
 
