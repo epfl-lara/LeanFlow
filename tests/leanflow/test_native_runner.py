@@ -16693,7 +16693,7 @@ def test_prepare_queue_assignment_rejects_kernel_clean_incremental_blocker(monke
     assert not any(args[0] == "queue-prerequisite-reassigned" for args, _kwargs in events)
 
 
-def test_prepare_queue_assignment_bounds_repeated_prerequisite_reassignment(monkeypatch, tmp_path):
+def test_prepare_queue_assignment_retains_unresolved_prerequisite_ownership(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(
         "private lemma clean : True := by\n  trivial\n\n" "theorem demo : True := by\n  sorry\n",
@@ -16710,11 +16710,16 @@ def test_prepare_queue_assignment_bounds_repeated_prerequisite_reassignment(monk
         return {"success": False, "ok": False, "error": "unexpected end of input"}
 
     events = []
+    blocker_clean = False
     monkeypatch.setattr(runner, "_manager_prepare_incremental_queue_item", fake_prepare)
+
+    def fake_check(_active_file, _target_symbol):
+        return {"ok": blocker_clean}
+
     monkeypatch.setattr(
         runner,
         "_manager_incremental_check_queue_item",
-        lambda _active_file, _target_symbol: {"ok": False},
+        fake_check,
     )
     monkeypatch.setattr(
         runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
@@ -16736,8 +16741,21 @@ def test_prepare_queue_assignment_bounds_repeated_prerequisite_reassignment(monk
     second = live_state()
     runner._prepare_queue_assignment_state(autonomy_state, second)
 
-    assert second["target_symbol"] == "demo"
-    assert any(args[0] == "queue-prerequisite-reassignment-bounded" for args, _kwargs in events)
+    assert second["target_symbol"] == "clean"
+    assert autonomy_state["current_queue_assignment"]["target_symbol"] == "clean"
+    assert any(args[0] == "queue-prerequisite-reassignment-retained" for args, _kwargs in events)
+
+    blocker_clean = True
+    third = live_state()
+    runner._prepare_queue_assignment_state(autonomy_state, third)
+
+    assert third["target_symbol"] == "demo"
+    assert autonomy_state["current_queue_assignment"]["target_symbol"] == "demo"
+    assert any(
+        args[0] == "queue-prerequisite-attribution-rejected"
+        and kwargs.get("repeated_attribution") is True
+        for args, kwargs in events
+    )
 
 
 def test_transition_handoff_retargets_after_prerequisite_reassignment(tmp_path):

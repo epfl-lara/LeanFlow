@@ -12936,81 +12936,83 @@ def _prepare_queue_assignment_state(
                         autonomy_state.get("incremental_prerequisite_reassignments") or []
                     )
                 }
-                if reassignment_signature in prior_reassignments:
-                    _record_activity(
-                        "queue-prerequisite-reassignment-bounded",
-                        (
-                            f"Kept {original_label} assigned after repeated incremental "
-                            f"prerequisite attribution to {blocking_label}"
-                        ),
-                        target_symbol=original_label,
-                        attributed_prerequisite=blocking_label,
-                        active_file=active_file,
-                        error=str(prepare_dict.get("error", "") or ""),
-                    )
-                    print(
-                        "Queue prerequisite reassignment bounded: "
-                        f"{blocking_label} remains diagnostic context for {original_label}"
-                    )
-                else:
-                    blocking_check = _manager_incremental_check_queue_item(
-                        active_file,
-                        blocking_label,
-                    )
+                repeated_reassignment = reassignment_signature in prior_reassignments
+                blocking_check = _manager_incremental_check_queue_item(
+                    active_file,
+                    blocking_label,
+                )
+                if not repeated_reassignment:
                     prior_reassignments.add(reassignment_signature)
                     autonomy_state["incremental_prerequisite_reassignments"] = sorted(
                         prior_reassignments
                     )[-128:]
-                    if bool(blocking_check.get("ok")):
-                        _record_activity(
-                            "queue-prerequisite-attribution-rejected",
-                            (
-                                f"Kept {original_label} assigned because claimed prerequisite "
-                                f"{blocking_label} is kernel-clean"
-                            ),
-                            target_symbol=original_label,
-                            attributed_prerequisite=blocking_label,
-                            active_file=active_file,
-                            check=dict(blocking_check),
-                            error=str(prepare_dict.get("error", "") or ""),
-                        )
+                if bool(blocking_check.get("ok")):
+                    _record_activity(
+                        "queue-prerequisite-attribution-rejected",
+                        (
+                            f"Kept {original_label} assigned because claimed prerequisite "
+                            f"{blocking_label} is kernel-clean"
+                        ),
+                        target_symbol=original_label,
+                        attributed_prerequisite=blocking_label,
+                        active_file=active_file,
+                        check=dict(blocking_check),
+                        error=str(prepare_dict.get("error", "") or ""),
+                        repeated_attribution=repeated_reassignment,
+                    )
+                    print(
+                        "Queue prerequisite attribution rejected: "
+                        f"{blocking_label} is kernel-clean; keeping {original_label}"
+                    )
+                else:
+                    label = blocking_label
+                    slice_text = _declaration_slice_text(active_file, label)
+                    item = {
+                        "label": label,
+                        "file": active_file,
+                        "kind": str(blocking_entry.get("kind", "") or ""),
+                        "line": int(blocking_entry.get("line", 0) or 0),
+                        "end_line": int(blocking_entry.get("end_line", 0) or 0),
+                        "reasons": [f"incremental environment blocker before {original_label}"],
+                        "blocker_signature": f"incremental-prerequisite:{label}",
+                        "search_hints": [
+                            label,
+                            str(blocking_entry.get("kind", "") or ""),
+                        ],
+                        "verification_gate": _canonical_file_verification_command(active_file),
+                    }
+                    prepare_dict = _manager_prepare_incremental_queue_item(active_file, label)
+                    prepare = PrepareState.from_mapping(prepare_dict)
+                    autonomy_state.pop("orchestrator_scope_entered", None)
+                    if isinstance(live_state, dict):
+                        live_state["current_queue_item"] = dict(item)
+                        live_state["target_symbol"] = label
+                        live_state["current_queue_item_slice"] = slice_text
+                    activity_kind = (
+                        "queue-prerequisite-reassignment-retained"
+                        if repeated_reassignment
+                        else "queue-prerequisite-reassigned"
+                    )
+                    activity_message = (
+                        f"Queue retained unresolved prerequisite {label} before {original_label}"
+                        if repeated_reassignment
+                        else f"Queue reassigned from {original_label} to prerequisite {label}"
+                    )
+                    _record_activity(
+                        activity_kind,
+                        activity_message,
+                        target_symbol=label,
+                        blocked_target_symbol=original_label,
+                        active_file=active_file,
+                        success=bool(prepare_dict.get("success")),
+                        error=str(prepare_dict.get("error", "") or ""),
+                    )
+                    if repeated_reassignment:
                         print(
-                            "Queue prerequisite attribution rejected: "
-                            f"{blocking_label} is kernel-clean; keeping {original_label}"
+                            "Queue prerequisite ownership retained: "
+                            f"{label} remains unresolved before {original_label}"
                         )
                     else:
-                        label = blocking_label
-                        slice_text = _declaration_slice_text(active_file, label)
-                        item = {
-                            "label": label,
-                            "file": active_file,
-                            "kind": str(blocking_entry.get("kind", "") or ""),
-                            "line": int(blocking_entry.get("line", 0) or 0),
-                            "end_line": int(blocking_entry.get("end_line", 0) or 0),
-                            "reasons": [f"incremental environment blocker before {original_label}"],
-                            "blocker_signature": f"incremental-prerequisite:{label}",
-                            "search_hints": [
-                                label,
-                                str(blocking_entry.get("kind", "") or ""),
-                            ],
-                            "verification_gate": _canonical_file_verification_command(active_file),
-                        }
-                        prepare_dict = _manager_prepare_incremental_queue_item(active_file, label)
-                        prepare = PrepareState.from_mapping(prepare_dict)
-                        autonomy_state.pop("orchestrator_scope_entered", None)
-                        if isinstance(live_state, dict):
-                            live_state["current_queue_item"] = dict(item)
-                            live_state["target_symbol"] = label
-                            live_state["current_queue_item_slice"] = slice_text
-                        _record_activity(
-                            "queue-prerequisite-reassigned",
-                            f"Queue reassigned from {original_label} to prerequisite {label}",
-                            target_symbol=label,
-                            blocked_target_symbol=original_label,
-                            active_file=active_file,
-                            success=bool(prepare_dict.get("success")),
-                            error=str(prepare_dict.get("error", "") or ""),
-                        )
                         print(f"Queue prerequisite reassigned to {label}")
     mgr.assign(
         QueueItem.from_mapping({**item, "label": label}),
