@@ -7766,6 +7766,123 @@ def test_web_search_only_loop_requests_route_and_interrupts_once(monkeypatch, tm
     )
 
 
+def test_search_synthesis_reservation_blocks_broad_search_before_execution(monkeypatch, tmp_path):
+    """Reject the forbidden extra search before it reaches a provider."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self.session_id = "preflight-search-agent"
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "synthesis_grace_pending": True,
+                },
+            }
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+
+    blocked = runner._managed_pre_tool_call(
+        agent,
+        "lean_search",
+        {"query": "Nat.Prime.mem_primeFactors"},
+    )
+
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["success"] is False
+    assert payload["status"] == "search_synthesis_required"
+    assert payload["blocked_tool"] == "lean_search"
+    assert payload["search_count"] == 12
+    assert agent.interrupt_messages == []
+    assert agent._managed_autonomy_state["search_progress"]["synthesis_grace_pending"] is True
+    assert any(event[0][0] == "search-synthesis-tool-blocked" for event in events)
+
+    # The ordinary post-tool path closes the inner turn using the deterministic
+    # preflight result; the forbidden provider/search implementation never ran.
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_search",
+        {"query": "Nat.Prime.mem_primeFactors"},
+        blocked,
+    )
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+
+
+def test_search_synthesis_reservation_keeps_concrete_tools_available(monkeypatch, tmp_path):
+    """A search fence must not suppress proof construction or checking."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "synthesis_grace_pending": True,
+                },
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    agent = _Agent()
+
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "lean_incremental_check",
+            {
+                "action": "check_target",
+                "file": str(active),
+                "name": "demo",
+                "replacement": "theorem demo : True := by\n  trivial",
+            },
+        )
+        is None
+    )
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "lean_decompose_helpers",
+            {"theorem_id": "demo", "target": str(active)},
+        )
+        is None
+    )
+
+
 def test_search_progress_nudge_records_originating_agent(monkeypatch, tmp_path):
     """Search nudges must identify their process and agent in concurrent research logs."""
     active = tmp_path / "Main.lean"

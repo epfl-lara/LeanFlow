@@ -88,6 +88,7 @@ from leanflow_cli.native import (
     queue_source_dependencies,
     route_execution,
     scope_entry_admission,
+    search_synthesis_admission,
     source_only_startup,
     source_order_dependency_guard,
     source_placeholder_guard,
@@ -285,9 +286,7 @@ SEARCH_PROGRESS_TOTAL_NUDGE_LIMIT = 6
 # Keep the lower threshold advisory, then force a non-terminal route handoff at this
 # higher configurable threshold.
 SEARCH_PROGRESS_HARD_LIMIT_DEFAULT = 12
-SEARCH_PROGRESS_TOOL_NAMES = frozenset(
-    {"lean_search", "lean_auto_search", "web_search", "web_fetch", "web_download"}
-)
+SEARCH_PROGRESS_TOOL_NAMES = search_synthesis_admission.BROAD_SEARCH_TOOL_NAMES
 # The foreground conversation executes in a worker thread so the native
 # runner's main thread can keep owning process-level duties. Serialize
 # portfolio maintenance requested by that parent heartbeat and by post-tool
@@ -6852,6 +6851,41 @@ def _reset_search_progress(agent: Any) -> None:
         autonomy_state.pop("search_progress", None)
 
 
+def _search_synthesis_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Reject broad search before execution once this assignment owes synthesis."""
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    tracker = dict(autonomy_state.get("search_progress") or {})
+    if not target_symbol or not active_file or not tracker:
+        return None
+    payload = search_synthesis_admission.blocked_search_result(
+        function_name=function_name,
+        tracker=tracker,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if payload is None:
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "search-synthesis-tool-blocked",
+            f"Blocked {function_name} before execution while {target_symbol} owes synthesis",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            search_count=int(tracker.get("search_count", 0) or 0),
+            provider_called=False,
+            campaign_progress=False,
+        )
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _search_progress_hard_limit() -> int:
     """Return the search-only call limit before yielding to orchestration.
 
@@ -7046,13 +7080,14 @@ def _track_search_progress(
     elif bool(tracker.get("synthesis_grace_pending")):
         # Reserve one provider turn after the cap for a no-tool synthesis so
         # the final successful fetch can enter the lane's durable report.
-        # A further tool call spends that grace and closes the inner turn.
+        # A further broad-search call is rejected in preflight; its
+        # deterministic result spends that grace and closes the inner turn.
         tracker["synthesis_grace_pending"] = False
         autonomy_state["search_progress"] = tracker
         _record_agent_activity(
             agent,
             "search-synthesis-grace-exhausted",
-            f"Search synthesis grace for {target_symbol} was spent on another tool call",
+            f"Search synthesis grace for {target_symbol} was spent on another search request",
             target_symbol=target_symbol,
             active_file=active_file,
             latest_tool=function_name,
@@ -8339,6 +8374,13 @@ def _managed_pre_tool_call(
         )
         if helper_priority_guard:
             return helper_priority_guard
+        search_synthesis_guard = _search_synthesis_pre_tool_guard(
+            agent,
+            function_name,
+            autonomy_state,
+        )
+        if search_synthesis_guard:
+            return search_synthesis_guard
         banked_inspection = banked_helper_inspection.reused_lean_inspection(
             agent,
             function_name,

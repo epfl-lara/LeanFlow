@@ -183,6 +183,7 @@ files = [
   "leanflow_cli/native/source_only_startup.py",
   "leanflow_cli/native/source_placeholder_guard.py",
   "leanflow_cli/native/scope_entry_admission.py",
+  "leanflow_cli/native/search_synthesis_admission.py",
   "leanflow_cli/native/helper_integration_admission.py",
   "leanflow_cli/native/warning_cleanup_guard.py",
   "leanflow_cli/native/transition_visibility.py",
