@@ -7079,9 +7079,31 @@ def _track_search_progress(
         }
     elif bool(tracker.get("synthesis_grace_pending")):
         # Reserve one provider turn after the cap for a no-tool synthesis so
-        # the final successful fetch can enter the lane's durable report.
-        # A further broad-search call is rejected in preflight; its
-        # deterministic result spends that grace and closes the inner turn.
+        # the final successful fetch can enter the lane's durable report. A
+        # preflight-rejected search keeps that debt active and returns control
+        # to the same worker; closing the turn here would let orchestration
+        # grant the unchanged theorem another full search window.
+        preflight_rejected = (
+            str(payload.get("status", "") or "") == "search_synthesis_required"
+            and payload.get("provider_called") is False
+        )
+        if preflight_rejected:
+            tracker["synthesis_grace_pending"] = True
+            autonomy_state["search_progress"] = tracker
+            _record_agent_activity(
+                agent,
+                "search-synthesis-debt-enforced",
+                f"Kept {target_symbol} in construction mode after blocking another search",
+                target_symbol=target_symbol,
+                active_file=active_file,
+                blocked_tool=function_name,
+                search_count=int(tracker.get("search_count", 0) or 0),
+                provider_called=False,
+                campaign_progress=False,
+            )
+            return False
+        # A search result that bypassed preflight (for example from a legacy
+        # delegated lane) still closes the inner turn fail-safe.
         tracker["synthesis_grace_pending"] = False
         autonomy_state["search_progress"] = tracker
         _record_agent_activity(
@@ -25513,8 +25535,11 @@ def _orchestrator_consult(
             ):
                 autonomy_state.pop("prover_requested_route", None)
             if bool(prior_search_progress.get("hard_route_requested")):
-                # The committed route gets a distinct bounded search window.
-                autonomy_state.pop("search_progress", None)
+                # Preserve the exact assignment's synthesis debt across the
+                # route. It is cleared only by concrete proof progress or an
+                # assignment change; otherwise a weak model can replay twelve
+                # broad searches after every planner handoff.
+                autonomy_state["search_progress"] = prior_search_progress
         autonomy_state["orchestrator_current_route"] = route.route
         epoch_refresh = dict(autonomy_state.get(campaign_epoch.EPOCH_ROUTE_REFRESH_STATE_KEY) or {})
         if bool(epoch_refresh.get("required")):

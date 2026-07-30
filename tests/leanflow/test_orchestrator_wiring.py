@@ -2005,6 +2005,7 @@ def test_search_boundary_plan_preserves_and_forwards_exact_target_scope(
             "used_tools": {"lean_search": 7, "web_search": 5},
             "last_query": "erdos straus n = 168 t + 121",
             "hard_route_requested": True,
+            "synthesis_grace_pending": True,
         },
         "failed_attempts": [
             {
@@ -2024,7 +2025,8 @@ def test_search_boundary_plan_preserves_and_forwards_exact_target_scope(
 
     route = runner._orchestrator_consult("event", autonomy_state, live_state)
     assert route is not None and route.route == "plan"
-    assert "search_progress" not in autonomy_state
+    assert autonomy_state["search_progress"]["search_count"] == 12
+    assert autonomy_state["search_progress"]["synthesis_grace_pending"] is True
 
     planner_calls: list[dict[str, Any]] = []
 

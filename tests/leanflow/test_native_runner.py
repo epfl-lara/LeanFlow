@@ -7820,15 +7820,30 @@ def test_search_synthesis_reservation_blocks_broad_search_before_execution(monke
     assert agent._managed_autonomy_state["search_progress"]["synthesis_grace_pending"] is True
     assert any(event[0][0] == "search-synthesis-tool-blocked" for event in events)
 
-    # The ordinary post-tool path closes the inner turn using the deterministic
-    # preflight result; the forbidden provider/search implementation never ran.
+    # Keep the worker in the same turn after the deterministic rejection so it
+    # can react with construction instead of receiving a fresh search budget.
     runner._handle_managed_tool_result(
         agent,
         "lean_search",
         {"query": "Nat.Prime.mem_primeFactors"},
         blocked,
     )
-    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent.interrupt_messages == []
+    assert agent._managed_autonomy_state["search_progress"]["synthesis_grace_pending"] is True
+    blocked_again = runner._managed_pre_tool_call(
+        agent,
+        "lean_search",
+        {"query": "Nat.factorization.support"},
+    )
+    assert blocked_again is not None
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_search",
+        {"query": "Nat.factorization.support"},
+        blocked_again,
+    )
+    assert agent.interrupt_messages == []
+    assert agent._managed_autonomy_state["search_progress"]["search_count"] == 12
 
 
 def test_search_synthesis_reservation_keeps_concrete_tools_available(monkeypatch, tmp_path):
@@ -7881,6 +7896,18 @@ def test_search_synthesis_reservation_keeps_concrete_tools_available(monkeypatch
         )
         is None
     )
+    runner._note_non_search_tool_progress(
+        agent,
+        "lean_incremental_check",
+        {
+            "action": "check_target",
+            "file": str(active),
+            "name": "demo",
+            "replacement": "theorem demo : True := by\n  trivial",
+        },
+        json.dumps({"success": True, "ok": True}),
+    )
+    assert "search_progress" not in agent._managed_autonomy_state
 
 
 def test_search_progress_nudge_records_originating_agent(monkeypatch, tmp_path):
@@ -8414,7 +8441,8 @@ def test_search_progress_hard_limit_is_configurable(monkeypatch):
     assert runner._search_progress_hard_limit() == 0
 
 
-def test_consumed_search_route_starts_a_fresh_search_streak(monkeypatch, tmp_path):
+def test_consumed_search_route_preserves_synthesis_debt(monkeypatch, tmp_path):
+    """An unchanged target must not receive another broad-search window."""
     active = tmp_path / "Main.lean"
     state = {
         "current_queue_assignment": {
@@ -8431,6 +8459,7 @@ def test_consumed_search_route_starts_a_fresh_search_streak(monkeypatch, tmp_pat
             "active_file": str(active),
             "search_count": 12,
             "hard_route_requested": True,
+            "synthesis_grace_pending": True,
         },
     }
     context = runner.orchestrator_floor.RouteContext(
@@ -8453,7 +8482,8 @@ def test_consumed_search_route_starts_a_fresh_search_streak(monkeypatch, tmp_pat
 
     assert runner._orchestrator_consult("event", state, {}) == route
     assert "prover_requested_route" not in state
-    assert "search_progress" not in state
+    assert state["search_progress"]["search_count"] == 12
+    assert state["search_progress"]["synthesis_grace_pending"] is True
 
 
 def test_explicit_plan_request_precedes_stale_epoch_negate_replay(monkeypatch, tmp_path):
