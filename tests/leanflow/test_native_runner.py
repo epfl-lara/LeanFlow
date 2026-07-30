@@ -4368,6 +4368,78 @@ def test_parent_poll_refreshes_attempt_count_during_foreground_conversation(monk
     ]
 
 
+def test_parent_poll_refreshes_refill_admission_before_each_tick(monkeypatch, tmp_path):
+    """A captured allow decision cannot relaunch workers behind a later plan route."""
+    calls: list[dict[str, object]] = []
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 3
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_step_boundary_closed = False
+        is_interrupted = False
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "campaign_id": "campaign-live-admission",
+                "campaign_epoch": 1,
+                "campaign_status": "running",
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242",
+                    "active_file": "/tmp/Erdos242.lean",
+                },
+            }
+
+    agent = _Agent()
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-live-admission", "epoch": 1},
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "pending_worker_refresh", lambda **_kwargs: {})
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "maintain_portfolio",
+        lambda **kwargs: calls.append(dict(kwargs)) or {},
+    )
+    monkeypatch.setattr(runner, "touch_workflow_runtime_heartbeat", lambda **_kwargs: None)
+
+    poll = runner._build_research_portfolio_parent_poll(agent)
+    assert poll is not None
+    agent._managed_autonomy_state["prover_requested_route"] = {
+        "route": "plan",
+        "target_symbol": "erdos_242",
+        "active_file": "/tmp/Erdos242.lean",
+    }
+
+    poll()
+    poll()
+
+    assert calls == [
+        {
+            "campaign_id": "campaign-live-admission",
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+            "attempt_count": 3,
+            "workers": 2,
+            "refill": False,
+        },
+        {
+            "campaign_id": "campaign-live-admission",
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+            "attempt_count": 3,
+            "workers": 2,
+            "refill": False,
+        },
+    ]
+
+
 def test_parent_poll_fails_closed_when_live_attempt_refresh_fails(monkeypatch, tmp_path):
     """A queue-state read failure cannot dispatch from the captured effort count."""
     calls: list[dict[str, object]] = []

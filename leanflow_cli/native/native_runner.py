@@ -23603,13 +23603,14 @@ def _refresh_research_portfolio_poll_attempt_count(
     autonomy_state: dict[str, Any],
     request: _ResearchPortfolioPollRequest,
 ) -> _ResearchPortfolioPollRequest | None:
-    """Refresh theorem-local effort without changing captured poll ownership.
+    """Refresh theorem-local effort and current refill admission.
 
     Failed exact-target checks can be recorded while the foreground provider
     remains inside one conversation. Re-read only that queue key so the parent
-    heartbeat can open the second research lane immediately; any queue-state
-    read failure leaves the immutable request unusable rather than launching
-    work from stale effort evidence.
+    heartbeat can open the second research lane immediately. Recompute refill
+    admission in the same step because a plan reservation may arrive after the
+    callback captured its assignment identity. Any queue-state read failure
+    leaves the request unusable rather than launching work from stale evidence.
     """
     if not request.target_symbol or not request.active_file:
         return None
@@ -23625,7 +23626,15 @@ def _refresh_research_portfolio_poll_attempt_count(
             exc_info=True,
         )
         return None
-    return _dataclass_replace(request, attempt_count=attempt_count)
+    return _dataclass_replace(
+        request,
+        attempt_count=attempt_count,
+        refill=_research_portfolio_refill_allowed(
+            autonomy_state,
+            target_symbol=request.target_symbol,
+            active_file=request.active_file,
+        ),
+    )
 
 
 def _build_research_portfolio_parent_poll(
