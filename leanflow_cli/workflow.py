@@ -568,8 +568,8 @@ def resolve_workflow_request(
     if workflow.allowed_axioms:
         child_env["LEANFLOW_NATIVE_ALLOWED_AXIOMS"] = workflow.allowed_axioms
     if workflow.research_mode or plan_state_enabled():
-        # Phase 1 (P1.3): every deployed agent can discover the living plan
-        # artifacts via env, independent of any prompt injection. Paths are
+        # Every deployed agent can discover live plan artifacts through the
+        # environment, independent of prompt injection. Paths are
         # anchored to the resolved project (not the parent's discovery).
         artifact_paths = plan_state_paths(project.root / ".leanflow" / "workflow-state")
         child_env.update(

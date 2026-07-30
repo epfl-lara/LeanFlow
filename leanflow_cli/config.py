@@ -54,8 +54,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "provider": "auto",
         "base_url": "",
         "api_key": "",
-        # Light tier for dispatched stub-grinding prover jobs (Phase 6,
-        # DeepSeek-V2 pattern); empty = jobs use the run's main model.
+        # Optional light tier for dispatched prover jobs; empty uses the
+        # run's main model.
         "prover_light": "",
     },
     "auxiliary": {
@@ -206,15 +206,14 @@ DEFAULT_CONFIG_HEADER = """# LeanFlow configuration
 #
 # Orchestrator routing turn:
 #   auxiliary.orchestration is used by the LLM routing layer over the
-#   deterministic orchestrator floor (dark until LEANFLOW_ORCHESTRATOR_LLM_ENABLED
-#   flips). The default (`provider: main`, empty model) means the strong
-#   main-agent model decides routing; set auxiliary.orchestration.model to
-#   pin a different one. Its strict JSON turn disables hidden RCP reasoning by
-#   default so a thinking model cannot spend its output budget before replying;
-#   set reasoning_effort to low/medium/high to opt back in.
-#   auxiliary.planner_synthesis is the planner-phase synthesizer turn
-#   (Phase 5, dark until LEANFLOW_PLANNER_ENABLED). Empty values inherit
-#   auxiliary.orchestration — i.e. the strong main-agent model by default.
+#   deterministic orchestrator floor. The default (`provider: main`, empty
+#   model) means the strong main-agent model decides routing; set
+#   auxiliary.orchestration.model to pin a different one. Its strict JSON turn
+#   disables hidden RCP reasoning by default so a thinking model cannot spend
+#   its output budget before replying; set reasoning_effort to low/medium/high
+#   to opt back in.
+#   auxiliary.planner_synthesis is the planner synthesizer turn. Empty values
+#   inherit auxiliary.orchestration — i.e. the strong main-agent model by default.
 #   Its strict JSON turn also defaults to non-thinking mode; set a planner-
 #   specific or orchestration reasoning_effort to opt back in.
 #

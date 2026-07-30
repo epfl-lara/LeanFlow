@@ -6171,7 +6171,7 @@ def _review_agent_final_report(
         manager_tool,
     )
     manager_check["last_verification"] = verification_record
-    # P0.4 shadow-compare: snapshot the pre-gate retry counters and the
+    # Snapshot the pre-gate retry counters and the
     # pre-mutation evidence (the exhausted path restores the file below, which
     # would flip the declaration's sorry state under the evidence's feet).
     # Shadow work never perturbs the gate: failures only disable the shadow.
@@ -10189,7 +10189,7 @@ def _finish_queue_step_boundary(
                 )
             elif pending_integration is not None:
                 pending_promoted_helper_names = pending_integration.helper_names
-        # P0.4 shadow-compare: decide() models the PRE-gate retry counters, so
+        # decide() models the pre-gate retry counters, so
         # snapshot the manager-owned keys before this gate consumes/clears
         # anything. Shadow work must never perturb the authoritative gate, so
         # a snapshot failure just disables the shadow for this call.
@@ -11139,11 +11139,11 @@ def _shadow_compare_step_boundary(
     hard_retry_limit: int,
     attempt_recorded: bool,
 ) -> None:
-    """Shadow-compare the boundary verdict against decide() (P0.4).
+    """Compare the boundary verdict with ``decide()`` without mutating state.
 
-    The legacy branch stays authoritative; this only logs a
-    queue-decide-shadow-mismatch activity event on divergence. Evidence
-    mirrors the legacy D7 order: a local cleanup reason classifies the
+    This comparison only logs a ``queue-decide-shadow-mismatch`` activity
+    event on divergence. Evidence mirrors the compatibility order: a local
+    cleanup reason classifies the
     manager check, otherwise the live-state synthetic evidence decides —
     both sides of the comparison always see the same evidence.
     """
@@ -15513,7 +15513,7 @@ def _handle_api_step_budget_exhaustion(
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
     active_file = str(assignment.get("active_file", "") or "").strip()
     if _queue_decide_shadow_enabled():
-        # P0.4 shadow-compare, before this path mutates anything: the legacy
+        # Compare before this path mutates anything: the compatibility
         # branch restores + records unconditionally once blocked.
         try:
             evidence = _shadow_live_evidence(active_file, target_symbol, live_state)
@@ -19496,7 +19496,7 @@ def _autonomous_stop_reason(
     if autonomy_state.get("terminal_outcome") == "disproved":
         return "disproved"
     if _budget_breakpoint_enabled() and autonomy_state.get("budget_breakpoint"):
-        # P1.4: an armed breakpoint is a real stop with a persisted decision
+        # An armed breakpoint is a real stop with a persisted decision
         # packet — first priority so nothing keeps grinding past it.
         return "budget-breakpoint"
     if _document_formalization_ready_for_prover_handoff(live_state):
@@ -19749,7 +19749,7 @@ def _autonomous_continuation_prompt(
             "\n\nSwarm remains user-approved for this continuation. "
             "Delegate only if the next step splits cleanly across files or verifier/planner roles."
         )
-    # P1.3: static artifact paths stay in the byte-stable prefix; the volatile
+    # Static artifact paths stay in the byte-stable prefix; the volatile
     # frontier digest goes after the cycle marker (RCP prefix-cache design).
     plan_paths_text = artifact_paths_block()
     if plan_paths_text:
@@ -19774,7 +19774,7 @@ def _collect_declaration_truth(
     live_state: Mapping[str, Any] | None = None,
     expected: Sequence[tuple[str, str]] = (),
 ) -> dict[tuple[str, str], plan_state.DeclTruth]:
-    """Build per-declaration truth for graph-referenced files (P1.2 I/O adapter).
+    """Build per-declaration truth for graph-referenced files.
 
     Parses each file's declarations directly and reuses the live-state
     diagnostics already fetched this cycle for the active file — zero extra
@@ -20525,13 +20525,12 @@ def _maybe_sync_plan_state(
     *,
     assignment_override: Mapping[str, Any] | None = None,
 ) -> bool:
-    """Per-cycle queue->graph sync + reconcile (Phase 1, dark).
+    """Synchronize queue outcomes and on-disk truth into the plan graph.
 
     Derives graph state from queue events: the current assignment becomes a
     ``proving`` node, gate-backed ``theorem_outcomes`` drive ``proved``
-    (via_gate) / ``blocked``, then reconcile() re-grounds everything against
-    the on-disk declarations. The graph feeds no verdicts in Phase 1, so a
-    sync failure is loud (activity event) but never fatal to the run.
+    (via_gate) or ``blocked``, then reconcile() re-grounds everything against
+    the on-disk declarations. A sync failure is visible but never fatal.
     """
     if not plan_state_enabled():
         return False
@@ -21346,7 +21345,7 @@ def _recover_deferred_resume_graph_gate_evidence(
 
 
 def _plan_state_resume_block(autonomy_state: Mapping[str, Any] | None) -> str:
-    """Resolve the documentation-driven resume handoff (P1.5).
+    """Resolve the documentation-driven resume handoff.
 
     When plan-state is on and a dependency graph exists, reconcile it against
     the on-disk declarations FIRST (stale checkpoints must not outrank kernel
@@ -22004,7 +22003,7 @@ def _maybe_record_learnings(
     *,
     post_quiescence: bool = False,
 ) -> None:
-    """Cross-run learnings for EVERY terminal exit (Phase 5, dark).
+    """Record cross-run learnings for every terminal exit.
 
     Independent of the final-report flag/outcome: disabling reports must
     not silently disable learnings, and verified exits contribute too.
@@ -22097,7 +22096,7 @@ def _graph_frontier_selection_enabled() -> bool:
 
 
 def _curriculum_order_key() -> Callable[[str], Any] | None:
-    """Easy->hard tie-break within a frontier rank (Phase 5, dark).
+    """Return the optional easy-to-hard tie-break within a frontier rank.
 
     Behind LEANFLOW_CURRICULUM_ORDERING (default off): shorter stated
     statements first — the cheap difficulty proxy the LeanAgent/AlphaProof
@@ -22150,7 +22149,7 @@ def _graph_frontier_precedence(
     active_file: str = "",
     queue_labels: Sequence[str] | None = None,
 ) -> Callable[[str], int] | None:
-    """Graph-frontier precedence for queue selection (Phase 4, flag-gated).
+    """Return graph-frontier precedence for queue selection.
 
     Rank -2 = the frontier-ready current assignment, -1 = another ready member
     of its split/dependency family, 0 = other frontier-ready work, 1 = unknown
@@ -26312,8 +26311,8 @@ def _orchestrator_apply_route(
                     autonomy_state,
                 )
         if not mechanical_placed and route.route == "decompose" and target_symbol and active_file:
-            # Phase 4 (3/6): state validated helper stubs between turns; any
-            # failure falls back to the prompt-level directive.
+            # State validated helper stubs between turns; any failure falls
+            # back to the prompt-level directive.
             try:
                 assignment = dict(autonomy_state.get("current_queue_assignment") or {})
                 current = dict(live_state or {})
@@ -26389,8 +26388,8 @@ def _orchestrator_apply_route(
                 )
         planner_banner = ""
         if planner_route_enabled:
-            # Phase 5 (3/6): research fan-out + synthesis; any failure falls
-            # back to the prompt-level directive exactly like decompose.
+            # Research fan-out and synthesis; any failure falls back to the
+            # prompt-level directive exactly like decompose.
             try:
                 assignment = dict(autonomy_state.get("current_queue_assignment") or {})
                 planner_context = dict(autonomy_state.get("_orchestrator_last_ctx") or {})
@@ -28068,7 +28067,7 @@ def main() -> int:
             checkpoint_state = {**checkpoint_state, "current": None}
         if resumed_checkpoint and not plan_resume_block:
             # Checkpoint replay is the fallback authority only when no
-            # plan-state artifacts exist (P1.5 documentation-driven resume).
+            # plan-state artifacts exist.
             history = _checkpoint_replay_history(resumed_checkpoint)
         proof_state_refresh_started = time.monotonic()
         proof_state_refresh_phases: dict[str, float] = {}

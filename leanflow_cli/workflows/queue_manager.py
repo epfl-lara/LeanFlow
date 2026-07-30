@@ -932,7 +932,7 @@ class TheoremQueueManager:
     def outcomes(self) -> Mapping[TheoremKey, TheoremOutcome]:
         return dict(self._outcomes)
 
-    # ----- disabled-tool tracking (P0.4 in the plan) -------------------
+    # ----- disabled-tool tracking --------------------------------------
 
     def disable_tool(self, name: str, reason: str = "") -> None:
         """Record that a tool was disabled for the rest of the run.

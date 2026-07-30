@@ -1,16 +1,9 @@
-"""Shadow-compare harness for the unified queue verdict policy (Phase 0, P0.4).
+"""Compare queue-verdict paths without mutating production state.
 
-While the legacy open-coded verdict branches remain authoritative, each of the
-four production gates can — under ``LEANFLOW_QUEUE_DECIDE_SHADOW=1`` — also
-evaluate the pure ``TheoremQueueManager.decide()`` on a fresh hydration of the
-same state and compare the outcomes. A divergence produces a mismatch payload
-the runner logs as a ``queue-decide-shadow-mismatch`` activity event
-(greppable post-hoc in ``activity/agents/*.jsonl``). Zero mismatches over the
-demo-project corpus and a real multi-theorem run is the promotion criterion
-for flipping decide() authoritative.
-
-decide() is pure and the shadow hydrates its own manager instance, so shadow
-evaluation can never mutate production retry counters.
+The optional shadow path evaluates ``TheoremQueueManager.decide()`` on a fresh
+hydration and emits a structured mismatch when verdicts diverge. The authority
+switch selects the unified verdict policy while runner-owned retry side effects
+remain unchanged.
 """
 
 from __future__ import annotations
@@ -26,7 +19,7 @@ from leanflow_cli.workflows.queue_manager import (
     TheoremQueueManager,
 )
 
-#: The comparison surface (spec P0.4): every field the legacy branches encode.
+#: Every verdict field represented by the compatibility branches.
 COMPARED_FIELDS = (
     "action",
     "feedback_kind",
@@ -42,19 +35,10 @@ def shadow_enabled() -> bool:
 
 
 def authority_enabled() -> bool:
-    """The promotion companion to shadow: make ``decide()`` authoritative.
+    """Return whether production gates use ``decide()`` as verdict authority.
 
-    When set, the four production gates take their VERDICT from ``decide()``
-    instead of the legacy open-coded classification (which stays in place as
-    the flag-off path — flag-off is byte-identical to today). ``decide()`` is
-    the verdict oracle only: the retry side effects still run through the
-    proven legacy helpers (``_increment``/``_clear``, keyed by explicit
-    target/file), never ``apply_decision``. The promotion criterion is zero
-    ``queue-decide-shadow-mismatch`` events over the demo corpus and a real
-    multi-theorem run; on the exercised (source × classification) cells the
-    two are equal, so the flip preserves behavior there. A few cells the
-    shadow never exercised (e.g. FINAL_REPORT + FUTURE_ONLY) adopt decide()'s
-    canonical golden-grid verdict, which is the intended policy.
+    Retry side effects remain in the runner and are keyed by the explicit
+    target and file; this switch changes verdict selection only.
     """
     raw = str(os.getenv("LEANFLOW_QUEUE_DECIDE_AUTHORITY", "") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}

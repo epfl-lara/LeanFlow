@@ -781,7 +781,7 @@ def set_node_status(
 
     ``proved`` requires ``via_gate=True`` (the deterministic gate-accept sync
     is the only prover of proved-ness); a ``proved`` node is immutable to
-    ordinary actors; ``false`` is reserved for negation promotion (Phase 3).
+    ordinary actors; ``false`` is reserved for verified negation promotion.
     ``journal=False`` defers the notebook write to the caller (the
     conflicted-save-then-retry discipline: journal only what was persisted,
     via :func:`journal_node_status`).
@@ -1335,7 +1335,7 @@ def merge_planner_findings(
 
 
 # ---------------------------------------------------------------------------
-# Reconciliation (P1.2, pure part)
+# Declaration-truth reconciliation.
 # ---------------------------------------------------------------------------
 
 
@@ -1880,7 +1880,7 @@ def write_final_report(status: str, *, detail: Mapping[str, Any] | None = None) 
 
 
 # ---------------------------------------------------------------------------
-# Prompt-surface blocks (P1.3)
+# Prompt-surface blocks.
 # ---------------------------------------------------------------------------
 
 
@@ -1942,8 +1942,8 @@ def frontier_digest_block() -> str:
 def resume_context_block(*, current_queue_assignment: Mapping[str, Any] | None = None) -> str:
     """Return the '[LEANFLOW PLAN-STATE RESUME]' startup handoff block.
 
-    Documentation-driven resume (P1.5): the persisted artifacts — not
-    checkpoint prose — are the resume authority. Renders goal, counters,
+    Persisted artifacts, not checkpoint prose, are the resume authority.
+    Renders goal, counters,
     frontier, open decision packets, and dead ends; '' when plan-state is
     off or no graph exists yet (caller falls back to checkpoint replay).
     ``current_queue_assignment`` lets the runner override the durable identity

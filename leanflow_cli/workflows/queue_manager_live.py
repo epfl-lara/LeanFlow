@@ -1,19 +1,15 @@
-"""Single live ``TheoremQueueManager`` per autonomy_state dict (Phase 0, P0.3).
+"""Cache one live ``TheoremQueueManager`` per autonomy-state mapping.
 
-The legacy bridge reconstructed a fresh manager from the untyped
-``autonomy_state`` dict at every helper call (19 call sites in
-``native_runner``). This sidecar keeps ONE live instance per dict — keyed by
+The sidecar keeps one live instance per mapping, keyed by
 ``id(autonomy_state)`` and guarded by a fingerprint over the manager-owned
-keys — so steady-state hydrations drop to the initial one plus fingerprint
-rebuilds. Direct external mutation of the legacy keys (e.g.
-``autonomy_state.pop("current_queue_assignment")``) changes the fingerprint
-and triggers a rebuild instead of a correctness cliff.
+keys. Direct external mutation of compatibility keys such as
+``autonomy_state.pop("current_queue_assignment")`` changes the fingerprint
+and triggers a safe rebuild.
 
 The dict remains the compatibility serialization: every flush rewrites the
 exact legacy ``OWNED_AUTONOMY_KEYS`` shape, so every reader of
 ``autonomy_state["current_queue_assignment"]`` etc. is unaffected by the
-migration. Deleting the flush is out of scope until shadow-compare (P0.4)
-has been green in production.
+cache.
 """
 
 from __future__ import annotations
@@ -33,7 +29,7 @@ from leanflow_cli.workflows.queue_manager import TheoremQueueManager
 _REGISTRY: dict[int, tuple[Mapping[str, Any], TheoremQueueManager, str]] = {}
 _MAX_REGISTRY_ENTRIES = 8
 
-# Observability for the P0.6 acceptance criterion (19 -> <=2 hydrations/run).
+# Hydration count for runtime observability and tests.
 _HYDRATION_COUNT = 0
 
 

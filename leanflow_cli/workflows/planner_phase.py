@@ -822,8 +822,8 @@ def run_planner_phase(
 ) -> PlannerOutcome:
     """One full planner phase; never raises.
 
-    ``lane_keys`` narrows the research lanes (the orchestrator LLM's probes
-    list selects them in Phase 6); default = every lane up to the
+    ``lane_keys`` narrows the research lanes selected by the orchestrator;
+    the default uses every lane up to the
     ``LEANFLOW_PLANNER_MAX_SUBAGENTS`` cap.
     """
     lane_records: list[dict[str, Any]] = []

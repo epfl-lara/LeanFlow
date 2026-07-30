@@ -36,8 +36,8 @@ def _worker_prompt(worker: str, request: LeanWorkerRequest) -> str:
                 f"- tools: {', '.join(record.tools) or '[none]'}",
             ]
         )
-    # P1.3: the worker prompt is also the delegate context, so this one block
-    # covers both dispatched workers and delegate_task children.
+    # The worker prompt is also the delegate context, so this block covers
+    # dispatched workers and delegate_task children.
     plan_context = artifact_context_block()
     if plan_context:
         parts.extend(["", "Plan artifacts:", plan_context])

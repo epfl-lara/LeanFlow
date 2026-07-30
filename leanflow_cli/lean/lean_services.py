@@ -64,7 +64,7 @@ from leanflow_cli.lean.lean_automation import (  # noqa: E402
     _proof_auto_unsupported_option_reason,
 )
 
-# Phase 5 (#4 lean backend): a thin LeanBackend façade over the two backend primitives below
+# LeanBackend is a thin façade over the two backend primitives below
 # (_invoke_json_tool / _run_command) plus a capability-availability reader. lean_backend owns NO
 # backend state and forwards verbatim, resolving _invoke_json_tool / _run_command lazily off this
 # module at call time so test monkeypatches on those names still apply. It imports only stdlib at
@@ -214,7 +214,7 @@ _DISABLED_MCP_TOOLS_BY_RUN: dict[str, set[str]] = {}
 LOCAL_INCREMENTAL_AUTO_PROBE_MIN_TIMEOUT_S = 60
 _OUTCOME_SCAN_MAX_RECORD_BYTES = 512 * 1024
 
-# Phase 5 (#4 lean backend): shared stateless façade over the backend primitives. The wrapper
+# Shared stateless façade over the backend primitives. The wrapper
 # forwards verbatim and resolves _invoke_json_tool / _run_command lazily off this module, so this
 # stays behaviour-identical even when tests monkeypatch those names on lean_services.
 _BACKEND = LeanBackend()
