@@ -160,6 +160,7 @@ from leanflow_cli.workflows import (
     source_negation_candidates,
     struggle_signals,
     target_handoff,
+    tool_result_loop_guard,
     verification_candidate_replay,
     verification_transaction,
     verified_transition_reconciliation,
@@ -11413,6 +11414,82 @@ def _handle_managed_tool_result(
             # It is known queue state, not a rejected candidate: do not enter
             # the target gate, failed-attempt ledger, or persistence coach.
             return
+    assignment = (
+        dict(autonomy_state.get("current_queue_assignment") or {})
+        if isinstance(autonomy_state, dict)
+        else {}
+    )
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    loop_decision = (
+        tool_result_loop_guard.observe(
+            autonomy_state,
+            function_name=function_name,
+            args=args,
+            result_text=_result,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            source_revision_sha256=(_source_revision_sha256(active_file) if active_file else ""),
+        )
+        if isinstance(autonomy_state, dict)
+        else tool_result_loop_guard.LoopDecision()
+    )
+    if loop_decision.nudge:
+        _append_post_tool_result_message(
+            agent,
+            "\n".join(
+                [
+                    "[LEANFLOW-NATIVE REPEATED TOOL RESULT]",
+                    f"- declaration: {target_symbol}",
+                    f"- tool: {loop_decision.tool_key}",
+                    (
+                        f"- the same exact blocker returned {loop_decision.streak} times "
+                        "at the unchanged source revision"
+                    ),
+                    "- stop varying unrelated trailing tactics or repeating the same inspection",
+                    "- read the diagnostic line and column literally, then make one distinct local edit,",
+                    "  screen only short tactics at that exact position, or request a different route",
+                ]
+            ),
+        )
+        _record_agent_activity(
+            agent,
+            "tool-result-loop-nudge",
+            f"Repeated non-progress result from {loop_decision.tool_key}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            tool_key=loop_decision.tool_key,
+            signature=loop_decision.signature,
+            streak=loop_decision.streak,
+            campaign_progress=False,
+        )
+    if loop_decision.close_turn:
+        _set_prover_requested_route(
+            autonomy_state,
+            route="plan",
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        _record_agent_activity(
+            agent,
+            "tool-result-loop-route-change",
+            (
+                f"Repeated {loop_decision.tool_key} blocker reached "
+                f"{loop_decision.streak} calls; requested plan"
+            ),
+            target_symbol=target_symbol,
+            active_file=active_file,
+            route="plan",
+            tool_key=loop_decision.tool_key,
+            signature=loop_decision.signature,
+            streak=loop_decision.streak,
+            campaign_progress=False,
+        )
+        with contextlib.suppress(Exception):
+            agent._managed_pending_theorem_feedback = None
+            agent._managed_step_boundary_closed = True
+        _request_step_boundary_interrupt(agent)
+        return
     if function_name in SEARCH_PROGRESS_TOOL_NAMES:
         if _track_search_progress(agent, function_name, args, _result):
             return

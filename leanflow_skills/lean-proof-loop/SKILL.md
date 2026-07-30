@@ -18,7 +18,7 @@ Treat the native workflow specs as the contract. This skill is the routing layer
 1. `lean_capabilities`
 2. `lean_inspect`
 3. `lean_search` with the smallest relevant search mode. It may use local project search, local/public Loogle, LeanExplore, semantic providers, and Mathlib fallbacks behind one wrapper.
-4. `lean_multi_attempt` when you have 2-6 short tactic candidates and want to screen them before editing; REPL power mode can make this much cheaper than patch/verify loops. Treat only `verified_attempts`/`target_verified=true` as proof-closing evidence; raw empty-goal probe output is provisional.
+4. `lean_multi_attempt` when you have 2-6 short tactic candidates and want to screen them before editing; do not send declaration-sized or multi-line `have ... := by` proof blocks. REPL power mode can make this much cheaper than patch/verify loops. Treat only `verified_attempts`/`target_verified=true` as proof-closing evidence; raw empty-goal probe output is provisional.
 5. `lean_proof_context` or `lean_auto_search` when theorem-local context or automation search would reduce guessing. Use them opportunistically for automation-shaped goals or repeated blockers; do not force them when a direct edit is clearer.
 6. `lean_decompose_helpers` when a hard theorem needs helper lemmas, intermediate invariants, or a proof split before a useful edit is clear. Prefer this over broad advice when the next step should be a checked sublemma plan.
 7. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the required gate

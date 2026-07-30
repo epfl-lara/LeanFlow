@@ -7516,6 +7516,77 @@ def test_search_progress_nudge_is_honest_about_degraded_providers(monkeypatch, t
     assert "malformed" in appendix
 
 
+def test_repeated_multi_attempt_result_requests_plan_and_closes_turn(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self.session_id = "tool-loop-agent"
+            self._session_messages = []
+            self._managed_step_boundary_closed = False
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    result = json.dumps(
+        {
+            "success": False,
+            "status": "screened_no_verified_candidate",
+            "backend_tool": "mcp_lean_lsp_lean_multi_attempt",
+            "items": [
+                {
+                    "snippet": "candidate",
+                    "diagnostics": [
+                        {
+                            "severity": "error",
+                            "message": "No goals to be solved",
+                            "line": 102,
+                            "column": 85,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    for index in range(runner.tool_result_loop_guard.HARD_LIMIT):
+        runner._handle_managed_tool_result(
+            agent,
+            "lean_multi_attempt",
+            {"attempts": [f"candidate {index}", "other"]},
+            result,
+        )
+
+    assert "REPEATED TOOL RESULT" in agent._post_tool_result_appendix
+    assert agent._managed_autonomy_state["prover_requested_route"] == {
+        "route": "plan",
+        "target_symbol": "demo",
+        "active_file": str(active),
+    }
+    assert agent._managed_step_boundary_closed is True
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert len([event for event in events if event[0][0] == "tool-result-loop-nudge"]) == 1
+    assert len([event for event in events if event[0][0] == "tool-result-loop-route-change"]) == 1
+
+
 def test_record_turn_prompt_fingerprint_tracks_change_and_size(monkeypatch):
     events = []
     monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: events.append((a, k)))

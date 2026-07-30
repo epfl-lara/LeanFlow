@@ -65,7 +65,7 @@ Primary specs:
 3. Use `lean_multi_attempt` when you have 2-6 specific short local tactic candidates at one proof location. This is especially useful before patching small tactic ideas because REPL power mode may screen them quickly. Treat only `verified_attempts`/`target_verified=true` as a closing result; an empty-goal backend probe is provisional until LeanFlow reconstructs and exact-checks the complete assigned declaration.
 4. If search is exhausted or the blocker still looks automation-suited, call `lean_proof_context` before deeper automation search.
 5. Use `lean_auto_search` when theorem-local automation search is justified. This wrapper is an optional accelerator, not a mandatory step.
-6. Do not send theorem-sized proof blocks, declaration headers, or candidates containing `sorry` to `lean_multi_attempt`.
+6. Do not send theorem-sized proof blocks, declaration headers, multi-line `have ... := by` proof blocks, or candidates containing `sorry` to `lean_multi_attempt`.
 7. If you have one full candidate proof, use the managed edit path unless the atomic `apply_verified_patch` payload is specifically useful.
 8. Invent helper lemmas or sublemmas when the direct proof is too large or repeated direct attempts fail. Prefer small statements that are easy to verify and directly feed the assigned declaration.
 9. If the theorem is hard because the next useful edit is a sublemma/invariant split, call `lean_decompose_helpers` with the exact statement, current diagnostics/goals, current attempt, and failed-attempt summary. Use it before inserting placeholder comments, unchecked theorem-sized helper guesses, or broad speculative patches.

@@ -278,6 +278,7 @@ files = [
   "leanflow_cli/workflows/golf_mode.py",
   "leanflow_cli/workflows/struggle_signals.py",
   "leanflow_cli/workflows/manager_nudge.py",
+  "leanflow_cli/workflows/tool_result_loop_guard.py",
   "leanflow_cli/workflows/dispatch_models.py",
   "leanflow_cli/workflows/dispatch_incremental_evidence.py",
   "leanflow_cli/workflows/dispatch_ledger_compaction.py",

@@ -145,7 +145,8 @@ tool is reachable through the public registry.
   Lean shaping, and the statement-review handoff.
 - `workflows/` owns proof queues, verification transactions, persistent
   plan/graph state, orchestration, research portfolios, decomposition,
-  negation, project proving, campaign epochs, and activity retention.
+  negation, project proving, campaign epochs, repeated-tool loop boundaries,
+  and activity retention.
 - `native/` owns the managed workflow process, startup/resume reconciliation,
   assignment transitions, completion policy, checkpoints, and shutdown.
 

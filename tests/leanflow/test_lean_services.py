@@ -3089,6 +3089,63 @@ def test_lean_multi_attempt_rejects_full_proof_blocks_and_sorry(monkeypatch, tmp
     )
 
 
+def test_lean_multi_attempt_rejects_multiline_local_have_proof(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={
+            "diagnostics": "",
+            "goals": "",
+            "code_actions": "",
+            "multi_attempt": "mcp_lean_lsp_lean_multi_attempt",
+            "run_code": "",
+            "local_search": "",
+            "leanfinder": "",
+            "leansearch": "",
+            "loogle": "",
+            "proof_context": "",
+            "auto_probe": "",
+            "auto_search": "",
+            "auto_try": "",
+        },
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("backend should not be called")
+        ),
+    )
+
+    payload = lean_services.lean_multi_attempt(
+        "Demo/Main.lean",
+        12,
+        [
+            "have h : True := by\n  trivial\nexact h",
+            "have h : True := by\n  simp\nexact h",
+        ],
+        cwd=project,
+    )
+
+    assert payload["success"] is False
+    assert any(
+        "expects short local tactic candidates" in reason for reason in payload["degraded_reasons"]
+    )
+
+
 def test_canonical_tool_file_path_prefers_active_file_for_basename_matches(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     target = project / "Demo" / "Main.lean"

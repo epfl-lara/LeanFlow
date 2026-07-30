@@ -60,6 +60,7 @@ def _multi_attempt_validation_reasons(attempts: list[str]) -> list[str]:
             f"lean_multi_attempt expects {MULTI_ATTEMPT_MIN_CANDIDATES}-{MULTI_ATTEMPT_MAX_CANDIDATES} concrete tactic candidates at one proof location"
         )
     declaration_pattern = re.compile(r"^\s*(theorem|lemma|example|def|instance|class|structure)\b")
+    local_proof_block_pattern = re.compile(r"^\s*(?:have|suffices)\b[^\n]*?(?::=|:)\s*by\s*$")
     for snippet in attempts:
         sanitized = _strip_comments_and_strings(snippet)
         if re.search(r"\bsorry\b", sanitized):
@@ -71,6 +72,7 @@ def _multi_attempt_validation_reasons(attempts: list[str]) -> list[str]:
             len(str(snippet)) > MULTI_ATTEMPT_MAX_CHARS
             or len(lines) > MULTI_ATTEMPT_MAX_LINES
             or declaration_pattern.match(str(snippet))
+            or (len(lines) >= 3 and bool(lines) and local_proof_block_pattern.match(lines[0]))
         ):
             reasons.append(
                 "lean_multi_attempt expects short local tactic candidates, not full proof blocks"
