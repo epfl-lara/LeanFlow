@@ -349,3 +349,22 @@ def test_rcp_source_reports_the_credential_that_was_actually_selected(monkeypatc
 
     assert resolved["api_key"] == "fallback-rcp-key"
     assert resolved["source"] == "RCP_OPENAI_API_KEY"
+
+
+def test_rcp_glm_fallback_prefers_endpoint_key_before_general_pool_key(monkeypatch, tmp_path):
+    """A general RCP pool key may expose fewer models than the endpoint key."""
+    cfg_path = tmp_path / "home" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(
+        yaml.safe_dump({"model": {"default": "zai-org/GLM-5.2"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    monkeypatch.setenv("LEANFLOW_OPENAI_API_KEY", "glm-capable-endpoint-key")
+    monkeypatch.setenv("RCP_OPENAI_API_KEY", "restricted-general-pool-key")
+    monkeypatch.setenv("GLM_BASE_URL", "https://glm-rcp.example/v1")
+
+    resolved = resolve_runtime_provider(requested="rcp")
+
+    assert resolved["api_key"] == "glm-capable-endpoint-key"
+    assert resolved["source"] == "LEANFLOW_OPENAI_API_KEY"

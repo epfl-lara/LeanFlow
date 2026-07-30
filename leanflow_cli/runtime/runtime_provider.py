@@ -296,9 +296,9 @@ def _resolve_rcp_runtime(model: str) -> dict[str, Any]:
     if glm_model:
         api_key, source = _read_provider_env_with_source(
             "GLM_API_KEY",
-            "RCP_OPENAI_API_KEY",
             "LEANFLOW_OPENAI_API_KEY",
             "OPENAI_API_KEY",
+            "RCP_OPENAI_API_KEY",
         )
         base_url = _read_provider_env(
             "GLM_BASE_URL",
