@@ -21000,6 +21000,105 @@ def test_queue_statement_guard_allows_model_created_helper_statement_change(monk
     assert "And True True" in active.read_text(encoding="utf-8")
 
 
+def test_queue_statement_guard_allows_resumed_generated_helper_statement_change(
+    monkeypatch, tmp_path
+):
+    """Durable graph provenance must keep generated helpers editable after restart."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "private lemma generated_helper : True := by\n"
+        "  sorry\n"
+        "\n"
+        "theorem source_goal : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "generated_helper",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    blueprint = runner.plan_state.Blueprint(
+        nodes=(
+            runner.plan_state.GraphNode(
+                id=runner.plan_state.node_id_for("generated_helper", str(active)),
+                name="generated_helper",
+                file=str(active),
+                statement="private lemma generated_helper : True := by\n  sorry",
+                status="proving",
+                generated_by="decomposer",
+            ),
+        )
+    )
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: True)
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: blueprint)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "private lemma generated_helper (h : True) : True := by\n"
+        "  exact h\n"
+        "\n"
+        "theorem source_goal : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    assert runner._restore_out_of_scope_queue_edit(agent, "patch") == ""
+    assert "(h : True)" in active.read_text(encoding="utf-8")
+
+
+def test_queue_statement_guard_keeps_resumed_source_node_immutable(monkeypatch, tmp_path):
+    """Queue-synced source statements remain protected when graph state is present."""
+    active = tmp_path / "Main.lean"
+    original = "theorem source_goal : True := by\n  sorry\n"
+    active.write_text(original, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "source_goal",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    blueprint = runner.plan_state.Blueprint(
+        nodes=(
+            runner.plan_state.GraphNode(
+                id=runner.plan_state.node_id_for("source_goal", str(active)),
+                name="source_goal",
+                file=str(active),
+                statement="theorem source_goal : True := by\n  sorry",
+                status="proving",
+                generated_by="queue-sync",
+            ),
+        )
+    )
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: True)
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: blueprint)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text("theorem source_goal : False := by\n  trivial\n", encoding="utf-8")
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    assert "QUEUE STATEMENT GUARD" in feedback
+    assert active.read_text(encoding="utf-8") == original
+
+
 def test_formalization_queue_statement_guard_protects_source_declaration(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     active = project / "Demo" / "Paper" / "Main.lean"

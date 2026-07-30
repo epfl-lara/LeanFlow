@@ -8618,6 +8618,13 @@ def _queue_edit_protect_assigned_statement(
     target_symbol: str,
     active_file: str,
 ) -> bool:
+    """Return whether the assigned declaration head is immutable source.
+
+    The per-process declaration inventory cannot distinguish source from a
+    helper that an earlier process inserted. Exact graph provenance remains
+    durable across resume, so unresolved model-generated nodes stay editable
+    while source/human declarations continue to fail closed.
+    """
     target = str(target_symbol or "").strip()
     short_target = target.split(".")[-1]
     if not target:
@@ -8625,6 +8632,26 @@ def _queue_edit_protect_assigned_statement(
     if _document_formalization_requested():
         source_names = _document_formalization_source_declaration_names()
         return bool(source_names) and (target in source_names or short_target in source_names)
+    if plan_state_enabled():
+        try:
+            node = plan_state.load_blueprint().node_by_id(
+                plan_state.node_id_for(target, active_file)
+            )
+        except Exception:
+            node = None
+        if (
+            node is not None
+            and node.status not in {"proved", "false"}
+            and node.generated_by
+            in {
+                "decomposer",
+                "planner",
+                "orchestrator",
+                "prover-edit",
+                "prover-edit-backfill",
+            }
+        ):
+            return False
     for entry in _declaration_line_index_from_text(before_text):
         if not _declaration_matches_target(entry, target):
             continue
