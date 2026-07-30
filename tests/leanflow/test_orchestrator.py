@@ -867,6 +867,25 @@ def test_generated_helper_gets_one_research_negation_preflight():
     assert after_probe.route == "direct-prove"
 
 
+def test_generated_helper_preflight_outranks_stale_plan_and_epoch_routes():
+    route = orchestrator_route(
+        _ctx(
+            research_mode=True,
+            target_generated_by="planner",
+            negation_status="not-attempted",
+            negation_probe_budget_remaining=1,
+            requested_route="plan",
+            requested_route_reason="old interrupted worker request",
+            epoch_refresh_required=True,
+            previous_epoch_routes=("decompose", "plan"),
+            routes_used_this_scope=99,
+        )
+    )
+
+    assert route.route == "negate"
+    assert route.target["generated_by"] == "planner"
+
+
 @pytest.mark.parametrize(
     ("research_mode", "generated_by"),
     [(False, "decomposer"), (True, ""), (True, "queue-sync")],

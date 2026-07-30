@@ -1078,6 +1078,34 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
             target={"target_symbol": ctx.target_symbol, "active_file": ctx.active_file},
         )
 
+    # Generated helper statements are model-authored conjectures, not source
+    # obligations. In research mode, give each one a single bounded
+    # feasibility preflight before any ordinary persistence route. This must
+    # outrank stale prover requests and campaign rollovers: either can survive
+    # an interrupted weaker-model turn and otherwise postpone falsity checking
+    # indefinitely. A conclusive counterexample activates the existing
+    # false-subtree cleanup; an inconclusive result is persisted and the next
+    # scope entry falls through without repeating the probe.
+    if (
+        ctx.research_mode
+        and ctx.trigger == "scope-entry"
+        and ctx.target_generated_by in {"decomposer", "planner"}
+        and ctx.negation_status in NEGATION_UNATTEMPTED
+        and _negation_probe_has_budget(ctx)
+        and ctx.has_queue_item()
+    ):
+        return OrchestratorRoute(
+            route="negate",
+            reason=(
+                "new generated helper requires one feasibility preflight before direct proving"
+            ),
+            target={
+                "target_symbol": ctx.target_symbol,
+                "active_file": ctx.active_file,
+                "generated_by": ctx.target_generated_by,
+            },
+        )
+
     # Row 8 — the campaign's no-progress route streak is spent. This guard
     # intentionally precedes both explicit prover requests and the happy-path
     # passthrough: neither branch may evade a due fresh-context epoch. Kernel
@@ -1194,32 +1222,6 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
                 )
             ),
             target=_verified_counterexample_route_target(ctx),
-        )
-
-    # Generated helper statements are model-authored conjectures, not source
-    # obligations. In research mode, give each one a single bounded
-    # feasibility preflight before asking the prover to invest in its proof.
-    # A conclusive counterexample activates the existing false-subtree cleanup;
-    # an inconclusive result is persisted and the next scope entry falls
-    # through to ordinary proving without repeating the probe.
-    if (
-        ctx.research_mode
-        and ctx.trigger == "scope-entry"
-        and ctx.target_generated_by in {"decomposer", "planner"}
-        and ctx.negation_status in NEGATION_UNATTEMPTED
-        and _negation_probe_has_budget(ctx)
-        and ctx.has_queue_item()
-    ):
-        return OrchestratorRoute(
-            route="negate",
-            reason=(
-                "new generated helper requires one feasibility preflight before direct proving"
-            ),
-            target={
-                "target_symbol": ctx.target_symbol,
-                "active_file": ctx.active_file,
-                "generated_by": ctx.target_generated_by,
-            },
         )
 
     # Repeated kernel-rejected attempts are themselves a scope-entry/event
