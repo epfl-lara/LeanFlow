@@ -28055,6 +28055,9 @@ def test_final_file_sweep_block_renders_warning_cleanup_wording(tmp_path):
     assert "bail clause" in block.lower()
     assert "actually inspected the file first" in block.lower()
     assert "do not touch theorem statements" in block.lower()
+    assert "unused local binder introduced inside the proof" in block.lower()
+    assert "parameter in a source theorem/lemma declaration is not safely editable" in block.lower()
+    assert "renaming an unused parameter" not in block.lower()
     assert "warnings will be accepted as-is" in block.lower()
     # Detected-warning summary must surface so the model has concrete targets.
     assert "all_goals omega" in block

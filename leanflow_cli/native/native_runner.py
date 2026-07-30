@@ -15590,12 +15590,16 @@ def _final_file_sweep_block(live_state: Mapping[str, Any]) -> str:
                     "through `apply_verified_patch` before bailing. Low-risk fixes include: replacing "
                     "deprecated `push_neg` with `push Not`; removing a `try { ... }` or `<;> try { ... }` "
                     "whose tactic is reported as never executed; deleting an `all_goals X`/`<;> X` reported "
-                    "as doing nothing; renaming an unused parameter to `_` (or dropping it from the proof "
-                    "body if it's a `have`); removing a `simp`/`linarith`/`omega` reported as unused."
+                    "as doing nothing; renaming an unused local binder introduced inside the proof to `_` "
+                    "(or dropping an unused local `have`); removing a `simp`/`linarith`/`omega` reported "
+                    "as unused."
                 ),
                 "- safety: edit only lines flagged by the linter. Do NOT touch theorem statements, proof "
                 "structure, or any unflagged tactic. The runner will restore the file to its pre-cleanup "
                 "content if your edit causes a hard verification failure.",
+                "- immutable warning rule: a warning on a parameter in a source theorem/lemma declaration "
+                "is not safely editable because renaming or removing that binder changes the protected "
+                "statement. Leave it unchanged and use the bail clause once no body-local cleanup remains.",
                 "- after one focused edit, stop and let the manager re-verify; the manager runs `lean_verify` "
                 "automatically.",
                 (
