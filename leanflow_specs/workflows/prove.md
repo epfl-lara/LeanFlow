@@ -163,6 +163,13 @@ Use the blocker kind from `lean_inspect` and the route decision from the runner 
   - the proof is mathematically plausible but too large to attack directly, repeated searches are broad, or the next productive edit is a helper lemma/invariant split
   - default route: call `lean_decompose_helpers` for ordered helper skeletons and proof hints, then patch and verify those helpers one at a time
   - do not replace this with comments plus `sorry`; if the helper skeleton is not ready to insert, report the failed skeleton diagnostics as blocker context
+- false generated-helper blocker
+  - a decomposer- or planner-owned helper has a concrete boundary counterexample, or its proof needs an
+    indispensable parent hypothesis omitted from its statement
+  - default route: request `negate` with the exact counterexample or missing-hypothesis evidence; do not
+    fabricate the premise or keep expanding an impossible proof
+  - the kernel-backed false-decomposition cleanup retires the invalid subtree and restores the parent for a
+    sound split
 - axiom-risk blocker
   - proof compiles but the axiom profile is unacceptable or unknown
   - default route: `lean_axioms`, then direct proof cleanup if needed

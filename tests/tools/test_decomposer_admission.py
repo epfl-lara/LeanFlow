@@ -382,6 +382,10 @@ def test_decomposer_prompt_forbids_singleton_instantiation(monkeypatch, tmp_path
     )
     assert "same-premise existential certificate" in system_prompt
     assert "isolate the missing divisor, witness, or coverage fact" in system_prompt
+    assert "audit every parent hypothesis that the helper omits" in system_prompt
+    assert "try the smallest boundary counterexample" in system_prompt
+    assert "Reachability, positivity, nonemptiness, and invariant helpers" in system_prompt
+    assert "initial-condition hypotheses" in system_prompt
     assert payload["success"] is True
     assert payload["helpers"][0]["check_status"] == "rejected_instantiated_parent"
     assert payload["helpers"][0]["lean_skeleton"] == ""

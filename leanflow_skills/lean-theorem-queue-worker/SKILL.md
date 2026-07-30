@@ -41,6 +41,12 @@ Primary specs:
 13. Treat runtime step-budget warnings as real control signals. With only a few API steps left, prefer one concrete verification-backed edit or a concise blocker report over starting a broad new strategy. A decompose-and-insert helper batch counts as one meaningful edit, not several; switching strategy to decomposition is budgeted work, never budget waste.
 14. Do not confuse a knowledge prior with Lean evidence. “This seems too hard,” “I do not know the library lemma,” or an advisor/model's initial doubt is a reason to inspect, search, derive, decompose, and test—not to surrender or request another plan. Keep climbing the persistence ladder until a concrete kernel diagnostic, statement mismatch, resource failure, or genuinely exhausted set of materially distinct routes supplies evidence.
 15. When a handoff contains a concrete next edit, construction, invariant, or verified route, attempt that exact step before requesting another route. You may abandon it only after recording the precise Lean rejection or new mathematical evidence that makes it unsuitable. Preserve target-local checked facts and the strongest verified route across rewrites; do not delete them merely to return to a familiar proof shape.
+16. Treat a decomposer- or planner-generated helper differently from an established source theorem when
+    concrete evidence shows its statement is false. If a boundary counterexample works, or the proof
+    requires an indispensable parent hypothesis that the generated helper omitted, stop trying to invent
+    that premise. Preserve the counterexample or missing-hypothesis evidence and request the `negate` route
+    immediately. The manager's kernel-backed false-decomposition cleanup owns invalidating the helper,
+    restoring its parent, and replanning the affected subtree.
 
 ## Plan-State Freshness
 
@@ -92,6 +98,8 @@ Record failed-attempt evidence and request a distinct route when:
 
 - the same proof approach keeps failing for a known reason
 - the declaration appears to require a missing lemma or changed statement
+- a generated helper is false without a parent hypothesis it omitted; request `negate` with the smallest
+  concrete counterexample instead of fabricating the missing premise
 - the surrounding file state prevents isolated progress on the assigned declaration
 
 When a proof shape fails, summarize the blocker in terms the manager can store as failed-attempt evidence,
