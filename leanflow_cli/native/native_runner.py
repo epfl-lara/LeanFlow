@@ -6854,7 +6854,7 @@ def _reset_search_progress(agent: Any) -> None:
 def _search_synthesis_pre_tool_guard(
     agent: Any,
     function_name: str,
-    autonomy_state: Mapping[str, Any],
+    autonomy_state: dict[str, Any],
 ) -> str | None:
     """Reject broad search before execution once this assignment owes synthesis."""
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
@@ -6871,6 +6871,12 @@ def _search_synthesis_pre_tool_guard(
     )
     if payload is None:
         return None
+    # Older checkpoints may have spent the one-turn grace immediately before
+    # an interruption while retaining the authoritative hard-route marker.
+    # Normalize that shape so the deterministic blocked result follows the
+    # same durable-debt path below.
+    tracker["synthesis_grace_pending"] = True
+    autonomy_state["search_progress"] = tracker
     with contextlib.suppress(Exception):
         _record_agent_activity(
             agent,

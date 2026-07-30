@@ -25,7 +25,9 @@ def blocked_search_result(
     """
     if function_name not in BROAD_SEARCH_TOOL_NAMES:
         return None
-    if not bool(tracker.get("synthesis_grace_pending")):
+    if not (
+        bool(tracker.get("synthesis_grace_pending")) or bool(tracker.get("hard_route_requested"))
+    ):
         return None
     if (
         str(tracker.get("target_symbol", "") or "") != target_symbol

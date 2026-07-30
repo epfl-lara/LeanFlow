@@ -7786,7 +7786,8 @@ def test_search_synthesis_reservation_blocks_broad_search_before_execution(monke
                     "target_symbol": "demo",
                     "active_file": str(active),
                     "search_count": 12,
-                    "synthesis_grace_pending": True,
+                    "hard_route_requested": True,
+                    "synthesis_grace_pending": False,
                 },
             }
             self.interrupt_messages: list[str | None] = []
