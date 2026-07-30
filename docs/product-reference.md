@@ -1450,11 +1450,12 @@ leanflow workflow prove Main.lean \
   --provider rcp --model zai-org/GLM-5.2 --research
 ```
 
-For a custom/RCP launch, LeanFlow propagates the resolved provider, endpoint,
-credential, and model to isolated manager, planner, advisor, verifier, worker,
-and compression calls after dotenv reload. This prevents an auxiliary role
-from silently reverting to a globally configured model or an incompatible
-model-family key.
+For any explicit workflow provider, LeanFlow propagates the resolved provider,
+model, and reasoning effort to isolated manager, planner, advisor, verifier,
+worker, and compression calls after dotenv reload. Custom/RCP launches also
+propagate the coupled endpoint and credential. This prevents an auxiliary role
+from silently reverting to a globally configured model, reasoning policy, or
+incompatible model-family key.
 
 The `LEANFLOW_NATIVE_*` variables are internal workflow-launcher plumbing. The CLI sets those automatically when it starts `leanflow-native`; you should not need to export them manually.
 

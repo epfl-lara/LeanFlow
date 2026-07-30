@@ -9,6 +9,7 @@ from leanflow_cli.runtime.env_loader import (
     NATIVE_AUXILIARY_MODEL_ENV,
     NATIVE_AUXILIARY_PROVIDER_ENV,
     NATIVE_AUXILIARY_PROVIDER_TARGETS,
+    NATIVE_AUXILIARY_REASONING_EFFORT_ENV,
     _native_auxiliary_targets,
     load_leanflow_dotenv,
     reassert_native_auxiliary_provider,
@@ -121,7 +122,8 @@ def test_reassert_native_auxiliary_provider_wins_after_dotenv_reload(monkeypatch
     monkeypatch.setenv(NATIVE_AUXILIARY_BASE_URL_ENV, "https://rcp.example/v1")
     monkeypatch.setenv(NATIVE_AUXILIARY_API_KEY_ENV, "rcp-key")
     monkeypatch.setenv(NATIVE_AUXILIARY_MODEL_ENV, "zai-org/GLM-5.2")
-    for suffix in ("BASE_URL", "API_KEY", "MODEL"):
+    monkeypatch.setenv(NATIVE_AUXILIARY_REASONING_EFFORT_ENV, "xhigh")
+    for suffix in ("BASE_URL", "API_KEY", "MODEL", "REASONING_EFFORT"):
         for name in _native_auxiliary_targets(suffix):
             monkeypatch.setenv(name, "stale")
     for name in NATIVE_AUXILIARY_PROVIDER_TARGETS:
@@ -139,6 +141,8 @@ def test_reassert_native_auxiliary_provider_wins_after_dotenv_reload(monkeypatch
         assert os.environ[name] == "rcp-key"
     for name in _native_auxiliary_targets("MODEL"):
         assert os.environ[name] == "zai-org/GLM-5.2"
+    for name in _native_auxiliary_targets("REASONING_EFFORT"):
+        assert os.environ[name] == "xhigh"
     assert _resolve_task_provider_model("planner_synthesis") == (
         "custom",
         "zai-org/GLM-5.2",

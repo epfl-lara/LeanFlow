@@ -167,6 +167,9 @@ codex login
 leanflow config set model.provider codex
 ```
 
+An explicit workflow provider applies its resolved model and reasoning effort
+to the foreground prover and every model-backed auxiliary lane for that launch.
+
 To run a local model server (`vllm`, `ollama`, or `llama.cpp`):
 
 ```bash

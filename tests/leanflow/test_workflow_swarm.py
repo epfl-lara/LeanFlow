@@ -215,6 +215,8 @@ def test_resolve_workflow_request_uses_inline_provider_override(monkeypatch, tmp
     assert plan.runtime["provider"] == "openai-codex"
     assert plan.child_env["LEANFLOW_NATIVE_REASONING_EFFORT"] == "xhigh"
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_PROVIDER"] == "codex"
+    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_MODEL"] == "gpt-5.5"
+    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_REASONING_EFFORT"] == "xhigh"
 
 
 def test_resolve_clean_room_model_is_scoped_to_one_launch(monkeypatch, tmp_path):

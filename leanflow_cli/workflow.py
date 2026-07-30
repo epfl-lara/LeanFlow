@@ -28,6 +28,7 @@ from leanflow_cli.runtime.env_loader import (
     NATIVE_AUXILIARY_BASE_URL_ENV,
     NATIVE_AUXILIARY_MODEL_ENV,
     NATIVE_AUXILIARY_PROVIDER_ENV,
+    NATIVE_AUXILIARY_REASONING_EFFORT_ENV,
 )
 from leanflow_cli.runtime.runtime_provider import (
     apply_runtime_model_override,
@@ -639,10 +640,13 @@ def resolve_workflow_request(
         # it across dotenv reloads in foreground and dispatch-worker processes.
         auxiliary_provider = "custom" if str(runtime["provider"]) == "custom" else explicit_provider
         child_env[NATIVE_AUXILIARY_PROVIDER_ENV] = auxiliary_provider
+        child_env[NATIVE_AUXILIARY_MODEL_ENV] = str(runtime.get("model", ""))
+        child_env[NATIVE_AUXILIARY_REASONING_EFFORT_ENV] = str(
+            runtime.get("reasoning_effort", "") or ""
+        )
         if str(runtime["provider"]) == "custom":
             child_env[NATIVE_AUXILIARY_BASE_URL_ENV] = str(runtime["base_url"])
             child_env[NATIVE_AUXILIARY_API_KEY_ENV] = str(runtime.get("api_key", ""))
-            child_env[NATIVE_AUXILIARY_MODEL_ENV] = str(runtime.get("model", ""))
     if workflow.research_mode:
         child_env["LEANFLOW_RESEARCH_MODE"] = "1"
         apply_research_profile_env(

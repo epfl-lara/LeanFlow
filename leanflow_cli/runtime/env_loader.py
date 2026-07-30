@@ -13,6 +13,7 @@ NATIVE_AUXILIARY_PROVIDER_ENV = "LEANFLOW_NATIVE_AUXILIARY_PROVIDER"
 NATIVE_AUXILIARY_BASE_URL_ENV = "LEANFLOW_NATIVE_AUXILIARY_BASE_URL"
 NATIVE_AUXILIARY_API_KEY_ENV = "LEANFLOW_NATIVE_AUXILIARY_API_KEY"
 NATIVE_AUXILIARY_MODEL_ENV = "LEANFLOW_NATIVE_AUXILIARY_MODEL"
+NATIVE_AUXILIARY_REASONING_EFFORT_ENV = "LEANFLOW_NATIVE_AUXILIARY_REASONING_EFFORT"
 NATIVE_AUXILIARY_PROVIDER_TARGETS = (
     "AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER",
     "AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER",
@@ -71,8 +72,8 @@ def reassert_native_auxiliary_provider() -> str:
     Native foreground and dispatch-worker processes reload the user dotenv at
     import time. Reapply this explicit per-launch override afterwards so blank
     or independently configured ``AUXILIARY_*`` entries cannot silently route
-    a nested proving lane through another provider, endpoint, credential, or
-    model.
+    a nested proving lane through another provider, endpoint, credential,
+    model, or reasoning effort.
     """
     provider = str(os.getenv(NATIVE_AUXILIARY_PROVIDER_ENV, "") or "").strip()
     if not provider:
@@ -83,6 +84,7 @@ def reassert_native_auxiliary_provider() -> str:
         ("BASE_URL", NATIVE_AUXILIARY_BASE_URL_ENV),
         ("API_KEY", NATIVE_AUXILIARY_API_KEY_ENV),
         ("MODEL", NATIVE_AUXILIARY_MODEL_ENV),
+        ("REASONING_EFFORT", NATIVE_AUXILIARY_REASONING_EFFORT_ENV),
     ):
         value = str(os.getenv(source_name, "") or "").strip()
         if not value:
