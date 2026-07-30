@@ -7893,8 +7893,9 @@ def test_search_synthesis_reservation_blocks_broad_search_before_execution(monke
     assert agent._managed_autonomy_state["search_progress"]["synthesis_grace_pending"] is True
     assert any(event[0][0] == "search-synthesis-tool-blocked" for event in events)
 
-    # Keep the worker in the same turn after the deterministic rejection so it
-    # can react with construction instead of receiving a fresh search budget.
+    # Keep the worker in the same turn after the first deterministic rejection
+    # so it can react with construction instead of receiving a fresh search
+    # budget.
     runner._handle_managed_tool_result(
         agent,
         "lean_search",
@@ -7903,6 +7904,7 @@ def test_search_synthesis_reservation_blocks_broad_search_before_execution(monke
     )
     assert agent.interrupt_messages == []
     assert agent._managed_autonomy_state["search_progress"]["synthesis_grace_pending"] is True
+    assert agent._managed_autonomy_state["search_progress"]["synthesis_rejection_count"] == 1
     blocked_again = runner._managed_pre_tool_call(
         agent,
         "lean_search",
@@ -7915,8 +7917,11 @@ def test_search_synthesis_reservation_blocks_broad_search_before_execution(monke
         {"query": "Nat.factorization.support"},
         blocked_again,
     )
-    assert agent.interrupt_messages == []
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_step_boundary_closed is True
     assert agent._managed_autonomy_state["search_progress"]["search_count"] == 12
+    assert agent._managed_autonomy_state["search_progress"]["synthesis_rejection_count"] == 2
+    assert any(event[0][0] == "search-synthesis-rejection-boundary" for event in events)
 
 
 def test_search_synthesis_reservation_keeps_concrete_tools_available(monkeypatch, tmp_path):
@@ -8512,6 +8517,18 @@ def test_search_progress_hard_limit_is_configurable(monkeypatch):
     assert runner._search_progress_hard_limit() == 17
     monkeypatch.setenv("LEANFLOW_SEARCH_PROGRESS_HARD_LIMIT", "0")
     assert runner._search_progress_hard_limit() == 0
+
+
+def test_search_synthesis_rejection_limit_is_configurable(monkeypatch):
+    monkeypatch.delenv("LEANFLOW_SEARCH_SYNTHESIS_REJECTION_LIMIT", raising=False)
+    assert (
+        runner._search_synthesis_rejection_limit()
+        == runner.SEARCH_SYNTHESIS_REJECTION_LIMIT_DEFAULT
+    )
+    monkeypatch.setenv("LEANFLOW_SEARCH_SYNTHESIS_REJECTION_LIMIT", "4")
+    assert runner._search_synthesis_rejection_limit() == 4
+    monkeypatch.setenv("LEANFLOW_SEARCH_SYNTHESIS_REJECTION_LIMIT", "0")
+    assert runner._search_synthesis_rejection_limit() == 1
 
 
 def test_consumed_search_route_preserves_synthesis_debt(monkeypatch, tmp_path):

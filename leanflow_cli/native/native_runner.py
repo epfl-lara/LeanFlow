@@ -286,6 +286,11 @@ SEARCH_PROGRESS_TOTAL_NUDGE_LIMIT = 6
 # Keep the lower threshold advisory, then force a non-terminal route handoff at this
 # higher configurable threshold.
 SEARCH_PROGRESS_HARD_LIMIT_DEFAULT = 12
+# A weaker model may ignore the deterministic synthesis fence and repeatedly
+# request searches that are rejected before execution. Preserve one correction
+# opportunity, then close the inner turn before those no-provider calls consume
+# the remaining provider budget.
+SEARCH_SYNTHESIS_REJECTION_LIMIT_DEFAULT = 2
 SEARCH_PROGRESS_TOOL_NAMES = search_synthesis_admission.BROAD_SEARCH_TOOL_NAMES
 # The foreground conversation executes in a worker thread so the native
 # runner's main thread can keep owning process-level duties. Serialize
@@ -6939,7 +6944,17 @@ def _search_synthesis_pre_tool_guard(
     # Normalize that shape so the deterministic blocked result follows the
     # same durable-debt path below.
     tracker["synthesis_grace_pending"] = True
+    rejection_limit = _search_synthesis_rejection_limit()
+    rejection_count = int(tracker.get("synthesis_rejection_count", 0) or 0) + 1
+    tracker["synthesis_rejection_count"] = rejection_count
     autonomy_state["search_progress"] = tracker
+    payload["synthesis_rejection_count"] = rejection_count
+    payload["synthesis_rejection_limit"] = rejection_limit
+    if rejection_count >= rejection_limit:
+        payload["required_action"] = (
+            "The bounded correction window is exhausted. Preserve the search evidence and "
+            "yield now so the outer orchestrator can start the requested construction route."
+        )
     with contextlib.suppress(Exception):
         _record_agent_activity(
             agent,
@@ -6949,6 +6964,8 @@ def _search_synthesis_pre_tool_guard(
             active_file=active_file,
             blocked_tool=function_name,
             search_count=int(tracker.get("search_count", 0) or 0),
+            synthesis_rejection_count=rejection_count,
+            synthesis_rejection_limit=rejection_limit,
             provider_called=False,
             campaign_progress=False,
         )
@@ -6966,6 +6983,15 @@ def _search_progress_hard_limit() -> int:
         "LEANFLOW_SEARCH_PROGRESS_HARD_LIMIT",
         SEARCH_PROGRESS_HARD_LIMIT_DEFAULT,
         minimum=0,
+    )
+
+
+def _search_synthesis_rejection_limit() -> int:
+    """Return the blocked-search corrections allowed before a route boundary."""
+    return _read_int_env(
+        "LEANFLOW_SEARCH_SYNTHESIS_REJECTION_LIMIT",
+        SEARCH_SYNTHESIS_REJECTION_LIMIT_DEFAULT,
+        minimum=1,
     )
 
 
@@ -7159,6 +7185,37 @@ def _track_search_progress(
         if preflight_rejected:
             tracker["synthesis_grace_pending"] = True
             autonomy_state["search_progress"] = tracker
+            rejection_count = int(tracker.get("synthesis_rejection_count", 0) or 0)
+            rejection_limit = _search_synthesis_rejection_limit()
+            if rejection_count >= rejection_limit:
+                _record_agent_activity(
+                    agent,
+                    "search-synthesis-rejection-boundary",
+                    (
+                        f"Repeated blocked searches for {target_symbol} exhausted "
+                        "the synthesis correction window"
+                    ),
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    blocked_tool=function_name,
+                    search_count=int(tracker.get("search_count", 0) or 0),
+                    synthesis_rejection_count=rejection_count,
+                    synthesis_rejection_limit=rejection_limit,
+                    provider_called=False,
+                    route=str(tracker.get("hard_route", "") or "plan"),
+                    campaign_progress=False,
+                )
+                with contextlib.suppress(Exception):
+                    agent._managed_pending_theorem_feedback = None
+                    agent._managed_step_boundary_closed = True
+                if not bool(getattr(agent, "quiet_mode", False)):
+                    print(
+                        f"\n↻ {target_symbol} repeated a blocked search "
+                        f"{rejection_count} times; yielding to the preserved "
+                        "construction route."
+                    )
+                _request_step_boundary_interrupt(agent)
+                return True
             _record_agent_activity(
                 agent,
                 "search-synthesis-debt-enforced",
@@ -7167,6 +7224,8 @@ def _track_search_progress(
                 active_file=active_file,
                 blocked_tool=function_name,
                 search_count=int(tracker.get("search_count", 0) or 0),
+                synthesis_rejection_count=rejection_count,
+                synthesis_rejection_limit=rejection_limit,
                 provider_called=False,
                 campaign_progress=False,
             )
@@ -7226,6 +7285,7 @@ def _track_search_progress(
         tracker["hard_route_requested"] = True
         tracker["hard_route"] = route
         tracker["synthesis_grace_pending"] = True
+        tracker["synthesis_rejection_count"] = 0
         autonomy_state["search_progress"] = tracker
         _set_prover_requested_route(
             autonomy_state,
