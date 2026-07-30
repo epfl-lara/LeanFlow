@@ -1457,6 +1457,10 @@ propagate the coupled endpoint and credential. This prevents an auxiliary role
 from silently reverting to a globally configured model, reasoning policy, or
 incompatible model-family key.
 
+Environment precedence is process environment, then `~/.leanflow/.env`, then
+the project `.env`. Dotenv files fill missing values and do not overwrite an
+explicit launch-scoped environment override.
+
 The `LEANFLOW_NATIVE_*` variables are internal workflow-launcher plumbing. The CLI sets those automatically when it starts `leanflow-native`; you should not need to export them manually.
 
 For RCP / vLLM-style endpoints, LeanFlow enables model thinking through provider-compatible request fields instead of only the OpenRouter-style `reasoning` payload:

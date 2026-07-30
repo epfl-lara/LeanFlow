@@ -169,6 +169,9 @@ leanflow config set model.provider codex
 
 An explicit workflow provider applies its resolved model and reasoning effort
 to the foreground prover and every model-backed auxiliary lane for that launch.
+Process environment values take precedence over `~/.leanflow/.env`, so
+launch-scoped `LEANFLOW_CODEX_MODEL` and
+`LEANFLOW_CODEX_REASONING_EFFORT` overrides remain authoritative.
 
 To run a local model server (`vllm`, `ollama`, or `llama.cpp`):
 

@@ -58,7 +58,7 @@ def test_load_leanflow_dotenv_project_env_supplements_home(monkeypatch, tmp_path
     assert os.environ["FROM_PROJECT"] == "project-only"
 
 
-def test_load_leanflow_dotenv_home_overrides_existing_env(monkeypatch, tmp_path):
+def test_load_leanflow_dotenv_preserves_existing_process_env(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     (home / ".env").write_text("OVERRIDE_KEY=from-file\n", encoding="utf-8")
@@ -66,8 +66,7 @@ def test_load_leanflow_dotenv_home_overrides_existing_env(monkeypatch, tmp_path)
 
     load_leanflow_dotenv(leanflow_home=home)
 
-    # The home .env is loaded with override=True so it replaces the existing value.
-    assert os.environ["OVERRIDE_KEY"] == "from-file"
+    assert os.environ["OVERRIDE_KEY"] == "from-shell"
 
 
 def test_load_leanflow_dotenv_project_does_not_override_home(monkeypatch, tmp_path):

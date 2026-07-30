@@ -56,11 +56,11 @@ def load_leanflow_dotenv(
     project_env_path = Path(project_env) if project_env else None
 
     if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True)
+        _load_dotenv_with_fallback(user_env, override=False)
         loaded.append(user_env)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not loaded)
+        _load_dotenv_with_fallback(project_env_path, override=False)
         loaded.append(project_env_path)
 
     return loaded
