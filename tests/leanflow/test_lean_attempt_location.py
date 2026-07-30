@@ -58,6 +58,34 @@ def test_resolve_multi_attempt_location_advances_to_next_line_trailing_sorry(tmp
     )
 
 
+def test_resolve_multi_attempt_location_finds_unique_moved_placeholder(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "theorem target : True := by\n"
+        "  have h1 : True := trivial\n"
+        "  have h2 : True := trivial\n"
+        "  have h3 : True := trivial\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    assert location._resolve_multi_attempt_location(target, 2, None) == (
+        5,
+        3,
+        "trailing_placeholder",
+    )
+
+
+def test_resolve_multi_attempt_location_keeps_ambiguous_moved_placeholders(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "theorem target : True ∧ True := by\n" "  constructor\n" "  · sorry\n" "  · sorry\n",
+        encoding="utf-8",
+    )
+
+    assert location._resolve_multi_attempt_location(target, 2, None) == (2, None, None)
+
+
 def test_resolve_multi_attempt_location_corrects_blank_after_multiline_proof(tmp_path):
     target = tmp_path / "Demo.lean"
     target.write_text(

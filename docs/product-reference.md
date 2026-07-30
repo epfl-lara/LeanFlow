@@ -562,6 +562,11 @@ commands are then denied. Model file tools are also confined to `LEANFLOW_PROJEC
 canonical path and symlink checks. On the regular local backend the terminal is
 reduced to an audited, read-only, project-confined diagnostic surface; sandbox
 runs additionally receive the container's host-filesystem boundary.
+During a managed theorem turn, clean-room writes are limited to the assigned
+Lean file, its exact `<Stem>Helpers.lean` companion, and text/JSON state under
+`.leanflow/workflow-state`; ad hoc scripts and unrelated project artifacts are
+rejected before they are written. This preserves modular Lean development and
+durable plans/graphs without contaminating the benchmark.
 This policy is intentionally off by default: normal open-problem campaigns keep
 repository research because reusing public formalizations can save substantial
 time.
@@ -599,6 +604,11 @@ default two-worker portfolio is deep-search plus empirical work. A semantically 
 lane rotates first to negation; an inconclusive or spent negation lane can then rotate to the
 dedicated decomposition archetype without increasing capacity. Completed findings are consumed once
 and replacement objectives are assignment-scoped and deduplicated while the goal remains unresolved.
+Foreground discovery is also bounded per assigned declaration. Lean/web search,
+file-pattern search, and source reads share one budget; once it is spent, those
+tools are fenced until the model synthesizes the preserved evidence or the
+outer orchestrator starts a distinct construction route. Proof edits, exact
+Lean checks, and explicit helper decomposition remain available.
 
 Background decomposition is process-isolated and proposal-only. Its normalized
 `decomposition_report` contains exact source references, source-backed subgoal statements, and

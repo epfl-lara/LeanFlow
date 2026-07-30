@@ -104,7 +104,9 @@ LeanFlow reaches that by working in small, Lean-verified steps rather than one b
 - **`prove --clean-room`** disables repository-backed and task-specific
   prior-solution research for one benchmark run while retaining general web,
   paper, and local library search. Add one or more `--clean-room-label`
-  spellings when the file name alone does not identify the benchmark.
+  spellings when the file name alone does not identify the benchmark. Managed
+  writes remain limited to the assigned Lean source, its exact `Helpers.lean`
+  companion, and durable workflow state.
 - **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
 
 Headless proof outcomes are explicit: `0` means verified, `3` means an authoritatively promoted

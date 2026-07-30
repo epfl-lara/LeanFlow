@@ -19,6 +19,7 @@ TRACKED_TOOLS = frozenset(
         "lean_outline",
         "lean_proof_context",
         "lean_advisor",
+        "terminal",
     }
 )
 NUDGE_LIMIT = 3
@@ -191,6 +192,15 @@ def _advisor_failed(payload: Mapping[str, Any]) -> bool:
     }
 
 
+def _terminal_policy_denied(payload: Mapping[str, Any]) -> bool:
+    """Return whether the terminal was deterministically denied before execution."""
+    status = str(payload.get("status", "") or "").strip().lower()
+    return status.endswith("_terminal_denied") or status in {
+        "clean_room_policy_denied",
+        "terminal_policy_denied",
+    }
+
+
 def advisor_preflight_blocked(
     state: Mapping[str, Any],
     *,
@@ -237,6 +247,10 @@ def observe(
         if not isinstance(payload, Mapping) or not _advisor_failed(payload):
             state.pop(STATE_KEY, None)
             return LoopDecision(tool_key=key)
+    elif key == "terminal":
+        if not isinstance(payload, Mapping) or not _terminal_policy_denied(payload):
+            state.pop(STATE_KEY, None)
+            return LoopDecision(tool_key=key)
     elif isinstance(payload, Mapping) and _made_progress(payload):
         state.pop(STATE_KEY, None)
         return LoopDecision(tool_key=key)
@@ -248,6 +262,9 @@ def observe(
         # Reasoning and decomposition advisors share one expensive provider
         # family. Alternating them after equivalent failures is not progress.
         signature = "unchanged-source-advisor-failure"
+    elif key == "terminal":
+        # Varying a forbidden Python/shell command does not make a fresh route.
+        signature = "unchanged-source-terminal-policy-denial"
     elif key == "lean_multi_attempt":
         signature = _multi_attempt_site_signature(args)
     elif key == "lean_incremental_check:check_helper":

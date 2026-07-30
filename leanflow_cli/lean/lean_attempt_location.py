@@ -153,7 +153,8 @@ def _resolve_trailing_placeholder(
     )
     if not re.match(r"by\b", proof):
         return None
-    for candidate_line in (line, line + 1, line - 1):
+    nearby_lines = (line, line + 1, line - 1)
+    for candidate_line in nearby_lines:
         if candidate_line < start or candidate_line > end or candidate_line > len(lines):
             continue
         match = re.match(
@@ -162,6 +163,21 @@ def _resolve_trailing_placeholder(
         )
         if match is not None:
             return candidate_line, len(match.group("indent")) + 1
+    # Source edits often move the final hole while a model retains an older
+    # theorem-local line number. Resolve that stale anchor only when the
+    # declaration has one unambiguous standalone placeholder.
+    placeholders: list[tuple[int, int]] = []
+    for candidate_line in range(start, min(end, len(lines)) + 1):
+        if candidate_line in nearby_lines:
+            continue
+        match = re.match(
+            r"^(?P<indent>\s*)(?:sorry|admit)\b(?:\s*--.*)?\s*$",
+            lines[candidate_line - 1],
+        )
+        if match is not None:
+            placeholders.append((candidate_line, len(match.group("indent")) + 1))
+    if len(placeholders) == 1:
+        return placeholders[0]
     return None
 
 

@@ -7865,6 +7865,99 @@ def test_web_search_only_loop_requests_route_and_interrupts_once(monkeypatch, tm
     )
 
 
+def test_source_inspection_loop_uses_search_budget(monkeypatch, tmp_path):
+    """Bound file search and reads just like remote theorem discovery."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 3)
+    agent = _Agent()
+
+    calls = [
+        (
+            "search_files",
+            {"path": str(tmp_path), "pattern": "angle", "file_glob": "*.lean"},
+        ),
+        ("read_file", {"path": str(active), "offset": 1, "limit": 40}),
+        (
+            "search_files",
+            {"path": str(tmp_path), "pattern": "Orientation", "file_glob": "*.lean"},
+        ),
+    ]
+    for function_name, args in calls:
+        runner._handle_managed_tool_result(
+            agent,
+            function_name,
+            args,
+            json.dumps({"success": True}),
+        )
+
+    tracker = agent._managed_autonomy_state["search_progress"]
+    assert tracker["search_count"] == 3
+    assert tracker["synthesis_grace_pending"] is True
+    assert tracker["used_tools"] == {"search_files": 2, "read_file": 1}
+
+
+@pytest.mark.parametrize("function_name", ["read_file", "search_files"])
+def test_search_synthesis_reservation_blocks_source_inspection(
+    monkeypatch, tmp_path, function_name
+):
+    """Keep file inspection from bypassing a pending synthesis handoff."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "hard_route_requested": True,
+                    "synthesis_grace_pending": True,
+                },
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    args = (
+        {"path": str(active)}
+        if function_name == "read_file"
+        else {"path": str(tmp_path), "pattern": "angle"}
+    )
+
+    blocked = runner._managed_pre_tool_call(_Agent(), function_name, args)
+
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["status"] == "search_synthesis_required"
+    assert payload["blocked_tool"] == function_name
+    assert payload["provider_called"] is False
+
+
 def test_search_synthesis_reservation_blocks_broad_search_before_execution(monkeypatch, tmp_path):
     """Reject the forbidden extra search before it reaches a provider."""
     active = tmp_path / "Main.lean"
@@ -13829,6 +13922,62 @@ def test_support_file_write_does_not_verify_or_reject_assigned_theorem(monkeypat
     assert "failed_attempts" not in agent._managed_autonomy_state
     assert agent._managed_pending_theorem_feedback is None
     assert any(args[0] == "queue-support-file-edit" for args, _kwargs in events)
+
+
+def test_clean_room_queue_blocks_ad_hoc_scripts_but_allows_companion_and_state(
+    monkeypatch, tmp_path
+):
+    """Keep clean-room proof writes scoped without disabling modular Lean work."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    companion = tmp_path / "MainHelpers.lean"
+    state = tmp_path / ".leanflow" / "workflow-state" / "plan.md"
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "solution_research_disabled", lambda: True)
+    agent = _Agent()
+
+    blocked = runner._managed_pre_tool_call(
+        agent,
+        "write_file",
+        {"path": str(tmp_path / "verify.py"), "content": "print('probe')\n"},
+    )
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["status"] == "clean_room_queue_write_denied"
+    assert payload["blocked_paths"] == [str(tmp_path / "verify.py")]
+
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "write_file",
+            {"path": str(companion), "content": "import Mathlib\n"},
+        )
+        is None
+    )
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "write_file",
+            {"path": str(state), "content": "# Plan\n"},
+        )
+        is None
+    )
 
 
 def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(monkeypatch, capsys):

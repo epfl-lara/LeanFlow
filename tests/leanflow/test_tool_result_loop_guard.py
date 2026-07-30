@@ -368,3 +368,67 @@ def test_successful_advisor_answer_clears_failure_family():
     assert decision.tool_key == "lean_advisor"
     assert decision.streak == 0
     assert tool_result_loop_guard.STATE_KEY not in state
+
+
+def test_varying_terminal_policy_denials_share_one_family():
+    state: dict = {}
+    common = {
+        "target_symbol": "result",
+        "active_file": "Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+
+    decisions = [
+        tool_result_loop_guard.observe(
+            state,
+            function_name="terminal",
+            args={"command": command},
+            result_text=json.dumps(
+                {
+                    "success": False,
+                    "status": "clean_room_terminal_denied",
+                    "error": "command is outside the read-only allowlist",
+                }
+            ),
+            **common,
+        )
+        for command in (
+            "python3 probe.py",
+            "python3 -c 'print(1)'",
+            "bash probe.sh",
+            "node probe.js",
+            "ruby probe.rb",
+            "perl probe.pl",
+        )
+    ]
+
+    assert decisions[tool_result_loop_guard.NUDGE_LIMIT - 1].nudge is True
+    assert decisions[-1].close_turn is True
+    assert decisions[-1].streak == tool_result_loop_guard.HARD_LIMIT
+
+
+def test_successful_terminal_clears_policy_denial_streak():
+    state: dict = {}
+    common = {
+        "target_symbol": "result",
+        "active_file": "Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    tool_result_loop_guard.observe(
+        state,
+        function_name="terminal",
+        args={"command": "python3 probe.py"},
+        result_text=json.dumps({"success": False, "status": "clean_room_terminal_denied"}),
+        **common,
+    )
+
+    decision = tool_result_loop_guard.observe(
+        state,
+        function_name="terminal",
+        args={"command": "lake env lean Main.lean"},
+        result_text=json.dumps({"success": True, "exit_code": 0}),
+        **common,
+    )
+
+    assert decision.streak == 0
+    assert tool_result_loop_guard.STATE_KEY not in state

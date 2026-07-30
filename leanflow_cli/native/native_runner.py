@@ -293,7 +293,7 @@ SEARCH_PROGRESS_HARD_LIMIT_DEFAULT = 12
 # opportunity, then close the inner turn before those no-provider calls consume
 # the remaining provider budget.
 SEARCH_SYNTHESIS_REJECTION_LIMIT_DEFAULT = 2
-SEARCH_PROGRESS_TOOL_NAMES = search_synthesis_admission.BROAD_SEARCH_TOOL_NAMES
+SEARCH_PROGRESS_TOOL_NAMES = search_synthesis_admission.DISCOVERY_TOOL_NAMES
 # The foreground conversation executes in a worker thread so the native
 # runner's main thread can keep owning process-level duties. Serialize
 # portfolio maintenance requested by that parent heartbeat and by post-tool
@@ -7151,14 +7151,10 @@ def _track_search_progress(
     if not target_symbol or not active_file:
         return False
     payload = _json_tool_result_payload(result)
-    query = str(
-        payload.get("query", "")
-        or dict(args or {}).get("query", "")
-        or dict(args or {}).get("q", "")
-        or payload.get("url", "")
-        or dict(args or {}).get("url", "")
-        or dict(args or {}).get("uri", "")
-        or ""
+    query = search_synthesis_admission.request_description(
+        function_name,
+        args,
+        payload,
     )
     normalized_query = _normalized_search_query(query) or "[unspecified request]"
     request_fingerprint = f"{function_name}:{normalized_query}"
@@ -7673,6 +7669,61 @@ def _tool_proposed_edit_text(function_name: str, args: Mapping[str, Any] | None)
     if function_name == "apply_verified_patch":
         return str(data.get("patch", "") or "")
     return ""
+
+
+def _clean_room_queue_support_edit_guard(
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Restrict clean-room queue writes to proof source and durable workflow state."""
+    if (
+        _workflow_kind() != "prove"
+        or not solution_research_disabled()
+        or function_name not in _MANAGED_SOURCE_EDIT_TOOLS
+    ):
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    active_path = _resolve_project_path(active_file)
+    edit_paths = _tool_edit_paths(function_name, args)
+    if active_path is None or not edit_paths:
+        return None
+    project_root = Path(_project_root()).expanduser().resolve()
+    companion_path = active_path.with_name(f"{active_path.stem}Helpers.lean")
+    state_root = project_root / ".leanflow" / "workflow-state"
+    allowed_state_suffixes = {".json", ".jsonl", ".md", ".txt"}
+    blocked: list[str] = []
+    for path in edit_paths:
+        resolved = path.resolve(strict=False)
+        if resolved in {active_path, companion_path}:
+            continue
+        try:
+            relative_state = resolved.relative_to(state_root)
+        except ValueError:
+            blocked.append(str(resolved))
+            continue
+        if not relative_state.parts or resolved.suffix.lower() not in allowed_state_suffixes:
+            blocked.append(str(resolved))
+    if not blocked:
+        return None
+    return json.dumps(
+        {
+            "success": False,
+            "status": "clean_room_queue_write_denied",
+            "blocked_by": "managed_clean_room_queue",
+            "active_file": str(active_path),
+            "allowed_companion": str(companion_path),
+            "blocked_paths": blocked,
+            "error": (
+                "Clean-room theorem queues may edit only the assigned Lean file, its exact "
+                "`Helpers.lean` companion, or text/JSON workflow state under "
+                "`.leanflow/workflow-state`. Do not create ad hoc scripts or unrelated project "
+                "artifacts; use Lean checks, proof tools, and the managed plan/graph state."
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 def _proposed_edit_changes_assigned_declaration(
@@ -8521,6 +8572,13 @@ def _managed_pre_tool_call(
         return formalization_guard
     autonomy_state = getattr(agent, "_managed_autonomy_state", {}) or {}
     if isinstance(autonomy_state, dict):
+        clean_room_write_guard = _clean_room_queue_support_edit_guard(
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if clean_room_write_guard:
+            return clean_room_write_guard
         helper_priority_guard = _research_helper_candidate_pre_tool_guard(
             agent,
             function_name,
@@ -11821,6 +11879,7 @@ def _handle_managed_tool_result(
         else tool_result_loop_guard.LoopDecision()
     )
     if loop_decision.nudge:
+        terminal_policy_denial = loop_decision.tool_key == "terminal"
         _append_post_tool_result_message(
             agent,
             "\n".join(
@@ -11832,9 +11891,25 @@ def _handle_managed_tool_result(
                         f"- the same blocker site/result returned {loop_decision.streak} times "
                         "at the unchanged source revision"
                     ),
-                    "- stop varying unrelated trailing tactics or repeating the same inspection",
-                    "- read the diagnostic line and column literally, then make one distinct local edit,",
-                    "  screen only short tactics at that exact position, or request a different route",
+                    (
+                        "- stop varying forbidden shell/Python commands; the policy denial is "
+                        "deterministic"
+                        if terminal_policy_denial
+                        else "- stop varying unrelated trailing tactics or repeating the same inspection"
+                    ),
+                    (
+                        "- use the allowed Lean checks, proof tools, source reads, or request a "
+                        "different route"
+                        if terminal_policy_denial
+                        else "- read the diagnostic line and column literally, then make one distinct local edit,"
+                    ),
+                    *(
+                        []
+                        if terminal_policy_denial
+                        else [
+                            "  screen only short tactics at that exact position, or request a different route"
+                        ]
+                    ),
                 ]
             ),
         )
