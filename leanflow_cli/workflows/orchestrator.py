@@ -180,6 +180,7 @@ class RouteContext:
     target_node_status: str = ""
     target_node_found: bool = False  # the graph positively knows this node
     target_is_sublemma: bool = False
+    target_generated_by: str = ""
     fidelity_suspect: bool = False  # statement-fidelity audit said BLOCK
     negation_status: str = ""  # summary probe verdict, packet status as fallback
     negation_proved: bool = False  # this run revalidated the requested-root disproof
@@ -729,6 +730,7 @@ def build_route_context(
     target_node_status = ""
     target_node_found = False
     target_is_sublemma = False
+    target_generated_by = ""
     fidelity_suspect = False
     frontier: tuple[str, ...] = ()
     unrelated_frontier: tuple[str, ...] = ()
@@ -796,6 +798,7 @@ def build_route_context(
                 if node is not None:
                     target_node_found = True
                     target_node_status = node.status
+                    target_generated_by = node.generated_by.strip().lower()
                     fidelity_suspect = "fidelity: suspect" in str(node.notes or "")
                     target_is_sublemma = any(
                         edge.kind == "split_of" and edge.source == node.id
@@ -946,6 +949,7 @@ def build_route_context(
         target_node_status=target_node_status,
         target_node_found=target_node_found,
         target_is_sublemma=target_is_sublemma,
+        target_generated_by=target_generated_by,
         fidelity_suspect=fidelity_suspect,
         negation_status=negation_status,
         negation_proved=negation_proved,
@@ -1190,6 +1194,32 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
                 )
             ),
             target=_verified_counterexample_route_target(ctx),
+        )
+
+    # Generated helper statements are model-authored conjectures, not source
+    # obligations. In research mode, give each one a single bounded
+    # feasibility preflight before asking the prover to invest in its proof.
+    # A conclusive counterexample activates the existing false-subtree cleanup;
+    # an inconclusive result is persisted and the next scope entry falls
+    # through to ordinary proving without repeating the probe.
+    if (
+        ctx.research_mode
+        and ctx.trigger == "scope-entry"
+        and ctx.target_generated_by in {"decomposer", "planner"}
+        and ctx.negation_status in NEGATION_UNATTEMPTED
+        and _negation_probe_has_budget(ctx)
+        and ctx.has_queue_item()
+    ):
+        return OrchestratorRoute(
+            route="negate",
+            reason=(
+                "new generated helper requires one feasibility preflight before direct proving"
+            ),
+            target={
+                "target_symbol": ctx.target_symbol,
+                "active_file": ctx.active_file,
+                "generated_by": ctx.target_generated_by,
+            },
         )
 
     # Repeated kernel-rejected attempts are themselves a scope-entry/event

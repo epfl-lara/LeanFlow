@@ -843,6 +843,50 @@ def test_row3_breakpoint_without_probe_verdict_negates():
     assert after_probe.route == "decompose"
 
 
+def test_generated_helper_gets_one_research_negation_preflight():
+    route = orchestrator_route(
+        _ctx(
+            research_mode=True,
+            target_generated_by="decomposer",
+            negation_status="not-attempted",
+            negation_probe_budget_remaining=1,
+        )
+    )
+
+    assert route.route == "negate"
+    assert route.target["generated_by"] == "decomposer"
+
+    after_probe = orchestrator_route(
+        _ctx(
+            research_mode=True,
+            target_generated_by="decomposer",
+            negation_status="inconclusive",
+            negation_probe_budget_remaining=1,
+        )
+    )
+    assert after_probe.route == "direct-prove"
+
+
+@pytest.mark.parametrize(
+    ("research_mode", "generated_by"),
+    [(False, "decomposer"), (True, ""), (True, "queue-sync")],
+)
+def test_source_or_nonresearch_items_skip_generated_helper_preflight(
+    research_mode,
+    generated_by,
+):
+    route = orchestrator_route(
+        _ctx(
+            research_mode=research_mode,
+            target_generated_by=generated_by,
+            negation_status="not-attempted",
+            negation_probe_budget_remaining=1,
+        )
+    )
+
+    assert route.route == "direct-prove"
+
+
 def test_row3_breakpoint_skips_negation_when_exact_probe_budget_is_spent():
     route = orchestrator_route(
         _ctx(
@@ -1096,7 +1140,13 @@ def test_build_route_context_reads_queue_graph_and_negation(tmp_path):
     node_id = node_id_for("demo", str(active))
     blueprint = Blueprint(
         nodes=(
-            GraphNode(id=node_id, name="demo", file=str(active), status="false"),
+            GraphNode(
+                id=node_id,
+                name="demo",
+                file=str(active),
+                status="false",
+                generated_by="decomposer",
+            ),
             GraphNode(id="n-parent", name="main", file=str(active), status="stated"),
         ),
         edges=(GraphEdge(source=node_id, target="n-parent", kind="split_of"),),
@@ -1142,6 +1192,7 @@ def test_build_route_context_reads_queue_graph_and_negation(tmp_path):
 
     assert ctx.attempt_count == 2
     assert ctx.target_is_sublemma is True
+    assert ctx.target_generated_by == "decomposer"
     assert ctx.negation_proved is False
     assert ctx.search_exhausted is True
     assert ctx.routes_used_this_scope == 1
