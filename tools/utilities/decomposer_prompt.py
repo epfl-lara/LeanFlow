@@ -351,6 +351,7 @@ def compose_decomposer_user_prompt(
     max_helper_count: int,
     question: str,
     json_contract: str,
+    source_declarations: str = "",
 ) -> tuple[str, dict[str, Any]]:
     """Compose the final user prompt while preserving its question and JSON contract."""
     prefix_parts = [
@@ -367,6 +368,12 @@ def compose_decomposer_user_prompt(
             "Source-backed negative/consistency constraints (sorry-free declarations):\n"
             f"{context.source_constraints}"
             if context.source_constraints
+            else ""
+        ),
+        (
+            "Authoritative referenced in-file declarations:\n"
+            f"{_bounded_text(source_declarations, 16_000)}"
+            if source_declarations
             else ""
         ),
         (

@@ -117,8 +117,8 @@ results flow through `core.model_tools` and `tools/response.py`.
   document, web, repository, delegation, memory, skill, and empirical tools.
 - `tools/utilities/` contains deterministic guards and reusable implementation
   support, including process ownership, transcript protection, repository
-  research policy, scratch-terminal policy, verified patch parsing, and helper
-  admission.
+  research policy, scratch-terminal policy, verified patch parsing, helper
+  admission, and bounded authoritative source context for Lean advisors.
 - `tools/mcp/` contains MCP configuration, schema shaping, transport, sampling,
   and managed-server lifecycle behavior.
 - `tools/environments/` contains the local, SSH, Singularity, Daytona, and

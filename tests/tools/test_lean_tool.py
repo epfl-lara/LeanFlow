@@ -943,6 +943,97 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
     assert "sorry, admit, axiom, unsafe code, or a placeholder" in system_prompt
 
 
+def test_lean_reasoning_help_grounds_prompt_in_exact_source(monkeypatch, tmp_path):
+    target = tmp_path / "Main.lean"
+    target.write_text(
+        """\
+noncomputable def finalValue (p : Nat → Nat) : Nat :=
+  ∏ i in Finset.range 3, p i
+
+theorem result (p : Nat → Nat) : finalValue p = finalValue p := by
+  sorry
+""",
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            model="test-model",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Use the exact supplied finalValue body and prove the product identity."
+                    )
+                )
+            ],
+        )
+
+    monkeypatch.setattr(lean_experts, "call_llm", _fake_call_llm)
+
+    payload = json.loads(
+        lean_tool.lean_reasoning_help_tool(
+            "result",
+            str(target),
+            theorem_statement="theorem result : False",
+            question="How should finalValue be used?",
+            cwd=str(tmp_path),
+        )
+    )
+
+    prompt = captured["messages"][1]["content"]
+    assert payload["success"] is True
+    assert payload["source_context"]["status"] == "loaded"
+    assert payload["source_context"]["caller_statement_overridden"] is True
+    assert payload["source_context"]["referenced_names"] == ["finalValue"]
+    assert "theorem result (p : Nat → Nat) : finalValue p = finalValue p" in prompt
+    assert "theorem result : False" not in prompt
+    assert "noncomputable def finalValue" in prompt
+    assert "∏ i in Finset.range 3, p i" in prompt
+
+
+def test_lean_reasoning_help_rejects_source_redefinition(monkeypatch, tmp_path):
+    target = tmp_path / "Main.lean"
+    target.write_text(
+        """\
+def finalValue (n : Nat) : Nat := n + 1
+theorem result (n : Nat) : 0 < finalValue n := by
+  sorry
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        lean_experts,
+        "call_llm",
+        lambda **_kwargs: SimpleNamespace(
+            model="test-model",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Assuming `finalValue` is a product, use Finset.prod_pos."
+                    )
+                )
+            ],
+        ),
+    )
+
+    payload = json.loads(
+        lean_tool.lean_reasoning_help_tool(
+            "result",
+            str(target),
+            question="How should finalValue be used?",
+            cwd=str(tmp_path),
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["status"] == "source_conflict"
+    assert payload["source_conflicts"] == ["finalValue"]
+    assert "Ignore this advisor response" in payload["message"]
+    assert "advice" not in payload
+
+
 @pytest.mark.parametrize(
     "tool",
     [lean_experts.lean_reasoning_help_tool, lean_experts.lean_decompose_helpers_tool],
@@ -1191,6 +1282,72 @@ def test_lean_reasoning_help_tool_reports_unavailable(monkeypatch):
     assert payload["success"] is False
     assert payload["status"] == "unavailable"
     assert "No LLM provider configured" in payload["message"]
+
+
+def test_lean_decompose_helpers_grounds_and_rejects_source_redefinition(monkeypatch, tmp_path):
+    target = tmp_path / "Main.lean"
+    target.write_text(
+        """\
+noncomputable def finalValue (p : Nat → Nat) : Nat :=
+  ∏ i in Finset.range 3, p i
+
+theorem result (p : Nat → Nat) : finalValue p = finalValue p := by
+  sorry
+""",
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            model="test-model",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "obstacle_summary": (
+                                    "Assuming `finalValue` is a sum, isolate one summand."
+                                ),
+                                "recommended_split": "Prove a sum helper.",
+                                "insertion_guidance": "Before result.",
+                                "first_concrete_next_edit": "Insert the helper.",
+                                "helpers": [],
+                            }
+                        )
+                    )
+                )
+            ],
+        )
+
+    monkeypatch.setattr(lean_experts, "call_llm", _fake_call_llm)
+    monkeypatch.setattr(
+        lean_experts,
+        "_validate_helper_skeletons",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("source-conflicted advice must fail before Lean validation")
+        ),
+    )
+
+    payload = json.loads(
+        lean_tool.lean_decompose_helpers_tool(
+            "result",
+            str(target),
+            theorem_statement="theorem result : False",
+            question="Decompose the use of finalValue.",
+            cwd=str(tmp_path),
+        )
+    )
+
+    prompt = captured["messages"][1]["content"]
+    assert payload["success"] is False
+    assert payload["status"] == "source_conflict"
+    assert payload["source_conflicts"] == ["finalValue"]
+    assert "noncomputable def finalValue" in prompt
+    assert "∏ i in Finset.range 3, p i" in prompt
+    assert payload["context_shaping"]["caller_statement_overridden"] is True
+    assert payload["context_shaping"]["referenced_source_names"] == ["finalValue"]
 
 
 @pytest.mark.parametrize(

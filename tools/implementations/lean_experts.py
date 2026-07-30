@@ -40,6 +40,7 @@ from leanflow_cli.lean.lean_helper_ephemeral import build_integrated_helper_sour
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
 from leanflow_cli.lean.lean_parsing import _find_assignment_marker_for_statement
 from tools.utilities import (
+    advisor_source_context,
     decomposer_admission,
     decomposer_prompt,
     decomposer_source_guard,
@@ -94,6 +95,77 @@ def _advisor_failure(
     )
 
 
+def _reasoning_source_payload(
+    context: advisor_source_context.AdvisorSourceContext,
+    *,
+    caller_statement: str,
+) -> dict[str, Any]:
+    """Return source-grounding telemetry for one reasoning-advisor request."""
+    source_statement = str(context.target_statement or "").strip()
+    caller = str(caller_statement or "").strip()
+    return {
+        "status": context.status,
+        "source_sha256": context.source_sha256,
+        "referenced_names": list(context.referenced_names),
+        "caller_statement_overridden": bool(
+            source_statement
+            and caller
+            and _statement_identity_key(source_statement) != _statement_identity_key(caller)
+        ),
+    }
+
+
+def _reasoning_answer(
+    *,
+    theorem_id: str,
+    file_path: str,
+    advice: str,
+    context: advisor_source_context.AdvisorSourceContext,
+    source_payload: dict[str, Any],
+    provider_payload: dict[str, Any],
+) -> str:
+    """Return guarded advisor advice or fail closed on a source redefinition."""
+    conflicts = advisor_source_context.advisor_source_conflicts(advice, context)
+    if conflicts:
+        return json.dumps(
+            {
+                "success": False,
+                "status": "source_conflict",
+                "theorem_id": theorem_id,
+                "file_path": file_path,
+                **provider_payload,
+                "source_context": source_payload,
+                "source_conflicts": list(conflicts),
+                "message": (
+                    "The advisor treated authoritative in-file declaration(s) as hypothetical "
+                    "or redefined them: "
+                    + ", ".join(conflicts)
+                    + ". Ignore this advisor response and continue from the exact source "
+                    "declarations, current diagnostics, and kernel-checked evidence."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    guarded_advice = guard_reasoning_advice(advice)
+    return json.dumps(
+        {
+            "success": True,
+            "status": (
+                "answered_with_persistence_guard" if guarded_advice.guard_applied else "answered"
+            ),
+            "theorem_id": theorem_id,
+            "file_path": file_path,
+            **provider_payload,
+            "advice": guarded_advice.text,
+            "persistence_guard_applied": guarded_advice.guard_applied,
+            "rejected_terminal_fragments": guarded_advice.rejected_fragment_count,
+            "source_context": source_payload,
+            "next_step": REASONING_ADVISOR_NEXT_STEP,
+        },
+        ensure_ascii=False,
+    )
+
+
 def lean_reasoning_help_tool(
     theorem_id: str,
     file_path: str,
@@ -131,6 +203,30 @@ def lean_reasoning_help_tool(
     except (TypeError, ValueError):
         max_tokens = 64000
 
+    source_evidence = "\n\n".join(
+        part
+        for part in (
+            theorem_statement,
+            current_diagnostics,
+            current_goals,
+            current_attempt,
+            recent_failed_attempts,
+            question,
+        )
+        if part
+    )
+    source_context = advisor_source_context.load_advisor_source_context(
+        theorem_id=theorem_id,
+        file_path=file_path,
+        cwd=cwd,
+        evidence=source_evidence,
+    )
+    authoritative_statement = source_context.target_statement or theorem_statement
+    source_block = source_context.render()
+    source_payload = _reasoning_source_payload(
+        source_context,
+        caller_statement=theorem_statement,
+    )
     system_prompt = (
         "You are an auxiliary Lean proof-strategy advisor for LeanFlow. "
         "Act as a world-class mathematical strategist, combining deep olympiad, "
@@ -160,7 +256,13 @@ def lean_reasoning_help_tool(
         "Do not suggest "
         "replacing the proof with sorry, admit, axiom, unsafe code, or a placeholder. "
         "You may suggest small helper lemmas or private supporting declarations when "
-        "they preserve existing statements and directly help the assigned theorem."
+        "they preserve existing statements and directly help the assigned theorem. "
+        "The authoritative in-file source context in the request outranks caller summaries and "
+        "your prior knowledge. Never redefine or treat a supplied declaration as hypothetical. "
+        "Quote and inspect its exact body before diagnosing a reduction, recursion, elaboration, "
+        "or unification failure. Distinguish the source location where Lean reports an error from "
+        "the operation that caused it; inspect the expected theorem type and intermediate goal "
+        "before blaming an unfold or rewrite."
     )
     user_prompt = "\n\n".join(
         part
@@ -168,7 +270,15 @@ def lean_reasoning_help_tool(
             f"File: {file_path}",
             f"Theorem: {theorem_id}",
             f"Working directory: {cwd}" if cwd else "",
-            f"Theorem statement:\n{theorem_statement}" if theorem_statement else "",
+            (
+                f"Authoritative in-file source context:\n{source_block}"
+                if source_block
+                else (
+                    f"Theorem statement:\n{authoritative_statement}"
+                    if authoritative_statement
+                    else ""
+                )
+            ),
             f"Current diagnostics:\n{current_diagnostics}" if current_diagnostics else "",
             f"Current goals:\n{current_goals}" if current_goals else "",
             f"Current attempt:\n{current_attempt}" if current_attempt else "",
@@ -230,17 +340,13 @@ def lean_reasoning_help_tool(
                 theorem_id=theorem_id,
                 file_path=file_path,
             )
-        guarded_advice = guard_reasoning_advice(raw_advice)
-        return json.dumps(
-            {
-                "success": True,
-                "status": (
-                    "answered_with_persistence_guard"
-                    if guarded_advice.guard_applied
-                    else "answered"
-                ),
-                "theorem_id": theorem_id,
-                "file_path": file_path,
+        return _reasoning_answer(
+            theorem_id=theorem_id,
+            file_path=file_path,
+            advice=raw_advice,
+            context=source_context,
+            source_payload=source_payload,
+            provider_payload={
                 "provider": command_result.provider,
                 "mode": "command",
                 "command": command_result.command,
@@ -248,12 +354,7 @@ def lean_reasoning_help_tool(
                 "truncated": command_result.truncated,
                 "response_chars": command_result.response_chars,
                 "max_response_chars": command_result.max_response_chars,
-                "advice": guarded_advice.text,
-                "persistence_guard_applied": guarded_advice.guard_applied,
-                "rejected_terminal_fragments": guarded_advice.rejected_fragment_count,
-                "next_step": REASONING_ADVISOR_NEXT_STEP,
             },
-            ensure_ascii=False,
         )
 
     try:
@@ -319,24 +420,17 @@ def lean_reasoning_help_tool(
         file_path=file_path,
     )
 
-    guarded_advice = guard_reasoning_advice(advice)
-    return json.dumps(
-        {
-            "success": True,
-            "status": (
-                "answered_with_persistence_guard" if guarded_advice.guard_applied else "answered"
-            ),
-            "theorem_id": theorem_id,
-            "file_path": file_path,
+    return _reasoning_answer(
+        theorem_id=theorem_id,
+        file_path=file_path,
+        advice=advice,
+        context=source_context,
+        source_payload=source_payload,
+        provider_payload={
             "provider": expert_provider,
             "mode": "model",
             "model": str(getattr(response, "model", "") or ""),
-            "advice": guarded_advice.text,
-            "persistence_guard_applied": guarded_advice.guard_applied,
-            "rejected_terminal_fragments": guarded_advice.rejected_fragment_count,
-            "next_step": REASONING_ADVISOR_NEXT_STEP,
         },
-        ensure_ascii=False,
     )
 
 
@@ -1163,12 +1257,31 @@ def lean_decompose_helpers_tool(
         file_path=file_path,
         cwd=cwd,
     )
+    advisor_context = advisor_source_context.load_advisor_source_context(
+        theorem_id=theorem_id,
+        file_path=file_path,
+        cwd=cwd,
+        evidence="\n\n".join(
+            part
+            for part in (
+                theorem_statement,
+                current_diagnostics,
+                current_goals,
+                current_attempt,
+                recent_failed_attempts,
+                question,
+            )
+            if part
+        ),
+    )
     source_statement = (
         str(source_context.target_statement or "").strip()
         if source_context.status == "loaded"
         else ""
     )
-    authoritative_statement = source_statement or theorem_statement
+    authoritative_statement = (
+        source_statement or advisor_context.target_statement or theorem_statement
+    )
     caller_statement_overridden = bool(
         source_statement
         and str(theorem_statement or "").strip()
@@ -1205,6 +1318,10 @@ def lean_decompose_helpers_tool(
         "propose a helper whose conclusion conflicts with them, and never turn a "
         "source-verified consistent terminal branch into `False`; prefer a coverage or "
         "witness-producing helper for that branch. "
+        "The authoritative referenced declarations in the request are exact source, not "
+        "informal hints. Never redefine them, replace their bodies with assumed formulas, or "
+        "diagnose an unfold/rewrite without first checking the exact supplied body and the "
+        "intermediate Lean goal. "
         f"{decomposer_admission.DECOMPOSITION_ADMISSION_PROMPT_CONTRACT}"
         "Prefer local/private helper lemmas and concrete proof hints over broad strategy."
     )
@@ -1225,6 +1342,7 @@ def lean_decompose_helpers_tool(
         max_helper_count=max_helper_count,
         question=question,
         json_contract=json_contract,
+        source_declarations="\n\n".join(advisor_context.referenced_declarations),
     )
     prompt_stats.update(
         {
@@ -1235,6 +1353,9 @@ def lean_decompose_helpers_tool(
                 if authoritative_statement
                 else ""
             ),
+            "referenced_source_status": advisor_context.status,
+            "referenced_source_names": list(advisor_context.referenced_names),
+            "referenced_source_sha256": advisor_context.source_sha256,
         }
     )
     expert_provider = resolve_expert_provider("lean_decompose_helpers")
@@ -1379,6 +1500,39 @@ def lean_decompose_helpers_tool(
         )
 
     normalized = _normalize_decomposition_payload(parsed, max_helper_count=max_helper_count)
+    response_grounding_text = "\n\n".join(
+        [
+            str(normalized.get("obstacle_summary", "") or ""),
+            str(normalized.get("recommended_split", "") or ""),
+            str(normalized.get("insertion_guidance", "") or ""),
+            str(normalized.get("first_concrete_next_edit", "") or ""),
+            json.dumps(normalized.get("helpers", []), ensure_ascii=False),
+        ]
+    )
+    source_redefinitions = advisor_source_context.advisor_source_conflicts(
+        response_grounding_text,
+        advisor_context,
+    )
+    if source_redefinitions:
+        return json.dumps(
+            {
+                "success": False,
+                "status": "source_conflict",
+                "theorem_id": theorem_id,
+                "file_path": file_path,
+                **provider_payload,
+                "source_conflicts": list(source_redefinitions),
+                "context_shaping": prompt_stats,
+                "message": (
+                    "The helper-decomposition advisor treated authoritative in-file "
+                    "declaration(s) as hypothetical or redefined them: "
+                    + ", ".join(source_redefinitions)
+                    + ". Ignore this decomposition and continue from exact source and "
+                    "kernel-checked evidence."
+                ),
+            },
+            ensure_ascii=False,
+        )
     validation_timeout_s = min(
         120,
         max(1, _remaining_request_timeout_s(request_deadline)),

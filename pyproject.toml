@@ -155,6 +155,7 @@ files = [
   "agent/execution/collaborator_resolvers.py",
   "tools/response.py",
   "tools/implementations/lean_experts.py",
+  "tools/utilities/advisor_source_context.py",
   "tools/utilities/advisor_persistence.py",
   "tools/utilities/decomposer_admission.py",
   "tools/utilities/decomposer_prompt.py",
