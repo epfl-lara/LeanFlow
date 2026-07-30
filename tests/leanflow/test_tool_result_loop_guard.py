@@ -7,11 +7,17 @@ import json
 from leanflow_cli.workflows import tool_result_loop_guard
 
 
-def _failed_screen(line: int = 102, column: int = 85) -> str:
+def _failed_screen(
+    line: int = 102,
+    column: int = 85,
+    *,
+    status: str = "screened_no_verified_candidate",
+    message: str = "No goals to be solved",
+) -> str:
     return json.dumps(
         {
             "success": False,
-            "status": "screened_no_verified_candidate",
+            "status": status,
             "backend_tool": "mcp_lean_lsp_lean_multi_attempt",
             "items": [
                 {
@@ -19,7 +25,7 @@ def _failed_screen(line: int = 102, column: int = 85) -> str:
                     "diagnostics": [
                         {
                             "severity": "error",
-                            "message": "No goals to be solved",
+                            "message": message,
                             "line": line,
                             "column": column,
                         }
@@ -50,7 +56,7 @@ def test_repeated_result_nudges_then_closes_the_turn():
     assert decisions[-1].streak == tool_result_loop_guard.HARD_LIMIT
 
 
-def test_changed_source_or_diagnostic_resets_the_streak():
+def test_changed_source_or_screening_location_resets_the_streak():
     state: dict = {}
     common = {
         "function_name": "lean_multi_attempt",
@@ -76,16 +82,49 @@ def test_changed_source_or_diagnostic_resets_the_streak():
         source_revision_sha256="source-b",
         **common,
     )
-    changed_diagnostic = tool_result_loop_guard.observe(
+    changed_common = {
+        **common,
+        "args": {"attempts": ["simp", "omega"], "line": 140},
+    }
+    changed_location = tool_result_loop_guard.observe(
         state,
         result_text=_failed_screen(line=140),
         source_revision_sha256="source-b",
-        **common,
+        **changed_common,
     )
 
     assert (first.streak, second.streak) == (1, 2)
     assert changed_source.streak == 1
-    assert changed_diagnostic.streak == 1
+    assert changed_location.streak == 1
+
+
+def test_multi_attempt_tracks_same_location_across_varying_failure_shapes():
+    state: dict = {}
+    decisions = []
+    for index in range(tool_result_loop_guard.HARD_LIMIT):
+        result = _failed_screen(
+            status=("screened_no_verified_candidate" if index % 2 == 0 else "invalid_candidates"),
+            message=f"candidate family {index} cannot prove the unchanged goal",
+        )
+        decisions.append(
+            tool_result_loop_guard.observe(
+                state,
+                function_name="lean_multi_attempt",
+                args={
+                    "file_path": "/tmp/Main.lean",
+                    "line": 102,
+                    "attempts": [f"candidate {index}", "other"],
+                },
+                result_text=result,
+                target_symbol="demo",
+                active_file="/tmp/Main.lean",
+                source_revision_sha256="same-source",
+            )
+        )
+
+    assert decisions[tool_result_loop_guard.NUDGE_LIMIT - 1].nudge is True
+    assert decisions[-1].close_turn is True
+    assert decisions[-1].streak == tool_result_loop_guard.HARD_LIMIT
 
 
 def test_verified_result_clears_prior_loop_state():

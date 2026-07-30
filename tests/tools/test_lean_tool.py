@@ -1171,6 +1171,8 @@ def test_lean_reasoning_help_tool_reports_no_answer(monkeypatch):
     assert payload["status"] == "no_answer"
     assert "not working" in payload["message"]
     assert "Continue with the main proof workflow" in payload["message"]
+    assert "independently established evidence" in payload["message"]
+    assert "statement should change" not in payload["message"]
 
 
 def test_lean_reasoning_help_tool_reports_unavailable(monkeypatch):
@@ -1207,6 +1209,8 @@ def test_model_lean_advisors_report_hard_deadline_timeout(monkeypatch, tool):
     assert payload["status"] == "timeout"
     assert "auxiliary call exceeded 10 seconds" in payload["message"]
     assert "Continue with the main proof workflow" in payload["message"]
+    assert "independently established evidence" in payload["message"]
+    assert "statement should change" not in payload["message"]
 
 
 def test_lean_decompose_helpers_returns_checked_structured_plan(monkeypatch, tmp_path):

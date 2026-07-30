@@ -84,8 +84,10 @@ def _advisor_failure(
             "file_path": file_path,
             "message": (
                 "lean_reasoning_help is not working for this request: "
-                f"{message} Continue with the main proof workflow; do not treat missing advisor "
-                "advice as evidence that the theorem statement should change."
+                f"{message} Continue with the main proof workflow using any independently "
+                "established evidence from source, counterexample, diagnostic, or graph state. "
+                "This advisor failure neither supports nor refutes any proof route or statement "
+                "repair."
             ),
         },
         ensure_ascii=False,
@@ -341,8 +343,10 @@ def _decompose_failure(
             "file_path": file_path,
             "message": (
                 "lean_decompose_helpers is not working for this request: "
-                f"{message} Continue with the main proof workflow; do not treat missing helper "
-                "decomposition as evidence that the theorem statement should change."
+                f"{message} Continue with the main proof workflow using any independently "
+                "established evidence from source, counterexample, diagnostic, or graph state. "
+                "This advisor failure neither supports nor refutes any proof route or statement "
+                "repair."
             ),
         },
         ensure_ascii=False,

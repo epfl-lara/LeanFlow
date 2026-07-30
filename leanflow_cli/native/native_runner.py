@@ -11470,7 +11470,7 @@ def _handle_managed_tool_result(
                     f"- declaration: {target_symbol}",
                     f"- tool: {loop_decision.tool_key}",
                     (
-                        f"- the same exact blocker returned {loop_decision.streak} times "
+                        f"- the same blocker site/result returned {loop_decision.streak} times "
                         "at the unchanged source revision"
                     ),
                     "- stop varying unrelated trailing tactics or repeating the same inspection",

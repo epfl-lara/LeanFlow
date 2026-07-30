@@ -118,6 +118,20 @@ def result_signature(result_text: str) -> str:
     return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def _multi_attempt_site_signature(args: Mapping[str, Any] | None) -> str:
+    """Return a candidate-insensitive fingerprint for one tactic-screening site."""
+    payload = dict(args or {})
+    material = "|".join(
+        (
+            "lean_multi_attempt",
+            str(payload.get("file_path", "") or "").strip(),
+            str(payload.get("line", 0) or 0),
+            str(payload.get("column", 0) or 0),
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:16]
+
+
 def _made_progress(payload: Mapping[str, Any]) -> bool:
     verified_attempts = payload.get("verified_attempts")
     return bool(
@@ -151,7 +165,14 @@ def observe(
         state.pop(STATE_KEY, None)
         return LoopDecision(tool_key=key)
 
-    signature = result_signature(result_text)
+    # Varying candidate text and backend rejection shapes do not constitute
+    # progress when the model keeps screening the same unchanged proof site.
+    # Other tools retain their diagnostic-sensitive blocker fingerprint.
+    signature = (
+        _multi_attempt_site_signature(args)
+        if key == "lean_multi_attempt"
+        else result_signature(result_text)
+    )
     previous = dict(state.get(STATE_KEY) or {})
     identity = (
         target_symbol,
