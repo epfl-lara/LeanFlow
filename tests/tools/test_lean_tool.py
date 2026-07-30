@@ -928,6 +928,7 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
     assert captured["task"] == "lean_reasoning"
     assert captured["max_tokens"] == 64000
     assert captured["timeout"] == 360
+    assert captured["isolate"] is True
     system_prompt = captured["messages"][0]["content"]
     assert "advisory only" in system_prompt
     assert "world-class mathematical strategist" in system_prompt
@@ -1185,6 +1186,29 @@ def test_lean_reasoning_help_tool_reports_unavailable(monkeypatch):
     assert "No LLM provider configured" in payload["message"]
 
 
+@pytest.mark.parametrize(
+    "tool",
+    [lean_experts.lean_reasoning_help_tool, lean_experts.lean_decompose_helpers_tool],
+)
+def test_model_lean_advisors_report_hard_deadline_timeout(monkeypatch, tool):
+    """Advisor process deadlines must remain retryable workflow evidence."""
+
+    def _raise_timeout(**kwargs):
+        assert kwargs["isolate"] is True
+        raise TimeoutError("auxiliary call exceeded 10 seconds")
+
+    monkeypatch.setattr(lean_experts, "resolve_expert_provider", lambda _task: "main")
+    monkeypatch.setattr(lean_experts, "is_command_expert_provider", lambda _provider: False)
+    monkeypatch.setattr(lean_experts, "call_llm", _raise_timeout)
+
+    payload = json.loads(tool("demo", "Demo/Main.lean", timeout_s=10))
+
+    assert payload["success"] is False
+    assert payload["status"] == "timeout"
+    assert "auxiliary call exceeded 10 seconds" in payload["message"]
+    assert "Continue with the main proof workflow" in payload["message"]
+
+
 def test_lean_decompose_helpers_returns_checked_structured_plan(monkeypatch, tmp_path):
     target = tmp_path / "Demo.lean"
     original = "theorem demo : True := by\n  sorry\n"
@@ -1298,6 +1322,7 @@ def test_lean_decompose_helpers_returns_checked_structured_plan(monkeypatch, tmp
     assert "theorem demo : True := by\n  sorry" in replacements[0]
     assert target.read_text(encoding="utf-8") == original
     assert captured["task"] == "lean_decompose_helpers"
+    assert captured["isolate"] is True
     assert "Return strict JSON only" in captured["messages"][0]["content"]
     assert "Do not copy declaration attributes" in captured["messages"][0]["content"]
     assert "Never suggest inserting or patching a skeleton" in captured["messages"][0]["content"]

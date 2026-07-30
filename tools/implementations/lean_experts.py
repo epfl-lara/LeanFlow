@@ -267,7 +267,10 @@ def lean_reasoning_help_tool(
             temperature=0.2,
             max_tokens=max_tokens,
             timeout=request_timeout_s,
+            isolate=True,
         )
+    except TimeoutError as exc:
+        return _advisor_failure("timeout", str(exc), theorem_id=theorem_id, file_path=file_path)
     except RuntimeError as exc:
         return _advisor_failure("unavailable", str(exc), theorem_id=theorem_id, file_path=file_path)
     except Exception as exc:
@@ -1300,6 +1303,11 @@ def lean_decompose_helpers_tool(
                 temperature=0.1,
                 max_tokens=max_tokens,
                 timeout=provider_timeout_s,
+                isolate=True,
+            )
+        except TimeoutError as exc:
+            return _decompose_failure(
+                "timeout", str(exc), theorem_id=theorem_id, file_path=file_path
             )
         except RuntimeError as exc:
             return _decompose_failure(

@@ -24,6 +24,7 @@ from agent.providers.auxiliary_client import (
     get_text_auxiliary_client,
     resolve_auxiliary_call_identity,
 )
+from agent.providers.isolated_auxiliary import AuxiliaryTextResponse
 from core.provider_capacity import (
     BACKGROUND_PROVIDER_CAPACITY_ENV,
     BACKGROUND_PROVIDER_NAMESPACE_ENV,
@@ -174,6 +175,50 @@ def test_auxiliary_call_reuses_delegated_actor_capacity(monkeypatch, tmp_path):
         result = call_llm(task="lean_reasoning", messages=[{"role": "user", "content": "x"}])
 
     assert result is response
+
+
+def test_call_llm_isolate_routes_through_hard_deadline_worker(monkeypatch):
+    """An isolated synchronous call must bypass the in-process provider client."""
+    captured: dict[str, object] = {}
+
+    def fake_isolated_call(**kwargs):
+        captured.update(kwargs)
+        return AuxiliaryTextResponse(content="bounded answer", model="open-model")
+
+    monkeypatch.setattr(
+        "agent.providers.isolated_auxiliary.run_isolated_auxiliary_text",
+        fake_isolated_call,
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._resolve_task_provider_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("the parent must not create a provider client")
+        ),
+    )
+
+    result = call_llm(
+        task="lean_decompose_helpers",
+        provider="main",
+        messages=[{"role": "user", "content": "split the proof"}],
+        temperature=0.1,
+        max_tokens=2048,
+        timeout=37,
+        isolate=True,
+    )
+
+    assert result.model == "open-model"
+    assert result.choices[0].message.content == "bounded answer"
+    assert captured == {
+        "task": "lean_decompose_helpers",
+        "provider": "main",
+        "model": None,
+        "base_url": None,
+        "api_key": None,
+        "messages": [{"role": "user", "content": "split the proof"}],
+        "timeout": 37,
+        "temperature": 0.1,
+        "max_tokens": 2048,
+    }
 
 
 def test_foreground_auxiliary_call_does_not_wait_for_background_actors(monkeypatch, tmp_path):

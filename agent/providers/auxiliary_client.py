@@ -32,6 +32,7 @@ import inspect
 import logging
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from openai import OpenAI
@@ -1155,6 +1156,7 @@ def call_llm(
     tools: list = None,
     timeout: float = 30.0,
     extra_body: dict = None,
+    isolate: bool = False,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -1173,6 +1175,9 @@ def call_llm(
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds.
         extra_body: Additional request body fields.
+        isolate: Enforce the timeout in a disposable child process. Use this
+            for synchronous control-plane calls whose provider SDK may outlive
+            its transport timeout.
 
     Returns:
         Response object with .choices[0].message.content
@@ -1180,6 +1185,35 @@ def call_llm(
     Raises:
         RuntimeError: If no provider is configured.
     """
+    if isolate:
+        if tools or extra_body:
+            raise ValueError("isolated auxiliary text calls do not support tools or extra_body")
+        # Import lazily because the isolated worker uses call_llm() for the
+        # actual provider request. The worker does not set isolate=True, so the
+        # child performs exactly one direct SDK call while the parent owns the
+        # hard wall-clock deadline and process-tree cleanup.
+        from agent.providers.isolated_auxiliary import run_isolated_auxiliary_text
+
+        isolated = run_isolated_auxiliary_text(
+            task=task,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            messages=messages,
+            timeout=timeout,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return SimpleNamespace(
+            model=isolated.model,
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=isolated.content),
+                )
+            ],
+        )
+
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key = (
         _resolve_task_provider_model(task, provider, model, base_url, api_key)
     )
