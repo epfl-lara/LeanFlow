@@ -9104,12 +9104,13 @@ def test_verified_patch_file_gate_cannot_bypass_exact_target_axiom_rejection(mon
             }
             self._managed_pending_theorem_feedback = None
             self._managed_step_boundary_closed = False
+            self.interrupt_messages: list[str | None] = []
 
         def is_interrupted(self):
             return False
 
         def interrupt(self, message=None):
-            pass
+            self.interrupt_messages.append(message)
 
     monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
@@ -9174,6 +9175,9 @@ def test_verified_patch_file_gate_cannot_bypass_exact_target_axiom_rejection(mon
     assert agent._managed_autonomy_state["last_verification"]["axiom_profile_blockers"] == [
         "sorryAx"
     ]
+    assert agent.interrupt_messages == []
+    assert agent._managed_step_boundary_closed is False
+    assert "still blocked; continue the same theorem turn" in agent._post_tool_result_appendix
     runner._rebuild_history_for_theorem_transition(
         [],
         {"snapshot_text": "Compact workflow snapshot"},
@@ -9182,6 +9186,101 @@ def test_verified_patch_file_gate_cannot_bypass_exact_target_axiom_rejection(mon
     )
     outcome = agent._managed_autonomy_state["theorem_outcomes"][f"{active}::{helper}"]
     assert outcome["status"] == "unverified"
+
+
+def test_exact_target_axiom_unavailability_retains_queue_without_failed_attempt(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "private lemma checked_helper : True := by\n"
+        "  trivial\n\n"
+        "lemma next_helper : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        quiet_mode = True
+
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "checked_helper",
+                    "active_file": str(active),
+                    "slice": "private lemma checked_helper : True := by\n  trivial",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self._managed_step_boundary_closed = False
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda _active_file, target_symbol: (
+            ["axiom-profile-unavailable"],
+            f"axiom guard: could not inspect {target_symbol}",
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "next_helper",
+            "active_file": str(active),
+            "active_file_label": str(active),
+            "current_queue_item": {"label": "next_helper", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "lemma next_helper : True := by\n  sorry",
+            "diagnostics": "warning: declaration uses sorry",
+            "goals": "no goals",
+            "build_status": "lake env lean Main.lean exits 0",
+            "current_blocker": "",
+        },
+    )
+    agent = _Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_incremental_check",
+        {
+            "action": "check_target",
+            "file_path": str(active),
+            "theorem_id": "checked_helper",
+        },
+        json.dumps(
+            {
+                "success": True,
+                "ok": True,
+                "action": "check_target",
+                "file": str(active),
+                "target": "checked_helper",
+                "valid_without_sorry": True,
+                "has_errors": False,
+                "has_sorry": False,
+                "messages": [],
+            }
+        ),
+    )
+
+    assert agent.interrupt_messages == []
+    assert agent._managed_step_boundary_closed is False
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert "transitive axiom profile is temporarily unavailable" in (
+        agent._post_tool_result_appendix
+    )
+    assert "retain this theorem and retry the exact gate" in agent._post_tool_result_appendix
 
 
 def test_incremental_checked_candidate_is_non_authoritative_commit_guidance(
@@ -17717,6 +17816,36 @@ def test_managed_pre_tool_call_requires_inline_profile_for_exact_replacement(mon
         "file_path": str(active),
         "theorem_id": "demo",
         "replacement": "theorem demo : True := by\n  trivial",
+        "include_axiom_profile": False,
+    }
+
+    assert runner._managed_pre_tool_call(_Agent(), "lean_incremental_check", args) is None
+    assert args["include_axiom_profile"] is True
+
+
+def test_managed_pre_tool_call_requires_inline_profile_for_sorry_free_exact_target(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("private theorem demo : True := by\n  trivial\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    args = {
+        "action": "check_target",
+        "file_path": str(active),
+        "theorem_id": "demo",
         "include_axiom_profile": False,
     }
 

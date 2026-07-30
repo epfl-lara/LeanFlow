@@ -5153,6 +5153,14 @@ def _manager_check_for_feedback_kind(
     has_assigned_warning = False
     has_future_evidence = False
     has_assigned_open_goals = _goals_still_open(str(manager_check.get("goals", "") or ""))
+    if any(
+        str(blocker or "").strip()
+        for blocker in list(manager_check.get("axiom_profile_blockers") or [])
+    ):
+        # A transitive axiom verdict is intrinsically scoped to the exact
+        # declaration named by the manager check. It has no source line, so
+        # treating it as future-file evidence can silently advance the queue.
+        has_assigned_error = True
 
     local_cleanup = str(manager_check.get("local_cleanup_reason", "") or "").strip()
     lowered_cleanup = local_cleanup.lower()
@@ -5198,6 +5206,55 @@ def _manager_check_for_feedback_kind(
         has_future_evidence=has_future_evidence,
         verification_failed=manager_verification_failed,
         raw_messages=(output,),
+    )
+
+
+def _exact_assigned_target_axiom_gate_rejected(
+    manager_check: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> bool:
+    """Return whether an exact on-disk target check failed its axiom gate."""
+    checked = dict(manager_check or {})
+    nested = checked.get("incremental")
+    exact = dict(nested) if isinstance(nested, Mapping) else checked
+    action = (
+        str(checked.get("action", "") or exact.get("action", "") or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
+    mode = str(checked.get("mode", "") or exact.get("mode", "") or "").strip().lower()
+    scope = (
+        str(checked.get("verification_scope", "") or exact.get("verification_scope", "") or "")
+        .strip()
+        .lower()
+    )
+    blockers = [
+        str(blocker or "").strip()
+        for blocker in list(checked.get("axiom_profile_blockers") or [])
+        if str(blocker or "").strip()
+    ]
+    if (
+        bool(checked.get("ok"))
+        or not blockers
+        or checked.get("replacement_matches_target") is True
+        or exact.get("replacement_matches_target") is True
+        or not (
+            action == "check_target"
+            or mode == "incremental_target"
+            or scope in {"target", "target_exact"}
+        )
+    ):
+        return False
+    payload = dict(exact)
+    payload.setdefault("target", checked.get("target", ""))
+    payload.setdefault("file", checked.get("file", ""))
+    return _incremental_result_matches_assignment(
+        payload,
+        target_symbol=target_symbol,
+        active_file=active_file,
     )
 
 
@@ -5551,13 +5608,15 @@ def _inject_exact_candidate_axiom_profile(
     args: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any],
 ) -> None:
-    """Require inline axiom evidence for an exact assigned-target replacement.
+    """Require inline axiom evidence for a ready exact assigned-target check.
 
     Replacement checks elaborate a temporary declaration while the source on
     disk still contains the unresolved assignment.  Profiling the on-disk
     declaration after such a check therefore inspects the wrong proof.  Mutate
     the actual tool-call arguments so LeanProbe profiles the replacement in the
-    same temporary environment that checks it.
+    same temporary environment that checks it.  A sorry-free on-disk target
+    receives the same one-shot treatment because private declarations cannot
+    reliably be recovered by a later name-based ``#print axioms`` fallback.
     """
     if (
         function_name != "lean_incremental_check"
@@ -5567,8 +5626,6 @@ def _inject_exact_candidate_axiom_profile(
         return
     action = str(args.get("action", "check_target") or "check_target")
     if action.strip().lower().replace("-", "_") != "check_target":
-        return
-    if not str(args.get("replacement", "") or "").strip():
         return
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
@@ -5583,6 +5640,12 @@ def _inject_exact_candidate_axiom_profile(
         active_file=active_file,
     ):
         return
+    replacement = str(args.get("replacement", "") or "").strip()
+    if not replacement:
+        entry = _find_declaration_entry(active_file, target_symbol)
+        source = str((entry or {}).get("text", "") or "")
+        if not source or _text_has_sorry(source):
+            return
     args["include_axiom_profile"] = True
 
 
@@ -10246,6 +10309,8 @@ def _finish_queue_step_boundary(
     candidate_pending_commit = False
     target_candidate_dry_run = False
     candidate_check_passed = False
+    exact_axiom_gate_rejected = False
+    axiom_gate_temporarily_unavailable = False
     promoted_helper_integration_gate_accepted = False
     pending_promoted_helper_names: tuple[str, ...] = ()
     autonomy_state: Any = None
@@ -10483,6 +10548,26 @@ def _finish_queue_step_boundary(
             str(manager_check.get("error", "") or ""),
             structured_items=manager_check.get("messages") or (),
         )
+        exact_axiom_gate_rejected = _exact_assigned_target_axiom_gate_rejected(
+            manager_check,
+            target_symbol=pending_target,
+            active_file=pending_file,
+        )
+        axiom_gate_temporarily_unavailable = bool(
+            exact_axiom_gate_rejected
+            and "axiom-profile-unavailable"
+            in {
+                str(blocker or "").strip()
+                for blocker in list(manager_check.get("axiom_profile_blockers") or [])
+            }
+        )
+        if exact_axiom_gate_rejected:
+            # The source scanner is allowed to omit a sorry-free declaration,
+            # but an exact manager gate remains the authoritative queue
+            # verdict. Keep ownership on the checked target until its
+            # transitive axiom profile is accepted.
+            feedback_kind = "error"
+            manager_check["feedback_kind"] = feedback_kind
         # A source-edit gate belongs to the declaration that triggered it even
         # when the refreshed diagnostic lands on attached command trivia (for
         # example a doc comment or ``set_option`` immediately before the
@@ -10526,6 +10611,7 @@ def _finish_queue_step_boundary(
         _a_decision = None
         if (
             not candidate_pending_commit
+            and not exact_axiom_gate_rejected
             and _queue_decide_authority_enabled()
             and isinstance(autonomy_state, dict)
             and same_assignment
@@ -10798,6 +10884,7 @@ def _finish_queue_step_boundary(
                 if (
                     feedback_kind in {"error", "sorry"}
                     and post_edit_verification
+                    and not axiom_gate_temporarily_unavailable
                     and isinstance(autonomy_state, dict)
                 ):
                     hard_retry_limit = MANAGER_POST_EDIT_HARD_RETRY_LIMIT
@@ -10837,7 +10924,7 @@ def _finish_queue_step_boundary(
                 if hard_retry_exhausted:
                     cleanup_feedback_reason = ""
             if still_blocked:
-                if isinstance(autonomy_state, dict):
+                if isinstance(autonomy_state, dict) and not axiom_gate_temporarily_unavailable:
                     new_attempt_recorded = _remember_failed_attempt(
                         autonomy_state,
                         live_state,
@@ -10973,7 +11060,11 @@ def _finish_queue_step_boundary(
                     "- status: replacement passed an isolated kernel check but is not committed or authoritatively verified; apply the exact checked replacement now"
                     if candidate_pending_commit
                     else (
-                        "- status: still blocked; continue the same theorem turn"
+                        (
+                            "- status: the exact proof is kernel-clean, but its transitive axiom profile is temporarily unavailable; retain this theorem and retry the exact gate"
+                            if axiom_gate_temporarily_unavailable
+                            else "- status: still blocked; continue the same theorem turn"
+                        )
                         if still_blocked
                         else "- status: proof cleared, but this assigned declaration still has warning-only cleanup; fix only this declaration"
                     )
@@ -10987,6 +11078,14 @@ def _finish_queue_step_boundary(
                         "- authority: this does not solve the queue item and is not stored as successful verification",
                         "- next action: write that exact replacement into the assigned declaration, preserving its statement, then let the parent manager verify the committed file on disk",
                         "- do not start a new proof shape or move to another declaration before committing this checked candidate",
+                    ]
+                )
+            elif axiom_gate_temporarily_unavailable:
+                feedback_lines.extend(
+                    [
+                        "- authority: an unavailable axiom inspection is an operational blocker, not proof failure and not queue completion",
+                        "- next action: rerun `lean_incremental_check(action=check_target)` on this exact declaration; the managed call will require inline axiom profiling",
+                        "- preserve the current sorry-free proof and do not move to a later declaration until that exact profile passes",
                     ]
                 )
             if cleanup_feedback_reason:
@@ -11031,7 +11130,11 @@ def _finish_queue_step_boundary(
                 ).strip()
                 if output:
                     feedback_lines.append(f"- feedback: {_single_line(output, 500)}")
-            if still_blocked and isinstance(autonomy_state, dict):
+            if (
+                still_blocked
+                and not axiom_gate_temporarily_unavailable
+                and isinstance(autonomy_state, dict)
+            ):
                 coach_guidance = _maybe_manager_nudge(
                     autonomy_state,
                     manager_check,
