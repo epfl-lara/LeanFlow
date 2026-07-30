@@ -12,6 +12,7 @@ from leanflow_cli.workflow import (
     NativeLaunchPlan,
     NativeWorkflowSpec,
     describe_launch_plan,
+    parse_workflow_command,
     resolve_workflow_request,
 )
 from leanflow_cli.workflows.workflow_state import (
@@ -583,6 +584,56 @@ def test_workflow_cli_provider_override_passes_through(monkeypatch, tmp_path):
     assert captured["run_command"] == "/prove Main.lean"
     assert captured["resolve_provider"] == "codex"
     assert captured["run_provider"] == "codex"
+
+
+def test_workflow_cli_preserves_multiword_option_values(monkeypatch, tmp_path):
+    """Decoded argv values must remain atomic through the string parser boundary."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    captured: dict[str, str] = {}
+    fake_plan = NativeLaunchPlan(
+        project=type("Project", (), {"label": "Demo", "root": tmp_path})(),
+        workflow=NativeWorkflowSpec(
+            workflow_kind="prove",
+            frontend_command="/prove",
+            canonical_command="/prove",
+            backend_command="/prove Main.lean",
+            workflow_args="Main.lean",
+        ),
+        runtime={"provider": "custom", "model": "zai-org/GLM-5.2", "base_url": "https://example"},
+        child_env={},
+        argv=["python", "-m", "leanflow_cli.native.native_runner"],
+        active_skill="lean-proof-loop",
+        toolset_name="leanflow-prove-worker",
+    )
+
+    def fake_resolve(command, **_kwargs):
+        captured["resolve"] = command
+        return fake_plan
+
+    def fake_run(command, **_kwargs):
+        captured["run"] = command
+        return 0
+
+    monkeypatch.setattr("leanflow_cli.main.resolve_workflow_request", fake_resolve)
+    monkeypatch.setattr("leanflow_cli.main.run_workflow", fake_run)
+
+    argv = [
+        "workflow",
+        "prove",
+        "Main.lean",
+        "--clean-room-label",
+        "IMO 2026 Problem 2",
+        "--goal",
+        "finish theorem result",
+    ]
+    assert main(argv) == 0
+
+    for command in (captured["resolve"], captured["run"]):
+        parsed = parse_workflow_command(command)
+        assert parsed.workflow_args == "Main.lean"
+        assert parsed.clean_room_labels == ("IMO 2026 Problem 2",)
+        assert parsed.explicit_goal == "finish theorem result"
 
 
 def test_workflow_leaf_help_never_launches_runtime(monkeypatch, tmp_path, capsys):

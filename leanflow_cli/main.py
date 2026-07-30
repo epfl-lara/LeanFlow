@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -380,7 +381,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if payload else 1
         text = f"/{args.workflow}" if not str(args.workflow).startswith("/") else str(args.workflow)
         if args.args:
-            text = f"{text} {' '.join(args.args)}"
+            # argparse receives already-decoded argv values. Re-quote them
+            # before handing the command to the workflow parser so a
+            # multiword label, prompt, or command template remains one value.
+            text = f"{text} {shlex.join(args.args)}"
         try:
             plan = resolve_workflow_request(
                 text, active_cwd=Path.cwd(), requested_provider=args.provider
