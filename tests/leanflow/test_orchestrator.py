@@ -18,6 +18,7 @@ from leanflow_cli.workflows.orchestrator import (
     bounded_requested_route_reason,
     build_route_context,
     evidence_supported_negate_request_from_text,
+    generated_helper_negation_preflight_due,
     orchestrator_enabled,
     orchestrator_max_routes,
     orchestrator_route,
@@ -844,15 +845,15 @@ def test_row3_breakpoint_without_probe_verdict_negates():
 
 
 def test_generated_helper_gets_one_research_negation_preflight():
-    route = orchestrator_route(
-        _ctx(
-            research_mode=True,
-            target_generated_by="decomposer",
-            negation_status="not-attempted",
-            negation_probe_budget_remaining=1,
-        )
+    ctx = _ctx(
+        research_mode=True,
+        target_generated_by="decomposer",
+        negation_status="not-attempted",
+        negation_probe_budget_remaining=1,
     )
+    route = orchestrator_route(ctx)
 
+    assert generated_helper_negation_preflight_due(ctx)
     assert route.route == "negate"
     assert route.target["generated_by"] == "decomposer"
 

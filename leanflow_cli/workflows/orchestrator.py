@@ -1016,6 +1016,18 @@ def strategy_directive(route: OrchestratorRoute, ctx: RouteContext) -> str:
     return ""
 
 
+def generated_helper_negation_preflight_due(ctx: RouteContext) -> bool:
+    """Return whether a generated helper needs its one bounded falsity probe."""
+    return bool(
+        ctx.research_mode
+        and ctx.trigger == "scope-entry"
+        and ctx.target_generated_by in {"decomposer", "planner"}
+        and ctx.negation_status in NEGATION_UNATTEMPTED
+        and _negation_probe_has_budget(ctx)
+        and ctx.has_queue_item()
+    )
+
+
 def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> OrchestratorRoute:
     """Apply the deterministic ordered route policy without mutating state.
 
@@ -1086,14 +1098,7 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
     # indefinitely. A conclusive counterexample activates the existing
     # false-subtree cleanup; an inconclusive result is persisted and the next
     # scope entry falls through without repeating the probe.
-    if (
-        ctx.research_mode
-        and ctx.trigger == "scope-entry"
-        and ctx.target_generated_by in {"decomposer", "planner"}
-        and ctx.negation_status in NEGATION_UNATTEMPTED
-        and _negation_probe_has_budget(ctx)
-        and ctx.has_queue_item()
-    ):
+    if generated_helper_negation_preflight_due(ctx):
         return OrchestratorRoute(
             route="negate",
             reason=(

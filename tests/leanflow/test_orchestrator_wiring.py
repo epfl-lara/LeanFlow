@@ -965,6 +965,118 @@ def test_interrupted_inflight_route_replays_once_without_recharging(enabled, mon
     )
 
 
+def test_generated_helper_preflight_drops_nonnegation_inflight_replay(
+    enabled, monkeypatch, tmp_path
+):
+    """A resumed strategy route must not bypass generated-helper falsity screening."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "generated-helper-inflight-preflight")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    events = _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("private lemma demo : True := by\n  sorry\n", encoding="utf-8")
+    state = _autonomy_state(str(active))
+    plan_state.save_queue_manager_state(state)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=plan_state.node_id_for("demo", str(active)),
+                    name="demo",
+                    file=str(active),
+                    status="proving",
+                    generated_by="decomposer",
+                ),
+            )
+        )
+    )
+    runner.campaign_epoch.record_route_decision(
+        state,
+        route="plan",
+        target_symbol="demo",
+        active_file=str(active),
+        trigger="event",
+        route_reason="interrupted weaker-model request",
+        reserve_inflight=True,
+    )
+    stale = dict(state[runner.campaign_epoch.INFLIGHT_ROUTE_STATE_KEY])
+    state["prover_requested_route"] = {
+        "route": "plan",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "reason": "interrupted weaker-model request",
+    }
+
+    selected = runner._orchestrator_consult("scope-entry", state, {})
+
+    assert selected is not None and selected.route == "negate"
+    current = runner.campaign_epoch.campaign_snapshot()["inflight_route"]
+    assert current["route"] == "negate"
+    assert current["token"] != stale["token"]
+    assert "prover_requested_route" not in state
+    assert any(
+        event[0] == "generated-helper-negation-preflight-superseded-replay"
+        for event, _details in events
+    )
+
+
+def test_generated_helper_preflight_supersedes_nonnegation_epoch_selection(
+    enabled, monkeypatch, tmp_path
+):
+    """A pending fresh-epoch route must yield to generated-helper falsity screening."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "generated-helper-epoch-preflight")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    events = _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("private lemma demo : True := by\n  sorry\n", encoding="utf-8")
+    state = _autonomy_state(str(active))
+    plan_state.save_queue_manager_state(state)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=plan_state.node_id_for("demo", str(active)),
+                    name="demo",
+                    file=str(active),
+                    status="proving",
+                    generated_by="planner",
+                ),
+            )
+        )
+    )
+    runner.campaign_epoch.roll_epoch(
+        state,
+        reason="context-pressure",
+        cycle=1,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    runner.campaign_epoch.record_route_decision(
+        state,
+        route="plan",
+        target_symbol="demo",
+        active_file=str(active),
+        trigger="scope-entry",
+        route_reason="stale fresh-epoch selection",
+    )
+    stale = dict(state[runner.campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY])
+
+    selected = runner._orchestrator_consult("scope-entry", state, {})
+
+    assert selected is not None and selected.route == "negate"
+    current = state[runner.campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY]
+    assert current["route"] == "negate"
+    assert current["reason"] != stale["reason"]
+    assert current["target"]["generated_by"] == "planner"
+    assert any(
+        event[0] == "generated-helper-negation-preflight-superseded-replay"
+        for event, _details in events
+    )
+
+
 def test_resumed_inflight_route_drops_when_assignment_changed(enabled, monkeypatch, tmp_path):
     """A pending route from an old theorem must not run against the new queue item."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))

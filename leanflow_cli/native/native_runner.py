@@ -25227,6 +25227,42 @@ def _orchestrator_consult(
             if not resumed_inflight
             else {}
         )
+        preflight_superseded_replays: list[str] = []
+        if orchestrator_floor.generated_helper_negation_preflight_due(ctx):
+            # Crash recovery normally outranks fresh routing, but generated
+            # conjectures require one bounded falsity check before any other
+            # persistence route. Retire an unfinished non-negation action so
+            # it cannot bypass that safety boundary after process resume.
+            inflight_route = str(resumed_inflight.get("route", "") or "").strip().lower()
+            if resumed_inflight and inflight_route != "negate":
+                completed = campaign_epoch.complete_inflight_route(
+                    autonomy_state,
+                    token=str(resumed_inflight.get("token", "") or ""),
+                    outcome="dropped",
+                    dropped_reason="superseded-by-generated-helper-negation-preflight",
+                )
+                if not completed:
+                    raise RuntimeError(
+                        "failed to retire stale in-flight route before generated-helper preflight"
+                    )
+                preflight_superseded_replays.append(campaign_epoch.INFLIGHT_ROUTE_STATE_KEY)
+                resumed_inflight = {}
+            selection_route = str(resumed_selection.get("route", "") or "").strip().lower()
+            if resumed_selection and selection_route != "negate":
+                # The next atomic route decision overwrites this pending
+                # fresh-epoch selection while preserving the epoch obligation.
+                preflight_superseded_replays.append(campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY)
+                resumed_selection = {}
+        if preflight_superseded_replays:
+            _record_activity(
+                "generated-helper-negation-preflight-superseded-replay",
+                "Generated-helper falsity preflight outranked stale route replay",
+                target_symbol=ctx.target_symbol,
+                active_file=ctx.active_file,
+                generated_by=ctx.target_generated_by,
+                superseded_sources=preflight_superseded_replays,
+                campaign_progress=False,
+            )
         superseded_replays = campaign_epoch.replay_sources_superseded_by_requested_route(
             requested_route=ctx.requested_route,
             inflight_route=resumed_inflight,
