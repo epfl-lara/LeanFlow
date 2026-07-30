@@ -4446,7 +4446,7 @@ def test_spent_negation_rotation_launches_decomposition_without_changing_baselin
     replacement = service._entry(status["launched"][0])
     assert replacement.spec.archetype == "decomposition"
     assert replacement.spec.deliverable == "decomposition_report"
-    assert replacement.spec.toolsets == ("web", "lean")
+    assert replacement.spec.toolsets == ("web-research", "lean-research")
     assert replacement.spec.scope["scratch_only"] is True
     assert replacement.spec.job_id.rpartition(".")[2].startswith("dc-")
     assert status["semantic_lane_cooldowns"]["negation_probe"]["reason"] == (
@@ -5237,7 +5237,7 @@ def test_empirical_evidence_to_helper_carries_live_em121_finding_into_em122_prom
         route_key="boundary-counterexample-probe",
         route_focus="probe boundary cases and assumptions for counterexamples",
     )
-    assert em121_spec.toolsets == ("terminal", "lean", "empirical-compute")
+    assert em121_spec.toolsets == ("lean-research", "empirical-compute")
     active_deep_search_spec = research_portfolio._job_spec(
         service,
         archetype="deep_search",

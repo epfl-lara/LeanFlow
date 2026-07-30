@@ -199,7 +199,7 @@ _LANES: tuple[_Lane, ...] = (
     ),
     _Lane(
         key="mathlib",
-        toolsets=("lean",),
+        toolsets=("lean-research",),
         goal_template=(
             "Search mathlib and the local Lean project for lemmas, definitions "
             "and instances that could discharge or decompose this goal: {goal}. "
@@ -215,12 +215,13 @@ _LANES: tuple[_Lane, ...] = (
     ),
     _Lane(
         key="empirical",
-        toolsets=("terminal", "lean"),
+        toolsets=("empirical-compute", "lean-research"),
         goal_template=(
             "Empirically probe this Lean 4 goal before anyone spends prover "
-            "budget on it: {goal}. Test small cases numerically (python via "
-            "terminal) and/or with lean_multi_attempt; look for counterexamples "
-            "and for the pattern a proof would need. " + empirical_pilot.prompt_contract()
+            "budget on it: {goal}. Test small cases numerically with "
+            "empirical_compute and/or use read/check-only Lean tools such as "
+            "lean_multi_attempt; look for counterexamples and for the pattern "
+            "a proof would need. " + empirical_pilot.prompt_contract()
         ),
         deliverable_hint=(
             '{"hypothesis": "...", "method": "...", '
@@ -425,7 +426,7 @@ def _run_lanes(
         if lane.key == "empirical":
             # Internal delegate hook: this callback is installed on only the
             # empirical child and is never part of the public tool schema.
-            task["_pre_tool_call_callback"] = empirical_pilot.BoundedTerminalPilot()
+            task["_pre_tool_call_callback"] = empirical_pilot.BoundedEmpiricalPilot()
         tasks.append(task)
     records: list[dict[str, Any]] = []
     deliverables: dict[str, dict[str, Any]] = {}

@@ -881,17 +881,19 @@ def test_lane_and_synthesis_prompts_embed_phase_fragments(enabled, monkeypatch):
     empirical_goal = delegate_calls[0]["tasks"][2]["goal"]
     assert "[PHASE SPEC" not in empirical_goal  # plausibility lane, not the kernel probe
     assert "at most 12 deliberately chosen small cases" in empirical_goal
-    assert "at most 2 terminal calls" in empirical_goal
+    assert "at most 2 empirical_compute calls" in empirical_goal
+    assert "no filesystem or project-mutation authority" in empirical_goal
     assert "trial-divide a squared denominator" in empirical_goal
     assert "complete compatible residue basis" in empirical_goal
     tasks = delegate_calls[0]["tasks"]
+    assert tasks[1]["toolsets"] == ["lean-research"]
+    assert tasks[2]["toolsets"] == ["empirical-compute", "lean-research"]
     assert "_pre_tool_call_callback" not in tasks[0]
     assert "_pre_tool_call_callback" not in tasks[1]
     empirical_policy = tasks[2]["_pre_tool_call_callback"]
-    terminal_args = {"command": "python exhaustive.py", "timeout": 180, "background": True}
-    assert empirical_policy("terminal", terminal_args) is None
-    assert terminal_args["timeout"] == 20
-    assert terminal_args["background"] is False
+    compute_args = {"program": "print(2 + 2)", "timeout_s": 180}
+    assert empirical_policy("empirical_compute", compute_args) is None
+    assert compute_args["timeout_s"] == 8
     synth_prompt = synth_calls[0]["prompt"]
     assert "[PHASE SPEC: phase-planning]" in synth_prompt
     assert "[PHASE SPEC: phase-draft]" in synth_prompt

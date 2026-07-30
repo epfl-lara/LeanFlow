@@ -1,4 +1,4 @@
-"""Bound empirical planner probes before they consume foreground control."""
+"""Bound process-isolated empirical planner probes before foreground handoff."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import threading
 from typing import Any
 
 PILOT_CASE_LIMIT = 12
-PILOT_TERMINAL_CALL_LIMIT = 2
-PILOT_TERMINAL_TIMEOUT_S = 20
+PILOT_COMPUTE_CALL_LIMIT = 2
+PILOT_COMPUTE_TIMEOUT_S = 8
 
 
 def prompt_contract() -> str:
@@ -15,8 +15,10 @@ def prompt_contract() -> str:
     return (
         "Pilot budget (mandatory): test at most "
         f"{PILOT_CASE_LIMIT} deliberately chosen small cases, make at most "
-        f"{PILOT_TERMINAL_CALL_LIMIT} terminal calls, and set each terminal timeout to at most "
-        f"{PILOT_TERMINAL_TIMEOUT_S} seconds. Start with one or two cases when the per-case "
+        f"{PILOT_COMPUTE_CALL_LIMIT} empirical_compute calls, and set each compute timeout "
+        f"to at most {PILOT_COMPUTE_TIMEOUT_S} seconds. `empirical_compute` is the only "
+        "numerical execution surface in this lane and has no filesystem or project-mutation "
+        "authority. Start with one or two cases when the per-case "
         "cost is uncertain. Never exhaustively enumerate a large residue range, trial-divide "
         "a squared denominator, or enumerate all divisors of a growing integer. Stop after the "
         "first useful counterexample or stable pattern. Before returning `supports` for a "
@@ -30,14 +32,14 @@ def prompt_contract() -> str:
     )
 
 
-class BoundedTerminalPilot:
-    """Clamp and count terminal calls made by one empirical planner child."""
+class BoundedEmpiricalPilot:
+    """Clamp and count isolated compute calls made by one empirical planner child."""
 
     def __init__(
         self,
         *,
-        timeout_s: int = PILOT_TERMINAL_TIMEOUT_S,
-        max_calls: int = PILOT_TERMINAL_CALL_LIMIT,
+        timeout_s: int = PILOT_COMPUTE_TIMEOUT_S,
+        max_calls: int = PILOT_COMPUTE_CALL_LIMIT,
     ) -> None:
         self.timeout_s = max(1, int(timeout_s))
         self.max_calls = max(1, int(max_calls))
@@ -45,30 +47,27 @@ class BoundedTerminalPilot:
         self._lock = threading.Lock()
 
     def __call__(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any] | None:
-        """Clamp an empirical terminal call or reject it after the pilot cap."""
-        if str(tool_name or "") != "terminal":
+        """Clamp an empirical compute call or reject it after the pilot cap."""
+        if str(tool_name or "") != "empirical_compute":
             return None
         with self._lock:
             if self._calls >= self.max_calls:
                 return {
                     "error": (
-                        "BLOCKED: empirical pilot terminal-call budget exhausted. "
+                        "BLOCKED: empirical pilot compute-call budget exhausted. "
                         "Return an inconclusive structured deliverable with the cases and "
                         "evidence already collected; do not continue exhaustive search."
                     ),
                     "status": "empirical_pilot_limit",
-                    "terminal_calls": self._calls,
-                    "max_terminal_calls": self.max_calls,
+                    "compute_calls": self._calls,
+                    "max_compute_calls": self.max_calls,
                 }
             self._calls += 1
 
-        requested = args.get("timeout")
+        requested = args.get("timeout_s")
         try:
             requested_timeout = int(requested) if requested is not None else self.timeout_s
         except (TypeError, ValueError):
             requested_timeout = self.timeout_s
-        args["timeout"] = max(1, min(requested_timeout, self.timeout_s))
-        # Empirical planner probes must return control; a background process
-        # would evade both the timeout and the structured lane deliverable.
-        args["background"] = False
+        args["timeout_s"] = max(1, min(requested_timeout, self.timeout_s))
         return None

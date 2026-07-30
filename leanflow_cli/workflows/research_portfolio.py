@@ -562,11 +562,11 @@ def _job_spec(
         "decomposition": "decomposition_report",
     }.get(archetype, "findings_report")
     toolsets = {
-        "deep_search": ("web", "lean"),
-        "empirical": ("terminal", "lean", "empirical-compute"),
-        "negation_probe": ("lean",),
-        "decomposition": ("web", "lean"),
-    }.get(archetype, ("lean",))
+        "deep_search": ("web-research", "lean-research"),
+        "empirical": ("lean-research", "empirical-compute"),
+        "negation_probe": ("lean-research",),
+        "decomposition": ("web-research", "lean-research"),
+    }.get(archetype, ("lean-research",))
     if _route_requires_anchor(route_key) and route_anchor_entry is None:
         raise ValueError(f"evidence-derived route {route_key!r} requires its source ledger entry")
     route_mode = "evidence_synthesis" if route_anchor_entry is not None else "grounding"

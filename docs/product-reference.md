@@ -637,14 +637,15 @@ candidate is delivered first and couples its receipt with the source receipt aft
 response, avoiding duplicate synthesis without weakening crash recovery.
 
 Planner empirical work is a bounded pilot, not an exhaustive foreground search: its prompt permits
-at most 12 deliberately selected small cases, and the runtime permits at most two terminal calls
-with a 20-second timeout each and no detached background command. While a synchronous planner wave
-runs, the parent process continues polling the research portfolio in harvest-only mode. Finished
-workers are reaped and their findings consumed, but their slots remain reserved until the planner
-wave finishes. Each resulting vacancy is checkpointed as a deduplicated replacement intent and is
-fulfilled once on planner release or immediately after an intervening epoch refresh. Planner lanes
-are chunked to the shared actor capacity, and capacity deferral is journaled instead of constructing
-extra waiting agents.
+at most 12 deliberately selected small cases, and the runtime permits at most two
+`empirical_compute` calls with an eight-second timeout each. The lane has read/check-only Lean tools
+and no terminal or project-mutation authority. While a synchronous planner wave runs, the parent
+process continues polling the research portfolio in harvest-only mode. Finished workers are reaped
+and their findings consumed, but their slots remain reserved until the planner wave finishes. Each
+resulting vacancy is checkpointed as a deduplicated replacement intent and is fulfilled once on
+planner release or immediately after an intervening epoch refresh. Planner lanes are chunked to the
+shared actor capacity, and capacity deferral is journaled instead of constructing extra waiting
+agents.
 
 Background empirical dispatch workers use a separate `empirical_compute` tool for exact integer and
 `Fraction` experiments. It is exposed only when the isolated worker's JobSpec archetype is
