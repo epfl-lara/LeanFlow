@@ -487,6 +487,31 @@ def test_shutdown_attempts_every_service_after_failure(monkeypatch):
     assert calls == ["anthropic", "incremental", "mcp"]
 
 
+def test_shutdown_bounds_incremental_close_while_foreground_probe_lock_is_held(
+    monkeypatch,
+):
+    """Let interrupted native processes exit despite an abandoned probe lock."""
+    release = threading.Event()
+
+    import leanflow_cli.lean.lean_incremental as lean_incremental
+    import tools.mcp.mcp_tool as mcp_tool
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_INCREMENTAL_CLOSE_TIMEOUT_S", "0.02")
+    monkeypatch.setattr(
+        lean_incremental,
+        "close_incremental_sessions",
+        lambda: release.wait(timeout=1.0) or True,
+    )
+    monkeypatch.setattr(mcp_tool, "shutdown_mcp_servers", lambda: ())
+
+    try:
+        failures = runtime_cleanup.shutdown_native_runtime_services(None)
+    finally:
+        release.set()
+
+    assert failures == ("incremental Lean sessions",)
+
+
 def test_shutdown_sweeps_expert_commands_and_attempts_later_services(monkeypatch):
     calls: list[str] = []
 

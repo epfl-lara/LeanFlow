@@ -33,7 +33,8 @@ __all__ = [
 
 
 LEAN_DECLARATION_PREAMBLE_RE = (
-    r"^\s*(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
+    r"^\s*(?:(?:set_option|variable)\b[^\n]*\bin\s+)*"
+    r"(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
     r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
 )
 

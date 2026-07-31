@@ -148,6 +148,29 @@ def test_segment_file_attaches_set_option_wrapper_to_private_theorem():
     assert segments[1].text.startswith("set_option maxRecDepth 10000 in")
 
 
+def test_segment_file_recognizes_same_line_set_option_theorem():
+    source = "\n".join(
+        [
+            "import Mathlib",
+            "",
+            "set_option maxHeartbeats 1000000 in theorem result : True := by",
+            "  trivial",
+            "",
+        ]
+    )
+
+    header, segments = li._segment_file(source)
+
+    assert header == "import Mathlib\n\n"
+    assert [segment.name for segment in segments] == ["result"]
+    assert segments[0].text.startswith("set_option maxHeartbeats 1000000 in theorem result")
+    assert source[segments[0].start : segments[0].end] == segments[0].text
+    entries = li._declaration_line_index_from_text(source)
+    assert [(entry["kind"], entry["name"], entry["line"]) for entry in entries] == [
+        ("theorem", "result", 3)
+    ]
+
+
 def test_segment_file_attaches_stacked_option_wrappers_to_private_theorem():
     header, segments = li._segment_file(
         "\n".join(

@@ -7,6 +7,30 @@ from collections.abc import Mapping
 
 RESEARCH_MODE_ENV = "LEANFLOW_RESEARCH_MODE"
 RESEARCH_MULTI_ATTEMPT_RECYCLE_ENV = "LEANFLOW_RESEARCH_RECYCLE_MULTI_ATTEMPT_MCP"
+RESEARCH_STATEFUL_LEAN_LSP_RECYCLE_ENV = "LEANFLOW_RESEARCH_RECYCLE_STATEFUL_LEAN_LSP_MCP"
+
+_STATEFUL_LEAN_LSP_TOOLS = frozenset(
+    {
+        "declaration_file",
+        "diagnostics",
+        "file_outline",
+        "goals",
+        "hammer_premise",
+        "hover_info",
+        "lean_declaration_file",
+        "lean_diagnostic_messages",
+        "lean_file_outline",
+        "lean_goal",
+        "lean_hammer_premise",
+        "lean_hover_info",
+        "lean_multi_attempt",
+        "lean_profile_proof",
+        "lean_state_search",
+        "multi_attempt",
+        "profile_proof",
+        "state_search",
+    }
+)
 
 
 def _truthy(value: object) -> bool:
@@ -34,23 +58,23 @@ def should_recycle_after_tool(
 ) -> bool:
     """Return whether a completed MCP call should retire its backing server.
 
-    ``lean_multi_attempt`` can transiently grow lean-lsp's shared Lean worker by
-    several gigabytes. A normal short workflow benefits from retaining that
-    warmed server, but a multi-day research campaign cannot leave reclamation to
-    Lean's eventual internal cleanup. Research therefore recycles only this
-    managed server/tool pair after preserving the tool result. The next native
-    capability probe reconnects it lazily.
+    Stateful lean-lsp calls can leave a shared Lean worker elaborating a large
+    file long after the requested result was returned. A normal short workflow
+    benefits from retaining that warmed server, but a multi-day research
+    campaign cannot let the old worker compete with LeanProbe after later source
+    edits. Research therefore recycles stateful calls after preserving their
+    result. The next native capability probe reconnects the server lazily.
     """
     env = os.environ if environ is None else environ
     if not _truthy(env.get(RESEARCH_MODE_ENV)):
         return False
-    if not _enabled_with_default(
-        env,
-        RESEARCH_MULTI_ATTEMPT_RECYCLE_ENV,
-        default=True,
-    ):
+    server = str(server_name or "").strip()
+    tool = str(tool_name or "").strip()
+    if server != "lean-lsp" or tool not in _STATEFUL_LEAN_LSP_TOOLS:
         return False
-    return (
-        str(server_name or "").strip() == "lean-lsp"
-        and str(tool_name or "").strip() == "lean_multi_attempt"
+    setting = (
+        RESEARCH_MULTI_ATTEMPT_RECYCLE_ENV
+        if tool in {"lean_multi_attempt", "multi_attempt"}
+        else RESEARCH_STATEFUL_LEAN_LSP_RECYCLE_ENV
     )
+    return _enabled_with_default(env, setting, default=True)

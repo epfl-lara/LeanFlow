@@ -15,18 +15,35 @@ import pytest
 from tools.mcp.mcp_reclaim import (
     RESEARCH_MODE_ENV,
     RESEARCH_MULTI_ATTEMPT_RECYCLE_ENV,
+    RESEARCH_STATEFUL_LEAN_LSP_RECYCLE_ENV,
     should_recycle_after_tool,
 )
 
 
-def test_research_multi_attempt_recycles_only_managed_lean_lsp() -> None:
-    """Select the one managed call whose worker has severe retained peaks."""
+def test_research_recycles_stateful_managed_lean_lsp_calls() -> None:
+    """Retire stateful LSP workers while keeping stateless search warm."""
     env = {RESEARCH_MODE_ENV: "1"}
 
     assert should_recycle_after_tool("lean-lsp", "lean_multi_attempt", environ=env)
-    assert not should_recycle_after_tool("lean-lsp", "lean_goal", environ=env)
+    assert should_recycle_after_tool("lean-lsp", "lean_goal", environ=env)
+    assert should_recycle_after_tool("lean-lsp", "lean_diagnostic_messages", environ=env)
+    assert not should_recycle_after_tool("lean-lsp", "lean_loogle", environ=env)
     assert not should_recycle_after_tool("other", "lean_multi_attempt", environ=env)
     assert not should_recycle_after_tool("lean-lsp", "lean_multi_attempt", environ={})
+
+
+@pytest.mark.parametrize("disabled", ["0", "false", "off"])
+def test_research_stateful_lsp_recycle_has_explicit_benchmark_opt_out(
+    disabled: str,
+) -> None:
+    """Allow controlled benchmarks to retain stateful LSP workers."""
+    env = {
+        RESEARCH_MODE_ENV: "1",
+        RESEARCH_STATEFUL_LEAN_LSP_RECYCLE_ENV: disabled,
+    }
+
+    assert not should_recycle_after_tool("lean-lsp", "lean_goal", environ=env)
+    assert should_recycle_after_tool("lean-lsp", "lean_multi_attempt", environ=env)
 
 
 @pytest.mark.parametrize("disabled", ["0", "false", "off"])

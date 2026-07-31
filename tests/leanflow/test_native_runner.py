@@ -22250,6 +22250,98 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
     assert registered == [("leanflow-native-abc123", {"cwd": str(project)})]
 
 
+def test_build_agent_refreshes_foreground_admission_for_every_provider_turn(monkeypatch, tmp_path):
+    """Keep later provider-to-Lean handoffs ahead of background research."""
+    project = tmp_path / "Project"
+    project.mkdir()
+    leases = []
+
+    class _Agent(_ManagedRunAgentStub):
+        session_id = "provider-turn-priority"
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_MODEL", "model")
+    monkeypatch.setenv("LEANFLOW_NATIVE_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("LEANFLOW_NATIVE_API_KEY", "key")
+    monkeypatch.setenv("LEANFLOW_NATIVE_PROVIDER", "provider")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "2")
+    monkeypatch.setattr(runner, "AIAgent", _Agent)
+    monkeypatch.setattr(
+        "tools.implementations.terminal_tool.register_task_env_overrides",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runner.scope_entry_admission,
+        "arm",
+        lambda *args, **kwargs: leases.append((args, kwargs))
+        or SimpleNamespace(to_dict=lambda: {"marker_path": f"lease-{len(leases)}"}),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+
+    agent = runner._build_agent()
+    callback = agent.kwargs["step_callback"]
+    callback(2, ["lean_search"])
+    callback(3, ["lean_incremental_check"])
+
+    assert len(leases) == 2
+    assert all(call[0][0] is agent for call in leases)
+    assert all(call[1]["project_root"] == str(project) for call in leases)
+    assert all(call[1]["background_workers"] == 2 for call in leases)
+    assert all(
+        call[1]["reason"] == "foreground provider turn awaiting Lean admission" for call in leases
+    )
+
+
+def test_failed_incremental_check_keeps_foreground_manager_handoff(monkeypatch, tmp_path):
+    """Do not let research seize the Lean slot after an unsuccessful check."""
+    project = tmp_path / "Project"
+    project.mkdir()
+
+    class _Agent(_ManagedRunAgentStub):
+        session_id = "failed-check-priority"
+
+        def __init__(self, **_kwargs):
+            pass
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_MODEL", "model")
+    monkeypatch.setenv("LEANFLOW_NATIVE_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("LEANFLOW_NATIVE_API_KEY", "key")
+    monkeypatch.setenv("LEANFLOW_NATIVE_PROVIDER", "provider")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "2")
+    monkeypatch.setattr(runner, "AIAgent", _Agent)
+    monkeypatch.setattr(
+        "tools.implementations.terminal_tool.register_task_env_overrides",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runner.candidate_commit_priority,
+        "handoff_seconds",
+        lambda *_args, **_kwargs: 0.0,
+    )
+    monkeypatch.setattr(
+        runner.scope_entry_admission,
+        "configured_lease_seconds",
+        lambda: 91.0,
+    )
+
+    agent = runner._build_agent()
+
+    assert (
+        agent._project_lean_handoff_request_callback(
+            "lean_incremental_check",
+            {"theorem_id": "demo"},
+            '{"success": false, "status": "timeout"}',
+        )
+        == 91.0
+    )
+
+
 def test_build_agent_post_tool_callback_reports_slow_phase(monkeypatch, tmp_path):
     project = tmp_path / "Project"
     project.mkdir()

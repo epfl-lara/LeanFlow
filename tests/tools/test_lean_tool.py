@@ -572,6 +572,9 @@ def test_apply_verified_patch_schema_defaults_to_cached_incremental_check():
 
     assert mode["default"] == "incremental"
     assert "default warm LeanFlow check" in mode["description"]
+    timeout = lean_tool.APPLY_VERIFIED_PATCH_SCHEMA["parameters"]["properties"]["timeout_s"]
+    assert timeout["default"] == 300
+    assert timeout["minimum"] == 1
 
 
 def test_lean_incremental_schema_explains_dispatch_worker_timeout_floor():
@@ -733,6 +736,7 @@ def test_apply_verified_patch_tool_records_broad_check_without_claiming_target_v
             "action": "check_file",
             "file_path": str(target),
             "cwd": str(tmp_path),
+            "timeout_s": 300,
         }
     ]
     assert payload["checkpoint_id"].startswith("vpatch-")
@@ -814,9 +818,50 @@ def test_apply_verified_patch_tool_persists_check_failed_status(tmp_path, monkey
 
     assert payload["success"] is False
     assert payload["status"] == "check_failed"
-    assert payload["patch_applied"] is True
+    assert payload["patch_applied"] is False
+    assert payload["patch_applied_before_rollback"] is True
+    assert payload["rolled_back"] is True
     assert payload["verification"]["output"] == "unsolved goals"
+    assert target.read_text(encoding="utf-8") == "theorem demo : True := by\n  sorry\n"
     assert load_verified_patch_status()["status"] == "check_failed"
+
+
+def test_apply_verified_patch_forwards_requested_incremental_timeout(tmp_path, monkeypatch):
+    """Let hard declarations opt into a realistic LeanProbe deadline."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    target = tmp_path / "Demo.lean"
+    target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        lean_patch,
+        "lean_incremental_check",
+        lambda **kwargs: calls.append(kwargs)
+        or {
+            "success": True,
+            "ok": True,
+            "has_errors": False,
+            "action": "check_file",
+        },
+    )
+    patch = f"""\
+*** Begin Patch
+*** Update File: {target}
+ theorem demo : True := by
+-  sorry
++  trivial
+*** End Patch"""
+
+    payload = json.loads(
+        lean_tool.apply_verified_patch_tool(
+            str(target),
+            patch,
+            cwd=str(tmp_path),
+            timeout_s=600,
+        )
+    )
+
+    assert payload["success"] is True
+    assert calls[0]["timeout_s"] == 600
 
 
 def test_apply_verified_patch_denies_scratch_worker_without_replacing_status(tmp_path, monkeypatch):

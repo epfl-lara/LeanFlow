@@ -70,13 +70,32 @@ LeanProbe, LeanIncrementalSegment, _probe_segment_file, _LEAN_PROBE_IMPORT_ERROR
 def _segment_file(text: str) -> tuple[str, list[Any]]:
     if _probe_segment_file is None:
         raise RuntimeError(_LEAN_PROBE_IMPORT_ERROR)
-    header, segments = _probe_segment_file(text)
+    segmentation_text = _normalize_inline_scoped_declarations(text)
+    header, segments = _probe_segment_file(segmentation_text)
     return _repair_option_wrapped_segments(text, header, list(segments))
 
 
 _SCOPED_COMMAND_WRAPPER_BEFORE_DECL_RE = re.compile(
-    r"(?m)(^[ \t]*(?:(?:set_option|variable)[^\n]*\bin[ \t]*\n[ \t]*)+)\Z"
+    r"(?m)(^[ \t]*(?:(?:set_option|variable)[^\n]*\bin(?:[ \t]*\n[ \t]*|[ \t]+))+)\Z"
 )
+_INLINE_SCOPED_DECLARATION_RE = re.compile(
+    r"(?m)^(?P<wrapper>[ \t]*(?:set_option|variable)\b[^\n]*\bin)"
+    r"(?P<space>[ \t]+)"
+    r"(?P<declaration>(?:(?:private|protected|noncomputable|unsafe|partial)\s+)*"
+    r"(?:theorem|lemma|example|def|instance|class|structure)\b)"
+)
+
+
+def _normalize_inline_scoped_declarations(text: str) -> str:
+    """Expose same-line scoped declarations to LeanProbe without shifting offsets."""
+
+    def replace(match: re.Match[str]) -> str:
+        spacing = match.group("space")
+        return (
+            match.group("wrapper") + "\n" + (" " * (len(spacing) - 1)) + match.group("declaration")
+        )
+
+    return _INLINE_SCOPED_DECLARATION_RE.sub(replace, text)
 
 
 def _rebuilt_segment(segment: Any, text: str, *, start: int, end: int) -> Any:

@@ -19,6 +19,9 @@ _FOREGROUND_DRAIN_TIMEOUT_ENV = "LEANFLOW_NATIVE_FOREGROUND_DRAIN_TIMEOUT_S"
 _FOREGROUND_DRAIN_DEFAULT_TIMEOUT_S = 10.0
 _FOREGROUND_DRAIN_MAX_TIMEOUT_S = 30.0
 _FOREGROUND_DRAIN_JOIN_SLICE_S = 0.1
+_INCREMENTAL_CLOSE_TIMEOUT_ENV = "LEANFLOW_NATIVE_INCREMENTAL_CLOSE_TIMEOUT_S"
+_INCREMENTAL_CLOSE_DEFAULT_TIMEOUT_S = 5.0
+_INCREMENTAL_CLOSE_MAX_TIMEOUT_S = 30.0
 
 
 def native_exit_status_fields(exit_code: int, reason: str) -> dict[str, Any]:
@@ -58,6 +61,55 @@ def _native_foreground_drain_timeout_s(timeout_s: float | None = None) -> float:
     if math.isnan(parsed):
         parsed = _FOREGROUND_DRAIN_DEFAULT_TIMEOUT_S
     return max(0.0, min(_FOREGROUND_DRAIN_MAX_TIMEOUT_S, parsed))
+
+
+def _incremental_close_timeout_s() -> float:
+    """Return the bounded LeanProbe close wait used during process exit."""
+    raw = str(
+        os.getenv(
+            _INCREMENTAL_CLOSE_TIMEOUT_ENV,
+            str(_INCREMENTAL_CLOSE_DEFAULT_TIMEOUT_S),
+        )
+        or ""
+    )
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        parsed = _INCREMENTAL_CLOSE_DEFAULT_TIMEOUT_S
+    if not math.isfinite(parsed):
+        parsed = _INCREMENTAL_CLOSE_DEFAULT_TIMEOUT_S
+    return max(0.01, min(_INCREMENTAL_CLOSE_MAX_TIMEOUT_S, parsed))
+
+
+def _close_incremental_sessions_bounded(close: Callable[[], object]) -> bool:
+    """Close LeanProbe without waiting forever on an abandoned tool lock.
+
+    An interrupted foreground check can still own LeanProbe's internal lock
+    after its Lean child is gone. The native process exits through ``os._exit``
+    after cleanup, so a timed-out daemon closer may be abandoned safely while
+    the caller records a truthful runtime-cleanup failure.
+    """
+    result: list[object] = []
+    errors: list[BaseException] = []
+
+    def target() -> None:
+        try:
+            result.append(close())
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(
+        target=target,
+        name="leanflow-incremental-close",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=_incremental_close_timeout_s())
+    if worker.is_alive():
+        return False
+    if errors:
+        raise errors[0]
+    return bool(result) and result[0] is not False
 
 
 def drain_managed_foreground_worker(
@@ -498,7 +550,7 @@ def shutdown_native_runtime_services(agent: Any = None) -> tuple[str, ...]:
 
     def close_incremental_lean_sessions() -> None:
         """Fail cleanup truthfully when the owned LeanProbe refuses to close."""
-        if close_incremental_sessions() is False:
+        if not _close_incremental_sessions_bounded(close_incremental_sessions):
             raise RuntimeError("incremental Lean session close failed")
 
     def close_mcp_servers() -> None:

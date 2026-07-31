@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from core.runtime_modes import scratch_only_dispatch_worker_enabled
@@ -163,6 +164,39 @@ def _source_revision_sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def _restore_unverified_source(
+    path: Path,
+    *,
+    before_exists: bool,
+    before_content: bytes,
+) -> tuple[bool, str]:
+    """Atomically restore the exact pre-patch source revision."""
+    try:
+        if not before_exists:
+            path.unlink(missing_ok=True)
+            return True, ""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_descriptor, temporary = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=f".{path.name}.rollback-",
+        )
+        try:
+            with os.fdopen(file_descriptor, "wb") as handle:
+                handle.write(before_content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+    except BaseException as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:240]}"
+    return True, ""
+
+
 def apply_verified_patch_tool(
     path: str,
     patch: str,
@@ -172,6 +206,7 @@ def apply_verified_patch_tool(
     theorem_id: str = "",
     owner_id: str = "",
     task_id: str = "default",
+    timeout_s: int = 300,
 ) -> str:
     """Apply a one-file Lean patch and immediately verify the touched scope."""
     del task_id
@@ -256,9 +291,11 @@ def apply_verified_patch_tool(
         else Path.cwd().resolve()
     )
     before_content = ""
+    before_bytes = b""
     before_exists = resolved_path.exists()
     if resolved_path.exists():
-        before_content = resolved_path.read_text(encoding="utf-8")
+        before_bytes = resolved_path.read_bytes()
+        before_content = before_bytes.decode("utf-8")
 
     checkpoint = write_verified_patch_checkpoint(
         file_path=str(resolved_path),
@@ -357,6 +394,7 @@ def apply_verified_patch_tool(
             action="check_file",
             file_path=str(resolved_path),
             cwd=str(base_cwd),
+            timeout_s=max(1, int(timeout_s or 300)),
         )
     else:
         verification = lean_verify(
@@ -377,7 +415,19 @@ def apply_verified_patch_tool(
     else:
         check_passed = bool(verification.get("ok"))
     check_passed = check_passed and verification_source_unchanged
-    status = "patch_elaborated" if check_passed else "check_failed"
+    rolled_back = False
+    rollback_error = ""
+    if not check_passed and verification_source_unchanged:
+        rolled_back, rollback_error = _restore_unverified_source(
+            resolved_path,
+            before_exists=before_exists,
+            before_content=before_bytes,
+        )
+    status = (
+        "patch_elaborated"
+        if check_passed
+        else ("check_failed" if not rollback_error else "rollback_failed")
+    )
     payload = {
         "success": check_passed,
         "status": status,
@@ -385,7 +435,10 @@ def apply_verified_patch_tool(
         "cwd": str(base_cwd),
         "theorem_id": str(theorem_id or ""),
         "check_mode": normalized_check,
-        "patch_applied": True,
+        "patch_applied": bool(check_passed or not rolled_back),
+        "patch_applied_before_rollback": True,
+        "rolled_back": rolled_back,
+        "rollback_error": rollback_error,
         "check_passed": check_passed,
         # This tool checks a broad file/module/project scope.  It does not run
         # the queue manager's declaration-identity and axiom-profile gate, so
@@ -407,8 +460,12 @@ def apply_verified_patch_tool(
             if check_passed
             else (
                 "Patch applied and Lean returned successfully, but the source changed during verification. Run a fresh exact check on the current revision."
-                if verification.get("ok") and not verification_source_unchanged
-                else "Patch applied, but verification failed. Continue repair from the returned diagnostics."
+                if not verification_source_unchanged
+                else (
+                    "Patch verification failed and the exact pre-patch source revision was restored. Repair the candidate from the returned diagnostics before applying it again."
+                    if rolled_back
+                    else "Patch verification failed, and restoring the pre-patch source revision failed. Stop source edits until the rollback error is resolved."
+                )
             )
         ),
     }

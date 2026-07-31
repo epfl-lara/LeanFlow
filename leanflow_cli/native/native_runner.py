@@ -48,6 +48,9 @@ _QUEUE_MANAGER_STATE_RESTORED_KEY = "_queue_manager_state_restored"
 _RESUME_GRAPH_RECOVERY_DEFERRED_KEY = "_resume_graph_recovery_deferred"
 _MECHANICAL_ORCHESTRATOR_ROUTES = frozenset({"decompose", "negate", "plan"})
 _MANAGED_SOURCE_EDIT_TOOLS = frozenset({"patch", "write_file", "apply_verified_patch"})
+_FOREGROUND_VERIFICATION_HANDOFF_TOOLS = frozenset(
+    {"apply_verified_patch", "lean_axioms", "lean_incremental_check", "lean_verify"}
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # leanflow_cli/native/X.py -> repo root
 if str(REPO_ROOT) not in sys.path:
@@ -12689,6 +12692,41 @@ def _step_callback(iteration: int, previous_tools: list[str]) -> None:
     )
 
 
+def _managed_agent_step_callback(
+    agent: Any,
+    iteration: int,
+    previous_tools: list[str],
+) -> None:
+    """Record one provider turn and refresh its foreground Lean reservation.
+
+    Research workers may elaborate while the provider reasons, but they must
+    not capture the project-wide Lean slot immediately before the next
+    foreground tool. Refreshing the bounded scope lease on every turn closes
+    that provider-to-tool gap after the initial workflow scope.
+    """
+    _step_callback(iteration, previous_tools)
+    try:
+        lease = scope_entry_admission.arm(
+            agent,
+            project_root=_project_root(),
+            background_workers=research_mode.research_worker_count(),
+            reason="foreground provider turn awaiting Lean admission",
+        )
+    except Exception:
+        logger.debug("provider-turn foreground admission lease failed", exc_info=True)
+        return
+    if lease is not None:
+        _record_agent_activity(
+            agent,
+            "provider-turn-foreground-admission-armed",
+            "Reserved foreground Lean admission for the active provider turn",
+            iteration=iteration,
+            previous_tools=list(previous_tools or []),
+            campaign_progress=False,
+            **lease.to_dict(),
+        )
+
+
 def _held_lock_count(owner_id: str) -> int:
     if not owner_id:
         return 0
@@ -18472,6 +18510,16 @@ def _build_agent() -> AIAgent:
     if runtime_reasoning_effort and configured_reasoning_effort.strip().lower() == "auto":
         configured_reasoning_effort = runtime_reasoning_effort
     reasoning_cfg = _parse_managed_reasoning_config(configured_reasoning_effort)
+    agent_holder: dict[str, Any] = {}
+
+    def managed_step_callback(iteration: int, previous_tools: list[str]) -> None:
+        """Forward step activity after the constructed agent is available."""
+        active_agent = agent_holder.get("agent")
+        if active_agent is None:
+            _step_callback(iteration, previous_tools)
+            return
+        _managed_agent_step_callback(active_agent, iteration, previous_tools)
+
     agent = AIAgent(
         model=model,
         base_url=base_url,
@@ -18486,7 +18534,7 @@ def _build_agent() -> AIAgent:
         checkpoints_enabled=True,
         checkpoint_max_snapshots=50,
         tool_progress_callback=_tool_progress_callback,
-        step_callback=_step_callback,
+        step_callback=managed_step_callback,
         reasoning_config=reasoning_cfg,
         seed=_managed_agent_seed(agent_cfg.get("seed")),
         temperature=_managed_agent_float(agent_cfg.get("temperature")),
@@ -18498,6 +18546,7 @@ def _build_agent() -> AIAgent:
         tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 28),
         tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 12),
     )
+    agent_holder["agent"] = agent
     project_root = _project_root()
     managed_tool_task_id = f"leanflow-native-{getattr(agent, 'session_id', '') or os.getpid()}"
     agent._managed_tool_task_id = managed_tool_task_id
@@ -18663,7 +18712,7 @@ def _build_agent() -> AIAgent:
         arguments: Mapping[str, Any],
         result: str,
     ) -> float:
-        """Reserve commit priority for one clean temporary assigned candidate."""
+        """Reserve priority through the next authoritative foreground gate."""
         autonomy_state = getattr(agent, "_managed_autonomy_state", None)
         assignment = (
             dict(autonomy_state.get("current_queue_assignment") or {})
@@ -18683,6 +18732,18 @@ def _build_agent() -> AIAgent:
             allowed_axioms=_allowed_axioms(),
             pending_helper=(pending_helper.to_mapping() if pending_helper is not None else None),
         )
+        if (
+            function_name in _FOREGROUND_VERIFICATION_HANDOFF_TOOLS
+            and research_mode.research_mode_enabled()
+            and research_mode.research_worker_count() > 0
+        ):
+            # A failed or ordinary check still enters synchronous manager
+            # verification. Keep the foreground chain continuous instead of
+            # letting a background full-file elaboration win the release gap.
+            handoff_seconds = max(
+                handoff_seconds,
+                scope_entry_admission.configured_lease_seconds(),
+            )
         target_symbol = str(assignment.get("target_symbol", "") or "").strip()
         active_file = str(assignment.get("active_file", "") or "").strip()
         if (
