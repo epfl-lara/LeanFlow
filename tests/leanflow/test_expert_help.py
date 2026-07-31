@@ -287,6 +287,27 @@ def test_advisor_timeout_terminates_spawned_grandchild(tmp_path):
             os.kill(child_pid, signal.SIGKILL)
 
 
+def test_long_advisor_refreshes_parent_workflow_heartbeat(monkeypatch, tmp_path):
+    heartbeats = []
+    monkeypatch.setattr(expert_help, "_EXPERT_HEARTBEAT_INTERVAL_S", 0.05)
+    monkeypatch.setattr(
+        expert_help,
+        "touch_workflow_runtime_heartbeat",
+        lambda: heartbeats.append(time.monotonic()) or True,
+    )
+
+    result = expert_help._run_isolated_expert_command(
+        [sys.executable, "-c", "import time; time.sleep(0.25); print('done')"],
+        input="advisor prompt",
+        cwd=str(tmp_path),
+        timeout=2,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "done"
+    assert heartbeats
+
+
 @pytest.mark.parametrize("detached", [False, True])
 @pytest.mark.skipif(not hasattr(os, "killpg"), reason="requires POSIX process groups")
 def test_advisor_timeout_finds_grandchild_after_leader_exits(tmp_path, detached):

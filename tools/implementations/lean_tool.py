@@ -452,14 +452,16 @@ LEAN_INCREMENTAL_CHECK_SCHEMA = {
     "name": "lean_incremental_check",
     "description": (
         "Fast LeanInteract-backed verifier for ordered same-file proof queues. It warms the "
-        "file header/imports, reuses cached Lean environments, and checks only the assigned "
-        "declaration or replacement chunk. Use this for inner-loop proof feedback and optional "
+        "file header/imports, reuses cached Lean environments, and checks the current file, assigned "
+        "declaration, or replacement chunk. Use this for inner-loop proof feedback and optional "
         "tactic/proof-state annotations; use lean_verify for explicit final Lake sweeps. "
         "Normal queue use is action=check_target with file_path and theorem_id. Use "
         "action=check_helper with theorem_id set to the existing assigned declaration and "
         "replacement set to a complete new helper declaration; this validates the helper "
         "against the exact pre-target environment without counting as target acceptance. Use "
-        "action=prepare_file to warm imports before a run. Use action=feedback or "
+        "action=check_file to incrementally elaborate the current file after a patch, including "
+        "files that retain an intentional assigned `sorry`. Use action=prepare_file to warm imports "
+        "before a run. Use action=feedback or "
         "include_tactics=true when the proof is blocked and you need intermediate tactic "
         "ranges, goals, proof_state, feedback_lean comments, and file-global diagnostic locations."
     ),
@@ -471,8 +473,14 @@ LEAN_INCREMENTAL_CHECK_SCHEMA = {
             "cwd": {"type": "string", "description": "Optional project working directory"},
             "action": {
                 "type": "string",
-                "enum": ["prepare_file", "check_target", "check_helper", "feedback"],
-                "description": "`prepare_file` warms header/imports and prior envs; `check_target` validates the assigned declaration; `check_helper` validates a complete new helper supplied in replacement, anchored immediately before the existing theorem_id; `feedback` is a rich diagnostic check with tactic/proof-state output.",
+                "enum": [
+                    "prepare_file",
+                    "check_file",
+                    "check_target",
+                    "check_helper",
+                    "feedback",
+                ],
+                "description": "`prepare_file` warms header/imports and prior envs; `check_file` incrementally elaborates the current file; `check_target` validates the assigned declaration; `check_helper` validates a complete new helper supplied in replacement, anchored immediately before the existing theorem_id; `feedback` is a rich diagnostic check with tactic/proof-state output.",
                 "default": "check_target",
             },
             "replacement": {
@@ -492,7 +500,7 @@ LEAN_INCREMENTAL_CHECK_SCHEMA = {
                     "helper harness, require a complete allowed-axiom profile, and fail closed "
                     "when that profile is unavailable. Managed assigned-target replacements "
                     "enable target profiling automatically. Do not use this option with "
-                    "`prepare_file` or `feedback`."
+                    "`prepare_file`, `check_file`, or `feedback`."
                 ),
                 "default": False,
             },
@@ -693,7 +701,8 @@ APPLY_VERIFIED_PATCH_SCHEMA = {
     "name": "apply_verified_patch",
     "description": (
         "Apply one V4A patch to a single .lean file, persist a pre-edit checkpoint, "
-        "then immediately run Lean verification. In managed queue workflows, ordinary `patch` "
+        "then immediately run LeanFlow's cached incremental verification by default. In managed "
+        "queue workflows, ordinary `patch` "
         "and `write_file` edits are manager-verified after successful tool calls; use this tool "
         "when you specifically need one atomic patch/checkpoint/verification result."
     ),
@@ -708,8 +717,8 @@ APPLY_VERIFIED_PATCH_SCHEMA = {
             "cwd": {"type": "string", "description": "Optional project working directory"},
             "check_mode": {
                 "type": "string",
-                "description": "Verification tier: file_exact/lean-file/fast, module/medium, or project/strict",
-                "default": "file_exact",
+                "description": "Verification tier: incremental/fast (default warm LeanFlow check), file_exact/lean-file (explicit Lake file check), module/medium, or project/strict",
+                "default": "incremental",
             },
             "theorem_id": {
                 "type": "string",
@@ -1020,7 +1029,7 @@ registry.register(
         path=args.get("path", ""),
         patch=args.get("patch", ""),
         cwd=args.get("cwd", ""),
-        check_mode=args.get("check_mode", "file_exact"),
+        check_mode=args.get("check_mode", "incremental"),
         theorem_id=args.get("theorem_id", ""),
         owner_id=str(kw.get("owner_id", "") or ""),
         task_id=str(kw.get("task_id", "") or "default"),

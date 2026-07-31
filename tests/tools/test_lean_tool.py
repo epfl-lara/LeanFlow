@@ -549,13 +549,29 @@ def test_lean_incremental_schema_exposes_target_and_helper_axiom_profiles():
         "include_axiom_profile"
     ]
 
-    assert action["enum"] == ["prepare_file", "check_target", "check_helper", "feedback"]
+    assert action["enum"] == [
+        "prepare_file",
+        "check_file",
+        "check_target",
+        "check_helper",
+        "feedback",
+    ]
     assert profile["type"] == "boolean"
     assert profile["default"] is False
     assert "For `check_target`" in profile["description"]
     assert "For `check_helper`" in profile["description"]
     assert "fail closed" in profile["description"]
-    assert "Do not use this option with `prepare_file` or `feedback`" in profile["description"]
+    assert (
+        "Do not use this option with `prepare_file`, `check_file`, or `feedback`"
+        in profile["description"]
+    )
+
+
+def test_apply_verified_patch_schema_defaults_to_cached_incremental_check():
+    mode = lean_tool.APPLY_VERIFIED_PATCH_SCHEMA["parameters"]["properties"]["check_mode"]
+
+    assert mode["default"] == "incremental"
+    assert "default warm LeanFlow check" in mode["description"]
 
 
 def test_lean_incremental_schema_explains_dispatch_worker_timeout_floor():
@@ -670,19 +686,21 @@ def test_apply_verified_patch_tool_records_broad_check_without_claiming_target_v
     target = tmp_path / "Demo.lean"
     target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
-    monkeypatch.setattr(
-        lean_patch,
-        "lean_verify",
-        lambda **kwargs: SimpleNamespace(
-            to_dict=lambda: {
-                "ok": True,
-                "mode": kwargs["mode"],
-                "command": "lake env lean Demo.lean",
-                "target": kwargs["target"],
-                "output": "ok",
-            }
-        ),
-    )
+    calls = []
+
+    def _fake_incremental_check(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "ok": True,
+            "has_errors": False,
+            "has_sorry": False,
+            "action": "check_file",
+            "backend": "lean_interact",
+            "cache": {"reused_server": True},
+        }
+
+    monkeypatch.setattr(lean_patch, "lean_incremental_check", _fake_incremental_check)
 
     patch = f"""\
 *** Begin Patch
@@ -707,6 +725,16 @@ def test_apply_verified_patch_tool_records_broad_check_without_claiming_target_v
     assert payload["verified"] is False
     assert len(payload["verified_source_revision_sha256"]) == 64
     assert payload["verification_source_unchanged"] is True
+    assert payload["check_mode"] == "incremental"
+    assert payload["verification"]["backend"] == "lean_interact"
+    assert payload["verification"]["cache"]["reused_server"] is True
+    assert calls == [
+        {
+            "action": "check_file",
+            "file_path": str(target),
+            "cwd": str(tmp_path),
+        }
+    ]
     assert payload["checkpoint_id"].startswith("vpatch-")
     assert "trivial" in target.read_text(encoding="utf-8")
     status = load_verified_patch_status()
@@ -726,17 +754,15 @@ def test_apply_verified_patch_rejects_verification_crossing_source_revision(tmp_
             "theorem demo : True := by\n  trivial\n\n-- concurrent change\n",
             encoding="utf-8",
         )
-        return SimpleNamespace(
-            to_dict=lambda: {
-                "ok": True,
-                "mode": kwargs["mode"],
-                "command": "lake env lean Demo.lean",
-                "target": kwargs["target"],
-                "output": "ok",
-            }
-        )
+        return {
+            "success": True,
+            "ok": True,
+            "has_errors": False,
+            "action": "check_file",
+            "backend": "lean_interact",
+        }
 
-    monkeypatch.setattr(lean_patch, "lean_verify", verify_and_mutate)
+    monkeypatch.setattr(lean_patch, "lean_incremental_check", verify_and_mutate)
     patch = f"""\
 *** Begin Patch
 *** Update File: {target}
@@ -765,16 +791,15 @@ def test_apply_verified_patch_tool_persists_check_failed_status(tmp_path, monkey
 
     monkeypatch.setattr(
         lean_patch,
-        "lean_verify",
-        lambda **kwargs: SimpleNamespace(
-            to_dict=lambda: {
-                "ok": False,
-                "mode": kwargs["mode"],
-                "command": "lake env lean Demo.lean",
-                "target": kwargs["target"],
-                "output": "unsolved goals",
-            }
-        ),
+        "lean_incremental_check",
+        lambda **kwargs: {
+            "success": True,
+            "ok": False,
+            "has_errors": True,
+            "action": "check_file",
+            "backend": "lean_interact",
+            "output": "unsolved goals",
+        },
     )
 
     patch = f"""\
@@ -834,7 +859,7 @@ def test_apply_verified_patch_tool_reports_no_changes_without_verifying(tmp_path
         verify_called["value"] = True
         return SimpleNamespace(to_dict=lambda: {"ok": True})
 
-    monkeypatch.setattr(lean_patch, "lean_verify", _fake_verify)
+    monkeypatch.setattr(lean_patch, "lean_incremental_check", _fake_verify)
 
     patch = f"""\
 *** Begin Patch
@@ -868,7 +893,7 @@ def test_apply_verified_patch_tool_blocks_statement_changes_before_verify(tmp_pa
         verify_called["value"] = True
         return SimpleNamespace(to_dict=lambda: {"ok": True})
 
-    monkeypatch.setattr(lean_patch, "lean_verify", _fake_verify)
+    monkeypatch.setattr(lean_patch, "lean_incremental_check", _fake_verify)
     patch = f"""\
 *** Begin Patch
 *** Update File: {target}

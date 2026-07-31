@@ -140,7 +140,8 @@ tool is reachable through the public registry.
   branding, environment loading, and built-in skill discovery.
 - `lean/` owns diagnostics, goals, declaration inspection, incremental checks,
   automation, proof context, premise search, axiom checks, ephemeral
-  validation, and the typed `LeanBackend` facade. Tactic-hole portfolios route
+  validation, target-owning verification-path resolution, and the typed
+  `LeanBackend` facade. Tactic-hole portfolios route
   through `lean_attempt_screening.py`, which prepares the target environment
   once and exact-checks bounded candidates with LeanProbe before any positional
   LSP fallback.
@@ -246,6 +247,9 @@ historical state is never assumed current before that reconciliation.
 - Axiom checks use elaborated declarations, not source-text heuristics alone.
 - Promoted negations and helper proofs pass the same trust checks as main proof
   edits.
+- Managed theorem workers route inner-loop Lean checks through
+  `lean_incremental_check`; `native/terminal_check_policy.py` reserves direct
+  terminal Lean and Lake processes for manager-owned canonical gates.
 - Verified graph state is derived from Lean evidence and reconciled after
   source changes.
 - File locks serialize supported writes during user-approved swarm runs.

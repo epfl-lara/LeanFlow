@@ -418,6 +418,35 @@ def test_direct_verify_does_not_spawn_after_incremental_close_failure(monkeypatc
     assert "admission retained" in retry.output.lower()
 
 
+def test_file_exact_verify_uses_explicit_targets_nested_project(monkeypatch, tmp_path):
+    """Keep file-exact checks scoped to a nested target when caller cwd is foreign."""
+    project = tmp_path / "Nested"
+    target = project / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+    target.write_text("theorem demo : True := by trivial\n", encoding="utf-8")
+    foreign_cwd = tmp_path / "Harness"
+    foreign_cwd.mkdir()
+    commands = []
+    monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (None, "missing"))
+    monkeypatch.setattr(
+        lean_services,
+        "_run_command",
+        lambda command, cwd=None: (commands.append((command, cwd)) or 0, "ok"),
+    )
+
+    result = lean_services.lean_verify(
+        target=str(target),
+        cwd=foreign_cwd,
+        mode="file_exact",
+    )
+
+    assert result.ok is True
+    assert result.mode == "file_exact"
+    assert result.command == "lake env lean Demo/Main.lean"
+    assert commands == [(["lake", "env", "lean", "Demo/Main.lean"], project)]
+
+
 def test_direct_axiom_harness_reclaims_preexisting_incremental_session(monkeypatch, tmp_path):
     """A parent axiom check cannot overlap its own retained LeanProbe child."""
     project = tmp_path / "Demo"
@@ -3245,6 +3274,21 @@ def test_project_root_prefers_native_project_env_when_cwd_omitted(monkeypatch, t
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
 
     root, error = lean_services._project_root()
+
+    assert root == project.resolve()
+    assert error == ""
+
+
+def test_project_root_keeps_native_authority_when_tool_cwd_is_foreign(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    foreign = tmp_path / "Harness"
+    project.mkdir()
+    foreign.mkdir()
+    (project / "lakefile.toml").write_text('[package]\nname = "Demo"\n', encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+
+    root, error = lean_services._project_root(foreign)
 
     assert root == project.resolve()
     assert error == ""

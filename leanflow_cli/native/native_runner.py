@@ -93,6 +93,7 @@ from leanflow_cli.native import (
     source_order_dependency_guard,
     source_placeholder_guard,
     terminal_authority,
+    terminal_check_policy,
     transition_visibility,
     verification_batch_admission,
     verified_patch_batch_reuse,
@@ -8723,6 +8724,27 @@ def _managed_pre_tool_call(
         )
         if decompose_guard:
             return decompose_guard
+    if (
+        _workflow_kind() == "prove"
+        and _single_queue_item_turn_enabled()
+        and not _agent_interrupted(agent)
+    ):
+        incremental_route = terminal_check_policy.incremental_check_route(
+            function_name,
+            args,
+        )
+        if incremental_route is not None:
+            with contextlib.suppress(Exception):
+                _record_agent_activity(
+                    agent,
+                    "managed-terminal-lean-check-blocked",
+                    "Routed a direct terminal Lean check through the incremental service",
+                    blocked_command=str(incremental_route["blocked_command"]),
+                    required_tool="lean_incremental_check",
+                    lean_started=False,
+                    campaign_progress=False,
+                )
+            return json.dumps(incremental_route, ensure_ascii=False)
     if _workflow_kind() == "prove" and function_name == "terminal":
         blocked_modules = environment_memory.blocked_imports(autonomy_state, args)
         if blocked_modules:

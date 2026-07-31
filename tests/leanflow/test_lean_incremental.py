@@ -43,6 +43,61 @@ def test_low_memory_mode_never_starts_leanprobe(monkeypatch, tmp_path):
     assert result["error_code"] == "low_memory_mode"
 
 
+def test_check_file_uses_cached_probe_declaration_replay(monkeypatch, tmp_path):
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  sorry\n",
+    )
+
+    class _FakeProbe:
+        def __init__(self):
+            self.calls = []
+
+        def check_target(self, file_path, **kwargs):
+            self.calls.append((file_path, kwargs))
+            return {
+                "success": True,
+                "ok": False,
+                "has_errors": False,
+                "has_sorry": True,
+                "valid_without_sorry": False,
+                "action": "check",
+                "cache": {"reused_server": True},
+            }
+
+    fake = _FakeProbe()
+    monkeypatch.setattr(li, "_probe", lambda: fake)
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="check_file",
+        file_path=str(target),
+        cwd=str(project),
+        timeout_s=17,
+    )
+
+    assert payload["success"] is True
+    assert payload["action"] == "check_file"
+    assert payload["has_errors"] is False
+    assert payload["has_sorry"] is True
+    assert payload["cache"]["reused_server"] is True
+    assert fake.calls == [
+        (
+            target,
+            {
+                "theorem_id": "demo",
+                "cwd": project,
+                "replacement": "",
+                "include_tactics": True,
+                "timeout_s": 17,
+            },
+        )
+    ]
+
+
 def test_segment_file_keeps_doc_comment_with_declaration():
     header, segments = li._segment_file(
         "\n".join(
@@ -582,6 +637,7 @@ def test_project_admission_reclaims_incremental_session_before_releasing_slot(
 
     fake = _FakeProbe()
     monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
     monkeypatch.setattr(li, "_PROBE", fake)
     monkeypatch.setattr(li, "_probe", lambda: fake)
     monkeypatch.setattr(
@@ -609,6 +665,49 @@ def test_project_admission_reclaims_incremental_session_before_releasing_slot(
     assert all(value >= 0 for value in payload["leanflow_timing"].values())
 
 
+def test_foreground_incremental_session_stays_warm_between_checks(monkeypatch, tmp_path):
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
+    )
+
+    class _FakeProbe:
+        closed = False
+
+        def check_target(self, *args, **kwargs):
+            return {
+                "success": True,
+                "ok": True,
+                "target": "demo",
+                "cache": {"cache_hit": True},
+            }
+
+        def close(self):
+            self.closed = True
+
+    fake = _FakeProbe()
+    monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
+    monkeypatch.setattr(li, "_PROBE", fake)
+    monkeypatch.setattr(li, "_probe", lambda: fake)
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+    )
+
+    assert payload["ok"] is True
+    assert fake.closed is False
+    assert payload["resource_admission"]["incremental_session_reclaimed"] is False
+    assert payload["cache"]["cache_hit"] is True
+
+
 def test_repeated_research_scratch_checks_recreate_closed_probe(monkeypatch, tmp_path):
     """Negation-like scratch probes must not retain a warm Lean child between calls."""
     project, _target = _write_project(tmp_path, "theorem demo : True := by trivial\n")
@@ -626,6 +725,7 @@ def test_repeated_research_scratch_checks_recreate_closed_probe(monkeypatch, tmp
             self.closed = True
 
     monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
     monkeypatch.setattr(li, "LeanProbe", _FakeProbe)
     monkeypatch.setattr(li, "_PROBE", None)
 
@@ -652,6 +752,7 @@ def test_failed_scratch_close_retains_project_slot_truthfully(monkeypatch, tmp_p
 
     fake = _FailingProbe()
     monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
     monkeypatch.setattr(li, "_PROBE", fake)
 
     payload = li.lean_scratch_check("example : True := by trivial", cwd=str(project))

@@ -1573,6 +1573,7 @@ class TestConcurrentToolExecution:
     def test_research_heavy_tools_reclaim_resident_lean_services(self, agent, monkeypatch):
         """Release owned LeanProbe state before the project slot admits another actor."""
         monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+        monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
         tool_calls = [
             _mock_tool_call(
                 name="lean_verify",
@@ -1607,6 +1608,7 @@ class TestConcurrentToolExecution:
     def test_single_sequential_lean_tool_uses_project_admission(self, agent, monkeypatch):
         """A one-tool turn shares the same admission/reclaim boundary as a batch."""
         monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+        monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
         calls: list[str] = []
         admission = SimpleNamespace(
             to_dict=lambda: {}, retain_until_process_exit=lambda reason: None
@@ -1901,6 +1903,7 @@ class TestConcurrentToolExecution:
         (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
         monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
         monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+        monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
         tool_call = _mock_tool_call(
             name="lean_verify",
             arguments=json.dumps({"target": "Demo/Main.lean"}),

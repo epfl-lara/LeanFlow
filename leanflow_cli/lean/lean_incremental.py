@@ -381,6 +381,8 @@ def _leanflow_action(action: str) -> str:
     return {
         "prepare": "prepare_file",
         "prepare_file": "prepare_file",
+        "check_file": "check_file",
+        "file": "check_file",
         "check": "check_target",
         "check_target": "check_target",
         "check_helper": "check_helper",
@@ -1139,6 +1141,14 @@ def lean_incremental_check(
             file_path=resolved,
             target=theorem_id,
         )
+    if leanflow_action == "check_file" and replacement.strip():
+        return _error_payload(
+            action=leanflow_action,
+            error="check_file reads the current file and does not accept replacement",
+            error_code="file_replacement_unsupported",
+            file_path=resolved,
+            target=theorem_id,
+        )
     probe_action = leanflow_action
     probe_replacement = replacement
     replacement_metadata: dict[str, Any] = {}
@@ -1313,6 +1323,30 @@ def lean_incremental_check(
                     cwd=project_root,
                     timeout_s=effective_timeout_s,
                 )
+            elif leanflow_action == "check_file":
+                _header, segments = _segment_file(source_text)
+                final_segment = segments[-1] if segments else None
+                final_target = str(getattr(final_segment, "name", "") or "")
+                if final_target:
+                    # Checking the final declaration makes LeanProbe replay every
+                    # changed predecessor through its per-declaration cache. Ask
+                    # for tactics up front so an intentional final `sorry` does
+                    # not trigger the ordinary failed-target diagnostic rerun.
+                    payload = _probe().check_target(
+                        resolved,
+                        theorem_id=final_target,
+                        cwd=project_root,
+                        replacement="",
+                        include_tactics=True,
+                        timeout_s=effective_timeout_s,
+                    )
+                else:
+                    payload = _probe().prepare_file(
+                        resolved,
+                        theorem_id="",
+                        cwd=project_root,
+                        timeout_s=effective_timeout_s,
+                    )
             elif probe_action == "check_target":
                 payload = _probe().check_target(
                     resolved,

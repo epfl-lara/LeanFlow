@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import Any
 
 from leanflow_cli.config import get_env_value, load_config
-from leanflow_cli.workflows.workflow_state import append_workflow_activity
+from leanflow_cli.workflows.workflow_state import (
+    append_workflow_activity,
+    touch_workflow_runtime_heartbeat,
+)
 from tools.utilities.interrupt import is_interrupted
 
 COMMAND_PROVIDER_ALIASES = {
@@ -45,6 +48,7 @@ TASK_FALLBACKS = {
 
 _EXPERT_PROCESS_TOKEN_ENV = "LEANFLOW_INTERNAL_EXPERT_PROCESS_TOKEN"
 _EXPERT_COMMUNICATE_POLL_S = 0.1
+_EXPERT_HEARTBEAT_INTERVAL_S = 15.0
 _EXPERT_SHUTDOWN_WAIT_S = 5.0
 
 
@@ -559,6 +563,7 @@ def _run_isolated_expert_command(
     communicate_input: str | None = input
     partial_stdout = ""
     partial_stderr = ""
+    next_heartbeat_at = time.monotonic() + _EXPERT_HEARTBEAT_INTERVAL_S
     try:
         while True:
             if active.cancel_requested.is_set() or is_interrupted():
@@ -586,6 +591,11 @@ def _run_isolated_expert_command(
                 communicate_input = None
                 partial_stdout = _subprocess_text(exc.stdout) or partial_stdout
                 partial_stderr = _subprocess_text(exc.stderr) or partial_stderr
+                now = time.monotonic()
+                if now >= next_heartbeat_at:
+                    with contextlib.suppress(Exception):
+                        touch_workflow_runtime_heartbeat()
+                    next_heartbeat_at = now + _EXPERT_HEARTBEAT_INTERVAL_S
                 continue
 
             # A signal can race the final pipe drain. Honor it and sweep any

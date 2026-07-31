@@ -16837,6 +16837,7 @@ def test_managed_pre_tool_call_blocks_terminal_edits_in_queue(monkeypatch, tmp_p
             return False
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
 
     result = runner._managed_pre_tool_call(
         _Agent(),
@@ -16857,10 +16858,82 @@ def test_managed_pre_tool_call_blocks_terminal_edits_in_queue(monkeypatch, tmp_p
     assert restore_payload["success"] is False
     assert "terminal-based file edits" in restore_payload["error"]
     assert (
+        json.loads(
+            runner._managed_pre_tool_call(
+                _Agent(),
+                "terminal",
+                {"command": "lake env lean Main.lean 2>&1"},
+            )
+        )["status"]
+        == "managed_incremental_check_required"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "lean Main.lean",
+        "/usr/bin/lake env lean Main.lean",
+        "lake build",
+        "rg -n theorem . | lake env lean Main.lean",
+    ],
+)
+def test_managed_pre_tool_call_routes_direct_lean_checks_to_incremental(
+    monkeypatch, tmp_path, command
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *_args, **_kwargs: None)
+
+    result = runner._managed_pre_tool_call(
+        _Agent(),
+        "terminal",
+        {"command": command},
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "managed_incremental_check_required"
+    assert payload["required_tool"] == "lean_incremental_check"
+    assert "per-declaration cache" in payload["error"]
+
+
+def test_managed_pre_tool_call_keeps_non_lean_terminal_diagnostics(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+
+    assert (
         runner._managed_pre_tool_call(
             _Agent(),
             "terminal",
-            {"command": "lake env lean Main.lean 2>&1"},
+            {"command": "rg -n theorem Main.lean"},
         )
         is None
     )

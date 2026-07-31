@@ -212,13 +212,19 @@ def _notify_admission_observer(phase: str, details: Mapping[str, object]) -> Non
 
 
 def project_lean_service_reclaim_enabled() -> bool:
-    """Return whether admitted research calls must release resident Lean services."""
-    return str(os.getenv(_RECLAIM_ENV, "") or "").strip().lower() in {
+    """Return whether this worker must release resident Lean services after each call.
+
+    Foreground proving keeps its incremental session warm. Dispatch workers
+    reclaim theirs before releasing the shared project slot so background
+    research cannot accumulate one resident Lean process per worker.
+    """
+    configured = str(os.getenv(_RECLAIM_ENV, "") or "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
+    return configured and dispatch_worker_enabled()
 
 
 def canonical_lean_project_root(project_root: str | os.PathLike[str]) -> Path:

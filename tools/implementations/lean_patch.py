@@ -26,6 +26,7 @@ import subprocess
 from pathlib import Path
 
 from core.runtime_modes import scratch_only_dispatch_worker_enabled
+from leanflow_cli.lean.lean_incremental import lean_incremental_check
 from leanflow_cli.lean.lean_services import lean_verify
 from leanflow_cli.runtime.file_locks import ensure_file_lock, release_file_lock
 from leanflow_cli.workflows.workflow_state import (
@@ -73,7 +74,7 @@ def _verified_patch_failure(
     *,
     path: str = "",
     cwd: str = "",
-    check_mode: str = "file_exact",
+    check_mode: str = "incremental",
     checkpoint: dict | None = None,
     patch_applied: bool = False,
     patch: dict | None = None,
@@ -111,11 +112,12 @@ def _verified_patch_failure(
 
 
 def _normalize_verified_patch_check_mode(check_mode: str) -> str:
-    normalized = str(check_mode or "file_exact").strip().lower().replace("-", "_")
+    normalized = str(check_mode or "incremental").strip().lower().replace("-", "_")
     aliases = {
         "lean_file": "file_exact",
         "file": "file_exact",
-        "fast": "file_exact",
+        "fast": "incremental",
+        "incremental": "incremental",
         "file_exact": "file_exact",
         "module": "module",
         "medium": "module",
@@ -166,7 +168,7 @@ def apply_verified_patch_tool(
     patch: str,
     *,
     cwd: str = "",
-    check_mode: str = "file_exact",
+    check_mode: str = "incremental",
     theorem_id: str = "",
     owner_id: str = "",
     task_id: str = "default",
@@ -211,7 +213,7 @@ def apply_verified_patch_tool(
             cwd=cwd,
             check_mode=normalized_check,
         )
-    if normalized_check not in {"file_exact", "module", "project"}:
+    if normalized_check not in {"incremental", "file_exact", "module", "project"}:
         return _verified_patch_failure(
             "invalid_request",
             f"unsupported check_mode: {check_mode}",
@@ -350,9 +352,16 @@ def apply_verified_patch_tool(
     except OSError:
         verification_source_bytes = b""
     verification_source_revision_sha256 = _source_revision_sha256(verification_source_bytes)
-    verification = lean_verify(
-        target=str(resolved_path), cwd=str(base_cwd), mode=normalized_check
-    ).to_dict()
+    if normalized_check == "incremental":
+        verification = lean_incremental_check(
+            action="check_file",
+            file_path=str(resolved_path),
+            cwd=str(base_cwd),
+        )
+    else:
+        verification = lean_verify(
+            target=str(resolved_path), cwd=str(base_cwd), mode=normalized_check
+        ).to_dict()
     try:
         post_verification_bytes = resolved_path.read_bytes()
     except OSError:
@@ -360,7 +369,14 @@ def apply_verified_patch_tool(
     verification_source_unchanged = bool(
         resolved_path.exists() and post_verification_bytes == verification_source_bytes
     )
-    check_passed = bool(verification.get("ok")) and verification_source_unchanged
+    if normalized_check == "incremental":
+        check_passed = bool(verification.get("success")) and not bool(
+            verification.get("has_errors")
+        )
+        check_passed = check_passed and not bool(verification.get("timed_out"))
+    else:
+        check_passed = bool(verification.get("ok"))
+    check_passed = check_passed and verification_source_unchanged
     status = "patch_elaborated" if check_passed else "check_failed"
     payload = {
         "success": check_passed,

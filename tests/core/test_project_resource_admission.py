@@ -19,6 +19,7 @@ from core.project_resource_admission import (
     ProjectLeanAdmissionRetained,
     project_lean_admission_observer,
     project_lean_heavy_admission,
+    project_lean_service_reclaim_enabled,
     reserve_project_foreground_priority_lease,
 )
 
@@ -66,6 +67,18 @@ def _stop_process(process: multiprocessing.Process | None) -> None:
     if process.is_alive():
         process.terminate()
         process.join(timeout=5)
+
+
+def test_resident_service_reclaim_is_limited_to_dispatch_workers(monkeypatch):
+    """Keep the foreground incremental service warm across proving calls."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
+
+    assert project_lean_service_reclaim_enabled() is False
+
+    monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
+
+    assert project_lean_service_reclaim_enabled() is True
 
 
 def test_project_gate_blocks_a_second_process_until_the_holder_releases(tmp_path: Path) -> None:

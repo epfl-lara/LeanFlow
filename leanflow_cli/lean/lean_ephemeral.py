@@ -14,7 +14,6 @@ from core.project_resource_admission import (
     ProjectLeanAdmission,
     ProjectLeanAdmissionRetained,
     project_lean_heavy_admission,
-    project_lean_service_reclaim_enabled,
 )
 
 _OUTPUT_LIMIT_BYTES = 1024 * 1024
@@ -107,8 +106,6 @@ def _retryable_project_failure(output: str) -> bool:
 
 def _reclaim_incremental_before_exact_check(admission: ProjectLeanAdmission) -> bool:
     """Close this process's LeanProbe before starting one-shot Lean."""
-    if not project_lean_service_reclaim_enabled():
-        return True
     from leanflow_cli.lean.lean_incremental import close_incremental_sessions
 
     reclaimed = close_incremental_sessions()

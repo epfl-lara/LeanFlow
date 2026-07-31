@@ -36,9 +36,9 @@ _PROFILE_DEFAULTS = {
     "LEANFLOW_LEARNINGS": "1",
     "LEANFLOW_CURRICULUM_ORDERING": "1",
     "LEANFLOW_MANAGER_LLM_MODE": "live",
-    # A research worker may retain a multi-gigabyte Lean/LSP session after a
-    # tool response.  The project admission gate reclaims that resident state
-    # before another foreground/background actor receives the shared slot.
+    # A dispatch worker may retain a multi-gigabyte Lean/LSP session after a
+    # tool response. The project admission policy reclaims background-worker
+    # state while keeping the single foreground prover's incremental cache warm.
     "LEANFLOW_PROJECT_LEAN_ADMISSION": "1",
     # Keep foreground lean-lsp diagnostics and remote/native search, but avoid
     # eagerly retaining a separate multi-gigabyte local Loogle index during a

@@ -22,7 +22,6 @@ from core.project_resource_admission import (
     ProjectLeanAdmission,
     ProjectLeanAdmissionRetained,
     project_lean_heavy_admission,
-    project_lean_service_reclaim_enabled,
 )
 from leanflow_cli.lean import lean_axiom_batch as _axiom_batch  # noqa: E402
 from leanflow_cli.lean import lean_proof_context_circuit as _proof_context_circuit  # noqa: E402
@@ -424,6 +423,7 @@ from leanflow_cli.lean.lean_models import (  # noqa: F401
     LeanWorkerResult,
     WorkflowRouteDecision,
 )
+from leanflow_cli.lean.lean_verification_paths import verification_project_root
 
 
 def _repo_root() -> Path:
@@ -432,12 +432,13 @@ def _repo_root() -> Path:
 
 def _project_root(cwd: str | os.PathLike[str] | None = None) -> tuple[Path | None, str]:
     explicit = str(os.getenv("LEANFLOW_PROJECT_ROOT", "") or "").strip()
+    native_workflow = str(os.getenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "") or "").strip()
     base = Path(cwd or explicit or os.getcwd()).expanduser().resolve()
     if explicit:
         explicit_path = Path(explicit).expanduser().resolve()
         explicit_root = find_lean_project_root(explicit_path)
         if explicit_root is not None and (
-            cwd is None or base == explicit_root or explicit_root in base.parents
+            native_workflow or cwd is None or base == explicit_root or explicit_root in base.parents
         ):
             # Tool calls may originate from `.lake/packages/<dependency>`,
             # which is itself a Lean project. The workflow root remains the
@@ -507,8 +508,6 @@ def _run_command(cmd: list[str], *, cwd: Path | None = None) -> tuple[int, str]:
 
 def _reclaim_incremental_before_local_lean(admission: ProjectLeanAdmission) -> bool:
     """Close an owned LeanProbe before launching another local Lean process."""
-    if not project_lean_service_reclaim_enabled():
-        return True
     from leanflow_cli.lean.lean_incremental import close_incremental_sessions
 
     reclaimed = close_incremental_sessions()
@@ -1156,9 +1155,12 @@ def lean_verify(
 ) -> LeanVerificationResult:
     """Run lake build at project, module, or file-level, returning exit code and compiler output to assess proof state."""
     project_root, _ = _project_root(cwd)
-    root = Path(project_root) if project_root else None
     normalized_mode = str(mode or "project").strip().lower()
     target_path = Path(target).expanduser().resolve() if target else None
+    root = verification_project_root(
+        target_path if normalized_mode in {"file_exact", "module"} else None,
+        Path(project_root) if project_root else None,
+    )
     if normalized_mode == "file_exact" and root and target_path:
         try:
             relative = str(target_path.relative_to(root))
