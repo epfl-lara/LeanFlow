@@ -253,6 +253,9 @@ historical state is never assumed current before that reconciliation.
 - Managed theorem workers route inner-loop Lean checks through
   `lean_incremental_check`; `native/terminal_check_policy.py` reserves direct
   terminal Lean and Lake processes for manager-owned canonical gates.
+- `lean/lean_interact_compat.py` installs a version-guarded linear response
+  reader when the installed LeanInteract still uses quadratic REPL output
+  concatenation; unfamiliar future implementations remain untouched.
 - Verified graph state is derived from Lean evidence and reconciled after
   source changes.
 - File locks serialize supported writes during user-approved swarm runs.

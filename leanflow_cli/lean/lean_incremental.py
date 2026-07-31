@@ -30,6 +30,7 @@ from leanflow_cli.lean.lean_incremental_axioms import (
     build_inline_axiom_query,
     parse_inline_axiom_messages,
 )
+from leanflow_cli.lean.lean_interact_compat import install_linear_repl_reader
 from leanflow_cli.lean.lean_parsing import (
     _declaration_line_index_from_text,
     _declaration_matches_target,
@@ -55,6 +56,7 @@ _PROBE_EVER_STARTED = False
 
 def _import_lean_probe() -> tuple[Any, Any, Any, str]:
     try:
+        install_linear_repl_reader()
         from lean_probe import LeanIncrementalSegment, LeanProbe
         from lean_probe.core import segment_file
     except Exception as exc:
