@@ -26,9 +26,11 @@ __all__ = [
     "_verification_review_system_prompt",
 ]
 
-# Default deterministic-verification timeouts (seconds). Used only by the timeout readers below.
+# Default deterministic-verification timeouts (seconds). Preparing the reusable
+# environment may pay a cold-start cost; an individual inner-loop target check
+# must stay short so a bad tactic cannot stall the managed proof turn.
 MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S = 300
-MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S = 300
+MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S = 60
 
 _ENV_BEFORE_TARGET_BLOCKER_RE = re.compile(
     r"failed to build env before target at\s+([A-Za-z_«][\w'.«»]*):",

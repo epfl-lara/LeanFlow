@@ -17412,8 +17412,7 @@ def test_low_memory_manager_skips_incremental_cache(monkeypatch):
     assert tool == "lean_verify"
 
 
-def test_manager_incremental_heartbeat_timeout_falls_back_to_file(monkeypatch):
-    file_verification = {"ok": True, "command": "lake env lean Main.lean"}
+def test_manager_incremental_heartbeat_timeout_stays_bounded(monkeypatch):
     events = []
     monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
     monkeypatch.setattr(
@@ -17429,16 +17428,21 @@ def test_manager_incremental_heartbeat_timeout_falls_back_to_file(monkeypatch):
             },
         },
     )
-    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda _path: file_verification)
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda _path: pytest.fail("a timed-out LeanProbe check must not start a file fallback"),
+    )
     monkeypatch.setattr(
         runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
     )
 
     checked, tool = runner._manager_check_queue_item("Main.lean", "demo")
 
-    assert checked == file_verification
-    assert tool == "lean_verify"
-    assert any(args[0] == "manager-incremental-file-fallback" for args, _ in events)
+    assert checked["ok"] is False
+    assert checked["fallback_suppressed"] is True
+    assert tool == "lean_incremental_check"
+    assert any(args[0] == "manager-incremental-timeout-bounded" for args, _ in events)
 
 
 def test_manager_file_fallback_scopes_unrelated_sorry_away_from_clean_helper(monkeypatch, tmp_path):
@@ -17457,12 +17461,12 @@ def test_manager_file_fallback_scopes_unrelated_sorry_away_from_clean_helper(mon
         "_manager_incremental_check_queue_item",
         lambda *_args: {
             "ok": False,
-            "output": "error: maximum number of heartbeats has been reached",
+            "output": "LeanProbe backend unavailable",
             "incremental": {
-                "success": True,
+                "success": False,
                 "ok": False,
                 "has_errors": True,
-                "timed_out": True,
+                "error_code": "backend_unavailable",
             },
         },
     )

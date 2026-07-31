@@ -4269,7 +4269,7 @@ def _manager_prepare_incremental_queue_item(active_file: str, target_symbol: str
 
 
 def _manager_check_queue_item(active_file: str, target_symbol: str) -> tuple[dict[str, Any], str]:
-    """Verify a queue item incrementally, falling back when scope options are lost."""
+    """Verify a queue item with LeanProbe, falling back only when it is unavailable."""
     started = time.monotonic()
     phase_seconds: dict[str, float] = {}
 
@@ -4343,10 +4343,21 @@ def _manager_check_queue_item(active_file: str, target_symbol: str) -> tuple[dic
                     route="incremental",
                 )
             _record_activity(
-                "manager-incremental-file-fallback",
-                f"Incremental timeout for {target_symbol}; running canonical file verification",
+                "manager-incremental-timeout-bounded",
+                f"LeanProbe timed out for {target_symbol}; skipped canonical file verification",
                 target_symbol=target_symbol,
                 active_file=active_file,
+                timeout_s=_manager_incremental_check_timeout_s(),
+                campaign_progress=False,
+            )
+            manager_verification["fallback_suppressed"] = True
+            manager_verification["fallback_reason"] = (
+                "deterministic LeanProbe timeout; keep the inner loop bounded"
+            )
+            return finish(
+                manager_verification,
+                "lean_incremental_check",
+                route="incremental-timeout",
             )
     phase_started = time.monotonic()
     check = _manager_verify_queue_file(active_file)
