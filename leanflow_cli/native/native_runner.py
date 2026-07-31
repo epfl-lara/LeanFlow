@@ -23163,6 +23163,24 @@ def _fidelity_goal_has_external_claim(goal: str) -> bool:
         return False
     if re.fullmatch(r"\S+\.lean", normalized, flags=re.IGNORECASE):
         return False
+    operational_target = re.match(
+        r"(?:complete|finish|prove|repair|solve)\s+(?:the\s+)?"
+        r"(?:assigned|current|target)\s+"
+        r"(?:declaration|file|goal|problem|theorem)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    explicit_claim_marker = re.search(
+        r"\b(?:claim|statement|theorem)\s*:",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if operational_target and explicit_claim_marker is None:
+        # A proving policy such as "complete the assigned theorem; use
+        # LeanProbe; preserve branches" does not supply a second mathematical
+        # statement to compare with the Lean declaration. Treating it as one
+        # manufactures a mismatch and can park the only queue item.
+        return False
     return True
 
 
