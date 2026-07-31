@@ -2932,24 +2932,14 @@ def test_lean_multi_attempt_requires_exact_target_check_for_probe_success(monkey
     monkeypatch.setattr(
         lean_services,
         "_invoke_json_tool",
-        lambda _tool_name, _arguments: {
-            "result": {
-                "success": True,
-                "items": [
-                    {
-                        "snippet": "nlinarith",
-                        "diagnostics": [],
-                        "goals": [],
-                        "timed_out": False,
-                    }
-                ],
-            }
-        },
+        lambda *_args: pytest.fail("a replaceable tactic hole must use LeanProbe first"),
     )
     exact_calls: list[dict[str, object]] = []
 
     def reject_exact_candidate(**kwargs):
         exact_calls.append(dict(kwargs))
+        if kwargs["action"] == "prepare_file":
+            return {"success": True, "ok": True, "cache": {"cache_hit": False}}
         return {
             "success": True,
             "target_verified": False,
@@ -2967,16 +2957,73 @@ def test_lean_multi_attempt_requires_exact_target_check_for_probe_success(monkey
         cwd=project,
     )
 
-    assert exact_calls[0]["theorem_id"] == "target"
-    assert exact_calls[0]["replacement"] == "theorem target : True := by\n  nlinarith"
+    assert exact_calls[0]["action"] == "prepare_file"
+    assert exact_calls[1]["theorem_id"] == "target"
+    assert exact_calls[1]["replacement"] == "theorem target : True := by\n  nlinarith"
+    assert exact_calls[2]["replacement"] == "theorem target : True := by\n  ring"
     assert payload["backend_success"] is True
+    assert payload["backend_tool"] == "lean_probe"
+    assert payload["screening_backend"] == "lean_probe"
     assert payload["success"] is False
     assert payload["target_verified"] is False
     assert payload["status"] == "screened_no_verified_candidate"
     assert payload["verified_attempts"] == []
-    assert payload["items"][0]["probe_closed_goal"] is True
+    assert payload["items"][0]["probe_closed_goal"] is False
     assert payload["items"][0]["verified"] is False
-    assert "provisional" in payload["action_required"]
+    assert "exact-target" in payload["action_required"]
+
+
+def test_lean_multi_attempt_stops_after_first_exact_leanprobe_success(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text("theorem target : True := by\n  sorry\n", encoding="utf-8")
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={"multi_attempt": "mcp_lean_lsp_lean_multi_attempt"},
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *_args: pytest.fail("a replaceable tactic hole must not start LSP screening"),
+    )
+    calls: list[dict[str, object]] = []
+
+    def accept_first_candidate(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs["action"] == "prepare_file":
+            return {"success": True, "ok": True}
+        return {
+            "success": True,
+            "target_verified": True,
+            "ok": True,
+            "has_sorry": False,
+        }
+
+    monkeypatch.setattr(lean_incremental, "lean_incremental_check", accept_first_candidate)
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: None)
+
+    payload = lean_services.lean_multi_attempt(
+        "Main.lean",
+        2,
+        ["exact True.intro", "trivial"],
+        cwd=project,
+    )
+
+    assert len(calls) == 2
+    assert calls[1]["timeout_s"] == 30
+    assert payload["success"] is True
+    assert payload["verified_attempts"] == ["exact True.intro"]
+    assert payload["items"][1]["screening_skipped"] == "earlier exact candidate verified"
 
 
 def test_lean_multi_attempt_rejects_invalid_candidate_count_before_backend_call(

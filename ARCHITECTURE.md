@@ -140,7 +140,10 @@ tool is reachable through the public registry.
   branding, environment loading, and built-in skill discovery.
 - `lean/` owns diagnostics, goals, declaration inspection, incremental checks,
   automation, proof context, premise search, axiom checks, ephemeral
-  validation, and the typed `LeanBackend` facade.
+  validation, and the typed `LeanBackend` facade. Tactic-hole portfolios route
+  through `lean_attempt_screening.py`, which prepares the target environment
+  once and exact-checks bounded candidates with LeanProbe before any positional
+  LSP fallback.
 - `formalization/` owns source-document extraction, TeX discovery, generated
   Lean shaping, and the statement-review handoff.
 - `workflows/` owns proof queues, verification transactions, persistent

@@ -44,6 +44,9 @@ from leanflow_cli.lean.lean_attempt_location import (  # noqa: E402
     _multi_attempt_replacement_candidate,
     _resolve_multi_attempt_location,
 )
+from leanflow_cli.lean.lean_attempt_screening import (  # noqa: E402
+    screen_multi_attempts_with_lean_probe,
+)
 
 # Phase 5: pure auto-prove normalization / parsing helpers (native-backend failure classifiers and
 # message extractors, the unsupported-option preflight, probe-success / replacement / diagnostics
@@ -2050,6 +2053,24 @@ def lean_multi_attempt(
             location_details["requested_column"] = column
     if adjustment == "inline_tactic_body":
         location_details["column_adjustment"] = adjustment
+    from leanflow_cli.lean.lean_incremental import lean_incremental_check
+
+    incremental_payload = screen_multi_attempts_with_lean_probe(
+        path=Path(canonical_file_path),
+        line=resolved_line,
+        column=resolved_column,
+        attempts=normalized_attempts,
+        cwd=str(cwd or report.cwd),
+        check_incrementally=lean_incremental_check,
+    )
+    if incremental_payload is not None:
+        payload = {
+            "degraded_reasons": list(report.degraded_reasons),
+            **location_details,
+            **incremental_payload,
+        }
+        append_workflow_outcome("lean-multi-attempt", payload)
+        return payload
     payload = _invoke_native_mcp_wrapper(
         report.mcp_tools.get("multi_attempt", ""),
         {
@@ -2068,8 +2089,6 @@ def lean_multi_attempt(
     exact_checks: list[dict[str, Any]] = []
     verified_attempts: list[str] = []
     if isinstance(items, list):
-        from leanflow_cli.lean.lean_incremental import lean_incremental_check
-
         for item in items:
             if not isinstance(item, dict):
                 continue

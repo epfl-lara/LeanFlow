@@ -203,6 +203,7 @@ files = [
   "leanflow_cli/lean/lean_helper_ephemeral.py",
   "leanflow_cli/lean/lean_attempt_helpers.py",
   "leanflow_cli/lean/lean_attempt_location.py",
+  "leanflow_cli/lean/lean_attempt_screening.py",
   "leanflow_cli/lean/lean_declarations.py",
   "leanflow_cli/lean/lean_lemma_suggest.py",
   "leanflow_cli/lean/lean_proof_context_circuit.py",
