@@ -857,11 +857,11 @@ historical payload. A live parent/worker identity prevents archival. The transac
 across archive, shard, index, and unlink crash boundaries, and ordinary status commands never
 decompress cold evidence.
 
-The verification loop is intentionally Lean-LSP-first:
+The verification loop is intentionally LeanProbe-first for exact theorem checks:
 
-- use diagnostics and proof goals for most iterations
+- use LSP diagnostics and proof goals to inspect state, then LeanProbe to check exact candidates
 - for ordered same-file theorem-queue turns, use `lean_incremental_check(check_target)` as the primary queue-step verifier; it is backed by LeanProbe, keeps a LeanInteract server warm, reuses header/import state, and checks only the assigned declaration chunk
-- keep the canonical `lake env lean <file>` path for final file/project sweeps, explicit canonical checks, and LeanProbe fallback recovery
+- keep the canonical `lake env lean <file>` path for final file/project sweeps, explicit canonical checks, and recovery when LeanProbe is unavailable or its session cannot be rebuilt
 - the queue manager performs controlled LeanProbe warmup with `prepare_file` when a theorem assignment is created or changes, so patch verification can reuse the warmed server
 - agents should use `lean_incremental_check` or `lean_verify` for normal theorem-queue verification so the manager can classify the assigned declaration; terminal-based Lake checks remain available as an emergency/manual fallback when Lean tools themselves are broken
 - do not treat `lake build`, `grep`, `head`, or truncated output as proof that an assigned theorem is clean
@@ -996,7 +996,7 @@ What the runner does each cycle:
    - New helper declarations are allowed when they directly help the assigned theorem; the manager does not restore them merely because they are outside the assigned declaration body.
    - If a file tool changes a pre-existing non-assigned declaration or future queue item, the manager restores those protected declarations to their assignment-start state and reports the queue edit guard in the tool result.
    - `patch` and `write_file` are preferred in managed queue workflows; the manager warms LeanProbe with `prepare_file` at assignment time, and after a successful edit it first runs `lean_incremental_check(check_target)` for the assigned declaration.
-   - If LeanProbe is unavailable, crashes, times out, or cannot rebuild a valid cache, the manager falls back to the canonical file verification gate.
+   - If LeanProbe is unavailable, crashes, or cannot rebuild a valid cache, the manager falls back to the canonical file verification gate. A bounded deterministic target-check timeout remains a failed candidate and does not launch a duplicate full-file check.
    - Direct terminal verification commands are not the normal managed path because the manager cannot classify them as precisely, but they remain available as an emergency/manual fallback if the Lean tool surface is broken.
    - `apply_verified_patch` remains available when the atomic checkpoint plus verification payload is useful. Its tool-level file/module/project check is reported as `patch_elaborated`, not as target proof; the queue manager's exact declaration and axiom gate remains authoritative. In normal incremental mode, the parent appends one marker-isolated `#print axioms` query to that exact LeanProbe declaration request and applies the allowlist only after the complete profile parses. Low-memory mode or incomplete inline evidence retains the independent exact-harness fallback.
    - Gate-backed graph reconciliation refreshes the stored declaration body and source SHA-256 from the current file; orchestration never treats an older `by sorry` snapshot as the text of a proved helper.

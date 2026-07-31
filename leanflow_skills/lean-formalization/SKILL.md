@@ -29,7 +29,7 @@ Primary specs:
 
 - Keep names readable and codebase-consistent.
 - Start from structured Lean state, not guessed missing imports or guessed theorem names.
-- In managed queue workflows, prefer `patch`/`write_file` because the runner records the automatic post-edit `lean_incremental_check(check_target)` result and falls back to Lake only when needed. Use `apply_verified_patch` for compatibility or when its pre-edit checkpoint payload is specifically useful.
+- In managed queue workflows, prefer `patch`/`write_file` because the runner records the automatic post-edit `lean_incremental_check(check_target)` result and falls back to Lake only when LeanProbe is unavailable, crashes, or cannot rebuild its cache. A bounded target-check timeout rejects that attempt without starting a duplicate full-file check. Use `apply_verified_patch` for compatibility or when its pre-edit checkpoint payload is specifically useful.
 - Prefer focused `lean_verify` module checks when close to clean; reserve full-project verification for milestone checks.
 - Prefer explicit intermediate lemmas over brittle proof scripts.
 - Every generated Lean file must begin with imports. Do not put module doc comments, file overviews, namespaces, or declarations above imports.

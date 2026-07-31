@@ -455,6 +455,28 @@ def _project_root(cwd: str | os.PathLike[str] | None = None) -> tuple[Path | Non
         return None, str(exc)
 
 
+def _terminate_command_process(process: subprocess.Popen[str]) -> None:
+    """Terminate and reap one managed subprocess tree after an abnormal exit."""
+    try:
+        if os.name == "nt":
+            process.terminate()
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            if os.name == "nt":
+                process.kill()
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        process.communicate(timeout=1)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def _run_command(cmd: list[str], *, cwd: Path | None = None) -> tuple[int, str]:
     """Run one subprocess with process-tree cleanup and the effective timeout policy."""
     process: subprocess.Popen[str] | None = None
@@ -471,26 +493,15 @@ def _run_command(cmd: list[str], *, cwd: Path | None = None) -> tuple[int, str]:
         return int(process.returncode or 0), output.strip()
     except subprocess.TimeoutExpired as exc:
         if process is not None:
-            try:
-                if os.name == "nt":
-                    process.terminate()
-                else:
-                    os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=2)
-            except (OSError, subprocess.TimeoutExpired):
-                try:
-                    if os.name == "nt":
-                        process.kill()
-                    else:
-                        os.killpg(process.pid, signal.SIGKILL)
-                except OSError:
-                    pass
-            try:
-                process.communicate(timeout=1)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            _terminate_command_process(process)
         return 1, str(exc)
+    except (KeyboardInterrupt, SystemExit):
+        if process is not None:
+            _terminate_command_process(process)
+        raise
     except Exception as exc:
+        if process is not None:
+            _terminate_command_process(process)
         return 1, str(exc)
 
 

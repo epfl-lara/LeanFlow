@@ -85,6 +85,39 @@ def test_run_command_terminates_the_process_group_on_timeout(monkeypatch, tmp_pa
     assert signals == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
 
 
+def test_run_command_terminates_the_process_group_on_keyboard_interrupt(monkeypatch, tmp_path):
+    """Reap the canonical Lean process tree before propagating an interrupt."""
+
+    class Process:
+        pid = 4323
+        returncode = None
+        communicate_calls = 0
+
+        def communicate(self, timeout):
+            self.communicate_calls += 1
+            if self.communicate_calls == 1:
+                raise KeyboardInterrupt
+            return "", None
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired(["lake", "env", "lean"], timeout)
+
+    process = Process()
+    signals = []
+    monkeypatch.setattr(lean_services.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        lean_services.os,
+        "killpg",
+        lambda pid, sent: signals.append((pid, sent)),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        lean_services._run_command(["lake", "env", "lean", "Demo.lean"], cwd=tmp_path)
+
+    assert signals == [(4323, signal.SIGTERM), (4323, signal.SIGKILL)]
+    assert process.communicate_calls == 2
+
+
 def test_research_file_check_uses_cold_start_timeout_floor(monkeypatch):
     """Do not let the canonical research gate expire before cold Lean startup."""
     command = ["lake", "env", "lean", "FormalConjectures/ErdosProblems/242.lean"]

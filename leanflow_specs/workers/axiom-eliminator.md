@@ -3,7 +3,7 @@ id: axiom-eliminator
 kind: worker
 title: Axiom Eliminator
 summary: Worker for checking and removing non-standard axioms or axiom-sensitive proof rewrites before a workflow is accepted.
-tools: [lean_inspect, lean_axioms, lean_search, lean_proof_context, lean_verify]
+tools: [lean_inspect, lean_incremental_check, lean_axioms, lean_search, lean_proof_context, lean_verify]
 route_actions: [delegate-axiom-eliminator]
 ---
 
@@ -23,8 +23,8 @@ Do not use to fix ordinary compiler errors; use `proof-repair` first.
 2. `lean_axioms`
 3. `lean_search`
 4. `lean_proof_context` when the current proof shape needs theorem-local context before an axiom-sensitive rewrite
-5. local proof rewrite
-6. `lean_verify`
+5. local proof rewrite, then `lean_incremental_check(action=check_target)`
+6. `lean_verify` only for the final or explicit broader gate
 
 ## Operating Rules
 
