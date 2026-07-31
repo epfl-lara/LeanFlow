@@ -26,6 +26,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from core import verified_edit_authority
 from core.runtime_modes import scratch_only_dispatch_worker_enabled
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
 from leanflow_cli.lean.lean_services import lean_verify
@@ -207,6 +208,7 @@ def apply_verified_patch_tool(
     owner_id: str = "",
     task_id: str = "default",
     timeout_s: int = 300,
+    verified_edit_authority_token: str = "",
 ) -> str:
     """Apply a one-file Lean patch and immediately verify the touched scope."""
     del task_id
@@ -389,7 +391,43 @@ def apply_verified_patch_tool(
     except OSError:
         verification_source_bytes = b""
     verification_source_revision_sha256 = _source_revision_sha256(verification_source_bytes)
-    if normalized_check == "incremental":
+    cached_authorization = verified_edit_authority.consume(
+        verified_edit_authority_token,
+        path=str(resolved_path),
+        theorem_id=theorem_id,
+        before_sha256=_source_revision_sha256(before_bytes),
+        after_sha256=verification_source_revision_sha256,
+    )
+    if cached_authorization is not None:
+        verification = {
+            "success": True,
+            "ok": True,
+            "backend": "authenticated_parent_helper_reuse",
+            "tool": "lean_incremental_check",
+            "action": "check_helper",
+            "file": str(resolved_path),
+            "target": cached_authorization.verified_declaration,
+            "valid_without_sorry": True,
+            "has_errors": False,
+            "has_sorry": False,
+            "timed_out": False,
+            "error_code": "",
+            "error": "",
+            "output": (
+                "reused exact parent LeanProbe verification for the authenticated "
+                "helper insertion image"
+            ),
+            "messages": [],
+            "verification_scope": "authenticated_helper_insertion",
+            "axiom_profile_checked": True,
+            "axiom_profile_axioms": list(cached_authorization.axiom_profile_axioms),
+            "axiom_profile_blockers": [],
+            "cache": {
+                "cache_hit": True,
+                "kind": "exact_parent_helper_insertion",
+            },
+        }
+    elif normalized_check == "incremental":
         verification = lean_incremental_check(
             action="check_file",
             file_path=str(resolved_path),
@@ -407,7 +445,9 @@ def apply_verified_patch_tool(
     verification_source_unchanged = bool(
         resolved_path.exists() and post_verification_bytes == verification_source_bytes
     )
-    if normalized_check == "incremental":
+    if cached_authorization is not None:
+        check_passed = True
+    elif normalized_check == "incremental":
         check_passed = bool(verification.get("success")) and not bool(
             verification.get("has_errors")
         )
@@ -455,16 +495,25 @@ def apply_verified_patch_tool(
         "verification": verification,
         "verified_source_revision_sha256": verification_source_revision_sha256,
         "verification_source_unchanged": verification_source_unchanged,
+        "authenticated_helper_insertion": cached_authorization is not None,
+        "broad_verification_skipped": cached_authorization is not None,
         "message": (
-            "Patch applied and its broad verification check passed; the exact target gate is still required."
-            if check_passed
+            (
+                "Patch applied by reusing an exact parent LeanProbe helper check; "
+                "the assigned theorem remains unresolved."
+            )
+            if cached_authorization is not None
             else (
-                "Patch applied and Lean returned successfully, but the source changed during verification. Run a fresh exact check on the current revision."
-                if not verification_source_unchanged
+                "Patch applied and its broad verification check passed; the exact target gate is still required."
+                if check_passed
                 else (
-                    "Patch verification failed and the exact pre-patch source revision was restored. Repair the candidate from the returned diagnostics before applying it again."
-                    if rolled_back
-                    else "Patch verification failed, and restoring the pre-patch source revision failed. Stop source edits until the rollback error is resolved."
+                    "Patch applied and Lean returned successfully, but the source changed during verification. Run a fresh exact check on the current revision."
+                    if not verification_source_unchanged
+                    else (
+                        "Patch verification failed and the exact pre-patch source revision was restored. Repair the candidate from the returned diagnostics before applying it again."
+                        if rolled_back
+                        else "Patch verification failed, and restoring the pre-patch source revision failed. Stop source edits until the rollback error is resolved."
+                    )
                 )
             )
         ),

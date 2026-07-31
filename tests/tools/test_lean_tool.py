@@ -12,6 +12,7 @@ import model_tools
 import tools.implementations.lean_experts as lean_experts
 import tools.implementations.lean_patch as lean_patch
 import tools.implementations.lean_tool as lean_tool
+from core import verified_edit_authority
 from leanflow_cli.lean.lean_services import (
     LeanAxiomReport,
     LeanCapabilityReport,
@@ -745,6 +746,116 @@ def test_apply_verified_patch_tool_records_broad_check_without_claiming_target_v
     assert status["status"] == "patch_elaborated"
     assert status["target_verified"] is False
     assert "exact target gate is still required" in status["message"]
+
+
+def test_apply_verified_patch_reuses_hash_bound_parent_helper_authority(tmp_path, monkeypatch):
+    """Retain one exact helper insertion without replaying an open target."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    verified_edit_authority.clear_for_tests()
+    target = tmp_path / "Demo.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    helper = "private lemma checked_helper : True := by\n  trivial"
+    after = helper + "\n\n" + before
+    target.write_text(before, encoding="utf-8")
+    token = verified_edit_authority.register(
+        path=str(target),
+        theorem_id="demo",
+        before_sha256=hashlib.sha256(before.encode()).hexdigest(),
+        after_sha256=hashlib.sha256(after.encode()).hexdigest(),
+        verified_declaration="checked_helper",
+        axiom_profile_axioms=("Classical.choice",),
+    )
+    monkeypatch.setattr(
+        lean_patch,
+        "lean_incremental_check",
+        lambda **_kwargs: pytest.fail("authenticated helper insertion replayed Lean"),
+    )
+    patch = f"""\
+*** Begin Patch
+*** Update File: {target}
+@@
++{helper.replace(chr(10), chr(10) + '+')}
++
+ theorem demo : True := by
+*** End Patch"""
+
+    payload = json.loads(
+        lean_tool.apply_verified_patch_tool(
+            str(target),
+            patch,
+            cwd=str(tmp_path),
+            theorem_id="demo",
+            verified_edit_authority_token=token,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["authenticated_helper_insertion"] is True
+    assert payload["broad_verification_skipped"] is True
+    assert payload["target_verified"] is False
+    assert payload["verification"]["target"] == "checked_helper"
+    assert payload["verification"]["axiom_profile_axioms"] == ["Classical.choice"]
+    assert target.read_text(encoding="utf-8") == after
+
+
+def test_apply_verified_patch_rejects_authority_for_a_different_source_image(tmp_path, monkeypatch):
+    """Fall back to Lean and rollback when an authorized patch gains extra content."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    verified_edit_authority.clear_for_tests()
+    target = tmp_path / "Demo.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    helper = "private lemma checked_helper : True := by\n  trivial"
+    authorized_after = helper + "\n\n" + before
+    target.write_text(before, encoding="utf-8")
+    token = verified_edit_authority.register(
+        path=str(target),
+        theorem_id="demo",
+        before_sha256=hashlib.sha256(before.encode()).hexdigest(),
+        after_sha256=hashlib.sha256(authorized_after.encode()).hexdigest(),
+        verified_declaration="checked_helper",
+        axiom_profile_axioms=(),
+    )
+    calls: list[dict[str, object]] = []
+
+    def reject_unverified_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "ok": False,
+            "has_errors": True,
+            "action": "check_file",
+            "backend": "lean_interact",
+            "output": "unverified source image",
+        }
+
+    monkeypatch.setattr(lean_patch, "lean_incremental_check", reject_unverified_image)
+    patch = f"""\
+*** Begin Patch
+*** Update File: {target}
+@@
++{helper.replace(chr(10), chr(10) + '+')}
++
++-- unverified extra content
++
+ theorem demo : True := by
+*** End Patch"""
+
+    payload = json.loads(
+        lean_tool.apply_verified_patch_tool(
+            str(target),
+            patch,
+            cwd=str(tmp_path),
+            theorem_id="demo",
+            verified_edit_authority_token=token,
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["authenticated_helper_insertion"] is False
+    assert payload["broad_verification_skipped"] is False
+    assert payload["rolled_back"] is True
+    assert calls
+    assert target.read_text(encoding="utf-8") == before
 
 
 def test_apply_verified_patch_rejects_verification_crossing_source_revision(tmp_path, monkeypatch):

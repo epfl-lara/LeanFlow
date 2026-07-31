@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 
 from leanflow_cli.native import native_runner as runner
 from leanflow_cli.native import parent_helper_verification_reuse
+from tools.implementations import lean_patch
 
 
 def _sha256(text: str) -> str:
@@ -195,6 +197,65 @@ def test_exact_parent_helper_insertion_reuses_gate_and_records_progress(
     assert reused["candidate_id"] == ready.candidate_id
     assert reused["lean_started"] is False
     assert reused["axiom_profile_axioms"] == ["Classical.choice"]
+
+
+def test_helper_priority_authorizes_exact_atomic_patch_without_target_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Carry a parent helper check through the required atomic patch tool."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *_args, **_kwargs: None)
+    active, _before, expected, declaration, state, ready = _ready_candidate(tmp_path)
+
+    class Agent:
+        _managed_autonomy_state = state
+
+        @staticmethod
+        def is_interrupted() -> bool:
+            return False
+
+    arguments = {
+        "path": str(active),
+        "theorem_id": "demo",
+        "patch": (
+            "*** Begin Patch\n"
+            f"*** Update File: {active}\n"
+            "@@\n"
+            f"+{declaration.replace(chr(10), chr(10) + '+')}\n"
+            "+\n"
+            " theorem demo : True := by\n"
+            "*** End Patch\n"
+        ),
+    }
+
+    assert runner._managed_pre_tool_call(Agent(), "apply_verified_patch", arguments) is None
+    token = str(arguments.get("_leanflow_verified_edit_authority", ""))
+    assert token
+    monkeypatch.setattr(
+        lean_patch,
+        "lean_incremental_check",
+        lambda **_kwargs: pytest.fail("exact parent helper insertion replayed Lean"),
+    )
+    payload = json.loads(
+        lean_patch.apply_verified_patch_tool(
+            str(active),
+            str(arguments["patch"]),
+            cwd=str(tmp_path),
+            theorem_id="demo",
+            verified_edit_authority_token=token,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["authenticated_helper_insertion"] is True
+    assert payload["verification"]["target"] == ready.helper_name
+    assert active.read_text(encoding="utf-8") == expected
 
 
 @pytest.mark.parametrize(

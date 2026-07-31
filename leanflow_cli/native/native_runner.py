@@ -12,7 +12,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from dataclasses import replace as _dataclass_replace
 from difflib import unified_diff
@@ -20,6 +20,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from core import verified_edit_authority
 from core.constants import WORKFLOW_STEP_BOUNDARY_INTERRUPT
 from core.process_identity import process_identity_from_mapping, process_identity_matches
 from core.provider_availability import normalize_provider_retry_after
@@ -8455,7 +8456,9 @@ def _research_helper_candidate_pre_tool_guard(
         # same API step instead of charging the model one rejected batch only
         # to repeat it on its next response.
         return None
-    arguments = dict(args or {})
+    arguments: MutableMapping[str, Any] = (
+        args if isinstance(args, MutableMapping) else dict(args or {})
+    )
     safe_inspection_tools = {
         "lean_axioms",
         "lean_capabilities",
@@ -8544,6 +8547,55 @@ def _research_helper_candidate_pre_tool_guard(
                 autonomy_state,
                 candidate_id=candidate.candidate_id,
             )
+            if research_helper_candidate_priority.parent_recheck_evidence_authenticated(candidate):
+                try:
+                    before_bytes = Path(active_file).read_bytes()
+                    before_text = before_bytes.decode("utf-8")
+                    after_text, preview_error = preview_v4a_update(
+                        str(arguments.get("patch", "") or ""),
+                        before_text,
+                    )
+                except (OSError, UnicodeError):
+                    before_bytes = b""
+                    after_text = None
+                    preview_error = "source_unreadable"
+                before_sha256 = hashlib.sha256(before_bytes).hexdigest()
+                after_sha256 = (
+                    hashlib.sha256(after_text.encode("utf-8")).hexdigest()
+                    if after_text is not None
+                    else ""
+                )
+                if (
+                    not preview_error
+                    and before_sha256 == candidate.rechecked_source_revision_sha256
+                    and after_sha256 == candidate.expected_integrated_source_revision_sha256
+                ):
+                    authority_token = verified_edit_authority.register(
+                        path=active_file,
+                        theorem_id=target_symbol,
+                        before_sha256=before_sha256,
+                        after_sha256=after_sha256,
+                        verified_declaration=candidate.helper_name,
+                        axiom_profile_axioms=tuple(candidate.parent_recheck_axioms),
+                    )
+                    if authority_token:
+                        arguments["_leanflow_verified_edit_authority"] = authority_token
+                        with contextlib.suppress(Exception):
+                            _record_agent_activity(
+                                agent,
+                                "research-helper-verified-edit-authorized",
+                                (
+                                    f"Authorized exact cached insertion of helper "
+                                    f"{candidate.helper_name}"
+                                ),
+                                candidate_id=candidate.candidate_id,
+                                target_symbol=target_symbol,
+                                active_file=active_file,
+                                helper_symbol=candidate.helper_name,
+                                before_source_revision_sha256=before_sha256,
+                                integrated_source_revision_sha256=after_sha256,
+                                campaign_progress=False,
+                            )
             return None
     with contextlib.suppress(Exception):
         _record_agent_activity(

@@ -129,6 +129,7 @@ files = [
   "core/provider_availability.py",
   "core/provider_capacity.py",
   "core/runtime_modes.py",
+  "core/verified_edit_authority.py",
   "core/utils.py",
   "agent/display/log_formatting.py",
   "agent/runtime/workflow_events.py",

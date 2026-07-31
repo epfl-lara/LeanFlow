@@ -1040,6 +1040,7 @@ registry.register(
         owner_id=str(kw.get("owner_id", "") or ""),
         task_id=str(kw.get("task_id", "") or "default"),
         timeout_s=int(args.get("timeout_s", 300) or 300),
+        verified_edit_authority_token=str(args.get("_leanflow_verified_edit_authority", "") or ""),
     ),
     check_fn=check_lean_requirements,
     emoji="✅",

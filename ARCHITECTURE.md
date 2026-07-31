@@ -79,6 +79,9 @@ layers:
   recovery and bounded background actors.
 - `project_resource_admission.py` coordinates resource-heavy Lean work.
 - `runtime_modes.py` centralizes process-scoped runtime flags.
+- `verified_edit_authority.py` carries single-use, hash-bound authorization
+  between managed orchestration and atomic patch tools when prior Lean evidence
+  proves one exact source transition.
 - `filesystem.py`, `time.py`, `constants.py`, and `utils.py` provide shared
   dependency-light utilities.
 
