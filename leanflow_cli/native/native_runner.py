@@ -23186,9 +23186,10 @@ def _fidelity_goal_has_external_claim(goal: str) -> bool:
     if re.fullmatch(r"\S+\.lean", normalized, flags=re.IGNORECASE):
         return False
     operational_target = re.match(
-        r"(?:complete|finish|prove|repair|solve)\s+(?:the\s+)?"
+        r"(?:complete|finish|prove|repair|solve)\s+"
+        r"(?:(?:the|every|all)\s+)?"
         r"(?:assigned|current|target)\s+"
-        r"(?:declaration|file|goal|problem|theorem)\b",
+        r"(?:declarations?|files?|goals?|problems?|theorems?)\b",
         normalized,
         flags=re.IGNORECASE,
     )

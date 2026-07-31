@@ -191,6 +191,31 @@ def test_operational_proving_goal_treats_existing_statement_as_authority(
     )
 
 
+def test_campaign_policy_with_every_assigned_declaration_skips_fidelity_reviewer(
+    audit_enabled, monkeypatch
+):
+    monkeypatch.setenv(
+        "LEANFLOW_NATIVE_EFFECTIVE_PROMPT",
+        (
+            "Complete every assigned declaration in IMO2026/P2.lean with a "
+            "kernel-verified, sorry-free proof. Use LeanProbe as the primary "
+            "inner loop and preserve all logs and workflow artifacts."
+        ),
+    )
+    calls, events = _wire(monkeypatch, "BLOCK", response="BLOCK\nworkflow text differs")
+
+    verdict = runner._maybe_statement_fidelity_audit(_autonomy_state(), {})
+
+    assert verdict == "pass"
+    assert calls == []
+    assert any(
+        args[0] == "statement-fidelity-audit"
+        and kwargs.get("verdict") == "pass"
+        and "authoritative statement" in kwargs.get("detail", "")
+        for args, kwargs in events
+    )
+
+
 def test_operational_prefix_with_explicit_claim_still_runs_fidelity_audit(
     audit_enabled, monkeypatch
 ):
