@@ -1163,6 +1163,60 @@ def record_prover_helpers_from_edit(
     )
 
 
+def removable_prover_helper(target_symbol: str, active_file: str) -> bool:
+    """Return whether the assigned node is optional prover-generated evidence.
+
+    Only spontaneous prover-edit nodes with evidence-only graph edges qualify.
+    Source declarations, proved facts, decomposer obligations, and structural
+    dependencies must use their stronger statement-repair/negation protocols.
+    """
+    if not plan_state.plan_state_enabled():
+        return False
+    try:
+        blueprint = plan_state.load_blueprint()
+    except Exception:
+        return False
+    node = blueprint.node_by_id(plan_state.node_id_for(target_symbol, active_file))
+    if (
+        node is None
+        or node.generated_by not in {"prover-edit", "prover-edit-backfill"}
+        or node.status in {"proved", "false"}
+    ):
+        return False
+    touching = [
+        edge for edge in blueprint.edges if edge.source == node.id or edge.target == node.id
+    ]
+    return all(edge.kind == "evidence" for edge in touching)
+
+
+def retire_removed_prover_helper(target_symbol: str, active_file: str) -> bool:
+    """Park one safely removed optional helper while preserving its dead-branch record."""
+    if not removable_prover_helper(target_symbol, active_file):
+        return False
+    blueprint = plan_state.load_blueprint()
+    node_id = plan_state.node_id_for(target_symbol, active_file)
+    node = blueprint.node_by_id(node_id)
+    if node is None:
+        return False
+    note = "retired: unused prover-generated helper removed from source"
+    notes = "; ".join(part for part in (str(node.notes or "").strip(), note) if part)
+    plan_state.save_blueprint(
+        blueprint.replace_node(replace(node, status="parked", owner="", notes=notes))
+    )
+    plan_state.append_journal_event(
+        {
+            "event": "prover-helper-retired",
+            "node_id": node_id,
+            "name": target_symbol,
+            "file": active_file,
+            "from": node.status,
+            "to": "parked",
+            "why": "unused optional prover-generated helper removed from source",
+        }
+    )
+    return True
+
+
 def _canonical_graph_file(value: Any) -> str:
     """Return a stable exact-scope key for one journal or graph file."""
     text = str(value or "").strip()

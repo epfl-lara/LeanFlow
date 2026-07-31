@@ -1389,13 +1389,14 @@ def reconcile(
             new_status = "stated" if present else "conjectured"
         elif (
             not present
-            and node.generated_by.strip().lower() in {"planner", "decomposer"}
+            and node.generated_by.strip().lower()
+            in {"planner", "decomposer", "prover-edit", "prover-edit-backfill"}
             and node.status in {"stated", "audited", "proving", "blocked"}
         ):
-            # Planner/decomposer nodes can outlive a rolled-back or interrupted
-            # source transaction. An absent generated declaration is only an
-            # advisory conjecture; leaving it stated makes a nonexistent stub
-            # reappear as the active dependency frontier after restart.
+            # Generated nodes can outlive a rolled-back, retired, or interrupted
+            # source transaction. An absent declaration is only an advisory
+            # conjecture; leaving it stated makes a nonexistent helper reappear
+            # as the active dependency frontier after restart.
             new_status = "conjectured"
         elif node.status == "conjectured" and present and not explicitly_uncertain_advisory:
             new_status = "stated"

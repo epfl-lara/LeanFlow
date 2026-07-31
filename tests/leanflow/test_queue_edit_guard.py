@@ -175,6 +175,44 @@ def test_restore_returns_none_when_protected_declaration_is_missing():
     assert queue_edit_guard._restore_changed_protected_declarations(removed, changed) is None
 
 
+def test_removed_generated_assignment_requires_no_remaining_source_reference():
+    referenced = "theorem result : True := by\n  exact generated_helper\n"
+    unused = "theorem result : True := by\n  trivial\n"
+
+    assert (
+        queue_edit_guard._queue_edit_removed_generated_assignment_is_safe(
+            referenced,
+            "generated_helper",
+            removal_authorized=True,
+            protected_declarations=[
+                {
+                    "kind": "theorem",
+                    "name": "result",
+                    "text": referenced.strip(),
+                    "line": 1,
+                }
+            ],
+        )
+        is False
+    )
+    assert (
+        queue_edit_guard._queue_edit_removed_generated_assignment_is_safe(
+            unused,
+            "generated_helper",
+            removal_authorized=True,
+            protected_declarations=[
+                {
+                    "kind": "theorem",
+                    "name": "result",
+                    "text": unused.strip(),
+                    "line": 1,
+                }
+            ],
+        )
+        is True
+    )
+
+
 def test_initial_declaration_keys_are_cached_on_the_agent():
     agent = SimpleNamespace()
     keys = queue_edit_guard._queue_edit_initial_declaration_keys(agent, "/tmp/Main.lean", FILE)

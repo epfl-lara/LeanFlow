@@ -34,6 +34,7 @@ __all__ = [
     "_queue_edit_named_declarations",
     "_queue_edit_placeholder_regressions",
     "_queue_edit_declaration_delta",
+    "_queue_edit_removed_generated_assignment_is_safe",
     "QueueEditDeclarationDelta",
     "_restore_changed_protected_declarations",
     "_restore_assigned_declaration_against_before_text",
@@ -484,6 +485,34 @@ def _queue_edit_declaration_delta(
         assigned_changed=assigned_changed,
         helper_names=tuple(name for name in helper_names if name),
     )
+
+
+def _queue_edit_removed_generated_assignment_is_safe(
+    current_text: str,
+    target_symbol: str,
+    *,
+    removal_authorized: bool,
+    protected_declarations: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Return whether an authorized generated assignment vanished without collateral edits.
+
+    The caller owns provenance: this predicate only accepts a target already
+    classified as an optional runtime-generated helper. It then fails closed
+    if the declaration remains, any other protected declaration changed, or
+    the remaining Lean source still references the helper identifier.
+    """
+    if not removal_authorized or not target_symbol:
+        return False
+    entries = _declaration_line_index_from_text(current_text)
+    if any(_declaration_matches_target(entry, target_symbol) for entry in entries):
+        return False
+    if _queue_edit_changed_protected_declarations(protected_declarations, current_text):
+        return False
+    leaf = str(target_symbol).rsplit(".", 1)[-1]
+    if not leaf:
+        return False
+    sanitized = _strip_lean_comments_and_strings(current_text)
+    return re.search(rf"(?<![\w']){re.escape(leaf)}(?![\w'])", sanitized) is None
 
 
 def _restore_changed_protected_declarations(

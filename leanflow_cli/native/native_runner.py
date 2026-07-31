@@ -573,6 +573,7 @@ from leanflow_cli.workflows.queue_edit_guard import (  # noqa: E402
     _queue_edit_placeholder_regressions,
     _queue_edit_preserves_doc_comments,
     _queue_edit_protected_declarations,
+    _queue_edit_removed_generated_assignment_is_safe,
     _queue_edit_statement_signature,
     _restore_assigned_declaration_against_before_text,
     _restore_changed_protected_declarations,
@@ -8861,6 +8862,10 @@ def _managed_pre_tool_call(
             "assigned_statement_signature": assigned_statement_signature,
             "protected_declarations": protected_declarations,
             "editable_dependency_helpers": tuple(sorted(editable_dependencies)),
+            "removable_generated_assignment": bool(
+                not str(_queue_edit_assigned_preamble(before_text, target_symbol) or "").strip()
+                and decomposer.removable_prover_helper(target_symbol, active_file)
+            ),
         }
         agent._managed_queue_edit_guard_state = guard_state
     agent._managed_queue_edit_snapshot = {
@@ -8879,6 +8884,7 @@ def _managed_pre_tool_call(
             before_text,
             tuple(guard_state.get("editable_dependency_helpers") or ()),
         ),
+        "removable_generated_assignment": bool(guard_state.get("removable_generated_assignment")),
     }
     return None
 
@@ -9292,6 +9298,13 @@ def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
         )
     current_entry = _find_declaration_entry(active_file, target_symbol)
     if not current_entry:
+        if _queue_edit_removed_generated_assignment_is_safe(
+            current_text,
+            target_symbol,
+            removal_authorized=bool(snapshot.get("removable_generated_assignment")),
+            protected_declarations=protected_declarations,
+        ):
+            return ""
         try:
             path.write_text(before_text, encoding="utf-8")
         except Exception:
@@ -9399,7 +9412,12 @@ def _queue_edit_snapshot_is_accepted(snapshot: Mapping[str, Any]) -> bool:
         None,
     )
     if current_entry is None:
-        return False
+        return _queue_edit_removed_generated_assignment_is_safe(
+            current_text,
+            target_symbol,
+            removal_authorized=bool(snapshot.get("removable_generated_assignment")),
+            protected_declarations=list(snapshot.get("protected_declarations") or ()),
+        )
     assigned_signature = str(snapshot.get("assigned_statement_signature", "") or "")
     if assigned_signature and _queue_edit_statement_signature(current_entry) != assigned_signature:
         return False
@@ -9433,6 +9451,7 @@ class _ManagedQueueEditVerdict:
     evidence_helper_names: tuple[str, ...] = ()
     promoted_helper_names: tuple[str, ...] = ()
     before_source_revision_sha256: str = ""
+    removed_generated_assignment: bool = False
 
 
 @dataclass(frozen=True)
@@ -9641,6 +9660,33 @@ def _finalize_managed_queue_edit_details(
     )
     phase_seconds["declaration_delta"] = max(0.0, time.monotonic() - phase_started)
     managed_autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+    removed_generated_assignment = bool(
+        snapshot.get("removable_generated_assignment")
+        and _find_declaration_entry(active_file, target_symbol) is None
+    )
+    if removed_generated_assignment and isinstance(managed_autonomy_state, dict):
+        graph_retired = False
+        try:
+            graph_retired = decomposer.retire_removed_prover_helper(
+                target_symbol,
+                active_file,
+            )
+        except Exception:
+            logger.debug("generated helper graph retirement failed", exc_info=True)
+        mgr = _queue_manager_from_state(managed_autonomy_state)
+        queue_retired = mgr.retire_theorem_state(_queue_key(target_symbol, active_file))
+        if queue_retired:
+            _flush_queue_manager(managed_autonomy_state, mgr)
+        managed_autonomy_state.pop("orchestrator_scope_entered", None)
+        _record_activity(
+            "queue-generated-helper-retired",
+            f"Retired unused prover-generated helper {target_symbol}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            graph_retired=graph_retired,
+            queue_retired=queue_retired,
+            campaign_progress=False,
+        )
     phase_started = time.monotonic()
     singleton_feedback = _restore_repeated_singleton_evidence_edit(
         snapshot,
@@ -9740,6 +9786,7 @@ def _finalize_managed_queue_edit_details(
             before_source_revision_sha256=str(
                 snapshot.get("before_source_revision_sha256", "") or ""
             ).strip(),
+            removed_generated_assignment=removed_generated_assignment,
         )
     )
 
@@ -11740,6 +11787,7 @@ def _handle_managed_tool_result(
     queue_evidence_helpers: Sequence[str] = (),
     queue_promoted_helpers: Sequence[str] = (),
     queue_edit_before_source_revision_sha256: str = "",
+    queue_removed_generated_assignment: bool = False,
 ) -> None:
     """Dispatch managed queue callbacks on tool result: track search progress, record formalization verifications, detect and respond to post-edit verification outcomes, invoke step boundary on theorem feedback. Central hook for autonomous managed-queue loop state updates."""
     verified_patch_checks: dict[str, Mapping[str, Any]] = {}
@@ -12009,6 +12057,22 @@ def _handle_managed_tool_result(
             return
         if _managed_tool_result_succeeded(_result):
             _refresh_live_queue_source_after_managed_edit(agent, function_name, args)
+        if queue_edit_accepted is True and queue_removed_generated_assignment:
+            with contextlib.suppress(Exception):
+                agent.set_tool_result_appendix(
+                    "\n".join(
+                        [
+                            "[LEANFLOW-NATIVE GENERATED HELPER RETIRED]",
+                            f"- retired declaration: {target_symbol}",
+                            "- reason: optional prover-generated evidence was removed and is no longer referenced",
+                            "- graph: the dead branch remains parked for audit instead of re-entering the proof queue",
+                            "- next action: refresh the queue and continue the next live obligation",
+                        ]
+                    )
+                )
+                agent._managed_step_boundary_closed = True
+            _request_step_boundary_interrupt(agent)
+            return
         if (
             _workflow_kind() == "prove"
             and queue_edit_accepted is True
@@ -18485,6 +18549,7 @@ def _build_agent() -> AIAgent:
             queue_evidence_helpers=edit_verdict.evidence_helper_names,
             queue_promoted_helpers=edit_verdict.promoted_helper_names,
             queue_edit_before_source_revision_sha256=(edit_verdict.before_source_revision_sha256),
+            queue_removed_generated_assignment=edit_verdict.removed_generated_assignment,
         )
         if isinstance(managed_autonomy, dict):
             assignment = dict(managed_autonomy.get("current_queue_assignment") or {})

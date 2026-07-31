@@ -50,6 +50,7 @@ RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S: Final[int] = 900
 PROFILED_HELPER_TIMEOUT_FLOOR_S: Final[int] = 900
 
 _PROBE: Any | None = None
+_PROBE_EVER_STARTED = False
 
 
 def _import_lean_probe() -> tuple[Any, Any, Any, str]:
@@ -74,7 +75,7 @@ def _segment_file(text: str) -> tuple[str, list[Any]]:
 
 
 _SCOPED_COMMAND_WRAPPER_BEFORE_DECL_RE = re.compile(
-    r"(?m)(^[ \t]*(?:set_option|variable)[^\n]*\bin[ \t]*\n[ \t]*)$"
+    r"(?m)(^[ \t]*(?:(?:set_option|variable)[^\n]*\bin[ \t]*\n[ \t]*)+)\Z"
 )
 
 
@@ -299,11 +300,12 @@ def _local_repl_dir(project_root: Path) -> Path | None:
 
 
 def _probe() -> Any:
-    global _PROBE
+    global _PROBE, _PROBE_EVER_STARTED
     if LeanProbe is None:
         raise RuntimeError(_LEAN_PROBE_IMPORT_ERROR)
     if _PROBE is None:
         _PROBE = LeanProbe(auto_build=False)
+        _PROBE_EVER_STARTED = True
     return _PROBE
 
 
@@ -407,7 +409,11 @@ def _effective_incremental_timeout_s(
     if dispatch_worker_enabled() and requested < DISPATCH_WORKER_INCREMENTAL_TIMEOUT_FLOOR_S:
         effective = DISPATCH_WORKER_INCREMENTAL_TIMEOUT_FLOOR_S
         policy = "dispatch_worker_cold_start_floor"
-    elif research_mode_enabled() and requested < RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S:
+    elif (
+        research_mode_enabled()
+        and not _PROBE_EVER_STARTED
+        and requested < RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S
+    ):
         effective = RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S
         policy = "research_cold_start_floor"
     elif profiled_helper and requested < PROFILED_HELPER_TIMEOUT_FLOOR_S:

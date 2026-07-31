@@ -93,6 +93,34 @@ def test_segment_file_attaches_set_option_wrapper_to_private_theorem():
     assert segments[1].text.startswith("set_option maxRecDepth 10000 in")
 
 
+def test_segment_file_attaches_stacked_option_wrappers_to_private_theorem():
+    header, segments = li._segment_file(
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "theorem first : True := by",
+                "  trivial",
+                "",
+                "set_option maxHeartbeats 50000000 in",
+                "set_option maxRecDepth 100000 in",
+                "private theorem wrapped : True := by",
+                "  trivial",
+                "",
+                "theorem last : True := by",
+                "  trivial",
+                "",
+            ]
+        )
+    )
+
+    assert header == "import Mathlib\n"
+    assert [segment.name for segment in segments] == ["first", "wrapped", "last"]
+    assert "set_option" not in segments[0].text
+    assert segments[1].text.startswith("set_option maxHeartbeats 50000000 in")
+    assert "set_option maxRecDepth 100000 in" in segments[1].text
+
+
 def test_segment_file_attaches_variable_wrapper_to_scoped_declaration():
     header, segments = li._segment_file(
         "\n".join(
@@ -717,6 +745,7 @@ def test_foreground_research_applies_cold_start_timeout_floor(
     fake = _FakeProbe()
     monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
     monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setattr(li, "_PROBE_EVER_STARTED", False)
     monkeypatch.setattr(li, "_probe", lambda: fake)
     monkeypatch.setattr(
         li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
@@ -738,6 +767,44 @@ def test_foreground_research_applies_cold_start_timeout_floor(
     assert payload["timeout_policy"] == ("research_cold_start_floor" if adjusted else "requested")
 
 
+def test_foreground_research_honors_requested_timeout_after_probe_warmup(monkeypatch, tmp_path):
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
+    )
+
+    class _FakeProbe:
+        def __init__(self):
+            self.timeout_s = 0
+
+        def prepare_file(self, *args, **kwargs):
+            self.timeout_s = kwargs["timeout_s"]
+            return {"success": True, "ok": True, "action": "prepare_file"}
+
+    fake = _FakeProbe()
+    monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setattr(li, "_PROBE_EVER_STARTED", True)
+    monkeypatch.setattr(li, "_probe", lambda: fake)
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="prepare_file",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        timeout_s=60,
+    )
+
+    assert fake.timeout_s == 60
+    assert payload["effective_timeout_s"] == 60
+    assert payload["timeout_adjusted"] is False
+    assert payload["timeout_policy"] == "requested"
+
+
 def test_authoritative_timeout_ceiling_caps_research_cold_start_floor(monkeypatch, tmp_path):
     project, target = _write_project(
         tmp_path,
@@ -754,6 +821,7 @@ def test_authoritative_timeout_ceiling_caps_research_cold_start_floor(monkeypatc
     fake = _FakeProbe()
     monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
     monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setattr(li, "_PROBE_EVER_STARTED", False)
     monkeypatch.setattr(li, "_probe", lambda: fake)
     monkeypatch.setattr(
         li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"

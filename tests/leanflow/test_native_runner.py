@@ -21671,6 +21671,81 @@ def test_queue_statement_guard_allows_resumed_generated_helper_statement_change(
     assert "(h : True)" in active.read_text(encoding="utf-8")
 
 
+def test_queue_guard_retires_unused_prover_edit_assignment(monkeypatch, tmp_path):
+    """An unused spontaneous helper may leave source without becoming a phantom queue item."""
+    active = tmp_path / "Main.lean"
+    active_file = str(active.resolve())
+    helper = "generated_helper"
+    goal = "source_goal"
+    before = (
+        "private lemma generated_helper : False := by\n"
+        "  contradiction\n\n"
+        "theorem source_goal : True := by\n"
+        "  sorry\n"
+    )
+    after = "theorem source_goal : True := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+    helper_id = runner.plan_state.node_id_for(helper, active_file)
+    goal_id = runner.plan_state.node_id_for(goal, active_file)
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": helper,
+                "active_file": active_file,
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    runner.plan_state.save_blueprint(
+        runner.plan_state.Blueprint(
+            nodes=(
+                runner.plan_state.GraphNode(
+                    id=helper_id,
+                    kind="lemma",
+                    name=helper,
+                    file=active_file,
+                    status="proving",
+                    generated_by="prover-edit",
+                ),
+                runner.plan_state.GraphNode(
+                    id=goal_id,
+                    name=goal,
+                    file=active_file,
+                    status="stated",
+                    generated_by="queue-sync",
+                ),
+            ),
+            edges=(runner.plan_state.GraphEdge(helper_id, goal_id, "evidence"),),
+        )
+    )
+    agent = _Agent()
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": active_file}) is None
+    active.write_text(after, encoding="utf-8")
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is True
+    assert verdict.removed_generated_assignment is True
+    assert active.read_text(encoding="utf-8") == after
+    retired = runner.plan_state.load_blueprint().node_by_id(helper_id)
+    assert retired is not None
+    assert retired.status == "parked"
+    assert "retired: unused prover-generated helper" in retired.notes
+    assert "current_queue_assignment" not in agent._managed_autonomy_state
+
+
 def test_parent_turn_can_revise_generated_dependency_and_reopens_its_gate(monkeypatch, tmp_path):
     """A parent may repair its generated helper without losing source scope."""
     active = tmp_path / "Main.lean"
