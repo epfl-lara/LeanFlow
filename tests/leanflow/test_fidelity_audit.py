@@ -216,6 +216,62 @@ def test_campaign_policy_with_every_assigned_declaration_skips_fidelity_reviewer
     )
 
 
+def test_campaign_policy_reopens_stale_fidelity_park():
+    file = "Demo/Main.lean"
+    node_id = plan_state.node_id_for("demo", file)
+    blueprint = plan_state.Blueprint(
+        nodes=(
+            plan_state.GraphNode(
+                id=node_id,
+                name="demo",
+                file=file,
+                status="parked",
+                notes="human note; fidelity: suspect",
+            ),
+        )
+    )
+    truth = {(file, "demo"): plan_state.DeclTruth(present=True, has_sorry=True)}
+
+    updated, reopened = runner._reopen_policy_only_fidelity_parks(
+        blueprint,
+        truth,
+        "Complete every assigned declaration in Demo/Main.lean and preserve logs.",
+    )
+
+    node = updated.node_by_id(node_id)
+    assert reopened == (("demo", file),)
+    assert node is not None and node.status == "audited"
+    assert "fidelity: audited" in node.notes
+    assert "fidelity: suspect" not in node.notes
+    assert "human note" in node.notes
+
+
+def test_external_claim_keeps_fidelity_park_closed():
+    file = "Demo/Main.lean"
+    node_id = plan_state.node_id_for("demo", file)
+    blueprint = plan_state.Blueprint(
+        nodes=(
+            plan_state.GraphNode(
+                id=node_id,
+                name="demo",
+                file=file,
+                status="parked",
+                notes="fidelity: suspect",
+            ),
+        )
+    )
+    truth = {(file, "demo"): plan_state.DeclTruth(present=True, has_sorry=True)}
+
+    updated, reopened = runner._reopen_policy_only_fidelity_parks(
+        blueprint,
+        truth,
+        "Prove the assigned theorem. Claim: every positive integer is even.",
+    )
+
+    assert reopened == ()
+    assert updated.node_by_id(node_id).status == "parked"
+
+
 def test_operational_prefix_with_explicit_claim_still_runs_fidelity_audit(
     audit_enabled, monkeypatch
 ):

@@ -21195,6 +21195,47 @@ def _reconcile_historical_finite_branch_progress(
     return reconciliation
 
 
+def _reopen_policy_only_fidelity_parks(
+    bp: plan_state.Blueprint,
+    truth: Mapping[tuple[str, str], plan_state.DeclTruth],
+    goal: str,
+) -> tuple[plan_state.Blueprint, tuple[tuple[str, str], ...]]:
+    """Reopen stale fidelity parks when the Lean statement is authoritative.
+
+    Older campaign-policy classification could send operational instructions
+    to the statement reviewer and park the only source obligation. A resumed
+    run has no current assignment in that state, so the ordinary per-target
+    audit cannot repair it. Reopen only present declarations carrying the
+    exact fidelity marker and no invalid dependency; genuine external claims
+    remain parked for human review.
+    """
+    if _fidelity_goal_has_external_claim(goal):
+        return bp, ()
+    reopened: list[tuple[str, str]] = []
+    for node in bp.nodes:
+        markers = {part.strip() for part in str(node.notes or "").split(";") if part.strip()}
+        if (
+            node.status != "parked"
+            or "fidelity: suspect" not in markers
+            or bp.has_invalid_dependency(node.id)
+        ):
+            continue
+        declaration = truth.get((node.file, node.name))
+        if declaration is None or not declaration.present:
+            continue
+        kept = [part for part in markers if not part.startswith("fidelity:")]
+        updated = _dataclass_replace(node, notes="; ".join([*sorted(kept), "fidelity: audited"]))
+        bp = bp.replace_node(updated)
+        bp = plan_state.set_node_status(
+            bp,
+            node.id,
+            "audited",
+            why="operational proving policy makes the existing Lean statement authoritative",
+        )
+        reopened.append((node.name, node.file))
+    return bp, tuple(reopened)
+
+
 def _maybe_sync_plan_state(
     autonomy_state: Mapping[str, Any] | None,
     live_state: Mapping[str, Any] | None,
@@ -21308,6 +21349,14 @@ def _maybe_sync_plan_state(
         )
         truth = _collect_declaration_truth(files, live_state, expected)
         bp, changes = plan_state.reconcile(bp, truth)
+        bp, reopened_fidelity_parks = _reopen_policy_only_fidelity_parks(bp, truth, goal)
+        for symbol, file in reopened_fidelity_parks:
+            _record_activity(
+                "statement-fidelity-park-reopened",
+                f"Reopened stale policy-only fidelity park for {symbol}",
+                target_symbol=symbol,
+                active_file=file,
+            )
         for change in changes:
             plan_state.append_journal_event(change)
             _record_activity(
@@ -21620,6 +21669,28 @@ def _maybe_sync_plan_state(
                         bp = plan_state.save_blueprint(bp)
                         graph_changed = True
         summary = plan_state.load_summary()
+        fidelity_questions_changed = False
+        if reopened_fidelity_parks:
+            reopened_keys = {
+                _queue_key(symbol, file).storage_key() for symbol, file in reopened_fidelity_parks
+            }
+            old_questions = [
+                dict(entry)
+                for entry in (summary.get("human_questions") or [])
+                if isinstance(entry, Mapping)
+            ]
+            kept_questions = [
+                entry
+                for entry in old_questions
+                if _queue_key(
+                    str(entry.get("target_symbol", "") or ""),
+                    str(entry.get("active_file", "") or ""),
+                ).storage_key()
+                not in reopened_keys
+            ]
+            fidelity_questions_changed = kept_questions != old_questions
+            if fidelity_questions_changed:
+                summary["human_questions"] = kept_questions
         active_assignment_key = (
             plan_state.node_id_for(target_symbol, active_file)
             if target_symbol and active_file
@@ -21636,7 +21707,10 @@ def _maybe_sync_plan_state(
             if str(outcome.get("status", "") or "").strip().lower() == "deferred"
             and plan_state.node_id_for(symbol, file) != active_assignment_key
         ]
-        summary_changed = summary.get("deferred_queue_items") != deferred_queue_items
+        summary_changed = (
+            summary.get("deferred_queue_items") != deferred_queue_items
+            or fidelity_questions_changed
+        )
         if summary_changed:
             summary["deferred_queue_items"] = deferred_queue_items
         if graph_changed or summary_changed:
