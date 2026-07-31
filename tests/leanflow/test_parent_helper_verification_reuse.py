@@ -280,6 +280,12 @@ def test_helper_priority_normalizes_model_patch_to_parent_checked_location(
         tmp_path,
         before=before,
     )
+    for _ in range(runner.research_helper_candidate_priority.MAX_INTEGRATION_ATTEMPTS):
+        runner.research_helper_candidate_priority.note_integration_attempt(
+            state,
+            candidate_id=ready.candidate_id,
+        )
+    assert not runner.research_helper_candidate_priority.load(state).integration_fence_active
 
     class Agent:
         _managed_autonomy_state = state

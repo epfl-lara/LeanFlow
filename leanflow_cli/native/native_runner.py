@@ -8413,7 +8413,7 @@ def _research_helper_candidate_pre_tool_guard(
             },
             ensure_ascii=False,
         )
-    if candidate is None or not candidate.integration_fence_active or consumption_pending:
+    if candidate is None or consumption_pending:
         return None
     try:
         name_collision = research_helper_candidate_priority.source_name_collision(candidate)
@@ -8624,6 +8624,11 @@ def _research_helper_candidate_pre_tool_guard(
                 candidate_id=candidate.candidate_id,
             )
             return None
+    if not candidate.integration_fence_active:
+        # Exhausting the foreground priority fence lets unrelated work resume,
+        # but it must never disable the exact cached-insertion authority above.
+        # Otherwise a later faithful retry falls through to a broad Lean replay.
+        return None
     with contextlib.suppress(Exception):
         _record_agent_activity(
             agent,
