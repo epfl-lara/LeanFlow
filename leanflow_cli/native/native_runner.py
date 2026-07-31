@@ -8543,20 +8543,19 @@ def _research_helper_candidate_pre_tool_guard(
                     },
                     ensure_ascii=False,
                 )
-            research_helper_candidate_priority.note_integration_attempt(
-                autonomy_state,
-                candidate_id=candidate.candidate_id,
-            )
             if research_helper_candidate_priority.parent_recheck_evidence_authenticated(candidate):
                 try:
                     before_bytes = Path(active_file).read_bytes()
                     before_text = before_bytes.decode("utf-8")
-                    after_text, preview_error = preview_v4a_update(
-                        str(arguments.get("patch", "") or ""),
+                    exact_patch = parent_helper_verification_reuse.exact_integrated_source_patch(
                         before_text,
+                        candidate,
+                        path=str(arguments.get("path", "") or active_file),
                     )
+                    after_text, preview_error = preview_v4a_update(exact_patch, before_text)
                 except (OSError, UnicodeError):
                     before_bytes = b""
+                    exact_patch = ""
                     after_text = None
                     preview_error = "source_unreadable"
                 before_sha256 = hashlib.sha256(before_bytes).hexdigest()
@@ -8579,7 +8578,13 @@ def _research_helper_candidate_pre_tool_guard(
                         axiom_profile_axioms=tuple(candidate.parent_recheck_axioms),
                     )
                     if authority_token:
+                        supplied_patch = str(arguments.get("patch", "") or "")
+                        arguments["patch"] = exact_patch
                         arguments["_leanflow_verified_edit_authority"] = authority_token
+                        research_helper_candidate_priority.note_integration_attempt(
+                            autonomy_state,
+                            candidate_id=candidate.candidate_id,
+                        )
                         with contextlib.suppress(Exception):
                             _record_agent_activity(
                                 agent,
@@ -8594,8 +8599,30 @@ def _research_helper_candidate_pre_tool_guard(
                                 helper_symbol=candidate.helper_name,
                                 before_source_revision_sha256=before_sha256,
                                 integrated_source_revision_sha256=after_sha256,
+                                patch_normalized=supplied_patch != exact_patch,
                                 campaign_progress=False,
                             )
+                        return None
+                return json.dumps(
+                    {
+                        "success": False,
+                        "status": "checked_helper_exact_patch_unavailable",
+                        "candidate_id": candidate.candidate_id,
+                        "helper_symbol": candidate.helper_name,
+                        "target_symbol": target_symbol,
+                        "reason": (
+                            "The manager could not construct and authorize the exact "
+                            "parent-checked insertion image. Preserve the candidate and "
+                            "retry after refreshing the current source; do not run a broad "
+                            "target replay for this helper-only edit."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            research_helper_candidate_priority.note_integration_attempt(
+                autonomy_state,
+                candidate_id=candidate.candidate_id,
+            )
             return None
     with contextlib.suppress(Exception):
         _record_agent_activity(

@@ -11,6 +11,7 @@ from typing import Any
 
 from leanflow_cli.lean.lean_helper_ephemeral import build_integrated_helper_source
 from leanflow_cli.workflows import research_helper_candidate_priority
+from tools.utilities.patch_parser import preview_v4a_update
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,63 @@ def expected_integrated_source_revision_sha256(
     """Return the expected post-insertion source hash, or an empty value."""
     integrated = expected_integrated_source(source_text, candidate)
     return _sha256_bytes(integrated.encode("utf-8")) if integrated else ""
+
+
+def exact_integrated_source_patch(
+    source_text: str,
+    candidate: research_helper_candidate_priority.PendingResearchHelperCandidate,
+    *,
+    path: str,
+) -> str:
+    """Build a compact V4A patch for the exact parent-checked source image."""
+    expected = expected_integrated_source(source_text, candidate)
+    if not expected or expected == source_text or not str(path or "").strip():
+        return ""
+    before_lines = source_text.splitlines()
+    after_lines = expected.splitlines()
+    prefix = 0
+    while (
+        prefix < len(before_lines)
+        and prefix < len(after_lines)
+        and before_lines[prefix] == after_lines[prefix]
+    ):
+        prefix += 1
+    suffix = 0
+    while (
+        suffix < len(before_lines) - prefix
+        and suffix < len(after_lines) - prefix
+        and before_lines[-(suffix + 1)] == after_lines[-(suffix + 1)]
+    ):
+        suffix += 1
+    context = 4
+    before_start = max(0, prefix - context)
+    before_stop = len(before_lines) - suffix
+    after_stop = len(after_lines) - suffix
+    suffix_stop = min(len(before_lines), before_stop + context)
+    hunk: list[str] = []
+    if before_stop == prefix:
+        # For a pure insertion, anchor on the following declaration. Including
+        # a prior scoped command would make the parser scope the hunk to the
+        # declaration while simultaneously asking it to match text before that
+        # region, an impossible anchor.
+        hunk.extend(f"+{line}" for line in after_lines[prefix:after_stop])
+        hunk.extend(f" {line}" for line in before_lines[before_stop:suffix_stop])
+    else:
+        hunk.extend(f" {line}" for line in before_lines[before_start:prefix])
+        hunk.extend(f"-{line}" for line in before_lines[prefix:before_stop])
+        hunk.extend(f"+{line}" for line in after_lines[prefix:after_stop])
+        hunk.extend(f" {line}" for line in before_lines[before_stop:suffix_stop])
+    patch = "\n".join(
+        (
+            "*** Begin Patch",
+            f"*** Update File: {path}",
+            "@@",
+            *hunk,
+            "*** End Patch",
+        )
+    )
+    preview, error = preview_v4a_update(patch, source_text)
+    return patch if not error and preview == expected else ""
 
 
 def classify_reuse(

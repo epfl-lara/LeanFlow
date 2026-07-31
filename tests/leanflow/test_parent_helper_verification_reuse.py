@@ -22,10 +22,10 @@ def _ready_candidate(
     *,
     axioms: tuple[str, ...] = ("Classical.choice",),
     declaration_prefix: str = "",
+    before: str = "theorem demo : True := by\n  sorry\n",
 ):
     """Stage one accepted parent helper check against the original source."""
     active = tmp_path / "Main.lean"
-    before = "theorem demo : True := by\n  sorry\n"
     declaration = declaration_prefix + "private lemma checked_family : True := by\n  trivial"
     active.write_text(before, encoding="utf-8")
     declaration_hash = _sha256(declaration)
@@ -241,6 +241,86 @@ def test_helper_priority_authorizes_exact_atomic_patch_without_target_replay(
         lean_patch,
         "lean_incremental_check",
         lambda **_kwargs: pytest.fail("exact parent helper insertion replayed Lean"),
+    )
+    payload = json.loads(
+        lean_patch.apply_verified_patch_tool(
+            str(active),
+            str(arguments["patch"]),
+            cwd=str(tmp_path),
+            theorem_id="demo",
+            verified_edit_authority_token=token,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["authenticated_helper_insertion"] is True
+    assert payload["verification"]["target"] == ready.helper_name
+    assert active.read_text(encoding="utf-8") == expected
+
+
+def test_helper_priority_normalizes_model_patch_to_parent_checked_location(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Replace a guessed helper location with the exact checked source transition."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    before = "set_option maxHeartbeats 1000000\n\ntheorem demo : True := by\n  sorry\n"
+    active, _before, expected, declaration, state, ready = _ready_candidate(
+        tmp_path,
+        before=before,
+    )
+
+    class Agent:
+        _managed_autonomy_state = state
+
+        @staticmethod
+        def is_interrupted() -> bool:
+            return False
+
+    guessed_patch = (
+        "*** Begin Patch\n"
+        f"*** Update File: {active}\n"
+        "@@\n"
+        "-set_option maxHeartbeats 1000000\n"
+        f"+{declaration.replace(chr(10), chr(10) + '+')}\n"
+        "+\n"
+        "+set_option maxHeartbeats 1000000\n"
+        " theorem demo : True := by\n"
+        "*** End Patch\n"
+    )
+    arguments = {
+        "path": str(active),
+        "theorem_id": "demo",
+        "patch": guessed_patch,
+    }
+
+    assert runner._managed_pre_tool_call(Agent(), "apply_verified_patch", arguments) is None
+    assert arguments["patch"] != guessed_patch
+    normalized, error = runner.preview_v4a_update(str(arguments["patch"]), before)
+    assert error is None
+    assert normalized == expected
+    token = str(arguments.get("_leanflow_verified_edit_authority", ""))
+    assert token
+    authorized = next(
+        kwargs for args, kwargs in events if args[1] == "research-helper-verified-edit-authorized"
+    )
+    assert authorized["patch_normalized"] is True
+
+    monkeypatch.setattr(
+        lean_patch,
+        "lean_incremental_check",
+        lambda **_kwargs: pytest.fail("normalized helper insertion replayed Lean"),
     )
     payload = json.loads(
         lean_patch.apply_verified_patch_tool(
