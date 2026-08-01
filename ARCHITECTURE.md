@@ -163,6 +163,9 @@ tool is reachable through the public registry.
   publication (`support_module_materialization.py`), checkpoints, and shutdown.
   Hard-diagnostic edit rollback lives in `managed_edit_rollback.py` so the
   exact after-image check and atomic restoration remain independently tested.
+  Revision-authenticated successful-gate reuse lives in
+  `verified_gate_handoff.py`; it carries a checked queue snapshot across the
+  provider boundary without replaying diagnostics, goals, or full-file builds.
 
 The larger coordination modules remain intentionally coupled where tests patch
 their module attributes. Extracting behavior from them requires

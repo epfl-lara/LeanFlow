@@ -200,6 +200,7 @@ files = [
   "leanflow_cli/native/source_order_dependency_guard.py",
   "leanflow_cli/native/queue_source_dependencies.py",
   "leanflow_cli/native/verification_batch_admission.py",
+  "leanflow_cli/native/verified_gate_handoff.py",
   "leanflow_cli/native/parent_helper_verification_reuse.py",
   "leanflow_cli/native/verified_patch_batch_reuse.py",
   "leanflow_cli/lean/lean_diagnostics.py",

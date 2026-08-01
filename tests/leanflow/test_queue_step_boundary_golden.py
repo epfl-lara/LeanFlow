@@ -233,6 +233,35 @@ def test_post_edit_hard_error_consumes_retry_records_attempt_and_continues(monke
     assert next(iter(counts.values())) == {"hard": 1}
 
 
+def test_restored_edit_feedback_names_discarded_after_image(monkeypatch):
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    events = _wire(monkeypatch, _blocked_live_state())
+    monkeypatch.setattr(runner, "_source_revision_sha256", lambda path: "restored-sha")
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="patch+lean_incremental_check",
+        manager_verification={
+            "ok": False,
+            "output": "error: unexpected token at the rejected edit",
+            "failed_edit_restored": True,
+        },
+    )
+
+    args, kwargs = _boundary_event(events)
+    assert args[0] == "queue-theorem-feedback"
+    review = kwargs["manager_verification"]
+    assert review["source_restored"] is True
+    assert review["restored_source_sha256"] == "restored-sha"
+    assert review["feedback_describes_rejected_after_image"] is True
+    assert "discarded after-image" in agent._post_tool_result_appendix
+    assert "re-read the complete edited region" in agent._post_tool_result_appendix
+    assert any(event[0] == "manager-restored-source-reused" for event, _ in events)
+
+
 def test_rejection_stages_coached_feedback_before_portfolio_maintenance(monkeypatch):
     """Slow research refill must not sit ahead of rejection feedback staging."""
     autonomy_state = _autonomy_state()
@@ -523,6 +552,61 @@ def test_clean_advance_yields_with_step_boundary_interrupt(monkeypatch):
         autonomy_state,
         scope=scope,
     )
+
+
+def test_clean_exact_gate_hands_fast_state_to_outer_loop(monkeypatch):
+    """A passed exact gate must not immediately rebuild the same Lean state."""
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    fast_state = _clean_advanced_live_state()
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        runner,
+        "_build_verified_gate_handoff_state",
+        lambda *args, **kwargs: dict(fast_state),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("successful gate must not run comprehensive live refresh")
+        ),
+    )
+    monkeypatch.setattr(
+        runner.verified_gate_handoff,
+        "remember",
+        lambda target_agent, state: (
+            setattr(target_agent, "_managed_step_boundary_live_state", dict(state)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner, "_declaration_diagnostic_feedback_reason", lambda *args, **kwargs: ""
+    )
+    monkeypatch.setattr(runner, "_find_declaration_entry", lambda file, label: {"has_sorry": False})
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="patch+lean_incremental_check",
+        manager_verification={
+            "ok": True,
+            "action": "check_target",
+            "target": "demo",
+            "axiom_profile_checked": True,
+            "output": "target:demo passed",
+        },
+    )
+
+    args, kwargs = _boundary_event(events)
+    assert args[0] == "queue-step-boundary"
+    assert kwargs["refresh_error"] == ""
+    assert agent._managed_step_boundary_live_state == fast_state
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
 
 
 def test_live_warning_without_cleanup_advances(monkeypatch):

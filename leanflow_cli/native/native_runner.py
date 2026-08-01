@@ -112,6 +112,7 @@ from leanflow_cli.native import (
     terminal_check_policy,
     transition_visibility,
     verification_batch_admission,
+    verified_gate_handoff,
     verified_patch_batch_reuse,
     warning_cleanup_guard,
 )
@@ -11100,6 +11101,170 @@ def _failed_exact_check_source_is_unchanged(
     )
 
 
+def _build_verified_gate_handoff_state(
+    pending_file: str,
+    pending_target: str,
+    manager_check: Mapping[str, Any],
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    cleanup_reason: str = "",
+) -> dict[str, Any]:
+    """Build the next queue state from an authenticated successful target gate.
+
+    Re-scan stable source bytes to select the next ``sorry`` target without
+    replaying diagnostics, goals, or a full-file build. A checked final
+    declaration with an accepted axiom profile also closes the drained file.
+    """
+    if (
+        not bool(manager_check.get("ok"))
+        or _declaration_queue_scope() != "file"
+        or _document_formalization_requested()
+    ):
+        return {}
+    revision = source_only_startup.capture_source_revision(pending_file)
+    if revision is None:
+        return {}
+    active_file = revision.path
+    declarations = _declaration_line_index(active_file)
+    target_entry = next(
+        (
+            dict(entry)
+            for entry in declarations
+            if str(entry.get("name", "") or "").strip() == pending_target
+        ),
+        {},
+    )
+    if not target_entry or bool(target_entry.get("has_sorry")):
+        return {}
+
+    declaration_queue = _declaration_work_queue(
+        active_file,
+        "",
+        project_root=_project_root(),
+        scope="file",
+    )
+    if cleanup_reason:
+        cleanup_item = {
+            "file": active_file,
+            "label": pending_target,
+            "kind": str(target_entry.get("kind", "") or "theorem"),
+            "line": int(target_entry.get("line", 0) or 0),
+            "end_line": int(target_entry.get("end_line", 0) or 0),
+            "reasons": ["warning-only cleanup"],
+        }
+        declaration_queue = [
+            cleanup_item,
+            *[
+                item
+                for item in declaration_queue
+                if str(item.get("label", "") or "").strip() != pending_target
+            ],
+        ]
+        current_queue_item: dict[str, Any] | None = cleanup_item
+    else:
+        queue_labels = tuple(str(item.get("label", "") or "").strip() for item in declaration_queue)
+        current_queue_item = _current_queue_item(
+            declaration_queue,
+            active_file,
+            precedence=_graph_frontier_precedence(
+                autonomy_state,
+                active_file=active_file,
+                queue_labels=queue_labels,
+            ),
+            order_key=_curriculum_order_key(),
+        )
+    queue_frontier_exhausted = bool(declaration_queue and not current_queue_item)
+    current_label = str((current_queue_item or {}).get("label", "") or "").strip()
+    sorry_count = _count_sorries(active_file)
+    if not isinstance(sorry_count, int):
+        return {}
+    project_sorry_count, project_sorry_files = _count_project_sorries(_project_root())
+    diagnostics = str(
+        manager_check.get("output", "") or manager_check.get("error", "") or ""
+    ).strip()
+    build_status = _verification_status_text(manager_check)
+    last_verification = _last_verification_record(autonomy_state)
+    active_file_label = _relative_file_label(active_file) or active_file
+    declaration_queue_summary = _format_declaration_queue(declaration_queue)
+    current_blocker = ", ".join((current_queue_item or {}).get("reasons", []) or [])
+    final_named_declaration = str(
+        next(
+            (
+                entry.get("name", "")
+                for entry in reversed(declarations)
+                if str(entry.get("name", "") or "").strip()
+            ),
+            "",
+        )
+        or ""
+    ).strip()
+    exact_gate_covers_file = bool(
+        not declaration_queue
+        and final_named_declaration == pending_target
+        and manager_check.get("axiom_profile_checked") is True
+        and not list(manager_check.get("axiom_profile_blockers") or [])
+    )
+    queue_needs_final_file_sweep = bool(not declaration_queue and not exact_gate_covers_file)
+    state: dict[str, Any] = {
+        "active_file": active_file,
+        "active_file_label": active_file_label,
+        "target_symbol": current_label,
+        "diagnostics": diagnostics or "authenticated target gate reported no diagnostics",
+        "goals": "no goals" if not current_label else "not queried after authenticated gate",
+        "build_status": build_status,
+        "last_verification": last_verification,
+        "declaration_scope": "file",
+        "declaration_queue_total": len(declaration_queue),
+        "declaration_queue": list(declaration_queue),
+        "declaration_queue_preview": list(declaration_queue[:8]),
+        "declaration_queue_summary": declaration_queue_summary,
+        "current_queue_item": dict(current_queue_item or {}),
+        "current_queue_item_prefix": (
+            _declaration_prefix_text(active_file, current_label) if current_label else ""
+        ),
+        "current_queue_item_slice": (
+            _declaration_slice_text(active_file, current_label) if current_label else ""
+        ),
+        "current_blocker": current_blocker,
+        "queue_frontier_exhausted": queue_frontier_exhausted,
+        "queue_needs_final_file_sweep": queue_needs_final_file_sweep,
+        "sorry_count": sorry_count,
+        "project_sorry_count": project_sorry_count,
+        "project_sorry_files": list(project_sorry_files),
+        "blocker_summary": current_blocker,
+        "verification_hint": _recommended_verification_command(active_file),
+        "capability_report": {},
+        "route_decision": {},
+        "document_formalization_handoff": {},
+        "proof_state_authority": "authenticated_target_gate",
+        "source_revision": revision.to_mapping(),
+        "source_revision_sha256": revision.sha256,
+        "used_source_only_snapshot": False,
+        "verification_ok": exact_gate_covers_file,
+        "proof_solved": exact_gate_covers_file,
+        "message": "\n".join(
+            [
+                "[LEANFLOW-NATIVE VERIFIED GATE HANDOFF]",
+                "The assigned declaration passed its exact kernel and axiom gate.",
+                "The next queue state was selected from the same stable source revision without replaying Lean.",
+                f"Active file: {active_file_label}",
+                f"Target theorem: {current_label or '[queue drained]'}",
+                f"Source revision: {revision.sha256}",
+                f"Queue: {declaration_queue_summary}",
+            ]
+        ),
+    }
+    state["route_decision"] = route_workflow_step(
+        _workflow_kind(),
+        state,
+        configured_skill=_base_active_skill(),
+        cwd=_project_root(),
+    ).to_dict()
+    if not source_only_startup.source_revision_is_current(revision):
+        return {}
+    return state
+
+
 def _manager_check_timed_out(manager_check: Mapping[str, Any] | None) -> bool:
     """Return whether a manager gate failed for an operational timeout."""
     checked = dict(manager_check or {})
@@ -11160,6 +11325,7 @@ def _finish_queue_step_boundary(
     candidate_pending_commit = False
     target_candidate_dry_run = False
     candidate_check_passed = False
+    target_gate_accepted = False
     exact_axiom_gate_rejected = False
     axiom_gate_temporarily_unavailable = False
     promoted_helper_integration_gate_accepted = False
@@ -11327,6 +11493,29 @@ def _finish_queue_step_boundary(
                 "feedback_lean": manager_check.get("feedback_lean", ""),
                 "replacement": candidate_replacement or manager_check.get("replacement", ""),
             }
+        failed_edit_restored = bool(manager_check.get("failed_edit_restored"))
+        if failed_edit_restored:
+            restored_revision = _source_revision_sha256(pending_file)
+            rejected_feedback = manager_feedback_reason
+            manager_check.update(
+                {
+                    "source_restored": True,
+                    "restored_source_sha256": restored_revision,
+                    "feedback_describes_rejected_after_image": True,
+                }
+            )
+            manager_feedback_reason = (
+                "the rejected edit was rolled back; current source is restored at revision "
+                f"{restored_revision}. Re-read the complete edited region before retrying. "
+                f"The following diagnostics describe the discarded after-image: {rejected_feedback}"
+            ).strip()
+        cleanup_feedback_reason = _declaration_diagnostic_feedback_reason(
+            pending_file,
+            pending_target,
+            str(manager_check.get("output", "") or ""),
+            str(manager_check.get("error", "") or ""),
+            structured_items=manager_check.get("messages") or (),
+        )
         live_refresh_started = time.monotonic()
         failed_exact_source_unchanged = _failed_exact_check_source_is_unchanged(
             pending_file,
@@ -11334,7 +11523,48 @@ def _finish_queue_step_boundary(
             manager_check,
             exact_check_source_snapshot,
         )
-        if target_candidate_dry_run or failed_exact_source_unchanged:
+        verified_gate_state = (
+            _build_verified_gate_handoff_state(
+                pending_file,
+                pending_target,
+                manager_check,
+                autonomy_state if isinstance(autonomy_state, dict) else None,
+                cleanup_reason=cleanup_feedback_reason,
+            )
+            if target_gate_accepted and not target_candidate_dry_run
+            else {}
+        )
+        if verified_gate_state:
+            live_state = verified_gate_state
+            _record_activity(
+                "manager-verified-gate-source-reused",
+                f"Reused authenticated target gate for {pending_target}",
+                target_symbol=pending_target,
+                active_file=pending_file,
+                source_revision_sha256=str(live_state.get("source_revision_sha256", "") or ""),
+                queue_total=int(live_state.get("declaration_queue_total", 0) or 0),
+                file_verified=bool(live_state.get("verification_ok")),
+                elapsed_s=round(max(0.0, time.monotonic() - live_refresh_started), 3),
+            )
+        elif failed_edit_restored:
+            live_state = _unchanged_failed_check_source_state(
+                pending_file,
+                pending_target,
+                manager_check,
+                autonomy_state if isinstance(autonomy_state, dict) else None,
+                temporary_candidate=False,
+            )
+            live_state["current_blocker"] = manager_feedback_reason
+            live_state["blocker_summary"] = manager_feedback_reason
+            _record_activity(
+                "manager-restored-source-reused",
+                f"Reused restored source state after rejected edit for {pending_target}",
+                target_symbol=pending_target,
+                active_file=pending_file,
+                source_revision_sha256=str(manager_check.get("restored_source_sha256", "") or ""),
+                elapsed_s=round(max(0.0, time.monotonic() - live_refresh_started), 3),
+            )
+        elif target_candidate_dry_run or failed_exact_source_unchanged:
             # A temporary candidate never writes source, while an exact failed
             # check is admitted here only when the captured bytes still match.
             # A comprehensive refresh would only repeat diagnostics/goals (or
@@ -11407,13 +11637,6 @@ def _finish_queue_step_boundary(
         # Pass structured `messages` so the helper can locate
         # `lean_incremental_check`-style warnings, which lack the
         # `<file>:<line>:<col>:` prefix the text fallback regex needs.
-        cleanup_feedback_reason = _declaration_diagnostic_feedback_reason(
-            pending_file,
-            pending_target,
-            str(manager_check.get("output", "") or ""),
-            str(manager_check.get("error", "") or ""),
-            structured_items=manager_check.get("messages") or (),
-        )
         exact_axiom_gate_rejected = _exact_assigned_target_axiom_gate_rejected(
             manager_check,
             target_symbol=pending_target,
@@ -11813,6 +12036,31 @@ def _finish_queue_step_boundary(
                             attempt=attempt_number,
                             verification_tool=verification_tool,
                         )
+        if warning_retry_accepted and target_gate_accepted:
+            if isinstance(autonomy_state, dict):
+                # The assigned declaration already received its single bounded
+                # warning-cleanup edit. Do not open a second whole-file model
+                # cleanup window for the same successful gate.
+                autonomy_state["final_sweep_cleanup_attempted"] = True
+                autonomy_state["final_sweep_cleanup_turn_started"] = True
+                autonomy_state.pop("final_sweep_baseline", None)
+            accepted_state = _build_verified_gate_handoff_state(
+                pending_file,
+                pending_target,
+                manager_check,
+                autonomy_state if isinstance(autonomy_state, dict) else None,
+                cleanup_reason="",
+            )
+            if accepted_state:
+                live_state = accepted_state
+                live_state.update(
+                    {
+                        "warning_cleanup_status": "accepted",
+                        "warning_cleanup_attempted": True,
+                        "warning_cleanup_verified": True,
+                        "final_sweep_warning_cleanup_pending": False,
+                    }
+                )
     except Exception as exc:
         refresh_error = str(exc)[:500]
     finally:
@@ -11820,6 +12068,22 @@ def _finish_queue_step_boundary(
             candidate_pending_commit or still_blocked or cleanup_feedback_reason
         )
         should_yield = bool(refresh_error or not continue_same_turn)
+        if (
+            should_yield
+            and not refresh_error
+            and target_gate_accepted
+            and live_state
+            and verified_gate_handoff.remember(agent, live_state)
+        ):
+            _record_activity(
+                "verified-gate-handoff-staged",
+                f"Staged authenticated queue-boundary state for {pending_target}",
+                target_symbol=pending_target,
+                active_file=pending_file,
+                source_revision_sha256=str(live_state.get("source_revision_sha256", "") or ""),
+                queue_total=int(live_state.get("declaration_queue_total", 0) or 0),
+                file_verified=bool(live_state.get("verification_ok")),
+            )
         if post_edit_verification and pending_promoted_helper_names:
             _account_promoted_helper_integration_after_target_gate(
                 autonomy_state if isinstance(autonomy_state, dict) else None,
@@ -11983,6 +12247,14 @@ def _finish_queue_step_boundary(
                     "- queue boundary: do not edit future queued declarations; stop after this cleanup or after the manager cleanup opportunity"
                 )
             if manager_check:
+                if manager_check.get("source_restored"):
+                    feedback_lines.extend(
+                        [
+                            "- source state: the rejected edit was atomically rolled back; diagnostics below describe the discarded after-image",
+                            "- required refresh: re-read the complete edited region before constructing another patch",
+                            f"- restored revision: {manager_check.get('restored_source_sha256', '[unknown]')}",
+                        ]
+                    )
                 feedback_lines.append(
                     f"- manager file check: {'ok' if manager_check.get('ok') else 'failed'}"
                     + (
@@ -15980,6 +16252,22 @@ def _stabilize_live_state_before_theorem_transition(
     current = dict(live_state or {})
     if not plan_state_enabled() or _queue_assignment_transition(autonomy_state, current) is None:
         return current
+    if (
+        str(current.get("proof_state_authority", "") or "") == "authenticated_target_gate"
+        and int(current.get("declaration_queue_total", 0) or 0) == 0
+    ):
+        revision = source_only_startup.SourceRevision.from_mapping(
+            dict(current.get("source_revision") or {})
+        )
+        if revision is not None and source_only_startup.source_revision_is_current(revision):
+            _maybe_sync_plan_state(autonomy_state, current)
+            _record_activity(
+                "verified-gate-drain-stabilized",
+                "Kept authenticated drained state after plan synchronization",
+                active_file=revision.path,
+                source_revision_sha256=revision.sha256,
+            )
+            return current
     _maybe_sync_plan_state(autonomy_state, current)
     refreshed_checkpoint = dict(checkpoint_state or {})
     with contextlib.suppress(Exception):
@@ -29341,8 +29629,32 @@ def _drive_autonomous_followups_inner(
             )
             return history, compaction_state, checkpoint_state, live_state
         checkpoint_state = _journal_status()
-        live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
-        live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
+        live_state = verified_gate_handoff.take(agent)
+        if live_state:
+            _record_activity(
+                "verified-gate-handoff-consumed",
+                "Consumed authenticated queue-boundary state without replaying Lean",
+                active_file=str(live_state.get("active_file", "") or ""),
+                target_symbol=str(live_state.get("target_symbol", "") or ""),
+                source_revision_sha256=str(live_state.get("source_revision_sha256", "") or ""),
+                queue_total=int(live_state.get("declaration_queue_total", 0) or 0),
+                file_verified=bool(live_state.get("verification_ok")),
+            )
+            if bool(live_state.get("queue_needs_final_file_sweep")):
+                # The exact target was not the last declaration. Run the one
+                # required final file gate directly from the source snapshot;
+                # never precede it with diagnostics/goals LSP replays.
+                live_state = _promote_live_state_to_verified_compat(
+                    live_state,
+                    autonomy_state,
+                )
+        else:
+            live_state = _build_live_proof_state_compat(
+                history,
+                checkpoint_state,
+                autonomy_state,
+            )
+            live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
         if _advance_project_prove_manager_if_needed(autonomy_state, live_state, phase="autonomous"):
             checkpoint_state = _journal_status()
             live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
