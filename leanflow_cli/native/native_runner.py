@@ -23837,7 +23837,7 @@ def _supersede_stale_persistence_for_deferred_verification(
     autonomy_state: dict[str, Any],
     live_state: Mapping[str, Any] | None,
 ) -> bool:
-    """Retire stale mechanical work when a newer sorry-free proof needs optimization."""
+    """Retire stale route work when a newer sorry-free proof needs optimization."""
     if not (
         source_only_startup.is_source_only_unverified(live_state)
         and bool((live_state or {}).get("defer_incremental_warmup"))
@@ -23867,12 +23867,22 @@ def _supersede_stale_persistence_for_deferred_verification(
         active_file=active_file,
     )
     inflight_route = str(inflight.get("route", "") or "").strip().lower()
-    if inflight_route in _MECHANICAL_ORCHESTRATOR_ROUTES:
+    inflight_reason = str(inflight.get("reason", "") or "").strip().lower()
+    stale_fidelity_review = bool(
+        inflight_route == "ask-human"
+        and "statement fidelity" in inflight_reason
+        and "suspect" in inflight_reason
+    )
+    if inflight_route in _MECHANICAL_ORCHESTRATOR_ROUTES or stale_fidelity_review:
         completed = campaign_epoch.complete_inflight_route(
             autonomy_state,
             token=str(inflight.get("token", "") or ""),
             outcome="dropped",
-            dropped_reason="superseded-by-deferred-exact-verification",
+            dropped_reason=(
+                "superseded-by-authoritative-operational-policy"
+                if stale_fidelity_review
+                else "superseded-by-deferred-exact-verification"
+            ),
         )
         if not completed:
             raise RuntimeError(
@@ -23900,8 +23910,8 @@ def _supersede_stale_persistence_for_deferred_verification(
     if not superseded_routes:
         return False
     _record_activity(
-        "campaign-stale-persistence-backpressured",
-        "Retired stale mechanical replay so the foreground can optimize the proof candidate",
+        "campaign-stale-route-backpressured",
+        "Retired stale route replay so the foreground can optimize the proof candidate",
         target_symbol=target_symbol,
         active_file=active_file,
         routes=superseded_routes,
@@ -23910,6 +23920,18 @@ def _supersede_stale_persistence_for_deferred_verification(
         reason=timeout_reason,
         campaign_progress=False,
     )
+    if any(route in _MECHANICAL_ORCHESTRATOR_ROUTES for route in superseded_routes):
+        _record_activity(
+            "campaign-stale-persistence-backpressured",
+            "Retired stale mechanical replay so the foreground can optimize the proof candidate",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            routes=superseded_routes,
+            refresh_token=str(selection.get("token", "") or ""),
+            epoch=int(selection.get("epoch", 1) or 1),
+            reason=timeout_reason,
+            campaign_progress=False,
+        )
     if selection_route == "negate":
         _record_activity(
             "campaign-epoch-stale-negate-backpressured",

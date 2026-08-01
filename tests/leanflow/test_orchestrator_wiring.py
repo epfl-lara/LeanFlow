@@ -182,6 +182,48 @@ def test_deferred_proof_candidate_drops_interrupted_mechanical_route(
     assert not any(event[0] == "campaign-inflight-route-resumed" for event, _details in events)
 
 
+def test_deferred_proof_candidate_drops_stale_fidelity_human_review(enabled, monkeypatch, tmp_path):
+    """A corrected policy audit must retire its unfinished false human-review route."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "deferred-proof-stale-fidelity-review")
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "_restored_assignment_verification_timeout_reason",
+        lambda *_args, **_kwargs: "LeanProbe timed out after 300 seconds",
+    )
+    events = _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    state = _autonomy_state(str(active))
+    plan_state.save_queue_manager_state(state)
+    runner.campaign_epoch.record_route_decision(
+        state,
+        route="ask-human",
+        target_symbol="demo",
+        active_file=str(active),
+        trigger="scope-entry",
+        route_reason="statement fidelity is suspect on the main goal; human review requested",
+        reserve_inflight=True,
+    )
+    live_state = {
+        "active_file": str(active),
+        "target_symbol": "demo",
+        "proof_state_authority": "source_only_unverified",
+        "defer_incremental_warmup": True,
+        "sorry_count": 0,
+    }
+
+    selected = runner._orchestrator_consult("scope-entry", state, live_state)
+
+    assert selected is not None and selected.route == "direct-prove"
+    assert any(
+        event[0] == "campaign-stale-route-backpressured" and details["routes"] == ["ask-human"]
+        for event, details in events
+    )
+    assert not any(event[0] == "campaign-inflight-route-resumed" for event, _details in events)
+
+
 def test_consult_refreshes_plan_render_without_a_graph_mutation(enabled, monkeypatch, tmp_path):
     events = _events(monkeypatch)
     monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
