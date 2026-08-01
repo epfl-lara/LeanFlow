@@ -3736,6 +3736,72 @@ def _remember_same_revision_verification_timeout(
     return True
 
 
+def _migrate_same_revision_verification_timeout_from_activity(
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> str:
+    """Import a legacy startup timeout when its exact source revision still matches."""
+    if not isinstance(autonomy_state, dict) or not target_symbol or not active_file:
+        return ""
+    existing = _restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if existing:
+        return existing
+    source_sha256 = _source_revision_sha256(active_file)
+    if not source_sha256:
+        return ""
+    try:
+        events = read_workflow_activity(
+            limit=500,
+            event_types={"startup-exact-verification-deferred"},
+        )
+    except Exception:
+        logger.debug("legacy verification-timeout activity read failed", exc_info=True)
+        return ""
+    for event in reversed(events):
+        details = event.get("details")
+        if not isinstance(details, Mapping):
+            continue
+        event_target = str(details.get("target_symbol", "") or "").strip()
+        event_file = str(details.get("active_file", "") or "").strip()
+        event_source = str(details.get("source_revision_sha256", "") or "").strip()
+        if (
+            event_target != target_symbol
+            or not _same_active_file(event_file, active_file)
+            or event_source != source_sha256
+        ):
+            continue
+        timeout_s = details.get("timeout_s")
+        reason = (
+            f"startup exact verification timed out after {timeout_s} seconds"
+            if timeout_s
+            else "startup exact verification reached its bounded time limit"
+        )
+        if not _remember_same_revision_verification_timeout(
+            autonomy_state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            manager_check={"timed_out": True, "output": reason},
+        ):
+            return ""
+        _record_activity(
+            "verification-timeout-activity-migrated",
+            f"Imported legacy exact-timeout evidence for {target_symbol}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            source_revision_sha256=source_sha256,
+            reason=reason,
+            campaign_progress=False,
+        )
+        return reason
+    return ""
+
+
 def _assignment_verification_timeout_count(
     autonomy_state: Mapping[str, Any] | None,
     *,
@@ -17854,6 +17920,11 @@ def _verified_startup_preflight(
         restored = _restored_queue_assignment_live_state(autonomy_state)
         restored_file = str(restored.get("active_file", "") or "")
         restored_target = str(restored.get("target_symbol", "") or "")
+        _migrate_same_revision_verification_timeout_from_activity(
+            autonomy_state,
+            target_symbol=restored_target,
+            active_file=restored_file,
+        )
         prior_timeout = _restored_assignment_verification_timeout_reason(
             autonomy_state,
             target_symbol=restored_target,
@@ -17905,11 +17976,18 @@ def _verified_startup_preflight(
                 verification_diagnostics=diagnostics,
             )
             if deferred:
+                target_symbol = str(deferred.get("target_symbol", "") or "")
+                _remember_same_revision_verification_timeout(
+                    autonomy_state,
+                    target_symbol=target_symbol,
+                    active_file=revision.path,
+                    manager_check={"timed_out": True, "output": diagnostics},
+                )
                 _record_activity(
                     "startup-exact-verification-deferred",
                     "Bounded startup exact verification timed out; deferred replay to foreground",
                     active_file=revision.path,
-                    target_symbol=str(deferred.get("target_symbol", "") or ""),
+                    target_symbol=target_symbol,
                     timeout_s=STARTUP_EXACT_VERIFICATION_TIMEOUT_S,
                     source_revision_sha256=revision.sha256,
                 )
@@ -22734,6 +22812,11 @@ def _plan_state_resume_block(autonomy_state: Mapping[str, Any] | None) -> str:
         assignment = dict(dict(autonomy_state or {}).get("current_queue_assignment") or {})
         assignment_file = str(assignment.get("active_file", "") or "").strip()
         assignment_target = str(assignment.get("target_symbol", "") or "").strip()
+        _migrate_same_revision_verification_timeout_from_activity(
+            autonomy_state,
+            target_symbol=assignment_target,
+            active_file=assignment_file,
+        )
         prior_timeout = _restored_assignment_verification_timeout_reason(
             autonomy_state,
             target_symbol=assignment_target,

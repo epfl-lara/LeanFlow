@@ -2052,6 +2052,104 @@ def test_resume_gate_backpressures_same_revision_timeout(
     assert any(args[0] == "plan-graph-resume-gate-backpressured" for args, _kwargs in events)
 
 
+def test_resume_migrates_matching_legacy_startup_timeout_before_truth_collection(
+    plan_enabled, monkeypatch, tmp_path
+):
+    """Old source-bound timeout activity must suppress startup Lean replay."""
+    events = _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    source_sha256 = runner._source_revision_sha256(str(active))
+    node_id = plan_state.node_id_for("demo", str(active))
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=node_id,
+                    name="demo",
+                    file=str(active),
+                    statement="True",
+                    status="stated",
+                ),
+            )
+        )
+    )
+    autonomy_state = {
+        runner._QUEUE_MANAGER_STATE_RESTORED_KEY: True,
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    monkeypatch.setattr(
+        runner,
+        "read_workflow_activity",
+        lambda **_kwargs: [
+            {
+                "type": "startup-exact-verification-deferred",
+                "details": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "source_revision_sha256": source_sha256,
+                    "timeout_s": 60,
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        runner,
+        "_collect_declaration_truth",
+        lambda *_args, **_kwargs: pytest.fail(
+            "legacy timeout migration did not precede graph truth collection"
+        ),
+    )
+
+    assert runner._plan_state_resume_block(autonomy_state)
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    assert any(
+        attempt.get("declaration_hash") == declaration_hash
+        and "timed out" in str(attempt.get("gate_verdict", ""))
+        for attempt in autonomy_state["failed_attempts"]
+    )
+    assert any(args[0] == "verification-timeout-activity-migrated" for args, _ in events)
+
+
+def test_legacy_startup_timeout_migration_rejects_changed_source(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    monkeypatch.setattr(
+        runner,
+        "read_workflow_activity",
+        lambda **_kwargs: [
+            {
+                "type": "startup-exact-verification-deferred",
+                "details": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "source_revision_sha256": "stale-source-revision",
+                    "timeout_s": 60,
+                },
+            }
+        ],
+    )
+
+    assert (
+        runner._migrate_same_revision_verification_timeout_from_activity(
+            autonomy_state,
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        == ""
+    )
+    assert "failed_attempts" not in autonomy_state
+
+
 @pytest.mark.parametrize(
     ("axioms", "expected_status"),
     [(["propext"], "proved"), (["propext", "sorryAx"], "stated")],

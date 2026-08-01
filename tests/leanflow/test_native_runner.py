@@ -24198,14 +24198,21 @@ def test_verified_startup_preflight_defers_slow_sorry_free_resume(monkeypatch, t
         "_record_activity",
         lambda event, _message, **details: recorded.append((event, details)),
     )
+    monkeypatch.setattr(runner, "read_workflow_activity", lambda **_kwargs: [])
+    autonomy_state = {}
 
-    result = runner._verified_startup_preflight([], {}, {})
+    result = runner._verified_startup_preflight([], {}, autonomy_state)
 
     assert result["proof_state_authority"] == "source_only_unverified"
     assert result["defer_incremental_warmup"] is True
     assert result["target_symbol"] == "demo"
     assert result["sorry_count"] == 0
-    assert recorded[0][0] == "startup-exact-verification-deferred"
+    assert recorded[-1][0] == "startup-exact-verification-deferred"
+    assert runner._restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
 
 
 def test_verified_startup_preflight_reuses_same_revision_timeout(monkeypatch, tmp_path):
