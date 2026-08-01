@@ -215,6 +215,8 @@ MCP_CAPABILITY_DISABLED_LABELS = {
 _DISABLED_MCP_TOOLS_BY_RUN: dict[str, set[str]] = {}
 LOCAL_INCREMENTAL_AUTO_PROBE_MIN_TIMEOUT_S = 60
 _OUTCOME_SCAN_MAX_RECORD_BYTES = 512 * 1024
+_ACTIVE_COMMANDS_LOCK = threading.RLock()
+_ACTIVE_COMMANDS: dict[int, subprocess.Popen[str]] = {}
 
 # Shared stateless façade over the backend primitives. The wrapper
 # forwards verbatim and resolves _invoke_json_tool / _run_command lazily off this module, so this
@@ -478,6 +480,29 @@ def _terminate_command_process(process: subprocess.Popen[str]) -> None:
         pass
 
 
+def terminate_active_lean_commands() -> tuple[int, ...]:
+    """Terminate every local Lean command owned by this process.
+
+    Native-runner shutdown can begin while a foreground worker is blocked in
+    ``communicate``.  Signals are delivered to the main thread, so that worker
+    cannot run its local interrupt handler before process exit.  Keep an exact
+    process registry so finalization can stop and reap those command groups
+    before joining the worker.
+    """
+    with _ACTIVE_COMMANDS_LOCK:
+        active = list(_ACTIVE_COMMANDS.values())
+    for process in active:
+        _terminate_command_process(process)
+    residual: list[int] = []
+    with _ACTIVE_COMMANDS_LOCK:
+        for process in active:
+            if process.poll() is None:
+                residual.append(int(process.pid))
+            elif _ACTIVE_COMMANDS.get(int(process.pid)) is process:
+                _ACTIVE_COMMANDS.pop(int(process.pid), None)
+    return tuple(residual)
+
+
 def _run_command(
     cmd: list[str],
     *,
@@ -495,6 +520,8 @@ def _run_command(
             text=True,
             start_new_session=os.name != "nt",
         )
+        with _ACTIVE_COMMANDS_LOCK:
+            _ACTIVE_COMMANDS[int(process.pid)] = process
         effective_timeout = (
             effective_command_timeout_s(cmd) if timeout_s is None else max(0.01, float(timeout_s))
         )
@@ -512,6 +539,11 @@ def _run_command(
         if process is not None:
             _terminate_command_process(process)
         return 1, str(exc)
+    finally:
+        if process is not None:
+            with _ACTIVE_COMMANDS_LOCK:
+                if _ACTIVE_COMMANDS.get(int(process.pid)) is process:
+                    _ACTIVE_COMMANDS.pop(int(process.pid), None)
 
 
 def _reclaim_incremental_before_local_lean(admission: ProjectLeanAdmission) -> bool:

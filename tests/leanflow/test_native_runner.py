@@ -2156,6 +2156,7 @@ def test_stop_native_owned_work_rejects_reported_agent_and_runtime_failures(monk
         def interrupt(self, _message=None):
             return None
 
+    monkeypatch.setattr(runner, "terminate_active_lean_commands", lambda: (7654,))
     monkeypatch.setattr(runner, "_quiesce_native_writer_threads", lambda _agent: None)
     monkeypatch.setattr(
         runner,
@@ -2178,6 +2179,7 @@ def test_stop_native_owned_work_rejects_reported_agent_and_runtime_failures(monk
         runner._stop_native_owned_work(_Agent(), {}, reason="terminal outcome")
 
     detail = str(caught.value)
+    assert "local Lean commands" in detail
     assert "descendant agents" in detail
     assert "runtime services" in detail
 
@@ -2189,6 +2191,11 @@ def test_stop_native_owned_work_releases_helper_reservation_after_research(monke
     class _Agent:
         session_id = "root-agent"
 
+    monkeypatch.setattr(
+        runner,
+        "terminate_active_lean_commands",
+        lambda: calls.append("local-lean") or (),
+    )
     monkeypatch.setattr(
         runner,
         "_quiesce_native_writer_threads",
@@ -2228,6 +2235,7 @@ def test_stop_native_owned_work_releases_helper_reservation_after_research(monke
     runner._stop_native_owned_work(_Agent(), {}, reason="signal interrupt")
 
     assert calls == [
+        "local-lean",
         "foreground",
         "descendants",
         "project-agents",
@@ -10093,6 +10101,77 @@ def test_incremental_exact_target_timeout_without_echoed_target_is_rejected_feed
     assert "research-findings-feedback-staged" in event_types
     source_reuse = next(
         kwargs for args, kwargs in events if args[0] == "manager-candidate-source-reused"
+    )
+    assert source_reuse["source_unchanged"] is True
+    assert source_reuse["candidate_check_passed"] is False
+
+
+def test_incremental_exact_target_timeout_reuses_unchanged_on_disk_source(monkeypatch, tmp_path):
+    """Do not follow an exact-check timeout with an unbounded full-file inspection."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_parent_portfolio_maintenance_active = True
+
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_cycle": 1,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  trivial",
+                },
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unchanged exact-check failure must not start a second Lean inspection"
+        ),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(runner, "_maybe_manager_nudge", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *_args: "")
+
+    agent = _Agent()
+    arguments = {
+        "action": "check_target",
+        "theorem_id": "demo",
+        "file_path": str(active),
+    }
+    runner._capture_exact_check_source_snapshot(agent, "lean_incremental_check", arguments)
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_incremental_check",
+        arguments,
+        json.dumps(
+            {
+                "success": False,
+                "ok": False,
+                "action": "check_target",
+                "timed_out": True,
+                "error_code": "lean_probe_wall_clock_timeout",
+                "error": "LeanProbe call exceeded its wall-clock deadline",
+                "file": str(active),
+                "target": "demo",
+                "verification_scope": "target",
+            }
+        ),
+    )
+
+    source_reuse = next(
+        kwargs for args, kwargs in events if args[0] == "manager-failed-source-reused"
     )
     assert source_reuse["source_unchanged"] is True
     assert source_reuse["candidate_check_passed"] is False

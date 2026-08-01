@@ -76,6 +76,7 @@ from leanflow_cli.lean.lean_services import (
     probe_capabilities,
     recent_empty_search_streak,
     route_workflow_step,
+    terminate_active_lean_commands,
 )
 from leanflow_cli.lean.lean_workflow_specs import specs_for_skill
 from leanflow_cli.native import (
@@ -788,6 +789,7 @@ class _NativeWriterKind(Enum):
 class _NativeStopSubsystem(Enum):
     """Identify owned-work stop steps without parsing rendered errors."""
 
+    LOCAL_LEAN_COMMANDS = "local Lean commands"
     FOREGROUND_WRITERS = "foreground writers"
     DESCENDANT_AGENTS = "descendant agents"
     PROJECT_AGENTS = "project agents"
@@ -989,9 +991,13 @@ def _stop_native_owned_work(
     """Reconcile agents, research jobs, and process-owned runtime services."""
     steps: list[tuple[_NativeStopSubsystem, Callable[[], Any]]] = [
         (
+            _NativeStopSubsystem.LOCAL_LEAN_COMMANDS,
+            terminate_active_lean_commands,
+        ),
+        (
             _NativeStopSubsystem.FOREGROUND_WRITERS,
             lambda: _quiesce_native_writer_threads(agent),
-        )
+        ),
     ]
     if agent is not None:
         steps.extend(
@@ -1042,6 +1048,10 @@ def _stop_native_owned_work(
                 _NativeStopSubsystem.PROJECT_AGENTS,
             } and isinstance(result, Mapping):
                 _prove_terminated_workflow_agents_gone(result)
+            if label is _NativeStopSubsystem.LOCAL_LEAN_COMMANDS and result:
+                raise RuntimeError(
+                    "local Lean command processes remain live: " + ", ".join(map(str, result))
+                )
             if label is _NativeStopSubsystem.RUNTIME_SERVICES and result:
                 raise RuntimeError("runtime shutdown failed for: " + ", ".join(map(str, result)))
         except (NativeTerminationSignal, KeyboardInterrupt) as exc:
@@ -10640,19 +10650,21 @@ def _retry_unverified_helper_gates(
     return accepted_count
 
 
-def _temporary_candidate_source_state(
+def _unchanged_failed_check_source_state(
     active_file: str,
     target_symbol: str,
     manager_check: Mapping[str, Any],
     autonomy_state: Mapping[str, Any] | None,
+    *,
+    temporary_candidate: bool,
 ) -> dict[str, Any]:
-    """Build the unchanged source state after an isolated candidate check.
+    """Build local queue state after a failed check left source unchanged.
 
-    A ``lean_incremental_check(check_target)`` replacement lives only inside
-    LeanProbe. The queue therefore remains on the exact on-disk declaration,
-    which can be classified locally without a second diagnostics/goals round
-    trip. This state is deliberately assignment-scoped and cannot authorize
-    queue advancement or successful verification.
+    A replacement lives only inside LeanProbe, while a failed exact on-disk
+    check has already established that a second unchanged inspection cannot
+    advance the queue. Both cases can classify the exact source declaration
+    locally. This state is assignment-scoped and cannot authorize advancement
+    or successful verification.
     """
     entry = _find_declaration_entry(active_file, target_symbol) or {}
     assignment = dict(dict(autonomy_state or {}).get("current_queue_assignment") or {})
@@ -10664,9 +10676,19 @@ def _temporary_candidate_source_state(
         manager_check.get("output", "")
         or manager_check.get("error", "")
         or _verification_status_text(manager_check)
-        or "temporary target candidate did not pass its isolated check"
+        or (
+            "temporary target candidate did not pass its isolated check"
+            if temporary_candidate
+            else "exact target check did not pass"
+        )
     ).strip()
-    reasons = ["contains sorry"] if has_sorry else ["temporary candidate rejected"]
+    reasons = (
+        ["contains sorry"]
+        if has_sorry
+        else [
+            "temporary candidate rejected" if temporary_candidate else "target verification failed"
+        ]
+    )
     queue_item = {
         "label": target_symbol,
         "kind": str(entry.get("kind", "") or "theorem"),
@@ -10703,6 +10725,30 @@ def _temporary_candidate_source_state(
         "route_decision": {},
         "message": "",
     }
+
+
+def _failed_exact_check_source_is_unchanged(
+    active_file: str,
+    target_symbol: str,
+    manager_check: Mapping[str, Any],
+    source_snapshot: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether a failed exact check left its assigned source unchanged."""
+    if not manager_check or bool(manager_check.get("ok")) or not source_snapshot:
+        return False
+    precheck = final_report_failure_reuse.PreCheckIdentity.from_mapping(source_snapshot)
+    scope = _queue_key(target_symbol, active_file)
+    return bool(
+        precheck.valid
+        and scope.is_valid()
+        and precheck.assignment_scope == scope.storage_key()
+        and precheck.source_sha256 == _source_revision_sha256(active_file)
+        and str(source_snapshot.get("target_symbol", "") or "").strip() == target_symbol
+        and _same_active_file(
+            str(source_snapshot.get("active_file", "") or ""),
+            active_file,
+        )
+    )
 
 
 def _finish_queue_step_boundary(
@@ -10911,23 +10957,37 @@ def _finish_queue_step_boundary(
                 "replacement": candidate_replacement or manager_check.get("replacement", ""),
             }
         live_refresh_started = time.monotonic()
-        if target_candidate_dry_run:
-            # ``check_target`` elaborates a temporary replacement and never
-            # writes the assigned source. Re-running the comprehensive live
-            # inspector here can pay diagnostics and goals backend timeouts
-            # (observed as two consecutive ~45-second waits) before merely
-            # rediscovering the unchanged on-disk ``sorry``. Parse that exact
-            # source declaration locally; the parent still performs the full
-            # live refresh after a committed edit and before queue advancement.
-            live_state = _temporary_candidate_source_state(
+        failed_exact_source_unchanged = _failed_exact_check_source_is_unchanged(
+            pending_file,
+            pending_target,
+            manager_check,
+            exact_check_source_snapshot,
+        )
+        if target_candidate_dry_run or failed_exact_source_unchanged:
+            # A temporary candidate never writes source, while an exact failed
+            # check is admitted here only when the captured bytes still match.
+            # A comprehensive refresh would only repeat diagnostics/goals (or
+            # the same timed-out elaboration) before rediscovering that source.
+            # The parent still refreshes fully after an edit and before queue
+            # advancement.
+            live_state = _unchanged_failed_check_source_state(
                 pending_file,
                 pending_target,
                 manager_check,
                 autonomy_state if isinstance(autonomy_state, dict) else None,
+                temporary_candidate=target_candidate_dry_run,
             )
             _record_activity(
-                "manager-candidate-source-reused",
-                f"Reused unchanged source state after temporary candidate check for {pending_target}",
+                (
+                    "manager-candidate-source-reused"
+                    if target_candidate_dry_run
+                    else "manager-failed-source-reused"
+                ),
+                (
+                    f"Reused unchanged source state after temporary candidate check for {pending_target}"
+                    if target_candidate_dry_run
+                    else f"Reused unchanged source state after failed exact check for {pending_target}"
+                ),
                 target_symbol=pending_target,
                 active_file=pending_file,
                 candidate_check_passed=candidate_check_passed,

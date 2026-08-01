@@ -4,6 +4,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import types
 from contextlib import nullcontext
 from pathlib import Path
@@ -116,6 +117,52 @@ def test_run_command_terminates_the_process_group_on_keyboard_interrupt(monkeypa
 
     assert signals == [(4323, signal.SIGTERM), (4323, signal.SIGKILL)]
     assert process.communicate_calls == 2
+
+
+def test_native_shutdown_terminates_command_blocked_in_worker(monkeypatch, tmp_path):
+    """Finalization must reap a local Lean command before joining its worker."""
+    started = threading.Event()
+    terminated = threading.Event()
+    signals = []
+
+    class Process:
+        pid = 4325
+        returncode = None
+
+        def communicate(self, timeout):
+            started.set()
+            assert terminated.wait(timeout=2)
+            return "", None
+
+        def wait(self, timeout):
+            assert terminated.wait(timeout=timeout)
+            self.returncode = -signal.SIGTERM
+
+        def poll(self):
+            return self.returncode
+
+    process = Process()
+    monkeypatch.setattr(lean_services.subprocess, "Popen", lambda *args, **kwargs: process)
+
+    def killpg(pid, sent):
+        signals.append((pid, sent))
+        terminated.set()
+
+    monkeypatch.setattr(lean_services.os, "killpg", killpg)
+    worker = threading.Thread(
+        target=lean_services._run_command,
+        args=(["lake", "env", "lean", "Demo.lean"],),
+        kwargs={"cwd": tmp_path},
+    )
+    worker.start()
+    assert started.wait(timeout=1)
+
+    assert lean_services.terminate_active_lean_commands() == ()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert signals == [(4325, signal.SIGTERM)]
+    assert lean_services._ACTIVE_COMMANDS == {}
 
 
 def test_research_file_check_uses_cold_start_timeout_floor(monkeypatch):
