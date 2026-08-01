@@ -3604,6 +3604,7 @@ def _restored_assignment_verification_timeout_reason(
     timeout_markers = (
         "timed out",
         "timeout=",
+        "wall-clock deadline",
         "maximum number of heartbeats",
         "maxheartbeats",
     )

@@ -1984,7 +1984,16 @@ def test_resume_rebuilds_lost_exact_gates_for_sorry_free_helpers_only(
     assert axiom_batches == []
 
 
-def test_resume_gate_backpressures_same_revision_timeout(plan_enabled, monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "timeout_reason",
+    [
+        "Lean server timed out after 300 seconds",
+        "LeanProbe call exceeded its 300s wall-clock deadline",
+    ],
+)
+def test_resume_gate_backpressures_same_revision_timeout(
+    plan_enabled, monkeypatch, tmp_path, timeout_reason
+):
     """Restored foreground work must not replay a known slow gate before startup."""
     events = _events(monkeypatch)
     active = tmp_path / "Demo.lean"
@@ -2014,7 +2023,7 @@ def test_resume_gate_backpressures_same_revision_timeout(plan_enabled, monkeypat
                 "target_symbol": "demo",
                 "active_file": str(active),
                 "declaration_hash": "b" * 64,
-                "gate_verdict": "Lean server timed out after 300 seconds",
+                "gate_verdict": timeout_reason,
             },
             {
                 "target_symbol": "demo",
