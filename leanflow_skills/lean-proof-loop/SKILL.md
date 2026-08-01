@@ -18,20 +18,22 @@ Treat the native workflow specs as the contract. This skill is the routing layer
 When the manager handoff reports that the unchanged assigned declaration already exhausted a
 bounded exact or incremental verification check without errors or placeholders, do not begin by
 repeating `lean_inspect` or a broad file check. After two such timeouts, take the decomposition
-route: extract cohesive top-level helpers, verify them independently with LeanProbe, and retry the
-parent only after its body is materially smaller. This timeout-recovery rule overrides the default
-order below.
+route: first use `lean_extract_have` when the declaration already contains a substantial local
+`have`; otherwise derive cohesive new helpers with `lean_decompose_helpers`. Verify helpers
+independently with LeanProbe and retry the parent only after its body is materially smaller. This
+timeout-recovery rule overrides the default order below.
 
 1. `lean_capabilities`
 2. `lean_inspect`
 3. `lean_search` with the smallest relevant search mode. It may use local project search, local/public Loogle, LeanExplore, semantic providers, and Mathlib fallbacks behind one wrapper.
 4. `lean_multi_attempt` when you have 2-6 short tactic candidates and want to screen them before editing; do not send declaration-sized or multi-line `have ... := by` proof blocks. REPL power mode can make this much cheaper than patch/verify loops. Treat only `verified_attempts`/`target_verified=true` as proof-closing evidence; raw empty-goal probe output is provisional.
 5. `lean_proof_context` or `lean_auto_search` when theorem-local context or automation search would reduce guessing. Use them opportunistically for automation-shaped goals or repeated blockers; do not force them when a direct edit is clearer.
-6. `lean_decompose_helpers` when a hard theorem needs helper lemmas, intermediate invariants, or a proof split before a useful edit is clear. Prefer this over broad advice when the next step should be a checked sublemma plan.
-7. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the required gate
-8. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result
-9. `lean_verify` only when inspecting existing state or doing a final broader verification not already covered by the manager gate
-10. `lean_reasoning_help` when repeated focused attempts fail and another configured model may provide broad proof-strategy advice
+6. `lean_extract_have` after repeated timeouts when a large existing local proof can be mechanically promoted to a private helper and checked independently
+7. `lean_decompose_helpers` when a hard theorem needs new helper lemmas, intermediate invariants, or a proof split before a useful edit is clear. Prefer this over broad advice when the next step should be a checked sublemma plan.
+8. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the required gate and restores the exact pre-edit source when Lean reports hard errors
+9. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result
+10. `lean_verify` only when inspecting existing state or doing a final broader verification not already covered by the manager gate
+11. `lean_reasoning_help` when repeated focused attempts fail and another configured model may provide broad proof-strategy advice
 
 ## Operating Rules
 
@@ -40,7 +42,7 @@ order below.
 3. Treat failed-attempt history as negative guidance.
 4. Keep work pinned to the requested file or project scope.
 5. Use theorem-context and automation-search wrappers only after search exhaustion, repeated blockers, or an explicitly automation-suited route.
-6. Helper decomposition is a standard, first-class strategy: when the theorem is hard, after about two failed direct attempts, or after repeated bounded verification timeouts, call `lean_decompose_helpers`, insert the `ready_to_insert` helper skeletons now, prove each helper, then assemble the assigned goal from them. Prefer top-level helpers over additional local `have` blocks when declaration size is causing the timeout, so LeanProbe can cache and verify each phase independently. A helper's `sorry` is normal work-in-progress during the turn; the sorry-free requirement applies at final acceptance, not to intermediate states. Use `omit ... in` or a narrower section for helpers that do not use file-level variables/instances, avoiding predictable `unusedSectionVars` warning growth.
+6. Helper decomposition is a standard, first-class strategy: when the theorem is hard, after about two failed direct attempts, or after repeated bounded verification timeouts, use `lean_extract_have` to promote an existing substantial local proof automatically. If no suitable local block exists, call `lean_decompose_helpers`, insert the `ready_to_insert` helper skeletons now, prove each helper, then assemble the assigned goal from them. Prefer top-level helpers over additional local `have` blocks when declaration size is causing the timeout, so LeanProbe can cache and verify each phase independently. A helper's `sorry` is normal work-in-progress during the turn; the sorry-free requirement applies at final acceptance, not to intermediate states. Use `omit ... in` or a narrower section for helpers that do not use file-level variables/instances, avoiding predictable `unusedSectionVars` warning growth.
 7. Treat `lean_reasoning_help` output as advice only. Its deterministic guard removes terminal surrender recommendations and reframes blocker/open-problem assessments as route-change evidence. If it is unavailable or returns no answer, continue the main proof workflow and report that the advisor was unavailable if relevant.
 8. In managed queue workflows, prefer `patch`/`write_file` because the runner records the automatic post-edit `lean_incremental_check(check_target)` result and falls back to Lake only when LeanProbe is unavailable, crashes, or cannot rebuild its cache. A bounded target-check timeout rejects that attempt without starting a duplicate full-file check. Use `apply_verified_patch` for compatibility or when its pre-edit checkpoint payload is specifically useful.
 9. Preserve existing theorem, lemma, and example statements exactly unless the user explicitly requested a refactor. New helper declarations are allowed, but pre-existing future queue declarations are not part of the current turn.

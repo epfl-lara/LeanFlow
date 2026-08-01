@@ -49,9 +49,17 @@ _ROUTE_EXECUTION_STATE_KEY = "_orchestrator_route_execution"
 _QUEUE_MANAGER_STATE_RESTORED_KEY = "_queue_manager_state_restored"
 _RESUME_GRAPH_RECOVERY_DEFERRED_KEY = "_resume_graph_recovery_deferred"
 _MECHANICAL_ORCHESTRATOR_ROUTES = frozenset({"decompose", "negate", "plan"})
-_MANAGED_SOURCE_EDIT_TOOLS = frozenset({"patch", "write_file", "apply_verified_patch"})
+_MANAGED_SOURCE_EDIT_TOOLS = frozenset(
+    {"patch", "write_file", "apply_verified_patch", "lean_extract_have"}
+)
 _FOREGROUND_VERIFICATION_HANDOFF_TOOLS = frozenset(
-    {"apply_verified_patch", "lean_axioms", "lean_incremental_check", "lean_verify"}
+    {
+        "apply_verified_patch",
+        "lean_extract_have",
+        "lean_axioms",
+        "lean_incremental_check",
+        "lean_verify",
+    }
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # leanflow_cli/native/X.py -> repo root
@@ -89,6 +97,7 @@ from leanflow_cli.native import (
     determine_answer_policy,
     final_report_failure_reuse,
     helper_integration_admission,
+    managed_edit_rollback,
     parent_helper_verification_reuse,
     process_artifact_cleanup,
     queue_source_dependencies,
@@ -3980,7 +3989,7 @@ def _tool_result_counts_as_theorem_feedback(
         if target and active_file:
             return _same_active_file(target, active_file)
         return True
-    if function_name == "apply_verified_patch":
+    if function_name in {"apply_verified_patch", "lean_extract_have"}:
         return True
     if function_name != "terminal":
         return False
@@ -7952,8 +7961,8 @@ def _document_formalization_target_path() -> Path | None:
 def _tool_edit_paths(function_name: str, args: Mapping[str, Any] | None) -> list[Path]:
     data = dict(args or {})
     raw_paths: list[str] = []
-    if function_name in {"write_file", "apply_verified_patch"}:
-        raw_paths.append(str(data.get("path", "") or ""))
+    if function_name in {"write_file", "apply_verified_patch", "lean_extract_have"}:
+        raw_paths.append(str(data.get("path", "") or data.get("file_path", "") or ""))
     elif function_name == "patch":
         mode = str(data.get("mode", "replace") or "replace")
         if mode == "replace":
@@ -9267,7 +9276,10 @@ def _managed_pre_tool_call(
     active_file = str(assignment.get("active_file", "") or "").strip()
     if not target_symbol or not active_file:
         return None
-    if function_name == "apply_verified_patch" and _managed_edit_targets_assignment(
+    if function_name in {
+        "apply_verified_patch",
+        "lean_extract_have",
+    } and _managed_edit_targets_assignment(
         args,
         active_file,
         function_name=function_name,
@@ -9298,7 +9310,7 @@ def _managed_pre_tool_call(
                     "patch_applied": False,
                     "check_passed": False,
                     "error": (
-                        f"`apply_verified_patch` requested `{requested_target}`, but the current "
+                        f"`{function_name}` requested `{requested_target}`, but the current "
                         f"managed queue assignment is `{target_symbol}`. The patch was not applied "
                         "or verified, so no successful source revision can be rolled back by the "
                         "queue guard. If this patch inserts or changes a helper for the assigned "
@@ -9714,7 +9726,7 @@ def _enforce_manager_axiom_profile(
 
 def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
     """Restore file to pre-edit state if a Lean edit removed the assigned theorem, changed its statement signature, introduced a forbidden axiom, or modified protected declarations outside assignment scope. Returns guard message summarizing what was restored; called post-edit to enforce queue boundaries."""
-    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+    if function_name not in _MANAGED_SOURCE_EDIT_TOOLS:
         return ""
     snapshot = dict(getattr(agent, "_managed_queue_edit_snapshot", {}) or {})
     with contextlib.suppress(Exception):
@@ -9956,6 +9968,8 @@ class _ManagedQueueEditVerdict:
     evidence_helper_names: tuple[str, ...] = ()
     promoted_helper_names: tuple[str, ...] = ()
     before_source_revision_sha256: str = ""
+    before_text: str = ""
+    after_source_revision_sha256: str = ""
     removed_generated_assignment: bool = False
 
 
@@ -10126,7 +10140,7 @@ def _finalize_managed_queue_edit_details(
     )
     phase_seconds["structural_acceptance"] = max(0.0, time.monotonic() - phase_started)
     if not accepted:
-        if function_name == "apply_verified_patch" and guard_feedback:
+        if function_name in {"apply_verified_patch", "lean_extract_have"} and guard_feedback:
             payload = _json_tool_result_payload(result)
             checkpoint_id = str(payload.get("checkpoint_id", "") or "").strip()
             if checkpoint_id:
@@ -10291,6 +10305,8 @@ def _finalize_managed_queue_edit_details(
             before_source_revision_sha256=str(
                 snapshot.get("before_source_revision_sha256", "") or ""
             ).strip(),
+            before_text=str(snapshot.get("before_text", "") or ""),
+            after_source_revision_sha256=hashlib.sha256(current_text.encode("utf-8")).hexdigest(),
             removed_generated_assignment=removed_generated_assignment,
         )
     )
@@ -11163,6 +11179,7 @@ def _finish_queue_step_boundary(
         "patch",
         "write_file",
         "apply_verified_patch",
+        "lean_extract_have",
     }
     try:
         autonomy_state = getattr(agent, "_managed_autonomy_state", None)
@@ -12363,6 +12380,8 @@ def _handle_managed_tool_result(
     queue_evidence_helpers: Sequence[str] = (),
     queue_promoted_helpers: Sequence[str] = (),
     queue_edit_before_source_revision_sha256: str = "",
+    queue_edit_before_text: str = "",
+    queue_edit_after_source_revision_sha256: str = "",
     queue_removed_generated_assignment: bool = False,
 ) -> None:
     """Dispatch managed queue callbacks on tool result: track search progress, record formalization verifications, detect and respond to post-edit verification outcomes, invoke step boundary on theorem feedback. Central hook for autonomous managed-queue loop state updates."""
@@ -12635,7 +12654,12 @@ def _handle_managed_tool_result(
             )
         _maybe_append_formalization_handoff_feedback(agent, function_name=function_name)
 
-    if function_name in {"patch", "write_file", "apply_verified_patch"}:
+    if function_name in {
+        "patch",
+        "write_file",
+        "apply_verified_patch",
+        "lean_extract_have",
+    }:
         # The queue guard owns rejection. A tool-level success after a restored
         # out-of-scope edit is not theorem evidence and must not spend a retry.
         if queue_edit_accepted is False:
@@ -12688,7 +12712,7 @@ def _handle_managed_tool_result(
                         campaign_progress=False,
                     )
             if (
-                function_name == "apply_verified_patch"
+                function_name in {"apply_verified_patch", "lean_extract_have"}
                 and target_symbol
                 and active_file
                 and _verified_patch_result_passed(_result)
@@ -12787,7 +12811,7 @@ def _handle_managed_tool_result(
             ):
                 _reset_search_progress(agent)
 
-    if function_name == "apply_verified_patch":
+    if function_name in {"apply_verified_patch", "lean_extract_have"}:
         apply_payload = _json_tool_result_payload(_result)
         if (
             not _managed_tool_result_succeeded(_result)
@@ -12808,7 +12832,10 @@ def _handle_managed_tool_result(
             or ""
         ).strip()
         active_file = str(
-            dict(baseline or {}).get("active_file", "") or dict(args or {}).get("path", "") or ""
+            dict(baseline or {}).get("active_file", "")
+            or dict(args or {}).get("path", "")
+            or dict(args or {}).get("file_path", "")
+            or ""
         ).strip()
         if not target_symbol or not active_file:
             live_state_for_apply = _build_live_proof_state_compat(
@@ -12994,6 +13021,32 @@ def _handle_managed_tool_result(
                 target_symbol,
                 purpose="target-post-edit",
             )
+            if managed_edit_rollback.check_has_hard_errors(
+                manager_verification,
+                timed_out=_manager_check_timed_out,
+            ):
+                source_restored = managed_edit_rollback.restore_exact_after_image(
+                    active_file,
+                    before_text=queue_edit_before_text,
+                    expected_after_sha256=queue_edit_after_source_revision_sha256,
+                )
+                _record_activity(
+                    (
+                        "queue-hard-error-edit-restored"
+                        if source_restored
+                        else "queue-hard-error-edit-restore-failed"
+                    ),
+                    (
+                        f"Restored invalid managed edit for {target_symbol}"
+                        if source_restored
+                        else f"Could not restore invalid managed edit for {target_symbol}"
+                    ),
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    function_name=function_name,
+                    campaign_progress=False,
+                )
+                manager_verification["failed_edit_restored"] = source_restored
             _remember_same_revision_verification_timeout(
                 managed_autonomy,
                 target_symbol=target_symbol,
@@ -19393,6 +19446,8 @@ def _build_agent() -> AIAgent:
             queue_evidence_helpers=edit_verdict.evidence_helper_names,
             queue_promoted_helpers=edit_verdict.promoted_helper_names,
             queue_edit_before_source_revision_sha256=(edit_verdict.before_source_revision_sha256),
+            queue_edit_before_text=edit_verdict.before_text,
+            queue_edit_after_source_revision_sha256=(edit_verdict.after_source_revision_sha256),
             queue_removed_generated_assignment=edit_verdict.removed_generated_assignment,
         )
         if isinstance(managed_autonomy, dict):
@@ -19437,7 +19492,7 @@ def _build_agent() -> AIAgent:
             )
         )
         completes_verification_batch = bool(
-            function_name == "apply_verified_patch"
+            function_name in {"apply_verified_patch", "lean_extract_have"}
             and (_verified_patch_result_passed(_result) or truncated_verified_patch_passed)
             and verification_batch_admission.has_pending(
                 agent,
@@ -19509,7 +19564,7 @@ def _build_agent() -> AIAgent:
         target_symbol = str(assignment.get("target_symbol", "") or "").strip()
         active_file = str(assignment.get("active_file", "") or "").strip()
         if (
-            function_name == "apply_verified_patch"
+            function_name in {"apply_verified_patch", "lean_extract_have"}
             and research_mode.research_mode_enabled()
             and research_mode.research_worker_count() > 0
             and _verified_patch_result_passed(result)

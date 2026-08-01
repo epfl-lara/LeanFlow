@@ -1,0 +1,41 @@
+"""Test exact rollback of managed Lean edits with hard diagnostics."""
+
+import hashlib
+
+from leanflow_cli.native import managed_edit_rollback, native_runner
+
+
+def test_hard_error_classifier_excludes_operational_timeouts():
+    """Treat concrete diagnostics as invalid edits but preserve timeout-only work."""
+    assert managed_edit_rollback.check_has_hard_errors(
+        {"has_errors": True, "messages": [{"severity": "error", "message": "unknown id"}]},
+        timed_out=native_runner._manager_check_timed_out,
+    )
+    assert not managed_edit_rollback.check_has_hard_errors(
+        {"has_errors": False, "timed_out": True, "error": "wall-clock deadline"},
+        timed_out=native_runner._manager_check_timed_out,
+    )
+
+
+def test_restore_failed_managed_edit_requires_exact_after_image(tmp_path):
+    """Restore captured bytes without overwriting an intervening source revision."""
+    target = tmp_path / "Demo.lean"
+    before = "theorem demo : True := by\n  trivial\n"
+    invalid = "theorem demo : True := by\n  exact missing\n"
+    target.write_text(invalid, encoding="utf-8")
+    after_sha256 = hashlib.sha256(invalid.encode("utf-8")).hexdigest()
+
+    assert managed_edit_rollback.restore_exact_after_image(
+        str(target),
+        before_text=before,
+        expected_after_sha256=after_sha256,
+    )
+    assert target.read_text(encoding="utf-8") == before
+
+    target.write_text("-- concurrent edit\n", encoding="utf-8")
+    assert not managed_edit_rollback.restore_exact_after_image(
+        str(target),
+        before_text=before,
+        expected_after_sha256=after_sha256,
+    )
+    assert target.read_text(encoding="utf-8") == "-- concurrent edit\n"

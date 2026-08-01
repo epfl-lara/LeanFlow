@@ -118,6 +118,8 @@ results flow through `core.model_tools` and `tools/response.py`.
 
 - `tools/implementations/` contains model-callable Lean, file, terminal,
   document, web, repository, delegation, memory, skill, and empirical tools.
+  `lean_have_extraction.py` owns the transactional local-`have` promotion tool;
+  its source parser lives in `leanflow_cli/lean/lean_have_extraction.py`.
 - `tools/utilities/` contains deterministic guards and reusable implementation
   support, including process ownership, transcript protection, repository
   research policy, scratch-terminal policy, verified patch parsing, helper
@@ -159,6 +161,8 @@ tool is reachable through the public registry.
   admission (`search_synthesis_admission.py`), same-revision verification-timeout
   backpressure and structural-recovery handoff, verified companion-module
   publication (`support_module_materialization.py`), checkpoints, and shutdown.
+  Hard-diagnostic edit rollback lives in `managed_edit_rollback.py` so the
+  exact after-image check and atomic restoration remain independently tested.
 
 The larger coordination modules remain intentionally coupled where tests patch
 their module attributes. Extracting behavior from them requires
@@ -255,6 +259,10 @@ historical state is never assumed current before that reconciliation.
 - Managed theorem workers route inner-loop Lean checks through
   `lean_incremental_check`; `native/terminal_check_policy.py` reserves direct
   terminal Lean and Lake processes for manager-owned canonical gates.
+- Repeated target timeouts can mechanically promote a large local `have` to a
+  private lemma: Mathlib supplies the exact context signature, LeanProbe checks
+  the helper and replacement site, and the verified patch transaction commits
+  only the authenticated source image.
 - `lean/lean_interact_compat.py` installs a version-guarded linear response
   reader when the installed LeanInteract still uses quadratic REPL output
   concatenation; unfamiliar future implementations remain untouched.

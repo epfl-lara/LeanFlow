@@ -1097,6 +1097,45 @@ def test_authoritative_timeout_ceiling_caps_research_cold_start_floor(monkeypatc
     assert payload["timeout_policy"] == "research_cold_start_floor_capped_by_deadline"
 
 
+def test_run_hard_timeout_caps_research_incremental_cold_start(monkeypatch, tmp_path):
+    """Apply the explicit run-wide Lean cap to LeanProbe as well as Lake commands."""
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
+    )
+
+    class _FakeProbe:
+        timeout_s = 0
+
+        def prepare_file(self, *args, **kwargs):
+            self.timeout_s = kwargs["timeout_s"]
+            return {"success": True, "ok": True, "action": "prepare_file"}
+
+    fake = _FakeProbe()
+    monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_LEAN_COMMAND_HARD_TIMEOUT_S", "600")
+    monkeypatch.setattr(li, "_PROBE_EVER_STARTED", False)
+    monkeypatch.setattr(li, "_probe", lambda: fake)
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="prepare_file",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        timeout_s=60,
+    )
+
+    assert fake.timeout_s == 600
+    assert payload["effective_timeout_s"] == 600
+    assert payload["timeout_ceiling_s"] == 600
+    assert payload["timeout_policy"] == "research_cold_start_floor_capped_by_deadline"
+
+
 def test_check_target_labels_unrelated_declaration_as_scratch_replacement(monkeypatch, tmp_path):
     project, target = _write_project(
         tmp_path,

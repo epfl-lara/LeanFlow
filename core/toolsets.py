@@ -27,6 +27,7 @@ _LEAN_TOOLS = [
     "lean_lemma_suggest",
     "lean_outline",
     "apply_verified_patch",
+    "lean_extract_have",
     "lean_reasoning_help",
     "lean_decompose_helpers",
 ]
@@ -36,6 +37,7 @@ _LEAN_RESEARCH_TOOLS = [
     if tool
     not in {
         "apply_verified_patch",
+        "lean_extract_have",
         "lean_reasoning_help",
         "lean_decompose_helpers",
     }

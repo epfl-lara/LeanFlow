@@ -32,6 +32,7 @@ from tools.implementations.lean_experts import (  # noqa: E402
     lean_decompose_helpers_tool,
     lean_reasoning_help_tool,
 )
+from tools.implementations.lean_have_extraction import lean_extract_have_tool  # noqa: E402
 from tools.implementations.lean_patch import apply_verified_patch_tool  # noqa: E402
 from tools.registry import registry
 from tools.utilities.lean_inspection_projection import project_exact_symbol_inspection
@@ -735,6 +736,39 @@ APPLY_VERIFIED_PATCH_SCHEMA = {
     },
 }
 
+LEAN_EXTRACT_HAVE_SCHEMA = {
+    "name": "lean_extract_have",
+    "description": (
+        "Transactionally extract one large top-level local `have` proof into a private helper. "
+        "LeanFlow uses Mathlib `extract_goal` to recover the exact local context, verifies the "
+        "helper and its replacement independently with LeanProbe, then banks the source rewrite. "
+        "Use after repeated target timeouts instead of growing or manually refactoring a monolithic proof."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "theorem_id": {"type": "string", "description": "Assigned declaration name"},
+            "file_path": {"type": "string", "description": "Lean file containing the declaration"},
+            "have_name": {
+                "type": "string",
+                "description": "Optional local have name; omit to select the largest eligible block",
+            },
+            "minimum_lines": {
+                "type": "integer",
+                "description": "Minimum local proof size for automatic selection",
+                "default": 8,
+            },
+            "cwd": {"type": "string", "description": "Optional project working directory"},
+            "timeout_s": {
+                "type": "integer",
+                "description": "Hard wall-clock ceiling for each LeanProbe extraction stage",
+                "default": 300,
+            },
+        },
+        "required": ["theorem_id", "file_path"],
+    },
+}
+
 LEAN_WORKER_DISPATCH_SCHEMA = {
     "name": "lean_worker_dispatch",
     "description": "Dispatch or describe a native Lean specialist worker such as `proof-repair`, `proof-golfer`, `axiom-eliminator`, or `sorry-filler-deep`. When delegation is unavailable, returns a structured worker plan instead of failing.",
@@ -1044,6 +1078,22 @@ registry.register(
     ),
     check_fn=check_lean_requirements,
     emoji="✅",
+)
+registry.register(
+    name="lean_extract_have",
+    toolset="lean",
+    schema=LEAN_EXTRACT_HAVE_SCHEMA,
+    handler=lambda args, **kw: lean_extract_have_tool(
+        theorem_id=args.get("theorem_id", ""),
+        file_path=args.get("file_path", ""),
+        have_name=args.get("have_name", ""),
+        minimum_lines=int(args.get("minimum_lines", 8) or 8),
+        cwd=args.get("cwd", ""),
+        timeout_s=int(args.get("timeout_s", 300) or 300),
+        owner_id=str(kw.get("owner_id", "") or ""),
+    ),
+    check_fn=check_lean_requirements,
+    emoji="✂️",
 )
 if LEAN_WORKER_DISPATCH_ENABLED:
     registry.register(

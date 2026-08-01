@@ -23,6 +23,7 @@ from core.project_resource_admission import (
     project_lean_service_reclaim_enabled,
 )
 from core.runtime_modes import dispatch_worker_enabled, low_memory_mode_enabled
+from leanflow_cli.lean.lean_command_timeout import configured_hard_timeout_s
 from leanflow_cli.lean.lean_ephemeral import lean_ephemeral_source_check
 from leanflow_cli.lean.lean_helper_ephemeral import check_helper_ephemerally
 from leanflow_cli.lean.lean_incremental_axioms import (
@@ -448,6 +449,11 @@ def _effective_incremental_timeout_s(
         policy = "profiled_helper_cold_start_floor"
 
     normalized_ceiling = None if timeout_ceiling_s is None else max(1, int(timeout_ceiling_s))
+    hard_ceiling = configured_hard_timeout_s()
+    if hard_ceiling is not None:
+        normalized_ceiling = (
+            hard_ceiling if normalized_ceiling is None else min(normalized_ceiling, hard_ceiling)
+        )
     if normalized_ceiling is not None and effective > normalized_ceiling:
         effective = normalized_ceiling
         policy = (

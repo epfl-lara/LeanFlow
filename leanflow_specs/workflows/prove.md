@@ -5,7 +5,7 @@ title: Prove
 summary: Queue-driven autonomous theorem proving with LeanProbe-first checking, native search fallbacks, helper decomposition, and strict verification gates.
 aliases: [autoprove]
 skills: [lean-proof-loop, lean-theorem-queue-worker]
-tools: [lean_capabilities, lean_inspect, lean_incremental_check, lean_search, lean_proof_context, lean_auto_search, lean_multi_attempt, lean_decompose_helpers, lean_reasoning_help, lean_verify, lean_sorries, lean_axioms, web_search, web_fetch, web_download]
+tools: [lean_capabilities, lean_inspect, lean_incremental_check, lean_search, lean_proof_context, lean_auto_search, lean_multi_attempt, lean_extract_have, lean_decompose_helpers, lean_reasoning_help, lean_verify, lean_sorries, lean_axioms, web_search, web_fetch, web_download]
 workers: []
 review_actions: [continue, decompose, plan, negate, re-state, ask-human]
 stop_conditions: [verified, disproved, cancelled, paused-infrastructure]
@@ -78,25 +78,33 @@ Use `review`, `draft`, `refactor`, or `golf` for those cases.
    - do not use it for vague search, speculative whole-proof generation, declaration headers, or candidates containing `sorry`
    - if you have one full candidate proof, screen it with LeanProbe, patch the file, and let the
      managed post-edit LeanProbe gate check the assigned declaration
-8. `lean_decompose_helpers`
+8. `lean_extract_have`
+   - use after repeated bounded timeouts when the current declaration already contains a substantial
+     sorry-free local `have`: the tool automatically selects the largest eligible block unless a name
+     is supplied, recovers its exact context with Mathlib's `extract_goal`, verifies the generated
+     private lemma and rewritten call site independently with LeanProbe, and commits only that checked
+     source transition
+   - prefer this mechanical extraction before asking a model to restate proof-specific helper
+     signatures; a failed extraction leaves source unchanged and returns structured diagnostics
+9. `lean_decompose_helpers`
    - use when a theorem is hard because the direct proof needs intermediate invariants, helper lemmas, or an affine/algebraic split before editing will be productive
    - after repeated bounded verification timeouts on a sorry-free declaration, stop replaying the unchanged broad check; decompose into cohesive top-level helpers, verify each helper independently with LeanProbe, and retry the parent only after its body is materially smaller
    - call it after focused search/proof-context work has identified the obstacle but before inserting theorem-sized comment blocks, placeholder `sorry`, or broad speculative helper declarations
    - pass the exact theorem statement, current diagnostics/goals, current attempt, and a concise failed-attempt summary
    - treat returned helpers as checked decomposition advice: insert only `ready_to_insert` skeletons deliberately, then prove each helper without lingering `sorry`
-9. edit the current target minimally
+10. edit the current target minimally
    - queue-driven runs should change one declaration-sized unit at a time
    - declaring local helper lemmas is allowed/encouraged when they directly unblock the assigned declaration
-10. `lean_reasoning_help`
+11. `lean_reasoning_help`
    - use for broad proof-strategy advice when the missing piece is conceptual or library-navigation oriented
    - prefer `lean_decompose_helpers` instead when the useful next step is a structured sublemma split
    - treat an open-problem or blocker assessment as unverified route-change evidence, never a terminal verdict; the tool removes surrendering conclusion fragments and appends a deterministic continuation contract
-11. `lean_verify`
+12. `lean_verify`
    - use the narrowest verification mode that matches the current gate
    - do not treat `grep`, truncated logs, or disappearing `sorry` text as verification
-12. `lean_sorries` or `lean_axioms`
+13. `lean_sorries` or `lean_axioms`
    - use when the blocker is global `sorry` inventory or axiom risk rather than local proof construction
-13. `web_search` / `web_fetch` / `web_download` (external research — for HARD or unfamiliar problems)
+14. `web_search` / `web_fetch` / `web_download` (external research — for HARD or unfamiliar problems)
    - after local `lean_search` is exhausted and the obstacle is conceptual or needs outside knowledge, use `web_search` for the open web, code (Sourcegraph/GitHub), and papers (arXiv/Semantic Scholar): find a known proof, a prior formalization, a similar result, or the right lemma/technique
    - use `web_fetch <url>` to actually READ a promising page or PDF, and `web_download <url>` to save a paper/artifact (then `read_pdf` it)
    - this is research to inform the Lean proof, never a substitute for verification — the theorem is only solved when the verification gate passes

@@ -43,6 +43,11 @@ def _configured_hard_timeout_s() -> int | None:
     return min(MAX_COMMAND_TIMEOUT_S, max(MIN_COMMAND_TIMEOUT_S, value))
 
 
+def configured_hard_timeout_s() -> int | None:
+    """Return the run-wide hard cap shared by canonical and incremental Lean checks."""
+    return _configured_hard_timeout_s()
+
+
 def _is_canonical_file_check(command: Sequence[str]) -> bool:
     """Return whether a command is the canonical ``lake env lean FILE`` gate."""
     normalized = [str(part or "").strip().lower() for part in command[:3]]
