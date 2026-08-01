@@ -10295,8 +10295,9 @@ def test_post_edit_timeout_reuses_verified_source_identity(monkeypatch, tmp_path
     monkeypatch.setattr(runner, "_maybe_manager_nudge", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *_args: "")
 
+    agent = _Agent()
     runner._handle_managed_tool_result(
-        _Agent(),
+        agent,
         "patch",
         {"path": str(active)},
         json.dumps({"success": True}),
@@ -10307,6 +10308,14 @@ def test_post_edit_timeout_reuses_verified_source_identity(monkeypatch, tmp_path
     )
     assert source_reuse["source_unchanged"] is True
     assert source_reuse["candidate_check_passed"] is False
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    timeout_attempts = [
+        attempt
+        for attempt in agent._managed_autonomy_state["failed_attempts"]
+        if attempt.get("declaration_hash") == declaration_hash
+        and "timed out" in str(attempt.get("gate_verdict", ""))
+    ]
+    assert len(timeout_attempts) == 1
 
 
 def test_rejected_verification_reclaims_consumed_delivery_before_staging_fresh_finding(
@@ -15703,6 +15712,55 @@ def test_review_agent_final_report_backpressures_unchanged_verification_timeout(
     assert calls == []
     assert result["manager_final_report_review"]["ok"] is False
     assert "top-level helper theorems" in result["messages"][-1]["content"]
+
+
+def test_review_agent_final_report_persists_new_verification_timeout(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "manager_feedback_retries": {"hard": 99},
+    }
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item_transaction",
+        lambda *args, **kwargs: (
+            {
+                "ok": False,
+                "timed_out": True,
+                "output": "lake env lean Main.lean timed out after 600 seconds",
+            },
+            "lean_verify",
+        ),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "Progress made; verification remains open.",
+            "messages": [{"role": "assistant", "content": "progress"}],
+        },
+        autonomy_state,
+    )
+
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    assert any(
+        attempt.get("declaration_hash") == declaration_hash
+        and "timed out" in str(attempt.get("gate_verdict", ""))
+        for attempt in autonomy_state["failed_attempts"]
+    )
+    assert runner._restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
 
 
 def test_review_agent_final_report_rejects_disallowed_axiom_dependency(monkeypatch, tmp_path):
@@ -26295,6 +26353,48 @@ def test_promote_live_state_backpressures_same_revision_verification_timeout(mon
     assert promoted["deferred_exact_verification"] is True
     assert "top-level helper theorems" in promoted["blocker_summary"]
     assert any(event[0] == "live-verification-timeout-backpressured" for event in events)
+
+
+def test_promote_live_state_persists_new_exact_verification_timeout(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "manager_feedback_retries": {"hard": 99},
+    }
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (1, ["Other.lean"]))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda *args, **kwargs: (
+            False,
+            "lake env lean Main.lean timed out after 600 seconds",
+        ),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "target_symbol": "demo",
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert promoted["verification_ok"] is False
+    assert runner._restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
 
 
 def test_same_revision_verification_timeout_is_invalidated_by_source_edit(tmp_path):

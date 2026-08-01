@@ -3668,6 +3668,74 @@ def _same_revision_timeout_backpressure_check(
     return check, "verification_timeout_backpressure"
 
 
+def _manager_check_timeout_reason(manager_check: Mapping[str, Any] | None) -> str:
+    """Return bounded verifier-timeout evidence from one manager result."""
+    checked = dict(manager_check or {})
+    incremental = checked.get("incremental")
+    payload = dict(incremental) if isinstance(incremental, Mapping) else {}
+    detail = " ".join(
+        str(value or "")
+        for value in (
+            checked.get("output"),
+            checked.get("error"),
+            checked.get("build_status"),
+            checked.get("error_code"),
+            payload.get("output"),
+            payload.get("error"),
+            payload.get("build_status"),
+            payload.get("error_code"),
+        )
+    ).strip()
+    lowered = detail.lower()
+    timed_out = bool(checked.get("timed_out") or payload.get("timed_out"))
+    if not timed_out and not any(marker in lowered for marker in _VERIFICATION_TIMEOUT_MARKERS):
+        return ""
+    return _single_line(detail or "bounded exact verification timed out", 500)
+
+
+def _remember_same_revision_verification_timeout(
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+    manager_check: Mapping[str, Any] | None,
+) -> bool:
+    """Persist a timeout attempt even after the local feedback window is spent."""
+    if not isinstance(autonomy_state, dict):
+        return False
+    reason = _manager_check_timeout_reason(manager_check)
+    declaration_hash = _failed_attempt_declaration_hash(active_file, target_symbol, None)
+    key = _queue_key(target_symbol, active_file)
+    if not reason or not declaration_hash or not key.is_valid():
+        return False
+    mgr = _queue_manager_from_state(autonomy_state)
+    recorded = mgr.record_attempt_for(
+        key,
+        cycle=int(autonomy_state.get("current_cycle", 0) or 0),
+        proof_shape=_attempt_proof_shape(None),
+        reason=reason,
+        declaration_hash=declaration_hash,
+        gate_verdict=reason,
+        turn_key=_failed_attempt_turn_key(
+            autonomy_state,
+            int(autonomy_state.get("current_cycle", 0) or 0),
+        ),
+    )
+    _flush_queue_manager(autonomy_state, mgr)
+    if recorded is None:
+        return False
+    _record_activity(
+        "verification-timeout-revision-recorded",
+        f"Persisted exact timeout revision for {target_symbol}",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        declaration_hash=declaration_hash,
+        reason=reason,
+        campaign_progress=False,
+    )
+    return True
+
+
 def _assignment_verification_timeout_count(
     autonomy_state: Mapping[str, Any] | None,
     *,
@@ -6370,6 +6438,12 @@ def _review_agent_final_report(
                 active_file,
                 target_symbol,
                 purpose="target-final-report",
+            )
+            _remember_same_revision_verification_timeout(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                manager_check=manager_check,
             )
         else:
             manager_check, manager_tool = source_placeholder_check
@@ -12635,6 +12709,12 @@ def _handle_managed_tool_result(
                         active_file, target_symbol
                     )
                     exact_gate = "lean_incremental_check"
+                _remember_same_revision_verification_timeout(
+                    managed_autonomy,
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    manager_check=manager_verification,
+                )
                 _finish_queue_step_boundary(
                     agent,
                     pending_target=target_symbol,
@@ -12707,6 +12787,12 @@ def _handle_managed_tool_result(
                 active_file,
                 target_symbol,
                 purpose="target-post-edit",
+            )
+            _remember_same_revision_verification_timeout(
+                managed_autonomy,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                manager_check=manager_verification,
             )
             verification_tool = f"{function_name}+{manager_tool}"
             _finish_queue_step_boundary(
@@ -18138,6 +18224,16 @@ def _promote_live_state_to_verified(
         )
         if backpressured is None:
             ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
+            _remember_same_revision_verification_timeout(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                manager_check={
+                    "ok": ok,
+                    "output": build_status,
+                    "timed_out": _manager_check_timed_out({"output": build_status}),
+                },
+            )
         else:
             timeout_check, _timeout_tool = backpressured
             ok = False
@@ -22275,6 +22371,22 @@ def _recover_resume_graph_gate_evidence(
                 reason="durable queue state has no current assignment",
             )
         return ()
+    prior_timeout = _restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol=assignment_target,
+        active_file=assignment_file,
+    )
+    if assignment_file and assignment_target and prior_timeout:
+        with contextlib.suppress(Exception):
+            _record_activity(
+                "plan-graph-resume-gate-backpressured",
+                "Deferred repeated resume-gate verification to the foreground",
+                active_file=assignment_file,
+                target_symbol=assignment_target,
+                candidate_count=0,
+                reason=prior_timeout,
+            )
+        return ()
     try:
         blueprint = plan_state.load_blueprint()
         files = sorted({node.file for node in blueprint.nodes if node.file})
@@ -22303,23 +22415,6 @@ def _recover_resume_graph_gate_evidence(
             _record_activity(
                 "plan-graph-resume-gate-error",
                 f"Could not inventory resume graph candidates: {_single_line(str(exc), 200)}",
-            )
-        return ()
-
-    prior_timeout = _restored_assignment_verification_timeout_reason(
-        autonomy_state,
-        target_symbol=assignment_target,
-        active_file=assignment_file,
-    )
-    if candidates and prior_timeout:
-        with contextlib.suppress(Exception):
-            _record_activity(
-                "plan-graph-resume-gate-backpressured",
-                "Deferred repeated resume-gate verification to the foreground",
-                active_file=assignment_file,
-                target_symbol=assignment_target,
-                candidate_count=len(candidates),
-                reason=prior_timeout,
             )
         return ()
 
@@ -22625,16 +22720,30 @@ def _plan_state_resume_block(autonomy_state: Mapping[str, Any] | None) -> str:
 
     When plan-state is on and a dependency graph exists, reconcile it against
     the on-disk declarations FIRST (stale checkpoints must not outrank kernel
-    truth), then render the resume block. '' means the caller falls back to
-    checkpoint replay; failures degrade to the fallback rather than blocking
-    startup.
+    truth), then render the resume block. An unchanged declaration whose exact
+    gate already timed out reuses the durable graph without another Lean truth
+    scan; no node is promoted by that scheduling shortcut. '' means the caller
+    falls back to checkpoint replay; failures degrade to the fallback rather
+    than blocking startup.
     """
     if not plan_state_enabled():
         return ""
     try:
         if not plan_state_paths().blueprint_json.is_file():
             return ""
+        assignment = dict(dict(autonomy_state or {}).get("current_queue_assignment") or {})
+        assignment_file = str(assignment.get("active_file", "") or "").strip()
+        assignment_target = str(assignment.get("target_symbol", "") or "").strip()
+        prior_timeout = _restored_assignment_verification_timeout_reason(
+            autonomy_state,
+            target_symbol=assignment_target,
+            active_file=assignment_file,
+        )
         _recover_resume_graph_gate_evidence(autonomy_state)
+        if assignment_file and assignment_target and prior_timeout:
+            return plan_state.resume_context_block(
+                current_queue_assignment=assignment,
+            )
         if not _maybe_sync_plan_state(autonomy_state, None):
             # An unreconciled graph must not present itself as the resume
             # authority — fall back to checkpoint replay.

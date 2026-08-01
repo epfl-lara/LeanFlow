@@ -2039,6 +2039,13 @@ def test_resume_gate_backpressures_same_revision_timeout(
         "_manager_incremental_check_queue_item",
         lambda *_args, **_kwargs: pytest.fail("resume replayed known timed-out gate"),
     )
+    monkeypatch.setattr(
+        runner,
+        "_collect_declaration_truth",
+        lambda *_args, **_kwargs: pytest.fail(
+            "resume inspected graph truth before timeout backpressure"
+        ),
+    )
 
     assert runner._plan_state_resume_block(autonomy_state)
     assert plan_state.load_blueprint().node_by_id(node_id).status != "proved"
