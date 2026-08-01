@@ -95,6 +95,25 @@ def test_managed_pre_tool_hook_captures_only_exact_on_disk_check(monkeypatch, tm
     assert snapshot["source_sha256"] == runner._source_revision_sha256(str(active))
 
 
+def test_managed_pre_tool_hook_captures_exact_file_verification(monkeypatch, tmp_path):
+    """Capture source identity for a canonical assigned-file verification."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    agent = _Agent(_state(active))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    result = runner._managed_pre_tool_call(
+        agent,
+        "lean_verify",
+        {"mode": "file_exact", "target": str(active)},
+    )
+
+    assert result is None
+    snapshot = runner._take_exact_check_source_snapshot(agent, "lean_verify")
+    assert snapshot["assignment_scope"] == runner._queue_key("demo", str(active)).storage_key()
+    assert snapshot["source_sha256"] == runner._source_revision_sha256(str(active))
+
+
 def test_managed_post_tool_hook_forwards_exact_check_snapshot(monkeypatch, tmp_path):
     """Carry the pre-tool identity into the authoritative step-boundary hook."""
     active = tmp_path / "Main.lean"

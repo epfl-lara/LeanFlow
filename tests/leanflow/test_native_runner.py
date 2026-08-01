@@ -10177,6 +10177,70 @@ def test_incremental_exact_target_timeout_reuses_unchanged_on_disk_source(monkey
     assert source_reuse["candidate_check_passed"] is False
 
 
+def test_exact_file_timeout_reuses_unchanged_on_disk_source(monkeypatch, tmp_path):
+    """Do not follow a canonical file timeout with another full inspection."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_parent_portfolio_maintenance_active = True
+
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_cycle": 1,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  trivial",
+                },
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unchanged exact-file failure must not start a second Lean inspection"
+        ),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(runner, "_maybe_manager_nudge", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *_args: "")
+
+    agent = _Agent()
+    arguments = {"mode": "file_exact", "target": str(active)}
+    runner._capture_exact_check_source_snapshot(agent, "lean_verify", arguments)
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_verify",
+        arguments,
+        json.dumps(
+            {
+                "success": True,
+                "ok": False,
+                "mode": "file_exact",
+                "command": "lake env lean Main.lean",
+                "target": str(active),
+                "output": "Command timed out after 900 seconds",
+            }
+        ),
+    )
+
+    source_reuse = next(
+        kwargs for args, kwargs in events if args[0] == "manager-failed-source-reused"
+    )
+    assert source_reuse["source_unchanged"] is True
+    assert source_reuse["candidate_check_passed"] is False
+
+
 def test_rejected_verification_reclaims_consumed_delivery_before_staging_fresh_finding(
     monkeypatch, tmp_path
 ):

@@ -5992,12 +5992,15 @@ def _capture_exact_check_source_snapshot(
     """
     with contextlib.suppress(Exception):
         delattr(agent, _EXACT_CHECK_SOURCE_SNAPSHOT_ATTR)
-    if function_name != "lean_incremental_check":
+    if function_name not in {"lean_incremental_check", "lean_verify"}:
         return
     arguments = dict(args or {})
-    action = str(arguments.get("action", "check_target") or "check_target")
-    action = action.strip().lower().replace("-", "_")
-    if action != "check_target" or str(arguments.get("replacement", "") or "").strip():
+    if function_name == "lean_incremental_check":
+        action = str(arguments.get("action", "check_target") or "check_target")
+        action = action.strip().lower().replace("-", "_")
+        if action != "check_target" or str(arguments.get("replacement", "") or "").strip():
+            return
+    elif str(arguments.get("mode", "") or "").strip().lower() != "file_exact":
         return
     autonomy_state = getattr(agent, "_managed_autonomy_state", None)
     if not isinstance(autonomy_state, dict):
@@ -6005,12 +6008,15 @@ def _capture_exact_check_source_snapshot(
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
     active_file = str(assignment.get("active_file", "") or "").strip()
-    requested_target = str(
-        arguments.get("theorem_id", "") or arguments.get("target_symbol", "") or target_symbol
-    ).strip()
-    requested_file = str(
-        arguments.get("file_path", "") or arguments.get("active_file", "") or active_file
-    ).strip()
+    requested_target = target_symbol
+    requested_file = str(arguments.get("target", "") or active_file).strip()
+    if function_name == "lean_incremental_check":
+        requested_target = str(
+            arguments.get("theorem_id", "") or arguments.get("target_symbol", "") or target_symbol
+        ).strip()
+        requested_file = str(
+            arguments.get("file_path", "") or arguments.get("active_file", "") or active_file
+        ).strip()
     scope = _queue_key(target_symbol, active_file)
     source_sha256 = _source_revision_sha256(active_file)
     if (
@@ -6037,7 +6043,7 @@ def _capture_exact_check_source_snapshot(
 
 def _take_exact_check_source_snapshot(agent: Any, function_name: str) -> dict[str, Any]:
     """Take the matching pre-tool source snapshot exactly once."""
-    if function_name != "lean_incremental_check":
+    if function_name not in {"lean_incremental_check", "lean_verify"}:
         return {}
     snapshot = dict(getattr(agent, _EXACT_CHECK_SOURCE_SNAPSHOT_ATTR, None) or {})
     with contextlib.suppress(Exception):
