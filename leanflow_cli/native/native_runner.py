@@ -8962,6 +8962,84 @@ def _research_helper_candidate_pre_tool_guard(
     )
 
 
+def _same_revision_timeout_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Block an unchanged broad verifier replay before it starts Lean."""
+    if _workflow_kind() != "prove" or function_name not in {
+        "lean_incremental_check",
+        "lean_verify",
+    }:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return None
+    arguments = dict(args or {})
+    if function_name == "lean_verify":
+        mode = str(arguments.get("mode", "") or "").strip().lower().replace("-", "_")
+        requested_file = str(arguments.get("target", "") or active_file).strip()
+        if mode != "file_exact" or not _same_active_file(requested_file, active_file):
+            return None
+    else:
+        action = str(arguments.get("action", "check_target") or "check_target")
+        action = action.strip().lower().replace("-", "_")
+        replacement = str(arguments.get("replacement", "") or "").strip()
+        requested_target = str(
+            arguments.get("theorem_id", "") or arguments.get("target_symbol", "") or target_symbol
+        ).strip()
+        requested_file = str(
+            arguments.get("file_path", "") or arguments.get("active_file", "") or active_file
+        ).strip()
+        if (
+            action != "check_target"
+            or replacement
+            or requested_target != target_symbol
+            or not _same_active_file(requested_file, active_file)
+        ):
+            return None
+    backpressured = _same_revision_timeout_backpressure_check(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if backpressured is None:
+        return None
+    check, _tool = backpressured
+    payload = {
+        **check,
+        "status": "same_revision_verification_timeout",
+        "blocked_tool": function_name,
+        "lean_started": False,
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "target_attempt_consumed": False,
+    }
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "same-revision-verification-tool-blocked",
+            f"Blocked unchanged exact-verification replay for {target_symbol}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            source_sha256=_source_revision_sha256(active_file),
+            declaration_sha256=_failed_attempt_declaration_hash(
+                active_file,
+                target_symbol,
+                None,
+            ),
+            lean_started=False,
+            target_attempt_consumed=False,
+            campaign_progress=False,
+        )
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _managed_pre_tool_call(
     agent: Any, function_name: str, args: Mapping[str, Any] | None
 ) -> str | None:
@@ -9083,6 +9161,14 @@ def _managed_pre_tool_call(
                     campaign_progress=False,
                 )
             return json.dumps(payload, ensure_ascii=False)
+        timeout_block = _same_revision_timeout_pre_tool_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if timeout_block:
+            return timeout_block
         _inject_target_knowledge_into_decomposer_args(
             function_name,
             args,
@@ -12394,6 +12480,15 @@ def _handle_managed_tool_result(
             # The pre-tool source fence already returned complete guidance.
             # It is known queue state, not a rejected candidate: do not enter
             # the target gate, failed-attempt ledger, or persistence coach.
+            return
+    if function_name in {"lean_incremental_check", "lean_verify"}:
+        preflight_payload = _json_tool_result_payload(_result)
+        if (
+            str(preflight_payload.get("status", "") or "") == "same_revision_verification_timeout"
+            and preflight_payload.get("lean_started") is False
+        ):
+            # The pre-tool timeout fence already returned the structural next
+            # action. It did not run Lean or consume a mathematical attempt.
             return
     assignment = (
         dict(autonomy_state.get("current_queue_assignment") or {})

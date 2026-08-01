@@ -18515,6 +18515,162 @@ def test_managed_pre_tool_call_requires_inline_profile_for_sorry_free_exact_targ
     assert args["include_axiom_profile"] is True
 
 
+@pytest.mark.parametrize(
+    ("function_name", "args"),
+    [
+        ("lean_verify", {"mode": "file_exact"}),
+        (
+            "lean_incremental_check",
+            {"action": "check_target", "theorem_id": "demo"},
+        ),
+    ],
+)
+def test_managed_pre_tool_call_blocks_unchanged_verification_timeout(
+    monkeypatch, tmp_path, function_name, args
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "LeanProbe call exceeded its 300s wall-clock deadline",
+            }
+        ],
+    }
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *event_args, **event_kwargs: events.append((event_args, event_kwargs)),
+    )
+    tool_args = {**args, "target": str(active), "file_path": str(active)}
+
+    result = runner._managed_pre_tool_call(_Agent(), function_name, tool_args)
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "same_revision_verification_timeout"
+    assert payload["blocked_tool"] == function_name
+    assert payload["lean_started"] is False
+    assert payload["target_attempt_consumed"] is False
+    assert "top-level helper theorems" in payload["output"]
+    assert events[0][0][1] == "same-revision-verification-tool-blocked"
+
+
+def test_managed_pre_tool_timeout_fence_allows_changed_source_and_replacement(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "timed out after 600 seconds",
+            }
+        ],
+    }
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    replacement_args = {
+        "action": "check_target",
+        "file_path": str(active),
+        "theorem_id": "demo",
+        "replacement": "theorem demo : True := by\n  exact True.intro",
+    }
+
+    assert (
+        runner._managed_pre_tool_call(
+            _Agent(),
+            "lean_incremental_check",
+            replacement_args,
+        )
+        is None
+    )
+    active.write_text("theorem demo : True := by\n  exact True.intro\n", encoding="utf-8")
+    assert (
+        runner._managed_pre_tool_call(
+            _Agent(),
+            "lean_verify",
+            {"mode": "file_exact", "target": str(active)},
+        )
+        is None
+    )
+
+
+def test_timeout_pre_tool_result_does_not_consume_queue_attempt(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *args, **kwargs: pytest.fail("pre-tool timeout consumed a queue attempt"),
+    )
+    agent = _Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_verify",
+        {"mode": "file_exact", "target": str(active)},
+        json.dumps(
+            {
+                "success": False,
+                "status": "same_revision_verification_timeout",
+                "lean_started": False,
+                "target_attempt_consumed": False,
+            }
+        ),
+    )
+
+    assert "failed_attempts" not in agent._managed_autonomy_state
+
+
 def test_managed_pre_tool_call_injects_search_source_horizon_for_file_assignment(
     monkeypatch, tmp_path
 ):
