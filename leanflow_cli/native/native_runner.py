@@ -26381,14 +26381,20 @@ def _research_scope_entry_setup(
         )
     autonomy_state["orchestrator_scope_entered"] = True
     if autonomy_state.get("campaign_epoch_requested"):
-        # This consult spent the fourth no-progress route. Preserve findings,
-        # but do not send the spent portfolio's route into the fresh epoch.
-        # Startup consumes the request before making its provider call.
+        # A route decision is not an attempted strategy until its reserved
+        # work runs. Production scope entry therefore gives the fourth route
+        # one protected foreground turn before rollover; the string-only
+        # characterization surface keeps its historical no-apply behavior.
         pending = campaign_epoch.pending_inflight_route(autonomy_state)
         if pending:
             autonomy_state[_INFLIGHT_ROUTE_REPLAY_TOKEN_KEY] = str(pending.get("token", "") or "")
-        return "\n\n".join(
-            part for part in (initial_message, findings_prompt, helper_priority_prompt) if part
+        if not apply_route:
+            return "\n\n".join(
+                part for part in (initial_message, findings_prompt, helper_priority_prompt) if part
+            )
+        orchestrator_event_watermark.arm_foreground_grace(
+            autonomy_state,
+            scope=_orchestrator_event_scope(autonomy_state, live_state),
         )
     route_messages: list[dict[str, Any]] = []
     if apply_route:
@@ -28614,8 +28620,13 @@ def _roll_pending_startup_scope_epoch(
     autonomy_state: dict[str, Any],
     live_state: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], bool]:
-    """Roll a scope-entry route boundary before the startup provider call."""
-    reason = campaign_epoch.consume_rollover_request(autonomy_state)
+    """Roll a ready scope-entry boundary before the startup provider call.
+
+    Preserve any exact route that still owes mechanical work or its protected
+    foreground turn. The autonomous loop consumes the boundary immediately
+    after that obligation returns.
+    """
+    reason = _consume_ready_campaign_rollover(autonomy_state, live_state)
     if not reason:
         return history, compaction_state, checkpoint_state, False
     history, compaction_state, checkpoint_state = _roll_autonomous_campaign_epoch(

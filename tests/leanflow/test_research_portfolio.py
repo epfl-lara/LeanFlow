@@ -6263,6 +6263,91 @@ def test_fourth_scope_entry_route_rolls_epoch_before_startup_provider_call(monke
     assert "campaign_epoch_requested" not in state
 
 
+def test_fourth_applied_scope_route_runs_before_startup_epoch_rollover(monkeypatch, tmp_path):
+    """Do not count a reserved fourth strategy as attempted before it runs."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "campaign-applied-scope-boundary")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner.scope_entry_admission, "arm", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *args, **kwargs: "pass")
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        runner,
+        "_recheck_pending_research_helper_if_due",
+        lambda *args, **kwargs: "",
+    )
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority,
+        "matching",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(runner, "_pending_checked_target_replacement", lambda *args: False)
+    monkeypatch.setattr(runner, "_reconcile_legacy_epoch_route_completion", lambda *args: None)
+
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    for route_name in ("direct-prove", "plan", "negate"):
+        runner.campaign_epoch.record_route_decision(state, route=route_name, limit=99)
+
+    selected = orchestrator.OrchestratorRoute(
+        route="decompose",
+        reason="structurally recover after repeated verification limits",
+    )
+
+    def fourth_consult(*args, **kwargs):
+        runner.campaign_epoch.record_route_decision(
+            state,
+            route="decompose",
+            target_symbol="demo",
+            active_file=str(active),
+            trigger="scope-entry",
+            reserve_inflight=True,
+        )
+        return selected
+
+    applied: list[str] = []
+
+    def apply(route, *_args, **_kwargs):
+        applied.append(route.route)
+        return "continue"
+
+    monkeypatch.setattr(runner, "_orchestrator_consult", fourth_consult)
+    monkeypatch.setattr(runner, "_apply_orchestrator_route_with_completion", apply)
+
+    prompt = runner._research_scope_entry_setup(
+        "start",
+        state,
+        {"target_symbol": "demo", "active_file": str(active)},
+        agent=object(),
+        apply_route=True,
+    )
+
+    assert applied == ["decompose"]
+    assert "[ORCHESTRATOR SCOPE-ENTRY ROUTE]" in prompt
+    assert state["campaign_epoch_requested"] == "route-no-graph-progress"
+    scope = runner._orchestrator_event_scope(state)
+    assert runner.orchestrator_event_watermark.foreground_grace_active(state, scope=scope)
+
+    history, compaction, checkpoint, rolled = runner._roll_pending_startup_scope_epoch(
+        object(), [], {}, {}, state, {"target_symbol": "demo", "active_file": str(active)}
+    )
+
+    assert rolled is False
+    assert history == []
+    assert compaction == {}
+    assert checkpoint == {}
+    assert state["campaign_epoch_requested"] == "route-no-graph-progress"
+
+
 def test_shutdown_kills_every_open_portfolio_job(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("LEANFLOW_DISPATCH_ENABLED", "1")
