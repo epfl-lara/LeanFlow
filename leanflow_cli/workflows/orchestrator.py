@@ -164,6 +164,7 @@ class RouteContext:
     diagnostics: str = ""
     blocker_summary: str = ""
     queue_frontier_exhausted: bool = False
+    deferred_exact_verification: bool = False
     requested_route: str = ""
     requested_route_reason: str = ""
     stable_cycles: int = 0
@@ -933,6 +934,11 @@ def build_route_context(
         diagnostics=_truncate(str(current.get("diagnostics", "") or ""), 2000),
         blocker_summary=str(current.get("blocker_summary", "") or ""),
         queue_frontier_exhausted=bool(current.get("queue_frontier_exhausted")),
+        deferred_exact_verification=bool(
+            str(current.get("proof_state_authority", "") or "").strip() == "source_only_unverified"
+            and current.get("defer_incremental_warmup")
+            and _as_int(current.get("sorry_count", 0) or 0) == 0
+        ),
         requested_route=requested_route,
         requested_route_reason=requested_route_reason,
         stable_cycles=_as_int(autonomy.get("continuation_stable_cycles", 0) or 0),
@@ -1109,6 +1115,21 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
                 "active_file": ctx.active_file,
                 "generated_by": ctx.target_generated_by,
             },
+        )
+
+    # A sorry-free source candidate that exceeded bounded exact verification
+    # is newer work than the attempt/route history restored for its theorem.
+    # Give it directly to the foreground for profiling, optimization, and a
+    # bounded LeanProbe check. Replaying persistence routes here can starve the
+    # only action capable of turning the candidate into kernel authority.
+    if ctx.deferred_exact_verification and ctx.has_queue_item():
+        return OrchestratorRoute(
+            route="direct-prove",
+            reason=(
+                "sorry-free proof candidate awaits deferred exact verification; "
+                "optimize and verify it before replaying older persistence routes"
+            ),
+            target={"target_symbol": ctx.target_symbol, "active_file": ctx.active_file},
         )
 
     # Row 8 — the campaign's no-progress route streak is spent. This guard

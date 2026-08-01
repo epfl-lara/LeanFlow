@@ -197,6 +197,24 @@ def test_high_attempt_scope_entry_and_event_change_strategy():
     assert rotated.route == "negate"
 
 
+def test_deferred_exact_verification_outranks_old_attempt_and_epoch_routes():
+    """A newer proof candidate must reach the optimizer before stale persistence work."""
+    route = orchestrator_route(
+        _ctx(
+            attempt_count=29,
+            hard_retries=29,
+            routes_used_this_scope=4,
+            research_mode=True,
+            epoch_refresh_required=True,
+            previous_epoch_routes=("decompose", "plan", "negate"),
+            deferred_exact_verification=True,
+        )
+    )
+
+    assert route.route == "direct-prove"
+    assert "optimize and verify" in route.reason
+
+
 def test_fresh_epoch_selects_persisted_distinct_non_direct_route():
     direct_epoch = orchestrator_route(
         _ctx(
@@ -1147,6 +1165,22 @@ def test_build_route_context_is_total_on_empty_inputs():
 
     weird = build_route_context(trigger="not-a-trigger")
     assert weird.trigger == "event"
+
+
+def test_build_route_context_identifies_deferred_exact_verification():
+    ctx = build_route_context(
+        trigger="scope-entry",
+        live_state={
+            "active_file": "Demo.lean",
+            "target_symbol": "demo",
+            "proof_state_authority": "source_only_unverified",
+            "defer_incremental_warmup": True,
+            "sorry_count": 0,
+        },
+    )
+
+    assert ctx.deferred_exact_verification is True
+    assert orchestrator_route(ctx).route == "direct-prove"
 
 
 def test_build_route_context_reads_queue_graph_and_negation(tmp_path):
