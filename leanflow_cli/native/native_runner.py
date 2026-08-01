@@ -18416,6 +18416,82 @@ def _provider_free_exact_scope_state(
     )
 
 
+def _durable_authenticated_resume_gate_state(
+    autonomy_state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Restore a source-bound exact target gate from durable queue evidence."""
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return {}
+    raw_outcome = dict(
+        dict(autonomy_state.get("theorem_outcomes") or {}).get(
+            _queue_key(target_symbol, active_file).storage_key(),
+            {},
+        )
+        or {}
+    )
+    verification = dict(raw_outcome.get("last_verification") or {})
+    if (
+        str(raw_outcome.get("status", "") or "").strip().lower() != "solved"
+        or not _verification_accepts_theorem_outcome(verification, target_symbol)
+        or verification.get("axiom_profile_checked") is not True
+        or list(verification.get("axiom_profile_blockers") or [])
+    ):
+        return {}
+    revision = source_only_startup.capture_source_revision(active_file)
+    if revision is None:
+        return {}
+    authenticated_sha256 = str(verification.get("source_revision_sha256", "") or "").strip()
+    migrated_from_activity = False
+    if not authenticated_sha256:
+        try:
+            events = read_workflow_activity(
+                limit=1000,
+                event_types={"plan-graph-resume-gate-handoff-staged"},
+            )
+        except Exception:
+            logger.debug("durable resume-gate activity lookup failed", exc_info=True)
+            events = []
+        for event in reversed(events):
+            details = event.get("details")
+            payload = dict(details) if isinstance(details, Mapping) else {}
+            if (
+                str(payload.get("target_symbol", "") or "").strip() == target_symbol
+                and _same_active_file(str(payload.get("active_file", "") or ""), active_file)
+                and payload.get("file_verified") is True
+                and str(payload.get("source_revision_sha256", "") or "").strip() == revision.sha256
+            ):
+                authenticated_sha256 = revision.sha256
+                migrated_from_activity = True
+                break
+    if authenticated_sha256 != revision.sha256:
+        return {}
+    manager_check = {
+        **verification,
+        "ok": True,
+        "target": target_symbol,
+        "output": str(verification.get("summary", "") or "authenticated exact target gate"),
+    }
+    restored = _build_verified_gate_handoff_state(
+        active_file,
+        target_symbol,
+        manager_check,
+        autonomy_state,
+    )
+    if restored and migrated_from_activity:
+        _record_activity(
+            "startup-resume-gate-activity-migrated",
+            "Recovered a source-bound exact gate from durable activity",
+            active_file=revision.path,
+            target_symbol=target_symbol,
+            source_revision_sha256=revision.sha256,
+            file_verified=bool(restored.get("verification_ok")),
+        )
+    return restored
+
+
 def _verified_startup_preflight(
     history: list[dict[str, Any]],
     checkpoint_state: Mapping[str, Any] | None,
@@ -18436,6 +18512,8 @@ def _verified_startup_preflight(
         return {}
     try:
         recovered_gate = verified_gate_handoff.take_mapping(autonomy_state)
+        if not recovered_gate:
+            recovered_gate = _durable_authenticated_resume_gate_state(autonomy_state)
         if recovered_gate:
             _record_activity(
                 "startup-resume-gate-reused",
@@ -23297,6 +23375,8 @@ def _recover_resume_graph_gate_evidence(
                         ),
                     )
                 continue
+
+            verification["source_revision_sha256"] = exact_revision
 
             _record_theorem_outcome(
                 autonomy_state,

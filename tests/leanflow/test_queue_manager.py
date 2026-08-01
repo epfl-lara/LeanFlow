@@ -444,6 +444,7 @@ def test_outcome_verification_round_trips(tmp_path) -> None:
         tool="lean_incremental_check",
         target="demo",
         summary="target demo passed",
+        source_revision_sha256="a" * 64,
     )
 
     mgr.record_outcome(status="solved", note="done", verification=record)
@@ -451,8 +452,12 @@ def test_outcome_verification_round_trips(tmp_path) -> None:
     state = mgr.to_autonomy_state()
     outcome = next(iter(state["theorem_outcomes"].values()))
     assert outcome["last_verification"]["scope"] == "target:demo"
+    assert outcome["last_verification"]["source_revision_sha256"] == "a" * 64
     restored = TheoremQueueManager.from_autonomy_state(state)
     assert restored.outcome_for(restored.current.key).verification.tool == "lean_incremental_check"
+    assert (
+        restored.outcome_for(restored.current.key).verification.source_revision_sha256 == "a" * 64
+    )
 
 
 def test_blocked_outcomes_reopen_idempotently_at_strategy_refresh(tmp_path) -> None:

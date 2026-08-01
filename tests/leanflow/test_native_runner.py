@@ -24370,6 +24370,87 @@ def test_verified_startup_preflight_reuses_fresh_resume_gate(monkeypatch, tmp_pa
     assert events == ["startup-resume-gate-reused"]
 
 
+def test_verified_startup_preflight_migrates_durable_gate_activity(monkeypatch, tmp_path):
+    """Recover an interrupted in-memory handoff from its authenticated activity hash."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    revision = runner.source_only_startup.capture_source_revision(str(active))
+    assert revision is not None
+    recovered = {
+        "active_file": str(active),
+        "target_symbol": "",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "verification_ok": True,
+        "proof_solved": True,
+        "proof_state_authority": "authenticated_target_gate",
+        "source_revision": revision.to_mapping(),
+        "source_revision_sha256": revision.sha256,
+    }
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "theorem_outcomes": {
+            f"{active}::demo": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "status": "solved",
+                "last_verification": {
+                    "scope": "target:demo",
+                    "target": "demo",
+                    "ok": True,
+                    "errors": 0,
+                    "sorry": 0,
+                    "axiom_profile_checked": True,
+                    "axiom_profile_blockers": [],
+                },
+            }
+        },
+    }
+    events: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "read_workflow_activity",
+        lambda **kwargs: [
+            {
+                "type": "plan-graph-resume-gate-handoff-staged",
+                "details": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "source_revision_sha256": revision.sha256,
+                    "file_verified": True,
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_verified_gate_handoff_state",
+        lambda *args, **kwargs: dict(recovered),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_provider_free_exact_scope_state",
+        lambda *args, **kwargs: pytest.fail("durable gate replayed canonical Lean"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event, *args, **kwargs: events.append(event),
+    )
+
+    result = runner._verified_startup_preflight([], {}, autonomy_state)
+
+    assert result == recovered
+    assert events == [
+        "startup-resume-gate-activity-migrated",
+        "startup-resume-gate-reused",
+    ]
+
+
 def test_verified_startup_preflight_preserves_pending_warning_cleanup(monkeypatch):
     """A granted cleanup turn must reach startup instead of a stale verified exit."""
     clean_file = "/tmp/project/Main.lean"

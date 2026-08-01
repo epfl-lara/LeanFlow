@@ -192,6 +192,7 @@ class VerificationRecord:
     axiom_profile_checked: bool = False
     axiom_profile_axioms: tuple[str, ...] = ()
     axiom_profile_blockers: tuple[str, ...] = ()
+    source_revision_sha256: str = ""
 
 
 def verification_from_mapping(raw: Mapping[str, Any] | None) -> VerificationRecord | None:
@@ -238,6 +239,7 @@ def verification_from_mapping(raw: Mapping[str, Any] | None) -> VerificationReco
             axiom_profile_checked=raw.get("axiom_profile_checked") is True,
             axiom_profile_axioms=axiom_profile_axioms,
             axiom_profile_blockers=axiom_profile_blockers,
+            source_revision_sha256=str(raw.get("source_revision_sha256", "") or ""),
         )
     except Exception:
         return None
@@ -276,6 +278,8 @@ def verification_to_mapping(record: VerificationRecord | None) -> dict[str, Any]
         payload["axiom_profile_checked"] = record.axiom_profile_checked
         payload["axiom_profile_axioms"] = list(record.axiom_profile_axioms)
         payload["axiom_profile_blockers"] = list(record.axiom_profile_blockers)
+    if record.source_revision_sha256:
+        payload["source_revision_sha256"] = record.source_revision_sha256
     return payload
 
 
