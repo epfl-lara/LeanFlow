@@ -24332,6 +24332,44 @@ def test_verified_startup_preflight_uses_exact_gate_without_capability_probe(mon
     assert result == promoted
 
 
+def test_verified_startup_preflight_reuses_fresh_resume_gate(monkeypatch, tmp_path):
+    """A recovered exact target gate must replace the duplicate file check."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    revision = runner.source_only_startup.capture_source_revision(str(active))
+    assert revision is not None
+    recovered = {
+        "active_file": str(active),
+        "target_symbol": "",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "verification_ok": True,
+        "proof_solved": True,
+        "proof_state_authority": "authenticated_target_gate",
+        "source_revision": revision.to_mapping(),
+        "source_revision_sha256": revision.sha256,
+    }
+    autonomy_state: dict = {}
+    assert runner.verified_gate_handoff.remember_mapping(autonomy_state, recovered)
+    events: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_provider_free_exact_scope_state",
+        lambda *args, **kwargs: pytest.fail("recovered gate replayed a whole-file check"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event, *args, **kwargs: events.append(event),
+    )
+
+    result = runner._verified_startup_preflight([], {}, autonomy_state)
+
+    assert result == recovered
+    assert events == ["startup-resume-gate-reused"]
+
+
 def test_verified_startup_preflight_preserves_pending_warning_cleanup(monkeypatch):
     """A granted cleanup turn must reach startup instead of a stale verified exit."""
     clean_file = "/tmp/project/Main.lean"

@@ -18398,6 +18398,18 @@ def _verified_startup_preflight(
     if _workflow_kind() != "prove":
         return {}
     try:
+        recovered_gate = verified_gate_handoff.take_mapping(autonomy_state)
+        if recovered_gate:
+            _record_activity(
+                "startup-resume-gate-reused",
+                "Reused the exact resume target gate without a second file check",
+                active_file=str(recovered_gate.get("active_file", "") or ""),
+                target_symbol=str(recovered_gate.get("target_symbol", "") or ""),
+                source_revision_sha256=str(recovered_gate.get("source_revision_sha256", "") or ""),
+                queue_total=int(recovered_gate.get("declaration_queue_total", 0) or 0),
+                file_verified=bool(recovered_gate.get("verification_ok")),
+            )
+            return recovered_gate
         restored = _restored_queue_assignment_live_state(autonomy_state)
         restored_file = str(restored.get("active_file", "") or "")
         restored_target = str(restored.get("target_symbol", "") or "")
@@ -23258,6 +23270,31 @@ def _recover_resume_graph_gate_evidence(
                     "last_verification": verification,
                 },
             )
+            if candidate.target_symbol == assignment_target and _same_active_file(
+                candidate.active_file, assignment_file
+            ):
+                recovered_state = _build_verified_gate_handoff_state(
+                    candidate.active_file,
+                    candidate.target_symbol,
+                    manager_check,
+                    autonomy_state,
+                )
+                if recovered_state and verified_gate_handoff.remember_mapping(
+                    autonomy_state,
+                    recovered_state,
+                ):
+                    with contextlib.suppress(Exception):
+                        _record_activity(
+                            "plan-graph-resume-gate-handoff-staged",
+                            f"Staged recovered exact gate for {candidate.target_symbol}",
+                            target_symbol=candidate.target_symbol,
+                            active_file=candidate.active_file,
+                            source_revision_sha256=str(
+                                recovered_state.get("source_revision_sha256", "") or ""
+                            ),
+                            queue_total=int(recovered_state.get("declaration_queue_total", 0) or 0),
+                            file_verified=bool(recovered_state.get("verification_ok")),
+                        )
             recovered.append(candidate.node_id)
             with contextlib.suppress(Exception):
                 _record_activity(

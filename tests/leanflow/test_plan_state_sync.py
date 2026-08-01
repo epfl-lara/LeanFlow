@@ -2309,6 +2309,72 @@ def test_resume_reuses_complete_inline_axiom_profile_without_batch_process(
     assert bool(rejected) is (expected_status == "stated")
 
 
+def test_scoped_resume_gate_stages_verified_startup_handoff(
+    plan_enabled,
+    monkeypatch,
+    tmp_path,
+):
+    """Carry a freshly recovered assignment gate into startup without Lake replay."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    node_id = plan_state.node_id_for("demo", str(active))
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=node_id,
+                    name="demo",
+                    file=str(active),
+                    statement="True",
+                    status="stated",
+                ),
+            )
+        )
+    )
+    revision = runner.source_only_startup.capture_source_revision(str(active))
+    assert revision is not None
+    recovered_state = {
+        "active_file": str(active),
+        "target_symbol": "",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "verification_ok": True,
+        "proof_solved": True,
+        "proof_state_authority": "authenticated_target_gate",
+        "source_revision": revision.to_mapping(),
+        "source_revision_sha256": revision.sha256,
+    }
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda _file, target: _strict_resume_exact_payload(
+            active,
+            target,
+            inline_axioms=["propext"],
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "lean_axioms_many",
+        lambda *_args, **_kwargs: pytest.fail("inline profile unexpectedly replayed axioms"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_verified_gate_handoff_state",
+        lambda *args, **kwargs: dict(recovered_state),
+    )
+    autonomy_state: dict[str, Any] = {
+        runner._QUEUE_MANAGER_STATE_RESTORED_KEY: True,
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+
+    assert runner._recover_resume_graph_gate_evidence(autonomy_state) == (node_id,)
+    assert runner.verified_gate_handoff.take_mapping(autonomy_state) == recovered_state
+
+
 def test_resume_gate_timeout_backpressures_later_startup_verification(
     plan_enabled,
     monkeypatch,

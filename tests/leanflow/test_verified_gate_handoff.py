@@ -42,6 +42,29 @@ def test_take_rejects_state_after_source_change(tmp_path):
     assert verified_gate_handoff.take(agent) == {}
 
 
+def test_mapping_handoff_consumes_current_revision_once(tmp_path):
+    source = tmp_path / "Main.lean"
+    source.write_text("theorem demo : True := by trivial\n", encoding="utf-8")
+    owner: dict = {}
+    state = _state(str(source))
+
+    assert verified_gate_handoff.remember_mapping(owner, state)
+    assert verified_gate_handoff.take_mapping(owner) == state
+    assert verified_gate_handoff.take_mapping(owner) == {}
+
+
+def test_mapping_handoff_rejects_stale_revision(tmp_path):
+    source = tmp_path / "Main.lean"
+    source.write_text("theorem demo : True := by trivial\n", encoding="utf-8")
+    owner: dict = {}
+    state = _state(str(source))
+
+    assert verified_gate_handoff.remember_mapping(owner, state)
+    source.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+
+    assert verified_gate_handoff.take_mapping(owner) == {}
+
+
 def test_final_exact_gate_builds_drained_state_without_lean(tmp_path, monkeypatch):
     source = tmp_path / "Main.lean"
     source.write_text("theorem demo : True := by trivial\n", encoding="utf-8")
