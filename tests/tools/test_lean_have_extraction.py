@@ -119,3 +119,132 @@ def test_tool_leaves_source_unchanged_when_switch_does_not_elaborate(monkeypatch
 
     assert payload["status"] == "helper_switch_failed"
     assert target.read_text(encoding="utf-8") == SOURCE
+
+
+def test_inventory_is_comment_safe_and_provider_free(monkeypatch, tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        """import Mathlib
+
+theorem demo : True := by
+  /- have historical : True := by
+    trivial
+  -/
+  have active : True := by
+    trivial
+    trivial
+  exact active
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        extraction,
+        "lean_incremental_check",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("inventory must not start Lean")),
+    )
+
+    payload = json.loads(
+        extraction.lean_extract_have_tool(
+            "demo",
+            str(target),
+            cwd=str(tmp_path),
+            action="inventory",
+            minimum_lines=2,
+        )
+    )
+
+    assert payload["success"] is True
+    assert [item["have_name"] for item in payload["candidates"]] == ["active"]
+    assert payload["candidates"][0]["suggested_helper_name"] == "leanflow_demo_active"
+
+
+def test_tool_extracts_named_batch_with_semantic_names_in_one_patch(monkeypatch, tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        """import Mathlib
+
+theorem demo (a : Nat) : a = a := by
+  have first : a = a := by
+    rfl
+    rfl
+  have second : a = a := by
+    exact first
+    exact first
+  exact second
+""",
+        encoding="utf-8",
+    )
+    captured = {}
+    verified_edit_authority.clear_for_tests()
+
+    def fake_check(**kwargs):
+        replacement = kwargs.get("replacement", "")
+        match = extraction.re.search(r"extract_goal using ([A-Za-z0-9_]+)", replacement)
+        if match:
+            helper_name = match.group(1)
+            return {
+                "success": True,
+                "ok": False,
+                "has_errors": False,
+                "has_sorry": True,
+                "timed_out": False,
+                "messages": [
+                    {
+                        "severity": "info",
+                        "message": f"theorem {helper_name} (a : ℕ) : a = a := sorry",
+                    }
+                ],
+            }
+        if kwargs.get("action") == "check_helper":
+            return {
+                "success": True,
+                "ok": True,
+                "valid_without_sorry": True,
+                "has_errors": False,
+                "has_sorry": False,
+                "timed_out": False,
+                "axiom_profile_checked": True,
+                "axiom_profile_axioms": ["propext"],
+                "axiom_profile_blockers": [],
+            }
+        return {
+            "success": True,
+            "ok": False,
+            "has_errors": False,
+            "has_sorry": True,
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(extraction, "lean_incremental_check", fake_check)
+
+    def fake_apply(path, patch, **kwargs):
+        captured.update({"path": path, "patch": patch, **kwargs})
+        return json.dumps(
+            {
+                "success": True,
+                "status": "patch_elaborated",
+                "check_passed": True,
+                "patch_applied": True,
+            }
+        )
+
+    monkeypatch.setattr(extraction, "apply_verified_patch_tool", fake_apply)
+
+    payload = json.loads(
+        extraction.lean_extract_have_tool(
+            "demo",
+            str(target),
+            cwd=str(tmp_path),
+            have_names=["first", "second"],
+            helper_names={"first": "demo_reflexive_base", "second": "demo_reflexive_finish"},
+            minimum_lines=2,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["extraction"]["helper_count"] == 2
+    assert payload["extraction"]["transactional_batch"] is True
+    assert "private lemma demo_reflexive_base" in captured["patch"]
+    assert "private lemma demo_reflexive_finish" in captured["patch"]
+    assert "solve_by_elim [demo_reflexive_base]" in captured["patch"]
+    assert "solve_by_elim [demo_reflexive_finish]" in captured["patch"]

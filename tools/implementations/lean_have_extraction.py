@@ -6,11 +6,12 @@ import hashlib
 import json
 import re
 import textwrap
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from core import verified_edit_authority
-from leanflow_cli.lean.lean_have_extraction import HaveCandidate, select_candidate
+from leanflow_cli.lean.lean_have_extraction import HaveCandidate, candidates, ranked_candidates
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
 from leanflow_cli.lean.lean_parsing import (
     _declaration_line_index_from_text,
@@ -27,10 +28,17 @@ def _failure(status: str, message: str, **fields: Any) -> str:
     )
 
 
-def _helper_name(theorem_id: str, have_name: str, source: str) -> str:
+def _helper_name(
+    theorem_id: str,
+    have_name: str,
+    source: str,
+    *,
+    requested_name: str = "",
+) -> str:
     """Return a collision-free private helper name."""
+    requested = re.sub(r"\W+", "_", str(requested_name or "")).strip("_")
     stem = re.sub(r"\W+", "_", f"{theorem_id}_{have_name}").strip("_")
-    base = f"leanflow_{stem or 'extracted_have'}"
+    base = requested or f"leanflow_{stem or 'extracted_have'}"
     name = base
     index = 2
     while re.search(rf"\b(?:theorem|lemma)\s+{re.escape(name)}\b", source):
@@ -107,12 +115,16 @@ def lean_extract_have_tool(
     file_path: str,
     *,
     cwd: str = "",
+    action: str = "extract",
     have_name: str = "",
+    have_names: Sequence[str] | None = None,
+    helper_names: Mapping[str, str] | None = None,
     minimum_lines: int = 8,
+    max_helpers: int = 1,
     timeout_s: int = 300,
     owner_id: str = "",
 ) -> str:
-    """Extract and transactionally bank one independently verified local ``have`` proof."""
+    """Inventory or transactionally extract a bounded set of local ``have`` proofs."""
     root = Path(cwd).expanduser().resolve() if str(cwd or "").strip() else Path.cwd().resolve()
     path = Path(file_path).expanduser()
     if not path.is_absolute():
@@ -134,96 +146,203 @@ def lean_extract_have_tool(
             "target_not_found", "Assigned declaration not found.", theorem_id=theorem_id
         )
     declaration = str(entry.get("text", "") or "")
-    candidate = select_candidate(
-        declaration,
-        have_name=have_name,
-        minimum_lines=max(2, int(minimum_lines or 8)),
+    available = candidates(declaration)
+    minimum = max(2, int(minimum_lines or 8))
+    requested_names = tuple(
+        dict.fromkeys(
+            [
+                *([str(have_name).strip()] if str(have_name or "").strip() else []),
+                *[
+                    str(name or "").strip()
+                    for name in (have_names or ())
+                    if str(name or "").strip()
+                ],
+            ]
+        )
     )
-    if candidate is None:
+    ranked = ranked_candidates(declaration, minimum_lines=minimum)
+    inventory = [
+        {
+            "have_name": candidate.name,
+            "line_count": candidate.line_count,
+            "source_chars": len(candidate.source),
+            "source_start": candidate.start,
+            "suggested_helper_name": _helper_name(theorem_id, candidate.name, source),
+            "estimated_context_reduction_chars": max(
+                0, len(candidate.source) - len(candidate.header)
+            ),
+        }
+        for candidate in ranked
+    ]
+    normalized_action = str(action or "extract").strip().lower().replace("-", "_")
+    if normalized_action in {"inventory", "inspect", "list", "plan"}:
+        return json.dumps(
+            {
+                "success": True,
+                "status": "candidate_inventory",
+                "theorem_id": theorem_id,
+                "candidate_count": len(inventory),
+                "candidates": inventory,
+                "transactional_batch_limit": 4,
+            },
+            ensure_ascii=False,
+        )
+    available_by_name = {candidate.name: candidate for candidate in available}
+    if requested_names:
+        missing = [name for name in requested_names if name not in available_by_name]
+        if missing:
+            return _failure(
+                "no_extractable_have",
+                "One or more requested local have proofs are not active extractable blocks.",
+                theorem_id=theorem_id,
+                missing_have_names=missing,
+                available_have_names=[candidate.name for candidate in available],
+            )
+        selected_names = requested_names
+    else:
+        selected_names = tuple(
+            candidate.name for candidate in ranked[: min(4, max(1, int(max_helpers or 1)))]
+        )
+    if not selected_names:
         return _failure(
             "no_extractable_have",
             "No complete top-level local have proof matched the extraction request.",
             theorem_id=theorem_id,
             have_name=have_name,
         )
-    helper_name = _helper_name(theorem_id, candidate.name, source)
-    instrumented = _instrumented_candidate(candidate, helper_name)
-    probe = lean_incremental_check(
-        action="check_target",
-        file_path=str(path),
-        theorem_id=theorem_id,
-        cwd=str(root),
-        replacement=_truncated_declaration(declaration, candidate, instrumented),
-        timeout_s=max(1, int(timeout_s or 300)),
-        timeout_ceiling_s=max(1, int(timeout_s or 300)),
-        allow_placeholders_for_elaboration=True,
-    )
-    statement = _extracted_statement(probe, helper_name)
-    if not statement:
-        return _failure(
-            "goal_extraction_failed",
-            "Lean did not emit a standalone theorem signature for the selected have.",
-            theorem_id=theorem_id,
-            have_name=candidate.name,
-            diagnostics=probe,
+    selected_names = tuple(
+        candidate.name
+        for candidate in sorted(
+            (available_by_name[name] for name in selected_names),
+            key=lambda candidate: candidate.start,
         )
-    helper = _private_helper(statement, candidate)
-    if not helper:
-        return _failure(
-            "goal_extraction_failed",
-            "Lean emitted a helper signature in an unsupported shape.",
-            theorem_id=theorem_id,
-            have_name=candidate.name,
-            extracted_statement=statement,
+    )[:4]
+    requested_helper_names = {
+        str(key or "").strip(): str(value or "").strip()
+        for key, value in dict(helper_names or {}).items()
+        if str(key or "").strip() and str(value or "").strip()
+    }
+    rewritten = declaration
+    helpers: list[str] = []
+    reports: list[dict[str, Any]] = []
+    used_axioms: set[str] = set()
+    for selected_name in selected_names:
+        candidate = next(
+            (item for item in candidates(rewritten) if item.name == selected_name),
+            None,
         )
-    helper_check = lean_incremental_check(
-        action="check_helper",
-        file_path=str(path),
-        theorem_id=theorem_id,
-        cwd=str(root),
-        replacement=helper,
-        include_axiom_profile=True,
-        timeout_s=max(1, int(timeout_s or 300)),
-        timeout_ceiling_s=max(1, int(timeout_s or 300)),
-    )
-    blockers = list(helper_check.get("axiom_profile_blockers") or [])
-    if not (
-        helper_check.get("success") is True
-        and helper_check.get("ok") is True
-        and helper_check.get("valid_without_sorry") is True
-        and helper_check.get("axiom_profile_checked") is True
-        and not blockers
-    ):
-        return _failure(
-            "helper_verification_failed",
-            "The extracted helper did not pass its independent LeanProbe and axiom gates.",
-            theorem_id=theorem_id,
-            have_name=candidate.name,
-            helper_name=helper_name,
-            diagnostics=helper_check,
+        if candidate is None:
+            return _failure(
+                "batch_candidate_changed",
+                "A selected local have disappeared while planning the transactional batch.",
+                theorem_id=theorem_id,
+                have_name=selected_name,
+                completed_plans=reports,
+            )
+        helper_name = _helper_name(
+            theorem_id,
+            candidate.name,
+            source + "\n" + "\n\n".join(helpers),
+            requested_name=requested_helper_names.get(candidate.name, ""),
         )
-    switched = _switched_candidate(candidate, helper_name)
-    prefix_check = lean_incremental_check(
-        action="check_target",
-        file_path=str(path),
-        theorem_id=theorem_id,
-        cwd=str(root),
-        replacement=(helper + "\n\n" + _truncated_declaration(declaration, candidate, switched)),
-        timeout_s=max(1, int(timeout_s or 300)),
-        timeout_ceiling_s=max(1, int(timeout_s or 300)),
-        allow_placeholders_for_elaboration=True,
-    )
-    if prefix_check.get("has_errors") is True or prefix_check.get("timed_out") is True:
-        return _failure(
-            "helper_switch_failed",
-            "The private helper passed, but replacing the local have did not elaborate.",
+        instrumented = _instrumented_candidate(candidate, helper_name)
+        truncated = _truncated_declaration(rewritten, candidate, instrumented)
+        probe_replacement = "\n\n".join([*helpers, truncated])
+        probe = lean_incremental_check(
+            action="check_target",
+            file_path=str(path),
             theorem_id=theorem_id,
-            have_name=candidate.name,
-            helper_name=helper_name,
-            diagnostics=prefix_check,
+            cwd=str(root),
+            replacement=probe_replacement,
+            timeout_s=max(1, int(timeout_s or 300)),
+            timeout_ceiling_s=max(1, int(timeout_s or 300)),
+            allow_placeholders_for_elaboration=True,
         )
-    rewritten = declaration[: candidate.start] + switched + declaration[candidate.end :]
-    combined = helper + "\n\n" + rewritten
+        statement = _extracted_statement(probe, helper_name)
+        if not statement:
+            return _failure(
+                "goal_extraction_failed",
+                "Lean did not emit a standalone theorem signature for the selected have.",
+                theorem_id=theorem_id,
+                have_name=candidate.name,
+                diagnostics=probe,
+                completed_plans=reports,
+            )
+        helper = _private_helper(statement, candidate)
+        if not helper:
+            return _failure(
+                "goal_extraction_failed",
+                "Lean emitted a helper signature in an unsupported shape.",
+                theorem_id=theorem_id,
+                have_name=candidate.name,
+                extracted_statement=statement,
+                completed_plans=reports,
+            )
+        helper_check = lean_incremental_check(
+            action="check_helper",
+            file_path=str(path),
+            theorem_id=theorem_id,
+            cwd=str(root),
+            replacement=helper,
+            include_axiom_profile=True,
+            timeout_s=max(1, int(timeout_s or 300)),
+            timeout_ceiling_s=max(1, int(timeout_s or 300)),
+        )
+        blockers = list(helper_check.get("axiom_profile_blockers") or [])
+        if not (
+            helper_check.get("success") is True
+            and helper_check.get("ok") is True
+            and helper_check.get("valid_without_sorry") is True
+            and helper_check.get("axiom_profile_checked") is True
+            and not blockers
+        ):
+            return _failure(
+                "helper_verification_failed",
+                "The extracted helper did not pass its independent LeanProbe and axiom gates.",
+                theorem_id=theorem_id,
+                have_name=candidate.name,
+                helper_name=helper_name,
+                diagnostics=helper_check,
+                completed_plans=reports,
+            )
+        switched = _switched_candidate(candidate, helper_name)
+        next_rewritten = rewritten[: candidate.start] + switched + rewritten[candidate.end :]
+        prefix_check = lean_incremental_check(
+            action="check_target",
+            file_path=str(path),
+            theorem_id=theorem_id,
+            cwd=str(root),
+            replacement="\n\n".join(
+                [*helpers, helper, _truncated_declaration(rewritten, candidate, switched)]
+            ),
+            timeout_s=max(1, int(timeout_s or 300)),
+            timeout_ceiling_s=max(1, int(timeout_s or 300)),
+            allow_placeholders_for_elaboration=True,
+        )
+        if prefix_check.get("has_errors") is True or prefix_check.get("timed_out") is True:
+            return _failure(
+                "helper_switch_failed",
+                "The private helper passed, but replacing the local have did not elaborate.",
+                theorem_id=theorem_id,
+                have_name=candidate.name,
+                helper_name=helper_name,
+                diagnostics=prefix_check,
+                completed_plans=reports,
+            )
+        helpers.append(helper)
+        rewritten = next_rewritten
+        used_axioms.update(str(item) for item in helper_check.get("axiom_profile_axioms") or ())
+        reports.append(
+            {
+                "have_name": candidate.name,
+                "helper_name": helper_name,
+                "extracted_lines": candidate.line_count,
+                "extracted_chars": len(candidate.source),
+                "helper_check": helper_check,
+                "switch_prefix_check": prefix_check,
+            }
+        )
+    combined = "\n\n".join([*helpers, rewritten])
     patch = _v4a_replace(path, declaration, combined)
     before_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
     after_source = source.replace(declaration, combined, 1)
@@ -233,8 +352,8 @@ def lean_extract_have_tool(
         theorem_id=theorem_id,
         before_sha256=before_sha256,
         after_sha256=after_sha256,
-        verified_declaration=helper_name,
-        axiom_profile_axioms=tuple(helper_check.get("axiom_profile_axioms") or ()),
+        verified_declaration=str(reports[-1]["helper_name"]),
+        axiom_profile_axioms=tuple(sorted(used_axioms)),
     )
     result = json.loads(
         apply_verified_patch_tool(
@@ -252,11 +371,13 @@ def lean_extract_have_tool(
         {
             "extraction": {
                 "theorem_id": theorem_id,
-                "have_name": candidate.name,
-                "helper_name": helper_name,
-                "extracted_lines": candidate.line_count,
-                "helper_check": helper_check,
-                "switch_prefix_check": prefix_check,
+                "have_name": reports[0]["have_name"],
+                "helper_name": reports[0]["helper_name"],
+                "extracted_lines": sum(int(report["extracted_lines"]) for report in reports),
+                "extracted_chars": sum(int(report["extracted_chars"]) for report in reports),
+                "helper_count": len(reports),
+                "helpers": reports,
+                "transactional_batch": len(reports) > 1,
             }
         }
     )

@@ -166,6 +166,9 @@ tool is reachable through the public registry.
   Revision-authenticated successful-gate reuse lives in
   `verified_gate_handoff.py`; it carries a checked queue snapshot across the
   provider boundary without replaying diagnostics, goals, or full-file builds.
+  Large local-proof partitioning is split between the comment-safe candidate
+  inventory in `leanflow_cli/lean/lean_have_extraction.py` and bounded,
+  transactional LeanProbe extraction in `tools/implementations/lean_have_extraction.py`.
 
 The larger coordination modules remain intentionally coupled where tests patch
 their module attributes. Extracting behavior from them requires

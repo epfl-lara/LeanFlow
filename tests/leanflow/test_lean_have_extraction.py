@@ -1,6 +1,6 @@
 """Test local-have discovery for automatic helper extraction."""
 
-from leanflow_cli.lean.lean_have_extraction import candidates, select_candidate
+from leanflow_cli.lean.lean_have_extraction import candidates, ranked_candidates, select_candidate
 
 DECLARATION = """theorem demo (a b : Nat) (h : a = b) : a = b := by
   have short : a = b := by
@@ -49,3 +49,29 @@ def test_select_candidate_honors_explicit_name_and_rejects_placeholders():
     assert selected is not None
     assert selected.name == "short"
     assert admitted is None
+
+
+def test_candidates_ignore_nested_block_and_line_comments():
+    """Historical proof branches in comments must never become split candidates."""
+    declaration = """theorem demo : True := by
+  /- old branch
+  have commented : True := by
+    /- have nestedComment : True := by trivial -/
+    trivial
+  -/
+  -- have lineComment : True := by trivial
+  have active : True := by
+    trivial
+    trivial
+  exact active
+"""
+
+    found = candidates(declaration)
+
+    assert [candidate.name for candidate in found] == ["active"]
+
+
+def test_ranked_candidates_reports_largest_context_reduction_first():
+    ranked = ranked_candidates(DECLARATION, minimum_lines=2)
+
+    assert [candidate.name for candidate in ranked] == ["substantial", "short"]

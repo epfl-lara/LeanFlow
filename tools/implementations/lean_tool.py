@@ -739,9 +739,9 @@ APPLY_VERIFIED_PATCH_SCHEMA = {
 LEAN_EXTRACT_HAVE_SCHEMA = {
     "name": "lean_extract_have",
     "description": (
-        "Transactionally extract one large top-level local `have` proof into a private helper. "
+        "Inventory or transactionally extract up to four top-level local `have` proofs into private helpers. "
         "LeanFlow uses Mathlib `extract_goal` to recover the exact local context, verifies the "
-        "helper and its replacement independently with LeanProbe, then banks the source rewrite. "
+        "helpers and replacements independently with LeanProbe, then banks one combined source rewrite. "
         "Use after repeated target timeouts instead of growing or manually refactoring a monolithic proof."
     ),
     "parameters": {
@@ -749,14 +749,38 @@ LEAN_EXTRACT_HAVE_SCHEMA = {
         "properties": {
             "theorem_id": {"type": "string", "description": "Assigned declaration name"},
             "file_path": {"type": "string", "description": "Lean file containing the declaration"},
+            "action": {
+                "type": "string",
+                "enum": ["inventory", "extract"],
+                "default": "extract",
+                "description": "Inventory candidates without editing, or extract a bounded verified batch",
+            },
             "have_name": {
                 "type": "string",
-                "description": "Optional local have name; omit to select the largest eligible block",
+                "description": "Optional single local have name (backward-compatible shorthand)",
+            },
+            "have_names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 4,
+                "description": "Optional ordered set of active local have names to extract transactionally",
+            },
+            "helper_names": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Optional mapping from local have names to semantic private helper names",
             },
             "minimum_lines": {
                 "type": "integer",
                 "description": "Minimum local proof size for automatic selection",
                 "default": 8,
+            },
+            "max_helpers": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4,
+                "default": 1,
+                "description": "Automatic extraction batch size when explicit names are omitted",
             },
             "cwd": {"type": "string", "description": "Optional project working directory"},
             "timeout_s": {
@@ -1086,8 +1110,12 @@ registry.register(
     handler=lambda args, **kw: lean_extract_have_tool(
         theorem_id=args.get("theorem_id", ""),
         file_path=args.get("file_path", ""),
+        action=args.get("action", "extract"),
         have_name=args.get("have_name", ""),
+        have_names=args.get("have_names", []),
+        helper_names=args.get("helper_names", {}),
         minimum_lines=int(args.get("minimum_lines", 8) or 8),
+        max_helpers=int(args.get("max_helpers", 1) or 1),
         cwd=args.get("cwd", ""),
         timeout_s=int(args.get("timeout_s", 300) or 300),
         owner_id=str(kw.get("owner_id", "") or ""),
