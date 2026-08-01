@@ -36,18 +36,45 @@ def _owned_sessions(probe: Any) -> list[Any]:
 
 
 def _terminate_owned_sessions(probe: Any) -> bool:
-    """Terminate owned REPL processes without acquiring LeanProbe's call lock."""
+    """Terminate owned REPL processes without acquiring LeanProbe's call lock.
+
+    LeanInteract can race two timeout paths through ``kill``. One path may
+    reap the process while the other raises while closing an already-closed
+    stream. Treat observed process death as authoritative instead of retaining
+    the project lease solely because that cleanup exception occurred.
+    """
     terminated = True
     for session in _owned_sessions(probe):
         server = getattr(session, "server", None)
         kill = getattr(server, "kill", None)
         if not callable(kill):
             continue
+        kill_failed = False
         try:
             kill()
         except Exception:
+            kill_failed = True
+        if kill_failed and not _server_is_stopped(server):
             terminated = False
     return terminated
+
+
+def _server_is_stopped(server: Any) -> bool:
+    """Return whether a server reports that its owned process has exited."""
+    is_alive = getattr(server, "is_alive", None)
+    if callable(is_alive):
+        try:
+            return not bool(is_alive())
+        except Exception:
+            return False
+    process = getattr(server, "_proc", None)
+    poll = getattr(process, "poll", None)
+    if callable(poll):
+        try:
+            return poll() is not None
+        except Exception:
+            return False
+    return False
 
 
 def _native_probe_lock(probe: Any) -> Any | None:

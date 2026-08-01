@@ -83,6 +83,43 @@ def test_probe_outer_deadline_terminates_owned_session_and_reaps_worker():
     assert captured.value.worker_stopped is True
 
 
+def test_probe_shutdown_accepts_verified_process_death_after_cleanup_race():
+    release = threading.Event()
+
+    class _Server:
+        alive = True
+
+        def kill(self):
+            self.alive = False
+            release.set()
+            raise ValueError("stream already closed")
+
+        def is_alive(self):
+            return self.alive
+
+    class _Session:
+        server = _Server()
+
+    class _HangingProbe:
+        _sessions = {"target": _Session()}
+        _code_sessions = {}
+        _scratch_sessions = {}
+
+        def check_target(self):
+            release.wait()
+
+    with pytest.raises(LeanProbeDeadlineExceeded) as captured:
+        call_lean_probe_with_deadline(
+            _HangingProbe(),
+            "check_target",
+            deadline_s=0.03,
+            shutdown_grace_s=0.1,
+        )
+
+    assert captured.value.sessions_terminated is True
+    assert captured.value.worker_stopped is True
+
+
 def test_incremental_check_returns_retryable_payload_on_probe_outer_timeout(monkeypatch, tmp_path):
     project, target = _write_project(tmp_path, "theorem demo : True := by\n  trivial\n")
 
