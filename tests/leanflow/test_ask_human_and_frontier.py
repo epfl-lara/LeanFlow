@@ -15,6 +15,7 @@ from leanflow_cli.workflows.queue_models import QueueItem, select_next_item
 @pytest.fixture()
 def enabled(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_ORCHESTRATOR_ENABLED", "1")
+    monkeypatch.setenv("LEANFLOW_HUMAN_REVIEW_ENABLED", "1")
     monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
     monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
 
@@ -32,7 +33,8 @@ def _events(monkeypatch) -> list[tuple[tuple, dict]]:
 # ---------------------------------------------------------------------------
 
 
-def test_fidelity_suspect_main_goal_routes_ask_human():
+def test_fidelity_suspect_main_goal_routes_ask_human(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_HUMAN_REVIEW_ENABLED", "1")
     ctx = RouteContext(
         trigger="scope-entry",
         target_symbol="demo",
@@ -58,6 +60,22 @@ def test_fidelity_suspect_main_goal_routes_ask_human():
         )
     )
     assert sublemma.route == "direct-prove"
+
+
+def test_fidelity_suspect_main_goal_continues_without_human_review(monkeypatch):
+    monkeypatch.delenv("LEANFLOW_HUMAN_REVIEW_ENABLED", raising=False)
+    route = orchestrator_route(
+        RouteContext(
+            trigger="scope-entry",
+            target_symbol="demo",
+            active_file="Demo.lean",
+            declaration_queue_total=2,
+            target_node_found=True,
+            fidelity_suspect=True,
+        )
+    )
+
+    assert route.route == "direct-prove"
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +112,29 @@ def test_apply_ask_human_parks_and_continues(enabled, monkeypatch):
     summary = plan_state.load_summary()
     assert summary["human_questions"][0]["target_symbol"] == "demo"
     assert any(args[0] == "ask-human" for args, _k in events)
+
+
+def test_apply_ask_human_continues_as_plan_without_opt_in(enabled, monkeypatch):
+    monkeypatch.setenv("LEANFLOW_HUMAN_REVIEW_ENABLED", "0")
+    events = _events(monkeypatch)
+    node_id = _seed_node("demo", "Demo.lean")
+    autonomy_state: dict[str, Any] = {
+        "_orchestrator_last_ctx": {"target_symbol": "demo", "active_file": "Demo.lean"}
+    }
+    history: list[dict[str, Any]] = []
+
+    action = runner._orchestrator_apply_route(
+        OrchestratorRoute(route="ask-human", reason="fidelity suspect"),
+        history,
+        autonomy_state,
+        {},
+    )
+
+    assert action == "continue"
+    assert plan_state.load_blueprint().node_by_id(node_id).status == "proving"
+    assert not plan_state.load_summary().get("human_questions")
+    assert not any(args[0] == "ask-human" for args, _k in events)
+    assert history and "human review is disabled" in history[-1]["content"]
 
 
 def test_main_goal_restate_requires_ack_and_converts(enabled, monkeypatch):

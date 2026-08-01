@@ -90,6 +90,14 @@ def test_parse_workflow_command_extracts_research_profile():
     assert sequential.research_workers == 0
 
 
+def test_parse_workflow_command_human_review_is_explicit():
+    assert parse_workflow_command("/prove Main.lean").human_review is False
+    assert parse_workflow_command("/prove Main.lean --human-review").human_review is True
+
+    with pytest.raises(ValueError, match="only for prove"):
+        parse_workflow_command("/formalize notes.tex --human-review")
+
+
 def test_parse_research_workers_implies_research_and_validates():
     implied = parse_workflow_command("/prove Main.lean --research-workers 1")
     assert implied.research_mode is True
@@ -160,6 +168,7 @@ def test_parse_workflow_command_defaults_to_single_agent():
 def test_resolve_workflow_request_uses_swarm_toolset_only_when_user_requests_agents(
     monkeypatch, tmp_path
 ):
+    monkeypatch.setenv("LEANFLOW_HUMAN_REVIEW_ENABLED", "1")
     monkeypatch.setattr(
         workflow_mod,
         "discover_leanflow_project",
@@ -182,9 +191,13 @@ def test_resolve_workflow_request_uses_swarm_toolset_only_when_user_requests_age
 
     assert single.toolset_name == "leanflow-prove-worker"
     assert single.child_env["LEANFLOW_NATIVE_USER_APPROVED_SWARM"] == "0"
+    assert single.child_env["LEANFLOW_HUMAN_REVIEW_ENABLED"] == "0"
     assert swarm.toolset_name == "leanflow-native-swarm"
     assert swarm.active_skill == "lean-autonomous-swarm"
     assert swarm.child_env["LEANFLOW_NATIVE_USER_APPROVED_SWARM"] == "1"
+
+    reviewed = resolve_workflow_request("/autoprove Main.lean --human-review", active_cwd=tmp_path)
+    assert reviewed.child_env["LEANFLOW_HUMAN_REVIEW_ENABLED"] == "1"
 
 
 def test_resolve_workflow_request_uses_inline_provider_override(monkeypatch, tmp_path):

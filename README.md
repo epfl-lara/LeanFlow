@@ -107,6 +107,9 @@ LeanFlow reaches that by working in small, Lean-verified steps rather than one b
   spellings when the file name alone does not identify the benchmark. Managed
   writes remain limited to the assigned Lean source, its exact `Helpers.lean`
   companion, and durable workflow state.
+- **`prove --human-review`** explicitly permits the orchestrator to park an
+  ambiguous goal for human review. Without this flag, uncertainty is recorded
+  and the workflow continues autonomously without changing the source statement.
 - **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
 
 Headless proof outcomes are explicit: `0` means verified, `3` means an authoritatively promoted

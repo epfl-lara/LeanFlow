@@ -27252,10 +27252,9 @@ def _orchestrator_apply_route(
         _resume_after_breakpoint()
         return "continue"
     if route.route == "re-state" and target_symbol and active_file:
-        # Main-statement changes require human acknowledgement. Only a
-        # graph-confirmed sublemma may be restated autonomously. A
-        # missing or unreadable graph fails CLOSED — unknown scope converts
-        # to ask-human rather than risking an autonomous main re-statement.
+        # Main-statement changes require explicit human-review mode. Only a
+        # graph-confirmed sublemma may be restated autonomously. Without that
+        # opt-in, preserve the source statement and continue through planning.
         confirmed_sublemma = False
         with contextlib.suppress(Exception):
             bp = plan_state.load_blueprint()
@@ -27266,11 +27265,25 @@ def _orchestrator_apply_route(
                 )
         if not confirmed_sublemma:
             route = orchestrator_floor.OrchestratorRoute(
-                route="ask-human",
-                reason="main-statement re-state requires human ACK",
+                route=("ask-human" if orchestrator_floor.human_review_enabled() else "plan"),
+                reason=(
+                    "main-statement re-state requires human ACK"
+                    if orchestrator_floor.human_review_enabled()
+                    else "main-statement re-state rejected; preserve the source statement "
+                    "and plan another autonomous proof route"
+                ),
                 target=dict(route.target),
                 source=route.source,
             )
+    if route.route == "ask-human" and not orchestrator_floor.human_review_enabled():
+        route = orchestrator_floor.OrchestratorRoute(
+            route="plan",
+            reason=(
+                f"human review is disabled; continue autonomously after recording: {route.reason}"
+            ),
+            target=dict(route.target),
+            source=route.source,
+        )
     if route.route == "ask-human":
         _decide_packet("park")
         question = (

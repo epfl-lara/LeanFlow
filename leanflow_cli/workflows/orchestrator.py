@@ -9,8 +9,9 @@ The floor consumes the existing classifier output from
 The optional LLM layer may refine eligible routes separately. Easy runs retain
 the no-op ``direct-prove`` path.
 
-``ask-human`` is emitted only for a fidelity-suspect main goal. That route
-parks the affected node while independent frontier work may continue.
+``ask-human`` is available only when the workflow explicitly enables human
+review. Otherwise the floor records uncertainty through autonomous planning
+routes and leaves the source statement unchanged.
 """
 
 from __future__ import annotations
@@ -136,6 +137,12 @@ _EVIDENCE_SUPPORTED_NEGATE_DENIAL_RE = re.compile(
 
 def orchestrator_enabled() -> bool:
     raw = str(os.getenv("LEANFLOW_ORCHESTRATOR_ENABLED", "") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def human_review_enabled() -> bool:
+    """Return whether this workflow explicitly permits human-review routes."""
+    raw = str(os.getenv("LEANFLOW_HUMAN_REVIEW_ENABLED", "") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -1071,6 +1078,15 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
     # Negation proved but the graph cannot confirm the node's scope: request
     # human review instead of using the difficulty-only park route.
     if ctx.negation_proved and not ctx.target_node_found:
+        if not human_review_enabled():
+            return OrchestratorRoute(
+                route="plan",
+                reason=(
+                    "negation kernel-proved but graph scope is unknown; repair the "
+                    "dependency map while preserving the source statement"
+                ),
+                target={"target_symbol": ctx.target_symbol, "active_file": ctx.active_file},
+            )
         return OrchestratorRoute(
             route="ask-human",
             reason=(
@@ -1085,6 +1101,7 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
     # one failure the kernel cannot catch. Non-blocking: park and continue.
     if (
         ctx.fidelity_suspect
+        and human_review_enabled()
         and ctx.target_node_found
         and not ctx.target_is_sublemma
         and ctx.trigger in {"scope-entry", "event"}

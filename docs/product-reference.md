@@ -322,6 +322,7 @@ leanflow workflow prove Main.lean --provider codex --research
 leanflow workflow prove Main.lean --provider codex --research --research-workers 2
 leanflow workflow prove Main.lean --provider rcp --model zai-org/GLM-5.2
 leanflow workflow prove Main.lean --clean-room --clean-room-label "Benchmark Problem 2"
+leanflow workflow prove Main.lean --human-review
 leanflow workflow prove Main.lean --agents 3
 leanflow workflow prove Main.lean --no-parallel
 leanflow workflow formalize docs/paper.tex
@@ -528,6 +529,11 @@ such as `LEANFLOW_ORCHESTRATOR_ENABLED=0` cannot silently turn an explicit resea
 partial profile. Environment-only activation applies the complete defaults while preserving
 deliberate per-feature overrides for advanced diagnostics. In either form, an unavailable or
 disabled orchestrator cannot make `stalled`, `blocked`, `budget-breakpoint`, or `parked` terminal.
+
+`--human-review` is an explicit opt-in. It permits the orchestrator to park a
+scope-ambiguous or statement-fidelity-suspect goal and add a question to the
+human-review queue. Without the flag, LeanFlow preserves the source statement,
+records the concern, and selects another autonomous planning route.
 
 External research is enabled by default. `web_search` routes current/documentation queries to the
 general web and formal-mathematics queries across arXiv, Semantic Scholar, Crossref, Sourcegraph,

@@ -80,6 +80,7 @@ class NativeWorkflowSpec:
     research_mode: bool = False
     research_workers: int = 0
     no_parallel: bool = False
+    human_review: bool = False
 
 
 @dataclass(frozen=True)
@@ -297,6 +298,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     allowed_axioms = ""
     research_mode = False
     research_workers: int | None = None
+    human_review = False
     workflow_tokens: list[str] = []
     idx = 0
     while idx < len(remaining):
@@ -307,6 +309,10 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             continue
         if token == "--research":
             research_mode = True
+            idx += 1
+            continue
+        if token == "--human-review":
+            human_review = True
             idx += 1
             continue
         if token == "--research-workers":
@@ -423,6 +429,8 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         raise ValueError("--research is supported only for prove/autoprove workflows")
     if clean_room and workflow_kind != "prove":
         raise ValueError("--clean-room is supported only for prove/autoprove workflows")
+    if human_review and workflow_kind != "prove":
+        raise ValueError("--human-review is supported only for prove/autoprove workflows")
     effective_research_workers = 0
     if research_mode:
         effective_research_workers = (
@@ -453,6 +461,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         allowed_axioms=allowed_axioms,
         research_mode=research_mode,
         research_workers=effective_research_workers,
+        human_review=human_review,
     )
 
 
@@ -619,6 +628,7 @@ def resolve_workflow_request(
             "LEANFLOW_NATIVE_EFFECTIVE_PROMPT": workflow.explicit_goal,
             "LEANFLOW_NATIVE_TOOLSET": toolset_name,
             "LEANFLOW_NATIVE_ACTIVE_FILE": normalized_active_file,
+            "LEANFLOW_HUMAN_REVIEW_ENABLED": "1" if workflow.human_review else "0",
         }
     )
     if workflow.model_override:

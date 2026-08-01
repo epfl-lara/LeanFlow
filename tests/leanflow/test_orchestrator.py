@@ -344,7 +344,8 @@ def test_explicit_negate_request_falls_back_when_exact_budget_is_spent():
     assert "budget is exhausted" in route.reason
 
 
-def test_fresh_epoch_diversity_never_overrides_fidelity_pause():
+def test_fresh_epoch_diversity_never_overrides_fidelity_pause(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_HUMAN_REVIEW_ENABLED", "1")
     route = orchestrator_route(
         _ctx(
             attempt_count=20,
