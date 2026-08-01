@@ -256,6 +256,8 @@ historical state is never assumed current before that reconciliation.
 - `lean/lean_interact_compat.py` installs a version-guarded linear response
   reader when the installed LeanInteract still uses quadratic REPL output
   concatenation; unfamiliar future implementations remain untouched.
+  `lean/lean_probe_deadline.py` independently bounds every LeanProbe call and
+  terminates owned REPL sessions when IPC stalls.
 - Verified graph state is derived from Lean evidence and reconciled after
   source changes.
 - File locks serialize supported writes during user-approved swarm runs.

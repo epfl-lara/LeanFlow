@@ -132,6 +132,7 @@ files = [
   "core/verified_edit_authority.py",
   "core/utils.py",
   "leanflow_cli/lean/lean_interact_compat.py",
+  "leanflow_cli/lean/lean_probe_deadline.py",
   "agent/display/log_formatting.py",
   "agent/runtime/workflow_events.py",
   "agent/runtime/runtime_helpers.py",

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import re
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from leanflow_cli.lean import lean_incremental as li
+from leanflow_cli.lean.lean_probe_deadline import (
+    LeanProbeDeadlineExceeded,
+    call_lean_probe_with_deadline,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +29,91 @@ def _write_project(tmp_path: Path, text: str):
     target = module_dir / "Main.lean"
     target.write_text(text, encoding="utf-8")
     return project, target
+
+
+def test_probe_outer_deadline_bounds_a_call_that_ignores_its_timeout():
+    release = threading.Event()
+
+    class _HangingProbe:
+        def check_target(self):
+            release.wait()
+
+    started = time.monotonic()
+    with pytest.raises(LeanProbeDeadlineExceeded) as captured:
+        call_lean_probe_with_deadline(
+            _HangingProbe(),
+            "check_target",
+            deadline_s=0.03,
+            shutdown_grace_s=0.01,
+        )
+    elapsed = time.monotonic() - started
+    release.set()
+
+    assert elapsed < 0.2
+    assert captured.value.worker_stopped is False
+
+
+def test_probe_outer_deadline_terminates_owned_session_and_reaps_worker():
+    release = threading.Event()
+
+    class _Server:
+        def kill(self):
+            release.set()
+
+    class _Session:
+        server = _Server()
+
+    class _HangingProbe:
+        _sessions = {"target": _Session()}
+        _code_sessions = {}
+        _scratch_sessions = {}
+
+        def check_target(self):
+            release.wait()
+
+    with pytest.raises(LeanProbeDeadlineExceeded) as captured:
+        call_lean_probe_with_deadline(
+            _HangingProbe(),
+            "check_target",
+            deadline_s=0.03,
+            shutdown_grace_s=0.1,
+        )
+
+    assert captured.value.sessions_terminated is True
+    assert captured.value.worker_stopped is True
+
+
+def test_incremental_check_returns_retryable_payload_on_probe_outer_timeout(monkeypatch, tmp_path):
+    project, target = _write_project(tmp_path, "theorem demo : True := by\n  trivial\n")
+
+    class _DeadlineProbe:
+        def check_target(self, *args, **kwargs):
+            raise LeanProbeDeadlineExceeded(
+                kwargs["timeout_s"],
+                worker_stopped=True,
+                sessions_terminated=True,
+            )
+
+    fake = _DeadlineProbe()
+    monkeypatch.setattr(li, "_PROBE", fake)
+    monkeypatch.setattr(li, "_probe", lambda: fake)
+    monkeypatch.setattr(li, "_local_repl_dir", lambda root: root / ".lake" / "build")
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        timeout_s=7,
+    )
+
+    assert payload["timed_out"] is True
+    assert payload["retryable"] is True
+    assert payload["error_code"] == "lean_probe_wall_clock_timeout"
+    assert payload["probe_worker_stopped"] is True
+    assert payload["resource_admission"]["incremental_session_reclaimed"] is True
+    assert li._PROBE is None
 
 
 def test_low_memory_mode_never_starts_leanprobe(monkeypatch, tmp_path):

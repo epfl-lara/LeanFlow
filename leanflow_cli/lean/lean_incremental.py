@@ -37,6 +37,10 @@ from leanflow_cli.lean.lean_parsing import (
     _statement_signature_text,
     _strip_lean_comments_and_strings,
 )
+from leanflow_cli.lean.lean_probe_deadline import (
+    LeanProbeDeadlineExceeded,
+    call_lean_probe_with_deadline,
+)
 from leanflow_cli.workflows.project import find_lean_project_root
 from leanflow_cli.workflows.research_mode import research_mode_enabled
 
@@ -1017,6 +1021,13 @@ def close_incremental_sessions() -> bool:
     return True
 
 
+def _discard_timed_out_probe(probe: Any) -> None:
+    """Detach a timed-out probe generation without reacquiring its call lock."""
+    global _PROBE
+    if _PROBE is probe:
+        _PROBE = None
+
+
 def lean_incremental_capabilities(cwd: str | Path | None = None) -> dict[str, Any]:
     """Return a dict reporting availability of incremental Lean checking and any degradation reasons. Detects project root, local REPL binary, and LeanProbe capabilities; includes active sessions and max code sessions from the probe."""
     if low_memory_mode_enabled():
@@ -1333,13 +1344,18 @@ def lean_incremental_check(
     admission_wait_s = 0.0
     probe_call_s = 0.0
     session_reclaim_s = 0.0
+    probe_deadline: LeanProbeDeadlineExceeded | None = None
     with project_lean_heavy_admission(project_root) as admission:
         admission_wait_s = max(0.0, time.monotonic() - admission_started)
         probe_started = time.monotonic()
         try:
+            probe = _probe()
             if leanflow_action == "prepare_file":
-                payload = _probe().prepare_file(
+                payload = call_lean_probe_with_deadline(
+                    probe,
+                    "prepare_file",
                     resolved,
+                    deadline_s=effective_timeout_s,
                     theorem_id=theorem_id,
                     cwd=project_root,
                     timeout_s=effective_timeout_s,
@@ -1353,8 +1369,11 @@ def lean_incremental_check(
                     # changed predecessor through its per-declaration cache. Ask
                     # for tactics up front so an intentional final `sorry` does
                     # not trigger the ordinary failed-target diagnostic rerun.
-                    payload = _probe().check_target(
+                    payload = call_lean_probe_with_deadline(
+                        probe,
+                        "check_target",
                         resolved,
+                        deadline_s=effective_timeout_s,
                         theorem_id=final_target,
                         cwd=project_root,
                         replacement="",
@@ -1362,15 +1381,21 @@ def lean_incremental_check(
                         timeout_s=effective_timeout_s,
                     )
                 else:
-                    payload = _probe().prepare_file(
+                    payload = call_lean_probe_with_deadline(
+                        probe,
+                        "prepare_file",
                         resolved,
+                        deadline_s=effective_timeout_s,
                         theorem_id="",
                         cwd=project_root,
                         timeout_s=effective_timeout_s,
                     )
             elif probe_action == "check_target":
-                payload = _probe().check_target(
+                payload = call_lean_probe_with_deadline(
+                    probe,
+                    "check_target",
                     resolved,
+                    deadline_s=effective_timeout_s,
                     theorem_id=theorem_id,
                     cwd=project_root,
                     replacement=probe_replacement,
@@ -1378,8 +1403,11 @@ def lean_incremental_check(
                     timeout_s=effective_timeout_s,
                 )
             elif leanflow_action == "feedback":
-                payload = _probe().feedback(
+                payload = call_lean_probe_with_deadline(
+                    probe,
+                    "feedback",
                     resolved,
+                    deadline_s=effective_timeout_s,
                     theorem_id=theorem_id,
                     cwd=project_root,
                     replacement=replacement,
@@ -1393,11 +1421,37 @@ def lean_incremental_check(
                     file_path=resolved,
                     target=theorem_id,
                 )
+        except LeanProbeDeadlineExceeded as exc:
+            probe_deadline = exc
+            _discard_timed_out_probe(probe)
+            payload = _error_payload(
+                action=leanflow_action,
+                error=str(exc),
+                error_code="lean_probe_wall_clock_timeout",
+                file_path=resolved,
+                target=theorem_id,
+                timed_out=True,
+            )
+            payload.update(
+                {
+                    "retryable": True,
+                    "probe_worker_stopped": exc.worker_stopped,
+                    "probe_sessions_terminated": exc.sessions_terminated,
+                }
+            )
         finally:
             probe_call_s = max(0.0, time.monotonic() - probe_started)
             # Releasing only the file slot would be unsound if LeanProbe kept a
             # multi-gigabyte LSP child alive after returning its response.
-            if project_lean_service_reclaim_enabled():
+            if probe_deadline is not None:
+                reclaimed_incremental_session = bool(
+                    probe_deadline.worker_stopped and probe_deadline.sessions_terminated
+                )
+                if not reclaimed_incremental_session:
+                    admission.retain_until_process_exit(
+                        "LeanProbe deadline cancellation did not fully stop owned work"
+                    )
+            elif project_lean_service_reclaim_enabled():
                 reclaim_started = time.monotonic()
                 reclaimed_incremental_session = close_incremental_sessions()
                 session_reclaim_s = max(0.0, time.monotonic() - reclaim_started)
