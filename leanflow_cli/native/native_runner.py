@@ -98,6 +98,7 @@ from leanflow_cli.native import (
     source_only_startup,
     source_order_dependency_guard,
     source_placeholder_guard,
+    support_module_materialization,
     terminal_authority,
     terminal_check_policy,
     transition_visibility,
@@ -12828,13 +12829,57 @@ def _handle_managed_tool_result(
                 active_file,
                 function_name=function_name,
             ):
+                edited_file = str(dict(args or {}).get("path", "") or "").strip()
+                module_publication: dict[str, Any] = {}
+                if _verified_patch_result_passed(_result) and edited_file.endswith(".lean"):
+                    module_publication = (
+                        support_module_materialization.materialize_verified_support_module(
+                            edited_file,
+                            project_root=_project_root(),
+                        )
+                    )
+                    publication_ok = bool(module_publication.get("ok"))
+                    _record_activity(
+                        (
+                            "queue-support-module-materialized"
+                            if publication_ok
+                            else "queue-support-module-materialization-failed"
+                        ),
+                        (
+                            f"Published verified support module for {target_symbol}"
+                            if publication_ok
+                            else f"Failed to publish verified support module for {target_symbol}"
+                        ),
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        edited_file=edited_file,
+                        command=str(module_publication.get("command", "") or ""),
+                        output=str(module_publication.get("output", "") or "")[:2000],
+                        campaign_progress=False,
+                    )
+                    _append_post_tool_result_message(
+                        agent,
+                        "\n".join(
+                            [
+                                "[LEANFLOW-NATIVE SUPPORT MODULE PUBLICATION]",
+                                f"- support file: {edited_file}",
+                                (
+                                    "- status: built successfully and is available to importing modules"
+                                    if publication_ok
+                                    else "- status: module build failed; repair the support module before using it from the assigned file"
+                                ),
+                                "- scope: this publishes verified support code and does not claim the assigned theorem is solved",
+                            ]
+                        ),
+                    )
                 _record_activity(
                     "queue-support-file-edit",
                     f"Edited support file while assigned to {target_symbol}; theorem gate not invoked",
                     target_symbol=target_symbol,
                     active_file=active_file,
-                    edited_file=str(dict(args or {}).get("path", "") or ""),
+                    edited_file=edited_file,
                     verification_tool=function_name,
+                    module_published=bool(module_publication.get("ok")),
                 )
                 _maybe_append_formalization_handoff_feedback(
                     agent,

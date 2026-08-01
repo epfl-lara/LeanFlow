@@ -14144,6 +14144,71 @@ def test_support_file_write_does_not_verify_or_reject_assigned_theorem(monkeypat
     assert any(args[0] == "queue-support-file-edit" for args, _kwargs in events)
 
 
+def test_verified_support_patch_materializes_module_before_parent_reuse(monkeypatch, tmp_path):
+    """Publish a checked companion module before the assigned file imports its additions."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    support = tmp_path / "MainHelpers.lean"
+    support.write_text("theorem helper : True := by trivial\n", encoding="utf-8")
+    publications = []
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.support_module_materialization,
+        "materialize_verified_support_module",
+        lambda file_path, **kwargs: publications.append((file_path, kwargs))
+        or {"ok": True, "command": "lake build MainHelpers", "output": ""},
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_args, **_kwargs: pytest.fail("support publication must not verify the parent"),
+    )
+    agent = _Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "apply_verified_patch",
+        {"path": str(support)},
+        json.dumps(
+            {
+                "success": True,
+                "status": "patch_elaborated",
+                "check_passed": True,
+                "patch_elaborated": True,
+            }
+        ),
+    )
+
+    assert publications == [(str(support), {"project_root": str(tmp_path)})]
+    assert "built successfully" in agent._post_tool_result_appendix
+    assert any(args[0] == "queue-support-module-materialized" for args, _kwargs in events)
+    assert any(
+        args[0] == "queue-support-file-edit" and kwargs["module_published"] is True
+        for args, kwargs in events
+    )
+
+
 def test_clean_room_queue_blocks_ad_hoc_scripts_but_allows_companion_and_state(
     monkeypatch, tmp_path
 ):

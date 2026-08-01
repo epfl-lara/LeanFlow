@@ -157,7 +157,8 @@ tool is reachable through the public registry.
 - `native/` owns the managed workflow process, startup/resume reconciliation,
   assignment transitions, completion policy, durable bounded-search synthesis
   admission (`search_synthesis_admission.py`), same-revision verification-timeout
-  backpressure and structural-recovery handoff, checkpoints, and shutdown.
+  backpressure and structural-recovery handoff, verified companion-module
+  publication (`support_module_materialization.py`), checkpoints, and shutdown.
 
 The larger coordination modules remain intentionally coupled where tests patch
 their module attributes. Extracting behavior from them requires
