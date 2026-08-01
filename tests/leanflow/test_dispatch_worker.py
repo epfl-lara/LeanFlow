@@ -270,6 +270,9 @@ def test_worker_rejects_dead_parent_inside_final_launch_fence(monkeypatch, tmp_p
         def start(self):
             return None
 
+        def set_wall_clock_budget(self, _wall_clock_s):
+            return None
+
         def stop(self):
             return None
 
@@ -633,6 +636,27 @@ def test_parent_guard_allows_graceful_signal_cleanup_to_cancel_force_exit(monkey
     guard.stop()
     assert interrupt_reasons == ["dispatch worker received SIGTERM"]
     assert not forced.is_set()
+
+
+def test_parent_guard_enforces_wall_clock_without_parent_polling(monkeypatch):
+    """A blocked parent cannot let an isolated worker outlive its hard budget."""
+    interrupted = threading.Event()
+    interrupt_reasons: list[str] = []
+    forced = threading.Event()
+    monkeypatch.setattr(dispatch_worker, "PARENT_CLEANUP_GRACE_S", 0.0)
+    monkeypatch.setattr(dispatch_worker, "_force_exit_orphaned_worker", forced.set)
+    guard = dispatch_worker.ParentLivenessGuard(0)
+    guard.set_interrupt_callback(
+        lambda reason: (interrupt_reasons.append(reason), interrupted.set())
+    )
+    guard.start()
+
+    guard.set_wall_clock_budget(0)
+
+    assert forced.wait(timeout=2)
+    guard.stop()
+    assert interrupted.is_set()
+    assert interrupt_reasons == ["dispatch worker wall-clock budget exhausted"]
 
 
 def test_parent_liveness_requires_the_original_direct_parent(monkeypatch):

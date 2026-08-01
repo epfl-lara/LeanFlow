@@ -225,13 +225,16 @@ def _install_tool_availability_reporter(agent: Any, spec: JobSpec) -> None:
 
 
 class ParentLivenessGuard:
-    """Stop a detached dispatch worker when its native-runner parent disappears."""
+    """Stop a detached dispatch worker after parent loss or budget exhaustion."""
 
     def __init__(self, parent_pid: int):
         self.parent_pid = max(0, int(parent_pid))
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._shutdown_requested = threading.Event()
         self._shutdown_signum = 0
+        self._wall_clock_deadline: float | None = None
+        self._wall_clock_exhausted = False
         self._callback_lock = threading.Lock()
         self._interrupt_callback: Callable[[str], None] | None = None
         self._thread: threading.Thread | None = None
@@ -247,6 +250,17 @@ class ParentLivenessGuard:
         if signum:
             self._shutdown_signum = int(signum)
         self._shutdown_requested.set()
+        self._wake.set()
+
+    def set_wall_clock_budget(self, wall_clock_s: int) -> None:
+        """Enforce the assignment budget independently of parent polling.
+
+        Parent reconciliation remains the durable ledger authority, but the
+        worker must release its own process and provider capacity even while
+        the parent is blocked in a long Lean verification call.
+        """
+        self._wall_clock_deadline = time.monotonic() + max(0, int(wall_clock_s))
+        self._wake.set()
 
     def start(self) -> None:
         """Start the daemon liveness monitor once."""
@@ -266,6 +280,7 @@ class ParentLivenessGuard:
         """Stop the monitor after the worker reaches a normal terminal boundary."""
         self._stop.set()
         self._shutdown_requested.set()
+        self._wake.set()
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=0.2)
@@ -274,6 +289,8 @@ class ParentLivenessGuard:
         """Return the shutdown cause without conflating signals with parent loss."""
         if self._parent_lost:
             return "dispatch worker parent exited"
+        if self._wall_clock_exhausted:
+            return "dispatch worker wall-clock budget exhausted"
         if self._shutdown_signum:
             try:
                 signal_name = signal.Signals(self._shutdown_signum).name
@@ -293,7 +310,18 @@ class ParentLivenessGuard:
     def _run(self) -> None:
         """Poll parent identity, initiate cleanup, and enforce a bounded exit."""
         while not self._stop.is_set():
-            if self._shutdown_requested.wait(PARENT_POLL_INTERVAL_S):
+            wait_s = PARENT_POLL_INTERVAL_S
+            deadline = self._wall_clock_deadline
+            if deadline is not None:
+                wait_s = min(wait_s, max(0.0, deadline - time.monotonic()))
+            self._wake.wait(wait_s)
+            self._wake.clear()
+            if self._shutdown_requested.is_set():
+                break
+            deadline = self._wall_clock_deadline
+            if deadline is not None and time.monotonic() >= deadline:
+                self._wall_clock_exhausted = True
+                self._shutdown_requested.set()
                 break
             if self.parent_pid > 1 and not _parent_process_alive(self.parent_pid):
                 self._parent_lost = True
@@ -409,6 +437,7 @@ def main() -> int:
         problems = spec.validate()
         if problems:
             raise ValueError("; ".join(problems))
+        parent_guard.set_wall_clock_budget(spec.budget.wall_clock_s)
         result = run_worker(
             spec,
             parent_guard=parent_guard,
