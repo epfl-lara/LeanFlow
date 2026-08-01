@@ -3601,13 +3601,6 @@ def _restored_assignment_verification_timeout_reason(
     current_hash = str(attempts[-1].get("declaration_hash", "") or "").strip()
     if not current_hash:
         return ""
-    timeout_markers = (
-        "timed out",
-        "timeout=",
-        "wall-clock deadline",
-        "maximum number of heartbeats",
-        "maxheartbeats",
-    )
     for attempt in reversed(attempts):
         if str(attempt.get("declaration_hash", "") or "").strip() != current_hash:
             continue
@@ -3615,9 +3608,40 @@ def _restored_assignment_verification_timeout_reason(
             str(attempt.get(key, "") or "") for key in ("gate_verdict", "reason")
         ).strip()
         lowered = detail.lower()
-        if any(marker in lowered for marker in timeout_markers):
+        if any(marker in lowered for marker in _VERIFICATION_TIMEOUT_MARKERS):
             return _single_line(detail, 500)
     return ""
+
+
+_VERIFICATION_TIMEOUT_MARKERS = (
+    "timed out",
+    "timeout=",
+    "wall-clock deadline",
+    "maximum number of heartbeats",
+    "maxheartbeats",
+)
+
+
+def _assignment_verification_timeout_count(
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> int:
+    """Count retained verifier timeouts for one exact queue assignment."""
+    attempts = _scoped_failed_attempt_entries(
+        autonomy_state or {},
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    count = 0
+    for attempt in attempts:
+        detail = " ".join(
+            str(attempt.get(key, "") or "") for key in ("gate_verdict", "reason")
+        ).lower()
+        if any(marker in detail for marker in _VERIFICATION_TIMEOUT_MARKERS):
+            count += 1
+    return count
 
 
 def _failed_attempt_count_for_theorem(
@@ -24014,6 +24038,63 @@ def _supersede_stale_persistence_for_deferred_verification(
     return True
 
 
+def _stage_repeated_timeout_decomposition_route(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> bool:
+    """Request structural decomposition after repeated verifier timeouts."""
+    if not (
+        source_only_startup.is_source_only_unverified(live_state)
+        and bool((live_state or {}).get("defer_incremental_warmup"))
+        and int((live_state or {}).get("sorry_count", 0) or 0) == 0
+    ):
+        return False
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(
+        assignment.get("target_symbol", "") or (live_state or {}).get("target_symbol", "") or ""
+    ).strip()
+    active_file = str(
+        assignment.get("active_file", "") or (live_state or {}).get("active_file", "") or ""
+    ).strip()
+    if not target_symbol or not active_file or autonomy_state.get("prover_requested_route"):
+        return False
+    current_timeout = _restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    timeout_count = _assignment_verification_timeout_count(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if not current_timeout or timeout_count < 2:
+        return False
+    reason = (
+        "Requested route: decompose\n"
+        "Reason: repeated verification timeouts on a sorry-free declaration require "
+        "structural recovery through cohesive top-level helpers; verify each helper "
+        "independently with LeanProbe, then retry the parent gate"
+    )
+    _set_prover_requested_route(
+        autonomy_state,
+        route="decompose",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        reason=reason,
+    )
+    _record_activity(
+        "verification-timeout-decomposition-requested",
+        "Repeated verifier timeouts requested structural decomposition",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        timeout_count=timeout_count,
+        current_timeout=current_timeout,
+        campaign_progress=False,
+    )
+    return True
+
+
 def _route_rollover_owes_foreground_turn(
     autonomy_state: dict[str, Any],
     live_state: Mapping[str, Any] | None = None,
@@ -26378,6 +26459,7 @@ def _orchestrator_consult(
         # decision before the spent-budget guard observes durable state.
         campaign_epoch.ensure_campaign(autonomy_state)
         _supersede_stale_persistence_for_deferred_verification(autonomy_state, live_state)
+        _stage_repeated_timeout_decomposition_route(autonomy_state, live_state)
         blueprint = plan_state.load_blueprint() if plan_state_enabled() else None
         summary = plan_state.load_summary() if plan_state_enabled() else None
         packet = dict(decision_packet or {})
@@ -27348,43 +27430,58 @@ def _orchestrator_apply_route(
     if route.route in {"decompose", "plan", "re-state"}:
         _decide_packet("split" if route.route == "decompose" else route.route)
         if route.route == "decompose" and target_symbol and active_file:
-            clean_target_check = _manager_incremental_check_queue_item(
-                active_file,
-                target_symbol,
+            prior_timeout = _restored_assignment_verification_timeout_reason(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
             )
-            if bool(clean_target_check.get("ok")):
+            if prior_timeout:
                 _record_activity(
-                    "decomposer-clean-target-suppressed",
-                    (f"Suppressed decomposition for kernel-clean target " f"{target_symbol}"),
+                    "decomposer-clean-target-check-backpressured",
+                    "Skipped a repeated clean-target check before structural decomposition",
                     target_symbol=target_symbol,
                     active_file=active_file,
-                    check=dict(clean_target_check),
+                    reason=prior_timeout,
+                    campaign_progress=False,
                 )
-                _record_orchestrator_route_execution(
-                    autonomy_state,
-                    route_execution.RouteExecution.recorded(
-                        route="decompose",
+            else:
+                clean_target_check = _manager_incremental_check_queue_item(
+                    active_file,
+                    target_symbol,
+                )
+                if bool(clean_target_check.get("ok")):
+                    _record_activity(
+                        "decomposer-clean-target-suppressed",
+                        (f"Suppressed decomposition for kernel-clean target " f"{target_symbol}"),
                         target_symbol=target_symbol,
                         active_file=active_file,
-                        outcome="target already kernel-clean",
-                        evidence_kind="exact-target-check",
-                    ),
-                )
-                history.append(
-                    {
-                        "role": "user",
-                        "content": "\n".join(
-                            [
-                                "[LEANFLOW CLEAN-TARGET RECONCILIATION]",
-                                f"- `{target_symbol}` already passes its exact kernel gate.",
-                                "- do not edit or decompose this declaration",
-                                "- reconcile the queue with the downstream unresolved target",
-                            ]
+                        check=dict(clean_target_check),
+                    )
+                    _record_orchestrator_route_execution(
+                        autonomy_state,
+                        route_execution.RouteExecution.recorded(
+                            route="decompose",
+                            target_symbol=target_symbol,
+                            active_file=active_file,
+                            outcome="target already kernel-clean",
+                            evidence_kind="exact-target-check",
                         ),
-                    }
-                )
-                _resume_after_breakpoint()
-                return "continue"
+                    )
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": "\n".join(
+                                [
+                                    "[LEANFLOW CLEAN-TARGET RECONCILIATION]",
+                                    f"- `{target_symbol}` already passes its exact kernel gate.",
+                                    "- do not edit or decompose this declaration",
+                                    "- reconcile the queue with the downstream unresolved target",
+                                ]
+                            ),
+                        }
+                    )
+                    _resume_after_breakpoint()
+                    return "continue"
         mechanical_placed: tuple[str, ...] = ()
         mechanical_fallback: decomposer.DecomposeOutcome | None = None
         planner_route_enabled = route.route == "plan" and planner_phase.planner_enabled()

@@ -134,6 +134,43 @@ def test_deferred_proof_candidate_supersedes_stale_epoch_negate(enabled, monkeyp
     assert refresh["superseded_route"] == "negate"
 
 
+def test_repeated_current_revision_timeouts_request_decomposition(enabled, monkeypatch, tmp_path):
+    """Route a repeatedly timed-out sorry-free declaration to structural recovery."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "repeated-timeout-decompose")
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "_restored_assignment_verification_timeout_reason",
+        lambda *_args, **_kwargs: "LeanProbe timed out after 300 seconds",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_assignment_verification_timeout_count",
+        lambda *_args, **_kwargs: 2,
+    )
+    events = _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    state = _autonomy_state(str(active))
+    live_state = {
+        "active_file": str(active),
+        "target_symbol": "demo",
+        "proof_state_authority": "source_only_unverified",
+        "defer_incremental_warmup": True,
+        "sorry_count": 0,
+    }
+
+    selected = runner._orchestrator_consult("scope-entry", state, live_state)
+
+    assert selected is not None and selected.route == "decompose"
+    assert "top-level helpers" in selected.target["prover_request_reason"]
+    assert any(
+        event[0] == "verification-timeout-decomposition-requested" and details["timeout_count"] == 2
+        for event, details in events
+    )
+
+
 def test_deferred_proof_candidate_drops_interrupted_mechanical_route(
     enabled, monkeypatch, tmp_path
 ):

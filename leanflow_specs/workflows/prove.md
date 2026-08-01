@@ -80,6 +80,7 @@ Use `review`, `draft`, `refactor`, or `golf` for those cases.
      managed post-edit LeanProbe gate check the assigned declaration
 8. `lean_decompose_helpers`
    - use when a theorem is hard because the direct proof needs intermediate invariants, helper lemmas, or an affine/algebraic split before editing will be productive
+   - after repeated bounded verification timeouts on a sorry-free declaration, stop replaying the unchanged broad check; decompose into cohesive top-level helpers, verify each helper independently with LeanProbe, and retry the parent only after its body is materially smaller
    - call it after focused search/proof-context work has identified the obstacle but before inserting theorem-sized comment blocks, placeholder `sorry`, or broad speculative helper declarations
    - pass the exact theorem statement, current diagnostics/goals, current attempt, and a concise failed-attempt summary
    - treat returned helpers as checked decomposition advice: insert only `ready_to_insert` skeletons deliberately, then prove each helper without lingering `sorry`

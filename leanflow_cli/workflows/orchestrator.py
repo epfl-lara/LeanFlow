@@ -1139,7 +1139,15 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
     # Give it directly to the foreground for profiling, optimization, and a
     # bounded LeanProbe check. Replaying persistence routes here can starve the
     # only action capable of turning the candidate into kernel authority.
-    if ctx.deferred_exact_verification and ctx.has_queue_item():
+    timeout_decomposition_requested = bool(
+        ctx.requested_route == "decompose"
+        and "repeated verification timeouts" in ctx.requested_route_reason.lower()
+    )
+    if (
+        ctx.deferred_exact_verification
+        and ctx.has_queue_item()
+        and not timeout_decomposition_requested
+    ):
         return OrchestratorRoute(
             route="direct-prove",
             reason=(
@@ -1218,6 +1226,8 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
     if ctx.requested_route in PROVER_REQUESTED_ROUTES and ctx.has_queue_item():
         requested_route = ctx.requested_route
         reason = f"prover reported a blocker and requested route {requested_route}"
+        if ctx.requested_route_reason:
+            reason += f"; {ctx.requested_route_reason}"
         if (
             requested_route == "negate"
             and not _negation_probe_has_budget(ctx)

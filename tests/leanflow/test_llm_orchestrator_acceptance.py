@@ -172,6 +172,68 @@ def test_decompose_suppressed_for_kernel_clean_assignment(rigged, monkeypatch):
     assert any("CLEAN-TARGET RECONCILIATION" in entry["content"] for entry in history)
 
 
+def test_decompose_skips_repeated_timed_out_clean_target_check(rigged, monkeypatch):
+    """Do not replay a timed-out parent check before structural decomposition."""
+    active = rigged / "Demo.lean"
+    route = runner.orchestrator_floor.OrchestratorRoute(
+        route="decompose",
+        reason="repeated verification timeouts require structural recovery",
+        target={
+            "statements_to_state": [
+                {"name": "goal_helper", "statement": "lemma goal_helper : True := by sorry"}
+            ]
+        },
+        source="llm",
+    )
+    placed_calls: list[dict[str, Any]] = []
+
+    def fake_place(**kwargs):
+        placed_calls.append(kwargs)
+        from leanflow_cli.workflows.decomposer import DecomposeOutcome
+
+        return DecomposeOutcome(ok=True, placed=("goal_helper",), file=kwargs["active_file"])
+
+    monkeypatch.setattr(runner.decomposer, "place_helpers", fake_place)
+    monkeypatch.setattr(runner.decomposer, "refresh_queue_edit_guard", lambda _agent: None)
+    monkeypatch.setattr(
+        runner,
+        "_restored_assignment_verification_timeout_reason",
+        lambda *_args, **_kwargs: "LeanProbe timed out after 300 seconds",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda *_args, **_kwargs: pytest.fail("timed-out parent check must not be replayed"),
+    )
+    events: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    autonomy_state: dict[str, Any] = {
+        "_orchestrator_last_ctx": {
+            "target_symbol": "goal",
+            "active_file": str(active),
+        },
+        "current_queue_assignment": {
+            "target_symbol": "goal",
+            "active_file": str(active),
+            "slice": "theorem goal : True ∧ True := by sorry",
+        },
+    }
+
+    action = runner._orchestrator_apply_route(
+        route,
+        [],
+        autonomy_state,
+        {"target_symbol": "goal", "active_file": str(active)},
+        agent=None,
+    )
+
+    assert action == "continue"
+    assert len(placed_calls) == 1
+    assert any(args[0] == "decomposer-clean-target-check-backpressured" for args, _kwargs in events)
+
+
 def test_llm_decompose_rejects_exact_erdos_singleton_before_placement(rigged, monkeypatch):
     """The live route-statements door cannot state one closed parent instance."""
     decision = json.dumps(
