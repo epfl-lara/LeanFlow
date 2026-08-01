@@ -169,6 +169,7 @@ def test_research_file_check_uses_cold_start_timeout_floor(monkeypatch):
     """Do not let the canonical research gate expire before cold Lean startup."""
     command = ["lake", "env", "lean", "FormalConjectures/ErdosProblems/242.lean"]
     monkeypatch.delenv("LEANFLOW_LEAN_COMMAND_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("LEANFLOW_LEAN_COMMAND_HARD_TIMEOUT_S", raising=False)
     monkeypatch.delenv("LEANFLOW_RESEARCH_MODE", raising=False)
 
     assert lean_command_timeout.effective_command_timeout_s(command) == 120
@@ -181,6 +182,16 @@ def test_research_file_check_uses_cold_start_timeout_floor(monkeypatch):
 
     monkeypatch.setenv("LEANFLOW_LEAN_COMMAND_TIMEOUT_S", "1200")
     assert lean_command_timeout.effective_command_timeout_s(command) == 1200
+
+
+def test_explicit_hard_timeout_caps_research_file_check(monkeypatch):
+    """Honor an explicit run cap even when research mode raises its normal floor."""
+    command = ["lake", "env", "lean", "IMO2026/P2.lean"]
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_LEAN_COMMAND_TIMEOUT_S", "600")
+    monkeypatch.setenv("LEANFLOW_LEAN_COMMAND_HARD_TIMEOUT_S", "600")
+
+    assert lean_command_timeout.effective_command_timeout_s(command) == 600
 
 
 def test_research_timeout_floor_applies_to_run_command(monkeypatch, tmp_path):

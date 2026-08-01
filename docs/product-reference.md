@@ -595,7 +595,9 @@ Canonical `lake env lean FILE` gates normally use a 120-second subprocess timeou
 raises that gate to a deterministic 900-second cold-start floor, matching the incremental checker;
 otherwise a kernel-valid edit in a large fixture can be written and then labeled `check_failed`
 solely because the broad file check has a shorter budget. `LEANFLOW_LEAN_COMMAND_TIMEOUT_S` is a
-bounded expert override, but it cannot lower the research floor.
+bounded expert override, but it cannot lower the research floor. Set
+`LEANFLOW_LEAN_COMMAND_HARD_TIMEOUT_S` when one managed run needs an absolute subprocess cap; the
+hard cap remains authoritative in research mode and does not change the default policy.
 
 Research keeps the foreground `lean-lsp` diagnostics, goals, remote Loogle, and native search
 fallbacks, but disables that server's separate local Loogle index by default. This avoids retaining

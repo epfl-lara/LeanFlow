@@ -40,10 +40,16 @@ def _pid_is_live(process_id: int) -> bool:
 def _wait_for_pid_pair(path, *, timeout_s: float = 5.0) -> tuple[int, int]:
     """Return a leader/child PID pair after an advisor publishes it."""
     deadline = time.monotonic() + timeout_s
-    while not path.exists() and time.monotonic() < deadline:
+    last_content = ""
+    while time.monotonic() < deadline:
+        try:
+            last_content = path.read_text(encoding="utf-8")
+            leader, child = last_content.split(":", maxsplit=1)
+            return int(leader), int(child)
+        except (FileNotFoundError, ValueError):
+            pass
         time.sleep(0.01)
-    leader, child = path.read_text(encoding="utf-8").split(":", maxsplit=1)
-    return int(leader), int(child)
+    raise AssertionError(f"advisor did not publish a complete PID pair: {last_content!r}")
 
 
 def test_sandbox_codex_expert_falls_back_to_model_adapter_when_cli_missing(monkeypatch):
