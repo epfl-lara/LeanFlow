@@ -22888,6 +22888,81 @@ def _recover_deferred_resume_graph_gate_evidence(
     return _recover_resume_graph_gate_evidence(autonomy_state)
 
 
+def _recover_missing_timeout_assignment_from_ledger(
+    autonomy_state: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Restore one unambiguous sorry-free assignment from exact timeout evidence."""
+    if not isinstance(autonomy_state, dict) or autonomy_state.get("current_queue_assignment"):
+        return {}
+    try:
+        blueprint = plan_state.load_blueprint()
+    except Exception:
+        logger.debug("timeout assignment graph load failed", exc_info=True)
+        return {}
+    candidates: dict[str, tuple[Any, dict[str, Any], str]] = {}
+    for raw in reversed(list(autonomy_state.get("failed_attempts") or [])):
+        if not isinstance(raw, Mapping):
+            continue
+        target_symbol = str(raw.get("target_symbol", "") or "").strip()
+        active_file = str(raw.get("active_file", "") or "").strip()
+        if not target_symbol or not active_file:
+            continue
+        reason = _restored_assignment_verification_timeout_reason(
+            autonomy_state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        if not reason:
+            continue
+        node = blueprint.node_by_id(plan_state.node_id_for(target_symbol, active_file))
+        if node is None or node.status in {"proved", "false", "blocked"}:
+            continue
+        entry = _find_declaration_entry(active_file, target_symbol)
+        if not entry or bool(entry.get("has_sorry")):
+            continue
+        key = _queue_key(target_symbol, active_file)
+        outcome = _queue_manager_from_state(autonomy_state).outcome_for(key)
+        if outcome is not None and outcome.status in {"solved", "disproved"}:
+            continue
+        candidates[key.storage_key()] = (node, entry, reason)
+    if len(candidates) != 1:
+        return {}
+    node, entry, reason = next(iter(candidates.values()))
+    target_symbol = str(node.name or "").strip()
+    active_file = str(node.file or "").strip()
+    if not target_symbol or not active_file:
+        return {}
+    mgr = _queue_manager_from_state(autonomy_state)
+    mgr.assign(
+        QueueItem(
+            label=target_symbol,
+            kind=str(entry.get("kind", "") or ""),
+            line=int(entry.get("line", 0) or 0),
+            end_line=int(entry.get("end_line", 0) or 0),
+            reasons=("restored unchanged exact-verification timeout",),
+            verification_gate="same_revision_verification_timeout",
+        ),
+        active_file=active_file,
+        slice_text=str(entry.get("text", "") or ""),
+        prepare=PrepareState(
+            success=False,
+            error="runner restart requires fresh warmup",
+        ),
+    )
+    _flush_queue_manager(autonomy_state, mgr)
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    _record_activity(
+        "queue-timeout-assignment-recovered",
+        f"Recovered missing timeout assignment for {target_symbol}",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        node_id=str(node.id or ""),
+        reason=reason,
+        campaign_progress=False,
+    )
+    return assignment
+
+
 def _plan_state_resume_block(autonomy_state: Mapping[str, Any] | None) -> str:
     """Resolve the documentation-driven resume handoff.
 
@@ -22904,6 +22979,7 @@ def _plan_state_resume_block(autonomy_state: Mapping[str, Any] | None) -> str:
     try:
         if not plan_state_paths().blueprint_json.is_file():
             return ""
+        _recover_missing_timeout_assignment_from_ledger(autonomy_state)
         assignment = dict(dict(autonomy_state or {}).get("current_queue_assignment") or {})
         assignment_file = str(assignment.get("active_file", "") or "").strip()
         assignment_target = str(assignment.get("target_symbol", "") or "").strip()

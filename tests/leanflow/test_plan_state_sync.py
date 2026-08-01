@@ -2150,6 +2150,94 @@ def test_legacy_startup_timeout_migration_rejects_changed_source(monkeypatch, tm
     assert "failed_attempts" not in autonomy_state
 
 
+def test_resume_recovers_missing_assignment_from_exact_timeout_ledger(
+    plan_enabled, monkeypatch, tmp_path
+):
+    """An interrupted verifier must not strand a sorry-free unresolved node."""
+    events = _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    node_id = plan_state.node_id_for("demo", str(active))
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=node_id,
+                    name="demo",
+                    file=str(active),
+                    statement="True",
+                    status="audited",
+                ),
+            )
+        )
+    )
+    autonomy_state = {
+        runner._QUEUE_MANAGER_STATE_RESTORED_KEY: True,
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "timed out after 600 seconds",
+                "reason": "timed out after 600 seconds",
+            }
+        ],
+    }
+    monkeypatch.setattr(runner, "read_workflow_activity", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        runner,
+        "_collect_declaration_truth",
+        lambda *_args, **_kwargs: pytest.fail(
+            "recovered timeout assignment still started graph truth collection"
+        ),
+    )
+
+    assert runner._plan_state_resume_block(autonomy_state)
+    assert autonomy_state["current_queue_assignment"]["target_symbol"] == "demo"
+    assert autonomy_state["current_queue_assignment"]["active_file"] == str(active)
+    assert any(args[0] == "queue-timeout-assignment-recovered" for args, _ in events)
+    assert not any(args[0] == "plan-graph-assignment-retired" for args, _ in events)
+
+
+def test_missing_timeout_assignment_recovery_requires_one_candidate(
+    plan_enabled, monkeypatch, tmp_path
+):
+    first = tmp_path / "First.lean"
+    second = tmp_path / "Second.lean"
+    first.write_text("theorem first : True := by\n  trivial\n", encoding="utf-8")
+    second.write_text("theorem second : True := by\n  trivial\n", encoding="utf-8")
+    nodes = tuple(
+        plan_state.GraphNode(
+            id=plan_state.node_id_for(symbol, str(path)),
+            name=symbol,
+            file=str(path),
+            statement="True",
+            status="audited",
+        )
+        for path, symbol in ((first, "first"), (second, "second"))
+    )
+    plan_state.save_blueprint(plan_state.Blueprint(nodes=nodes))
+    autonomy_state = {
+        runner._QUEUE_MANAGER_STATE_RESTORED_KEY: True,
+        "failed_attempts": [
+            {
+                "target_symbol": symbol,
+                "active_file": str(path),
+                "declaration_hash": runner._failed_attempt_declaration_hash(
+                    str(path), symbol, None
+                ),
+                "gate_verdict": "timed out after 600 seconds",
+                "reason": "timed out after 600 seconds",
+            }
+            for path, symbol in ((first, "first"), (second, "second"))
+        ],
+    }
+
+    assert runner._recover_missing_timeout_assignment_from_ledger(autonomy_state) == {}
+    assert "current_queue_assignment" not in autonomy_state
+
+
 @pytest.mark.parametrize(
     ("axioms", "expected_status"),
     [(["propext"], "proved"), (["propext", "sorryAx"], "stated")],
