@@ -6042,15 +6042,29 @@ def _capture_exact_check_source_snapshot(
         requested_file = str(
             arguments.get("file_path", "") or arguments.get("active_file", "") or active_file
         ).strip()
+    if requested_target != target_symbol or not _same_active_file(requested_file, active_file):
+        return
+    snapshot = _exact_check_source_snapshot_for_assignment(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if not snapshot:
+        return
+    setattr(agent, _EXACT_CHECK_SOURCE_SNAPSHOT_ATTR, snapshot)
+
+
+def _exact_check_source_snapshot_for_assignment(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> dict[str, Any]:
+    """Return a source identity for an imminent exact assignment gate."""
     scope = _queue_key(target_symbol, active_file)
     source_sha256 = _source_revision_sha256(active_file)
-    if (
-        not scope.is_valid()
-        or requested_target != target_symbol
-        or not _same_active_file(requested_file, active_file)
-        or not source_sha256
-    ):
-        return
+    if not scope.is_valid() or not source_sha256:
+        return {}
     identity = final_report_failure_reuse.PreCheckIdentity(
         assignment_scope=scope.storage_key(),
         source_sha256=source_sha256,
@@ -6059,10 +6073,9 @@ def _capture_exact_check_source_snapshot(
             int(autonomy_state.get("current_cycle", 0) or 0),
         ),
     )
-    setattr(
-        agent,
-        _EXACT_CHECK_SOURCE_SNAPSHOT_ATTR,
-        identity.to_mapping(target_symbol=target_symbol, active_file=active_file),
+    return identity.to_mapping(
+        target_symbol=target_symbol,
+        active_file=active_file,
     )
 
 
@@ -10782,6 +10795,27 @@ def _failed_exact_check_source_is_unchanged(
     )
 
 
+def _manager_check_timed_out(manager_check: Mapping[str, Any] | None) -> bool:
+    """Return whether a manager gate failed for an operational timeout."""
+    checked = dict(manager_check or {})
+    if bool(checked.get("timed_out")):
+        return True
+    nested = checked.get("incremental")
+    if isinstance(nested, Mapping) and bool(nested.get("timed_out")):
+        return True
+    detail = " ".join(
+        str(checked.get(key, "") or "") for key in ("output", "error", "build_status", "error_code")
+    ).lower()
+    if isinstance(nested, Mapping):
+        detail = " ".join(
+            (
+                detail,
+                *(str(nested.get(key, "") or "") for key in ("output", "error", "error_code")),
+            )
+        ).lower()
+    return any(marker in detail for marker in _VERIFICATION_TIMEOUT_MARKERS)
+
+
 def _finish_queue_step_boundary(
     agent: Any,
     *,
@@ -12527,6 +12561,11 @@ def _handle_managed_tool_result(
                 # next cycle. Do not use the ordinary file fallback here: incomplete
                 # exact evidence remains resumably unverified rather than borrowing
                 # broad file evidence.
+                post_edit_source_snapshot = _exact_check_source_snapshot_for_assignment(
+                    managed_autonomy,
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                )
                 manager_verification = dict(verified_patch_checks.get(target_symbol) or {})
                 exact_gate = "verified_patch_batch"
                 if not manager_verification:
@@ -12540,6 +12579,11 @@ def _handle_managed_tool_result(
                     pending_file=active_file,
                     verification_tool=f"{function_name}+{exact_gate}",
                     manager_verification=manager_verification,
+                    exact_check_source_snapshot=(
+                        post_edit_source_snapshot
+                        if _manager_check_timed_out(manager_verification)
+                        else None
+                    ),
                     promoted_helper_names=queue_promoted_helpers,
                 )
                 _maybe_append_formalization_handoff_feedback(
@@ -12592,6 +12636,11 @@ def _handle_managed_tool_result(
                 "target_symbol": target_symbol,
                 "active_file": active_file,
             }
+            post_edit_source_snapshot = _exact_check_source_snapshot_for_assignment(
+                managed_autonomy,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
             manager_verification, manager_tool = _manager_check_queue_item_transaction(
                 active_file,
                 target_symbol,
@@ -12604,6 +12653,11 @@ def _handle_managed_tool_result(
                 pending_file=active_file,
                 verification_tool=verification_tool,
                 manager_verification=manager_verification,
+                exact_check_source_snapshot=(
+                    post_edit_source_snapshot
+                    if _manager_check_timed_out(manager_verification)
+                    else None
+                ),
                 promoted_helper_names=queue_promoted_helpers,
             )
         _maybe_append_formalization_handoff_feedback(

@@ -10241,6 +10241,74 @@ def test_exact_file_timeout_reuses_unchanged_on_disk_source(monkeypatch, tmp_pat
     assert source_reuse["candidate_check_passed"] is False
 
 
+def test_post_edit_timeout_reuses_verified_source_identity(monkeypatch, tmp_path):
+    """Do not hang in a second live inspection after a timed-out edit gate."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        quiet_mode = True
+
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "patched candidate"}]
+            self._managed_autonomy_state = {
+                "current_cycle": 1,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  trivial",
+                },
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item_transaction",
+        lambda *_args, **_kwargs: (
+            {
+                "ok": False,
+                "target": "demo",
+                "file": str(active),
+                "output": "lake env lean Main.lean timed out after 600 seconds",
+            },
+            "lean_verify",
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *_args, **_kwargs: pytest.fail(
+            "timed-out post-edit gate must not start another live inspection"
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    monkeypatch.setattr(runner, "_maybe_manager_nudge", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *_args: "")
+
+    runner._handle_managed_tool_result(
+        _Agent(),
+        "patch",
+        {"path": str(active)},
+        json.dumps({"success": True}),
+    )
+
+    source_reuse = next(
+        kwargs for args, kwargs in events if args[0] == "manager-failed-source-reused"
+    )
+    assert source_reuse["source_unchanged"] is True
+    assert source_reuse["candidate_check_passed"] is False
+
+
 def test_rejected_verification_reclaims_consumed_delivery_before_staging_fresh_finding(
     monkeypatch, tmp_path
 ):
