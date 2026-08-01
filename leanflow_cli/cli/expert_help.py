@@ -207,6 +207,64 @@ def resolve_expert_command_template(provider: str, task: str = "lean_reasoning")
     return DEFAULT_COMMAND_TEMPLATES[provider]
 
 
+def _resolve_command_task_setting(task: str, suffix: str) -> str:
+    """Return one task or fallback setting for a command-backed advisor."""
+    env_value = _read_task_env(task, suffix)
+    if env_value:
+        return env_value
+    config_key = suffix.lower()
+    task_value = str(_task_config(task).get(config_key, "") or "").strip()
+    if task_value:
+        return task_value
+    fallback_task = _fallback_task(task)
+    if not fallback_task:
+        return ""
+    fallback_env_value = _read_task_env(fallback_task, suffix)
+    if fallback_env_value:
+        return fallback_env_value
+    return str(_task_config(fallback_task).get(config_key, "") or "").strip()
+
+
+def _apply_command_runtime_overrides(
+    command: list[str],
+    *,
+    provider: str,
+    task: str,
+) -> list[str]:
+    """Bind a Codex command advisor to the workflow model and effort.
+
+    Explicit ``--provider codex`` launches reassert the selected runtime into
+    task-specific auxiliary environment variables. Command-backed advisors
+    must consume those values too; otherwise ``codex exec`` silently falls
+    back to the desktop config and can run a different model or effort than
+    every model-backed lane.
+    """
+    if (
+        normalize_expert_provider(provider) != "codex"
+        or len(command) < 2
+        or Path(command[0]).name != "codex"
+        or command[1] != "exec"
+    ):
+        return command
+    enriched = list(command)
+    insert_at = 2 if len(enriched) >= 2 and enriched[1] == "exec" else 1
+    model = _resolve_command_task_setting(task, "MODEL")
+    has_model = any(
+        token in {"-m", "--model"} or token.startswith("--model=") for token in enriched
+    )
+    if model and not has_model:
+        enriched[insert_at:insert_at] = ["--model", model]
+        insert_at += 2
+    reasoning_effort = _resolve_command_task_setting(task, "REASONING_EFFORT")
+    has_reasoning_effort = any("model_reasoning_effort" in token for token in enriched)
+    if reasoning_effort and not has_reasoning_effort:
+        enriched[insert_at:insert_at] = [
+            "--config",
+            f'model_reasoning_effort="{reasoning_effort}"',
+        ]
+    return enriched
+
+
 def _max_response_chars() -> int:
     raw = str(
         os.getenv("LEANFLOW_EXPERT_MAX_RESPONSE_CHARS", "")
@@ -657,6 +715,11 @@ def run_command_expert_help(
             "provider": provider,
         }
         command = _build_command(template, values)
+        command = _apply_command_runtime_overrides(
+            command,
+            provider=provider,
+            task=task,
+        )
         record_expert_help_activity(
             "expert-help-request",
             "Expert help command started",

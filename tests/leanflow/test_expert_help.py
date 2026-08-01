@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,6 +59,64 @@ def test_regular_codex_expert_remains_command_backed(monkeypatch):
     monkeypatch.setattr(expert_help.shutil, "which", lambda _command: None)
 
     assert expert_help.is_command_expert_provider("codex") is True
+
+
+def test_codex_expert_inherits_workflow_model_and_reasoning(monkeypatch, tmp_path):
+    """Bind regular command advisors to the explicit all-lanes runtime."""
+    captured = {}
+    monkeypatch.setenv("AUXILIARY_LEAN_DECOMPOSE_HELPERS_MODEL", "gpt-5.6-luna")
+    monkeypatch.setenv("AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT", "xhigh")
+    monkeypatch.setattr(expert_help, "record_expert_help_activity", lambda *_a, **_k: None)
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="advisor result", stderr="", timed_out=False)
+
+    monkeypatch.setattr(expert_help, "_run_isolated_expert_command", run)
+
+    result = expert_help.run_command_expert_help(
+        provider="codex",
+        task="lean_decompose_helpers",
+        prompt="split the proof",
+        cwd=str(tmp_path),
+        timeout_s=30,
+    )
+
+    command = captured["command"]
+    assert command[:2] == ["codex", "exec"]
+    assert command[2:6] == [
+        "--model",
+        "gpt-5.6-luna",
+        "--config",
+        'model_reasoning_effort="xhigh"',
+    ]
+    assert result.response == "advisor result"
+
+
+def test_codex_expert_preserves_explicit_template_runtime(monkeypatch):
+    """Do not duplicate model overrides already owned by a custom template."""
+    monkeypatch.setenv("AUXILIARY_LEAN_REASONING_MODEL", "gpt-5.6-luna")
+    monkeypatch.setenv("AUXILIARY_LEAN_REASONING_REASONING_EFFORT", "xhigh")
+
+    command = expert_help._apply_command_runtime_overrides(
+        [
+            "codex",
+            "exec",
+            "--model",
+            "custom-model",
+            "--config",
+            'model_reasoning_effort="high"',
+            "-",
+        ],
+        provider="codex",
+        task="lean_reasoning",
+    )
+
+    assert command.count("--model") == 1
+    assert command.count("--config") == 1
+    assert "custom-model" in command
+    assert 'model_reasoning_effort="high"' in command
 
 
 def test_advisor_interrupt_before_launch_does_not_spawn(monkeypatch, tmp_path):
