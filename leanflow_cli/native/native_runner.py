@@ -3568,6 +3568,47 @@ def _scoped_failed_attempt_entries(
     ]
 
 
+def _restored_assignment_verification_timeout_reason(
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> str:
+    """Return a same-source timeout that should backpressure resume checks.
+
+    The newest attempt identifies the current declaration revision. A timeout
+    from any retained attempt with that exact declaration hash proves that an
+    eager replay has already exceeded its verifier budget; startup should hand
+    the theorem to the foreground instead of running the same gate again.
+    """
+    attempts = _scoped_failed_attempt_entries(
+        autonomy_state or {},
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if not attempts:
+        return ""
+    current_hash = str(attempts[-1].get("declaration_hash", "") or "").strip()
+    if not current_hash:
+        return ""
+    timeout_markers = (
+        "timed out",
+        "timeout=",
+        "maximum number of heartbeats",
+        "maxheartbeats",
+    )
+    for attempt in reversed(attempts):
+        if str(attempt.get("declaration_hash", "") or "").strip() != current_hash:
+            continue
+        detail = " ".join(
+            str(attempt.get(key, "") or "") for key in ("gate_verdict", "reason")
+        ).strip()
+        lowered = detail.lower()
+        if any(marker in lowered for marker in timeout_markers):
+            return _single_line(detail, 500)
+    return ""
+
+
 def _failed_attempt_count_for_theorem(
     autonomy_state: Mapping[str, Any],
     *,
@@ -17518,6 +17559,32 @@ def _verified_startup_preflight(
         return {}
     try:
         restored = _restored_queue_assignment_live_state(autonomy_state)
+        restored_file = str(restored.get("active_file", "") or "")
+        restored_target = str(restored.get("target_symbol", "") or "")
+        prior_timeout = _restored_assignment_verification_timeout_reason(
+            autonomy_state,
+            target_symbol=restored_target,
+            active_file=restored_file,
+        )
+        if prior_timeout:
+            revision = source_only_startup.capture_source_revision(restored_file)
+            if revision is not None:
+                deferred = source_only_startup.build_deferred_verification_snapshot(
+                    restored,
+                    workflow_kind=_workflow_kind(),
+                    revision=revision,
+                    verification_diagnostics=prior_timeout,
+                )
+                if deferred:
+                    _record_activity(
+                        "startup-exact-verification-backpressured",
+                        "Skipped repeated startup verification for a timed-out source revision",
+                        active_file=revision.path,
+                        target_symbol=restored_target,
+                        source_revision_sha256=revision.sha256,
+                        reason=prior_timeout,
+                    )
+                    return deferred
         promoted = _provider_free_exact_scope_state(
             history,
             checkpoint_state,
@@ -22005,6 +22072,23 @@ def _recover_resume_graph_gate_evidence(
             _record_activity(
                 "plan-graph-resume-gate-error",
                 f"Could not inventory resume graph candidates: {_single_line(str(exc), 200)}",
+            )
+        return ()
+
+    prior_timeout = _restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol=assignment_target,
+        active_file=assignment_file,
+    )
+    if candidates and prior_timeout:
+        with contextlib.suppress(Exception):
+            _record_activity(
+                "plan-graph-resume-gate-backpressured",
+                "Deferred repeated resume-gate verification to the foreground",
+                active_file=assignment_file,
+                target_symbol=assignment_target,
+                candidate_count=len(candidates),
+                reason=prior_timeout,
             )
         return ()
 

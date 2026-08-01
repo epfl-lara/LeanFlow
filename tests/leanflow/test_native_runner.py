@@ -23895,6 +23895,58 @@ def test_verified_startup_preflight_defers_slow_sorry_free_resume(monkeypatch, t
     assert recorded[0][0] == "startup-exact-verification-deferred"
 
 
+def test_verified_startup_preflight_reuses_same_revision_timeout(monkeypatch, tmp_path):
+    """A persisted timeout must suppress both exact and incremental startup replay."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    restored = {
+        "active_file": str(active),
+        "active_file_label": "Main.lean",
+        "target_symbol": "demo",
+        "declaration_scope": "file",
+        "declaration_queue_total": 1,
+        "current_queue_item": {"label": "demo", "reasons": ["restored"]},
+    }
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": "a" * 64,
+                "reason": "Lean server timed out after 300 seconds",
+            },
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": "a" * 64,
+                "reason": "later parser feedback",
+            },
+        ],
+    }
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_restored_queue_assignment_live_state",
+        lambda _state: dict(restored),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_provider_free_exact_scope_state",
+        lambda *args, **kwargs: pytest.fail("persisted timeout replayed exact startup gate"),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    result = runner._verified_startup_preflight([], {}, autonomy_state)
+
+    assert result["proof_state_authority"] == "source_only_unverified"
+    assert result["defer_incremental_warmup"] is True
+    assert "timed out" in result["diagnostics"]
+
+
 def test_revalidation_uses_provider_free_exact_scope_without_capability_probe(monkeypatch):
     """Terminal verification must not start LSP or MCP after writers quiesce."""
     expected = {

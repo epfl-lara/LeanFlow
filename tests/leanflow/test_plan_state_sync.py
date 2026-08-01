@@ -1984,6 +1984,57 @@ def test_resume_rebuilds_lost_exact_gates_for_sorry_free_helpers_only(
     assert axiom_batches == []
 
 
+def test_resume_gate_backpressures_same_revision_timeout(plan_enabled, monkeypatch, tmp_path):
+    """Restored foreground work must not replay a known slow gate before startup."""
+    events = _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    node_id = plan_state.node_id_for("demo", str(active))
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=node_id,
+                    name="demo",
+                    file=str(active),
+                    statement="True",
+                    status="stated",
+                ),
+            )
+        )
+    )
+    autonomy_state = {
+        runner._QUEUE_MANAGER_STATE_RESTORED_KEY: True,
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": "b" * 64,
+                "gate_verdict": "Lean server timed out after 300 seconds",
+            },
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": "b" * 64,
+                "gate_verdict": "later parser feedback",
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda *_args, **_kwargs: pytest.fail("resume replayed known timed-out gate"),
+    )
+
+    assert runner._plan_state_resume_block(autonomy_state)
+    assert plan_state.load_blueprint().node_by_id(node_id).status != "proved"
+    assert any(args[0] == "plan-graph-resume-gate-backpressured" for args, _kwargs in events)
+
+
 @pytest.mark.parametrize(
     ("axioms", "expected_status"),
     [(["propext"], "proved"), (["propext", "sorryAx"], "stated")],
