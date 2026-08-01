@@ -22838,6 +22838,13 @@ def _recover_resume_graph_gate_evidence(
                 else "exact target gate did not accept the declaration"
             )
         )
+        if _manager_check_timed_out(manager_check):
+            _remember_same_revision_verification_timeout(
+                autonomy_state,
+                target_symbol=candidate.target_symbol,
+                active_file=candidate.active_file,
+                manager_check=manager_check,
+            )
         with contextlib.suppress(Exception):
             _record_activity(
                 "plan-graph-resume-gate-rejected",

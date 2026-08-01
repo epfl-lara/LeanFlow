@@ -2309,6 +2309,95 @@ def test_resume_reuses_complete_inline_axiom_profile_without_batch_process(
     assert bool(rejected) is (expected_status == "stated")
 
 
+def test_resume_gate_timeout_backpressures_later_startup_verification(
+    plan_enabled,
+    monkeypatch,
+    tmp_path,
+):
+    """Persist a resume-gate timeout before startup can launch a Lake replay."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    node_id = plan_state.node_id_for("demo", str(active))
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=node_id,
+                    name="demo",
+                    file=str(active),
+                    statement="True",
+                    status="stated",
+                ),
+            )
+        )
+    )
+    timeout_check = {
+        "ok": False,
+        "mode": "incremental_target",
+        "target": "demo",
+        "timed_out": True,
+        "output": "LeanProbe call exceeded its 600s wall-clock deadline",
+        "incremental": {
+            "success": False,
+            "ok": False,
+            "target": "demo",
+            "timed_out": True,
+            "has_errors": False,
+            "has_sorry": False,
+            "messages": [],
+        },
+    }
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda _file, _target: dict(timeout_check),
+    )
+    monkeypatch.setattr(
+        runner.resume_gate_rejection_cache,
+        "capture_identity",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    autonomy_state: dict[str, Any] = {
+        runner._QUEUE_MANAGER_STATE_RESTORED_KEY: True,
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+
+    assert runner._recover_resume_graph_gate_evidence(autonomy_state) == ()
+    assert runner._restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    restored = {
+        "active_file": str(active),
+        "active_file_label": "Demo.lean",
+        "target_symbol": "demo",
+        "declaration_scope": "file",
+        "declaration_queue_total": 1,
+        "current_queue_item": {"label": "demo", "reasons": ["restored"]},
+    }
+    monkeypatch.setattr(
+        runner,
+        "_restored_queue_assignment_live_state",
+        lambda _state: dict(restored),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_provider_free_exact_scope_state",
+        lambda *args, **kwargs: pytest.fail("resume timeout launched canonical Lake replay"),
+    )
+
+    deferred = runner._verified_startup_preflight([], {}, autonomy_state)
+
+    assert deferred["proof_state_authority"] == "source_only_unverified"
+    assert deferred["defer_incremental_warmup"] is True
+
+
 def test_resume_reuses_only_exact_cached_axiom_rejection(
     plan_enabled,
     monkeypatch,
