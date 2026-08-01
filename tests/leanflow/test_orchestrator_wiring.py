@@ -171,6 +171,39 @@ def test_repeated_current_revision_timeouts_request_decomposition(enabled, monke
     )
 
 
+def test_repeated_live_state_timeouts_request_decomposition(enabled, monkeypatch, tmp_path):
+    """Apply timeout structural recovery during a live campaign, not only startup."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "live-timeout-decompose")
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "_restored_assignment_verification_timeout_reason",
+        lambda *_args, **_kwargs: "lake env lean timed out after 600 seconds",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_assignment_verification_timeout_count",
+        lambda *_args, **_kwargs: 3,
+    )
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    state = _autonomy_state(str(active))
+    live_state = {
+        "active_file": str(active),
+        "target_symbol": "demo",
+        "proof_state_authority": "lean_inspect",
+        "deferred_exact_verification": True,
+        "diagnostics": "no errors found",
+        "sorry_count": 0,
+    }
+
+    selected = runner._orchestrator_consult("scope-entry", state, live_state)
+
+    assert selected is not None and selected.route == "decompose"
+    assert "top-level helpers" in selected.target["prover_request_reason"]
+
+
 def test_deferred_proof_candidate_drops_interrupted_mechanical_route(
     enabled, monkeypatch, tmp_path
 ):

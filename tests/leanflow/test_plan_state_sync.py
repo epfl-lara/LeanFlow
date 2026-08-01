@@ -1998,6 +1998,7 @@ def test_resume_gate_backpressures_same_revision_timeout(
     events = _events(monkeypatch)
     active = tmp_path / "Demo.lean"
     active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
     node_id = plan_state.node_id_for("demo", str(active))
     plan_state.save_blueprint(
         plan_state.Blueprint(
@@ -2022,13 +2023,13 @@ def test_resume_gate_backpressures_same_revision_timeout(
             {
                 "target_symbol": "demo",
                 "active_file": str(active),
-                "declaration_hash": "b" * 64,
+                "declaration_hash": declaration_hash,
                 "gate_verdict": timeout_reason,
             },
             {
                 "target_symbol": "demo",
                 "active_file": str(active),
-                "declaration_hash": "b" * 64,
+                "declaration_hash": declaration_hash,
                 "gate_verdict": "later parser feedback",
             },
         ],

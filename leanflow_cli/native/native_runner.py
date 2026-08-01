@@ -3601,6 +3601,12 @@ def _restored_assignment_verification_timeout_reason(
     current_hash = str(attempts[-1].get("declaration_hash", "") or "").strip()
     if not current_hash:
         return ""
+    live_hash = _failed_attempt_declaration_hash(active_file, target_symbol, None)
+    if not live_hash or live_hash != current_hash:
+        # A source edit immediately invalidates timeout backpressure. The next
+        # exact gate must inspect the new declaration instead of inheriting a
+        # timeout from the preceding proof shape.
+        return ""
     for attempt in reversed(attempts):
         if str(attempt.get("declaration_hash", "") or "").strip() != current_hash:
             continue
@@ -3620,6 +3626,46 @@ _VERIFICATION_TIMEOUT_MARKERS = (
     "maximum number of heartbeats",
     "maxheartbeats",
 )
+
+
+def _same_revision_timeout_backpressure_check(
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> tuple[dict[str, Any], str] | None:
+    """Return a synthetic failure that prevents an unchanged timeout replay."""
+    reason = _restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if not reason:
+        return None
+    message = (
+        "Exact verification already reached its bounded time or compilation limit for this "
+        "unchanged declaration. Do not replay the same broad check. Refactor the proof into "
+        "cohesive top-level helper theorems, verify those helpers independently with LeanProbe, "
+        "then retry the parent only after its body is materially smaller."
+    )
+    check = {
+        "success": False,
+        "ok": False,
+        "valid_without_sorry": True,
+        "has_errors": False,
+        "has_sorry": False,
+        "timed_out": True,
+        "retryable": True,
+        "error_code": "same_revision_verification_timeout",
+        "mode": "file_exact",
+        "target": active_file,
+        "command": _canonical_file_verification_command(active_file),
+        "output": f"{reason}\n{message}",
+        "source_sha256": _source_revision_sha256(active_file),
+        "verification_reused": True,
+        "verification_reuse_reason": "same assignment and unchanged declaration SHA-256",
+    }
+    return check, "verification_timeout_backpressure"
 
 
 def _assignment_verification_timeout_count(
@@ -6298,6 +6344,22 @@ def _review_agent_final_report(
         target_symbol=target_symbol,
     )
     if reused is None:
+        reused = _same_revision_timeout_backpressure_check(
+            autonomy_state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        if reused is not None:
+            _record_activity(
+                "manager-verification-timeout-backpressured",
+                f"Skipped unchanged exact-verification timeout replay for {target_symbol}",
+                target_symbol=target_symbol,
+                active_file=active_file,
+                purpose="target-final-report",
+                source_sha256=_source_revision_sha256(active_file),
+                campaign_progress=False,
+            )
+    if reused is None:
         source_placeholder_check = (
             None
             if agent_claimed_success
@@ -6315,7 +6377,7 @@ def _review_agent_final_report(
         manager_check, manager_tool = reused
         _record_activity(
             "manager-verification-reused",
-            f"Reused unchanged exact-target rejection for {target_symbol}",
+            f"Reused unchanged exact-target verification result for {target_symbol}",
             target_symbol=target_symbol,
             active_file=active_file,
             purpose="target-final-report",
@@ -18065,7 +18127,31 @@ def _promote_live_state_to_verified(
     normalized["project_sorry_count"] = project_sorry_count
     normalized["project_sorry_files"] = project_sorry_files
     if focused_verification is None:
-        ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
+        assignment = dict((autonomy_state or {}).get("current_queue_assignment") or {})
+        target_symbol = str(
+            assignment.get("target_symbol", "") or normalized.get("target_symbol", "") or ""
+        ).strip()
+        backpressured = _same_revision_timeout_backpressure_check(
+            autonomy_state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        if backpressured is None:
+            ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
+        else:
+            timeout_check, _timeout_tool = backpressured
+            ok = False
+            build_status = str(timeout_check.get("output", "") or "").strip()
+            normalized["verification_timeout_backpressured"] = True
+            normalized["deferred_exact_verification"] = True
+            _record_activity(
+                "live-verification-timeout-backpressured",
+                "Skipped unchanged live-state exact-verification timeout replay",
+                target_symbol=target_symbol,
+                active_file=active_file,
+                source_sha256=_source_revision_sha256(active_file),
+                campaign_progress=False,
+            )
     else:
         ok, build_status = focused_verification
     record = _record_manager_verification(
@@ -23983,11 +24069,16 @@ def _supersede_stale_persistence_for_deferred_verification(
     live_state: Mapping[str, Any] | None,
 ) -> bool:
     """Retire stale route work when a newer sorry-free proof needs optimization."""
-    if not (
-        source_only_startup.is_source_only_unverified(live_state)
-        and bool((live_state or {}).get("defer_incremental_warmup"))
-        and int((live_state or {}).get("sorry_count", 0) or 0) == 0
-    ):
+    current = dict(live_state or {})
+    deferred_timeout_state = bool(
+        (
+            source_only_startup.is_source_only_unverified(current)
+            and current.get("defer_incremental_warmup")
+        )
+        or current.get("deferred_exact_verification")
+        or current.get("verification_timeout_backpressured")
+    )
+    if not deferred_timeout_state or int(current.get("sorry_count", 0) or 0) != 0:
         return False
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     target_symbol = str(
@@ -24097,11 +24188,16 @@ def _stage_repeated_timeout_decomposition_route(
     live_state: Mapping[str, Any] | None,
 ) -> bool:
     """Request structural decomposition after repeated verifier timeouts."""
-    if not (
-        source_only_startup.is_source_only_unverified(live_state)
-        and bool((live_state or {}).get("defer_incremental_warmup"))
-        and int((live_state or {}).get("sorry_count", 0) or 0) == 0
-    ):
+    current = dict(live_state or {})
+    deferred_timeout_state = bool(
+        (
+            source_only_startup.is_source_only_unverified(current)
+            and current.get("defer_incremental_warmup")
+        )
+        or current.get("deferred_exact_verification")
+        or current.get("verification_timeout_backpressured")
+    )
+    if not deferred_timeout_state or int(current.get("sorry_count", 0) or 0) != 0:
         return False
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     target_symbol = str(

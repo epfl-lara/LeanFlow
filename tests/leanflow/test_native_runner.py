@@ -15661,6 +15661,50 @@ def test_review_agent_final_report_accepts_claim_only_after_manager_check(
     assert events
 
 
+def test_review_agent_final_report_backpressures_unchanged_verification_timeout(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "lake env lean Main.lean timed out after 600 seconds",
+            }
+        ],
+    }
+    calls = []
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item_transaction",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or ({"ok": True}, "unexpected"),
+    )
+
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "`demo` solved and verified.",
+            "messages": [{"role": "assistant", "content": "`demo` solved."}],
+        },
+        autonomy_state,
+    )
+
+    assert calls == []
+    assert result["manager_final_report_review"]["ok"] is False
+    assert "top-level helper theorems" in result["messages"][-1]["content"]
+
+
 def test_review_agent_final_report_rejects_disallowed_axiom_dependency(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : False := by\n  exact bad\n", encoding="utf-8")
@@ -24110,6 +24154,7 @@ def test_verified_startup_preflight_reuses_same_revision_timeout(monkeypatch, tm
     """A persisted timeout must suppress both exact and incremental startup replay."""
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
     restored = {
         "active_file": str(active),
         "active_file_label": "Main.lean",
@@ -24127,13 +24172,13 @@ def test_verified_startup_preflight_reuses_same_revision_timeout(monkeypatch, tm
             {
                 "target_symbol": "demo",
                 "active_file": str(active),
-                "declaration_hash": "a" * 64,
+                "declaration_hash": declaration_hash,
                 "reason": "Lean server timed out after 300 seconds",
             },
             {
                 "target_symbol": "demo",
                 "active_file": str(active),
-                "declaration_hash": "a" * 64,
+                "declaration_hash": declaration_hash,
                 "reason": "later parser feedback",
             },
         ],
@@ -26196,6 +26241,93 @@ def test_promote_live_state_uses_focused_build_before_full_project_build(monkeyp
     assert promoted["build_status"] == "lake build Main reported errors: unresolved import"
     assert promoted["verification_ok"] is False
     assert runner._live_state_is_verified(promoted) is False
+
+
+def test_promote_live_state_backpressures_same_revision_verification_timeout(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "lake env lean Main.lean timed out after 600 seconds",
+                "reason": "bounded exact verification timeout",
+            }
+        ],
+    }
+    calls = []
+    events = []
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (1, ["Other.lean"]))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or (True, "unexpected"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: events.append((event_type, message, details)),
+    )
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "target_symbol": "demo",
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert calls == []
+    assert promoted["verification_ok"] is False
+    assert promoted["verification_timeout_backpressured"] is True
+    assert promoted["deferred_exact_verification"] is True
+    assert "top-level helper theorems" in promoted["blocker_summary"]
+    assert any(event[0] == "live-verification-timeout-backpressured" for event in events)
+
+
+def test_same_revision_verification_timeout_is_invalidated_by_source_edit(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    autonomy_state = {
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "timed out after 600 seconds",
+            }
+        ]
+    }
+
+    assert runner._restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    active.write_text("theorem demo : True := by\n  exact True.intro\n", encoding="utf-8")
+
+    assert (
+        runner._restored_assignment_verification_timeout_reason(
+            autonomy_state,
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        == ""
+    )
 
 
 def test_promote_document_formalization_scaffold_waits_for_planner(monkeypatch, tmp_path):
