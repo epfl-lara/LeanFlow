@@ -1235,11 +1235,27 @@ def _revalidate_verified_scope_after_quiescence(
     expected_live_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Kernel-verify the exact requested Lean scope after writers stop."""
+    expected = dict(expected_live_state or {})
+    if str(
+        expected.get("proof_state_authority", "") or ""
+    ) == "authenticated_target_gate" and _live_state_is_verified(expected):
+        revision = source_only_startup.SourceRevision.from_mapping(
+            dict(expected.get("source_revision") or {})
+        )
+        if revision is not None and source_only_startup.source_revision_is_current(revision):
+            _record_activity(
+                "terminal-authenticated-gate-reused",
+                "Reused the authenticated source revision after workflow writers quiesced",
+                active_file=revision.path,
+                source_revision_sha256=revision.sha256,
+                queue_total=int(expected.get("declaration_queue_total", 0) or 0),
+            )
+            return expected
     exact = _provider_free_exact_scope_state(
         history,
         checkpoint_state,
         autonomy_state,
-        expected_live_state=expected_live_state,
+        expected_live_state=expected,
     )
     if exact:
         return exact

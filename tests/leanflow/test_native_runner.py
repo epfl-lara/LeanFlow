@@ -24558,6 +24558,46 @@ def test_revalidation_uses_provider_free_exact_scope_without_capability_probe(mo
     assert observed == [expected]
 
 
+def test_terminal_revalidation_reuses_authenticated_current_revision(monkeypatch, tmp_path):
+    """Do not replay Lake after the final exact gate and writer quiescence."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    revision = runner.source_only_startup.capture_source_revision(str(active))
+    assert revision is not None
+    expected = {
+        "active_file": str(active),
+        "target_symbol": "",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "verification_ok": True,
+        "proof_solved": True,
+        "proof_state_authority": "authenticated_target_gate",
+        "source_revision": revision.to_mapping(),
+        "source_revision_sha256": revision.sha256,
+    }
+    events: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_provider_free_exact_scope_state",
+        lambda *args, **kwargs: pytest.fail("terminal gate replayed canonical Lean"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event, *args, **kwargs: events.append(event),
+    )
+
+    result = runner._revalidate_verified_scope_after_quiescence(
+        [],
+        {},
+        {},
+        expected_live_state=expected,
+    )
+
+    assert result == expected
+    assert events == ["terminal-authenticated-gate-reused"]
+
+
 def test_provider_free_exact_scope_reuses_single_lean_result(monkeypatch):
     """The fast gate must not compile the same file twice in one verification pass."""
     clean_file = "/tmp/project/Main.lean"
