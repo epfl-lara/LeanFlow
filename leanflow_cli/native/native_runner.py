@@ -23817,6 +23817,64 @@ def _matching_pending_epoch_route_selection(
     return {}
 
 
+def _supersede_stale_negate_for_deferred_verification(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> bool:
+    """Retire stale negation work when a newer sorry-free proof needs optimization."""
+    if not (
+        source_only_startup.is_source_only_unverified(live_state)
+        and bool((live_state or {}).get("defer_incremental_warmup"))
+        and int((live_state or {}).get("sorry_count", 0) or 0) == 0
+    ):
+        return False
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(
+        assignment.get("target_symbol", "") or (live_state or {}).get("target_symbol", "") or ""
+    ).strip()
+    active_file = str(
+        assignment.get("active_file", "") or (live_state or {}).get("active_file", "") or ""
+    ).strip()
+    if not target_symbol or not active_file:
+        return False
+    selection = campaign_epoch.reusable_epoch_route_selection(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if str(selection.get("route", "") or "").strip().lower() != "negate":
+        return False
+    timeout_reason = _restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if not timeout_reason:
+        return False
+    superseded = campaign_epoch.supersede_epoch_refresh_selection(
+        autonomy_state,
+        refresh_token=str(selection.get("token", "") or ""),
+        epoch=int(selection.get("epoch", 1) or 1),
+        target_symbol=target_symbol,
+        active_file=active_file,
+        reason="sorry-free source candidate has same-revision exact-verification timeout",
+    )
+    if not superseded:
+        raise RuntimeError("failed to retire stale negation route before deferred verification")
+    _record_activity(
+        "campaign-epoch-stale-negate-backpressured",
+        "Retired stale negation replay so the foreground can optimize the proof candidate",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        route="negate",
+        refresh_token=str(selection.get("token", "") or ""),
+        epoch=int(selection.get("epoch", 1) or 1),
+        reason=timeout_reason,
+        campaign_progress=False,
+    )
+    return True
+
+
 def _route_rollover_owes_foreground_turn(
     autonomy_state: dict[str, Any],
     live_state: Mapping[str, Any] | None = None,
@@ -26180,6 +26238,7 @@ def _orchestrator_consult(
         # runs, so a resumed process cannot get one free requested/direct
         # decision before the spent-budget guard observes durable state.
         campaign_epoch.ensure_campaign(autonomy_state)
+        _supersede_stale_negate_for_deferred_verification(autonomy_state, live_state)
         blueprint = plan_state.load_blueprint() if plan_state_enabled() else None
         summary = plan_state.load_summary() if plan_state_enabled() else None
         packet = dict(decision_packet or {})

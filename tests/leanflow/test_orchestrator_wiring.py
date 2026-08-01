@@ -82,6 +82,58 @@ def test_consult_noops_when_flag_off(monkeypatch, tmp_path):
     assert events == []
 
 
+def test_deferred_proof_candidate_supersedes_stale_epoch_negate(enabled, monkeypatch, tmp_path):
+    """Do not replay feasibility work ahead of a newer sorry-free proof candidate."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "deferred-proof-stale-negate")
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "_restored_assignment_verification_timeout_reason",
+        lambda *_args, **_kwargs: "LeanProbe timed out after 300 seconds",
+    )
+    events = _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    state = _autonomy_state(str(active))
+    plan_state.save_queue_manager_state(state)
+    runner.campaign_epoch.roll_epoch(
+        state,
+        reason=runner.campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON,
+        cycle=4,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    runner.campaign_epoch.record_route_decision(
+        state,
+        route="negate",
+        target_symbol="demo",
+        active_file=str(active),
+        trigger="scope-entry",
+        route_reason="stale feasibility branch",
+    )
+    live_state = {
+        "active_file": str(active),
+        "target_symbol": "demo",
+        "proof_state_authority": "source_only_unverified",
+        "defer_incremental_warmup": True,
+        "sorry_count": 0,
+    }
+
+    selected = runner._orchestrator_consult("scope-entry", state, live_state)
+
+    assert selected is not None and selected.route == "direct-prove"
+    assert runner.campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY not in state
+    assert runner.campaign_epoch.EPOCH_ROUTE_REFRESH_STATE_KEY not in state
+    assert any(
+        event[0] == "campaign-epoch-stale-negate-backpressured" for event, _details in events
+    )
+    assert not any(event[0] == "campaign-epoch-route-resumed" for event, _details in events)
+    refresh = runner.campaign_epoch.campaign_snapshot()["epoch_route_refresh"]
+    assert refresh["required"] is False
+    assert refresh["superseded_route"] == "negate"
+
+
 def test_consult_refreshes_plan_render_without_a_graph_mutation(enabled, monkeypatch, tmp_path):
     events = _events(monkeypatch)
     monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)

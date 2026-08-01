@@ -2883,6 +2883,87 @@ def mark_epoch_refresh_started(
     return True
 
 
+def supersede_epoch_refresh_selection(
+    autonomy_state: dict[str, Any],
+    *,
+    refresh_token: str,
+    epoch: int,
+    target_symbol: str,
+    active_file: str,
+    reason: str,
+) -> bool:
+    """Retire an exact fresh-route selection displaced by newer source work.
+
+    This is narrower than ordinary route completion: it records that the
+    selected mechanical action never started and that a newer exact-scope
+    source candidate now owns the foreground. Token, epoch, and assignment
+    checks prevent unrelated resume state from clearing the obligation.
+    """
+    refresh = dict(autonomy_state.get(EPOCH_ROUTE_REFRESH_STATE_KEY) or {})
+    selection = _pending_refresh_selection(refresh)
+    if (
+        not selection
+        or str(selection.get("token", "") or "") != str(refresh_token or "")
+        or _positive_int(selection.get("epoch", 0), 1) != _positive_int(epoch, 1)
+        or not _selection_matches_scope(
+            selection,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+    ):
+        return False
+    campaign = ensure_campaign(autonomy_state)
+    superseded_at = _now_iso()
+    selected_route = str(selection.get("route", "") or "").strip().lower()
+
+    def mutate(summary: dict[str, Any]) -> bool:
+        current = dict(summary.get("campaign") or campaign)
+        persisted = dict(current.get("epoch_route_refresh") or refresh)
+        persisted_selection = _pending_refresh_selection(persisted)
+        if (
+            not persisted_selection
+            or str(persisted_selection.get("token", "") or "") != str(refresh_token or "")
+            or _positive_int(persisted_selection.get("epoch", 0), 1) != _positive_int(epoch, 1)
+            or not _selection_matches_scope(
+                persisted_selection,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
+        ):
+            return False
+        persisted.update(
+            {
+                "required": False,
+                "superseded_route": selected_route,
+                "superseded_at": superseded_at,
+                "superseded_reason": str(reason or "newer exact-scope source candidate"),
+            }
+        )
+        persisted.pop("pending_selection", None)
+        current["epoch_route_refresh"] = persisted
+        current["updated_at"] = superseded_at
+        summary["campaign"] = current
+        return True
+
+    superseded = bool(update_json_file(_summary_path(), mutate))
+    if not superseded:
+        return False
+    autonomy_state.pop(EPOCH_ROUTE_REFRESH_STATE_KEY, None)
+    autonomy_state.pop(EPOCH_ROUTE_SELECTION_STATE_KEY, None)
+    append_workflow_activity(
+        "campaign-epoch-route-superseded",
+        f"Superseded fresh-epoch route {selected_route} with newer source work",
+        campaign_id=str(campaign.get("campaign_id", "")),
+        epoch=_positive_int(epoch, 1),
+        route=selected_route,
+        refresh_token=str(refresh_token or ""),
+        target_symbol=str(target_symbol or ""),
+        active_file=str(active_file or ""),
+        reason=str(reason or ""),
+    )
+    return True
+
+
 def pending_worker_refresh(*, campaign_id: str = "") -> dict[str, Any]:
     """Return the durable worker-refresh obligation for one live campaign."""
     campaign = campaign_snapshot()

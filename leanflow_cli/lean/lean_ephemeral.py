@@ -266,5 +266,10 @@ def lean_ephemeral_source_check(
             "messages": [],
         }
     finally:
+        # Parent interruption bypasses the ordinary timeout and exception
+        # handlers. Reap the isolated group before deleting its source harness
+        # so Lake/Lean cannot survive native-runner shutdown as orphaned work.
+        if process is not None and process.returncode is None:
+            _stop_process_group(process)
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)

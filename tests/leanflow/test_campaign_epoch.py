@@ -110,6 +110,58 @@ def test_semantic_route_history_survives_rollover_and_resets_only_on_progress(
     assert len(restarted) == 1
 
 
+def test_epoch_selection_supersession_is_exact_and_restart_durable(monkeypatch, tmp_path):
+    """A newer source candidate may retire only its exact pending route."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "supersede-epoch-route")
+    active_file = str(tmp_path / "Main.lean")
+    state: dict[str, object] = {}
+    campaign_epoch.roll_epoch(
+        state,
+        reason=campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON,
+        cycle=4,
+        target_symbol="demo",
+        active_file=active_file,
+    )
+    campaign_epoch.record_route_decision(
+        state,
+        route="negate",
+        target_symbol="demo",
+        active_file=active_file,
+        trigger="scope-entry",
+        route_reason="stale feasibility branch",
+    )
+    selection = dict(state[campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY])
+
+    assert not campaign_epoch.supersede_epoch_refresh_selection(
+        state,
+        refresh_token=str(selection["token"]),
+        epoch=int(selection["epoch"]),
+        target_symbol="other",
+        active_file=active_file,
+        reason="wrong scope",
+    )
+    assert campaign_epoch.supersede_epoch_refresh_selection(
+        state,
+        refresh_token=str(selection["token"]),
+        epoch=int(selection["epoch"]),
+        target_symbol="demo",
+        active_file=active_file,
+        reason="new sorry-free source candidate",
+    )
+    assert campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY not in state
+    assert campaign_epoch.EPOCH_ROUTE_REFRESH_STATE_KEY not in state
+
+    resumed: dict[str, object] = {}
+    campaign_epoch.ensure_campaign(resumed)
+    assert campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY not in resumed
+    assert campaign_epoch.EPOCH_ROUTE_REFRESH_STATE_KEY not in resumed
+    refresh = campaign_epoch.campaign_snapshot()["epoch_route_refresh"]
+    assert refresh["required"] is False
+    assert refresh["superseded_route"] == "negate"
+    assert refresh["superseded_reason"] == "new sorry-free source candidate"
+
+
 def test_rollover_request_is_idempotent_and_consumed():
     state: dict[str, object] = {}
     campaign_epoch.request_rollover(state, "route-portfolio-exhausted")

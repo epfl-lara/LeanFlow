@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from leanflow_cli.lean import lean_ephemeral, lean_incremental
 
 
@@ -147,6 +149,52 @@ def test_timeout_is_retryable_and_reaps_process_group(monkeypatch, tmp_path):
     assert result["timed_out"] is True
     assert result["retryable"] is True
     assert signals == [lean_ephemeral.signal.SIGTERM]
+
+
+def test_parent_interrupt_reaps_process_group_and_source_harness(monkeypatch, tmp_path):
+    """Runner interruption must not orphan an in-progress exact Lean check."""
+    project = tmp_path / "project"
+    project.mkdir()
+    signals: list[int] = []
+    harnesses: list[Path] = []
+
+    class Process:
+        returncode = None
+        pid = 4321
+
+        def __init__(self, command, **_kwargs):
+            harnesses.append(Path(command[-1]))
+
+        def wait(self, timeout):
+            if timeout == 2:
+                self.returncode = -15
+                return -15
+            raise KeyboardInterrupt()
+
+        def poll(self):
+            return self.returncode
+
+        def communicate(self, timeout):
+            assert timeout == 1
+            return b"", None
+
+    monkeypatch.setattr(lean_ephemeral.subprocess, "Popen", Process)
+    monkeypatch.setattr(
+        lean_ephemeral.os,
+        "killpg",
+        lambda pid, requested_signal: signals.append(requested_signal),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        lean_ephemeral.lean_ephemeral_source_check(
+            "theorem interrupted : True := by trivial\n",
+            cwd=project,
+            timeout_s=10,
+        )
+
+    assert signals == [lean_ephemeral.signal.SIGTERM]
+    assert len(harnesses) == 1
+    assert not harnesses[0].exists()
 
 
 def test_exact_check_reclaims_owned_probe_under_project_admission(monkeypatch, tmp_path):
