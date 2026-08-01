@@ -23532,7 +23532,7 @@ def _fidelity_audit_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-FIDELITY_AUDIT_PROMPT_VERSION = "3"
+FIDELITY_AUDIT_PROMPT_VERSION = "4"
 
 
 def _fidelity_goal_has_external_claim(goal: str) -> bool:
@@ -23567,6 +23567,22 @@ def _fidelity_goal_has_external_claim(goal: str) -> bool:
         normalized,
         flags=re.IGNORECASE,
     )
+    operational_markers = (
+        r"\b(?:resume|restart)\b.*\b(?:workflow|proof|checkpoint|campaign)\b",
+        r"\b(?:LeanProbe|lean_incremental_check|provider|reasoning|model role)\b",
+        r"\b(?:sorry-free|without sorry|kernel verification|verification blocker)\b",
+        r"\b(?:logs?|plans?|graphs?|branches|dead ends|workflow artifacts?)\b",
+        r"\b(?:token ceiling|resource ceiling|do not search|only a genuine .* blocker)\b",
+    )
+    operational_marker_count = sum(
+        bool(re.search(pattern, normalized, flags=re.IGNORECASE)) for pattern in operational_markers
+    )
+    if explicit_claim_marker is None and operational_marker_count >= 2:
+        # A restart/campaign prompt can begin with contextual prose rather than
+        # "complete the assigned theorem". Multiple Lean-runtime policy cues
+        # still establish that it is execution guidance, not the informal
+        # mathematical proposition under translation.
+        return False
     if operational_target and explicit_claim_marker is None:
         # A proving policy such as "complete the assigned theorem; use
         # LeanProbe; preserve branches" does not supply a second mathematical

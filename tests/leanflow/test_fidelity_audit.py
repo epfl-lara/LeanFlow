@@ -216,6 +216,32 @@ def test_campaign_policy_with_every_assigned_declaration_skips_fidelity_reviewer
     )
 
 
+def test_resume_campaign_policy_skips_fidelity_reviewer(audit_enabled, monkeypatch):
+    """Contextual restart prose is execution policy, not an informal theorem."""
+    monkeypatch.setenv(
+        "LEANFLOW_NATIVE_EFFECTIVE_PROMPT",
+        (
+            "Resume IMO 2026 Problem 2 from the preserved LeanFlow proof, plan, graph, "
+            "and queue checkpoint. Complete the restored result without sorry or admit. "
+            "Use gpt-5.6-luna at xhigh reasoning for every model role. The source is "
+            "sorry-free but timed out under cold verification: use LeanProbe incremental "
+            "checks, preserve logs and dead ends, and only stop for a genuine workflow blocker."
+        ),
+    )
+    calls, events = _wire(monkeypatch, "BLOCK", response="BLOCK\nworkflow text differs")
+
+    verdict = runner._maybe_statement_fidelity_audit(_autonomy_state(), {})
+
+    assert verdict == "pass"
+    assert calls == []
+    assert any(
+        args[0] == "statement-fidelity-audit"
+        and kwargs.get("verdict") == "pass"
+        and "authoritative statement" in kwargs.get("detail", "")
+        for args, kwargs in events
+    )
+
+
 def test_campaign_policy_reopens_stale_fidelity_park():
     file = "Demo/Main.lean"
     node_id = plan_state.node_id_for("demo", file)
