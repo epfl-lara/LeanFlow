@@ -12,6 +12,9 @@ SOURCE_ONLY_PROOF_STATE_AUTHORITY = "source_only_unverified"
 SOURCE_ONLY_DIAGNOSTICS = "not queried during source-only startup"
 SOURCE_ONLY_GOALS = "not queried during source-only startup"
 SOURCE_ONLY_BUILD_STATUS = "unverified source-only startup snapshot; Lean was not queried"
+DEFERRED_VERIFICATION_BUILD_STATUS = (
+    "startup exact verification exceeded its bounded preflight; foreground repair required"
+)
 
 
 @dataclass(frozen=True)
@@ -195,6 +198,72 @@ def build_source_only_snapshot(
             "",
             "Verification authority:",
             SOURCE_ONLY_BUILD_STATUS,
+        ]
+    )
+    return state
+
+
+def build_deferred_verification_snapshot(
+    base_state: Mapping[str, Any],
+    *,
+    workflow_kind: str,
+    revision: SourceRevision,
+    verification_diagnostics: str,
+) -> dict[str, Any]:
+    """Return a sorry-free resume snapshot after bounded exact verification times out.
+
+    A durable assignment is required so a slow proof is handed back to the
+    foreground model instead of being mistaken for verified completion. The
+    snapshot carries no kernel authority and defers eager incremental warmup,
+    preventing startup from immediately replaying the same expensive file.
+    """
+    state = dict(base_state)
+    current_item = dict(state.get("current_queue_item") or {})
+    target_symbol = str(current_item.get("label", "") or "").strip()
+    eligible = bool(
+        str(workflow_kind or "").strip().casefold() == "prove"
+        and str(state.get("declaration_scope", "") or "").strip() == "file"
+        and str(state.get("active_file", "") or "").strip() == revision.path
+        and target_symbol
+    )
+    if not eligible:
+        return {}
+
+    diagnostics = str(verification_diagnostics or "").strip()
+    state.update(
+        {
+            "proof_state_authority": SOURCE_ONLY_PROOF_STATE_AUTHORITY,
+            "used_source_only_snapshot": True,
+            "source_revision": revision.to_mapping(),
+            "source_revision_sha256": revision.sha256,
+            "target_symbol": target_symbol,
+            "diagnostics": diagnostics,
+            "goals": SOURCE_ONLY_GOALS,
+            "build_status": DEFERRED_VERIFICATION_BUILD_STATUS,
+            "last_verification": {},
+            "proof_solved": False,
+            "sorry_count": 0,
+            "queue_needs_final_file_sweep": False,
+            "queue_frontier_exhausted": False,
+            "capability_report": {},
+            "defer_incremental_warmup": True,
+            "current_blocker": DEFERRED_VERIFICATION_BUILD_STATUS,
+            "blocker_summary": DEFERRED_VERIFICATION_BUILD_STATUS,
+        }
+    )
+    state.pop("verification_ok", None)
+    state["message"] = "\n".join(
+        [
+            "[LEANFLOW-NATIVE DEFERRED EXACT VERIFICATION]",
+            "The stable source is sorry-free, but bounded startup verification timed out.",
+            "This is not proof success or mathematical failure.",
+            "Foreground work must optimize or verify the restored declaration before advancing.",
+            "",
+            f"Active file: {revision.path}",
+            f"Target theorem: {target_symbol}",
+            f"Source revision: {revision.sha256}",
+            "",
+            f"Diagnostics: {diagnostics or DEFERRED_VERIFICATION_BUILD_STATUS}",
         ]
     )
     return state

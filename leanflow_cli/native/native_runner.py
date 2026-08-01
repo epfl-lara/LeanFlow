@@ -39,6 +39,7 @@ EXIT_RUNTIME_FAILURE = 1
 EXIT_PAUSED = 2
 EXIT_DISPROVED = 3
 EXIT_INTERRUPTED = 130
+STARTUP_EXACT_VERIFICATION_TIMEOUT_S = 60.0
 SOURCE_QUARANTINE_ORIGIN_TRANSACTION = "decomposition-source-transaction"
 SOURCE_QUARANTINE_ORIGIN_FALSE_CLEANUP = "false-decomposition-cleanup"
 SOURCE_QUARANTINE_ORIGIN_NEGATION_PROMOTION = "negation-promotion"
@@ -13506,7 +13507,27 @@ def _prepare_queue_assignment_state(
             active_file_label=str(current.get("active_file_label", "") or ""),
         )
         print(f"Queue manager assigned {label}")
-    if same_assignment and previous_prepare and previous_prepare.success:
+    defer_incremental_warmup = bool(current.get("defer_incremental_warmup"))
+    if defer_incremental_warmup:
+        prepare_dict = {
+            "success": False,
+            "ok": False,
+            "elapsed_s": 0.0,
+            "cache": {},
+            "error": (
+                "startup warmup deferred after bounded exact verification timeout; "
+                "use foreground LeanProbe checks after inspecting the proof hotspot"
+            ),
+        }
+        prepare = PrepareState.from_mapping(prepare_dict)
+        _record_activity(
+            "manager-incremental-warmup-deferred",
+            f"Deferred eager LeanInteract warmup for {label}",
+            target_symbol=label,
+            active_file=active_file,
+            reason=str(prepare_dict["error"]),
+        )
+    elif same_assignment and previous_prepare and previous_prepare.success:
         prepare = previous_prepare
     else:
         prepare_dict = _manager_prepare_incremental_queue_item(active_file, label)
@@ -17381,9 +17402,25 @@ def _run_explicit_verification_build(
     return False, f"{result.command} reported errors: {detail[:280]}"
 
 
-def _run_exact_file_verification(active_file: str) -> tuple[bool, str, str]:
+def _run_exact_file_verification(
+    active_file: str,
+    *,
+    timeout_s: float | None = None,
+) -> tuple[bool, str, str]:
     """Run one exact-file Lean check and return status plus complete diagnostics."""
-    result = lean_verify(target=active_file, cwd=_project_root(), mode="file_exact")
+    if timeout_s is None:
+        result = lean_verify(
+            target=active_file,
+            cwd=_project_root(),
+            mode="file_exact",
+        )
+    else:
+        result = lean_verify(
+            target=active_file,
+            cwd=_project_root(),
+            mode="file_exact",
+            timeout_s=timeout_s,
+        )
     output = str(result.output or "")
     if result.ok:
         return True, f"{result.command} succeeded", output
@@ -17397,6 +17434,7 @@ def _provider_free_exact_scope_state(
     autonomy_state: dict[str, Any],
     *,
     expected_live_state: Mapping[str, Any] | None = None,
+    verification_timeout_s: float | None = None,
 ) -> dict[str, Any]:
     """Build and verify the requested scope without starting capability services."""
     expected = dict(expected_live_state or {})
@@ -17415,7 +17453,10 @@ def _provider_free_exact_scope_state(
     diagnostics = ""
     focused_verification: tuple[bool, str] | None = None
     if sorry_count == 0:
-        ok, status, diagnostics = _run_exact_file_verification(active_file)
+        ok, status, diagnostics = _run_exact_file_verification(
+            active_file,
+            timeout_s=verification_timeout_s,
+        )
         focused_verification = (ok, status)
     else:
         diagnostics = f"source scan found {sorry_count} unresolved sorry placeholder(s)"
@@ -17476,10 +17517,13 @@ def _verified_startup_preflight(
     if _workflow_kind() != "prove":
         return {}
     try:
+        restored = _restored_queue_assignment_live_state(autonomy_state)
         promoted = _provider_free_exact_scope_state(
             history,
             checkpoint_state,
             autonomy_state,
+            expected_live_state=restored,
+            verification_timeout_s=STARTUP_EXACT_VERIFICATION_TIMEOUT_S,
         )
     except Exception:
         logger.debug("verified startup preflight failed", exc_info=True)
@@ -17488,6 +17532,28 @@ def _verified_startup_preflight(
         promoted.get("final_sweep_warning_cleanup_pending")
     ):
         return promoted
+    diagnostics = str(promoted.get("diagnostics", "") or "")
+    if "timed out after" in diagnostics.lower():
+        revision = source_only_startup.capture_source_revision(
+            str(restored.get("active_file", "") or "")
+        )
+        if revision is not None:
+            deferred = source_only_startup.build_deferred_verification_snapshot(
+                restored,
+                workflow_kind=_workflow_kind(),
+                revision=revision,
+                verification_diagnostics=diagnostics,
+            )
+            if deferred:
+                _record_activity(
+                    "startup-exact-verification-deferred",
+                    "Bounded startup exact verification timed out; deferred replay to foreground",
+                    active_file=revision.path,
+                    target_symbol=str(deferred.get("target_symbol", "") or ""),
+                    timeout_s=STARTUP_EXACT_VERIFICATION_TIMEOUT_S,
+                    source_revision_sha256=revision.sha256,
+                )
+                return deferred
     return {}
 
 

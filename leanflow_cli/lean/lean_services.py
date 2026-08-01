@@ -478,7 +478,12 @@ def _terminate_command_process(process: subprocess.Popen[str]) -> None:
         pass
 
 
-def _run_command(cmd: list[str], *, cwd: Path | None = None) -> tuple[int, str]:
+def _run_command(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout_s: float | None = None,
+) -> tuple[int, str]:
     """Run one subprocess with process-tree cleanup and the effective timeout policy."""
     process: subprocess.Popen[str] | None = None
     try:
@@ -490,7 +495,10 @@ def _run_command(cmd: list[str], *, cwd: Path | None = None) -> tuple[int, str]:
             text=True,
             start_new_session=os.name != "nt",
         )
-        output, _ = process.communicate(timeout=effective_command_timeout_s(cmd))
+        effective_timeout = (
+            effective_command_timeout_s(cmd) if timeout_s is None else max(0.01, float(timeout_s))
+        )
+        output, _ = process.communicate(timeout=effective_timeout)
         return int(process.returncode or 0), output.strip()
     except subprocess.TimeoutExpired as exc:
         if process is not None:
@@ -1152,6 +1160,7 @@ def lean_verify(
     *,
     cwd: str | os.PathLike[str] | None = None,
     mode: str = "project",
+    timeout_s: float | None = None,
 ) -> LeanVerificationResult:
     """Run lake build at project, module, or file-level, returning exit code and compiler output to assess proof state."""
     project_root, _ = _project_root(cwd)
@@ -1172,13 +1181,20 @@ def lean_verify(
     else:
         normalized_mode = "project"
         command = ["lake", "build"]
+
+    def run_verification_command() -> tuple[int, str]:
+        """Preserve legacy backend call shapes unless a bounded probe is requested."""
+        if timeout_s is None:
+            return _BACKEND.run_command(command, cwd=root)
+        return _BACKEND.run_command(command, cwd=root, timeout_s=timeout_s)
+
     if root is None:
-        code, output = _BACKEND.run_command(command, cwd=root)
+        code, output = run_verification_command()
     else:
         try:
             with project_lean_heavy_admission(root) as admission:
                 if _reclaim_incremental_before_local_lean(admission):
-                    code, output = _BACKEND.run_command(command, cwd=root)
+                    code, output = run_verification_command()
                 else:
                     code, output = 1, (
                         "Lean resource admission retained: an owned LeanProbe session "

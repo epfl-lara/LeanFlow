@@ -17018,6 +17018,30 @@ def test_prepare_queue_assignment_state_warms_incremental_once(monkeypatch, tmp_
     assert autonomy_state["current_queue_assignment"]["incremental_prepare"]["success"] is True
 
 
+def test_prepare_queue_assignment_defers_warmup_after_startup_timeout(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner,
+        "_manager_prepare_incremental_queue_item",
+        lambda *_args: pytest.fail("deferred startup replayed LeanProbe"),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    autonomy_state = {}
+    live_state = {
+        "active_file": str(active),
+        "current_queue_item": {"label": "demo"},
+        "current_queue_item_slice": active.read_text(encoding="utf-8"),
+        "defer_incremental_warmup": True,
+    }
+
+    runner._prepare_queue_assignment_state(autonomy_state, live_state)
+
+    prepare = autonomy_state["current_queue_assignment"]["incremental_prepare"]
+    assert prepare["success"] is False
+    assert "startup warmup deferred" in prepare["error"]
+
+
 def test_prepare_queue_assignment_reassigns_earlier_incremental_blocker(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(
@@ -23756,7 +23780,7 @@ def test_verified_startup_preflight_uses_exact_gate_without_capability_probe(mon
     monkeypatch.setattr(
         runner,
         "_run_exact_file_verification",
-        lambda path: (True, "lake env lean Main.lean succeeded", ""),
+        lambda path, **_kwargs: (True, "lake env lean Main.lean succeeded", ""),
     )
     monkeypatch.setattr(
         runner,
@@ -23797,7 +23821,7 @@ def test_verified_startup_preflight_preserves_pending_warning_cleanup(monkeypatc
     monkeypatch.setattr(
         runner,
         "_run_exact_file_verification",
-        lambda path: (
+        lambda path, **_kwargs: (
             True,
             "lake env lean Main.lean succeeded",
             (
@@ -23819,6 +23843,56 @@ def test_verified_startup_preflight_preserves_pending_warning_cleanup(monkeypatc
     result = runner._verified_startup_preflight([], {}, {})
 
     assert result == pending
+
+
+def test_verified_startup_preflight_defers_slow_sorry_free_resume(monkeypatch, tmp_path):
+    """A timed-out preflight must reach the model without replaying Lean at startup."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    restored = {
+        "active_file": str(active),
+        "active_file_label": "Main.lean",
+        "target_symbol": "demo",
+        "declaration_scope": "file",
+        "declaration_queue_total": 1,
+        "declaration_queue_preview": [
+            {"label": "demo", "reasons": ["restored unresolved assignment"]}
+        ],
+        "current_queue_item": {
+            "label": "demo",
+            "reasons": ["restored unresolved assignment"],
+        },
+        "current_queue_item_slice": active.read_text(encoding="utf-8"),
+    }
+    recorded: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_restored_queue_assignment_live_state",
+        lambda _state: dict(restored),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_provider_free_exact_scope_state",
+        lambda *args, **kwargs: {
+            **restored,
+            "diagnostics": "Command timed out after 60 seconds",
+            "sorry_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event, _message, **details: recorded.append((event, details)),
+    )
+
+    result = runner._verified_startup_preflight([], {}, {})
+
+    assert result["proof_state_authority"] == "source_only_unverified"
+    assert result["defer_incremental_warmup"] is True
+    assert result["target_symbol"] == "demo"
+    assert result["sorry_count"] == 0
+    assert recorded[0][0] == "startup-exact-verification-deferred"
 
 
 def test_revalidation_uses_provider_free_exact_scope_without_capability_probe(monkeypatch):
@@ -23864,7 +23938,7 @@ def test_provider_free_exact_scope_reuses_single_lean_result(monkeypatch):
     monkeypatch.setattr(
         runner,
         "_run_exact_file_verification",
-        lambda path: (
+        lambda path, **_kwargs: (
             exact_calls.append(path) or True,
             "lake env lean Main.lean succeeded",
             "",

@@ -40,11 +40,19 @@ class LeanBackend:
 
         return lean_services._invoke_json_tool(name, args)
 
-    def run_command(self, cmd: list[str], *, cwd: Path | None = None) -> tuple[int, str]:
+    def run_command(
+        self,
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        timeout_s: float | None = None,
+    ) -> tuple[int, str]:
         """Run a Lake/subprocess command, forwarding to the primitive."""
         from leanflow_cli.lean import lean_services
 
-        return lean_services._run_command(cmd, cwd=cwd)
+        if timeout_s is None:
+            return lean_services._run_command(cmd, cwd=cwd)
+        return lean_services._run_command(cmd, cwd=cwd, timeout_s=timeout_s)
 
     def is_available(self, report: LeanCapabilityReport, capability: str) -> bool:
         """True when ``capability`` resolved to a non-empty managed tool in ``report``."""

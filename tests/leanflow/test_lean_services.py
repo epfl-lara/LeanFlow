@@ -171,6 +171,37 @@ def test_research_timeout_floor_applies_to_run_command(monkeypatch, tmp_path):
     assert "timed out after 900 seconds" in output
 
 
+def test_explicit_run_command_timeout_overrides_research_floor(monkeypatch, tmp_path):
+    """A bounded startup probe must not inherit the 15-minute research floor."""
+
+    class Process:
+        pid = 4324
+        returncode = None
+        observed_timeouts = []
+
+        def communicate(self, timeout):
+            self.observed_timeouts.append(timeout)
+            raise subprocess.TimeoutExpired(["lake", "env", "lean"], timeout)
+
+        def wait(self, timeout):
+            self.returncode = 1
+
+    process = Process()
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setattr(lean_services.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(lean_services.os, "killpg", lambda *_args: None)
+
+    code, output = lean_services._run_command(
+        ["lake", "env", "lean", "Demo.lean"],
+        cwd=tmp_path,
+        timeout_s=17,
+    )
+
+    assert code == 1
+    assert process.observed_timeouts[0] == 17
+    assert "timed out after 17.0 seconds" in output
+
+
 def test_diagnostics_fallback_uses_project_admission_before_local_lean(monkeypatch, tmp_path):
     """Serialize and reclaim before the diagnostics fallback starts Lake."""
     project = tmp_path / "Demo"
