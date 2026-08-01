@@ -30589,7 +30589,28 @@ def main() -> int:
                 )
         checkpoint_state = _journal_status()
         resumed_checkpoint = checkpoint_state.get("current")
-        plan_resume_block = _plan_state_resume_block(autonomy_state)
+        startup_target = str(
+            dict(autonomy_state.get("current_queue_assignment") or {}).get("target_symbol", "")
+            or "[project scope]"
+        )
+        startup_deadline = _manager_incremental_check_timeout_s()
+        plan_resume_block = transition_visibility.run_with_heartbeat(
+            lambda: _plan_state_resume_block(autonomy_state),
+            start_message=(
+                f"⏳ Startup reconciliation is checking {startup_target} with LeanProbe "
+                f"(deadline {startup_deadline}s)."
+            ),
+            heartbeat_message=lambda elapsed: (
+                f"⏳ Startup reconciliation is still checking {startup_target} "
+                f"({elapsed:.0f}s elapsed; deadline {startup_deadline}s)."
+            ),
+            finish_message=lambda _result, elapsed: (
+                f"✓ Startup reconciliation finished for {startup_target} in {elapsed:.1f}s."
+            ),
+            delay_s=5.0,
+            heartbeat_s=60.0,
+            emit=lambda message: print(message, flush=True),
+        )
         if plan_resume_block and isinstance(checkpoint_state, dict):
             # The plan artifacts are the resume authority: blank the stale
             # checkpoint pointer so its file/target identity cannot leak into

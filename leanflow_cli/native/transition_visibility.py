@@ -42,6 +42,48 @@ def run_with_slow_notice(
     return result
 
 
+def run_with_heartbeat(
+    operation: Callable[[], T],
+    *,
+    start_message: str,
+    heartbeat_message: Callable[[float], str],
+    finish_message: Callable[[T, float], str],
+    delay_s: float = 5.0,
+    heartbeat_s: float = 60.0,
+    emit: Callable[[str], None] = print,
+) -> T:
+    """Run slow synchronous work with a delayed notice and bounded heartbeats."""
+    started = time.monotonic()
+    stopped = threading.Event()
+    announced = threading.Event()
+
+    def report() -> None:
+        if stopped.is_set():
+            return
+        elapsed = max(0.0, time.monotonic() - started)
+        if announced.is_set():
+            emit(heartbeat_message(elapsed))
+        else:
+            announced.set()
+            emit(start_message)
+        timer = threading.Timer(max(1.0, float(heartbeat_s)), report)
+        timer.daemon = True
+        timer.start()
+
+    first = threading.Timer(max(0.0, float(delay_s)), report)
+    first.daemon = True
+    first.start()
+    try:
+        result = operation()
+    finally:
+        stopped.set()
+        first.cancel()
+    elapsed = max(0.0, time.monotonic() - started)
+    if announced.is_set():
+        emit(finish_message(result, elapsed))
+    return result
+
+
 def report_research_portfolio_progress(
     state: MutableMapping[str, Any],
     status: Mapping[str, Any] | None,

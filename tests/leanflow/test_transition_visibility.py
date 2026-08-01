@@ -31,6 +31,24 @@ def test_slow_notice_reports_start_and_finish(monkeypatch):
     assert messages[1].startswith("refresh finished: 2 in ")
 
 
+def test_run_with_heartbeat_reports_progress_until_completion():
+    messages: list[str] = []
+
+    result = transition_visibility.run_with_heartbeat(
+        lambda: transition_visibility.time.sleep(0.035) or "ok",
+        start_message="checking",
+        heartbeat_message=lambda elapsed: f"heartbeat {elapsed:.3f}",
+        finish_message=lambda value, elapsed: f"finished {value}",
+        delay_s=0.005,
+        heartbeat_s=0.01,
+        emit=messages.append,
+    )
+
+    assert result == "ok"
+    assert messages[0] == "checking"
+    assert messages[-1] == "finished ok"
+
+
 def test_research_portfolio_progress_reports_changes_and_bounded_heartbeat():
     state = {}
     messages = []
