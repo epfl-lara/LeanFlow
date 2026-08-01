@@ -26696,6 +26696,41 @@ def test_same_revision_verification_timeout_is_invalidated_by_source_edit(tmp_pa
     )
 
 
+def test_file_timeout_does_not_backpressure_exact_target_resume_gate(tmp_path):
+    """A slow canonical sweep must not suppress a distinct LeanProbe target check."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    autonomy_state = {
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": (
+                    "Command ['lake', 'env', 'lean', 'Main.lean'] timed out after 60 seconds"
+                ),
+            }
+        ]
+    }
+
+    assert runner._restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+        gate_scope="file",
+    )
+    assert (
+        runner._restored_assignment_verification_timeout_reason(
+            autonomy_state,
+            target_symbol="demo",
+            active_file=str(active),
+            gate_scope="target",
+        )
+        == ""
+    )
+
+
 def test_promote_document_formalization_scaffold_waits_for_planner(monkeypatch, tmp_path):
     active = tmp_path / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)

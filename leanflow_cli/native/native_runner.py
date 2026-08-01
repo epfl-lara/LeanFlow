@@ -3594,6 +3594,7 @@ def _restored_assignment_verification_timeout_reason(
     *,
     target_symbol: str,
     active_file: str,
+    gate_scope: str = "",
 ) -> str:
     """Return a same-source timeout that should backpressure resume checks.
 
@@ -3618,6 +3619,7 @@ def _restored_assignment_verification_timeout_reason(
         # exact gate must inspect the new declaration instead of inheriting a
         # timeout from the preceding proof shape.
         return ""
+    requested_scope = str(gate_scope or "").strip().lower()
     for attempt in reversed(attempts):
         if str(attempt.get("declaration_hash", "") or "").strip() != current_hash:
             continue
@@ -3625,6 +3627,25 @@ def _restored_assignment_verification_timeout_reason(
             str(attempt.get(key, "") or "") for key in ("gate_verdict", "reason")
         ).strip()
         lowered = detail.lower()
+        observed_scope = (
+            "file"
+            if re.search(r"lake.{0,24}env.{0,24}lean", lowered) or "lake build" in lowered
+            else (
+                "target"
+                if any(
+                    marker in lowered
+                    for marker in (
+                        "leanprobe",
+                        "lean_probe",
+                        "incremental",
+                        "check_target",
+                    )
+                )
+                else ""
+            )
+        )
+        if requested_scope and observed_scope and observed_scope != requested_scope:
+            continue
         if any(marker in lowered for marker in _VERIFICATION_TIMEOUT_MARKERS):
             return _single_line(detail, 500)
     return ""
@@ -22948,6 +22969,7 @@ def _recover_resume_graph_gate_evidence(
         autonomy_state,
         target_symbol=assignment_target,
         active_file=assignment_file,
+        gate_scope="target",
     )
     if assignment_file and assignment_target and prior_timeout:
         with contextlib.suppress(Exception):
