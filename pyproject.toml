@@ -245,6 +245,7 @@ files = [
   "leanflow_cli/workflows/planner_candidate_admission.py",
   "leanflow_cli/workflows/planner_evidence.py",
   "leanflow_cli/workflows/planner_graph_identity.py",
+  "leanflow_cli/workflows/advisor_failure_circuit.py",
   "leanflow_cli/workflows/advisor_route_facts.py",
   "leanflow_cli/workflows/target_handoff.py",
   "leanflow_cli/workflows/queued_helper_handoff.py",

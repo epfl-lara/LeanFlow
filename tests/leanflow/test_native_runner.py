@@ -3446,6 +3446,41 @@ def test_decompose_route_repeat_guard_blocks_exact_immediate_request(monkeypatch
     assert events[0][0][1] == "orchestrator-decompose-repeat-blocked"
 
 
+def test_managed_pre_tool_call_blocks_durable_advisor_failure_circuit(monkeypatch, tmp_path):
+    """Reject an expensive advisor call after a process-rehydrated failure budget."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem goal : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "campaign_id": "campaign-1",
+        "current_queue_assignment": {
+            "target_symbol": "goal",
+            "active_file": str(active),
+        },
+    }
+    agent = _FakeAgent()
+    agent._managed_autonomy_state = state
+    monkeypatch.setattr(
+        runner.advisor_failure_circuit,
+        "preflight_blocked",
+        lambda **kwargs: True,
+    )
+
+    blocked = runner._managed_pre_tool_call(
+        agent,
+        "lean_reasoning_help",
+        {"theorem_id": "goal", "file_path": str(active)},
+    )
+
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["status"] == "advisor_retry_exhausted"
+    assert payload["provider_called"] is False
+    assert (
+        state[runner.tool_result_loop_guard.ADVISOR_STATE_KEY]["streak"]
+        == runner.tool_result_loop_guard.ADVISOR_NUDGE_LIMIT
+    )
+
+
 @pytest.mark.parametrize("release", ["source", "assignment", "cycle"])
 def test_decompose_route_repeat_guard_releases_after_context_change(monkeypatch, tmp_path, release):
     """Allow decomposition again once its cycle, assignment, or source is distinct."""

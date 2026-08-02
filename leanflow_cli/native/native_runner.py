@@ -139,6 +139,7 @@ from leanflow_cli.runtime.file_locks import (
 )
 from leanflow_cli.runtime.skill_core import load_skill
 from leanflow_cli.workflows import (
+    advisor_failure_circuit,
     advisor_route_facts,
     campaign_epoch,
     conditional_helper_progress,
@@ -9170,13 +9171,29 @@ def _managed_pre_tool_call(
         assignment = dict(autonomy_state.get("current_queue_assignment") or {})
         advisor_target = str(assignment.get("target_symbol", "") or "").strip()
         advisor_file = str(assignment.get("active_file", "") or "").strip()
-        if tool_result_loop_guard.advisor_preflight_blocked(
+        advisor_source_revision = _source_revision_sha256(advisor_file) if advisor_file else ""
+        local_advisor_blocked = tool_result_loop_guard.advisor_preflight_blocked(
             autonomy_state,
             function_name=function_name,
             target_symbol=advisor_target,
             active_file=advisor_file,
-            source_revision_sha256=(_source_revision_sha256(advisor_file) if advisor_file else ""),
-        ):
+            source_revision_sha256=advisor_source_revision,
+        )
+        durable_advisor_blocked = advisor_failure_circuit.preflight_blocked(
+            function_name=function_name,
+            target_symbol=advisor_target,
+            active_file=advisor_file,
+            source_revision_sha256=advisor_source_revision,
+            campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
+        )
+        if durable_advisor_blocked and not local_advisor_blocked:
+            tool_result_loop_guard.hydrate_advisor_failure_streak(
+                autonomy_state,
+                target_symbol=advisor_target,
+                active_file=advisor_file,
+                source_revision_sha256=advisor_source_revision,
+            )
+        if local_advisor_blocked or durable_advisor_blocked:
             with contextlib.suppress(Exception):
                 _record_agent_activity(
                     agent,
@@ -9207,6 +9224,13 @@ def _managed_pre_tool_call(
                 },
                 ensure_ascii=False,
             )
+        advisor_failure_circuit.remember_call_source(
+            autonomy_state,
+            function_name=function_name,
+            target_symbol=advisor_target,
+            active_file=advisor_file,
+            source_revision_sha256=advisor_source_revision,
+        )
         placeholder_block = (
             source_placeholder_guard.block_unchanged_target_check(
                 function_name,
@@ -12853,6 +12877,27 @@ def _handle_managed_tool_result(
     )
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
     active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        isinstance(autonomy_state, dict)
+        and function_name in advisor_failure_circuit.ADVISOR_TOOL_NAMES
+    ):
+        with contextlib.suppress(Exception):
+            current_source_revision = _source_revision_sha256(active_file) if active_file else ""
+            advisor_source_revision = advisor_failure_circuit.consume_call_source(
+                autonomy_state,
+                function_name=function_name,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                fallback_source_revision_sha256=current_source_revision,
+            )
+            advisor_failure_circuit.observe_result(
+                function_name=function_name,
+                result_text=_result,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                source_revision_sha256=advisor_source_revision,
+                campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
+            )
     loop_decision = (
         tool_result_loop_guard.observe(
             autonomy_state,

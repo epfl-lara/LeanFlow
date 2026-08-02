@@ -343,6 +343,71 @@ def test_alternating_advisor_failures_share_one_bounded_family():
     assert blocked.streak == tool_result_loop_guard.ADVISOR_HARD_LIMIT == 3
 
 
+def test_unrelated_tools_do_not_erase_advisor_failure_family():
+    state: dict = {}
+    common = {
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    first = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_reasoning_help",
+        args={"theorem_id": "demo"},
+        result_text=json.dumps({"success": False, "status": "timeout"}),
+        **common,
+    )
+    tool_result_loop_guard.observe(
+        state,
+        function_name="lean_inspect",
+        args={"target": "demo"},
+        result_text=json.dumps({"success": True, "sorry_count": 1}),
+        **common,
+    )
+    second = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_decompose_helpers",
+        args={"theorem_id": "demo"},
+        result_text=json.dumps({"success": False, "status": "unavailable"}),
+        **common,
+    )
+
+    assert first.streak == 1
+    assert second.streak == tool_result_loop_guard.ADVISOR_NUDGE_LIMIT
+    assert tool_result_loop_guard.advisor_preflight_blocked(
+        state,
+        function_name="lean_reasoning_help",
+        **common,
+    )
+
+
+def test_durable_advisor_streak_hydrates_process_local_boundary():
+    state: dict = {}
+    common = {
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    tool_result_loop_guard.hydrate_advisor_failure_streak(state, **common)
+
+    blocked = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_reasoning_help",
+        args={"theorem_id": "demo"},
+        result_text=json.dumps(
+            {
+                "success": False,
+                "status": "advisor_retry_exhausted",
+                "provider_called": False,
+            }
+        ),
+        **common,
+    )
+
+    assert blocked.streak == tool_result_loop_guard.ADVISOR_HARD_LIMIT
+    assert blocked.close_turn is True
+
+
 def test_successful_advisor_answer_clears_failure_family():
     state: dict = {}
     common = {
@@ -367,7 +432,7 @@ def test_successful_advisor_answer_clears_failure_family():
 
     assert decision.tool_key == "lean_advisor"
     assert decision.streak == 0
-    assert tool_result_loop_guard.STATE_KEY not in state
+    assert tool_result_loop_guard.ADVISOR_STATE_KEY not in state
 
 
 def test_varying_terminal_policy_denials_share_one_family():

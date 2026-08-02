@@ -1,0 +1,264 @@
+"""Persist exact-source advisor failure budgets across managed process lifetimes."""
+
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from leanflow_cli.workflows.workflow_json_io import read_json_file, update_json_file
+from leanflow_cli.workflows.workflow_state_paths import workflow_state_root
+
+ADVISOR_TOOL_NAMES = frozenset({"lean_reasoning_help", "lean_decompose_helpers"})
+FAILURE_THRESHOLD = 2
+STATE_VERSION = 1
+PENDING_STATE_KEY = "_pending_advisor_source_revisions"
+
+
+@dataclass(frozen=True)
+class AdvisorFailureSnapshot:
+    """Describe the durable unchanged-source advisor failure circuit."""
+
+    target_symbol: str = ""
+    active_file: str = ""
+    source_revision_sha256: str = ""
+    campaign_id: str = ""
+    consecutive_failures: int = 0
+    last_status: str = ""
+
+
+def _state_path() -> Path:
+    """Return the workflow-local advisor circuit path."""
+    return workflow_state_root() / "advisor-failure-circuit.json"
+
+
+def _canonical_file(value: Any) -> str:
+    """Return a stable active-file identity across relative and absolute callers."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    project_root = str(os.getenv("LEANFLOW_PROJECT_ROOT", "") or os.getcwd())
+    expanded = os.path.expanduser(text)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(project_root, expanded)
+    return os.path.realpath(expanded)
+
+
+def _snapshot(payload: Mapping[str, Any] | None) -> AdvisorFailureSnapshot:
+    """Normalize one persisted circuit payload."""
+    raw = dict(payload or {})
+    if int(raw.get("version", 0) or 0) != STATE_VERSION:
+        return AdvisorFailureSnapshot()
+    return AdvisorFailureSnapshot(
+        target_symbol=str(raw.get("target_symbol", "") or "").strip(),
+        active_file=_canonical_file(raw.get("active_file", "")),
+        source_revision_sha256=str(raw.get("source_revision_sha256", "") or "").strip(),
+        campaign_id=str(raw.get("campaign_id", "") or "").strip(),
+        consecutive_failures=max(0, int(raw.get("consecutive_failures", 0) or 0)),
+        last_status=str(raw.get("last_status", "") or "").strip(),
+    )
+
+
+def load_snapshot() -> AdvisorFailureSnapshot:
+    """Return the current durable circuit, failing open on unreadable state."""
+    try:
+        return _snapshot(read_json_file(_state_path()))
+    except (OSError, TypeError, ValueError):
+        return AdvisorFailureSnapshot()
+
+
+def _matches(
+    snapshot: AdvisorFailureSnapshot,
+    *,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+    campaign_id: str,
+) -> bool:
+    """Return whether a snapshot owns the exact current campaign source."""
+    incoming_campaign = str(campaign_id or "").strip()
+    return bool(
+        snapshot.target_symbol == str(target_symbol or "").strip()
+        and snapshot.active_file == _canonical_file(active_file)
+        and snapshot.source_revision_sha256 == str(source_revision_sha256 or "").strip()
+        and (
+            not snapshot.campaign_id
+            or not incoming_campaign
+            or snapshot.campaign_id == incoming_campaign
+        )
+    )
+
+
+def preflight_blocked(
+    *,
+    function_name: str,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+    campaign_id: str = "",
+) -> bool:
+    """Return whether two durable failures already exhausted this exact source."""
+    if str(function_name or "").strip() not in ADVISOR_TOOL_NAMES:
+        return False
+    snapshot = load_snapshot()
+    return (
+        _matches(
+            snapshot,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            source_revision_sha256=source_revision_sha256,
+            campaign_id=campaign_id,
+        )
+        and snapshot.consecutive_failures >= FAILURE_THRESHOLD
+    )
+
+
+def remember_call_source(
+    state: dict[str, Any],
+    *,
+    function_name: str,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+) -> None:
+    """Remember the exact source one in-flight advisor request received."""
+    tool = str(function_name or "").strip()
+    if tool not in ADVISOR_TOOL_NAMES:
+        return
+    pending = dict(state.get(PENDING_STATE_KEY) or {})
+    pending[tool] = {
+        "target_symbol": str(target_symbol or "").strip(),
+        "active_file": _canonical_file(active_file),
+        "source_revision_sha256": str(source_revision_sha256 or "").strip(),
+    }
+    state[PENDING_STATE_KEY] = pending
+
+
+def consume_call_source(
+    state: dict[str, Any],
+    *,
+    function_name: str,
+    target_symbol: str,
+    active_file: str,
+    fallback_source_revision_sha256: str,
+) -> str:
+    """Return and clear the source revision owned by one completed advisor call."""
+    tool = str(function_name or "").strip()
+    pending = dict(state.get(PENDING_STATE_KEY) or {})
+    record = dict(pending.pop(tool, {}) or {})
+    if pending:
+        state[PENDING_STATE_KEY] = pending
+    else:
+        state.pop(PENDING_STATE_KEY, None)
+    if str(record.get("target_symbol", "") or "").strip() == str(
+        target_symbol or ""
+    ).strip() and _canonical_file(record.get("active_file", "")) == _canonical_file(active_file):
+        recorded_revision = str(record.get("source_revision_sha256", "") or "").strip()
+        if recorded_revision:
+            return recorded_revision
+    return str(fallback_source_revision_sha256 or "").strip()
+
+
+def _result_payload(result_text: str) -> dict[str, Any]:
+    """Return one advisor result object or an empty payload."""
+    try:
+        payload = json.loads(str(result_text or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _failed_provider_result(payload: Mapping[str, Any]) -> bool:
+    """Return whether a provider-backed advisor request supplied no answer."""
+    if payload.get("provider_called") is False:
+        return False
+    if payload.get("success") is True:
+        return False
+    status = str(payload.get("status", "") or "").strip().lower()
+    return payload.get("success") is False or status in {
+        "error",
+        "invalid_json",
+        "no_answer",
+        "timeout",
+        "unavailable",
+    }
+
+
+def observe_result(
+    *,
+    function_name: str,
+    result_text: str,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+    campaign_id: str = "",
+) -> AdvisorFailureSnapshot:
+    """Record one advisor result and return the resulting durable circuit."""
+    if str(function_name or "").strip() not in ADVISOR_TOOL_NAMES:
+        return load_snapshot()
+    payload = _result_payload(result_text)
+    if not payload:
+        return load_snapshot()
+    target = str(target_symbol or "").strip()
+    active = _canonical_file(active_file)
+    revision = str(source_revision_sha256 or "").strip()
+    campaign = str(campaign_id or "").strip()
+    if not target or not active or not revision:
+        return load_snapshot()
+
+    if not _failed_provider_result(payload):
+        if payload.get("success") is not True:
+            return load_snapshot()
+
+        def clear_if_matching(current: dict[str, Any]) -> AdvisorFailureSnapshot:
+            snapshot = _snapshot(current)
+            if _matches(
+                snapshot,
+                target_symbol=target,
+                active_file=active,
+                source_revision_sha256=revision,
+                campaign_id=campaign,
+            ):
+                current.clear()
+            return AdvisorFailureSnapshot()
+
+        update_json_file(_state_path(), clear_if_matching)
+        return load_snapshot()
+
+    status = str(payload.get("status", "") or "").strip().lower() or "error"
+    recorded: AdvisorFailureSnapshot = AdvisorFailureSnapshot()
+
+    def record(current: dict[str, Any]) -> AdvisorFailureSnapshot:
+        nonlocal recorded
+        prior = _snapshot(current)
+        consecutive = (
+            prior.consecutive_failures + 1
+            if _matches(
+                prior,
+                target_symbol=target,
+                active_file=active,
+                source_revision_sha256=revision,
+                campaign_id=campaign,
+            )
+            else 1
+        )
+        current.clear()
+        current.update(
+            {
+                "version": STATE_VERSION,
+                "target_symbol": target,
+                "active_file": active,
+                "source_revision_sha256": revision,
+                "campaign_id": campaign,
+                "consecutive_failures": consecutive,
+                "last_status": status,
+            }
+        )
+        recorded = _snapshot(current)
+        return recorded
+
+    update_json_file(_state_path(), record)
+    return recorded

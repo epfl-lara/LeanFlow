@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 STATE_KEY = "tool_result_loop_guard"
+ADVISOR_STATE_KEY = "advisor_failure_loop_guard"
 TRACKED_TOOLS = frozenset(
     {
         "lean_incremental_check:check_helper",
@@ -212,7 +213,7 @@ def advisor_preflight_blocked(
     """Return whether two unchanged-source advisor failures already occurred."""
     if str(function_name or "").strip() not in _ADVISOR_TOOL_NAMES:
         return False
-    previous = dict(state.get(STATE_KEY) or {})
+    previous = dict(state.get(ADVISOR_STATE_KEY) or {})
     return bool(
         str(previous.get("target_symbol", "") or "") == str(target_symbol or "")
         and str(previous.get("active_file", "") or "") == str(active_file or "")
@@ -221,6 +222,42 @@ def advisor_preflight_blocked(
         and str(previous.get("tool_key", "") or "") == "lean_advisor"
         and int(previous.get("streak", 0) or 0) >= ADVISOR_NUDGE_LIMIT
     )
+
+
+def hydrate_advisor_failure_streak(
+    state: dict[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+    streak: int = ADVISOR_NUDGE_LIMIT,
+) -> None:
+    """Restore a durable advisor streak into the process-local loop guard."""
+    incoming: dict[str, Any] = {
+        "target_symbol": str(target_symbol or ""),
+        "active_file": str(active_file or ""),
+        "source_revision_sha256": str(source_revision_sha256 or ""),
+        "tool_key": "lean_advisor",
+        "signature": "unchanged-source-advisor-failure",
+        "streak": max(0, int(streak)),
+    }
+    previous = dict(state.get(ADVISOR_STATE_KEY) or {})
+    same_identity = all(
+        str(previous.get(key, "") or "") == str(incoming[key])
+        for key in (
+            "target_symbol",
+            "active_file",
+            "source_revision_sha256",
+            "tool_key",
+            "signature",
+        )
+    )
+    if same_identity:
+        incoming["streak"] = max(
+            int(incoming["streak"]),
+            max(0, int(previous.get("streak", 0) or 0)),
+        )
+    state[ADVISOR_STATE_KEY] = incoming
 
 
 def observe(
@@ -245,7 +282,10 @@ def observe(
         payload = {}
     if key == "lean_advisor":
         if not isinstance(payload, Mapping) or not _advisor_failed(payload):
-            state.pop(STATE_KEY, None)
+            state.pop(ADVISOR_STATE_KEY, None)
+            previous = dict(state.get(STATE_KEY) or {})
+            if str(previous.get("tool_key", "") or "") == "lean_advisor":
+                state.pop(STATE_KEY, None)
             return LoopDecision(tool_key=key)
     elif key == "terminal":
         if not isinstance(payload, Mapping) or not _terminal_policy_denied(payload):
@@ -276,7 +316,8 @@ def observe(
         signature = "unchanged-source-outline-budget"
     else:
         signature = result_signature(result_text)
-    previous = dict(state.get(STATE_KEY) or {})
+    tracker_state_key = ADVISOR_STATE_KEY if key == "lean_advisor" else STATE_KEY
+    previous = dict(state.get(tracker_state_key) or {})
     identity = (
         target_symbol,
         active_file,
@@ -300,7 +341,7 @@ def observe(
         "signature": signature,
         "streak": streak,
     }
-    state[STATE_KEY] = tracker
+    state[tracker_state_key] = tracker
 
     if key == "lean_outline":
         bounded_nudge = max(2, OUTLINE_NUDGE_LIMIT)
