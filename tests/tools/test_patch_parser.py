@@ -6,6 +6,7 @@ from tools.utilities.patch_parser import (
     OperationType,
     apply_v4a_operations,
     parse_v4a_patch,
+    preview_v4a_update,
 )
 
 
@@ -233,6 +234,41 @@ class TestAnchorScopedApply:
         assert fo.written.count("return x + 1") == 1
         assert "def alpha():\n    x = compute()\n    return x\n" in fo.written
         assert "def beta():\n    x = compute()\n    return x + 1\n" in fo.written
+
+    def test_exact_anchor_outranks_earlier_comment_substring(self):
+        """Anchor a live declaration even when a preserved attempt names it first."""
+        content = (
+            "-- Failed attempt:\n"
+            "-- theorem result : True := by\n"
+            "--   sorry\n"
+            "\n"
+            "theorem result : True := by\n"
+            "  sorry\n"
+        )
+        patch = """\
+*** Begin Patch
+*** Update File: Main.lean
+@@
++private lemma checked : True := by
++  trivial
++
+ theorem result : True := by
+*** End Patch"""
+
+        preview, error = preview_v4a_update(patch, content)
+
+        assert error is None
+        assert preview == (
+            "-- Failed attempt:\n"
+            "-- theorem result : True := by\n"
+            "--   sorry\n"
+            "\n"
+            "private lemma checked : True := by\n"
+            "  trivial\n"
+            "\n"
+            "theorem result : True := by\n"
+            "  sorry\n"
+        )
 
     def test_anchored_hunk_does_not_edit_unrelated_exact_match_elsewhere(self):
         # target()'s body differs from the hunk by trailing whitespace (so only a fuzzy strategy

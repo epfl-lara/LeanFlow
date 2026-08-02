@@ -514,15 +514,24 @@ def _anchor_region(content: str, anchor: str) -> tuple[int, int] | None:
 
     The window runs from the anchor to just before the next declaration (or a bounded
     span), so a search/replace within it cannot escape into an unrelated region that
-    happens to hold the same text.
+    happens to hold the same text. Prefer a whole-line match before the legacy
+    substring fallback so an earlier comment or string mentioning the declaration
+    cannot capture a hunk intended for the live declaration.
     """
     lines = content.split("\n")
     anchor_norm = anchor.strip()
-    anchor_line = None
-    for i, line in enumerate(lines):
-        if line.strip() == anchor_norm or (anchor_norm and anchor_norm in line):
-            anchor_line = i
-            break
+    anchor_line = next(
+        (i for i, line in enumerate(lines) if line.strip() == anchor_norm),
+        None,
+    )
+    # Context hints are often intentionally abbreviated (for example
+    # ``@@ def greet @@``), so preserve substring matching only when no exact
+    # source line exists.
+    if anchor_line is None:
+        anchor_line = next(
+            (i for i, line in enumerate(lines) if anchor_norm and anchor_norm in line),
+            None,
+        )
     if anchor_line is None:
         return None
 

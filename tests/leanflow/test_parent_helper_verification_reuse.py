@@ -344,6 +344,41 @@ def test_helper_priority_normalizes_model_patch_to_parent_checked_location(
     assert active.read_text(encoding="utf-8") == expected
 
 
+def test_exact_helper_patch_ignores_preserved_commented_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Build the authenticated insertion beside a live target, not its failed-attempt comment."""
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    before = (
+        "-- LeanFlow failed attempt preserved.\n"
+        "-- theorem demo : True := by\n"
+        "--   sorry\n"
+        "\n"
+        "theorem demo : True := by\n"
+        "  sorry\n"
+    )
+    active, _before, expected, _declaration, _state, ready = _ready_candidate(
+        tmp_path,
+        before=before,
+    )
+
+    patch = parent_helper_verification_reuse.exact_integrated_source_patch(
+        before,
+        ready,
+        path=str(active),
+    )
+    preview, error = runner.preview_v4a_update(patch, before)
+
+    assert patch
+    assert error is None
+    assert preview == expected
+
+
 @pytest.mark.parametrize(
     ("mutation", "before_revision", "reason"),
     [
