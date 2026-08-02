@@ -19,13 +19,14 @@ def blocked_search_result(
     target_symbol: str,
     active_file: str,
 ) -> dict[str, object] | None:
-    """Return a deterministic preflight rejection for a forbidden extra search.
+    """Return a deterministic preflight rejection for a forbidden broad search.
 
     The reservation belongs to one exact queue assignment. Constructive tools
-    remain available so the prover can turn preserved evidence into a checked
-    candidate instead of being forced to discard useful momentum.
+    and local source inspection remain available so the prover can turn
+    preserved evidence into a checked candidate instead of being forced to
+    discard useful momentum.
     """
-    if function_name not in DISCOVERY_TOOL_NAMES:
+    if function_name not in BROAD_SEARCH_TOOL_NAMES:
         return None
     if not (
         bool(tracker.get("synthesis_grace_pending")) or bool(tracker.get("hard_route_requested"))

@@ -7535,6 +7535,33 @@ def _track_search_progress(
             "unique_queries": [],
             "used_tools": {},
         }
+    elif function_name in search_synthesis_admission.SOURCE_INSPECTION_TOOL_NAMES and (
+        bool(tracker.get("synthesis_grace_pending")) or bool(tracker.get("hard_route_requested"))
+    ):
+        # A construction route still needs exact local source context. Keep the
+        # broad-search debt durable, but do not turn required reads into more
+        # search debt or immediately close the fresh worker that inherited it.
+        used_tools = dict(tracker.get("used_tools") or {})
+        used_tools[function_name] = int(used_tools.get(function_name, 0) or 0) + 1
+        tracker["used_tools"] = used_tools
+        tracker["construction_source_inspection_count"] = (
+            int(tracker.get("construction_source_inspection_count", 0) or 0) + 1
+        )
+        autonomy_state["search_progress"] = tracker
+        _record_agent_activity(
+            agent,
+            "search-synthesis-source-inspection",
+            f"Allowed local source inspection while {target_symbol} owes synthesis",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            inspection_tool=function_name,
+            search_count=int(tracker.get("search_count", 0) or 0),
+            construction_source_inspection_count=int(
+                tracker.get("construction_source_inspection_count", 0) or 0
+            ),
+            campaign_progress=False,
+        )
+        return False
     elif bool(tracker.get("synthesis_grace_pending")):
         # Reserve one provider turn after the cap for a no-tool synthesis so
         # the final successful fetch can enter the lane's durable report. A

@@ -7922,10 +7922,10 @@ def test_source_inspection_loop_uses_search_budget(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("function_name", ["read_file", "search_files"])
-def test_search_synthesis_reservation_blocks_source_inspection(
+def test_search_synthesis_reservation_allows_source_inspection(
     monkeypatch, tmp_path, function_name
 ):
-    """Keep file inspection from bypassing a pending synthesis handoff."""
+    """Keep local source context available during a pending synthesis handoff."""
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
@@ -7957,13 +7957,22 @@ def test_search_synthesis_reservation_blocks_source_inspection(
         else {"path": str(tmp_path), "pattern": "angle"}
     )
 
-    blocked = runner._managed_pre_tool_call(_Agent(), function_name, args)
-
-    assert blocked is not None
-    payload = json.loads(blocked)
-    assert payload["status"] == "search_synthesis_required"
-    assert payload["blocked_tool"] == function_name
-    assert payload["provider_called"] is False
+    agent = _Agent()
+    assert runner._managed_pre_tool_call(agent, function_name, args) is None
+    assert (
+        runner._track_search_progress(
+            agent,
+            function_name,
+            args,
+            json.dumps({"success": True}),
+        )
+        is False
+    )
+    tracker = agent._managed_autonomy_state["search_progress"]
+    assert tracker["search_count"] == 12
+    assert tracker["synthesis_grace_pending"] is True
+    assert tracker["construction_source_inspection_count"] == 1
+    assert tracker["used_tools"] == {function_name: 1}
 
 
 def test_search_synthesis_reservation_blocks_broad_search_before_execution(monkeypatch, tmp_path):
