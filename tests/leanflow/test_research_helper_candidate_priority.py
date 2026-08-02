@@ -279,6 +279,62 @@ def test_stale_parametric_partial_helper_remains_actionable(monkeypatch, tmp_pat
     assert remembered.declaration == declaration
 
 
+def test_source_stale_parametric_helper_is_rechecked_by_parent(monkeypatch, tmp_path):
+    """Retry exact helper source after an earlier dependency changes the file."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    finding = _finding(str(active), job_id="campaign.orchestrator.ds-stale-source")
+    finding["source_revision_sha256"] = hashlib.sha256(active.read_bytes()).hexdigest()
+    active.write_text(
+        "private lemma new_dependency : True := by trivial\n\n"
+        "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+
+    assert research_findings.foreground_use_reason(finding) == "stale_active_file_revision"
+    assert research_findings.foreground_use_role(finding) == "evidence_only"
+    remembered = priority.remember_from_findings(
+        {},
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert remembered is not None
+    assert remembered.helper_name == "checked_helper"
+
+
+def test_source_stale_finite_helper_remains_evidence_only(monkeypatch, tmp_path):
+    """Do not let source staleness bypass finite-evidence policy."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    finding = _finding(str(active), job_id="campaign.orchestrator.em-stale-finite")
+    finding["source_revision_sha256"] = hashlib.sha256(active.read_bytes()).hexdigest()
+    finding["semantic_novelty"]["progress_anchor_eligible"] = False
+    finding["semantic_novelty"]["progress_anchor_reason"] = "declared_finite_evidence_only"
+    finding["deliverable"]["status"] = "finite_instance_verified"
+    finding["deliverable"]["bounded_experiment"] = {"n": 3}
+    active.write_text(
+        "private lemma new_dependency : True := by trivial\n\n"
+        "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        priority.remember_from_findings(
+            {},
+            (finding,),
+            campaign_id="campaign",
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        is None
+    )
+
+
 def test_refreshed_proved_eventual_graph_node_cannot_suppress_useful_helper(monkeypatch, tmp_path):
     """Retain useful source after the proved graph node's environment changes."""
     active = tmp_path / "Demo.lean"

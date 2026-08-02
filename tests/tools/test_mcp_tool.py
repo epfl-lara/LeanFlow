@@ -1418,6 +1418,18 @@ class TestConfigurableTimeouts:
         finally:
             _servers.pop("lean-proof-auto", None)
 
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["lean_diagnostic_messages", "lean_goal", "lean_term_goal"],
+    )
+    def test_lean_lsp_interactive_state_reads_have_short_deadline(self, tool_name):
+        """Do not spend a compiler-sized timeout on interactive state reads."""
+        from tools.mcp.mcp_tool import _effective_tool_request_timeout
+
+        assert _effective_tool_request_timeout("lean-lsp", tool_name, {}, 600) == 60
+        assert _effective_tool_request_timeout("lean-lsp", tool_name, {}, 30) == 30
+        assert _effective_tool_request_timeout("lean-lsp", "lean_state_search", {}, 600) == 600
+
     def test_timed_out_proof_auto_search_recycles_exact_server(self):
         """Retire the search server whose request exceeded its bounded deadline."""
         from tools.mcp.mcp_tool import MCPServerTask, _make_tool_handler, _servers

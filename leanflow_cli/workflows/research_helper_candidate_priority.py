@@ -712,7 +712,7 @@ def remember_from_findings(
     if not key.is_valid() or not target_signature or not observed_revision:
         return None
     for finding in findings:
-        if research_findings.foreground_use_role(finding) != "actionable":
+        if not _finding_allows_parent_recheck(finding):
             continue
         if str(finding.get("target_symbol", "") or "").strip() != target_symbol:
             continue
@@ -800,6 +800,23 @@ def remember_from_findings(
             _persist(autonomy_state, record)
             return record
     return None
+
+
+def _finding_allows_parent_recheck(finding: Mapping[str, Any]) -> bool:
+    """Return whether an exact helper may receive a fresh parent check.
+
+    A whole-file source revision change makes worker advice stale, but it does
+    not make captured helper source unsafe to *recheck*. Re-evaluate only that
+    staleness reason against the current parent gate; finite, nonadvancing,
+    malformed, and semantically ineligible findings remain evidence-only.
+    """
+    if research_findings.foreground_use_role(finding) == "actionable":
+        return True
+    if research_findings.foreground_use_reason(finding) != "stale_active_file_revision":
+        return False
+    current = dict(finding)
+    current.pop("source_revision_sha256", None)
+    return research_findings.foreground_use_role(current) == "actionable"
 
 
 def mark_parent_recheck(

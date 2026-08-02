@@ -144,6 +144,11 @@ _MAX_RECONNECT_RETRIES = 5
 _MAX_BACKOFF_SECONDS = 60
 _PROOF_AUTO_SERVER_NAME = "lean-proof-auto"
 _PROOF_AUTO_SEARCH_TOOL_NAME = "search_automated_proof"
+_LEAN_LSP_SERVER_NAME = "lean-lsp"
+_LEAN_LSP_INTERACTIVE_STATE_TOOLS = frozenset(
+    {"lean_diagnostic_messages", "lean_goal", "lean_term_goal"}
+)
+_LEAN_LSP_INTERACTIVE_STATE_TIMEOUT_S = 60.0
 
 _RequestResult = TypeVar("_RequestResult")
 
@@ -162,11 +167,16 @@ def _effective_tool_request_timeout(
     args: dict[str, Any],
     configured_timeout: float,
 ) -> float:
-    """Return the transport deadline, honoring proof-auto's requested search budget."""
+    """Return a workload-specific bounded transport deadline."""
     try:
         configured = max(0.001, float(configured_timeout))
     except (TypeError, ValueError):
         configured = float(_DEFAULT_TOOL_TIMEOUT)
+    if (
+        str(server_name or "").strip() == _LEAN_LSP_SERVER_NAME
+        and str(tool_name or "").strip() in _LEAN_LSP_INTERACTIVE_STATE_TOOLS
+    ):
+        return min(configured, _LEAN_LSP_INTERACTIVE_STATE_TIMEOUT_S)
     if not _is_proof_auto_search(server_name, tool_name):
         return configured
     try:

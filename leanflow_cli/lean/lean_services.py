@@ -1103,13 +1103,40 @@ def lean_inspect(
     requested_symbol_line = (
         _find_symbol_line(file_path, requested_symbol) if requested_symbol else None
     )
+    declarations = _declaration_index(file_path)
+    requested_entry = next(
+        (
+            entry
+            for entry in declarations
+            if requested_symbol
+            and (
+                int(entry.get("line", 0) or 0) == requested_symbol_line
+                if requested_symbol_line is not None
+                else str(entry.get("name", "") or "").strip()
+                in {requested_symbol, requested_symbol.split(".")[-1]}
+            )
+        ),
+        None,
+    )
+    requested_has_sorry = bool(
+        requested_entry
+        and re.search(
+            r"\bsorry\b",
+            _strip_comments_and_strings(str(requested_entry.get("text", "") or "")),
+        )
+    )
     diagnostics = _diagnostics_text(file_path, project_root, report.mcp_tools)
-    goals = _goals_text(
-        file_path,
-        project_root,
-        report.mcp_tools,
-        line=line or requested_symbol_line,
-        symbol=symbol,
+    goals = (
+        "Lean goals unavailable while the assigned declaration contains `sorry`; "
+        "use lean_incremental_check feedback after supplying a concrete replacement."
+        if requested_has_sorry
+        else _goals_text(
+            file_path,
+            project_root,
+            report.mcp_tools,
+            line=line or requested_symbol_line,
+            symbol=symbol,
+        )
     )
     sorry_count = _count_sorries(file_path)
     project_sorry_count, _ = _project_sorry_stats(project_root)
@@ -1121,7 +1148,7 @@ def lean_inspect(
         line = diagnostic.get("line")
         if isinstance(line, int) and line > 0 and line not in diagnostic_lines:
             diagnostic_lines.append(line)
-    for entry in _declaration_index(file_path):
+    for entry in declarations:
         reasons: list[str] = []
         text = str(entry.get("text", "") or "")
         if re.search(r"\bsorry\b", _strip_comments_and_strings(text)):

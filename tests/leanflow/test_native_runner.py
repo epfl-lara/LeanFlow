@@ -15078,7 +15078,8 @@ def test_handle_managed_tool_result_yields_after_hard_retry_limit(monkeypatch, t
     assert "Intermediate turn incomplete for demo" in output
     assert "campaign continues on a new route" in output
     assert "recorded this as unresolved" not in output
-    assert "-- LeanFlow failed attempt preserved after API step budget exhaustion." in text
+    assert "LeanFlow failed attempt preserved" not in text
+    assert "exact False.elim ?bad" not in text
     assert "theorem demo : True := by\n  sorry" in text
     assert not hasattr(agent, "_post_tool_result_appendix")
     assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
@@ -16210,7 +16211,8 @@ def test_review_agent_final_report_restores_sorry_after_hard_retry_limit(monkeyp
     assert "campaign remains active" in message
     assert "MANAGER RETRY LIMIT REACHED" not in message
     text = active.read_text(encoding="utf-8")
-    assert "-- LeanFlow failed attempt preserved after API step budget exhaustion." in text
+    assert "LeanFlow failed attempt preserved" not in text
+    assert "exact False.elim ?bad" not in text
     assert "theorem demo : True := by\n  sorry" in text
 
 
@@ -31534,8 +31536,8 @@ def test_restore_queue_assignment_to_baseline_sorry_replaces_only_assigned_decla
 
     assert result["restored"] is True
     text = active.read_text(encoding="utf-8")
-    assert "-- LeanFlow failed attempt preserved after API step budget exhaustion." in text
-    assert "--   exact False.elim ?bad" in text
+    assert "LeanFlow failed attempt preserved" not in text
+    assert "exact False.elim ?bad" not in text
     assert "theorem demo : True := by\n  sorry\n" in text
     assert "theorem next_demo : True := by\n  sorry" in text
 
@@ -31613,8 +31615,8 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(
     assert autonomy_state["failed_attempts"][-1]["cycle"] == 3
     assert "exact False.elim" in autonomy_state["failed_attempts"][-1]["proof_shape"]
     restored_text = active.read_text(encoding="utf-8")
-    assert "-- theorem demo : True := by" in restored_text
-    assert "--   exact False.elim ?bad" in restored_text
+    assert "-- theorem demo : True := by" not in restored_text
+    assert "exact False.elim ?bad" not in restored_text
     assert "theorem demo : True := by\n  sorry" in restored_text
     assert events[-1][0][0] == "api-step-budget-exhausted"
 

@@ -17136,37 +17136,6 @@ def _queue_assignment_slice_body(slice_text: str) -> str:
     return candidate.strip()
 
 
-def _failed_attempt_comment_lines(
-    current_text: str,
-    *,
-    target_symbol: str,
-    max_lines: int = 120,
-    max_chars: int = 20_000,
-) -> list[str]:
-    text = str(current_text or "").strip()
-    if not text:
-        return []
-    truncated = False
-    if len(text) > max_chars:
-        text = text[:max_chars].rstrip()
-        truncated = True
-    attempt_lines = text.splitlines()
-    if len(attempt_lines) > max_lines:
-        attempt_lines = attempt_lines[:max_lines]
-        truncated = True
-    lines = [
-        "-- LeanFlow failed attempt preserved after API step budget exhaustion.",
-        f"-- Declaration: {target_symbol or '[unknown]'}",
-        "-- The active proof was restored to the baseline `sorry` body below.",
-        "-- Failed attempt:",
-    ]
-    for line in attempt_lines:
-        lines.append(f"-- {line}" if line else "--")
-    if truncated:
-        lines.append("-- [truncated failed attempt]")
-    return lines
-
-
 def _restore_queue_assignment_to_baseline_sorry(
     autonomy_state: Mapping[str, Any],
     live_state: Mapping[str, Any] | None,
@@ -17197,10 +17166,11 @@ def _restore_queue_assignment_to_baseline_sorry(
     except Exception as exc:
         return {"restored": False, "reason": f"could not read active file: {exc}"}
     original_lines = original_text.splitlines()
-    replacement_lines = (
-        _failed_attempt_comment_lines(current_text, target_symbol=target_symbol)
-        + baseline_body.splitlines()
-    )
+    # Failed proof bodies already live in the queue manager, plan journal, and
+    # activity log. Copying them into production source on every recovery
+    # bloats the file, changes later anchor identities, and makes a weak model
+    # rediscover commented dead branches as if they were live context.
+    replacement_lines = baseline_body.splitlines()
     new_lines = original_lines[: start - 1] + replacement_lines + original_lines[end:]
     new_text = "\n".join(new_lines)
     if original_text.endswith("\n"):
@@ -17266,7 +17236,7 @@ def _handle_api_step_budget_exhaustion(
     cycle: int = 0,
     phase: str,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
-    """Record a failed proof attempt when API step limit exhausts mid-queue-item, restore the declaration to baseline `sorry`, and hand off to the manager with updated proof state."""
+    """Record an exhausted attempt and restore a clean baseline declaration."""
     if not _single_queue_item_turn_enabled() or not _result_exhausted_api_steps(result, agent):
         return history, dict(live_state or {}), False
     if not _same_queue_assignment_still_blocked(autonomy_state, live_state):

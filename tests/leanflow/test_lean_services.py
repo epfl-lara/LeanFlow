@@ -1952,9 +1952,8 @@ def test_lean_inspect_exact_sorry_uses_queue_evidence_when_current_goals_are_emp
     monkeypatch.setattr(
         lean_services,
         "_goals_text",
-        lambda *args, **kwargs: (
-            '{"line_context": "theorem target : True :=", "goals": null, '
-            '"goals_before": [], "goals_after": []}'
+        lambda *args, **kwargs: pytest.fail(
+            "an assigned sorry should not start a redundant LSP goal request"
         ),
     )
     monkeypatch.setattr(
@@ -1965,6 +1964,7 @@ def test_lean_inspect_exact_sorry_uses_queue_evidence_when_current_goals_are_emp
     inspection = lean_services.lean_inspect(str(target), cwd=project, symbol="target")
 
     assert inspection.blocker_kind == "sorry"
+    assert inspection.goals.startswith("Lean goals unavailable")
     assert inspection.queue_items[0]["label"] == "target"
     assert inspection.queue_items[0]["reasons"] == ["contains sorry"]
 
