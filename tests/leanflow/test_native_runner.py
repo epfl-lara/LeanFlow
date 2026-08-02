@@ -15118,6 +15118,8 @@ def test_handle_managed_tool_result_yields_after_hard_retry_limit(monkeypatch, t
     assert "theorem demo : True := by\n  sorry" in text
     assert not hasattr(agent, "_post_tool_result_appendix")
     assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert "manager_feedback_retries" not in agent._managed_autonomy_state
+    assert "manager_feedback_retry_consumed_signatures" not in agent._managed_autonomy_state
     assert agent._managed_step_boundary_closed is True
     assert any(kwargs.get("hard_retry_exhausted") is True for _, kwargs in events)
 
@@ -16249,6 +16251,8 @@ def test_review_agent_final_report_restores_sorry_after_hard_retry_limit(monkeyp
     assert "LeanFlow failed attempt preserved" not in text
     assert "exact False.elim ?bad" not in text
     assert "theorem demo : True := by\n  sorry" in text
+    assert "manager_feedback_retries" not in autonomy_state
+    assert "manager_feedback_retry_consumed_signatures" not in autonomy_state
 
 
 def test_review_agent_final_report_rejects_claim_with_manager_feedback(
@@ -31577,6 +31581,31 @@ def test_restore_queue_assignment_to_baseline_sorry_replaces_only_assigned_decla
     assert "theorem next_demo : True := by\n  sorry" in text
 
 
+def test_restore_queue_assignment_to_baseline_sorry_strips_transient_trace_state(tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text(
+        "theorem demo : True := by\n  exact False.elim ?bad\n",
+        encoding="utf-8",
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": (
+                "Assigned declaration slice (1-3):\n"
+                "theorem demo : True := by\n"
+                "  trace_state\n"
+                "  sorry"
+            ),
+        }
+    }
+
+    result = runner._restore_queue_assignment_to_baseline_sorry(autonomy_state, {})
+
+    assert result["restored"] is True
+    assert active.read_text(encoding="utf-8") == "theorem demo : True := by\n  sorry\n"
+
+
 def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(
     monkeypatch, tmp_path
 ):
@@ -31632,6 +31661,13 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(
     monkeypatch.setattr(
         runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
     )
+    runner._increment_manager_feedback_retry(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+        kind="error",
+        signature="pre-budget-route",
+    )
 
     history, updated_live_state, attempt_recorded = runner._handle_api_step_budget_exhaustion(
         _Agent(),
@@ -31653,6 +31689,8 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(
     assert "-- theorem demo : True := by" not in restored_text
     assert "exact False.elim ?bad" not in restored_text
     assert "theorem demo : True := by\n  sorry" in restored_text
+    assert "manager_feedback_retries" not in autonomy_state
+    assert "manager_feedback_retry_consumed_signatures" not in autonomy_state
     assert events[-1][0][0] == "api-step-budget-exhausted"
 
 

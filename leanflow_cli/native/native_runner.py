@@ -166,6 +166,7 @@ from leanflow_cli.workflows import (
     planner_phase,
     project_guidance,
     queued_helper_handoff,
+    recovery_source,
     research_delivery_gate,
     research_delivery_observability,
     research_finding_priority,
@@ -6683,6 +6684,12 @@ def _review_agent_final_report(
             )
         elif authority_decision.restore_baseline:
             restore_result = _restore_queue_assignment_to_baseline_sorry(autonomy_state, {})
+            _clear_manager_feedback_retries(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
+            manager_check["feedback_retry_window_reset"] = True
             if restore_result.get("restored"):
                 restore_result = dict(restore_result)
                 restore_result["reason"] = (
@@ -6743,6 +6750,12 @@ def _review_agent_final_report(
                 )
             elif feedback_kind in {"error", "sorry"} and retry_count >= retry_limit:
                 restore_result = _restore_queue_assignment_to_baseline_sorry(autonomy_state, {})
+                _clear_manager_feedback_retries(
+                    autonomy_state,
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                )
+                manager_check["feedback_retry_window_reset"] = True
                 if restore_result.get("restored"):
                     restore_result = dict(restore_result)
                     restore_result["reason"] = (
@@ -11875,6 +11888,12 @@ def _finish_queue_step_boundary(
                 restore_result = _restore_queue_assignment_to_baseline_sorry(
                     autonomy_state, live_state
                 )
+                _clear_manager_feedback_retries(
+                    autonomy_state,
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                )
+                manager_check["feedback_retry_window_reset"] = True
                 if restore_result.get("restored"):
                     restore_result = dict(restore_result)
                     restore_result["reason"] = (
@@ -12078,6 +12097,12 @@ def _finish_queue_step_boundary(
                         restore_result = _restore_queue_assignment_to_baseline_sorry(
                             autonomy_state, live_state
                         )
+                        _clear_manager_feedback_retries(
+                            autonomy_state,
+                            target_symbol=pending_target,
+                            active_file=pending_file,
+                        )
+                        manager_check["feedback_retry_window_reset"] = True
                         if restore_result.get("restored"):
                             restore_result = dict(restore_result)
                             restore_result["reason"] = (
@@ -17188,7 +17213,9 @@ def _restore_queue_assignment_to_baseline_sorry(
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
     active_file = str(assignment.get("active_file", "") or "").strip()
-    baseline_body = _queue_assignment_slice_body(str(assignment.get("slice", "") or ""))
+    baseline_body = recovery_source.strip_transient_diagnostics(
+        _queue_assignment_slice_body(str(assignment.get("slice", "") or ""))
+    ).strip()
     if not target_symbol or not active_file:
         return {"restored": False, "reason": "missing queue assignment"}
     if not baseline_body:
@@ -17321,8 +17348,8 @@ def _handle_api_step_budget_exhaustion(
         # Legacy restores + records unconditionally once past the two guards;
         # decide() restores only on a HARD_BLOCKER classification and instead
         # advances (no-op) on WARNING/FUTURE/ACCEPT evidence — adopt that.
-        # apply_decision is unnecessary here: BUDGET_EXHAUSTION consumes no
-        # retry and clears none, so the verdict is the only side effect.
+        # apply_decision is unnecessary here: the budget verdict consumes no
+        # retry. The route reset below clears any earlier local retry window.
         try:
             evidence = _shadow_live_evidence(active_file, target_symbol, live_state)
             decision = _queue_manager_from_state(autonomy_state).decide(
@@ -17353,6 +17380,11 @@ def _handle_api_step_budget_exhaustion(
         _flush_queue_manager(autonomy_state, mgr)
     _remember_failed_attempt(autonomy_state, live_state, cycle_number=cycle, refresh_baseline=False)
     restore_result = _restore_queue_assignment_to_baseline_sorry(autonomy_state, live_state)
+    _clear_manager_feedback_retries(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
     _maybe_negation_probe(autonomy_state, target_symbol=target_symbol, active_file=active_file)
     if restore_result.get("restored"):
         manager_check = _manager_verify_queue_file(active_file)
@@ -17390,6 +17422,7 @@ def _handle_api_step_budget_exhaustion(
         api_calls=api_calls,
         max_turns=max_turns,
         restore=restore_result,
+        feedback_retry_window_reset=True,
     )
     return updated_history, updated_live_state, True
 

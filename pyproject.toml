@@ -185,6 +185,7 @@ files = [
   "leanflow_cli/native/checkpoint_handoff.py",
   "leanflow_cli/native/native_lean_files.py",
   "leanflow_cli/workflows/project_guidance.py",
+  "leanflow_cli/workflows/recovery_source.py",
   "leanflow_cli/native/process_artifact_cleanup.py",
   "leanflow_cli/native/source_only_startup.py",
   "leanflow_cli/native/source_placeholder_guard.py",

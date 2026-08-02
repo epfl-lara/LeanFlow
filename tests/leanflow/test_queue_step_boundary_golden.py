@@ -392,6 +392,8 @@ def test_post_edit_hard_error_at_limit_restores_baseline_and_yields(monkeypatch)
     assert agent._managed_step_boundary_closed is True
     assert agent._managed_step_boundary_recorded_attempt is False
     assert "failed_attempts" not in autonomy_state
+    assert "manager_feedback_retries" not in autonomy_state
+    assert "manager_feedback_retry_consumed_signatures" not in autonomy_state
     assert not hasattr(agent, "_post_tool_result_appendix")
 
 
