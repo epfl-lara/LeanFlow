@@ -313,6 +313,11 @@ SEARCH_PROGRESS_HARD_LIMIT_DEFAULT = 12
 # opportunity, then close the inner turn before those no-provider calls consume
 # the remaining provider budget.
 SEARCH_SYNTHESIS_REJECTION_LIMIT_DEFAULT = 2
+# Construction workers may inspect exact local declarations after broad-search
+# synthesis is reserved, but rereading source indefinitely is still a stalled
+# route. Bound each orchestration cycle while leaving a generous context window.
+CONSTRUCTION_SOURCE_INSPECTION_HARD_LIMIT_DEFAULT = 12
+CONSTRUCTION_SOURCE_INSPECTION_REPEAT_HARD_LIMIT_DEFAULT = 4
 SEARCH_PROGRESS_TOOL_NAMES = search_synthesis_admission.DISCOVERY_TOOL_NAMES
 # The foreground conversation executes in a worker thread so the native
 # runner's main thread can keep owning process-level duties. Serialize
@@ -7376,6 +7381,24 @@ def _search_synthesis_rejection_limit() -> int:
     )
 
 
+def _construction_source_inspection_hard_limit() -> int:
+    """Return the local-read limit for one construction orchestration cycle."""
+    return _read_int_env(
+        "LEANFLOW_CONSTRUCTION_SOURCE_INSPECTION_HARD_LIMIT",
+        CONSTRUCTION_SOURCE_INSPECTION_HARD_LIMIT_DEFAULT,
+        minimum=0,
+    )
+
+
+def _construction_source_inspection_repeat_hard_limit() -> int:
+    """Return the identical local-lookup limit for one construction cycle."""
+    return _read_int_env(
+        "LEANFLOW_CONSTRUCTION_SOURCE_INSPECTION_REPEAT_HARD_LIMIT",
+        CONSTRUCTION_SOURCE_INSPECTION_REPEAT_HARD_LIMIT_DEFAULT,
+        minimum=0,
+    )
+
+
 def _terminal_result_made_concrete_progress(
     args: Mapping[str, Any] | None,
     result: str,
@@ -7555,12 +7578,19 @@ def _track_search_progress(
         # A construction route still needs exact local source context. Keep the
         # broad-search debt durable, but do not turn required reads into more
         # search debt or immediately close the fresh worker that inherited it.
+        hard_limit = _construction_source_inspection_hard_limit()
+        repeat_hard_limit = _construction_source_inspection_repeat_hard_limit()
+        tracker, inspection = search_synthesis_admission.observe_source_inspection(
+            tracker,
+            function_name=function_name,
+            args=args,
+            cycle=int(autonomy_state.get("current_cycle", 0) or 0),
+            hard_limit=hard_limit,
+            repeat_hard_limit=repeat_hard_limit,
+        )
         used_tools = dict(tracker.get("used_tools") or {})
         used_tools[function_name] = int(used_tools.get(function_name, 0) or 0) + 1
         tracker["used_tools"] = used_tools
-        tracker["construction_source_inspection_count"] = (
-            int(tracker.get("construction_source_inspection_count", 0) or 0) + 1
-        )
         autonomy_state["search_progress"] = tracker
         _record_agent_activity(
             agent,
@@ -7570,11 +7600,64 @@ def _track_search_progress(
             active_file=active_file,
             inspection_tool=function_name,
             search_count=int(tracker.get("search_count", 0) or 0),
-            construction_source_inspection_count=int(
-                tracker.get("construction_source_inspection_count", 0) or 0
-            ),
+            construction_source_inspection_count=inspection.count,
             campaign_progress=False,
         )
+        if inspection.close_turn:
+            route = "plan"
+            _set_prover_requested_route(
+                autonomy_state,
+                route=route,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
+            _append_post_tool_result_message(
+                agent,
+                "\n".join(
+                    [
+                        "[LEANFLOW-NATIVE CONSTRUCTION SOURCE BOUNDARY]",
+                        f"- declaration: {target_symbol}",
+                        (
+                            f"- observed: {inspection.count} local source reads/searches "
+                            "without a successful proof edit or check"
+                        ),
+                        "- stop rereading source and yield a concrete construction summary now",
+                        "- preserve exact declarations, dead branches, and the next proposed helper/edit",
+                        "- the outer orchestrator will continue the theorem on a refreshed route",
+                    ]
+                ),
+            )
+            _record_agent_activity(
+                agent,
+                "construction-source-inspection-boundary",
+                f"Construction source-only turn for {target_symbol} reached its bounded window",
+                target_symbol=target_symbol,
+                active_file=active_file,
+                route=route,
+                construction_source_inspection_count=inspection.count,
+                same_request_streak=inspection.same_request_streak,
+                hard_limit=hard_limit,
+                repeat_hard_limit=repeat_hard_limit,
+                campaign_progress=False,
+            )
+            with contextlib.suppress(Exception):
+                agent._managed_pending_theorem_feedback = None
+                agent._managed_step_boundary_closed = True
+            _request_step_boundary_interrupt(agent)
+            return True
+        if inspection.nudge:
+            _append_post_tool_result_message(
+                agent,
+                "\n".join(
+                    [
+                        "[LEANFLOW-NATIVE CONSTRUCTION SOURCE NUDGE]",
+                        f"- declaration: {target_symbol}",
+                        f"- local source inspections this construction cycle: {inspection.count}",
+                        "- use the declarations already read to make or check a concrete proof edit",
+                        "- do not repeat equivalent symbol lookups",
+                    ]
+                ),
+            )
         return False
     elif bool(tracker.get("synthesis_grace_pending")):
         # Reserve one provider turn after the cap for a no-tool synthesis so
@@ -9185,18 +9268,25 @@ def _managed_pre_tool_call(
         advisor_target = str(assignment.get("target_symbol", "") or "").strip()
         advisor_file = str(assignment.get("active_file", "") or "").strip()
         advisor_source_revision = _source_revision_sha256(advisor_file) if advisor_file else ""
+        advisor_target_revision = (
+            _target_declaration_sha256(advisor_file, advisor_target)
+            if advisor_file and advisor_target
+            else ""
+        )
+        advisor_residual_revision = advisor_target_revision or advisor_source_revision
         local_advisor_blocked = tool_result_loop_guard.advisor_preflight_blocked(
             autonomy_state,
             function_name=function_name,
             target_symbol=advisor_target,
             active_file=advisor_file,
-            source_revision_sha256=advisor_source_revision,
+            source_revision_sha256=advisor_residual_revision,
         )
         durable_advisor_blocked = advisor_failure_circuit.preflight_blocked(
             function_name=function_name,
             target_symbol=advisor_target,
             active_file=advisor_file,
             source_revision_sha256=advisor_source_revision,
+            target_revision_sha256=advisor_target_revision,
             campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
         )
         if durable_advisor_blocked and not local_advisor_blocked:
@@ -9204,7 +9294,7 @@ def _managed_pre_tool_call(
                 autonomy_state,
                 target_symbol=advisor_target,
                 active_file=advisor_file,
-                source_revision_sha256=advisor_source_revision,
+                source_revision_sha256=advisor_residual_revision,
             )
         if local_advisor_blocked or durable_advisor_blocked:
             with contextlib.suppress(Exception):
@@ -9243,6 +9333,7 @@ def _managed_pre_tool_call(
             target_symbol=advisor_target,
             active_file=advisor_file,
             source_revision_sha256=advisor_source_revision,
+            target_revision_sha256=advisor_target_revision,
         )
         placeholder_block = (
             source_placeholder_guard.block_unchanged_target_check(
@@ -12908,19 +12999,26 @@ def _handle_managed_tool_result(
     ):
         with contextlib.suppress(Exception):
             current_source_revision = _source_revision_sha256(active_file) if active_file else ""
-            advisor_source_revision = advisor_failure_circuit.consume_call_source(
+            current_target_revision = (
+                _target_declaration_sha256(active_file, target_symbol)
+                if active_file and target_symbol
+                else ""
+            )
+            advisor_identity = advisor_failure_circuit.consume_call_identity(
                 autonomy_state,
                 function_name=function_name,
                 target_symbol=target_symbol,
                 active_file=active_file,
                 fallback_source_revision_sha256=current_source_revision,
+                fallback_target_revision_sha256=current_target_revision,
             )
             advisor_failure_circuit.observe_result(
                 function_name=function_name,
                 result_text=_result,
                 target_symbol=target_symbol,
                 active_file=active_file,
-                source_revision_sha256=advisor_source_revision,
+                source_revision_sha256=advisor_identity.source_revision_sha256,
+                target_revision_sha256=advisor_identity.target_revision_sha256,
                 campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
             )
     loop_decision = (
@@ -12931,7 +13029,13 @@ def _handle_managed_tool_result(
             result_text=_result,
             target_symbol=target_symbol,
             active_file=active_file,
-            source_revision_sha256=(_source_revision_sha256(active_file) if active_file else ""),
+            source_revision_sha256=(
+                _target_declaration_sha256(active_file, target_symbol)
+                if function_name in advisor_failure_circuit.ADVISOR_TOOL_NAMES
+                and active_file
+                and target_symbol
+                else (_source_revision_sha256(active_file) if active_file else "")
+            ),
         )
         if isinstance(autonomy_state, dict)
         else tool_result_loop_guard.LoopDecision()

@@ -156,11 +156,12 @@ tool is reachable through the public registry.
   plan/graph state, orchestration, research portfolios, decomposition,
   monolithic partial-proof detection, recovery-source hygiene, negation,
   project proving, campaign epochs, repeated-tool loop boundaries,
-  crash-durable unchanged-source advisor failure circuits, and activity retention.
+  crash-durable residual-target advisor failure circuits, and activity retention.
 - `native/` owns the managed workflow process, startup/resume reconciliation,
   assignment transitions, completion policy, durable bounded-search synthesis
-  admission (`search_synthesis_admission.py`), same-revision verification-timeout
-  backpressure and structural-recovery handoff, verified companion-module
+  admission plus cycle-bounded construction-source inspection
+  (`search_synthesis_admission.py`), same-revision verification-timeout backpressure
+  and structural-recovery handoff, verified companion-module
   publication (`support_module_materialization.py`), checkpoints, and shutdown.
   Hard-diagnostic edit rollback lives in `managed_edit_rollback.py` so the
   exact after-image check and atomic restoration remain independently tested.

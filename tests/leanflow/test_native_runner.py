@@ -8010,6 +8010,103 @@ def test_search_synthesis_reservation_allows_source_inspection(
     assert tracker["used_tools"] == {function_name: 1}
 
 
+def test_search_synthesis_reservation_bounds_construction_source_inspection(monkeypatch, tmp_path):
+    """Yield when a construction turn only rereads source without a proof action."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self.session_id = "construction-read-loop"
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_cycle": 9,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "hard_route_requested": True,
+                    "synthesis_grace_pending": True,
+                },
+            }
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_construction_source_inspection_hard_limit", lambda: 3)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+
+    for pattern in ("top_sum_bound", "alternating_odd_bound", "opponentClaims"):
+        runner._handle_managed_tool_result(
+            agent,
+            "search_files",
+            {"path": str(active), "pattern": pattern, "output_mode": "content"},
+            json.dumps({"success": True}),
+        )
+
+    tracker = agent._managed_autonomy_state["search_progress"]
+    assert tracker["construction_source_inspection_count"] == 3
+    assert agent._managed_autonomy_state["prover_requested_route"]["route"] == "plan"
+    assert agent._managed_step_boundary_closed is True
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert any(event[0][0] == "construction-source-inspection-boundary" for event in events)
+
+
+def test_construction_source_inspection_budget_resets_for_new_cycle(monkeypatch, tmp_path):
+    """Give a fresh worker a new bounded local-read window."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_cycle": 10,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "hard_route_requested": True,
+                    "synthesis_grace_pending": True,
+                    "construction_source_inspection_cycle": 9,
+                    "construction_source_inspection_count": 8,
+                },
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "read_file",
+        {"path": str(active), "offset": 1, "limit": 40},
+        json.dumps({"success": True}),
+    )
+
+    tracker = agent._managed_autonomy_state["search_progress"]
+    assert tracker["construction_source_inspection_cycle"] == 10
+    assert tracker["construction_source_inspection_count"] == 1
+
+
 def test_search_synthesis_reservation_blocks_broad_search_before_execution(monkeypatch, tmp_path):
     """Reject the forbidden extra search before it reaches a provider."""
     active = tmp_path / "Main.lean"

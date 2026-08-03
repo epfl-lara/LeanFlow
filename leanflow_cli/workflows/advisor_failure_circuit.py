@@ -1,4 +1,4 @@
-"""Persist exact-source advisor failure budgets across managed process lifetimes."""
+"""Persist residual-target advisor failure budgets across managed process lifetimes."""
 
 from __future__ import annotations
 
@@ -14,20 +14,30 @@ from leanflow_cli.workflows.workflow_state_paths import workflow_state_root
 
 ADVISOR_TOOL_NAMES = frozenset({"lean_reasoning_help", "lean_decompose_helpers"})
 FAILURE_THRESHOLD = 2
-STATE_VERSION = 1
+STATE_VERSION = 2
+LEGACY_STATE_VERSION = 1
 PENDING_STATE_KEY = "_pending_advisor_source_revisions"
 
 
 @dataclass(frozen=True)
 class AdvisorFailureSnapshot:
-    """Describe the durable unchanged-source advisor failure circuit."""
+    """Describe the durable unchanged-residual advisor failure circuit."""
 
     target_symbol: str = ""
     active_file: str = ""
     source_revision_sha256: str = ""
+    target_revision_sha256: str = ""
     campaign_id: str = ""
     consecutive_failures: int = 0
     last_status: str = ""
+
+
+@dataclass(frozen=True)
+class AdvisorCallIdentity:
+    """Identify the file and residual declaration seen by one advisor call."""
+
+    source_revision_sha256: str = ""
+    target_revision_sha256: str = ""
 
 
 def _state_path() -> Path:
@@ -50,12 +60,13 @@ def _canonical_file(value: Any) -> str:
 def _snapshot(payload: Mapping[str, Any] | None) -> AdvisorFailureSnapshot:
     """Normalize one persisted circuit payload."""
     raw = dict(payload or {})
-    if int(raw.get("version", 0) or 0) != STATE_VERSION:
+    if int(raw.get("version", 0) or 0) not in {LEGACY_STATE_VERSION, STATE_VERSION}:
         return AdvisorFailureSnapshot()
     return AdvisorFailureSnapshot(
         target_symbol=str(raw.get("target_symbol", "") or "").strip(),
         active_file=_canonical_file(raw.get("active_file", "")),
         source_revision_sha256=str(raw.get("source_revision_sha256", "") or "").strip(),
+        target_revision_sha256=str(raw.get("target_revision_sha256", "") or "").strip(),
         campaign_id=str(raw.get("campaign_id", "") or "").strip(),
         consecutive_failures=max(0, int(raw.get("consecutive_failures", 0) or 0)),
         last_status=str(raw.get("last_status", "") or "").strip(),
@@ -76,14 +87,22 @@ def _matches(
     target_symbol: str,
     active_file: str,
     source_revision_sha256: str,
+    target_revision_sha256: str,
     campaign_id: str,
 ) -> bool:
-    """Return whether a snapshot owns the exact current campaign source."""
+    """Return whether a snapshot owns the current campaign residual target."""
     incoming_campaign = str(campaign_id or "").strip()
+    snapshot_target = str(snapshot.target_revision_sha256 or "").strip()
+    incoming_target = str(target_revision_sha256 or "").strip()
+    revision_matches = (
+        snapshot_target == incoming_target
+        if snapshot_target and incoming_target
+        else snapshot.source_revision_sha256 == str(source_revision_sha256 or "").strip()
+    )
     return bool(
         snapshot.target_symbol == str(target_symbol or "").strip()
         and snapshot.active_file == _canonical_file(active_file)
-        and snapshot.source_revision_sha256 == str(source_revision_sha256 or "").strip()
+        and revision_matches
         and (
             not snapshot.campaign_id
             or not incoming_campaign
@@ -98,9 +117,10 @@ def preflight_blocked(
     target_symbol: str,
     active_file: str,
     source_revision_sha256: str,
+    target_revision_sha256: str = "",
     campaign_id: str = "",
 ) -> bool:
-    """Return whether two durable failures already exhausted this exact source."""
+    """Return whether two durable failures exhausted this residual target."""
     if str(function_name or "").strip() not in ADVISOR_TOOL_NAMES:
         return False
     snapshot = load_snapshot()
@@ -110,6 +130,7 @@ def preflight_blocked(
             target_symbol=target_symbol,
             active_file=active_file,
             source_revision_sha256=source_revision_sha256,
+            target_revision_sha256=target_revision_sha256,
             campaign_id=campaign_id,
         )
         and snapshot.consecutive_failures >= FAILURE_THRESHOLD
@@ -123,8 +144,9 @@ def remember_call_source(
     target_symbol: str,
     active_file: str,
     source_revision_sha256: str,
+    target_revision_sha256: str = "",
 ) -> None:
-    """Remember the exact source one in-flight advisor request received."""
+    """Remember the exact source and target one in-flight advisor request received."""
     tool = str(function_name or "").strip()
     if tool not in ADVISOR_TOOL_NAMES:
         return
@@ -133,19 +155,21 @@ def remember_call_source(
         "target_symbol": str(target_symbol or "").strip(),
         "active_file": _canonical_file(active_file),
         "source_revision_sha256": str(source_revision_sha256 or "").strip(),
+        "target_revision_sha256": str(target_revision_sha256 or "").strip(),
     }
     state[PENDING_STATE_KEY] = pending
 
 
-def consume_call_source(
+def consume_call_identity(
     state: dict[str, Any],
     *,
     function_name: str,
     target_symbol: str,
     active_file: str,
     fallback_source_revision_sha256: str,
-) -> str:
-    """Return and clear the source revision owned by one completed advisor call."""
+    fallback_target_revision_sha256: str = "",
+) -> AdvisorCallIdentity:
+    """Return and clear the source identity owned by one completed advisor call."""
     tool = str(function_name or "").strip()
     pending = dict(state.get(PENDING_STATE_KEY) or {})
     record = dict(pending.pop(tool, {}) or {})
@@ -157,9 +181,38 @@ def consume_call_source(
         target_symbol or ""
     ).strip() and _canonical_file(record.get("active_file", "")) == _canonical_file(active_file):
         recorded_revision = str(record.get("source_revision_sha256", "") or "").strip()
-        if recorded_revision:
-            return recorded_revision
-    return str(fallback_source_revision_sha256 or "").strip()
+        recorded_target = str(record.get("target_revision_sha256", "") or "").strip()
+        if recorded_revision or recorded_target:
+            return AdvisorCallIdentity(
+                source_revision_sha256=(
+                    recorded_revision or str(fallback_source_revision_sha256 or "").strip()
+                ),
+                target_revision_sha256=(
+                    recorded_target or str(fallback_target_revision_sha256 or "").strip()
+                ),
+            )
+    return AdvisorCallIdentity(
+        source_revision_sha256=str(fallback_source_revision_sha256 or "").strip(),
+        target_revision_sha256=str(fallback_target_revision_sha256 or "").strip(),
+    )
+
+
+def consume_call_source(
+    state: dict[str, Any],
+    *,
+    function_name: str,
+    target_symbol: str,
+    active_file: str,
+    fallback_source_revision_sha256: str,
+) -> str:
+    """Return the preflight file revision for compatibility callers."""
+    return consume_call_identity(
+        state,
+        function_name=function_name,
+        target_symbol=target_symbol,
+        active_file=active_file,
+        fallback_source_revision_sha256=fallback_source_revision_sha256,
+    ).source_revision_sha256
 
 
 def _result_payload(result_text: str) -> dict[str, Any]:
@@ -194,6 +247,7 @@ def observe_result(
     target_symbol: str,
     active_file: str,
     source_revision_sha256: str,
+    target_revision_sha256: str = "",
     campaign_id: str = "",
 ) -> AdvisorFailureSnapshot:
     """Record one advisor result and return the resulting durable circuit."""
@@ -205,6 +259,7 @@ def observe_result(
     target = str(target_symbol or "").strip()
     active = _canonical_file(active_file)
     revision = str(source_revision_sha256 or "").strip()
+    target_revision = str(target_revision_sha256 or "").strip()
     campaign = str(campaign_id or "").strip()
     if not target or not active or not revision:
         return load_snapshot()
@@ -220,6 +275,7 @@ def observe_result(
                 target_symbol=target,
                 active_file=active,
                 source_revision_sha256=revision,
+                target_revision_sha256=target_revision,
                 campaign_id=campaign,
             ):
                 current.clear()
@@ -241,6 +297,7 @@ def observe_result(
                 target_symbol=target,
                 active_file=active,
                 source_revision_sha256=revision,
+                target_revision_sha256=target_revision,
                 campaign_id=campaign,
             )
             else 1
@@ -252,6 +309,7 @@ def observe_result(
                 "target_symbol": target,
                 "active_file": active,
                 "source_revision_sha256": revision,
+                "target_revision_sha256": target_revision,
                 "campaign_id": campaign,
                 "consecutive_failures": consecutive,
                 "last_status": status,

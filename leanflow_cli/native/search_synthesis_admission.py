@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 BROAD_SEARCH_TOOL_NAMES = frozenset(
@@ -10,6 +12,16 @@ BROAD_SEARCH_TOOL_NAMES = frozenset(
 )
 SOURCE_INSPECTION_TOOL_NAMES = frozenset({"read_file", "search_files"})
 DISCOVERY_TOOL_NAMES = BROAD_SEARCH_TOOL_NAMES | SOURCE_INSPECTION_TOOL_NAMES
+
+
+@dataclass(frozen=True)
+class SourceInspectionDecision:
+    """Describe one construction-mode local source-inspection observation."""
+
+    count: int = 0
+    same_request_streak: int = 0
+    nudge: bool = False
+    close_turn: bool = False
 
 
 def blocked_search_result(
@@ -105,3 +117,85 @@ def request_description(
             if not part.endswith("=")
         )
     return ""
+
+
+def source_inspection_fingerprint(
+    function_name: str,
+    args: Mapping[str, Any] | None,
+) -> str:
+    """Return a presentation-insensitive identity for one local source lookup."""
+    arguments = dict(args or {})
+    if function_name == "search_files":
+        material = "|".join(
+            (
+                function_name,
+                str(arguments.get("path", "") or "").strip(),
+                str(arguments.get("pattern", "") or "").strip(),
+                str(arguments.get("file_glob", "") or "").strip(),
+            )
+        )
+    elif function_name == "read_file":
+        material = "|".join(
+            (
+                function_name,
+                str(arguments.get("path", "") or "").strip(),
+                str(arguments.get("offset", "") or "").strip(),
+                str(arguments.get("limit", "") or "").strip(),
+            )
+        )
+    else:
+        return ""
+    return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def observe_source_inspection(
+    tracker: Mapping[str, Any],
+    *,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    cycle: int,
+    hard_limit: int,
+    repeat_hard_limit: int,
+) -> tuple[dict[str, Any], SourceInspectionDecision]:
+    """Advance one cycle-local construction source window."""
+    updated = dict(tracker)
+    stored_cycle = updated.get("construction_source_inspection_cycle")
+    if stored_cycle is None or int(stored_cycle) != int(cycle):
+        updated["construction_source_inspection_cycle"] = int(cycle)
+        updated["construction_source_inspection_count"] = 0
+        updated["construction_source_inspection_same_request_streak"] = 0
+        updated.pop("construction_source_inspection_last_fingerprint", None)
+        updated.pop("construction_source_inspection_nudged", None)
+    fingerprint = source_inspection_fingerprint(function_name, args)
+    same_request_streak = (
+        int(updated.get("construction_source_inspection_same_request_streak", 0) or 0) + 1
+        if fingerprint
+        and str(updated.get("construction_source_inspection_last_fingerprint", "") or "")
+        == fingerprint
+        else 1
+    )
+    count = int(updated.get("construction_source_inspection_count", 0) or 0) + 1
+    updated["construction_source_inspection_count"] = count
+    updated["construction_source_inspection_same_request_streak"] = same_request_streak
+    updated["construction_source_inspection_last_fingerprint"] = fingerprint
+    close_turn = bool(
+        (hard_limit and count >= hard_limit)
+        or (repeat_hard_limit and same_request_streak >= repeat_hard_limit)
+    )
+    nudge_at = max(2, hard_limit // 2) if hard_limit else 0
+    nudge = bool(
+        not close_turn
+        and nudge_at
+        and count >= nudge_at
+        and not bool(updated.get("construction_source_inspection_nudged"))
+    )
+    if nudge:
+        updated["construction_source_inspection_nudged"] = True
+    if close_turn:
+        updated["construction_source_inspection_boundary"] = True
+    return updated, SourceInspectionDecision(
+        count=count,
+        same_request_streak=same_request_streak,
+        nudge=nudge,
+        close_turn=close_turn,
+    )

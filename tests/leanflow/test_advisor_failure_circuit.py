@@ -42,12 +42,35 @@ def test_failures_survive_process_local_state_and_block_third_call(monkeypatch, 
     assert advisor_failure_circuit.load_snapshot().consecutive_failures == 2
 
 
-def test_source_change_releases_durable_advisor_circuit(monkeypatch, tmp_path):
+def test_helper_only_source_change_keeps_durable_advisor_circuit_closed(monkeypatch, tmp_path):
     _configure_state_path(monkeypatch, tmp_path)
     common = {
         "target_symbol": "result",
         "active_file": str(tmp_path / "Main.lean"),
         "source_revision_sha256": "old-source",
+        "target_revision_sha256": "same-target",
+        "campaign_id": "campaign-1",
+    }
+    for tool in ("lean_reasoning_help", "lean_decompose_helpers"):
+        advisor_failure_circuit.observe_result(
+            function_name=tool,
+            result_text=json.dumps({"success": False, "status": "timeout"}),
+            **common,
+        )
+
+    assert advisor_failure_circuit.preflight_blocked(
+        function_name="lean_reasoning_help",
+        **{**common, "source_revision_sha256": "new-source"},
+    )
+
+
+def test_target_declaration_change_releases_durable_advisor_circuit(monkeypatch, tmp_path):
+    _configure_state_path(monkeypatch, tmp_path)
+    common = {
+        "target_symbol": "result",
+        "active_file": str(tmp_path / "Main.lean"),
+        "source_revision_sha256": "old-source",
+        "target_revision_sha256": "old-target",
         "campaign_id": "campaign-1",
     }
     for tool in ("lean_reasoning_help", "lean_decompose_helpers"):
@@ -59,7 +82,11 @@ def test_source_change_releases_durable_advisor_circuit(monkeypatch, tmp_path):
 
     assert not advisor_failure_circuit.preflight_blocked(
         function_name="lean_reasoning_help",
-        **{**common, "source_revision_sha256": "new-source"},
+        **{
+            **common,
+            "source_revision_sha256": "new-source",
+            "target_revision_sha256": "new-target",
+        },
     )
 
 
@@ -123,15 +150,18 @@ def test_completed_call_is_charged_to_its_preflight_source_revision(tmp_path):
         target_symbol="result",
         active_file=active,
         source_revision_sha256="source-before-call",
+        target_revision_sha256="target-before-call",
     )
 
-    revision = advisor_failure_circuit.consume_call_source(
+    identity = advisor_failure_circuit.consume_call_identity(
         state,
         function_name="lean_reasoning_help",
         target_symbol="result",
         active_file=active,
         fallback_source_revision_sha256="source-after-worker-edit",
+        fallback_target_revision_sha256="target-after-worker-edit",
     )
 
-    assert revision == "source-before-call"
+    assert identity.source_revision_sha256 == "source-before-call"
+    assert identity.target_revision_sha256 == "target-before-call"
     assert advisor_failure_circuit.PENDING_STATE_KEY not in state
