@@ -9,6 +9,7 @@ import pytest
 from leanflow_cli.native.parent_maintenance import (
     quiesce_parent_maintained_actions,
     run_with_parent_maintenance,
+    start_parent_maintained_action,
 )
 
 
@@ -108,3 +109,41 @@ def test_uncooperative_parent_maintained_writer_remains_visible_to_finalizer():
     )
     release.set()
     assert quiesce_parent_maintained_actions(timeout_s=1.0) == ()
+
+
+def test_named_auxiliary_action_is_single_flight_and_never_blocks_caller():
+    started = threading.Event()
+    release = threading.Event()
+    duplicate_ran = threading.Event()
+
+    def action() -> None:
+        started.set()
+        release.wait(timeout=2)
+
+    assert start_parent_maintained_action(action, name="research-maintenance") is True
+    assert started.wait(timeout=1)
+    assert (
+        start_parent_maintained_action(
+            duplicate_ran.set,
+            name="research-maintenance",
+        )
+        is False
+    )
+    assert not duplicate_ran.is_set()
+
+    release.set()
+    assert quiesce_parent_maintained_actions(timeout_s=1) == ()
+
+
+def test_named_auxiliary_action_failure_is_contained():
+    finished = threading.Event()
+
+    def action() -> None:
+        try:
+            raise RuntimeError("optional maintenance failed")
+        finally:
+            finished.set()
+
+    assert start_parent_maintained_action(action, name="failing-maintenance") is True
+    assert finished.wait(timeout=1)
+    assert quiesce_parent_maintained_actions(timeout_s=1) == ()

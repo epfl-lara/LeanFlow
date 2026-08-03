@@ -14,6 +14,7 @@ T = TypeVar("T")
 
 _ACTIVE_WORKERS_LOCK = threading.Lock()
 _ACTIVE_WORKERS: set[threading.Thread] = set()
+_ACTIVE_NAMED_WORKERS: dict[str, threading.Thread] = {}
 
 
 def _track_worker(worker: threading.Thread) -> None:
@@ -26,6 +27,45 @@ def _forget_worker(worker: threading.Thread) -> None:
     """Retire one completed daemon action from the process-owner registry."""
     with _ACTIVE_WORKERS_LOCK:
         _ACTIVE_WORKERS.discard(worker)
+        for name, active in tuple(_ACTIVE_NAMED_WORKERS.items()):
+            if active is worker:
+                _ACTIVE_NAMED_WORKERS.pop(name, None)
+
+
+def start_parent_maintained_action(
+    action: Callable[[], None],
+    *,
+    name: str,
+    settle_s: float = 0.0,
+) -> bool:
+    """Start one named auxiliary action without blocking the process owner.
+
+    Coalesce repeated submissions while the same named action is live. The
+    worker is registered with native finalization, and an auxiliary failure is
+    logged instead of escaping into foreground proof control flow.
+    """
+    worker_name = str(name or "leanflow-parent-maintenance").strip()
+
+    def target() -> None:
+        try:
+            action()
+        except Exception:
+            logger.debug("parent-maintained auxiliary action failed", exc_info=True)
+        finally:
+            _forget_worker(threading.current_thread())
+
+    with _ACTIVE_WORKERS_LOCK:
+        current = _ACTIVE_NAMED_WORKERS.get(worker_name)
+        if current is not None and current.is_alive():
+            return False
+        worker = threading.Thread(target=target, name=worker_name, daemon=True)
+        _ACTIVE_WORKERS.add(worker)
+        _ACTIVE_NAMED_WORKERS[worker_name] = worker
+        worker.start()
+    # Let trivial reconciliations retain their historical immediate
+    # visibility without ever waiting materially on a real portfolio refresh.
+    worker.join(timeout=max(0.0, float(settle_s)))
+    return True
 
 
 def quiesce_parent_maintained_actions(

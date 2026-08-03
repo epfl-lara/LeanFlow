@@ -4300,8 +4300,50 @@ def test_stopped_research_portfolio_cannot_refill(monkeypatch):
     runner._maintain_research_portfolio(state, {"target_symbol": "result"})
 
 
+def test_slow_research_refresh_never_holds_foreground_transition(monkeypatch):
+    """Optional portfolio work continues without blocking the proof queue."""
+    started = threading.Event()
+    release = threading.Event()
+    state: dict[str, object] = {}
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 1
+
+    def maintain(**_kwargs):
+        started.set()
+        assert release.wait(timeout=2)
+        return {"active": 1, "active_jobs": ["campaign.ds-001"]}
+
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 1)
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda _state: False)
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign", "epoch": 1},
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "pending_worker_refresh", lambda **_kwargs: {})
+    monkeypatch.setattr(runner.research_portfolio, "maintain_portfolio", maintain)
+
+    before = time.monotonic()
+    runner._maintain_research_portfolio(
+        state,
+        {"target_symbol": "result", "active_file": "/tmp/Main.lean"},
+    )
+    elapsed = time.monotonic() - before
+
+    assert started.wait(timeout=1)
+    assert elapsed < 0.25
+    release.set()
+    from leanflow_cli.native import parent_maintenance
+
+    assert parent_maintenance.quiesce_parent_maintained_actions(timeout_s=1) == ()
+
+
 def test_completed_worker_is_reaped_during_slow_foreground_tool(monkeypatch, tmp_path):
-    """The process-owning main thread polls while the conversation thread blocks."""
+    """A tracked maintenance worker reaps while foreground proof work blocks."""
     reaped = threading.Event()
     foreground_returned = threading.Event()
     caller_thread_id = threading.get_ident()
@@ -4362,7 +4404,8 @@ def test_completed_worker_is_reaped_during_slow_foreground_tool(monkeypatch, tmp
 
     assert result["interrupted"] is False
     assert foreground_returned.is_set()
-    assert poll_thread_ids == [caller_thread_id]
+    assert len(poll_thread_ids) == 1
+    assert poll_thread_ids[0] != caller_thread_id
     assert requests == [
         {
             "campaign_id": "campaign-demo",
@@ -12308,10 +12351,10 @@ def test_active_anchored_followup_defers_source_without_acknowledging_it(monkeyp
     )
 
 
-def test_research_finding_staging_waits_for_portfolio_maintenance_transaction(
+def test_research_finding_staging_defers_during_portfolio_maintenance_transaction(
     monkeypatch, tmp_path
 ):
-    """Never snapshot a source finding before its replacement reservation is published."""
+    """Never hold foreground delivery behind an optional portfolio transaction."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
     monkeypatch.setattr(
@@ -12369,14 +12412,18 @@ def test_research_finding_staging_waits_for_portfolio_maintenance_transaction(
         worker.start()
         assert worker_entered.wait(timeout=1.0)
         assert not summary_loaded.wait(timeout=0.2)
-        assert worker.is_alive()
+        worker.join(timeout=1.0)
+        assert not worker.is_alive()
 
-    worker.join(timeout=2.0)
-
-    assert not worker.is_alive()
     assert errors == []
-    assert len(result) == 1
-    assert source_job_id in result[0]
+    assert result == [""]
+    assert not summary_loaded.is_set()
+
+    prompt = runner._take_research_findings_prompt(
+        state,
+        {"target_symbol": target_symbol, "active_file": active_file},
+    )
+    assert source_job_id in prompt
 
 
 def test_checked_source_negation_invalidates_assignment_and_yields(monkeypatch, tmp_path):

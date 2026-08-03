@@ -119,6 +119,7 @@ from leanflow_cli.native import (
 from leanflow_cli.native.parent_maintenance import (
     quiesce_parent_maintained_actions,
     run_with_parent_maintenance,
+    start_parent_maintained_action,
 )
 from leanflow_cli.native.runtime_cleanup import (
     NativeRunFinalizer,
@@ -26052,7 +26053,7 @@ def _build_research_portfolio_parent_poll(
     *,
     continue_after_step_boundary: bool = False,
 ) -> Callable[[], None] | None:
-    """Build a main-thread heartbeat that reaps/refills during slow tool calls.
+    """Build a nonblocking heartbeat that reaps/refills during slow tool calls.
 
     The callback captures immutable ownership and route inputs before the
     conversation worker starts, then refreshes only theorem-local attempt
@@ -26075,26 +26076,9 @@ def _build_research_portfolio_parent_poll(
         logger.debug("research portfolio parent poll setup failed", exc_info=True)
         return None
 
-    def poll() -> None:
-        if not _research_portfolio_poll_is_current(
-            agent,
-            autonomy_state,
-            request,
-            continue_after_step_boundary=continue_after_step_boundary,
-        ):
-            return
-        # The conversation thread may be blocked inside a long Lean/search
-        # tool without emitting activity. The existing one-second owner loop
-        # is the liveness clock as well as the dispatch reaper. Heartbeat
-        # persistence is observational and must not starve worker reaping.
-        try:
-            touch_workflow_runtime_heartbeat(process_id=os.getpid())
-        except Exception:
-            logger.debug("research portfolio runtime heartbeat failed", exc_info=True)
+    def maintain() -> None:
+        """Run one serialized poll after revalidating the captured assignment."""
         with _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK:
-            # A tool callback may have held this lock while the assignment,
-            # campaign epoch, or lifecycle state changed. Recheck ownership
-            # after waiting so a stale callback cannot consume/refill a scope.
             if not _research_portfolio_poll_is_current(
                 agent,
                 autonomy_state,
@@ -26132,6 +26116,32 @@ def _build_research_portfolio_parent_poll(
                 active_file=refreshed_request.active_file,
                 status=status,
             )
+
+    def poll() -> None:
+        if not _research_portfolio_poll_is_current(
+            agent,
+            autonomy_state,
+            request,
+            continue_after_step_boundary=continue_after_step_boundary,
+        ):
+            return
+        # The conversation thread may be blocked inside a long Lean/search
+        # tool without emitting activity. The existing one-second owner loop
+        # is the liveness clock as well as the dispatch reaper. Heartbeat
+        # persistence is observational and must not starve worker reaping.
+        try:
+            touch_workflow_runtime_heartbeat(process_id=os.getpid())
+        except Exception:
+            logger.debug("research portfolio runtime heartbeat failed", exc_info=True)
+        # Portfolio route construction, process retirement, and launch
+        # publication are auxiliary work and can take tens of seconds. Keep
+        # the process-owner supervision loop responsive while one durable,
+        # finalizer-visible maintenance transaction runs in the background.
+        start_parent_maintained_action(
+            maintain,
+            name="leanflow-research-portfolio-maintenance",
+            settle_s=0.05,
+        )
 
     return poll
 
@@ -26227,7 +26237,7 @@ def _maintain_research_portfolio(
     autonomy_state: dict[str, Any],
     live_state: Mapping[str, Any] | None,
 ) -> None:
-    """Poll and refill the process-isolated research portfolio."""
+    """Schedule one process-isolated portfolio refresh without blocking proof flow."""
     if not research_mode.research_mode_enabled() or bool(
         autonomy_state.get("_native_research_portfolio_stopped")
     ):
@@ -26238,27 +26248,14 @@ def _maintain_research_portfolio(
         or autonomy_state.get("terminal_outcome") == "disproved"
     ):
         return
-    try:
+
+    def maintain() -> None:
         with _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK:
             request = _research_portfolio_poll_request(autonomy_state, live_state)
-            scope_label = request.target_symbol or "[project scope]"
             status = _finalize_research_portfolio_poll(
                 autonomy_state,
                 request,
-                transition_visibility.run_with_slow_notice(
-                    lambda: _execute_research_portfolio_poll(request),
-                    start_message=(
-                        "⏳ Research portfolio refresh is still running for "
-                        f"{scope_label}; foreground queue transition is waiting."
-                    ),
-                    finish_message=lambda result, elapsed: (
-                        "✓ Research portfolio refresh finished for "
-                        f"{scope_label} in {elapsed:.1f}s "
-                        f"(active {int(dict(result or {}).get('active', 0) or 0)}, "
-                        f"consumed {len(dict(result or {}).get('consumed') or [])}, "
-                        f"launched {len(dict(result or {}).get('launched') or [])})."
-                    ),
-                ),
+                _execute_research_portfolio_poll(request),
             )
             autonomy_state["research_portfolio"] = status
             transition_visibility.report_research_portfolio_progress(
@@ -26275,8 +26272,12 @@ def _maintain_research_portfolio(
                 status=status,
             )
             _retry_deferred_scratch_artifact_cleanup(autonomy_state)
-    except Exception:
-        logger.debug("research portfolio maintenance failed", exc_info=True)
+
+    start_parent_maintained_action(
+        maintain,
+        name="leanflow-research-portfolio-maintenance",
+        settle_s=0.05,
+    )
 
 
 def _poll_research_portfolio_after_tool_result(agent: Any, function_name: str) -> None:
@@ -26430,11 +26431,12 @@ def _take_research_findings_prompt(
     scope = _orchestrator_event_scope(autonomy_state, live_state)
     if not research_delivery_gate.scan_required(autonomy_state, scope=scope):
         return ""
-    wait_started = time.monotonic()
-    with _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK:
-        lock_wait_s = max(0.0, time.monotonic() - wait_started)
-        # Parent maintenance may have delivered and cleared this exact prefix
-        # while this caller waited. Recheck under the shared lock.
+    if not _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK.acquire(blocking=False):
+        # A portfolio transaction publishes findings and its replacement
+        # reservation atomically. Defer delivery to the next safe boundary
+        # instead of holding foreground proof flow behind optional research.
+        return ""
+    try:
         if not research_delivery_gate.scan_required(autonomy_state, scope=scope):
             return ""
         scan_started = time.monotonic()
@@ -26444,7 +26446,7 @@ def _take_research_findings_prompt(
         if autonomy_state.pop(_RESEARCH_FINDINGS_SCAN_FAILED_KEY, False):
             return ""
         research_delivery_gate.mark_scanned(autonomy_state, scope=scope)
-        if lock_wait_s + scan_s >= 1.0:
+        if scan_s >= 1.0:
             with contextlib.suppress(Exception):
                 _record_activity(
                     "research-finding-delivery-scan-finished",
@@ -26455,12 +26457,14 @@ def _take_research_findings_prompt(
                         )
                         or ""
                     ),
-                    lock_wait_s=round(lock_wait_s, 3),
+                    lock_wait_s=0.0,
                     scan_s=round(scan_s, 3),
-                    elapsed_s=round(lock_wait_s + scan_s, 3),
+                    elapsed_s=round(scan_s, 3),
                     prompt_staged=bool(prompt),
                 )
         return prompt
+    finally:
+        _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK.release()
 
 
 _RESEARCH_FINDINGS_SCAN_FAILED_KEY = "_research_findings_delivery_scan_failed"
