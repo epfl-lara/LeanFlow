@@ -4878,19 +4878,16 @@ def test_plan_route_arm_rolls_back_same_tick_replacement(monkeypatch, tmp_path):
         )
     )
     route_thread.start()
-    deadline = time.monotonic() + 2
-    while (
-        not agent._managed_autonomy_state.get(runner._PLANNER_CAPACITY_INTENT_KEY)
-        and time.monotonic() < deadline
-    ):
-        time.sleep(0.01)
-    assert agent._managed_autonomy_state[runner._PLANNER_CAPACITY_INTENT_KEY] is True
+    route_thread.join(timeout=0.5)
+    assert not route_thread.is_alive()
+    assert agent._managed_autonomy_state["prover_requested_route"]["route"] == "plan"
     release_maintain.set()
     poll_thread.join(timeout=2)
-    route_thread.join(timeout=2)
+    from leanflow_cli.native import parent_maintenance
+
+    assert parent_maintenance.quiesce_parent_maintained_actions(timeout_s=2) == ()
 
     assert not poll_thread.is_alive()
-    assert not route_thread.is_alive()
     assert "refill" not in calls[0]
     assert rollbacks == [("campaign-race", ("campaign-race.em-002",))]
     assert published[0]["active_jobs"] == ["campaign-race.ds-001"]
@@ -4979,16 +4976,13 @@ def test_plan_route_rolls_back_launch_published_after_refill_decision(monkeypatc
         )
     )
     route_thread.start()
-    deadline = time.monotonic() + 2
-    while not state.get(runner._PLANNER_CAPACITY_INTENT_KEY) and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert state[runner._PLANNER_CAPACITY_INTENT_KEY] is True
+    route_thread.join(timeout=0.5)
+    assert not route_thread.is_alive()
+    assert state["prover_requested_route"]["route"] == "plan"
     release_publication.set()
     finalize_thread.join(timeout=2)
-    route_thread.join(timeout=2)
 
     assert not finalize_thread.is_alive()
-    assert not route_thread.is_alive()
     assert len(finalized) == 1
     assert rollbacks == [("campaign-race", (job_id,))]
     assert state[runner._RESEARCH_PORTFOLIO_LAST_LAUNCH_KEY]["launched"] == []

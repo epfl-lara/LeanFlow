@@ -25666,10 +25666,13 @@ def _finalize_research_portfolio_poll(
     if (
         request.refill
         and launched
-        and not _research_portfolio_refill_allowed(
-            autonomy_state,
-            target_symbol=request.target_symbol,
-            active_file=request.active_file,
+        and (
+            not _research_portfolio_refill_allowed(
+                autonomy_state,
+                target_symbol=request.target_symbol,
+                active_file=request.active_file,
+            )
+            or bool(autonomy_state.get(_PLANNER_CAPACITY_INTENT_KEY))
         )
     ):
         rollback = _rollback_planner_race_launches(
@@ -25692,6 +25695,7 @@ def _finalize_research_portfolio_poll(
             result["active_jobs"] = active_jobs
             result["active"] = len(active_jobs)
     autonomy_state[_RESEARCH_PORTFOLIO_LAST_LAUNCH_KEY] = record
+    autonomy_state.pop(_PLANNER_CAPACITY_INTENT_KEY, None)
     return result
 
 
@@ -25733,71 +25737,78 @@ def _set_prover_requested_route(
         previous_published_generation = int(previous_record.get("generation", 0) or 0)
     except (TypeError, ValueError):
         previous_published_generation = 0
-    # Publish intent before waiting for an in-flight portfolio transaction.
-    # Its completion path will then roll back any replacement it just launched.
+    # Publish intent before durable route state. An in-flight portfolio poll
+    # observes this marker or the route below and rolls back raced launches;
+    # foreground routing never waits for optional maintenance to finish.
     autonomy_state[_PLANNER_CAPACITY_INTENT_KEY] = True
+    maintenance_lock_acquired = False
     try:
-        with _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK:
-            reservation: dict[str, Any] = {}
-            try:
-                reservation = campaign_epoch.reserve_planner_capacity(
-                    autonomy_state,
-                    target_symbol=payload["target_symbol"],
-                    active_file=payload["active_file"],
-                    reason=reason or "pending planner route",
-                )
-            except Exception:
-                # Preserve current-process route liveness. The next safe
-                # boundary retries the durable write; a storage outage remains
-                # visible in debug logs instead of losing the route outright.
-                logger.debug("planner capacity reservation persistence failed", exc_info=True)
-            autonomy_state["prover_requested_route"] = dict(payload)
+        try:
+            campaign_epoch.reserve_planner_capacity(
+                autonomy_state,
+                target_symbol=payload["target_symbol"],
+                active_file=payload["active_file"],
+                reason=reason or "pending planner route",
+            )
+        except Exception:
+            # The process-local route still blocks refill and the next safe
+            # boundary retries the durable reservation.
+            logger.debug("planner capacity reservation persistence failed", exc_info=True)
+        autonomy_state["prover_requested_route"] = dict(payload)
 
-            last = autonomy_state.get(_RESEARCH_PORTFOLIO_LAST_LAUNCH_KEY)
-            record = dict(last) if isinstance(last, Mapping) else {}
+        maintenance_lock_acquired = _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK.acquire(blocking=False)
+        if maintenance_lock_acquired:
             try:
-                last_generation = int(record.get("generation", 0) or 0)
-            except (TypeError, ValueError):
-                last_generation = 0
-            publication_token = str(
-                record.get(_RESEARCH_PORTFOLIO_PUBLICATION_TOKEN_FIELD, "") or ""
-            )
-            publication_advanced = (
-                bool(publication_token) and publication_token != previous_publication_token
-            ) or (
-                not publication_token
-                and (last_generation > previous_published_generation or record != previous_record)
-            )
-            if (
-                publication_advanced
-                and str(record.get("campaign_id", "") or "")
-                == str(autonomy_state.get("campaign_id", "") or "")
-                and str(record.get("target_symbol", "") or "") == payload["target_symbol"]
-                and _same_active_file(
-                    str(record.get("active_file", "") or ""),
-                    payload["active_file"],
+                last = autonomy_state.get(_RESEARCH_PORTFOLIO_LAST_LAUNCH_KEY)
+                record = dict(last) if isinstance(last, Mapping) else {}
+                try:
+                    last_generation = int(record.get("generation", 0) or 0)
+                except (TypeError, ValueError):
+                    last_generation = 0
+                publication_token = str(
+                    record.get(_RESEARCH_PORTFOLIO_PUBLICATION_TOKEN_FIELD, "") or ""
                 )
-                and list(record.get("launched") or [])
-            ):
-                rollback = _rollback_planner_race_launches(
-                    autonomy_state,
-                    campaign_id=str(record.get("campaign_id", "") or ""),
-                    target_symbol=payload["target_symbol"],
-                    active_file=payload["active_file"],
-                    launched=list(record.get("launched") or []),
+                publication_advanced = (
+                    bool(publication_token) and publication_token != previous_publication_token
+                ) or (
+                    not publication_token
+                    and (
+                        last_generation > previous_published_generation or record != previous_record
+                    )
                 )
-                released = {
-                    str(job_id) for job_id in (rollback.get("released") or []) if str(job_id)
-                }
-                record["launched"] = [
-                    str(job_id)
-                    for job_id in (record.get("launched") or [])
-                    if str(job_id) not in released
-                ]
-                record["rollback"] = dict(rollback)
-                autonomy_state[_RESEARCH_PORTFOLIO_LAST_LAUNCH_KEY] = record
+                if (
+                    publication_advanced
+                    and str(record.get("campaign_id", "") or "")
+                    == str(autonomy_state.get("campaign_id", "") or "")
+                    and str(record.get("target_symbol", "") or "") == payload["target_symbol"]
+                    and _same_active_file(
+                        str(record.get("active_file", "") or ""),
+                        payload["active_file"],
+                    )
+                    and list(record.get("launched") or [])
+                ):
+                    rollback = _rollback_planner_race_launches(
+                        autonomy_state,
+                        campaign_id=str(record.get("campaign_id", "") or ""),
+                        target_symbol=payload["target_symbol"],
+                        active_file=payload["active_file"],
+                        launched=list(record.get("launched") or []),
+                    )
+                    released = {
+                        str(job_id) for job_id in (rollback.get("released") or []) if str(job_id)
+                    }
+                    record["launched"] = [
+                        str(job_id)
+                        for job_id in (record.get("launched") or [])
+                        if str(job_id) not in released
+                    ]
+                    record["rollback"] = dict(rollback)
+                    autonomy_state[_RESEARCH_PORTFOLIO_LAST_LAUNCH_KEY] = record
+            finally:
+                _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK.release()
     finally:
-        autonomy_state.pop(_PLANNER_CAPACITY_INTENT_KEY, None)
+        if maintenance_lock_acquired:
+            autonomy_state.pop(_PLANNER_CAPACITY_INTENT_KEY, None)
     return payload
 
 
@@ -26070,8 +26081,7 @@ def _build_research_portfolio_parent_poll(
     if not isinstance(autonomy_state, dict):
         return None
     try:
-        with _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK:
-            request = _research_portfolio_poll_request(autonomy_state, None)
+        request = _research_portfolio_poll_request(autonomy_state, None)
     except Exception:
         logger.debug("research portfolio parent poll setup failed", exc_info=True)
         return None
@@ -26166,7 +26176,8 @@ def _run_planner_phase_with_parent_maintenance(
         autonomy_state["_planner_capacity_reserved"] = True
     try:
         if isinstance(autonomy_state, dict) and research_mode.research_mode_enabled():
-            with _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK:
+            maintenance_lock_acquired = _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK.acquire(blocking=False)
+            if maintenance_lock_acquired:
                 try:
                     campaign = campaign_epoch.ensure_campaign(autonomy_state)
                     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
@@ -26201,6 +26212,8 @@ def _run_planner_phase_with_parent_maintenance(
                     # The planner's existing bounded capacity verdict remains a
                     # truthful retry path if exact worker retirement is unavailable.
                     logger.debug("planner actor capacity reservation failed", exc_info=True)
+                finally:
+                    _RESEARCH_PORTFOLIO_MAINTENANCE_LOCK.release()
         poll = _build_research_portfolio_parent_poll(
             agent,
             continue_after_step_boundary=True,
