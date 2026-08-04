@@ -4121,9 +4121,65 @@ def test_campaign_epoch_rollover_retires_old_research_workers(monkeypatch):
             "new_epoch": 9,
             "reason": "route-no-graph-progress",
             "refresh_token": "refresh-epoch-9",
+            "refill": True,
         }
     ]
     assert state["research_portfolio_epoch_refresh"]["killed"] == ["old-worker"]
+
+
+def test_campaign_epoch_rollover_defers_refill_during_construction_debt(monkeypatch):
+    """Retire a spent worker epoch without replacing foreground discovery."""
+    refresh_calls: list[dict] = []
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args: None)
+    monkeypatch.setattr(runner, "_write_workflow_checkpoint", lambda *args, **kwargs: None)
+
+    def roll_epoch(state, **kwargs):
+        state["campaign_id"] = "campaign-demo"
+        state["campaign_epoch"] = 3
+        state[runner.campaign_epoch.EPOCH_WORKER_REFRESH_STATE_KEY] = {"token": "refresh-3"}
+        return "fresh handoff"
+
+    monkeypatch.setattr(runner.campaign_epoch, "roll_epoch", roll_epoch)
+    monkeypatch.setattr(runner.campaign_epoch, "pending_worker_refresh", lambda **kwargs: {})
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "refresh_portfolio_for_epoch",
+        lambda **kwargs: refresh_calls.append(kwargs) or ["old-worker"],
+    )
+    monkeypatch.setattr(runner, "_reopen_blocked_theorem_outcomes", lambda *args, **kwargs: ())
+    monkeypatch.setattr(runner.environment_memory, "prompt_block", lambda _state: "")
+    monkeypatch.setattr(runner, "_record_turn_prompt_fingerprint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    active_file = "/tmp/Main.lean"
+    state = {
+        "campaign_epoch": 2,
+        "current_queue_assignment": {
+            "target_symbol": "hard_goal",
+            "active_file": active_file,
+        },
+        "search_progress": {
+            "target_symbol": "hard_goal",
+            "active_file": active_file,
+            "search_count": 12,
+            "hard_route_requested": True,
+        },
+    }
+
+    runner._roll_autonomous_campaign_epoch(
+        object(),
+        [],
+        {},
+        {},
+        state,
+        {"target_symbol": "hard_goal", "active_file": active_file},
+        reason="route-no-graph-progress",
+        cycle=4,
+    )
+
+    assert refresh_calls[0]["refill"] is False
+    assert state["research_portfolio_epoch_refresh"]["refill_allowed"] is False
 
 
 def test_campaign_process_outcome_is_recorded_once(monkeypatch):
@@ -25430,6 +25486,38 @@ def test_startup_user_message_surfaces_effective_prompt(monkeypatch):
     assert "User prompt: use abs_abs_sub first" in prompt
 
 
+def test_startup_user_message_surfaces_durable_advisor_circuit(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Demo.lean")
+    monkeypatch.setattr(runner, "_runner_lean_prompt_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_startup_active_skill_contract", lambda _name: "")
+    monkeypatch.setattr(runner, "_startup_additional_skill_contracts", lambda _name: "")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_queue_needs_final_file_sweep", lambda _state: False)
+    monkeypatch.setattr(runner, "_queue_assignment_block", lambda *args, **kwargs: "queue")
+    monkeypatch.setattr(runner, "_swarm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *args, **kwargs: type("Route", (), {"to_dict": lambda self: {}})(),
+    )
+    monkeypatch.setattr(
+        runner.advisor_failure_circuit,
+        "preflight_blocked",
+        lambda **kwargs: kwargs["function_name"] == "lean_reasoning_help",
+    )
+
+    prompt = runner._startup_user_message(
+        live_state={"target_symbol": "demo", "active_file": str(active)},
+        autonomy_state={"campaign_id": "campaign-demo"},
+    )
+
+    assert "[LEANFLOW ADVISOR CIRCUIT HANDOFF]" in prompt
+    assert "lean_reasoning_help" in prompt
+
+
 def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeypatch):
     monkeypatch.setenv("LEANFLOW_RUNNER_LEAN_PROMPT", "1")
     monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
@@ -30877,6 +30965,38 @@ def test_autonomous_continuation_prompt_forces_construction_after_search_debt():
     assert "[LEANFLOW CONSTRUCTION-ONLY HANDOFF]" in prompt
     assert "do not restart with skill loading" in prompt
     assert "first substantive action must be a concrete Lean candidate check" in prompt
+
+
+def test_autonomous_continuation_prompt_surfaces_exhausted_advisor(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner.advisor_failure_circuit,
+        "preflight_blocked",
+        lambda **kwargs: kwargs["function_name"] == "lean_decompose_helpers",
+    )
+
+    prompt = runner._autonomous_continuation_prompt(
+        {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        },
+        4,
+        {"campaign_id": "campaign-demo"},
+    )
+
+    assert "[LEANFLOW ADVISOR CIRCUIT HANDOFF]" in prompt
+    assert "lean_decompose_helpers" in prompt
+    assert "do not call these advisor tools again" in prompt
+
+
+def test_managed_system_prompt_defers_bootstrap_to_turn_handoffs(monkeypatch):
+    monkeypatch.setattr(runner, "_runner_lean_prompt_enabled", lambda: True)
+
+    prompt = runner._managed_system_prompt()
+
+    assert "turn-local handoffs override bootstrap inspection" in prompt
 
 
 def test_queue_assignment_block_includes_exact_tool_path():

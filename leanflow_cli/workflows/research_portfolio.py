@@ -3733,15 +3733,19 @@ def refresh_portfolio_for_epoch(
     new_epoch: int,
     reason: str,
     refresh_token: str = "",
+    refill: bool = True,
 ) -> list[str]:
     """Retire old-epoch workers and honor any durable replacement obligation.
 
     Reconcile completed artifacts before killing anything: a worker that
     finished at the epoch boundary remains a deliverable, while genuinely
     open workers cannot carry the spent route portfolio into the fresh
-    context. Unlike campaign shutdown, this leaves refill enabled. A vacancy
-    recorded while planner capacity was reserved is fulfilled immediately
-    after a successful refresh, rather than waiting for a later cadence tick.
+    context. Unlike campaign shutdown, this normally leaves refill enabled. A
+    caller that owes foreground construction may set ``refill=False`` to
+    retire the spent epoch without launching replacement research. A vacancy
+    recorded while planner capacity was reserved is otherwise fulfilled
+    immediately after a successful refresh, rather than waiting for a later
+    cadence tick.
     """
     normalized_campaign = str(campaign_id or "campaign")
     with _MAINTENANCE_LOCK:
@@ -3780,7 +3784,7 @@ def refresh_portfolio_for_epoch(
             target_symbol=target_symbol,
             active_file=active_file,
         )
-        if completed and pending_intent:
+        if completed and pending_intent and refill:
             refill_status = _maintain_portfolio_once(
                 campaign_id=normalized_campaign,
                 target_symbol=target_symbol,
@@ -3800,6 +3804,8 @@ def refresh_portfolio_for_epoch(
             disposition = (
                 f"immediately launched {len(refill_launched)} distinct replacement route(s)"
             )
+        elif pending_intent and not refill:
+            disposition = "replacement research remains deferred until construction progress"
         elif pending_intent and refill_pending:
             disposition = "the durable replacement obligation remains pending"
         else:
@@ -3819,6 +3825,7 @@ def refresh_portfolio_for_epoch(
             replacement_intent_id=str(pending_intent.get("intent_id", "") or ""),
             replacement_refill_launched=refill_launched,
             replacement_pending=refill_pending,
+            refill_allowed=refill,
         )
         return killed
 

@@ -7360,6 +7360,42 @@ def _construction_only_handoff_block(
     )
 
 
+def _advisor_circuit_handoff_block(
+    live_state: Mapping[str, Any],
+    autonomy_state: Mapping[str, Any] | None,
+) -> str:
+    """Surface exhausted advisor tools before the model chooses its next action."""
+    target_symbol = str(live_state.get("target_symbol", "") or "").strip()
+    active_file = str(live_state.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return ""
+    source_revision = _source_revision_sha256(active_file)
+    target_revision = _target_declaration_sha256(active_file, target_symbol)
+    campaign_id = str(dict(autonomy_state or {}).get("campaign_id", "") or "")
+    blocked = [
+        tool
+        for tool in sorted(advisor_failure_circuit.ADVISOR_TOOL_NAMES)
+        if advisor_failure_circuit.preflight_blocked(
+            function_name=tool,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            source_revision_sha256=source_revision,
+            target_revision_sha256=target_revision,
+            campaign_id=campaign_id,
+        )
+    ]
+    if not blocked:
+        return ""
+    return "\n".join(
+        [
+            "[LEANFLOW ADVISOR CIRCUIT HANDOFF]",
+            f"- exhausted for this unchanged declaration: {', '.join(blocked)}",
+            "- do not call these advisor tools again until kernel-verified progress changes the declaration",
+            "- use the preserved diagnostics, plan, graph, findings, and dead branches for a concrete local construction step",
+        ]
+    )
+
+
 def _search_synthesis_pre_tool_guard(
     agent: Any,
     function_name: str,
@@ -21461,6 +21497,12 @@ def _startup_user_message(
             queue_text = _queue_assignment_block(dict(live_state or {}), autonomy_state)
             if queue_text:
                 queue_block = f"\n\n{queue_text}"
+    for handoff in (
+        _construction_only_handoff_block(dict(live_state or {}), autonomy_state),
+        _advisor_circuit_handoff_block(dict(live_state or {}), autonomy_state),
+    ):
+        if handoff:
+            queue_block += f"\n\n{handoff}"
     organization_block = ""
     if _document_formalization_organization_phase_active(live_state, autonomy_state):
         organization_block = (
@@ -21517,7 +21559,7 @@ def _managed_system_prompt() -> str:
             "Work inside the active Lean project only.",
             "Treat `/prove`, `/formalize`, `/review`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
             "The loaded workflow and worker specs are the policy manuals; runner-injected blocks below are turn-local state only.",
-            "Use `lean_capabilities` and `lean_inspect` to refresh state first, then follow the active spec.",
+            "Use `lean_capabilities` and `lean_inspect` to refresh state first unless a runner-injected construction-only, checked-candidate, or exhausted-advisor handoff says the current state is already authoritative; turn-local handoffs override bootstrap inspection.",
             "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff.",
             "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
         ]
@@ -21528,7 +21570,7 @@ def _managed_system_prompt() -> str:
             "Treat `/prove`, `/formalize`, `/review`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
             "The loaded workflow and worker specs are the policy manuals for tool order, verification ladders, escalation rules, and stop conditions.",
             "Runner-injected blocks below are turn-local state only: queue assignment, route decision, attempt history, blockers, and verification hints.",
-            "Use `lean_capabilities` and `lean_inspect` to refresh state first, then follow the active spec rather than inventing a parallel process.",
+            "Use `lean_capabilities` and `lean_inspect` to refresh state first unless a runner-injected construction-only, checked-candidate, or exhausted-advisor handoff says the current state is already authoritative; turn-local handoffs override bootstrap inspection and then the active spec governs the work.",
             "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff instead of reconstructing the full transcript from memory.",
             "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
         ]
@@ -21946,6 +21988,9 @@ def _autonomous_continuation_prompt(
     construction_handoff = _construction_only_handoff_block(live_state, autonomy_state)
     if construction_handoff:
         prompt += f"\n\n{construction_handoff}"
+    advisor_handoff = _advisor_circuit_handoff_block(live_state, autonomy_state)
+    if advisor_handoff:
+        prompt += f"\n\n{advisor_handoff}"
     if _document_formalization_organization_phase_active(live_state, autonomy_state):
         prompt += f"\n\n{_document_formalization_organization_prompt(live_state)}"
     if _queue_needs_final_file_sweep(live_state):
@@ -29881,6 +29926,11 @@ def _roll_autonomous_campaign_epoch(
         if target_symbol and active_file:
             attempts = list(mgr.attempt_entries_for(_queue_key(target_symbol, active_file)))
     previous_epoch = int(autonomy_state.get("campaign_epoch", 1) or 1)
+    construction_debt = _search_synthesis_debt_active(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
     handoff = campaign_epoch.roll_epoch(
         autonomy_state,
         reason=reason,
@@ -29901,6 +29951,7 @@ def _roll_autonomous_campaign_epoch(
                 new_epoch=int(autonomy_state.get("campaign_epoch", previous_epoch + 1) or 1),
                 reason=reason,
                 refresh_token=str(worker_refresh.get("token", "") or ""),
+                refill=not construction_debt,
             )
             if not campaign_epoch.pending_worker_refresh(
                 campaign_id=str(autonomy_state.get("campaign_id", "") or "campaign")
@@ -29910,6 +29961,7 @@ def _roll_autonomous_campaign_epoch(
                 "previous_epoch": previous_epoch,
                 "new_epoch": int(autonomy_state.get("campaign_epoch", previous_epoch + 1) or 1),
                 "killed": killed,
+                "refill_allowed": not construction_debt,
             }
     else:
         # Non-research profiles have no background portfolio to retire.

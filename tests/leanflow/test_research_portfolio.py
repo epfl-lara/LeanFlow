@@ -1008,6 +1008,51 @@ def test_planner_deferred_replacement_survives_epoch_refresh_and_refills_once(
     assert stable["active"] == 2
 
 
+def test_epoch_refresh_can_defer_pending_replacement(monkeypatch, tmp_path):
+    """Preserve a replacement obligation without launching during construction."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "campaign-deferred-epoch")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_ENABLED", "1")
+    campaign_id = "campaign-deferred-epoch"
+    active_file = str(tmp_path / "Main.lean")
+    service = dispatch_service.DispatchService(root_job_id=campaign_id)
+    intent = {
+        "intent_id": "replacement-demo",
+        "campaign_id": campaign_id,
+        "target_symbol": "demo",
+        "active_file": active_file,
+        "attempt_count": 4,
+        "workers": 2,
+    }
+    workflow_json_io.update_json_file(
+        service._summary_path(),
+        lambda payload: payload.update({research_portfolio.PENDING_REPLACEMENT_STATE_KEY: intent}),
+    )
+    launches: list[dict] = []
+    monkeypatch.setattr(
+        research_portfolio,
+        "_maintain_portfolio_once",
+        lambda **kwargs: launches.append(kwargs) or {},
+    )
+
+    killed = research_portfolio.refresh_portfolio_for_epoch(
+        campaign_id=campaign_id,
+        target_symbol="demo",
+        active_file=active_file,
+        previous_epoch=1,
+        new_epoch=2,
+        reason="construction-debt",
+        refill=False,
+    )
+
+    assert killed == []
+    assert launches == []
+    persisted = workflow_json_io.read_json_file(service._summary_path())
+    assert persisted[research_portfolio.PENDING_REPLACEMENT_STATE_KEY]["intent_id"] == (
+        "replacement-demo"
+    )
+
+
 def test_planner_race_rollback_retires_only_exact_replacement(monkeypatch, tmp_path):
     """Rollback frees the raced launch without preempting older research."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
