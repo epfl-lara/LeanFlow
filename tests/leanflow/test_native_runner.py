@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import threading
@@ -8976,10 +8977,12 @@ def test_malformed_edit_snapshot_emits_no_unknown_finalization_event(monkeypatch
     assert not hasattr(agent, "_managed_queue_edit_snapshot")
 
 
-def test_accepted_active_proof_patch_resets_search_streak(monkeypatch, tmp_path):
-    """A queue-accepted Lean edit starts a fresh bounded-search window."""
+def test_kernel_checked_retained_proof_patch_resets_search_streak(monkeypatch, tmp_path):
+    """Only a source-bound, kernel-clean retained edit starts a fresh search window."""
     active = tmp_path / "Main.lean"
-    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    before = "theorem demo : True := by\n  sorry\n"
+    after = "theorem demo : True := by\n  have h : True := by trivial\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
 
     class _Agent(_ManagedRunAgentStub):
         def __init__(self):
@@ -9000,7 +9003,18 @@ def test_accepted_active_proof_patch_resets_search_streak(monkeypatch, tmp_path)
     monkeypatch.setattr(
         runner,
         "_manager_check_queue_item",
-        lambda *_args: ({"ok": False, "has_errors": True}, "lean_incremental_check"),
+        lambda *_args: (
+            {
+                "ok": False,
+                "incremental": {
+                    "success": True,
+                    "ok": False,
+                    "has_errors": False,
+                    "has_sorry": True,
+                },
+            },
+            "lean_incremental_check",
+        ),
     )
     monkeypatch.setattr(runner, "_finish_queue_step_boundary", lambda *_args, **_kwargs: None)
     agent = _Agent()
@@ -9012,6 +9026,7 @@ def test_accepted_active_proof_patch_resets_search_streak(monkeypatch, tmp_path)
             {"query": query},
             json.dumps({"success": True, "query": query}),
         )
+    active.write_text(after, encoding="utf-8")
     runner._handle_managed_tool_result(
         agent,
         "patch",
@@ -9019,9 +9034,78 @@ def test_accepted_active_proof_patch_resets_search_streak(monkeypatch, tmp_path)
         json.dumps({"success": True}),
         queue_edit_accepted=True,
         queue_assignment_changed=True,
+        queue_edit_before_source_revision_sha256=hashlib.sha256(before.encode("utf-8")).hexdigest(),
+        queue_edit_before_text=before,
+        queue_edit_after_source_revision_sha256=hashlib.sha256(after.encode("utf-8")).hexdigest(),
     )
 
     assert "search_progress" not in agent._managed_autonomy_state
+
+
+def test_kernel_rejected_restored_patch_preserves_search_streak(monkeypatch, tmp_path):
+    """A hard-error rollback cannot purchase another discovery window."""
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    invalid = "theorem demo : True := by\n  exact missing\n"
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": before.strip(),
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_args: (
+            {
+                "ok": False,
+                "incremental": {
+                    "success": True,
+                    "ok": False,
+                    "has_errors": True,
+                    "errors": 1,
+                },
+            },
+            "lean_incremental_check",
+        ),
+    )
+    monkeypatch.setattr(runner, "_finish_queue_step_boundary", lambda *_args, **_kwargs: None)
+    agent = _Agent()
+
+    for query in ("first", "second"):
+        runner._handle_managed_tool_result(
+            agent,
+            "web_search",
+            {"query": query},
+            json.dumps({"success": True, "query": query}),
+        )
+    active.write_text(invalid, encoding="utf-8")
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        {"path": str(active)},
+        json.dumps({"success": True}),
+        queue_edit_accepted=True,
+        queue_assignment_changed=True,
+        queue_edit_before_source_revision_sha256=hashlib.sha256(before.encode("utf-8")).hexdigest(),
+        queue_edit_before_text=before,
+        queue_edit_after_source_revision_sha256=hashlib.sha256(invalid.encode("utf-8")).hexdigest(),
+    )
+
+    assert active.read_text(encoding="utf-8") == before
+    assert agent._managed_autonomy_state["search_progress"]["search_count"] == 2
 
 
 def test_kernel_rejected_check_does_not_reset_search_streak(monkeypatch, tmp_path):

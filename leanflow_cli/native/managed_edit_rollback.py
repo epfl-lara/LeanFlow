@@ -42,6 +42,50 @@ def check_has_hard_errors(
     return False
 
 
+def retained_edit_confirms_kernel_progress(
+    active_file: str,
+    *,
+    before_sha256: str,
+    expected_after_sha256: str,
+    manager_check: Mapping[str, Any] | None,
+    timed_out: Callable[[Mapping[str, Any] | None], bool],
+) -> bool:
+    """Return whether a changed, retained after-image received a concrete clean gate.
+
+    A structurally accepted edit is only progress after its exact after-image has
+    survived Lean.  Operational failures and restored or superseded revisions
+    preserve any existing construction debt.
+    """
+    checked = dict(manager_check or {})
+    if (
+        not active_file
+        or len(before_sha256) != 64
+        or len(expected_after_sha256) != 64
+        or before_sha256 == expected_after_sha256
+        or not checked
+        or checked.get("failed_edit_restored") is True
+        or timed_out(checked)
+        or check_has_hard_errors(checked, timed_out=timed_out)
+    ):
+        return False
+    try:
+        current_sha256 = hashlib.sha256(Path(active_file).read_bytes()).hexdigest()
+    except OSError:
+        return False
+    if current_sha256 != expected_after_sha256:
+        return False
+
+    nested = checked.get("incremental")
+    payloads = [checked, dict(nested) if isinstance(nested, Mapping) else {}]
+    if any(payload.get("lean_started") is False for payload in payloads):
+        return False
+    return bool(
+        checked.get("ok") is True
+        or checked.get("lean_started") is True
+        or any(payload.get("success") is True for payload in payloads)
+    )
+
+
 def restore_exact_after_image(
     active_file: str,
     *,

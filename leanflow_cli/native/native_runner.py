@@ -13416,17 +13416,6 @@ def _handle_managed_tool_result(
                 if queue_assignment_changed is False:
                     return
 
-        if queue_assignment_changed is True:
-            managed_autonomy = getattr(agent, "_managed_autonomy_state", {}) or {}
-            assignment = dict(managed_autonomy).get("current_queue_assignment", {})
-            active_file = str(dict(assignment or {}).get("active_file", "") or "").strip()
-            if active_file and _managed_edit_targets_assignment(
-                args,
-                active_file,
-                function_name=function_name,
-            ):
-                _reset_search_progress(agent)
-
     if function_name in {"apply_verified_patch", "lean_extract_have"}:
         apply_payload = _json_tool_result_payload(_result)
         if (
@@ -13564,6 +13553,17 @@ def _handle_managed_tool_result(
                     active_file=active_file,
                     manager_check=manager_verification,
                 )
+                if (
+                    queue_assignment_changed is True
+                    and managed_edit_rollback.retained_edit_confirms_kernel_progress(
+                        active_file,
+                        before_sha256=queue_edit_before_source_revision_sha256,
+                        expected_after_sha256=queue_edit_after_source_revision_sha256,
+                        manager_check=manager_verification,
+                        timed_out=_manager_check_timed_out,
+                    )
+                ):
+                    _reset_search_progress(agent)
                 _finish_queue_step_boundary(
                     agent,
                     pending_target=target_symbol,
@@ -13663,6 +13663,17 @@ def _handle_managed_tool_result(
                     campaign_progress=False,
                 )
                 manager_verification["failed_edit_restored"] = source_restored
+            if (
+                queue_assignment_changed is True
+                and managed_edit_rollback.retained_edit_confirms_kernel_progress(
+                    active_file,
+                    before_sha256=queue_edit_before_source_revision_sha256,
+                    expected_after_sha256=queue_edit_after_source_revision_sha256,
+                    manager_check=manager_verification,
+                    timed_out=_manager_check_timed_out,
+                )
+            ):
+                _reset_search_progress(agent)
             _remember_same_revision_verification_timeout(
                 managed_autonomy,
                 target_symbol=target_symbol,

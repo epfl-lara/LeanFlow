@@ -17,6 +17,56 @@ def test_hard_error_classifier_excludes_operational_timeouts():
     )
 
 
+def test_retained_edit_progress_requires_current_kernel_checked_after_image(tmp_path):
+    """Accept unresolved clean elaboration, but reject rollback, timeout, and stale source."""
+    target = tmp_path / "Demo.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    after = "theorem demo : True := by\n  have h : True := by trivial\n  sorry\n"
+    before_sha256 = hashlib.sha256(before.encode("utf-8")).hexdigest()
+    after_sha256 = hashlib.sha256(after.encode("utf-8")).hexdigest()
+    target.write_text(after, encoding="utf-8")
+    clean_partial = {
+        "ok": False,
+        "incremental": {
+            "success": True,
+            "ok": False,
+            "has_errors": False,
+            "has_sorry": True,
+        },
+    }
+
+    assert managed_edit_rollback.retained_edit_confirms_kernel_progress(
+        str(target),
+        before_sha256=before_sha256,
+        expected_after_sha256=after_sha256,
+        manager_check=clean_partial,
+        timed_out=native_runner._manager_check_timed_out,
+    )
+    assert not managed_edit_rollback.retained_edit_confirms_kernel_progress(
+        str(target),
+        before_sha256=before_sha256,
+        expected_after_sha256=after_sha256,
+        manager_check={**clean_partial, "failed_edit_restored": True},
+        timed_out=native_runner._manager_check_timed_out,
+    )
+    assert not managed_edit_rollback.retained_edit_confirms_kernel_progress(
+        str(target),
+        before_sha256=before_sha256,
+        expected_after_sha256=after_sha256,
+        manager_check={"timed_out": True},
+        timed_out=native_runner._manager_check_timed_out,
+    )
+
+    target.write_text(before, encoding="utf-8")
+    assert not managed_edit_rollback.retained_edit_confirms_kernel_progress(
+        str(target),
+        before_sha256=before_sha256,
+        expected_after_sha256=after_sha256,
+        manager_check=clean_partial,
+        timed_out=native_runner._manager_check_timed_out,
+    )
+
+
 def test_restore_failed_managed_edit_requires_exact_after_image(tmp_path):
     """Restore captured bytes without overwriting an intervening source revision."""
     target = tmp_path / "Demo.lean"
