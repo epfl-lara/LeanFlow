@@ -4300,6 +4300,32 @@ def test_stopped_research_portfolio_cannot_refill(monkeypatch):
     runner._maintain_research_portfolio(state, {"target_symbol": "result"})
 
 
+def test_search_synthesis_debt_reaps_without_refilling_workers():
+    """Completed research is not replaced while the foreground owes construction."""
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "result",
+            "active_file": "/tmp/Main.lean",
+        },
+        "search_progress": {
+            "target_symbol": "result",
+            "active_file": "/tmp/Main.lean",
+            "search_count": 12,
+            "hard_route_requested": True,
+        },
+    }
+
+    assert runner._research_portfolio_refill_allowed(state) is False
+    assert (
+        runner._research_portfolio_refill_allowed(
+            state,
+            target_symbol="other",
+            active_file="/tmp/Other.lean",
+        )
+        is True
+    )
+
+
 def test_slow_research_refresh_never_holds_foreground_transition(monkeypatch):
     """Optional portfolio work continues without blocking the proof queue."""
     started = threading.Event()
@@ -30823,6 +30849,34 @@ def test_autonomous_continuation_prompt_includes_recent_failed_attempts():
     assert "proof shape: intro x y; simp" in prompt
     assert "why it failed: warning: declaration uses sorry" in prompt
     assert "attempt: 2" not in prompt
+
+
+def test_autonomous_continuation_prompt_forces_construction_after_search_debt():
+    prompt = runner._autonomous_continuation_prompt(
+        {
+            "target_symbol": "demo",
+            "active_file": "/tmp/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        },
+        4,
+        {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": "/tmp/Demo/Main.lean",
+            },
+            "search_progress": {
+                "target_symbol": "demo",
+                "active_file": "/tmp/Demo/Main.lean",
+                "search_count": 12,
+                "hard_route_requested": True,
+            },
+        },
+    )
+
+    assert "[LEANFLOW CONSTRUCTION-ONLY HANDOFF]" in prompt
+    assert "do not restart with skill loading" in prompt
+    assert "first substantive action must be a concrete Lean candidate check" in prompt
 
 
 def test_queue_assignment_block_includes_exact_tool_path():

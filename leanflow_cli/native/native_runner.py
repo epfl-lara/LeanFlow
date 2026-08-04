@@ -7306,6 +7306,60 @@ def _reset_search_progress(agent: Any) -> None:
         autonomy_state.pop("search_progress", None)
 
 
+def _search_synthesis_debt_active(
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    target_symbol: str = "",
+    active_file: str = "",
+) -> bool:
+    """Return whether the exact queue assignment owes construction after search."""
+    state = dict(autonomy_state or {})
+    progress = dict(state.get("search_progress") or {})
+    if not progress or not (
+        bool(progress.get("hard_route_requested")) or bool(progress.get("synthesis_grace_pending"))
+    ):
+        return False
+    assignment = dict(state.get("current_queue_assignment") or {})
+    resolved_target = str(target_symbol or assignment.get("target_symbol", "") or "").strip()
+    resolved_file = str(active_file or assignment.get("active_file", "") or "").strip()
+    progress_target = str(progress.get("target_symbol", "") or "").strip()
+    progress_file = str(progress.get("active_file", "") or "").strip()
+    return bool(
+        resolved_target
+        and resolved_file
+        and progress_target == resolved_target
+        and _same_active_file(progress_file, resolved_file)
+    )
+
+
+def _construction_only_handoff_block(
+    live_state: Mapping[str, Any],
+    autonomy_state: Mapping[str, Any] | None,
+) -> str:
+    """Build the generic construction directive after bounded discovery is spent."""
+    target_symbol = str(live_state.get("target_symbol", "") or "").strip()
+    active_file = str(live_state.get("active_file", "") or "").strip()
+    if not _search_synthesis_debt_active(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    ):
+        return ""
+    progress = dict(dict(autonomy_state or {}).get("search_progress") or {})
+    search_count = int(progress.get("search_count", 0) or 0)
+    return "\n".join(
+        [
+            "[LEANFLOW CONSTRUCTION-ONLY HANDOFF]",
+            f"- bounded discovery is complete ({search_count} calls); its evidence is preserved below",
+            "- do not restart with skill loading, capability inspection, queue/sorry inventory, outline, search, or broad source reads",
+            "- synthesize from the supplied goal, declarations, findings, graph, and dead branches",
+            "- the first substantive action must be a concrete Lean candidate check, a verified proof edit, or a cohesive top-level helper decomposition",
+            "- use one exact local source read only when a missing declaration signature or patch anchor makes construction impossible",
+            "- construction debt clears only after kernel-verified proof progress or assignment change",
+        ]
+    )
+
+
 def _search_synthesis_pre_tool_guard(
     agent: Any,
     function_name: str,
@@ -21889,6 +21943,9 @@ def _autonomous_continuation_prompt(
             f"- blocker kind: {route_decision.get('blocker_kind') or '[none]'}\n"
             f"- reason: {route_decision.get('reason') or '[none]'}"
         )
+    construction_handoff = _construction_only_handoff_block(live_state, autonomy_state)
+    if construction_handoff:
+        prompt += f"\n\n{construction_handoff}"
     if _document_formalization_organization_phase_active(live_state, autonomy_state):
         prompt += f"\n\n{_document_formalization_organization_prompt(live_state)}"
     if _queue_needs_final_file_sweep(live_state):
@@ -25874,6 +25931,14 @@ def _research_portfolio_refill_allowed(
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     resolved_target = str(target_symbol or assignment.get("target_symbol", "") or "")
     resolved_file = str(active_file or assignment.get("active_file", "") or "")
+    if _search_synthesis_debt_active(
+        autonomy_state,
+        target_symbol=resolved_target,
+        active_file=resolved_file,
+    ):
+        # Reap already-running workers, but do not replace completed searches
+        # while the foreground owes synthesis from their accumulated evidence.
+        return False
     reservation = autonomy_state.get(campaign_epoch.PLANNER_CAPACITY_RESERVATION_STATE_KEY)
     if isinstance(reservation, Mapping) and _plan_route_matches_assignment(
         reservation,
