@@ -127,3 +127,20 @@ def test_preview_candidate_source_and_match_exact_rejection():
         )
         is None
     )
+
+
+def test_rejected_candidate_identity_ignores_trace_state_instrumentation():
+    """Treat diagnostic trace commands as non-semantic candidate presentation."""
+    rejected = "theorem demo : True := by\n  exact?"
+    replay = "theorem demo : True := by\n  trace_state\n  exact?"
+    candidate_hash = hashlib.sha256(
+        managed_edit_rollback.normalize_candidate_declaration(rejected).encode()
+    ).hexdigest()
+
+    matched = managed_edit_rollback.matching_rejected_candidate(
+        [{"attempt": 7, "declaration_hash": candidate_hash}],
+        replay,
+    )
+
+    assert matched is not None
+    assert matched["attempt"] == 7

@@ -92,7 +92,10 @@ def construction_attempt_request(
     """Return whether a tool request materially constructs or screens Lean code."""
     arguments = dict(args or {})
     if function_name in {"patch", "write_file", "apply_verified_patch"}:
-        return str(result_status or "").strip().lower() != "rejected_candidate_replay"
+        return str(result_status or "").strip().lower() not in {
+            "rejected_candidate_replay",
+            "isolated_suggestion_probe_required",
+        }
     if function_name in {"lean_extract_have", "lean_decompose_helpers"}:
         return True
     if function_name == "lean_multi_attempt":

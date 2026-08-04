@@ -31584,6 +31584,82 @@ def test_rejected_candidate_replay_guard_blocks_exact_assigned_edit(tmp_path, mo
     assert events[-1][0][1] == "rejected-candidate-replay-blocked"
 
 
+@pytest.mark.parametrize("suggestion", ["exact?", "apply?", "simp?", "aesop?"])
+def test_suggestion_only_source_patch_is_redirected_before_mutation(
+    tmp_path, monkeypatch, suggestion
+):
+    """Keep tactic-suggestion probes out of managed source and progress accounting."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  trace_state\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    patch = f"""*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+   trace_state
+-  sorry
++  {suggestion}
+*** End Patch"""
+
+    result = runner._suggestion_only_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": "demo", "patch": patch},
+        state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "isolated_suggestion_probe_required"
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == source
+    assert events[-1][0][1] == "suggestion-only-source-patch-blocked"
+
+
+def test_concrete_source_patch_is_not_redirected_as_suggestion(tmp_path):
+    """Allow ordinary concrete proof edits through the suggestion fence."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+-  sorry
++  exact True.intro
+*** End Patch"""
+
+    result = runner._suggestion_only_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": "demo", "patch": patch},
+        state,
+    )
+
+    assert result is None
+
+
 def test_rejected_verified_patch_reaches_failed_attempt_boundary(tmp_path, monkeypatch):
     """A transactional rollback must retain the rejected declaration identity."""
     active = tmp_path / "Main.lean"

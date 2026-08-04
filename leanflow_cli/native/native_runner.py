@@ -8700,6 +8700,74 @@ def _rejected_candidate_replay_pre_tool_guard(
     )
 
 
+def _suggestion_only_source_patch_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Redirect exploratory tactic suggestions away from managed source mutation."""
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not _managed_edit_targets_assignment(
+            args,
+            active_file,
+            function_name=function_name,
+        )
+    ):
+        return None
+    try:
+        before_text = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    candidate = _preview_managed_candidate_declaration(
+        function_name,
+        args,
+        before_text=before_text,
+        target_symbol=target_symbol,
+    )
+    if not candidate or not managed_edit_rollback.contains_suggestion_tactic(candidate):
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "suggestion-only-source-patch-blocked",
+            f"Redirected tactic-suggestion probe for {target_symbol} away from source mutation",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            provider_called=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "isolated_suggestion_probe_required",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "patch_applied": False,
+            "check_passed": False,
+            "provider_called": False,
+            "lean_started": False,
+            "required_action": (
+                "Do not write `exact?`, `apply?`, or another suggestion tactic into managed "
+                "source. Run the probe through LeanProbe (`lean_multi_attempt` or a temporary "
+                "`lean_incremental_check` candidate), then submit the resulting concrete term "
+                "or tactic script. This probe does not count as proof construction."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _clean_room_queue_support_edit_guard(
     function_name: str,
     args: Mapping[str, Any] | None,
@@ -9777,6 +9845,14 @@ def _managed_pre_tool_call(
         )
         if helper_priority_guard:
             return helper_priority_guard
+        suggestion_patch_guard = _suggestion_only_source_patch_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if suggestion_patch_guard:
+            return suggestion_patch_guard
         rejected_candidate_guard = _rejected_candidate_replay_pre_tool_guard(
             agent,
             function_name,
@@ -15727,8 +15803,7 @@ _FAILED_ATTEMPT_AXIOM_QUERY_RE = re.compile(r"^\s*#(?:check|print)\b", flags=re.
 
 def _normalize_failed_attempt_candidate_declaration(declaration: str) -> str:
     """Normalize harmless line-ending whitespace in candidate identity text."""
-    normalized = str(declaration or "").replace("\r\n", "\n").replace("\r", "\n")
-    return "\n".join(line.rstrip() for line in normalized.splitlines()).strip()
+    return managed_edit_rollback.normalize_candidate_declaration(declaration)
 
 
 def _failed_attempt_candidate_declaration(

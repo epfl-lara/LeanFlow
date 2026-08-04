@@ -5,12 +5,31 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import re
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from tools.utilities.patch_parser import preview_v4a_update
+
+_NON_SEMANTIC_CANDIDATE_LINE_RE = re.compile(r"^\s*trace_state\s*$")
+_SUGGESTION_TACTIC_RE = re.compile(r"(?m)^\s*(?:exact|apply|simp|rw|aesop|grind)\?(?:\s|$)")
+
+
+def normalize_candidate_declaration(declaration: str) -> str:
+    """Return a stable proof-candidate identity without diagnostic instrumentation."""
+    normalized = str(declaration or "").replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(
+        line.rstrip()
+        for line in normalized.splitlines()
+        if not _NON_SEMANTIC_CANDIDATE_LINE_RE.match(line)
+    ).strip()
+
+
+def contains_suggestion_tactic(declaration: str) -> bool:
+    """Return whether source still contains an exploratory tactic-suggestion command."""
+    return bool(_SUGGESTION_TACTIC_RE.search(str(declaration or "")))
 
 
 def preview_candidate_source(
@@ -49,13 +68,7 @@ def matching_rejected_candidate(
     candidate_declaration: str,
 ) -> dict[str, Any] | None:
     """Return the newest rejection for one exact normalized declaration candidate."""
-    normalized = "\n".join(
-        line.rstrip()
-        for line in str(candidate_declaration or "")
-        .replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .splitlines()
-    ).strip()
+    normalized = normalize_candidate_declaration(candidate_declaration)
     if not normalized:
         return None
     candidate_hash = hashlib.sha256(normalized.encode("utf-8", "replace")).hexdigest()

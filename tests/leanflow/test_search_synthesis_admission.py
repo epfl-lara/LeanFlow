@@ -188,3 +188,8 @@ def test_construction_attempt_classifier_excludes_inspection_and_exact_replay():
         {"patch": "candidate"},
         result_status="rejected_candidate_replay",
     )
+    assert not search_synthesis_admission.construction_attempt_request(
+        "apply_verified_patch",
+        {"patch": "candidate"},
+        result_status="isolated_suggestion_probe_required",
+    )
