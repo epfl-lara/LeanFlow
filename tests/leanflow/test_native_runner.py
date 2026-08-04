@@ -8431,6 +8431,13 @@ def test_search_synthesis_reservation_bounds_construction_source_inspection(monk
     assert agent._managed_autonomy_state["prover_requested_route"]["route"] == "plan"
     assert agent._managed_step_boundary_closed is True
     assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    tracker = agent._managed_autonomy_state["search_progress"]
+    assert tracker["construction_source_window_reset_pending"] is True
+
+    runner._prepare_managed_turn_state(agent, agent._managed_autonomy_state)
+    refreshed_tracker = agent._managed_autonomy_state["search_progress"]
+    assert "construction_source_inspection_boundary" not in refreshed_tracker
+    assert "construction_source_inspection_count" not in refreshed_tracker
 
 
 def test_construction_source_inspection_budget_resets_for_new_cycle(monkeypatch, tmp_path):
@@ -27118,10 +27125,10 @@ def test_queue_assignment_block_mentions_only_assigned_theorem():
     assert "`lake env lean ProveDemo/RealTheorems-homework.lean`" in text
     assert "do not treat `lake build`, `grep`, `head`, or truncated output" in text
     assert "Current file prefix ending at `absLipschitz1`" in text
-    assert "PREVIOUS ATTEMPTS:" not in text
-    assert "attempt: 1" not in text
-    assert "proof shape: direct `simpa [isLipschitz] using abs_abs_sub_abs_le`" not in text
-    assert "why it failed: type mismatch" not in text
+    assert "PREVIOUS ATTEMPTS:" in text
+    assert "attempt: 1" in text
+    assert "proof shape: direct `simpa [isLipschitz] using abs_abs_sub_abs_le`" in text
+    assert "why it failed: type mismatch" in text
     assert "Task:" in text
     assert "Repair `absLipschitz1` from its current state." in text
 
@@ -31058,7 +31065,8 @@ def test_autonomous_continuation_prompt_includes_recent_failed_attempts():
     assert "attempt: 1" in prompt
     assert "proof shape: intro x y; simp" in prompt
     assert "why it failed: warning: declaration uses sorry" in prompt
-    assert "attempt: 2" not in prompt
+    assert "attempt: 2" in prompt
+    assert "proof shape: have h : True := by trivial" in prompt
 
 
 def test_autonomous_continuation_prompt_forces_construction_after_search_debt():
@@ -31522,6 +31530,117 @@ def test_remember_failed_attempt_uses_temporary_candidate_shape_and_hash(tmp_pat
     assert attempt["declaration_hash"] != source_hash
 
 
+def test_rejected_candidate_replay_guard_blocks_exact_assigned_edit(tmp_path, monkeypatch):
+    """Do not spend Lean time on an exact declaration candidate already rejected."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    candidate = "theorem demo : True := by\n  exact missing\n"
+    active.write_text(source, encoding="utf-8")
+    candidate_hash = runner.hashlib.sha256(candidate.strip().encode()).hexdigest()
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        },
+        "failed_attempts": [
+            {
+                "attempt": 9,
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": candidate_hash,
+                "proof_shape": "+ exact missing",
+                "reason": "unknown identifier missing",
+            }
+        ],
+    }
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+-  sorry
++  exact missing
+*** End Patch"""
+
+    result = runner._rejected_candidate_replay_pre_tool_guard(
+        _ManagedRunAgentStub(),
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": "demo", "patch": patch},
+        state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "rejected_candidate_replay"
+    assert payload["prior_attempt"] == 9
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert events[-1][0][1] == "rejected-candidate-replay-blocked"
+
+
+def test_rejected_verified_patch_reaches_failed_attempt_boundary(tmp_path, monkeypatch):
+    """A transactional rollback must retain the rejected declaration identity."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    candidate = "theorem demo : True := by\n  exact missing\n"
+    active.write_text(source, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": source,
+                }
+            }
+
+    captured = []
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+    result = json.dumps(
+        {
+            "success": False,
+            "status": "check_failed",
+            "rolled_back": True,
+            "checkpoint_id": "vpatch-demo",
+            "verification": {
+                "ok": False,
+                "has_errors": True,
+                "has_sorry": True,
+                "output": "error: unknown identifier missing",
+            },
+        }
+    )
+
+    runner._handle_managed_tool_result(
+        _Agent(),
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": "demo"},
+        result,
+        queue_edit_accepted=False,
+        queue_edit_candidate_declaration=candidate,
+    )
+
+    assert len(captured) == 1
+    kwargs = captured[0][1]
+    assert kwargs["pending_target"] == "demo"
+    assert kwargs["manager_verification"]["failed_edit_restored"] is True
+    assert kwargs["manager_verification"]["verified_patch_checkpoint_id"] == "vpatch-demo"
+    assert kwargs["candidate_replacement"] == candidate
+
+
 def test_failed_attempt_candidate_extraction_is_bounded_and_falls_back(tmp_path, monkeypatch):
     """Oversized feedback may use replacement, while malformed evidence uses source truth."""
     active = tmp_path / "Main.lean"
@@ -31869,7 +31988,7 @@ def test_recent_failed_attempts_summary_does_not_leak_other_theorem_attempts():
     assert summary == ""
 
 
-def test_recent_failed_attempts_summary_excludes_latest_in_file_attempt_and_honors_limit(
+def test_recent_failed_attempts_summary_includes_latest_in_file_attempt_and_honors_limit(
     monkeypatch,
 ):
     monkeypatch.setenv("LEANFLOW_NATIVE_FAILED_ATTEMPT_HISTORY", "2")
@@ -31919,9 +32038,9 @@ def test_recent_failed_attempts_summary_excludes_latest_in_file_attempt_and_hono
     )
 
     assert "attempt: 1" not in summary
-    assert "attempt: 2" in summary
+    assert "attempt: 2" not in summary
     assert "attempt: 3" in summary
-    assert "attempt: 4" not in summary
+    assert "attempt: 4" in summary
 
 
 def test_failed_attempt_count_uses_latest_attempt_number_even_after_pruning(monkeypatch):

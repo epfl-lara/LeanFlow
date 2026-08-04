@@ -1,4 +1,4 @@
-"""Classify hard Lean edit failures and restore their exact source image."""
+"""Classify, remember, and restore rejected Lean source edits."""
 
 from __future__ import annotations
 
@@ -9,6 +9,61 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+from tools.utilities.patch_parser import preview_v4a_update
+
+
+def preview_candidate_source(
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    before_text: str,
+) -> str:
+    """Return the exact proposed source image when it can be reconstructed safely."""
+    arguments = dict(args or {})
+    if not before_text:
+        return ""
+    if function_name == "write_file":
+        content = arguments.get("content")
+        return content if isinstance(content, str) else ""
+    if function_name == "patch":
+        mode = str(arguments.get("mode", "replace") or "replace")
+        if mode == "replace":
+            old = str(arguments.get("old_string", "") or "")
+            new = str(arguments.get("new_string", "") or "")
+            if not old or before_text.count(old) != 1:
+                return ""
+            return before_text.replace(old, new, 1)
+        patch_text = str(arguments.get("patch", "") or "")
+    elif function_name == "apply_verified_patch":
+        patch_text = str(arguments.get("patch", "") or "")
+    else:
+        return ""
+    if not patch_text:
+        return ""
+    after_text, error = preview_v4a_update(patch_text, before_text)
+    return "" if error or after_text is None else after_text
+
+
+def matching_rejected_candidate(
+    attempts: Sequence[Mapping[str, Any]],
+    candidate_declaration: str,
+) -> dict[str, Any] | None:
+    """Return the newest rejection for one exact normalized declaration candidate."""
+    normalized = "\n".join(
+        line.rstrip()
+        for line in str(candidate_declaration or "")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .splitlines()
+    ).strip()
+    if not normalized:
+        return None
+    candidate_hash = hashlib.sha256(normalized.encode("utf-8", "replace")).hexdigest()
+    for raw in reversed(list(attempts)):
+        attempt = dict(raw)
+        if str(attempt.get("declaration_hash", "") or "").strip() == candidate_hash:
+            return attempt
+    return None
 
 
 def check_has_hard_errors(

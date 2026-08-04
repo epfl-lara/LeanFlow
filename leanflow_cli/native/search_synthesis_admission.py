@@ -28,6 +28,16 @@ SOURCE_INSPECTION_TOOL_NAMES = frozenset(
 )
 DISCOVERY_TOOL_NAMES = BROAD_SEARCH_TOOL_NAMES | SOURCE_INSPECTION_TOOL_NAMES
 
+_CONSTRUCTION_WINDOW_KEYS = (
+    "construction_source_inspection_cycle",
+    "construction_source_inspection_count",
+    "construction_source_inspection_same_request_streak",
+    "construction_source_inspection_last_fingerprint",
+    "construction_source_inspection_nudged",
+    "construction_source_inspection_boundary",
+    "construction_synthesis_rejection_count",
+)
+
 _LEAN_INSPECTION_COMMAND = re.compile(r"(?m)^\s*(?:#(?:check|print|eval|reduce)\b|run_cmd\b)")
 _LEAN_DECLARATION_START = re.compile(
     r"(?m)^\s*(?:private\s+)?(?:theorem|lemma|example|def|abbrev)\b(?P<header>[^\n]*)"
@@ -43,6 +53,23 @@ class SourceInspectionDecision:
     same_request_streak: int = 0
     nudge: bool = False
     close_turn: bool = False
+
+
+def schedule_fresh_construction_window(tracker: Mapping[str, Any]) -> dict[str, Any]:
+    """Mark a completed route handoff to refresh source inspection next turn."""
+    updated = dict(tracker)
+    updated["construction_source_window_reset_pending"] = True
+    return updated
+
+
+def prepare_provider_turn(tracker: Mapping[str, Any]) -> dict[str, Any]:
+    """Open a fresh source window after the previous turn yielded to orchestration."""
+    updated = dict(tracker)
+    if not bool(updated.pop("construction_source_window_reset_pending", False)):
+        return updated
+    for key in _CONSTRUCTION_WINDOW_KEYS:
+        updated.pop(key, None)
+    return updated
 
 
 def is_inspection_only_incremental_check(

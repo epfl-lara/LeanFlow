@@ -4291,6 +4291,8 @@ def _prepare_managed_turn_state(agent: Any, autonomy_state: dict[str, Any]) -> N
     agent._managed_step_boundary_closed = False
     search_progress = autonomy_state.get("search_progress")
     if isinstance(search_progress, dict):
+        search_progress = search_synthesis_admission.prepare_provider_turn(search_progress)
+        autonomy_state["search_progress"] = search_progress
         # Search and source debt are assignment-durable, but the small
         # correction allowance belongs to one provider conversation. Without
         # this reset, a fresh route can be terminated by its first mistaken
@@ -7754,6 +7756,8 @@ def _track_search_progress(
             )
             return False
         route = "plan"
+        tracker = search_synthesis_admission.schedule_fresh_construction_window(tracker)
+        autonomy_state["search_progress"] = tracker
         _set_prover_requested_route(
             autonomy_state,
             route=route,
@@ -8356,6 +8360,151 @@ def _tool_proposed_edit_text(function_name: str, args: Mapping[str, Any] | None)
     if function_name == "apply_verified_patch":
         return str(data.get("patch", "") or "")
     return ""
+
+
+def _assigned_candidate_declaration(source: str, target_symbol: str) -> str:
+    """Return one normalized assigned declaration from an in-memory source image."""
+    entry = next(
+        (
+            item
+            for item in _declaration_line_index_from_text(source)
+            if _declaration_matches_target(item, target_symbol)
+        ),
+        None,
+    )
+    return _normalize_failed_attempt_candidate_declaration(str((entry or {}).get("text", "") or ""))
+
+
+def _preview_managed_candidate_declaration(
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    *,
+    before_text: str,
+    target_symbol: str,
+) -> str:
+    """Return the exact proposed assigned declaration without writing source."""
+    after_text = managed_edit_rollback.preview_candidate_source(
+        function_name,
+        args,
+        before_text,
+    )
+    if not after_text:
+        return ""
+    candidate = _assigned_candidate_declaration(after_text, target_symbol)
+    before = _assigned_candidate_declaration(before_text, target_symbol)
+    return candidate if candidate and candidate != before else ""
+
+
+def _pending_managed_candidate_declaration(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+) -> str:
+    """Capture the assigned candidate before a tool or queue guard rolls it back."""
+    snapshot = dict(getattr(agent, "_managed_queue_edit_snapshot", {}) or {})
+    if not _queue_edit_snapshot_has_identity(snapshot):
+        return ""
+    target_symbol = str(snapshot.get("target_symbol", "") or "").strip()
+    active_file = str(snapshot.get("active_file", "") or "").strip()
+    before_text = str(snapshot.get("before_text", "") or "")
+    if not target_symbol or not active_file or not before_text:
+        return ""
+    try:
+        current_text = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        current_text = ""
+    if current_text and current_text != before_text:
+        candidate = _assigned_candidate_declaration(current_text, target_symbol)
+        before = _assigned_candidate_declaration(before_text, target_symbol)
+        if candidate and candidate != before:
+            return candidate
+    return _preview_managed_candidate_declaration(
+        function_name,
+        args,
+        before_text=before_text,
+        target_symbol=target_symbol,
+    )
+
+
+def _rejected_candidate_replay_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Reject an exact assigned-theorem source candidate already rejected by Lean."""
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not _managed_edit_targets_assignment(
+            args,
+            active_file,
+            function_name=function_name,
+        )
+    ):
+        return None
+    try:
+        before_text = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    candidate = _preview_managed_candidate_declaration(
+        function_name,
+        args,
+        before_text=before_text,
+        target_symbol=target_symbol,
+    )
+    if not candidate:
+        return None
+    previous = managed_edit_rollback.matching_rejected_candidate(
+        _scoped_failed_attempt_entries(
+            autonomy_state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        ),
+        candidate,
+    )
+    if previous is None:
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "rejected-candidate-replay-blocked",
+            f"Blocked exact replay of rejected candidate for {target_symbol}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            prior_attempt=previous.get("attempt"),
+            prior_proof_shape=str(previous.get("proof_shape", "") or ""),
+            provider_called=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "rejected_candidate_replay",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "patch_applied": False,
+            "check_passed": False,
+            "provider_called": False,
+            "lean_started": False,
+            "prior_attempt": previous.get("attempt"),
+            "prior_proof_shape": previous.get("proof_shape", ""),
+            "prior_rejection": previous.get("reason", ""),
+            "required_action": (
+                "Do not rerun this exact rejected declaration. Preserve its diagnostics and "
+                "make a materially different candidate, isolate a named helper, or change routes."
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 def _clean_room_queue_support_edit_guard(
@@ -9435,6 +9584,14 @@ def _managed_pre_tool_call(
         )
         if helper_priority_guard:
             return helper_priority_guard
+        rejected_candidate_guard = _rejected_candidate_replay_pre_tool_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if rejected_candidate_guard:
+            return rejected_candidate_guard
         search_synthesis_guard = _search_synthesis_pre_tool_guard(
             agent,
             function_name,
@@ -11881,8 +12038,11 @@ def _finish_queue_step_boundary(
                 manager_feedback_reason = str(
                     manager_check.get("output", "") or manager_check.get("error", "") or ""
                 ).strip() or _verification_status_text(verification_record)
+        if candidate_replacement:
+            rejected_candidate_evidence = {"replacement": candidate_replacement}
         if target_candidate_dry_run:
             rejected_candidate_evidence = {
+                **dict(rejected_candidate_evidence or {}),
                 "feedback_lean": manager_check.get("feedback_lean", ""),
                 "replacement": candidate_replacement or manager_check.get("replacement", ""),
             }
@@ -13060,6 +13220,7 @@ def _handle_managed_tool_result(
     queue_edit_before_source_revision_sha256: str = "",
     queue_edit_before_text: str = "",
     queue_edit_after_source_revision_sha256: str = "",
+    queue_edit_candidate_declaration: str = "",
     queue_removed_generated_assignment: bool = False,
 ) -> None:
     """Dispatch managed queue callbacks on tool result: track search progress, record formalization verifications, detect and respond to post-edit verification outcomes, invoke step boundary on theorem feedback. Central hook for autonomous managed-queue loop state updates."""
@@ -13376,6 +13537,51 @@ def _handle_managed_tool_result(
         # The queue guard owns rejection. A tool-level success after a restored
         # out-of-scope edit is not theorem evidence and must not spend a retry.
         if queue_edit_accepted is False:
+            apply_payload = (
+                _json_tool_result_payload(_result)
+                if function_name == "apply_verified_patch"
+                else {}
+            )
+            nested_verification = apply_payload.get("verification")
+            if (
+                str(apply_payload.get("status", "") or "").strip() == "check_failed"
+                and apply_payload.get("rolled_back") is True
+                and isinstance(nested_verification, Mapping)
+            ):
+                managed_autonomy = getattr(agent, "_managed_autonomy_state", {}) or {}
+                assignment = dict(managed_autonomy).get("current_queue_assignment", {})
+                target_symbol = str(
+                    dict(assignment or {}).get("target_symbol", "")
+                    or dict(args or {}).get("theorem_id", "")
+                    or ""
+                ).strip()
+                active_file = str(
+                    dict(assignment or {}).get("active_file", "")
+                    or dict(args or {}).get("path", "")
+                    or ""
+                ).strip()
+                if target_symbol and active_file:
+                    manager_verification = dict(nested_verification)
+                    manager_verification.update(
+                        {
+                            "failed_edit_restored": True,
+                            "verified_patch_checkpoint_id": str(
+                                apply_payload.get("checkpoint_id", "") or ""
+                            ),
+                        }
+                    )
+                    agent._managed_pending_theorem_feedback = {
+                        "target_symbol": target_symbol,
+                        "active_file": active_file,
+                    }
+                    _finish_queue_step_boundary(
+                        agent,
+                        pending_target=target_symbol,
+                        pending_file=active_file,
+                        verification_tool="apply_verified_patch",
+                        manager_verification=manager_verification,
+                        candidate_replacement=queue_edit_candidate_declaration,
+                    )
             return
         if _managed_tool_result_succeeded(_result):
             _refresh_live_queue_source_after_managed_edit(agent, function_name, args)
@@ -13790,6 +13996,7 @@ def _handle_managed_tool_result(
                     else None
                 ),
                 promoted_helper_names=queue_promoted_helpers,
+                candidate_replacement=queue_edit_candidate_declaration,
             )
         _maybe_append_formalization_handoff_feedback(
             agent,
@@ -16058,7 +16265,7 @@ def _recent_failed_attempts_summary(
         target_symbol=target_symbol,
         active_file=active_file,
     )
-    previous_attempts = scoped[:-1]
+    previous_attempts = scoped
     if not previous_attempts:
         return ""
     lines = [
@@ -20193,7 +20400,13 @@ def _build_agent() -> AIAgent:
         phase_seconds: dict[str, float] = {}
         phase_started = time.monotonic()
         edit_verdict = _ManagedQueueEditVerdict()
+        queue_edit_candidate_declaration = ""
         if _queue_edit_finalization_required(agent, function_name, _args):
+            queue_edit_candidate_declaration = _pending_managed_candidate_declaration(
+                agent,
+                function_name,
+                _args,
+            )
             edit_verdict = _finalize_managed_queue_edit_details(agent, function_name, _result)
         managed_autonomy = getattr(agent, "_managed_autonomy_state", None)
         if isinstance(managed_autonomy, dict):
@@ -20256,6 +20469,7 @@ def _build_agent() -> AIAgent:
             queue_edit_before_source_revision_sha256=(edit_verdict.before_source_revision_sha256),
             queue_edit_before_text=edit_verdict.before_text,
             queue_edit_after_source_revision_sha256=(edit_verdict.after_source_revision_sha256),
+            queue_edit_candidate_declaration=queue_edit_candidate_declaration,
             queue_removed_generated_assignment=edit_verdict.removed_generated_assignment,
         )
         if isinstance(managed_autonomy, dict):

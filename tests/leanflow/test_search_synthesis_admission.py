@@ -75,3 +75,26 @@ def test_construction_source_boundary_blocks_only_its_cycle():
     assert blocked is not None
     assert blocked["status"] == "construction_synthesis_required"
     assert refreshed is None
+
+
+def test_construction_route_handoff_opens_fresh_provider_window():
+    """A forced route handoff must not poison the next provider conversation."""
+    tracker = {
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "construction_source_inspection_cycle": 4,
+        "construction_source_inspection_count": 12,
+        "construction_source_inspection_boundary": True,
+        "construction_synthesis_rejection_count": 2,
+    }
+
+    pending = search_synthesis_admission.schedule_fresh_construction_window(tracker)
+    assert pending["construction_source_window_reset_pending"] is True
+
+    refreshed = search_synthesis_admission.prepare_provider_turn(pending)
+    assert "construction_source_window_reset_pending" not in refreshed
+    assert "construction_source_inspection_cycle" not in refreshed
+    assert "construction_source_inspection_count" not in refreshed
+    assert "construction_source_inspection_boundary" not in refreshed
+    assert "construction_synthesis_rejection_count" not in refreshed
+    assert refreshed["target_symbol"] == "demo"

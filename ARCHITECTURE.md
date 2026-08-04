@@ -163,8 +163,8 @@ tool is reachable through the public registry.
   (`search_synthesis_admission.py`), same-revision verification-timeout backpressure
   and structural-recovery handoff, verified companion-module
   publication (`support_module_materialization.py`), checkpoints, and shutdown.
-  Hard-diagnostic edit rollback lives in `managed_edit_rollback.py` so the
-  exact after-image check and atomic restoration remain independently tested.
+  Rejected-edit identity, replay preview, hard-diagnostic classification, and
+  atomic exact-after-image restoration live in `managed_edit_rollback.py`.
   Revision-authenticated successful-gate reuse lives in
   `verified_gate_handoff.py`; it carries a checked queue snapshot across the
   provider boundary without replaying diagnostics, goals, or full-file builds.

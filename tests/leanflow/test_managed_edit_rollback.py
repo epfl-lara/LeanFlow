@@ -89,3 +89,41 @@ def test_restore_failed_managed_edit_requires_exact_after_image(tmp_path):
         expected_after_sha256=after_sha256,
     )
     assert target.read_text(encoding="utf-8") == "-- concurrent edit\n"
+
+
+def test_preview_candidate_source_and_match_exact_rejection():
+    """Reconstruct a verified patch candidate and identify only its exact replay."""
+    before = "theorem demo : True := by\n  sorry\n"
+    patch = """*** Begin Patch
+*** Update File: Demo.lean
+@@
+ theorem demo : True := by
+-  sorry
++  exact True.intro
+*** End Patch"""
+
+    candidate = managed_edit_rollback.preview_candidate_source(
+        "apply_verified_patch",
+        {"patch": patch},
+        before,
+    )
+    assert candidate == "theorem demo : True := by\n  exact True.intro\n"
+
+    declaration = candidate.strip()
+    candidate_hash = hashlib.sha256(declaration.encode()).hexdigest()
+    matched = managed_edit_rollback.matching_rejected_candidate(
+        [
+            {"attempt": 1, "declaration_hash": "0" * 64},
+            {"attempt": 2, "declaration_hash": candidate_hash},
+        ],
+        declaration,
+    )
+    assert matched is not None
+    assert matched["attempt"] == 2
+    assert (
+        managed_edit_rollback.matching_rejected_candidate(
+            [{"attempt": 1, "declaration_hash": "0" * 64}],
+            declaration,
+        )
+        is None
+    )
