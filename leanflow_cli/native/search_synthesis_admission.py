@@ -27,6 +27,8 @@ SOURCE_INSPECTION_TOOL_NAMES = frozenset(
     }
 )
 DISCOVERY_TOOL_NAMES = BROAD_SEARCH_TOOL_NAMES | SOURCE_INSPECTION_TOOL_NAMES
+CONSTRUCTION_DEBT_STATE_KEY = "construction_turn_debt"
+CONSTRUCTION_ATTEMPT_SERIAL_KEY = "construction_attempt_serial"
 
 _CONSTRUCTION_WINDOW_KEYS = (
     "construction_source_inspection_cycle",
@@ -55,6 +57,15 @@ class SourceInspectionDecision:
     close_turn: bool = False
 
 
+@dataclass(frozen=True)
+class ConstructionTurnDecision:
+    """Describe assignment-local construction debt after one unresolved turn."""
+
+    count: int = 0
+    require_construction: bool = False
+    reset_reason: str = ""
+
+
 def schedule_fresh_construction_window(tracker: Mapping[str, Any]) -> dict[str, Any]:
     """Mark a completed route handoff to refresh source inspection next turn."""
     updated = dict(tracker)
@@ -70,6 +81,134 @@ def prepare_provider_turn(tracker: Mapping[str, Any]) -> dict[str, Any]:
     for key in _CONSTRUCTION_WINDOW_KEYS:
         updated.pop(key, None)
     return updated
+
+
+def construction_attempt_request(
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    *,
+    result_status: str = "",
+) -> bool:
+    """Return whether a tool request materially constructs or screens Lean code."""
+    arguments = dict(args or {})
+    if function_name in {"patch", "write_file", "apply_verified_patch"}:
+        return str(result_status or "").strip().lower() != "rejected_candidate_replay"
+    if function_name in {"lean_extract_have", "lean_decompose_helpers"}:
+        return True
+    if function_name == "lean_multi_attempt":
+        attempts = arguments.get("attempts")
+        return isinstance(attempts, (list, tuple)) and bool(attempts)
+    if function_name != "lean_incremental_check":
+        return False
+    action = str(arguments.get("action", "check_target") or "check_target")
+    action = action.strip().lower().replace("-", "_")
+    replacement = str(arguments.get("replacement", "") or "").strip()
+    return bool(
+        replacement
+        and action in {"check_helper", "check_target"}
+        and not is_inspection_only_incremental_check(function_name, arguments)
+    )
+
+
+def record_construction_attempt(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Advance the durable serial used to distinguish concrete prover work."""
+    updated = dict(state)
+    try:
+        serial = int(updated.get(CONSTRUCTION_ATTEMPT_SERIAL_KEY, 0) or 0)
+    except (TypeError, ValueError):
+        serial = 0
+    updated[CONSTRUCTION_ATTEMPT_SERIAL_KEY] = serial + 1
+    return updated
+
+
+def observe_unresolved_construction_turn(
+    tracker: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+    construction_attempt_serial: int,
+    requested_route: str,
+    limit: int,
+) -> tuple[dict[str, Any], ConstructionTurnDecision]:
+    """Accumulate no-construction debt across route labels and campaign epochs."""
+    previous = dict(tracker or {})
+    same_scope = bool(
+        str(previous.get("target_symbol", "") or "") == target_symbol
+        and str(previous.get("active_file", "") or "") == active_file
+    )
+    same_source = bool(
+        same_scope
+        and str(previous.get("source_revision_sha256", "") or "") == source_revision_sha256
+    )
+    try:
+        prior_serial = int(previous.get("construction_attempt_serial", 0) or 0)
+    except (TypeError, ValueError):
+        prior_serial = 0
+    reset_reason = ""
+    if not same_scope:
+        count = 1
+        reset_reason = "assignment-changed" if previous else ""
+        routes: list[str] = []
+    elif not same_source:
+        count = 0
+        reset_reason = "source-changed"
+        routes = []
+    elif prior_serial != int(construction_attempt_serial):
+        count = 0
+        reset_reason = "construction-attempted"
+        routes = []
+    else:
+        count = int(previous.get("count", 0) or 0) + 1
+        routes = [str(route) for route in (previous.get("routes") or []) if str(route)]
+    route = str(requested_route or "").strip().lower()
+    if route:
+        routes.append(route)
+    routes = routes[-8:]
+    require_construction = bool(limit > 0 and count >= limit)
+    updated = {
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "source_revision_sha256": source_revision_sha256,
+        "construction_attempt_serial": int(construction_attempt_serial),
+        "count": count,
+        "routes": routes,
+        "require_construction": require_construction,
+    }
+    return updated, ConstructionTurnDecision(
+        count=count,
+        require_construction=require_construction,
+        reset_reason=reset_reason,
+    )
+
+
+def construction_required_for_assignment(
+    tracker: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+    construction_attempt_serial: int | None = None,
+) -> bool:
+    """Return whether unchanged assignment state owes a concrete construction."""
+    current = dict(tracker or {})
+    try:
+        stored_serial = int(current.get("construction_attempt_serial", 0) or 0)
+        requested_serial = (
+            stored_serial
+            if construction_attempt_serial is None
+            else int(construction_attempt_serial)
+        )
+    except (TypeError, ValueError):
+        return False
+    serial_matches = stored_serial == requested_serial
+    return bool(
+        current.get("require_construction")
+        and serial_matches
+        and str(current.get("target_symbol", "") or "") == target_symbol
+        and str(current.get("active_file", "") or "") == active_file
+        and str(current.get("source_revision_sha256", "") or "") == source_revision_sha256
+    )
 
 
 def is_inspection_only_incremental_check(

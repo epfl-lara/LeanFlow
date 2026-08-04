@@ -319,6 +319,7 @@ SEARCH_SYNTHESIS_REJECTION_LIMIT_DEFAULT = 2
 # route. Bound each orchestration cycle while leaving a generous context window.
 CONSTRUCTION_SOURCE_INSPECTION_HARD_LIMIT_DEFAULT = 6
 CONSTRUCTION_SOURCE_INSPECTION_REPEAT_HARD_LIMIT_DEFAULT = 4
+CONSTRUCTION_NO_PROGRESS_TURN_LIMIT_DEFAULT = 3
 SEARCH_PROGRESS_TOOL_NAMES = search_synthesis_admission.DISCOVERY_TOOL_NAMES
 # The foreground conversation executes in a worker thread so the native
 # runner's main thread can keep owning process-level duties. Serialize
@@ -6537,6 +6538,7 @@ def _review_agent_final_report(
         final_text,
         requested_route,
     )
+    construction_turn_guidance = ""
 
     reused = _take_final_report_failure_check(
         autonomy_state,
@@ -6821,6 +6823,68 @@ def _review_agent_final_report(
                 counterexample_evidence
             )
     if isinstance(autonomy_state, dict):
+        if ok:
+            autonomy_state.pop(
+                search_synthesis_admission.CONSTRUCTION_DEBT_STATE_KEY,
+                None,
+            )
+        else:
+            try:
+                construction_serial = int(
+                    autonomy_state.get(
+                        search_synthesis_admission.CONSTRUCTION_ATTEMPT_SERIAL_KEY,
+                        0,
+                    )
+                    or 0
+                )
+            except (TypeError, ValueError):
+                construction_serial = 0
+            debt_tracker, construction_decision = (
+                search_synthesis_admission.observe_unresolved_construction_turn(
+                    autonomy_state.get(search_synthesis_admission.CONSTRUCTION_DEBT_STATE_KEY),
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    source_revision_sha256=_source_revision_sha256(active_file),
+                    construction_attempt_serial=construction_serial,
+                    requested_route=requested_route,
+                    limit=_construction_no_progress_turn_limit(),
+                )
+            )
+            autonomy_state[search_synthesis_admission.CONSTRUCTION_DEBT_STATE_KEY] = debt_tracker
+            manager_check["construction_no_progress_turns"] = construction_decision.count
+            manager_check["construction_required"] = construction_decision.require_construction
+            if construction_decision.reset_reason:
+                _record_activity(
+                    "construction-turn-debt-reset",
+                    f"Reset construction debt for {target_symbol}: {construction_decision.reset_reason}",
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    reason=construction_decision.reset_reason,
+                    construction_attempt_serial=construction_serial,
+                    source_sha256=str(debt_tracker.get("source_revision_sha256", "") or ""),
+                    campaign_progress=construction_decision.reset_reason
+                    in {"source-changed", "construction-attempted"},
+                )
+            if construction_decision.require_construction:
+                suppressed_route = requested_route
+                requested_route = ""
+                requested_route_reason = ""
+                construction_turn_guidance = _construction_turn_debt_handoff_block(
+                    {"target_symbol": target_symbol, "active_file": active_file},
+                    autonomy_state,
+                )
+                _record_activity(
+                    "construction-turn-debt-activated",
+                    f"Required a concrete Lean attempt for unchanged target {target_symbol}",
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    no_progress_turns=construction_decision.count,
+                    suppressed_route=suppressed_route,
+                    routes=list(debt_tracker.get("routes") or []),
+                    source_sha256=str(debt_tracker.get("source_revision_sha256", "") or ""),
+                    campaign_progress=False,
+                )
+    if isinstance(autonomy_state, dict):
         target_signature = research_helper_candidate_priority.target_signature_sha256(
             active_file,
             target_symbol,
@@ -6958,6 +7022,17 @@ def _review_agent_final_report(
             feedback_text = f"{feedback_text}\n{nudge_guidance}"
         messages.append({"role": "user", "content": feedback_text})
         updated["messages"] = messages
+    if construction_turn_guidance and not ok:
+        guided_messages = list(updated.get("messages") or messages)
+        if guided_messages and str(guided_messages[-1].get("role", "") or "") == "user":
+            prior_content = str(guided_messages[-1].get("content", "") or "").rstrip()
+            guided_messages[-1] = {
+                **guided_messages[-1],
+                "content": f"{prior_content}\n\n{construction_turn_guidance}".strip(),
+            }
+        else:
+            guided_messages.append({"role": "user", "content": construction_turn_guidance})
+        updated["messages"] = guided_messages
     if shadow_state is not None and shadow_evidence is not None:
         try:
             retry_exhausted = bool(manager_check.get("retry_exhausted"))
@@ -7370,6 +7445,115 @@ def _construction_only_handoff_block(
     )
 
 
+def _construction_turn_debt_handoff_block(
+    live_state: Mapping[str, Any],
+    autonomy_state: Mapping[str, Any] | None,
+) -> str:
+    """Build the mandatory construction directive after route-only oscillation."""
+    state = dict(autonomy_state or {})
+    target_symbol = str(live_state.get("target_symbol", "") or "").strip()
+    active_file = str(live_state.get("active_file", "") or "").strip()
+    tracker = dict(state.get(search_synthesis_admission.CONSTRUCTION_DEBT_STATE_KEY) or {})
+    if (
+        not target_symbol
+        or not active_file
+        or not search_synthesis_admission.construction_required_for_assignment(
+            tracker,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            source_revision_sha256=_source_revision_sha256(active_file),
+            construction_attempt_serial=int(
+                state.get(search_synthesis_admission.CONSTRUCTION_ATTEMPT_SERIAL_KEY, 0) or 0
+            ),
+        )
+    ):
+        return ""
+    routes = [str(route) for route in (tracker.get("routes") or []) if str(route)]
+    return "\n".join(
+        [
+            "[LEANFLOW CONCRETE CONSTRUCTION REQUIRED]",
+            (
+                f"- {int(tracker.get('count', 0) or 0)} unresolved turns reached the "
+                "same assigned declaration and source without a material Lean candidate"
+            ),
+            *([f"- advisory routes already tried: {', '.join(routes)}"] if routes else []),
+            "- advisory route changes, research, source rereads, and planner calls are temporarily closed",
+            "- the next action must construct or screen a concrete declaration: make a scoped proof edit, check a complete replacement/helper, run concrete tactic attempts, or mechanically decompose a local proof",
+            "- preserve every named obligation and dead branch, but do not end the turn with another plan or route request",
+            "- this fence clears after a material assigned-source change or a substantive Lean candidate attempt",
+        ]
+    )
+
+
+def _construction_turn_debt_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Fence advisory tools until an oscillating route makes a concrete attempt."""
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    tracker = dict(autonomy_state.get(search_synthesis_admission.CONSTRUCTION_DEBT_STATE_KEY) or {})
+    if (
+        not target_symbol
+        or not active_file
+        or not search_synthesis_admission.construction_required_for_assignment(
+            tracker,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            source_revision_sha256=_source_revision_sha256(active_file),
+            construction_attempt_serial=int(
+                autonomy_state.get(
+                    search_synthesis_admission.CONSTRUCTION_ATTEMPT_SERIAL_KEY,
+                    0,
+                )
+                or 0
+            ),
+        )
+    ):
+        return None
+    if search_synthesis_admission.construction_attempt_request(function_name, args):
+        return None
+    if function_name in {"acquire_file_lock", "release_file_lock", "list_file_locks", "terminal"}:
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "construction-turn-debt-tool-blocked",
+            f"Blocked advisory tool {function_name} until {target_symbol} receives a concrete attempt",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            no_progress_turns=int(tracker.get("count", 0) or 0),
+            provider_called=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "concrete_construction_required",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "no_progress_turns": int(tracker.get("count", 0) or 0),
+            "provider_called": False,
+            "lean_started": False,
+            "required_action": (
+                "Use a scoped proof edit, a complete Lean replacement/helper check, concrete "
+                "tactic attempts, or mechanical local decomposition before more advice or inspection."
+            ),
+            "reason": (
+                "This unchanged assignment already cycled through multiple advisory routes "
+                "without constructing a material Lean candidate."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _advisor_circuit_handoff_block(
     live_state: Mapping[str, Any],
     autonomy_state: Mapping[str, Any] | None,
@@ -7550,6 +7734,15 @@ def _construction_source_inspection_repeat_hard_limit() -> int:
         "LEANFLOW_CONSTRUCTION_SOURCE_INSPECTION_REPEAT_HARD_LIMIT",
         CONSTRUCTION_SOURCE_INSPECTION_REPEAT_HARD_LIMIT_DEFAULT,
         minimum=0,
+    )
+
+
+def _construction_no_progress_turn_limit() -> int:
+    """Return unresolved unchanged turns allowed before construction is mandatory."""
+    return _read_int_env(
+        "LEANFLOW_CONSTRUCTION_NO_PROGRESS_TURN_LIMIT",
+        CONSTRUCTION_NO_PROGRESS_TURN_LIMIT_DEFAULT,
+        minimum=1,
     )
 
 
@@ -9592,6 +9785,14 @@ def _managed_pre_tool_call(
         )
         if rejected_candidate_guard:
             return rejected_candidate_guard
+        construction_turn_guard = _construction_turn_debt_pre_tool_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if construction_turn_guard:
+            return construction_turn_guard
         search_synthesis_guard = _search_synthesis_pre_tool_guard(
             agent,
             function_name,
@@ -13228,6 +13429,26 @@ def _handle_managed_tool_result(
     exact_check_source_snapshot = _take_exact_check_source_snapshot(agent, function_name)
     _sync_disabled_tools_from_result(agent, function_name, _result)
     autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+    if _workflow_kind() == "prove" and isinstance(autonomy_state, dict):
+        result_status = str(_json_tool_result_payload(_result).get("status", "") or "")
+        construction_attempted = search_synthesis_admission.construction_attempt_request(
+            function_name,
+            args,
+            result_status=result_status,
+        )
+        if function_name in {"patch", "write_file", "apply_verified_patch"}:
+            construction_attempted = bool(
+                construction_attempted
+                and (
+                    queue_edit_accepted is True
+                    or str(queue_edit_candidate_declaration or "").strip()
+                )
+            )
+        if construction_attempted:
+            updated_state = search_synthesis_admission.record_construction_attempt(autonomy_state)
+            autonomy_state[search_synthesis_admission.CONSTRUCTION_ATTEMPT_SERIAL_KEY] = (
+                updated_state[search_synthesis_admission.CONSTRUCTION_ATTEMPT_SERIAL_KEY]
+            )
     if _workflow_kind() == "prove" and isinstance(autonomy_state, dict):
         observed_environment_failures = environment_memory.observe_terminal_result(
             autonomy_state,
@@ -22310,6 +22531,12 @@ def _autonomous_continuation_prompt(
     construction_handoff = _construction_only_handoff_block(live_state, autonomy_state)
     if construction_handoff:
         prompt += f"\n\n{construction_handoff}"
+    construction_turn_handoff = _construction_turn_debt_handoff_block(
+        live_state,
+        autonomy_state,
+    )
+    if construction_turn_handoff:
+        prompt += f"\n\n{construction_turn_handoff}"
     advisor_handoff = _advisor_circuit_handoff_block(live_state, autonomy_state)
     if advisor_handoff:
         prompt += f"\n\n{advisor_handoff}"

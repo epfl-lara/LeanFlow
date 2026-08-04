@@ -159,7 +159,8 @@ tool is reachable through the public registry.
   crash-durable residual-target advisor failure circuits, and activity retention.
 - `native/` owns the managed workflow process, startup/resume reconciliation,
   assignment transitions, completion policy, durable bounded-search synthesis
-  admission plus cycle-bounded construction-source inspection
+  admission, cycle-bounded construction-source inspection, and cross-route
+  no-construction debt that fences advisory oscillation
   (`search_synthesis_admission.py`), same-revision verification-timeout backpressure
   and structural-recovery handoff, verified companion-module
   publication (`support_module_materialization.py`), checkpoints, and shutdown.

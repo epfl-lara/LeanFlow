@@ -98,3 +98,93 @@ def test_construction_route_handoff_opens_fresh_provider_window():
     assert "construction_source_inspection_boundary" not in refreshed
     assert "construction_synthesis_rejection_count" not in refreshed
     assert refreshed["target_symbol"] == "demo"
+
+
+def test_construction_debt_accumulates_across_route_labels():
+    """Route alternation must not erase unchanged no-construction turns."""
+    tracker = None
+    for route in ("decompose", "negate", "decompose"):
+        tracker, decision = search_synthesis_admission.observe_unresolved_construction_turn(
+            tracker,
+            target_symbol="demo",
+            active_file="/tmp/Main.lean",
+            source_revision_sha256="source-a",
+            construction_attempt_serial=0,
+            requested_route=route,
+            limit=3,
+        )
+
+    assert decision.count == 3
+    assert decision.require_construction is True
+    assert tracker["routes"] == ["decompose", "negate", "decompose"]
+    assert search_synthesis_admission.construction_required_for_assignment(
+        tracker,
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        source_revision_sha256="source-a",
+        construction_attempt_serial=0,
+    )
+
+
+def test_construction_attempt_or_source_change_clears_route_debt():
+    """Reward a concrete candidate or material source change immediately."""
+    tracker = {
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "source-a",
+        "construction_attempt_serial": 2,
+        "count": 4,
+        "routes": ["decompose", "negate"],
+        "require_construction": True,
+    }
+
+    after_attempt, attempt_decision = (
+        search_synthesis_admission.observe_unresolved_construction_turn(
+            tracker,
+            target_symbol="demo",
+            active_file="/tmp/Main.lean",
+            source_revision_sha256="source-a",
+            construction_attempt_serial=3,
+            requested_route="plan",
+            limit=3,
+        )
+    )
+    after_edit, edit_decision = search_synthesis_admission.observe_unresolved_construction_turn(
+        tracker,
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        source_revision_sha256="source-b",
+        construction_attempt_serial=2,
+        requested_route="plan",
+        limit=3,
+    )
+
+    assert attempt_decision.reset_reason == "construction-attempted"
+    assert attempt_decision.count == 0
+    assert after_attempt["require_construction"] is False
+    assert edit_decision.reset_reason == "source-changed"
+    assert edit_decision.count == 0
+    assert after_edit["require_construction"] is False
+
+
+def test_construction_attempt_classifier_excludes_inspection_and_exact_replay():
+    """Only materially distinct Lean candidates discharge construction debt."""
+    assert search_synthesis_admission.construction_attempt_request(
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": "private lemma useful : True := by\n  trivial",
+        },
+    )
+    assert not search_synthesis_admission.construction_attempt_request(
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": "#check Nat.add_comm\nprivate lemma inspect : True := by trivial",
+        },
+    )
+    assert not search_synthesis_admission.construction_attempt_request(
+        "apply_verified_patch",
+        {"patch": "candidate"},
+        result_status="rejected_candidate_replay",
+    )

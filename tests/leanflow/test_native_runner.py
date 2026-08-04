@@ -31641,6 +31641,133 @@ def test_rejected_verified_patch_reaches_failed_attempt_boundary(tmp_path, monke
     assert kwargs["candidate_replacement"] == candidate
 
 
+def test_unresolved_route_oscillation_requires_concrete_construction(tmp_path, monkeypatch):
+    """Accumulate unchanged no-construction turns across alternating routes."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    source_revision = runner._source_revision_sha256(str(active))
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        runner.search_synthesis_admission.CONSTRUCTION_ATTEMPT_SERIAL_KEY: 0,
+        runner.search_synthesis_admission.CONSTRUCTION_DEBT_STATE_KEY: {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "source_revision_sha256": source_revision,
+            "construction_attempt_serial": 0,
+            "count": 2,
+            "routes": ["decompose", "negate"],
+            "require_construction": False,
+        },
+    }
+    events = []
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "final_response": "Requested route: decompose.",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "Requested route: decompose.",
+                }
+            ],
+        },
+        state,
+    )
+
+    tracker = state[runner.search_synthesis_admission.CONSTRUCTION_DEBT_STATE_KEY]
+    assert tracker["count"] == 3
+    assert tracker["require_construction"] is True
+    assert tracker["routes"] == ["decompose", "negate", "decompose"]
+    assert "prover_requested_route" not in state
+    assert result["manager_final_report_review"]["construction_required"] is True
+    assert "[LEANFLOW CONCRETE CONSTRUCTION REQUIRED]" in result["messages"][-1]["content"]
+    assert any(args[0] == "construction-turn-debt-activated" for args, _ in events)
+
+
+def test_construction_debt_blocks_advice_then_releases_after_candidate(tmp_path, monkeypatch):
+    """Fence another read, but release immediately after one concrete Lean candidate."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    source_revision = runner._source_revision_sha256(str(active))
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        runner.search_synthesis_admission.CONSTRUCTION_ATTEMPT_SERIAL_KEY: 0,
+        runner.search_synthesis_admission.CONSTRUCTION_DEBT_STATE_KEY: {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "source_revision_sha256": source_revision,
+            "construction_attempt_serial": 0,
+            "count": 3,
+            "routes": ["decompose", "negate", "decompose"],
+            "require_construction": True,
+        },
+    }
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+
+    blocked = runner._construction_turn_debt_pre_tool_guard(
+        agent,
+        "read_file",
+        {"path": str(active), "offset": 1, "limit": 40},
+        state,
+    )
+    allowed = runner._construction_turn_debt_pre_tool_guard(
+        agent,
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": "private lemma candidate : True := by\n  trivial",
+        },
+        state,
+    )
+
+    assert json.loads(blocked)["status"] == "concrete_construction_required"
+    assert allowed is None
+
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": "private lemma candidate : True := by\n  trivial",
+        },
+        json.dumps({"success": True, "ok": True}),
+    )
+
+    assert state[runner.search_synthesis_admission.CONSTRUCTION_ATTEMPT_SERIAL_KEY] == 1
+    assert (
+        runner._construction_turn_debt_pre_tool_guard(
+            agent,
+            "read_file",
+            {"path": str(active), "offset": 1, "limit": 40},
+            state,
+        )
+        is None
+    )
+
+
 def test_failed_attempt_candidate_extraction_is_bounded_and_falls_back(tmp_path, monkeypatch):
     """Oversized feedback may use replacement, while malformed evidence uses source truth."""
     active = tmp_path / "Main.lean"
