@@ -76,14 +76,54 @@ def test_resolve_multi_attempt_location_finds_unique_moved_placeholder(tmp_path)
     )
 
 
-def test_resolve_multi_attempt_location_keeps_ambiguous_moved_placeholders(tmp_path):
+def test_resolve_multi_attempt_location_prefers_first_placeholder_at_or_after_request(tmp_path):
     target = tmp_path / "Demo.lean"
     target.write_text(
         "theorem target : True ∧ True := by\n" "  constructor\n" "  · sorry\n" "  · sorry\n",
         encoding="utf-8",
     )
 
-    assert location._resolve_multi_attempt_location(target, 2, None) == (2, None, None)
+    assert location._resolve_multi_attempt_location(target, 2, None) == (
+        3,
+        5,
+        "trailing_placeholder",
+    )
+
+
+def test_resolve_multi_attempt_location_selects_later_branch_after_earlier_hole(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "theorem target : True ∧ True := by\n"
+        "  constructor\n"
+        "  · sorry\n"
+        "  · have marker : True := trivial\n"
+        "    sorry\n",
+        encoding="utf-8",
+    )
+
+    assert location._resolve_multi_attempt_location(target, 4, None) == (
+        5,
+        5,
+        "trailing_placeholder",
+    )
+
+
+def test_resolve_multi_attempt_location_rejects_ambiguous_backward_jump(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "theorem target : True ∧ True := by\n"
+        "  constructor\n"
+        "  · sorry\n"
+        "  · sorry\n"
+        "  have done : True := trivial\n",
+        encoding="utf-8",
+    )
+
+    assert location._resolve_multi_attempt_location(target, 5, None) == (
+        5,
+        None,
+        "ambiguous_backward_placeholders",
+    )
 
 
 def test_resolve_multi_attempt_location_corrects_blank_after_multiline_proof(tmp_path):

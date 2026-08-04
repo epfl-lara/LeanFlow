@@ -66,7 +66,7 @@ def workflow_run_help_text(workflow: str) -> str:
             [
                 "  --research                Enable the complete research profile",
                 "  --research-workers N      Set background workers (implies --research)",
-                "  --clean-room              Disable repository and prior-solution research",
+                "  --clean-room              Block benchmark solution research and sibling tasks",
                 "  --clean-room-label VALUE  Add a protected task spelling (repeatable)",
                 "  --human-review            Allow explicit human-review pauses",
             ]

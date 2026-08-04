@@ -16,6 +16,10 @@ __all__ = [
     "_resolve_multi_attempt_location",
 ]
 
+_STANDALONE_PLACEHOLDER_RE = re.compile(
+    r"^(?P<prefix>\s*(?:(?:·|-|\+)\s*)?)(?:sorry|admit)\b(?:\s*--.*)?\s*$"
+)
+
 
 def _resolve_tactic_line_after_blank(path: Path, requested_line: int) -> int:
     """Resolve an immediate post-proof blank to the preceding tactic line.
@@ -153,32 +157,50 @@ def _resolve_trailing_placeholder(
     )
     if not re.match(r"by\b", proof):
         return None
-    nearby_lines = (line, line + 1, line - 1)
-    for candidate_line in nearby_lines:
-        if candidate_line < start or candidate_line > end or candidate_line > len(lines):
-            continue
-        match = re.match(
-            r"^(?P<indent>\s*)(?:sorry|admit)\b(?:\s*--.*)?\s*$",
-            lines[candidate_line - 1],
-        )
-        if match is not None:
-            return candidate_line, len(match.group("indent")) + 1
-    # Source edits often move the final hole while a model retains an older
-    # theorem-local line number. Resolve that stale anchor only when the
-    # declaration has one unambiguous standalone placeholder.
     placeholders: list[tuple[int, int]] = []
     for candidate_line in range(start, min(end, len(lines)) + 1):
-        if candidate_line in nearby_lines:
-            continue
-        match = re.match(
-            r"^(?P<indent>\s*)(?:sorry|admit)\b(?:\s*--.*)?\s*$",
-            lines[candidate_line - 1],
-        )
+        match = _STANDALONE_PLACEHOLDER_RE.match(lines[candidate_line - 1])
         if match is not None:
-            placeholders.append((candidate_line, len(match.group("indent")) + 1))
+            placeholders.append((candidate_line, len(match.group("prefix")) + 1))
+    # A line request is a forward source anchor. Prefer the first hole at or
+    # after it, even when earlier branches still contain intentional holes.
+    at_or_after = [placeholder for placeholder in placeholders if placeholder[0] >= line]
+    if at_or_after:
+        return min(at_or_after, key=lambda placeholder: placeholder[0])
+    # A stale anchor beyond the declaration may move backward only when the
+    # declaration has one unambiguous standalone placeholder.
     if len(placeholders) == 1:
         return placeholders[0]
     return None
+
+
+def _has_ambiguous_backward_placeholders(path: Path, requested_line: int) -> bool:
+    """Return whether a line-only request could only jump to multiple earlier holes."""
+    line = int(requested_line)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    entry = next(
+        (
+            candidate
+            for candidate in _declaration_index(path)
+            if int(candidate.get("line", 0) or 0)
+            <= line
+            <= int(candidate.get("end_line", 0) or 0) + 1
+        ),
+        None,
+    )
+    if entry is None:
+        return False
+    start = int(entry.get("line", 0) or 0)
+    end = min(int(entry.get("end_line", 0) or 0), len(lines))
+    placeholders = [
+        candidate_line
+        for candidate_line in range(start, end + 1)
+        if _STANDALONE_PLACEHOLDER_RE.match(lines[candidate_line - 1])
+    ]
+    return len(placeholders) > 1 and all(candidate_line < line for candidate_line in placeholders)
 
 
 def _multi_attempt_replacement_candidate(
@@ -240,12 +262,16 @@ def _resolve_multi_attempt_location(
         placeholder = _resolve_trailing_placeholder(path, resolved_line)
         if placeholder is not None:
             return placeholder[0], placeholder[1], "trailing_placeholder"
+        if _has_ambiguous_backward_placeholders(path, resolved_line):
+            return resolved_line, None, "ambiguous_backward_placeholders"
         return resolved_line, None, "previous_tactic_line_after_blank"
     if requested_column is not None:
         return line, requested_column, None
     placeholder = _resolve_trailing_placeholder(path, line)
     if placeholder is not None:
         return placeholder[0], placeholder[1], "trailing_placeholder"
+    if _has_ambiguous_backward_placeholders(path, line):
+        return line, None, "ambiguous_backward_placeholders"
     inline_column = _resolve_inline_tactic_column(path, line)
     if inline_column is not None:
         return line, inline_column, "inline_tactic_body"

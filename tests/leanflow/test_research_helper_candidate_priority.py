@@ -79,6 +79,109 @@ def _checked_helper(active_file: str, *, name: str, declaration: str) -> dict:
     }
 
 
+def _foreground_helper_check(active_file: str, *, declaration: str, name: str = "checked_helper"):
+    """Return exact tool arguments and a successful foreground helper result."""
+    return (
+        {
+            "action": "check_helper",
+            "file_path": active_file,
+            "theorem_id": "demo",
+            "replacement": declaration,
+        },
+        {
+            "success": True,
+            "action": "check_helper",
+            "ok": True,
+            "valid_without_sorry": True,
+            "has_errors": False,
+            "has_sorry": False,
+            "verification_scope": "helper_candidate",
+            "replacement_matches_target": False,
+            "replacement_declarations": [name],
+        },
+    )
+
+
+def test_foreground_helper_check_is_durable_before_parent_recheck(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "state"))
+    declaration = "private lemma checked_helper (n : Nat) : n = n := by\n  rfl"
+    arguments, result = _foreground_helper_check(str(active), declaration=declaration)
+
+    record = priority.remember_from_foreground_check(
+        {},
+        arguments,
+        result,
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert record is not None
+    assert record.state == priority.AWAITING_RECHECK
+    assert record.job_id.startswith("foreground-check:")
+    assert record.delivery_markers == ("foreground-check",)
+    assert record.declaration == declaration
+    assert priority.load({priority._HYDRATION_KEY: "prior-process"}) == record
+
+
+@pytest.mark.parametrize(
+    ("result_update", "declaration"),
+    [
+        ({"ok": False}, "private lemma checked_helper : True := by\n  trivial"),
+        ({"has_sorry": True}, "private lemma checked_helper : True := by\n  trivial"),
+        (
+            {"replacement_declarations": ["checked_helper", "second_helper"]},
+            "private lemma checked_helper : True := by\n  trivial",
+        ),
+        ({}, "private lemma checked_helper : True := by\n  apply?"),
+        ({}, "private lemma checked_helper : True := by\n  sorry"),
+    ],
+)
+def test_foreground_helper_check_fails_closed(monkeypatch, tmp_path, result_update, declaration):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    arguments, result = _foreground_helper_check(str(active), declaration=declaration)
+    result.update(result_update)
+
+    assert (
+        priority.remember_from_foreground_check(
+            {},
+            arguments,
+            result,
+            campaign_id="campaign",
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        is None
+    )
+
+
+def test_foreground_helper_check_requires_exact_assignment(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    other = tmp_path / "Other.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    other.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    declaration = "private lemma checked_helper : True := by\n  trivial"
+    arguments, result = _foreground_helper_check(str(other), declaration=declaration)
+
+    assert (
+        priority.remember_from_foreground_check(
+            {},
+            arguments,
+            result,
+            campaign_id="campaign",
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        is None
+    )
+
+
 def test_registers_one_exact_assignment_candidate_and_deduplicates(monkeypatch, tmp_path):
     active = tmp_path / "Demo.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")

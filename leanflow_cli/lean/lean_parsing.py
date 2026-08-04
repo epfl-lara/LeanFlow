@@ -13,6 +13,7 @@ from typing import Any
 
 __all__ = [
     "LEAN_DECLARATION_PREAMBLE_RE",
+    "_contains_lean_suggestion_tactic",
     "_strip_lean_comments_and_strings",
     "_text_has_theorem_or_lemma",
     "_text_has_sorry",
@@ -41,6 +42,7 @@ LEAN_DECLARATION_PREAMBLE_RE = (
 _DECLARATION_OPENERS = {"(": ")", "{": "}", "[": "]", "⦃": "⦄", "⟨": "⟩"}
 _DECLARATION_CLOSERS = {closer: opener for opener, closer in _DECLARATION_OPENERS.items()}
 _TYPE_ASSIGNMENT_KEYWORDS = ("let", "have")
+_SUGGESTION_TACTIC_RE = re.compile(r"(?m)^\s*(?:exact|apply|simp|rw|aesop|grind)\?(?:\s|$)")
 
 
 def _next_significant_character(text: str, start: int) -> tuple[int, str] | None:
@@ -204,6 +206,11 @@ def _strip_lean_comments_and_strings(text: str) -> str:
         i += 1
 
     return "".join(out)
+
+
+def _contains_lean_suggestion_tactic(text: str) -> bool:
+    """Return whether executable source contains a diagnostic suggestion tactic."""
+    return bool(_SUGGESTION_TACTIC_RE.search(_strip_lean_comments_and_strings(str(text or ""))))
 
 
 def _text_has_theorem_or_lemma(text: str) -> bool:

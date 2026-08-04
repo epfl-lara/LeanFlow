@@ -81,7 +81,7 @@ def _compact_capability_report(value: Any) -> dict[str, Any]:
     dominate an otherwise compact theorem-local result.
     """
     report = dict(value) if isinstance(value, Mapping) else {}
-    source_text = json.dumps(
+    report_text = json.dumps(
         report,
         ensure_ascii=False,
         sort_keys=True,
@@ -137,9 +137,12 @@ def _compact_capability_report(value: Any) -> dict[str, Any]:
         "unavailable_binaries": _false_keys(report.get("binaries")),
         "unavailable_helper_tools": _false_keys(report.get("helper_tools")),
         "unavailable_managed_mcp_servers": _false_keys(report.get("managed_mcp_servers")),
-        "source_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
-        "source_char_count": len(source_text),
-        "source_top_level_key_count": len(report),
+        # These identify the serialized capability report, not the inspected
+        # Lean source. Precise names prevent a stable capability digest from
+        # masquerading as stale source-revision evidence after an edit.
+        "report_sha256": hashlib.sha256(report_text.encode("utf-8")).hexdigest(),
+        "report_char_count": len(report_text),
+        "report_top_level_key_count": len(report),
         "omitted_top_level_key_count": len(omitted_keys),
         "omitted_top_level_keys": omitted_keys,
         "omitted_degraded_reason_count": omitted_degraded_reasons,
@@ -159,7 +162,7 @@ def _compact_capability_report(value: Any) -> dict[str, Any]:
             separators=(",", ":"),
         )
         summary["projected_char_count"] = len(projected_text)
-        summary["omitted_char_count"] = max(0, len(source_text) - len(projected_text))
+        summary["omitted_char_count"] = max(0, len(report_text) - len(projected_text))
     return summary
 
 

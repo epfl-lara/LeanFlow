@@ -38,6 +38,7 @@ from typing import Any, Protocol, runtime_checkable
 # Callback signatures AIAgent invokes during the conversation loop.
 PreToolCallCallback = Callable[[str, Mapping[str, Any]], str | None]
 PostToolResultCallback = Callable[[str, Mapping[str, Any], str], None]
+ToolResultProjectionCallback = Callable[[str, Mapping[str, Any], str], str]
 ToolProgressCallback = Callable[..., None]
 StepCallback = Callable[[int, "list[str]"], None]
 
@@ -63,6 +64,7 @@ class ManagedRunAgent(Protocol):
 
     pre_tool_call_callback: PreToolCallCallback | None
     post_tool_result_callback: PostToolResultCallback | None
+    tool_result_projection_callback: ToolResultProjectionCallback | None
     tool_progress_callback: ToolProgressCallback | None
     step_callback: StepCallback | None
 

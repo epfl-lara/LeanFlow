@@ -312,6 +312,8 @@ class AIAgent:
         tool_progress_callback: callable = None,
         pre_tool_call_callback: callable = None,
         post_tool_result_callback: callable = None,
+        tool_result_projection_callback: callable = None,
+        wall_timeout_s: float = None,
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
@@ -369,6 +371,10 @@ class AIAgent:
             post_tool_result_callback (callable): Callback function(tool_name, args_dict, result_text)
                 invoked after each tool finishes. Can request an interrupt to stop after a
                 workflow boundary such as the first file edit.
+            tool_result_projection_callback (callable): Callback that returns a bounded model-facing
+                tool result after audit and managed callbacks have consumed the original result.
+            wall_timeout_s (float): Optional per-conversation wall-clock deadline. Provider request
+                timeouts are clipped to the remaining budget and the loop stops at a safe boundary.
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
@@ -435,6 +441,14 @@ class AIAgent:
         self.tool_progress_callback = tool_progress_callback
         self.pre_tool_call_callback = pre_tool_call_callback
         self.post_tool_result_callback = post_tool_result_callback
+        self.tool_result_projection_callback = tool_result_projection_callback
+        self.wall_timeout_s = (
+            max(1.0, float(wall_timeout_s))
+            if isinstance(wall_timeout_s, (int, float)) and not isinstance(wall_timeout_s, bool)
+            else None
+        )
+        self._conversation_deadline_monotonic: float | None = None
+        self._conversation_wall_timeout_reached = False
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
         self.clarify_callback = clarify_callback
@@ -3245,6 +3259,10 @@ class AIAgent:
         self._usage_summary_logged = False
         self._tokens.start_turn()
         self._current_run_api_calls = 0
+        self._conversation_wall_timeout_reached = False
+        self._conversation_deadline_monotonic = (
+            time.monotonic() + self.wall_timeout_s if self.wall_timeout_s is not None else None
+        )
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
 
@@ -3405,6 +3423,15 @@ class AIAgent:
                     getattr(self, "_suppress_next_interrupt_log", False)
                 ):
                     print("\n⚡ Breaking out of tool loop due to interrupt...")
+                break
+
+            if (
+                self._conversation_deadline_monotonic is not None
+                and time.monotonic() >= self._conversation_deadline_monotonic
+            ):
+                self._conversation_wall_timeout_reached = True
+                if not self.quiet_mode:
+                    print("\n⏱️  Conversation wall-clock deadline reached at a safe boundary")
                 break
 
             api_call_count += 1
@@ -5285,7 +5312,10 @@ class AIAgent:
 
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
-        if completed:
+        if self._conversation_wall_timeout_reached:
+            completed = False
+            exit_reason = "wall_timeout"
+        elif completed:
             exit_reason = "completed"
         elif interrupted:
             exit_reason = "interrupted"
@@ -5323,6 +5353,7 @@ class AIAgent:
             "exit_reason": exit_reason,
             "partial": False,  # True only when stopped due to invalid tool calls
             "interrupted": interrupted,
+            "wall_timed_out": self._conversation_wall_timeout_reached,
             "response_previewed": getattr(self, "_response_was_previewed", False),
         }
         self._response_was_previewed = False

@@ -165,13 +165,39 @@ def clean_room_project_root(*, cwd: str | Path | None = None) -> Path:
     return base.expanduser().resolve()
 
 
+def _active_clean_room_file(root: Path) -> Path | None:
+    """Return the canonical active file when solution isolation can identify it."""
+    active_text = str(os.getenv("LEANFLOW_NATIVE_ACTIVE_FILE", "") or "").strip()
+    if not active_text:
+        return None
+    active = Path(active_text).expanduser()
+    if not active.is_absolute():
+        active = root / active
+    return active.resolve(strict=False)
+
+
+def _is_sibling_benchmark_file(path: Path, active: Path) -> bool:
+    """Return whether ``path`` belongs to another numbered task beside ``active``."""
+    if path == active or path.parent != active.parent:
+        return False
+    match = re.match(r"^(?P<prefix>.*?)(?P<number>\d+)$", active.stem)
+    if match is None:
+        return False
+    sibling = re.match(
+        rf"^{re.escape(match.group('prefix'))}(?P<number>\d+)(?:[^0-9].*)?$",
+        path.stem,
+        flags=re.IGNORECASE,
+    )
+    return sibling is not None and sibling.group("number") != match.group("number")
+
+
 def clean_room_path_block_reason(
     path: str | Path,
     *,
     cwd: str | Path | None = None,
 ) -> str:
-    """Return a denial reason when a path resolves outside the clean-room project."""
-    if not repository_research_disabled():
+    """Return a denial reason for escaped or sibling benchmark solution paths."""
+    if not (repository_research_disabled() or solution_research_disabled()):
         return ""
     root = clean_room_project_root(cwd=cwd)
     candidate = Path(path).expanduser()
@@ -181,9 +207,59 @@ def clean_room_path_block_reason(
         resolved = candidate.resolve(strict=False)
     except (OSError, RuntimeError) as exc:
         return f"Clean-room path could not be resolved safely: {exc}"
-    if resolved == root or root in resolved.parents:
+    if resolved != root and root not in resolved.parents:
+        return (
+            "Clean-room file access is confined to the active project; "
+            f"refusing path {str(path)!r} because it resolves outside {str(root)!r}"
+        )
+    if not solution_research_disabled() or not resolved.is_file():
+        return ""
+    active = _active_clean_room_file(root)
+    if active is None:
+        return ""
+    if not _is_sibling_benchmark_file(resolved, active):
         return ""
     return (
-        "Clean-room file access is confined to the active project; "
-        f"refusing path {str(path)!r} because it resolves outside {str(root)!r}"
+        "Clean-room file access cannot read a sibling benchmark task; "
+        f"refusing {str(path)!r} while the active task is {active.name!r}"
+    )
+
+
+def clean_room_terminal_path_block_reason(
+    path: str | Path,
+    *,
+    cwd: str | Path | None = None,
+) -> str:
+    """Return a denial reason for terminal reads that can span sibling tasks.
+
+    File tools filter individual search matches, but a terminal directory scan
+    emits raw output.  Deny an active benchmark directory or one of its
+    ancestors so a broad ``rg``/``ls`` cannot bypass per-file isolation.
+    """
+    root = clean_room_project_root(cwd=cwd)
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path(cwd or root).expanduser() / candidate
+    resolved = candidate.resolve(strict=False)
+    base_reason = clean_room_path_block_reason(resolved, cwd=cwd)
+    if base_reason or not solution_research_disabled() or not resolved.is_dir():
+        return base_reason
+    active = _active_clean_room_file(root)
+    if active is None:
+        return ""
+    active_parent = active.parent
+    if resolved != active_parent and resolved not in active_parent.parents:
+        return ""
+    try:
+        exposes_sibling = any(
+            entry.is_file() and _is_sibling_benchmark_file(entry.resolve(strict=False), active)
+            for entry in active_parent.iterdir()
+        )
+    except OSError:
+        exposes_sibling = True
+    if not exposes_sibling:
+        return ""
+    return (
+        "Clean-room terminal access cannot scan a directory containing sibling "
+        f"benchmark tasks; use the active file {active.name!r} or filtered file tools"
     )

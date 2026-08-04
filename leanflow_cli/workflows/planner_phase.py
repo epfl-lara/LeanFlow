@@ -28,6 +28,7 @@ orchestration boundary rather than blocking the foreground for a whole job.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -65,6 +66,10 @@ PLANNER_EVIDENCE_INTERRUPTED_STATUS = "evidence-interrupted"
 LANE_MAX_ITERATIONS = 24
 EMPIRICAL_LANE_MAX_ITERATIONS = 8
 PLANNER_CAPACITY_WAIT_DEFAULT_S = 1.0
+PLANNER_LANE_WALL_TIMEOUT_S = 600
+PLANNER_LANE_JSON_INPUT_MAX_CHARS = 128_000
+PLANNER_LANE_DELIVERABLE_MAX_CHARS = 64_000
+PLANNER_LANE_RAW_SUMMARY_MAX_CHARS = 16_000
 
 _EQUALITY_MARKER_RE = re.compile(r"(?<![:<>!=%])=(?!=)")
 _ASSERTION_CUE_RE = re.compile(
@@ -141,6 +146,23 @@ def planner_capacity_wait_s() -> float:
     except ValueError:
         value = PLANNER_CAPACITY_WAIT_DEFAULT_S
     return max(0.0, min(10.0, value))
+
+
+def planner_lane_wall_timeout_s() -> int:
+    """Return the per-lane conversation deadline."""
+    try:
+        requested = int(
+            str(
+                os.getenv(
+                    "LEANFLOW_PLANNER_LANE_TIMEOUT_S",
+                    PLANNER_LANE_WALL_TIMEOUT_S,
+                )
+                or PLANNER_LANE_WALL_TIMEOUT_S
+            )
+        )
+    except (TypeError, ValueError):
+        requested = PLANNER_LANE_WALL_TIMEOUT_S
+    return max(60, min(requested, 1200))
 
 
 @dataclass(frozen=True)
@@ -242,27 +264,72 @@ _LANE_ALIASES = {
     "empirical": "empirical",
 }
 
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
-    """Fence-tolerant dict extraction (orchestrator_llm parser pattern)."""
+    """Extract one bounded JSON object without repeatedly decoding nested text."""
     raw = str(text or "").strip()
     if not raw:
         return None
-    candidates = [match.group(1) for match in _JSON_FENCE_RE.finditer(raw)]
-    if not candidates:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start >= 0 and end > start:
-            candidates = [raw[start : end + 1]]
+    raw = raw[:PLANNER_LANE_JSON_INPUT_MAX_CHARS]
+    candidates = [raw]
+    if raw.startswith("```"):
+        first_newline = raw.find("\n")
+        closing_fence = raw.rfind("```")
+        if 0 <= first_newline < closing_fence:
+            candidates.insert(0, raw[first_newline + 1 : closing_fence].strip())
+    decoder = json.JSONDecoder()
     for candidate in candidates:
+        start = candidate.find("{")
+        if start < 0:
+            continue
         try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
+            payload, _end = decoder.raw_decode(candidate[start:])
+        except (json.JSONDecodeError, RecursionError):
             continue
         if isinstance(payload, dict):
             return payload
     return None
+
+
+def _bounded_json_value(value: Any, *, depth: int = 0) -> Any:
+    """Normalize one untrusted lane value into a bounded synthesis shape."""
+    if depth >= 6:
+        return "[nested value omitted]"
+    if isinstance(value, Mapping):
+        items = list(value.items())
+        mapped_result = {
+            str(key)[:200]: _bounded_json_value(item, depth=depth + 1) for key, item in items[:32]
+        }
+        if len(items) > 32:
+            mapped_result["_omitted_keys"] = len(items) - 32
+        return mapped_result
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        values = list(value)
+        sequence_result = [_bounded_json_value(item, depth=depth + 1) for item in values[:64]]
+        if len(values) > 64:
+            sequence_result.append(f"[{len(values) - 64} items omitted]")
+        return sequence_result
+    if isinstance(value, str):
+        return _bounded_text(value, 4000)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _bounded_text(str(value), 1000)
+
+
+def _normalize_lane_deliverable(payload: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Return a bounded lane payload and whether normalization omitted data."""
+    normalized = _bounded_json_value(payload)
+    assert isinstance(normalized, dict)
+    encoded = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+    if len(encoded) <= PLANNER_LANE_DELIVERABLE_MAX_CHARS:
+        return normalized, normalized != dict(payload)
+    projected: dict[str, Any] = {}
+    for key, value in list(normalized.items())[:12]:
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        projected[key] = _bounded_text(rendered, 4000)
+    projected["_leanflow_payload_truncated"] = True
+    projected["_leanflow_original_normalized_chars"] = len(encoded)
+    return projected, True
 
 
 def _phase_fragment(spec_id: str, *, include_schema: bool = True) -> str:
@@ -423,6 +490,7 @@ def _run_lanes(
             # actor slots are occupied by long process jobs, return a durable
             # capacity-deferred record instead of freezing that control loop.
             "_background_capacity_timeout_s": planner_capacity_wait_s(),
+            "_wall_timeout_s": planner_lane_wall_timeout_s(),
         }
         if lane.key == "empirical":
             # Internal delegate hook: this callback is installed on only the
@@ -483,18 +551,37 @@ def _run_lanes(
             status = str(entry.get("status", "") or "missing")
             summary = str(entry.get("summary", "") or "")
             record: dict[str, Any] = {"lane": lane.key, "status": status}
+            if entry.get("summary_truncated"):
+                record.update(
+                    {
+                        "summary_truncated": True,
+                        "summary_original_chars": int(entry.get("summary_original_chars", 0) or 0),
+                        "summary_sha256": str(entry.get("summary_sha256", "") or ""),
+                    }
+                )
+            if entry.get("wall_timeout_s"):
+                record["wall_timeout_s"] = entry["wall_timeout_s"]
             if entry.get("error"):
                 record["error"] = str(entry["error"])[:300]
             parsed = _extract_json_object(summary) if status == "completed" else None
             if parsed is None:
                 if summary:
-                    record["raw_summary"] = summary
+                    record["raw_summary"] = _bounded_text(
+                        summary, PLANNER_LANE_RAW_SUMMARY_MAX_CHARS
+                    )
+                    record["raw_summary_chars"] = len(summary)
+                    record["raw_summary_sha256"] = hashlib.sha256(
+                        summary.encode("utf-8")
+                    ).hexdigest()
                 if status == "completed":
                     record["status"] = "parse-failure"
             else:
-                record["deliverable_keys"] = sorted(parsed.keys())
-                record["deliverable"] = parsed
-                wave_deliverables[lane.key] = parsed
+                normalized, was_bounded = _normalize_lane_deliverable(parsed)
+                record["deliverable_keys"] = sorted(normalized.keys())
+                record["deliverable"] = normalized
+                if was_bounded:
+                    record["deliverable_bounded"] = True
+                wave_deliverables[lane.key] = normalized
             wave_records.append(record)
         return wave_records, wave_deliverables
 
@@ -874,6 +961,16 @@ def run_planner_phase(
         lanes = [lane for lane in _LANES if not wanted or lane.key in wanted]
         lanes = lanes[: planner_max_subagents()]
 
+        plan_state.append_journal_event(
+            {
+                "event": "planner-phase-started",
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+                "lanes": [lane.key for lane in lanes],
+                "lane_wall_timeout_s": planner_lane_wall_timeout_s(),
+            }
+        )
+
         lane_records, deliverables = _run_lanes(
             goal,
             lanes,
@@ -931,22 +1028,34 @@ def run_planner_phase(
                 synthesis_status=PLANNER_EVIDENCE_INTERRUPTED_STATUS,
             )
 
+        synthesis_prompt = _synthesis_prompt(
+            goal,
+            deliverables,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            declaration_slice=declaration_slice,
+            lean_goal=lean_goal,
+            requested_route=requested_route,
+            failed_route_signature=failed_route_signature,
+            search_signature=search_signature,
+            bp=bp,
+            prior_evidence=prior_evidence,
+        )
+        plan_state.append_journal_event(
+            {
+                "event": "planner-synthesis-started",
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+                "lane_count": len(lane_records),
+                "deliverable_count": len(deliverables),
+                "prompt_chars": len(synthesis_prompt),
+                "timeout_s": planner_synthesis_timeout_s(),
+            }
+        )
         result = run_model_verification_review(
             provider="auto",
             task=PLANNER_SYNTHESIS_TASK,
-            prompt=_synthesis_prompt(
-                goal,
-                deliverables,
-                target_symbol=target_symbol,
-                active_file=active_file,
-                declaration_slice=declaration_slice,
-                lean_goal=lean_goal,
-                requested_route=requested_route,
-                failed_route_signature=failed_route_signature,
-                search_signature=search_signature,
-                bp=bp,
-                prior_evidence=prior_evidence,
-            ),
+            prompt=synthesis_prompt,
             system_prompt=_SYNTH_SYSTEM_PROMPT,
             timeout_s=planner_synthesis_timeout_s(),
             max_tokens=8000,

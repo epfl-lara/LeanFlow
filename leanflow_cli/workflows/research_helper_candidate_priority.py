@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from leanflow_cli.lean.lean_parsing import (
+    _contains_lean_suggestion_tactic,
     _declaration_line_index_from_text,
     _strip_lean_comments_and_strings,
+    _text_has_sorry,
 )
 from leanflow_cli.workflows import (
     decomposition_provenance,
@@ -691,6 +693,164 @@ def source_name_collision(
     )
 
 
+def _remember_exact_candidate(
+    autonomy_state: dict[str, Any],
+    *,
+    campaign_id: str,
+    job_id: str,
+    target_symbol: str,
+    active_file: str,
+    helper_name: str,
+    declaration: str,
+    delivery_markers: Sequence[str] = (),
+) -> PendingResearchHelperCandidate | None:
+    """Persist one exact helper candidate without replacing pending work."""
+    existing = load(autonomy_state)
+    if existing is not None:
+        return existing
+    canonical_file = _canonical_file(active_file)
+    normalized_target = str(target_symbol or "").strip()
+    normalized_name = str(helper_name or "").strip()
+    normalized_declaration = str(declaration or "").strip()
+    target_signature = target_signature_sha256(canonical_file, normalized_target)
+    observed_revision = source_revision_sha256(canonical_file)
+    key = TheoremKey.make(normalized_target, canonical_file)
+    if (
+        not key.is_valid()
+        or not target_signature
+        or not observed_revision
+        or not str(job_id or "").strip()
+        or not normalized_name
+        or not normalized_declaration
+        or len(normalized_declaration) > MAX_DECLARATION_CHARS
+        or _text_has_sorry(normalized_declaration)
+        or _contains_lean_suggestion_tactic(normalized_declaration)
+        or _helper_name_is_evidence_only(normalized_name)
+    ):
+        return None
+    entries = _declaration_line_index_from_text(normalized_declaration)
+    declared_names = tuple(
+        str(entry.get("name", "") or "").strip()
+        for entry in entries
+        if str(entry.get("name", "") or "").strip()
+    )
+    if declared_names != (normalized_name,):
+        return None
+    if any(
+        detector(
+            normalized_declaration,
+            target_symbol=normalized_target,
+            active_file=canonical_file,
+        )
+        is not None
+        for detector in (
+            research_helper_source_coverage.exact_source_duplicate,
+            research_helper_source_coverage.source_name_collision,
+        )
+    ):
+        return None
+    declaration_hash = _sha256(normalized_declaration)
+    candidate_id = _candidate_id(
+        active_file=canonical_file,
+        target_symbol=normalized_target,
+        target_signature=target_signature,
+        declaration_sha256=declaration_hash,
+    )
+    if candidate_id in resolved_candidate_ids(autonomy_state):
+        return None
+    now = _now_iso()
+    record = PendingResearchHelperCandidate(
+        candidate_id=candidate_id,
+        state=AWAITING_RECHECK,
+        campaign_id=str(campaign_id or "").strip(),
+        job_id=str(job_id or "").strip(),
+        delivery_markers=tuple(
+            dict.fromkeys(
+                str(marker or "").strip()
+                for marker in delivery_markers
+                if str(marker or "").strip()
+            )
+        )[:16],
+        target_symbol=normalized_target,
+        active_file=canonical_file,
+        target_signature_sha256=target_signature,
+        observed_source_revision_sha256=observed_revision,
+        rechecked_source_revision_sha256="",
+        helper_name=normalized_name,
+        declaration=normalized_declaration,
+        declaration_sha256=declaration_hash,
+        created_at=now,
+        updated_at=now,
+    )
+    _persist(autonomy_state, record)
+    return record
+
+
+def remember_from_foreground_check(
+    autonomy_state: dict[str, Any],
+    arguments: Mapping[str, Any],
+    result: Mapping[str, Any],
+    *,
+    campaign_id: str,
+    target_symbol: str,
+    active_file: str,
+) -> PendingResearchHelperCandidate | None:
+    """Persist one exact successful foreground helper check for parent recheck."""
+    if load(autonomy_state) is not None:
+        return None
+    action = str(arguments.get("action", "") or "").strip()
+    argument_target = str(arguments.get("theorem_id", "") or "").strip()
+    argument_file = str(arguments.get("file_path", "") or "").strip()
+    declaration = str(arguments.get("replacement", "") or "").strip()
+    raw_names = result.get("replacement_declarations")
+    names = (
+        tuple(
+            dict.fromkeys(
+                str(value or "").strip() for value in raw_names if str(value or "").strip()
+            )
+        )
+        if isinstance(raw_names, Sequence) and not isinstance(raw_names, (str, bytes, bytearray))
+        else ()
+    )
+    error_code = str(result.get("error_code", "") or "").strip()
+    if (
+        action != "check_helper"
+        or argument_target != str(target_symbol or "").strip()
+        or not _same_file(argument_file, active_file)
+        or result.get("success") is not True
+        or result.get("ok") is not True
+        or result.get("valid_without_sorry") is not True
+        or result.get("has_errors") is not False
+        or result.get("has_sorry") is not False
+        or result.get("replacement_matches_target") is not False
+        or str(result.get("verification_scope", "") or "").strip() != "helper_candidate"
+        or result.get("timed_out") is True
+        or "timeout" in error_code.casefold()
+        or len(names) != 1
+    ):
+        return None
+    check_identity = _sha256(
+        "\0".join(
+            (
+                _canonical_file(active_file),
+                str(target_symbol or "").strip(),
+                names[0],
+                declaration,
+            )
+        )
+    )[:24]
+    return _remember_exact_candidate(
+        autonomy_state,
+        campaign_id=campaign_id,
+        job_id=f"foreground-check:{check_identity}",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        helper_name=names[0],
+        declaration=declaration,
+        delivery_markers=("foreground-check",),
+    )
+
+
 def remember_from_findings(
     autonomy_state: dict[str, Any],
     findings: Sequence[Mapping[str, Any]],
@@ -705,12 +865,6 @@ def remember_from_findings(
     if existing is not None:
         return existing
     canonical_file = _canonical_file(active_file)
-    target_signature = target_signature_sha256(canonical_file, target_symbol)
-    observed_revision = source_revision_sha256(canonical_file)
-    key = TheoremKey.make(target_symbol, canonical_file)
-    resolved_ids = resolved_candidate_ids(autonomy_state)
-    if not key.is_valid() or not target_signature or not observed_revision:
-        return None
     for finding in findings:
         if not _finding_allows_parent_recheck(finding):
             continue
@@ -742,63 +896,20 @@ def remember_from_findings(
                 and not isinstance(raw_names, (str, bytes, bytearray))
                 else ()
             )
-            if (
-                len(names) != 1
-                or len(declaration) > MAX_DECLARATION_CHARS
-                or declaration_hash != _sha256(declaration)
-            ):
+            if len(names) != 1 or declaration_hash != _sha256(declaration):
                 continue
-            if _helper_name_is_evidence_only(names[0]):
-                continue
-            if any(
-                detector(
-                    declaration,
-                    target_symbol=target_symbol,
-                    active_file=canonical_file,
-                )
-                is not None
-                for detector in (
-                    research_helper_source_coverage.exact_source_duplicate,
-                    research_helper_source_coverage.source_name_collision,
-                )
-            ):
-                continue
-            candidate_id = _candidate_id(
-                active_file=canonical_file,
-                target_symbol=target_symbol,
-                target_signature=target_signature,
-                declaration_sha256=declaration_hash,
-            )
-            if candidate_id in resolved_ids:
-                continue
-            now = _now_iso()
-            record = PendingResearchHelperCandidate(
-                candidate_id=candidate_id,
-                state=AWAITING_RECHECK,
-                campaign_id=str(campaign_id or "").strip(),
+            record = _remember_exact_candidate(
+                autonomy_state,
+                campaign_id=campaign_id,
                 job_id=str(finding.get("job_id", "") or "").strip(),
-                delivery_markers=tuple(
-                    dict.fromkeys(
-                        str(marker or "").strip()
-                        for marker in delivery_markers
-                        if str(marker or "").strip()
-                    )
-                )[:16],
-                target_symbol=str(target_symbol or "").strip(),
+                target_symbol=target_symbol,
                 active_file=canonical_file,
-                target_signature_sha256=target_signature,
-                observed_source_revision_sha256=observed_revision,
-                rechecked_source_revision_sha256="",
                 helper_name=names[0],
                 declaration=declaration,
-                declaration_sha256=declaration_hash,
-                created_at=now,
-                updated_at=now,
+                delivery_markers=delivery_markers,
             )
-            if not record.job_id:
-                continue
-            _persist(autonomy_state, record)
-            return record
+            if record is not None:
+                return record
     return None
 
 

@@ -79,12 +79,13 @@ def _find_declaration_entry(path: Path, theorem_id: str) -> dict[str, Any] | Non
     return None
 
 
-def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 3) -> list[str]:
-    """Return nearby declarations that precede the requested declaration.
+def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 12) -> list[str]:
+    """Return relevant declarations that precede the requested declaration.
 
     Later declarations in the same file are not in scope while Lean elaborates
-    the requested declaration.  Keep this helper source-order safe because its
-    result is exposed to proof agents as usable local context.
+    the requested declaration. Include every source-local declaration named by
+    the target plus a bounded recent window, so inserted helper banks remain
+    visible without dumping the entire file.
     """
     entries = _declaration_index(path)
     if not entries:
@@ -95,11 +96,22 @@ def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 3) -
         name = str(entry.get("name", "") or "").strip()
         if name not in {wanted, short_name}:
             continue
-        start = max(0, idx - window)
+        start = max(0, idx - max(0, int(window)))
+        target_text = str(entry.get("text", "") or "")
+        referenced = {
+            str(item.get("name", "") or "").strip()
+            for item in entries[:idx]
+            if str(item.get("name", "") or "").strip()
+            and re.search(
+                rf"(?<![\w.]){re.escape(str(item.get('name', '') or '').strip())}(?![\w'])",
+                target_text,
+            )
+        }
         return [
             str(item.get("name", "") or "").strip()
-            for item in entries[start:idx]
+            for item_index, item in enumerate(entries[:idx])
             if str(item.get("name", "") or "").strip()
+            and (item_index >= start or str(item.get("name", "") or "").strip() in referenced)
         ]
     return []
 

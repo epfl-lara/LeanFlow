@@ -7,7 +7,9 @@ import json
 import pytest
 
 from tools.implementations import file_tools
+from tools.implementations.file_operations import SearchMatch, SearchResult
 from tools.utilities import repository_research_policy as policy
+from tools.utilities.scratch_terminal_guard import validate_scratch_terminal_command
 
 
 @pytest.mark.parametrize(
@@ -86,6 +88,24 @@ def test_non_repository_math_source_is_allowed():
     assert policy.is_repository_url("https://artofproblemsolving.com/wiki/example") is False
 
 
+def test_solution_only_clean_room_keeps_mathlib_and_unrelated_git_available(monkeypatch):
+    monkeypatch.setenv(policy.DISABLE_SOLUTION_RESEARCH_ENV, "1")
+    monkeypatch.setenv(policy.CLEAN_ROOM_TASK_LABELS_ENV, "IMO2026|IMO 2026 Problem 3")
+    monkeypatch.delenv(policy.DISABLE_REPOSITORY_RESEARCH_ENV, raising=False)
+
+    mathlib = (
+        "https://github.com/leanprover-community/mathlib4/blob/master/Mathlib/Data/Nat/Basic.lean"
+    )
+    unrelated = "https://github.com/example/combinatorics-library"
+    blocked = "https://example.org/IMO2026/problem3/solution"
+
+    assert policy.repository_url_block_reason(mathlib) == ""
+    assert policy.solution_research_url_block_reason(mathlib) == ""
+    assert policy.repository_url_block_reason(unrelated) == ""
+    assert policy.solution_research_url_block_reason(unrelated) == ""
+    assert policy.solution_research_url_block_reason(blocked)
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -128,6 +148,127 @@ def test_clean_room_blocks_symlink_escape(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
 
     assert policy.clean_room_path_block_reason("escape/P6.lean")
+
+
+def test_solution_clean_room_blocks_sibling_benchmark_files(monkeypatch, tmp_path):
+    project = tmp_path / "formalization"
+    benchmark = project / "IMO2026"
+    benchmark.mkdir(parents=True)
+    active = benchmark / "P3.lean"
+    active_helper = benchmark / "P3Helpers.lean"
+    sibling = benchmark / "P2.lean"
+    sibling_helper = benchmark / "P2Helpers.lean"
+    shared = benchmark / "Basic.lean"
+    for path in (active, active_helper, sibling, sibling_helper, shared):
+        path.write_text("-- source\n", encoding="utf-8")
+    monkeypatch.setenv(policy.DISABLE_SOLUTION_RESEARCH_ENV, "1")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", str(active))
+
+    assert policy.clean_room_path_block_reason(active) == ""
+    assert policy.clean_room_path_block_reason(active_helper) == ""
+    assert policy.clean_room_path_block_reason(shared) == ""
+    assert "sibling benchmark task" in policy.clean_room_path_block_reason(sibling)
+    assert "sibling benchmark task" in policy.clean_room_path_block_reason(sibling_helper)
+
+
+def test_clean_room_search_filters_sibling_benchmark_matches(monkeypatch, tmp_path):
+    project = tmp_path / "formalization"
+    benchmark = project / "IMO2026"
+    benchmark.mkdir(parents=True)
+    active = benchmark / "P3.lean"
+    sibling = benchmark / "P2.lean"
+    active.write_text("theorem active : True := by trivial\n", encoding="utf-8")
+    sibling.write_text("theorem hidden : True := by trivial\n", encoding="utf-8")
+    monkeypatch.setenv(policy.DISABLE_SOLUTION_RESEARCH_ENV, "1")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", str(active))
+
+    class _Ops:
+        def search(self, **_kwargs):
+            return SearchResult(
+                matches=[
+                    SearchMatch(str(active), 1, "active"),
+                    SearchMatch(str(sibling), 1, "hidden"),
+                ],
+                total_count=2,
+            )
+
+    monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task_id: _Ops())
+    payload = json.loads(file_tools.search_tool("theorem", path=str(benchmark)))
+
+    assert payload["total_count"] == 1
+    assert payload["matches"][0]["path"] == str(active)
+    assert payload["clean_room_omitted_results"] == 1
+
+
+def test_clean_room_terminal_guard_rejects_exact_sibling_read(monkeypatch, tmp_path):
+    project = tmp_path / "formalization"
+    benchmark = project / "IMO2026"
+    benchmark.mkdir(parents=True)
+    active = benchmark / "P3.lean"
+    sibling = benchmark / "P2.lean"
+    active.write_text("-- active\n", encoding="utf-8")
+    sibling.write_text("-- hidden\n", encoding="utf-8")
+    monkeypatch.setenv(policy.DISABLE_SOLUTION_RESEARCH_ENV, "1")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", str(active))
+
+    decision = validate_scratch_terminal_command(
+        "cat IMO2026/P2.lean",
+        workdir=str(project),
+        project_root=str(project),
+    )
+
+    assert decision.allowed is False
+    assert "sibling benchmark task" in decision.reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["rg theorem .", "rg theorem IMO2026", "ls", "ls IMO2026"],
+)
+def test_clean_room_terminal_guard_rejects_broad_sibling_scan(monkeypatch, tmp_path, command):
+    project = tmp_path / "formalization"
+    benchmark = project / "IMO2026"
+    benchmark.mkdir(parents=True)
+    active = benchmark / "P3.lean"
+    sibling = benchmark / "P2.lean"
+    active.write_text("-- active\n", encoding="utf-8")
+    sibling.write_text("-- hidden\n", encoding="utf-8")
+    monkeypatch.setenv(policy.DISABLE_SOLUTION_RESEARCH_ENV, "1")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", str(active))
+
+    decision = validate_scratch_terminal_command(
+        command,
+        workdir=str(project),
+        project_root=str(project),
+    )
+
+    assert decision.allowed is False
+    assert "directory containing sibling benchmark tasks" in decision.reason
+
+
+def test_clean_room_terminal_guard_allows_exact_active_file(monkeypatch, tmp_path):
+    project = tmp_path / "formalization"
+    benchmark = project / "IMO2026"
+    benchmark.mkdir(parents=True)
+    active = benchmark / "P3.lean"
+    sibling = benchmark / "P2.lean"
+    active.write_text("-- active\n", encoding="utf-8")
+    sibling.write_text("-- hidden\n", encoding="utf-8")
+    monkeypatch.setenv(policy.DISABLE_SOLUTION_RESEARCH_ENV, "1")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", str(active))
+
+    decision = validate_scratch_terminal_command(
+        "rg theorem IMO2026/P3.lean",
+        workdir=str(project),
+        project_root=str(project),
+    )
+
+    assert decision.allowed is True
 
 
 @pytest.mark.parametrize(

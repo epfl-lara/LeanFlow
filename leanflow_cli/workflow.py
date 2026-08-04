@@ -42,7 +42,6 @@ from leanflow_cli.workflows.project import (
 )
 from tools.utilities.repository_research_policy import (
     CLEAN_ROOM_TASK_LABELS_ENV,
-    DISABLE_REPOSITORY_RESEARCH_ENV,
     DISABLE_SOLUTION_RESEARCH_ENV,
 )
 
@@ -491,7 +490,7 @@ def _clean_room_labels(
     active = str(normalized_active_file or workflow.workflow_args or "").strip()
     if active:
         path = Path(active)
-        values.extend((active, path.name, path.stem))
+        values.extend((active, path.name, path.stem, path.parent.name))
     values.extend(workflow.clean_room_labels)
     return _dedupe_skills(values)
 
@@ -641,7 +640,6 @@ def resolve_workflow_request(
             normalized_active_file=normalized_active_file,
         )
         workflow = replace(workflow, clean_room_labels=labels)
-        child_env[DISABLE_REPOSITORY_RESEARCH_ENV] = "1"
         child_env[DISABLE_SOLUTION_RESEARCH_ENV] = "1"
         child_env[CLEAN_ROOM_TASK_LABELS_ENV] = "|".join(labels)
     explicit_provider = str(requested_provider or workflow.provider_override or "").strip()
@@ -764,7 +762,6 @@ def spawn_workflow(
     if plan.workflow.clean_room:
         # Dispatch metadata may add environment fields but cannot weaken an
         # explicit clean-room launch boundary.
-        child_env[DISABLE_REPOSITORY_RESEARCH_ENV] = "1"
         child_env[DISABLE_SOLUTION_RESEARCH_ENV] = "1"
         child_env[CLEAN_ROOM_TASK_LABELS_ENV] = "|".join(plan.workflow.clean_room_labels)
     # A fresh opaque token makes the persisted PID safe to revalidate before

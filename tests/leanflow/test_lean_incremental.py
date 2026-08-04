@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -816,6 +817,53 @@ def test_project_admission_reclaims_incremental_session_before_releasing_slot(
     assert all(value >= 0 for value in payload["leanflow_timing"].values())
 
 
+def test_project_admission_wait_consumes_the_end_to_end_probe_deadline(monkeypatch, tmp_path):
+    """Do not grant a fresh full probe timeout after waiting for admission."""
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
+    )
+
+    class _Admission:
+        def __enter__(self):
+            time.sleep(0.08)
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def to_dict(self):
+            return {}
+
+        def retain_until_process_exit(self, _reason):
+            return None
+
+    class _FakeProbe:
+        timeout_s = 0.0
+
+        def check_target(self, *args, **kwargs):
+            self.timeout_s = float(kwargs["timeout_s"])
+            return {"success": True, "ok": True, "target": "demo"}
+
+    fake = _FakeProbe()
+    monkeypatch.setattr(li, "project_lean_heavy_admission", lambda _root: _Admission())
+    monkeypatch.setattr(li, "project_lean_service_reclaim_enabled", lambda: False)
+    monkeypatch.setattr(li, "_probe", lambda: fake)
+    monkeypatch.setattr(li, "_local_repl_dir", lambda root: root / ".lake" / "packages" / "repl")
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        timeout_s=1,
+    )
+
+    assert payload["ok"] is True
+    assert 0.5 < fake.timeout_s < 0.98
+
+
 def test_foreground_incremental_session_stays_warm_between_checks(monkeypatch, tmp_path):
     project, target = _write_project(
         tmp_path,
@@ -1130,7 +1178,7 @@ def test_run_hard_timeout_caps_research_incremental_cold_start(monkeypatch, tmp_
         timeout_s=60,
     )
 
-    assert fake.timeout_s == 600
+    assert 599 < fake.timeout_s <= 600
     assert payload["effective_timeout_s"] == 600
     assert payload["timeout_ceiling_s"] == 600
     assert payload["timeout_policy"] == "research_cold_start_floor_capped_by_deadline"
@@ -1571,6 +1619,92 @@ def test_check_helper_rejects_placeholder_and_missing_anchor(monkeypatch, tmp_pa
     assert missing_anchor["error_code"] == "anchor_target_not_found"
 
 
+@pytest.mark.parametrize(
+    "tactic",
+    ["exact?", "apply?", "simp?", "rw?", "aesop?", "grind?"],
+)
+def test_check_helper_never_certifies_suggestion_tactics(monkeypatch, tmp_path, tactic):
+    """Keep diagnostic tactic suggestions out of helper-verification truth fields."""
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  sorry\n",
+    )
+    monkeypatch.setattr(
+        li,
+        "_probe",
+        lambda: pytest.fail("diagnostic-only helper suggestion started LeanProbe"),
+    )
+
+    payload = li.lean_incremental_check(
+        action="check_helper",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        replacement=f"private lemma helper : True := by\n  {tactic}",
+    )
+
+    assert payload["success"] is True
+    assert payload["ok"] is False
+    assert payload["valid_without_sorry"] is False
+    assert payload["has_errors"] is False
+    assert payload["has_sorry"] is False
+    assert payload["lean_started"] is False
+    assert payload["error_code"] == "suggestion_tactic_diagnostic_only"
+    assert payload["verification_scope"] == "helper_candidate"
+
+
+def test_check_helper_rejects_broad_print_prefix_before_lean(monkeypatch, tmp_path):
+    """Steer exact symbol inspection away from slow environment-prefix dumps."""
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  sorry\n",
+    )
+    monkeypatch.setattr(
+        li,
+        "_probe",
+        lambda: pytest.fail("broad print started LeanProbe"),
+    )
+
+    payload = li.lean_incremental_check(
+        action="check_helper",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        replacement="#print prefix List\nprivate lemma inspect : True := by trivial",
+    )
+
+    assert payload["ok"] is False
+    assert payload["status"] == "bounded_symbol_inspection_required"
+    assert payload["error_code"] == "broad_print_prefix_rejected"
+    assert payload["lean_started"] is False
+
+
+def test_check_target_never_accepts_suggestion_tactic_candidate(monkeypatch, tmp_path):
+    """Require a concrete term after suggestion discovery before target acceptance."""
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  sorry\n",
+    )
+    monkeypatch.setattr(
+        li,
+        "_probe",
+        lambda: pytest.fail("diagnostic-only target suggestion started LeanProbe"),
+    )
+
+    payload = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        replacement="theorem demo : True := by\n  apply?",
+    )
+
+    assert payload["ok"] is False
+    assert payload["valid_without_sorry"] is False
+    assert payload["lean_started"] is False
+    assert payload["error_code"] == "suggestion_tactic_diagnostic_only"
+
+
 def test_check_target_rejects_placeholder_before_starting_lean(monkeypatch, tmp_path):
     """Do not spend a full-source compile on an acceptance candidate with sorry."""
     project, target = _write_project(
@@ -1648,6 +1782,10 @@ def test_check_target_can_elaborate_placeholder_template_for_decomposition(monke
     assert len(calls) == 1
     assert payload["success"] is True
     assert payload["ok"] is False
+    assert payload["target_verified"] is False
+    assert payload["local_elaboration_only"] is True
+    assert payload["elaborated_with_placeholders"] is True
+    assert payload["has_sorry"] is True
     assert payload["replacement_matches_target"] is True
     assert payload["verification_scope"] == "target_candidate"
 
@@ -1876,3 +2014,31 @@ def test_successful_check_keeps_complete_evidence():
     }
 
     assert li._bound_failed_check_payload(payload, max_chars=10) == payload
+
+
+def test_successful_check_projection_drops_tactic_trace_but_keeps_audit_identity():
+    payload = {
+        "success": True,
+        "ok": True,
+        "action": "check_helper",
+        "target": "demo",
+        "valid_without_sorry": True,
+        "has_errors": False,
+        "has_sorry": False,
+        "replacement_declarations": ["checked_helper"],
+        "leanflow_timing": {"total_s": 0.5},
+        "tactics": [{"goal": "x" * 2000} for _ in range(80)],
+        "feedback_lean": "verified\n" + "trace" * 4000,
+    }
+
+    projected = li.compact_successful_check_payload(payload, max_chars=4000)
+
+    assert projected["ok"] is True
+    assert projected["replacement_declarations"] == ["checked_helper"]
+    assert "tactics" not in projected
+    assert projected["tactics_truncated"] == {"kept": 0, "total": 80}
+    assert projected["provider_context_projected"] is True
+    assert projected["audit_payload_preserved"] is True
+    assert projected["audit_payload_chars"] > 100_000
+    assert len(projected["audit_payload_sha256"]) == 64
+    assert len(json.dumps(projected, ensure_ascii=False)) < 4000

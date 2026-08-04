@@ -100,7 +100,8 @@ collaborators are grouped by responsibility:
 - `agent/compression/` — conversation persistence, context compression, and
   provider-aware summary handoff
 - `agent/execution/` — tool batches, interrupts, command safety, skill
-  commands, and resource handoff
+  commands, resource handoff, and model-facing projection of successful tool
+  payloads while the manager and audit log retain the complete raw result
 - `agent/accounting/` — token/cost accounting, redaction, and error logging
 - `agent/display/` — terminal rendering and structured log formatting
 - `agent/runtime/` — managed-run contracts, trajectory capture, and workflow
@@ -123,7 +124,8 @@ results flow through `core.model_tools` and `tools/response.py`.
 - `tools/utilities/` contains deterministic guards and reusable implementation
   support, including process ownership, transcript protection, repository
   research policy, scratch-terminal policy, verified patch parsing, helper
-  admission, and bounded authoritative source context for Lean advisors.
+  admission, daemon-backed wall-clock boundaries for blocking backends, and
+  bounded authoritative source context for Lean advisors.
 - `tools/mcp/` contains MCP configuration, schema shaping, transport, sampling,
   and managed-server lifecycle behavior.
 - `tools/environments/` contains the local, SSH, Singularity, Daytona, and
@@ -164,6 +166,9 @@ tool is reachable through the public registry.
   (`search_synthesis_admission.py`), same-revision verification-timeout backpressure
   and structural-recovery handoff, verified companion-module
   publication (`support_module_materialization.py`), checkpoints, and shutdown.
+  Direct bare references from an assigned declaration to itself are rejected
+  before mutation by `direct_self_reference.py` while legitimate recursive
+  applications remain available.
   Rejected-edit identity, replay preview, hard-diagnostic classification, and
   atomic exact-after-image restoration live in `managed_edit_rollback.py`.
   Revision-authenticated successful-gate reuse lives in
@@ -298,7 +303,8 @@ The following interfaces are load-bearing:
 - `AIAgent.run_conversation()` result keys:
   `final_response`, `last_reasoning`, `messages`, `api_calls`, `usage`,
   `completed`, `exit_reason`, `partial`, `interrupted`, and
-  `response_previewed`, with conditional interruption/error fields
+  `response_previewed`, `wall_timed_out`, with conditional interruption/error
+  fields
 - tool names and import-time self-registration
 - module attributes intentionally used as monkeypatch targets in tests,
   especially in `native_runner.py`, `run_agent.py`, and terminal tooling

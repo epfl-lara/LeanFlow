@@ -178,6 +178,32 @@ class TestPatchHandler:
         mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "x", "y", True)
 
     @patch("tools.implementations.file_tools._get_file_ops")
+    def test_strict_replace_requires_fresh_read_receipt(self, mock_get):
+        mock_ops = MagicMock()
+        mock_ops.read_raw.return_value = "foo"
+        mock_get.return_value = mock_ops
+
+        from tools.implementations import file_tools
+
+        with patch.object(
+            file_tools,
+            "_freshness_guard",
+            return_value=("foo", "File has not been read in this session."),
+        ):
+            payload = json.loads(
+                file_tools.patch_tool(
+                    mode="replace",
+                    path="/tmp/f.py",
+                    old_string="foo",
+                    new_string="bar",
+                    strict=True,
+                )
+            )
+
+        assert payload["status"] == "fresh_read_required"
+        mock_ops.patch_replace.assert_not_called()
+
+    @patch("tools.implementations.file_tools._get_file_ops")
     def test_replace_mode_missing_path_errors(self, mock_get):
         from tools.implementations.file_tools import patch_tool
 

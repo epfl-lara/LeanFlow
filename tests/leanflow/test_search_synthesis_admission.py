@@ -184,6 +184,31 @@ def test_construction_attempt_classifier_excludes_inspection_and_exact_replay():
         },
     )
     assert not search_synthesis_admission.construction_attempt_request(
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": "private lemma inspect_x : False := by\n  exact candidate",
+        },
+    )
+    assert not search_synthesis_admission.construction_attempt_request(
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": (
+                "private lemma probe_after_candidate_exists : True := by\n"
+                "  have h := guessed_identifier\n"
+                "  trivial"
+            ),
+        },
+    )
+    assert search_synthesis_admission.construction_attempt_request(
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": "private lemma contradiction : False := by\n  omega",
+        },
+    )
+    assert not search_synthesis_admission.construction_attempt_request(
         "apply_verified_patch",
         {"patch": "candidate"},
         result_status="rejected_candidate_replay",
@@ -192,4 +217,9 @@ def test_construction_attempt_classifier_excludes_inspection_and_exact_replay():
         "apply_verified_patch",
         {"patch": "candidate"},
         result_status="isolated_suggestion_probe_required",
+    )
+    assert not search_synthesis_admission.construction_attempt_request(
+        "apply_verified_patch",
+        {"patch": "candidate"},
+        result_status="direct_self_reference_rejected",
     )

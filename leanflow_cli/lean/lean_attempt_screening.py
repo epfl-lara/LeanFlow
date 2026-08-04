@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from leanflow_cli.lean.lean_attempt_location import _multi_attempt_replacement_candidate
+from leanflow_cli.lean.lean_parsing import _strip_lean_comments_and_strings
 
 MULTI_ATTEMPT_PREPARE_TIMEOUT_S = 300
 MULTI_ATTEMPT_CANDIDATE_TIMEOUT_S = 30
@@ -55,6 +57,17 @@ def _exact_check_summary(check: Mapping[str, Any], *, verified: bool) -> dict[st
     }
 
 
+def _placeholder_count(text: str) -> int:
+    """Return executable placeholder count in one declaration replacement."""
+    return len(
+        re.findall(
+            r"\b(?:sorry|admit|sorryAx)\b",
+            _strip_lean_comments_and_strings(str(text or "")),
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def screen_multi_attempts_with_lean_probe(
     *,
     path: Path,
@@ -71,18 +84,18 @@ def screen_multi_attempts_with_lean_probe(
     Once a replaceable hole is found, deterministic timeouts remain on this
     bounded path and never trigger the more expensive LSP fallback.
     """
-    replacements: list[tuple[str, str, str]] = []
+    replacements: list[tuple[str, str, str, int]] = []
     for snippet in attempts:
         replacement = _multi_attempt_replacement_candidate(path, line, column, snippet)
         if replacement is None:
             return None
         theorem_id, declaration = replacement
-        replacements.append((snippet, theorem_id, declaration))
+        replacements.append((snippet, theorem_id, declaration, _placeholder_count(declaration)))
     if not replacements:
         return None
 
     theorem_id = replacements[0][1]
-    if any(candidate_theorem != theorem_id for _, candidate_theorem, _ in replacements):
+    if any(candidate_theorem != theorem_id for _, candidate_theorem, _, _ in replacements):
         return None
 
     prepared = check_incrementally(
@@ -118,7 +131,8 @@ def screen_multi_attempts_with_lean_probe(
     items: list[dict[str, Any]] = []
     exact_checks: list[dict[str, Any]] = []
     verified_attempts: list[str] = []
-    for index, (snippet, candidate_theorem, declaration) in enumerate(replacements):
+    locally_verified_attempts: list[str] = []
+    for index, (snippet, candidate_theorem, declaration, anchor_count) in enumerate(replacements):
         check = check_incrementally(
             action="check_target",
             file_path=str(path),
@@ -127,13 +141,23 @@ def screen_multi_attempts_with_lean_probe(
             replacement=declaration,
             include_tactics=False,
             timeout_s=MULTI_ATTEMPT_CANDIDATE_TIMEOUT_S,
+            allow_placeholders_for_elaboration=anchor_count > 0,
         )
         verified = _incremental_check_passed(check)
+        locally_verified = bool(
+            anchor_count > 0
+            and check.get("elaborated_with_placeholders") is True
+            and check.get("replacement_matches_target") is True
+            and str(check.get("verification_scope", "") or "") == "target_candidate"
+            and not _incremental_check_timed_out(check)
+        )
         exact_check = _exact_check_summary(check, verified=verified)
         exact_checks.append(
             {
                 "snippet": snippet,
                 "theorem_id": candidate_theorem,
+                "unrelated_placeholder_anchors": anchor_count,
+                "local_goal_verified": locally_verified,
                 **exact_check,
             }
         )
@@ -145,12 +169,17 @@ def screen_multi_attempts_with_lean_probe(
                 "timed_out": exact_check["timed_out"],
                 "probe_closed_goal": verified,
                 "verified": verified,
+                "local_goal_verified": locally_verified,
+                "unrelated_placeholder_anchors": anchor_count,
                 "exact_check": exact_check,
             }
         )
         if verified:
             verified_attempts.append(snippet)
-            for skipped_snippet, _, _ in replacements[index + 1 :]:
+        elif locally_verified:
+            locally_verified_attempts.append(snippet)
+        if verified or locally_verified:
+            for skipped_snippet, _, _, _ in replacements[index + 1 :]:
                 items.append(
                     {
                         "snippet": skipped_snippet,
@@ -159,29 +188,52 @@ def screen_multi_attempts_with_lean_probe(
                         "timed_out": False,
                         "probe_closed_goal": False,
                         "verified": False,
-                        "screening_skipped": "earlier exact candidate verified",
+                        "local_goal_verified": False,
+                        "screening_skipped": (
+                            "earlier exact candidate verified"
+                            if verified
+                            else "earlier local-goal candidate verified"
+                        ),
                     }
                 )
             break
 
-    success = bool(verified_attempts)
+    target_verified = bool(verified_attempts)
+    local_goal_verified = bool(locally_verified_attempts)
+    success = target_verified or local_goal_verified
     payload: dict[str, Any] = {
         "success": success,
         "backend_success": True,
         "backend_tool": "lean_probe",
         "screening_backend": "lean_probe",
-        "target_verified": success,
+        "target_verified": target_verified,
         "verified_attempts": verified_attempts,
+        "local_goal_verified": local_goal_verified,
+        "locally_verified_attempts": locally_verified_attempts,
         "exact_checks": exact_checks,
         "items": items,
-        "status": "verified_candidate" if success else "screened_no_verified_candidate",
+        "status": (
+            "verified_candidate"
+            if target_verified
+            else (
+                "locally_verified_candidate"
+                if local_goal_verified
+                else "screened_no_verified_candidate"
+            )
+        ),
         "prepare": {
             "success": bool(prepared.get("success")),
             "elapsed_s": prepared.get("elapsed_s", 0),
             "cache": dict(prepared.get("cache") or {}),
         },
     }
-    if not success:
+    if local_goal_verified:
+        payload["action_required"] = (
+            "The candidate closes the selected local goal with unrelated holes held as typed "
+            "placeholders. It is not target-verified: apply the concrete tactic through the "
+            "managed edit path and continue the remaining holes."
+        )
+    elif not success:
         payload["action_required"] = (
             "No tactic is exact-target verified. Use the returned LeanProbe diagnostics, "
             "simplify the local goal, or choose a structurally different route."

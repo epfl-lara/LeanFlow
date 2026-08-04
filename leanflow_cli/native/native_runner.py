@@ -72,7 +72,10 @@ from agent.providers.auxiliary_client import call_llm
 from agent.providers.model_metadata import estimate_messages_tokens_rough
 from leanflow_cli.config import load_config
 from leanflow_cli.lean import negation_probe
-from leanflow_cli.lean.lean_incremental import lean_incremental_check
+from leanflow_cli.lean.lean_incremental import (
+    compact_successful_check_payload,
+    lean_incremental_check,
+)
 from leanflow_cli.lean.lean_lemma_suggest import lean_lemma_suggest
 from leanflow_cli.lean.lean_services import (
     diagnostic_items,
@@ -95,6 +98,7 @@ from leanflow_cli.native import (
     companion_module_policy,
     completion_policy,
     determine_answer_policy,
+    direct_self_reference,
     final_report_failure_reuse,
     helper_integration_admission,
     managed_edit_rollback,
@@ -449,6 +453,7 @@ from leanflow_cli.lean.lean_module_paths import (  # noqa: E402
 )
 from leanflow_cli.lean.lean_parsing import (  # noqa: E402
     LEAN_DECLARATION_PREAMBLE_RE,  # noqa: F401
+    _contains_lean_suggestion_tactic,  # noqa: F401
     _declaration_entries_by_name_from_text,  # noqa: F401
     _declaration_line_index_from_text,
     _declaration_matches_target,
@@ -5186,6 +5191,67 @@ def _json_tool_result_payload(result: str) -> dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+def _retain_foreground_checked_helper(
+    agent: Any,
+    function_name: str,
+    arguments: Mapping[str, Any],
+    result: str,
+) -> research_helper_candidate_priority.PendingResearchHelperCandidate | None:
+    """Durably retain one exact foreground-checked helper before handoff."""
+    if function_name != "lean_incremental_check":
+        return None
+    autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+    if not isinstance(autonomy_state, dict):
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return None
+    record = research_helper_candidate_priority.remember_from_foreground_check(
+        autonomy_state,
+        arguments,
+        _json_tool_result_payload(result),
+        campaign_id=str(autonomy_state.get("campaign_id", "") or "campaign"),
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if record is None:
+        return None
+    _record_agent_activity(
+        agent,
+        "foreground-helper-candidate-retained",
+        f"Retained verified helper candidate {record.helper_name} for parent recheck",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        helper_name=record.helper_name,
+        candidate_id=record.candidate_id,
+        declaration_sha256=record.declaration_sha256,
+        campaign_progress=False,
+    )
+    agent.stage_tool_result_appendix(
+        "LeanFlow durably retained the exact checked helper "
+        f"`{record.helper_name}`. Before unrelated work, the manager will recheck it "
+        "against the current parent file and offer authenticated integration."
+    )
+    return record
+
+
+def _project_managed_tool_result(
+    function_name: str,
+    _arguments: Mapping[str, Any],
+    result: str,
+) -> str:
+    """Return bounded provider context while workflow activity keeps full evidence."""
+    if function_name != "lean_incremental_check":
+        return result
+    payload = _json_tool_result_payload(result)
+    if not payload:
+        return result
+    projected = compact_successful_check_payload(payload)
+    return json.dumps(projected, ensure_ascii=False)
+
+
 def _disable_agent_tool_schema(agent: Any, tool_name: str) -> None:
     name = str(tool_name or "").strip()
     if not name:
@@ -8768,6 +8834,76 @@ def _suggestion_only_source_patch_guard(
     )
 
 
+def _direct_self_reference_source_patch_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Reject a bare assigned-target self-reference before source mutation."""
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not _managed_edit_targets_assignment(
+            args,
+            active_file,
+            function_name=function_name,
+        )
+    ):
+        return None
+    try:
+        before_text = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    candidate = _preview_managed_candidate_declaration(
+        function_name,
+        args,
+        before_text=before_text,
+        target_symbol=target_symbol,
+    )
+    if not candidate or not direct_self_reference.is_direct_self_reference(
+        candidate,
+        target_symbol,
+    ):
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "direct-self-reference-source-patch-blocked",
+            f"Rejected bare self-reference candidate for {target_symbol}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            provider_called=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "direct_self_reference_rejected",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "patch_applied": False,
+            "check_passed": False,
+            "provider_called": False,
+            "lean_started": False,
+            "required_action": (
+                "A theorem cannot be proved by a bare reference to itself. Construct a "
+                "different proof, isolate a helper, or use a genuinely recursive call with "
+                "a smaller argument."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _clean_room_queue_support_edit_guard(
     function_name: str,
     args: Mapping[str, Any] | None,
@@ -9853,6 +9989,14 @@ def _managed_pre_tool_call(
         )
         if suggestion_patch_guard:
             return suggestion_patch_guard
+        self_reference_guard = _direct_self_reference_source_patch_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if self_reference_guard:
+            return self_reference_guard
         rejected_candidate_guard = _rejected_candidate_replay_pre_tool_guard(
             agent,
             function_name,
@@ -10170,6 +10314,10 @@ def _managed_pre_tool_call(
         # Support/state-file edits do not need an assigned-source snapshot and
         # must not later masquerade as an unchanged helper edit.
         return None
+    if function_name == "patch" and isinstance(args, dict):
+        # Assigned declarations are too high-risk for fuzzy relocation. The
+        # file tool also requires a current read receipt for strict edits.
+        args["strict"] = True
     try:
         before_text = Path(active_file).read_text(encoding="utf-8")
     except Exception:
@@ -20714,6 +20862,8 @@ def _build_agent() -> AIAgent:
                     target_symbol=str(assignment.get("target_symbol", "") or "").strip(),
                     active_file=str(assignment.get("active_file", "") or "").strip(),
                 )
+            with contextlib.suppress(Exception):
+                _retain_foreground_checked_helper(agent, function_name, _args, _result)
         phase_seconds["edit_finalization"] = max(0.0, time.monotonic() - phase_started)
         phase_started = time.monotonic()
         # ``apply_verified_patch`` installs a continuous marker before its
@@ -20928,6 +21078,7 @@ def _build_agent() -> AIAgent:
 
     agent.pre_tool_call_callback = _pre_tool_call_callback
     agent.post_tool_result_callback = _post_tool_result_callback
+    agent.tool_result_projection_callback = _project_managed_tool_result
     agent._managed_delegated_post_tool_result_callback = _delegated_post_tool_result_callback
     agent._project_lean_handoff_request_callback = _project_lean_handoff_request_callback
     agent._managed_provider_usage_limit_callback = lambda retry_after: (
@@ -26967,9 +27118,34 @@ def _run_planner_phase_with_parent_maintenance(
             agent,
             continue_after_step_boundary=True,
         )
+        planner_started = time.monotonic()
+        last_notice = planner_started
+
+        def maintain_planner() -> None:
+            """Maintain workers and publish a visible bounded planner heartbeat."""
+            nonlocal last_notice
+            if poll is not None:
+                poll()
+            now = time.monotonic()
+            if now - last_notice < 60.0:
+                return
+            elapsed_s = round(now - planner_started, 1)
+            print(
+                "⏳ Planner phase remains active "
+                f"({elapsed_s:.1f}s elapsed; lane deadline "
+                f"{planner_phase.planner_lane_wall_timeout_s()}s)"
+            )
+            _record_activity(
+                "planner-phase-heartbeat",
+                "Planner phase remains active",
+                elapsed_s=elapsed_s,
+                lane_timeout_s=planner_phase.planner_lane_wall_timeout_s(),
+            )
+            last_notice = now
+
         return run_with_parent_maintenance(
             lambda: planner_phase.run_planner_phase(agent=agent, **kwargs),
-            maintenance=poll,
+            maintenance=maintain_planner,
             cancel=lambda: agent.interrupt("native runner planner shutdown"),
             interval_s=_research_portfolio_parent_poll_interval_s(),
         )

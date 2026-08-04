@@ -43,6 +43,7 @@ from tools.utilities.repository_research_policy import (
     repository_command_block_reason,
     repository_research_disabled,
     solution_research_command_block_reason,
+    solution_research_disabled,
 )
 from tools.utilities.scratch_terminal_guard import validate_scratch_terminal_command
 
@@ -913,12 +914,13 @@ def terminal_tool(
             )
 
         scratch_only = scratch_only_dispatch_worker_enabled()
-        clean_room_local = repository_research_disabled() and env_type == "local"
+        clean_room_active = repository_research_disabled() or solution_research_disabled()
         # Scratch workers and regular clean-room foreground turns share the
         # host checkout. Keep both on the same audited, project-confined
-        # diagnostic surface before environment creation; sandbox backends
-        # already provide the stronger host-filesystem boundary.
-        if scratch_only or clean_room_local:
+        # diagnostic surface before environment creation. Nonlocal backends
+        # cannot yet enforce sibling-task isolation inside their project mount,
+        # so direct terminal access fails closed there.
+        if scratch_only or clean_room_active:
             boundary_name = "Scratch-only research" if scratch_only else "Clean-room"
             status = (
                 "scratch_only_terminal_denied" if scratch_only else "clean_room_terminal_denied"

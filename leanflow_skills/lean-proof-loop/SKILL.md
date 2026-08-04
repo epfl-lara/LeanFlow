@@ -49,6 +49,7 @@ timeout-recovery rule overrides the default order below.
 10. Finish only after explicit verification of the requested scope.
 11. A negative knowledge prior is not a blocker. If a proof, construction, or library fact initially seems beyond reach, respond by inspecting the exact goal, researching the missing fact, deriving a smaller invariant, and checking a concrete candidate. Continue through materially distinct routes until Lean or deterministic workflow evidence—not confidence—justifies changing course.
 12. Concrete route advice creates an attempt obligation: apply its first edit or produce precise Lean evidence rejecting it before requesting another plan. Preserve the strongest kernel-verified route and target-local checked facts across compression and rewrites.
+13. When elaboration or arithmetic automation fails around a multiline `∑`, `∏`, or other big-operator expression, first parenthesize the complete summand or product body and check that smaller expression independently. Do this before changing the mathematical route: Lean's parser can otherwise associate trailing arithmetic outside the binder and make a correct `ring`/`nlinarith` step appear false.
 
 ## Verification Rules
 

@@ -134,7 +134,6 @@ from leanflow_cli.lean.lean_search_providers import (  # noqa: E402
     _leanexplore_local_status,
     _model_to_plain_dict,
     _quarantine_corrupt_leanexplore_db,
-    _quiet_leanexplore_local_output,
     _search_payload_fragments,
 )
 
@@ -636,7 +635,10 @@ def _leanexplore_local_search(query: str, *, limit: int = 10) -> tuple[list[dict
             )
 
         rerank_top = _leanexplore_local_rerank_top()
-        with _LEANEXPLORE_LOCAL_SERVICE_LOCK, _quiet_leanexplore_local_output():
+        # The third-party search package may write progress output. Do not use
+        # ``redirect_stdout`` here: it replaces process-wide streams and can
+        # hide native-manager heartbeats while a background lane is searching.
+        with _LEANEXPLORE_LOCAL_SERVICE_LOCK:
             try:
                 response = asyncio.run(
                     _run_search(0 if _LEANEXPLORE_LOCAL_RERANK_DISABLED else rerank_top)
@@ -2141,6 +2143,23 @@ def lean_multi_attempt(
             location_details["requested_column"] = column
     if adjustment == "inline_tactic_body":
         location_details["column_adjustment"] = adjustment
+    if adjustment == "ambiguous_backward_placeholders":
+        payload = {
+            "success": False,
+            "backend_success": False,
+            "backend_tool": "deterministic_location_guard",
+            "screening_backend": "not_started",
+            **location_details,
+            "requested_line": requested_line,
+            "line_adjustment": adjustment,
+            "status": "ambiguous_placeholder_location",
+            "action_required": (
+                "Multiple placeholders precede the requested line. Supply the exact line and "
+                "column of the intended hole; Lean screening was not started."
+            ),
+        }
+        append_workflow_outcome("lean-multi-attempt", payload)
+        return payload
     from leanflow_cli.lean.lean_incremental import lean_incremental_check
 
     incremental_payload = screen_multi_attempts_with_lean_probe(
@@ -2399,7 +2418,38 @@ def lean_auto_search(
         unavailable_reason="lean automation search MCP unavailable",
         outcome_kind="lean-auto-search",
         extra=extra,
+        append_outcome=False,
     )
+    try:
+        attempts = int(payload.get("attempts", -1))
+        explored_sets = int(payload.get("explored_sets", -1))
+    except (TypeError, ValueError):
+        attempts = explored_sets = -1
+    if attempts == 0 and explored_sets == 0:
+        payload.update(
+            {
+                "success": False,
+                "status": "unavailable_no_attempts",
+                "no_progress": True,
+                "search_progress": False,
+                "unavailable_reason": (
+                    "Lean automation search explored no candidate sets and ran no proof attempts."
+                ),
+                "action_required": (
+                    "Treat this backend route as unavailable for the current turn and rotate to "
+                    "a concrete LeanProbe attempt, local lemma search, or a different proof route."
+                ),
+            }
+        )
+        payload["degraded_reasons"] = list(
+            dict.fromkeys(
+                [
+                    *list(payload.get("degraded_reasons", []) or []),
+                    str(payload["unavailable_reason"]),
+                ]
+            )
+        )
+    append_workflow_outcome("lean-auto-search", payload)
     return payload
 
 

@@ -30,6 +30,7 @@ def test_structured_success_with_empty_error_fields_is_not_failure(payload):
     "payload",
     [
         {"success": False, "error": None},
+        {"success": True, "ok": False, "valid_without_sorry": False},
         {"success": True, "error": "isolated child failed"},
         {"ok": True, "failed": ["worker-one"]},
         {"status": "empirical_compute_timeout", "error": None},

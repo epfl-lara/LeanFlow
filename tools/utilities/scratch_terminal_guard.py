@@ -131,6 +131,7 @@ _PATH_OPTIONS_BY_COMMAND: Final[dict[str, frozenset[str]]] = {
     "pgrep": frozenset({"--logpidfile", "--pidfile", "-F", "-L"}),
     "rg": frozenset({"--file", "--ignore-file", "-f"}),
 }
+_IMPLICIT_CWD_READ_COMMANDS: Final[frozenset[str]] = frozenset({"du", "find", "ls", "rg"})
 _SECOND_ORDER_READ_OR_EXEC_OPTIONS: Final[dict[str, tuple[str, ...]]] = {
     # These modes interpret file contents as more paths, so confining the
     # option file itself is insufficient: a project-local list can name an
@@ -247,6 +248,7 @@ def _validate_read_paths(
     executable = tokens[0]
     path_options = _PATH_OPTIONS_BY_COMMAND.get(executable, frozenset())
     expects_path = False
+    saw_read_path = False
     for token in tokens[1:]:
         candidates: list[str] = []
         if expects_path:
@@ -281,14 +283,42 @@ def _validate_read_paths(
         for candidate in candidates:
             if not candidate or candidate == "-":
                 continue
+            saw_read_path = True
             if not _path_within(
                 candidate,
                 project_root,
                 relative_to=effective_workdir,
             ):
                 return _deny("read operands must remain inside the assigned project")
+            try:
+                from tools.utilities.repository_research_policy import (
+                    clean_room_terminal_path_block_reason,
+                )
+
+                clean_room_reason = clean_room_terminal_path_block_reason(
+                    candidate,
+                    cwd=effective_workdir,
+                )
+            except Exception:
+                clean_room_reason = ""
+            if clean_room_reason:
+                return _deny(clean_room_reason)
     if expects_path:
         return _deny("a read-path option is missing its project-local operand")
+    if executable in _IMPLICIT_CWD_READ_COMMANDS and not saw_read_path:
+        try:
+            from tools.utilities.repository_research_policy import (
+                clean_room_terminal_path_block_reason,
+            )
+
+            clean_room_reason = clean_room_terminal_path_block_reason(
+                effective_workdir,
+                cwd=effective_workdir,
+            )
+        except Exception:
+            clean_room_reason = ""
+        if clean_room_reason:
+            return _deny(clean_room_reason)
     return ScratchTerminalDecision(True)
 
 

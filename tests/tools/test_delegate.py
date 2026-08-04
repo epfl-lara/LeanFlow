@@ -11,6 +11,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import sys
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -398,6 +399,79 @@ class TestDelegateTask(unittest.TestCase):
 
 class TestDelegateObservability(unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""
+
+    def test_quiet_child_does_not_replace_process_output_streams(self):
+        parent = _make_mock_parent(depth=0)
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-test"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+
+            def run_conversation(**_kwargs):
+                self.assertIs(sys.stdout, original_stdout)
+                self.assertIs(sys.stderr, original_stderr)
+                return {
+                    "final_response": "done",
+                    "completed": True,
+                    "api_calls": 1,
+                }
+
+            mock_child.run_conversation.side_effect = run_conversation
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="quiet child", parent_agent=parent))
+
+        self.assertEqual(result["results"][0]["status"], "completed")
+        self.assertIs(sys.stdout, original_stdout)
+        self.assertIs(sys.stderr, original_stderr)
+
+    def test_child_summary_is_bounded_with_audit_identity(self):
+        from tools.implementations import delegate_tool
+
+        parent = _make_mock_parent(depth=0)
+        full_summary = "x" * (delegate_tool.DELEGATE_SUMMARY_MAX_CHARS + 500)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-test"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": full_summary,
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="large summary", parent_agent=parent))
+
+        entry = result["results"][0]
+        self.assertEqual(entry["status"], "completed")
+        self.assertTrue(entry["summary_truncated"])
+        self.assertEqual(entry["summary_original_chars"], len(full_summary))
+        self.assertEqual(len(entry["summary_sha256"]), 64)
+        self.assertLess(len(entry["summary"]), len(full_summary))
+
+    def test_internal_task_wall_timeout_is_forwarded(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.implementations.delegate_tool._run_single_child") as run_child:
+            run_child.return_value = {
+                "task_index": 0,
+                "status": "wall-timeout",
+                "summary": None,
+                "api_calls": 1,
+                "duration_seconds": 10,
+            }
+            delegate_task(
+                tasks=[{"goal": "bounded lane", "_wall_timeout_s": 600}],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(run_child.call_args.kwargs["wall_timeout_s"], 600)
 
     def test_dispatch_observer_receives_exact_tool_result_despite_hook_failures(self):
         parent = _make_mock_parent(depth=0)

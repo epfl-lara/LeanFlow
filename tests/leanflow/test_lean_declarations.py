@@ -129,6 +129,18 @@ def test_surrounding_declarations_window(tmp_path):
     assert ld._surrounding_declarations(target, "absent") == []
 
 
+def test_surrounding_declarations_keeps_referenced_helper_outside_window(tmp_path):
+    target = tmp_path / "Demo.lean"
+    declarations = ["lemma banked : True := by trivial"]
+    declarations.extend(f"lemma filler{i} : True := by trivial" for i in range(20))
+    declarations.append("theorem result : True := by exact banked")
+    target.write_text("\n\n".join(declarations) + "\n", encoding="utf-8")
+
+    in_scope = ld._surrounding_declarations(target, "result", window=3)
+
+    assert in_scope == ["banked", "filler17", "filler18", "filler19"]
+
+
 def test_split_declaration_statement_and_proof():
     statement, proof = ld._split_declaration_statement_and_proof(
         "theorem demo : True := by\n  trivial"

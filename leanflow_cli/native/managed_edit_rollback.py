@@ -11,10 +11,10 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.lean.lean_parsing import _contains_lean_suggestion_tactic
 from tools.utilities.patch_parser import preview_v4a_update
 
 _NON_SEMANTIC_CANDIDATE_LINE_RE = re.compile(r"^\s*trace_state\s*$")
-_SUGGESTION_TACTIC_RE = re.compile(r"(?m)^\s*(?:exact|apply|simp|rw|aesop|grind)\?(?:\s|$)")
 
 
 def normalize_candidate_declaration(declaration: str) -> str:
@@ -29,7 +29,7 @@ def normalize_candidate_declaration(declaration: str) -> str:
 
 def contains_suggestion_tactic(declaration: str) -> bool:
     """Return whether source still contains an exploratory tactic-suggestion command."""
-    return bool(_SUGGESTION_TACTIC_RE.search(str(declaration or "")))
+    return _contains_lean_suggestion_tactic(declaration)
 
 
 def preview_candidate_source(

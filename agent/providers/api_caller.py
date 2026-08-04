@@ -197,8 +197,14 @@ class ApiCaller:
         os = _ra().os
         timeout_value = api_kwargs.get("timeout", os.getenv("LEANFLOW_API_TIMEOUT", 1200.0))
         if isinstance(timeout_value, (int, float)) and not isinstance(timeout_value, bool):
-            return max(float(timeout_value), 1.0)
-        return max(float(os.getenv("LEANFLOW_API_TIMEOUT", 1200.0)), 1.0)
+            timeout_seconds = max(float(timeout_value), 1.0)
+        else:
+            timeout_seconds = max(float(os.getenv("LEANFLOW_API_TIMEOUT", 1200.0)), 1.0)
+        deadline = getattr(self._agent, "_conversation_deadline_monotonic", None)
+        if isinstance(deadline, (int, float)):
+            remaining = max(1.0, float(deadline) - _ra().time.monotonic())
+            timeout_seconds = min(timeout_seconds, remaining)
+        return timeout_seconds
 
     # ── Interruptible (non-streaming) call ──────────────────────────────────
 

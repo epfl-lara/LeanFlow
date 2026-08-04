@@ -281,12 +281,13 @@ def test_resolve_clean_room_model_is_scoped_to_one_launch(monkeypatch, tmp_path)
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_BASE_URL"] == "https://rcp.example/v1"
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_API_KEY"] == "glm-key"
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_MODEL"] == "zai-org/GLM-5.2"
-    assert plan.child_env["LEANFLOW_DISABLE_REPOSITORY_RESEARCH"] == "1"
+    assert "LEANFLOW_DISABLE_REPOSITORY_RESEARCH" not in plan.child_env
     assert plan.child_env["LEANFLOW_DISABLE_SOLUTION_RESEARCH"] == "1"
     labels = plan.child_env["LEANFLOW_CLEAN_ROOM_TASK_LABELS"].split("|")
     assert "IMO2026/P2.lean" in labels
     assert "P2.lean" in labels
     assert "P2" in labels
+    assert "IMO2026" in labels
     assert "IMO 2026 Problem 2" in labels
 
 

@@ -839,7 +839,7 @@ def test_leanexplore_local_search_quarantines_corrupt_db(monkeypatch):
     assert "parameters" not in error
 
 
-def test_leanexplore_local_search_reuses_service_and_suppresses_noise(monkeypatch, capsys):
+def test_leanexplore_local_search_reuses_service_without_hiding_process_output(monkeypatch, capsys):
     monkeypatch.setattr(
         lean_services,
         "_leanexplore_local_status",
@@ -894,8 +894,8 @@ def test_leanexplore_local_search_reuses_service_and_suppresses_noise(monkeypatc
     assert first_results == second_results
     assert constructed == 1
     assert calls == [0, 0]
-    assert "BM25S noisy progress" not in captured.out
-    assert "torch cuda warning" not in captured.err
+    assert captured.out.count("BM25S noisy progress") == 2
+    assert captured.err.count("torch cuda warning") == 2
 
 
 def test_leanexplore_local_reranker_is_opt_in_and_bounded(monkeypatch):
@@ -2211,8 +2211,11 @@ def test_auto_search_failed_outcome_is_not_reported_as_success(monkeypatch, tmp_
     payload = lean_services.lean_auto_search("Demo/Main.lean", "demo", cwd=project, timeout_s=20)
 
     assert payload["success"] is False
-    assert payload["status"] == "fail"
     assert payload["outcome"] == "failed"
+    assert payload["status"] == "unavailable_no_attempts"
+    assert payload["no_progress"] is True
+    assert payload["search_progress"] is False
+    assert "explored no candidate sets" in payload["unavailable_reason"]
     assert outcomes[-1][0] == "lean-auto-search"
     assert outcomes[-1][1]["success"] is False
 
@@ -3175,6 +3178,115 @@ def test_lean_multi_attempt_stops_after_first_exact_leanprobe_success(monkeypatc
     assert payload["success"] is True
     assert payload["verified_attempts"] == ["exact True.intro"]
     assert payload["items"][1]["screening_skipped"] == "earlier exact candidate verified"
+
+
+def test_lean_multi_attempt_locally_checks_one_hole_with_unrelated_anchor(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text(
+        "theorem target : True ∧ True := by\n" "  constructor\n" "  · sorry\n" "  · sorry\n",
+        encoding="utf-8",
+    )
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={"multi_attempt": "mcp_lean_lsp_lean_multi_attempt"},
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *_args: pytest.fail("replaceable multi-hole screening must stay on LeanProbe"),
+    )
+    calls: list[dict[str, object]] = []
+
+    def locally_accept(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs["action"] == "prepare_file":
+            return {"success": True, "ok": True}
+        return {
+            "success": True,
+            "ok": False,
+            "target_verified": False,
+            "has_sorry": True,
+            "has_errors": False,
+            "replacement_matches_target": True,
+            "verification_scope": "target_candidate",
+            "elaborated_with_placeholders": True,
+        }
+
+    monkeypatch.setattr(lean_incremental, "lean_incremental_check", locally_accept)
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: None)
+
+    payload = lean_services.lean_multi_attempt(
+        "Main.lean", 4, ["exact True.intro", "trivial"], cwd=project
+    )
+
+    assert calls[1]["allow_placeholders_for_elaboration"] is True
+    assert calls[1]["replacement"].endswith("  · exact True.intro")
+    assert payload["success"] is True
+    assert payload["target_verified"] is False
+    assert payload["verified_attempts"] == []
+    assert payload["local_goal_verified"] is True
+    assert payload["locally_verified_attempts"] == ["exact True.intro"]
+    assert payload["status"] == "locally_verified_candidate"
+    assert payload["items"][0]["unrelated_placeholder_anchors"] == 1
+    assert "not target-verified" in payload["action_required"]
+
+
+def test_lean_multi_attempt_rejects_ambiguous_backward_location_before_lean(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text(
+        "theorem target : True ∧ True := by\n"
+        "  constructor\n"
+        "  · sorry\n"
+        "  · sorry\n"
+        "  have done : True := trivial\n",
+        encoding="utf-8",
+    )
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={"multi_attempt": "mcp_lean_lsp_lean_multi_attempt"},
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_incremental,
+        "lean_incremental_check",
+        lambda **kwargs: pytest.fail("ambiguous location started LeanProbe"),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *_args: pytest.fail("ambiguous location started LSP"),
+    )
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: None)
+
+    payload = lean_services.lean_multi_attempt(
+        "Main.lean", 5, ["exact True.intro", "trivial"], cwd=project
+    )
+
+    assert payload["success"] is False
+    assert payload["status"] == "ambiguous_placeholder_location"
+    assert payload["line_adjustment"] == "ambiguous_backward_placeholders"
+    assert payload["screening_backend"] == "not_started"
 
 
 def test_lean_multi_attempt_rejects_invalid_candidate_count_before_backend_call(

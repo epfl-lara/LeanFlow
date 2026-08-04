@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
 from core.runtime_modes import scratch_only_dispatch_worker_enabled
@@ -68,6 +69,36 @@ def _clean_room_path_denial(path: str) -> str | None:
             "error": reason,
         }
     )
+
+
+def _filter_clean_room_search_result(result: Any) -> int:
+    """Remove protected sibling-task paths from one search result in place."""
+    omitted = 0
+    if hasattr(result, "matches"):
+        kept_matches = []
+        for match in result.matches:
+            if clean_room_path_block_reason(str(getattr(match, "path", "") or "")):
+                omitted += 1
+            else:
+                kept_matches.append(match)
+        result.matches = kept_matches
+    if hasattr(result, "files"):
+        kept_files = []
+        for candidate in result.files:
+            if clean_room_path_block_reason(str(candidate or "")):
+                omitted += 1
+            else:
+                kept_files.append(candidate)
+        result.files = kept_files
+    if hasattr(result, "counts") and isinstance(result.counts, dict):
+        result.counts = {
+            candidate: count
+            for candidate, count in result.counts.items()
+            if not clean_room_path_block_reason(str(candidate or ""))
+        }
+    if omitted and hasattr(result, "total_count"):
+        result.total_count = max(0, int(result.total_count or 0) - omitted)
+    return omitted
 
 
 def _clean_room_patch_denial(mode: str, path: str | None, patch: str | None) -> str | None:
@@ -563,6 +594,18 @@ def patch_tool(
                 _raw, freshness_warning = _freshness_guard(file_ops, path, task_id)
             except _FreshnessError as fe:
                 return dumps({"success": False, "error": str(fe), "path": path, "stale": True})
+            if strict and freshness_warning:
+                return dumps(
+                    {
+                        "success": False,
+                        "status": "fresh_read_required",
+                        "error": (
+                            "Strict edits require a fresh read of the exact target file in this "
+                            "tool session before patching."
+                        ),
+                        "path": path,
+                    }
+                )
             # Only forward `strict` when set, so the default call shape (path, old, new,
             # replace_all) — which callers and tests assert on — is unchanged.
             if strict:
@@ -603,6 +646,17 @@ def patch_tool(
                 return dumps({"success": False, "error": str(fe), "stale": True})
             if warnings and not freshness_warning:
                 freshness_warning = " ".join(warnings)
+            if strict and freshness_warning:
+                return dumps(
+                    {
+                        "success": False,
+                        "status": "fresh_read_required",
+                        "error": (
+                            "Strict edits require fresh reads of every updated target file in "
+                            "this tool session before patching."
+                        ),
+                    }
+                )
             result = file_ops.patch_v4a(patch, strict=True) if strict else file_ops.patch_v4a(patch)
             # Refresh tracked hashes for the files this patch just wrote.
             if getattr(result, "success", False):
@@ -697,11 +751,14 @@ def search_tool(
             output_mode=output_mode,
             context=context,
         )
+        clean_room_omitted = _filter_clean_room_search_result(result)
         if hasattr(result, "matches"):
             for m in result.matches:
                 if hasattr(m, "content") and m.content:
                     m.content = redact_sensitive_text(m.content)
         result_dict = result.to_dict()
+        if clean_room_omitted:
+            result_dict["clean_room_omitted_results"] = clean_room_omitted
 
         if count >= 3:
             result_dict["_warning"] = (

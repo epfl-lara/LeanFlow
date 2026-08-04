@@ -123,6 +123,13 @@ def test_timeout_falls_back_to_env(agent, monkeypatch):
     assert agent._provider_request_timeout_seconds({}) == 55.0
 
 
+def test_timeout_is_clipped_to_conversation_deadline(agent, monkeypatch):
+    agent._conversation_deadline_monotonic = 110.0
+    monkeypatch.setattr("run_agent.time.monotonic", lambda: 100.0)
+
+    assert agent._provider_request_timeout_seconds({"timeout": 1200.0}) == 10.0
+
+
 def test_transient_provider_retry_policy_is_exactly_three_managed_retries():
     """Expose the 5/15/45 contract independently of real sleeping."""
     assert TRANSIENT_PROVIDER_RETRY_DELAYS_S == (5.0, 15.0, 45.0)

@@ -149,6 +149,10 @@ def test_happy_path_merges_graph_and_prose(enabled, monkeypatch):
     assert call["max_iterations"] == planner_phase.LANE_MAX_ITERATIONS
     assert call["empirical_task_indexes"] == frozenset({2})
     assert call["task_iteration_limits"] == {2: planner_phase.EMPIRICAL_LANE_MAX_ITERATIONS}
+    assert all(
+        task["_wall_timeout_s"] == planner_phase.PLANNER_LANE_WALL_TIMEOUT_S
+        for task in call["tasks"]
+    )
 
     # Only the shape-valid target-file stub went through the guarded door
     # (the non-stub 'theorem demo : True' and the statement-less node did not).
@@ -185,6 +189,38 @@ def test_planner_synthesis_timeout_is_configurable_and_bounded(enabled, monkeypa
     assert planner_phase.planner_synthesis_timeout_s() == 600
     monkeypatch.setenv("LEANFLOW_PLANNER_SYNTHESIS_TIMEOUT_S", "1")
     assert planner_phase.planner_synthesis_timeout_s() == 30
+
+
+def test_planner_lane_timeout_is_configurable_and_bounded(enabled, monkeypatch):
+    monkeypatch.setenv("LEANFLOW_PLANNER_LANE_TIMEOUT_S", "480")
+    assert planner_phase.planner_lane_wall_timeout_s() == 480
+    monkeypatch.setenv("LEANFLOW_PLANNER_LANE_TIMEOUT_S", "5000")
+    assert planner_phase.planner_lane_wall_timeout_s() == 1200
+    monkeypatch.setenv("LEANFLOW_PLANNER_LANE_TIMEOUT_S", "1")
+    assert planner_phase.planner_lane_wall_timeout_s() == 60
+
+
+def test_lane_json_parser_and_deliverable_are_bounded():
+    huge = {
+        "findings": [
+            {"claim": "x" * 4_000, "nested": {"levels": [[[[[[["too deep"]]]]]]]}}
+            for _ in range(20)
+        ]
+    }
+    parsed = planner_phase._extract_json_object(json.dumps(huge))
+
+    assert parsed is not None
+    normalized, was_bounded = planner_phase._normalize_lane_deliverable(parsed)
+    assert was_bounded is True
+    assert len(json.dumps(normalized, ensure_ascii=False)) <= (
+        planner_phase.PLANNER_LANE_DELIVERABLE_MAX_CHARS
+    )
+
+
+def test_lane_json_parser_refuses_payload_beyond_input_ceiling():
+    oversized = '{"value":"' + "x" * planner_phase.PLANNER_LANE_JSON_INPUT_MAX_CHARS + '"}'
+
+    assert planner_phase._extract_json_object(oversized) is None
 
 
 def test_false_affine_synthesis_is_rejected_before_any_planner_state_mutation(enabled, monkeypatch):

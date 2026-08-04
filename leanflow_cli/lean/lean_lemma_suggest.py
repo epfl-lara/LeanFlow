@@ -21,7 +21,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from leanflow_cli.lean.lean_declarations import _find_declaration_entry
+from leanflow_cli.lean.lean_declarations import _declaration_index, _find_declaration_entry
 
 # Query derivation bounds: keep the derived query set small and cheap so the retriever issues a few
 # high-signal searches rather than flooding the (rate-limited) semantic providers.
@@ -365,6 +365,54 @@ def _run_search(query: str, *, mode: str, cwd: str | None, file_path: str) -> li
     return list(raw) if isinstance(raw, list) else []
 
 
+def _local_source_hits(
+    file_path: str,
+    theorem_id: str,
+    *,
+    cwd: str | None,
+    goal_symbols: Sequence[str],
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """Return bounded source-order-safe candidates before remote semantic search."""
+    path = Path(file_path).expanduser()
+    if not path.is_absolute() and cwd:
+        path = Path(cwd).expanduser() / path
+    entries = _declaration_index(path)
+    wanted = theorem_id.strip()
+    short = wanted.rsplit(".", 1)[-1]
+    target_index = next(
+        (
+            index
+            for index, entry in enumerate(entries)
+            if str(entry.get("name", "") or "").strip() in {wanted, short}
+        ),
+        -1,
+    )
+    if target_index <= 0:
+        return []
+    hits: list[tuple[str, str, dict[str, Any]]] = []
+    for entry in entries[:target_index]:
+        name = str(entry.get("name", "") or "").strip()
+        text = str(entry.get("text", "") or "").strip()
+        if not name or not text:
+            continue
+        matched = [symbol for symbol in goal_symbols if symbol and symbol in text]
+        if not matched:
+            continue
+        signature = text.split(":=", 1)[0].strip()[:400]
+        hits.append(
+            (
+                "local-source-index",
+                signature,
+                {
+                    "provider": "project-source-index",
+                    "name": name,
+                    "match": signature,
+                },
+            )
+        )
+    return hits[-MAX_CANDIDATES:]
+
+
 def _rank_candidates(
     raw_hits: list[tuple[str, str, dict[str, Any]]],
     *,
@@ -497,14 +545,21 @@ def lean_lemma_suggest(
         for mode in (str(value or "").strip().lower() for value in (search_modes or ()))
         if mode
     ) or ("semantic", "type-pattern")
-    raw_hits: list[tuple[str, str, dict[str, Any]]] = []
-    for query in queries:
-        for mode in modes:
-            for hit in _run_search(query, mode=mode, cwd=cwd_text, file_path=file_path):
-                if not isinstance(hit, Mapping):
-                    continue
-                match_text = str(hit.get("match", "") or hit.get("preview", "") or "")
-                raw_hits.append((query, match_text, dict(hit)))
+    raw_hits = _local_source_hits(
+        file_path,
+        theorem_id,
+        cwd=cwd_text,
+        goal_symbols=goal_symbols,
+    )
+    local_index_satisfied = len(raw_hits) >= min(3, max(1, int(max_candidates or 1)))
+    if not local_index_satisfied:
+        for query in queries:
+            for mode in modes:
+                for hit in _run_search(query, mode=mode, cwd=cwd_text, file_path=file_path):
+                    if not isinstance(hit, Mapping):
+                        continue
+                    match_text = str(hit.get("match", "") or hit.get("preview", "") or "")
+                    raw_hits.append((query, match_text, dict(hit)))
 
     if not raw_hits:
         degraded.append("no candidate lemmas found for the derived queries")
@@ -518,6 +573,7 @@ def lean_lemma_suggest(
         "theorem_id": theorem_id,
         "queries": queries,
         "search_modes": list(modes),
+        "local_index_satisfied": local_index_satisfied,
         "used_proof_context": use_proof_context,
         "goal_symbols": goal_symbols[:12],
         "candidates": candidates,

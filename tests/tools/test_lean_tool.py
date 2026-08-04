@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -102,6 +103,29 @@ def test_lean_inspect_tool_without_symbol_preserves_full_file_payload(tmp_path, 
     payload = json.loads(lean_tool.lean_inspect_tool(str(target)))
 
     assert payload == {"success": True, **inspection.to_dict()}
+
+
+def test_lean_inspect_tool_enforces_end_to_end_wall_timeout(tmp_path, monkeypatch):
+    target = tmp_path / "Demo.lean"
+    target.write_text("theorem target : True := by\n  trivial\n", encoding="utf-8")
+
+    def _slow_inspection(*args, **kwargs):
+        time.sleep(0.15)
+        return _inspection_fixture(target)
+
+    monkeypatch.setattr(lean_tool, "lean_inspect", _slow_inspection)
+    monkeypatch.setenv("LEANFLOW_LEAN_INSPECT_WALL_TIMEOUT_S", "0.03")
+
+    started = time.monotonic()
+    payload = json.loads(lean_tool.lean_inspect_tool(str(target), symbol="target"))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.12
+    assert payload["success"] is False
+    assert payload["status"] == "lean_inspect_timeout"
+    assert payload["timed_out"] is True
+    assert payload["no_progress"] is True
+    assert "Do not repeat" in payload["action_required"]
 
 
 def test_lean_inspect_registry_prefers_valid_file_path_over_symbol_target(tmp_path, monkeypatch):
@@ -217,7 +241,7 @@ def test_lean_inspect_tool_exact_symbol_bounds_warnings_and_queue_but_keeps_all_
     assert capability["full_report_tool"] == "lean_capabilities"
     assert capability["project_valid"] is True
     assert capability["degraded"] is False
-    assert capability["source_char_count"] > 0
+    assert capability["report_char_count"] > 0
     assert capability["projected_char_count"] > 0
     assert capability["omitted_top_level_key_count"] == 0
 
@@ -334,8 +358,8 @@ def test_lean_inspect_exact_symbol_compacts_capabilities_but_keeps_failure_signa
     assert capability["unavailable_binaries"] == ["lake"]
     assert capability["unavailable_helper_tools"] == ["axiom_checker"]
     assert capability["unavailable_managed_mcp_servers"] == ["lean-lsp"]
-    assert capability["source_sha256"] == hashlib.sha256(source_text.encode()).hexdigest()
-    assert capability["source_char_count"] == len(source_text)
+    assert capability["report_sha256"] == hashlib.sha256(source_text.encode()).hexdigest()
+    assert capability["report_char_count"] == len(source_text)
     assert capability["projected_char_count"] == len(projected_text)
     assert capability["omitted_char_count"] == len(source_text) - len(projected_text)
     assert capability["omitted_top_level_key_count"] > 0

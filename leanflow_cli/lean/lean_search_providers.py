@@ -7,9 +7,7 @@ service management remains in ``lean_services``.
 
 from __future__ import annotations
 
-import contextlib
 import importlib.util
-import io
 import json
 import os
 import re
@@ -191,23 +189,6 @@ def _model_to_plain_dict(value: Any) -> dict[str, Any]:
 def _is_leanexplore_reranker_load_error(exc: Exception) -> bool:
     message = str(exc)
     return "Cannot copy out of meta tensor" in message and "to_empty()" in message
-
-
-def _leanexplore_local_verbose() -> bool:
-    value = str(
-        os.getenv("LEANFLOW_LEANEXPLORE_VERBOSE", "") or os.getenv("LEANEXPLORE_VERBOSE", "") or ""
-    )
-    return value.strip().lower() in {"1", "true", "yes", "on", "debug"}
-
-
-@contextlib.contextmanager
-def _quiet_leanexplore_local_output():
-    if _leanexplore_local_verbose():
-        yield
-        return
-    sink = io.StringIO()
-    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-        yield
 
 
 def _leanexplore_api_search(query: str, *, limit: int = 10) -> tuple[list[dict[str, Any]], str]:

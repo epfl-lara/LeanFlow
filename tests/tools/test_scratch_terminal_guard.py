@@ -500,6 +500,33 @@ def test_scratch_terminal_denies_nonlocal_backend_before_environment_creation(
     assert "local backend" in payload["error"]
 
 
+def test_solution_clean_room_denies_nonlocal_terminal_before_environment_creation(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("LEANFLOW_DISPATCH_SCRATCH_ONLY", raising=False)
+    monkeypatch.setenv("LEANFLOW_DISABLE_SOLUTION_RESEARCH", "1")
+    monkeypatch.setattr(
+        terminal_module,
+        "_get_env_config",
+        lambda: {"env_type": "ssh", "cwd": str(tmp_path), "timeout": 30},
+    )
+    monkeypatch.setattr(
+        terminal_module,
+        "_create_environment",
+        lambda **_kwargs: pytest.fail("nonlocal clean-room terminal created an environment"),
+    )
+
+    payload = json.loads(
+        terminal_module.terminal_tool(
+            "rg theorem .",
+            task_id="clean-room-guard",
+        )
+    )
+
+    assert payload["status"] == "clean_room_terminal_denied"
+    assert "local backend" in payload["error"]
+
+
 def test_ordinary_foreground_terminal_keeps_mutating_command_authority(monkeypatch, tmp_path):
     calls: list[str] = []
 

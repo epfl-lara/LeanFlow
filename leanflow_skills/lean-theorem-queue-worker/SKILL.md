@@ -47,6 +47,7 @@ Primary specs:
     that premise. Preserve the counterexample or missing-hypothesis evidence and request the `negate` route
     immediately. The manager's kernel-backed false-decomposition cleanup owns invalidating the helper,
     restoring its parent, and replanning the affected subtree.
+17. When elaboration or arithmetic automation fails around a multiline `∑`, `∏`, or other big-operator expression, first parenthesize the complete summand or product body and check that smaller expression independently. Do this before changing the mathematical route: Lean's parser can otherwise associate trailing arithmetic outside the binder and make a correct `ring`/`nlinarith` step appear false.
 
 ## Plan-State Freshness
 

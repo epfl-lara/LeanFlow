@@ -33,6 +33,7 @@ from leanflow_cli.lean.lean_incremental_axioms import (
 )
 from leanflow_cli.lean.lean_interact_compat import install_linear_repl_reader
 from leanflow_cli.lean.lean_parsing import (
+    _contains_lean_suggestion_tactic,
     _declaration_line_index_from_text,
     _declaration_matches_target,
     _statement_signature_text,
@@ -641,6 +642,109 @@ def _bound_failed_check_payload(result: dict[str, Any], max_chars: int) -> dict[
     return bounded
 
 
+def compact_successful_check_payload(
+    result: Mapping[str, Any],
+    *,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
+    """Project successful target/helper evidence into bounded model context.
+
+    The tool executor records the original result before applying this model-
+    facing projection. Successful tactic traces are useful for audit but add no
+    repair signal, so retain verdict, identity, timing, and bounded warnings.
+    """
+    payload = dict(result)
+    if payload.get("ok") is not True or str(payload.get("action", "") or "") not in {
+        "check_target",
+        "check_helper",
+    }:
+        return payload
+    cap = max(2_000, int(max_chars or _feedback_max_chars()))
+    tactics = payload.get("tactics")
+    try:
+        serialized = json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return payload
+    if len(serialized) <= cap and not isinstance(tactics, list):
+        return payload
+
+    keep_fields = {
+        "success",
+        "ok",
+        "action",
+        "backend",
+        "tool",
+        "command",
+        "file",
+        "target",
+        "cache",
+        "valid_without_sorry",
+        "has_errors",
+        "has_sorry",
+        "timed_out",
+        "retryable",
+        "replacement_matches_target",
+        "replacement_declarations",
+        "verification_scope",
+        "anchor_target",
+        "anchor_temporary_sorry",
+        "axiom_profile_requested",
+        "axiom_profile_checked",
+        "axiom_profile_axioms",
+        "axiom_profile_blockers",
+        "axiom_profile_error",
+        "requested_timeout_s",
+        "effective_timeout_s",
+        "timeout_adjusted",
+        "timeout_policy",
+        "timeout_ceiling_s",
+        "resource_admission",
+        "leanflow_timing",
+        "messages",
+        "anchor_messages",
+        "feedback_lean",
+        "output",
+        "error",
+        "error_code",
+    }
+    projected = {key: value for key, value in payload.items() if key in keep_fields}
+    if isinstance(tactics, list):
+        projected["tactics_truncated"] = {"kept": 0, "total": len(tactics)}
+    for field in ("feedback_lean", "output", "error"):
+        if projected.get(field):
+            projected[field] = _truncate_diagnostic_text(projected[field], 1200)
+    for field in ("messages", "anchor_messages"):
+        messages = projected.get(field)
+        if not isinstance(messages, list):
+            continue
+        compact_messages: list[Any] = []
+        for message in messages[:4]:
+            if not isinstance(message, Mapping):
+                compact_messages.append(message)
+                continue
+            compact = dict(message)
+            if compact.get("message"):
+                compact["message"] = _truncate_diagnostic_text(compact["message"], 800)
+            compact_messages.append(compact)
+        projected[field] = compact_messages
+        if len(messages) > len(compact_messages):
+            projected[f"{field}_truncated"] = {
+                "kept": len(compact_messages),
+                "total": len(messages),
+            }
+    omitted = sorted(set(payload).difference(projected).difference({"tactics"}))
+    projected.update(
+        {
+            "provider_context_projected": True,
+            "audit_payload_preserved": True,
+            "audit_payload_chars": len(serialized),
+            "audit_payload_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+            "projected_fields_omitted": omitted,
+        }
+    )
+    return projected
+
+
 def _normalize_payload(payload: dict[str, Any], action: str) -> dict[str, Any]:
     result = dict(payload)
     result["action"] = action
@@ -883,6 +987,72 @@ def _replacement_has_placeholder(replacement: str) -> bool:
     """Return whether executable replacement source contains a proof placeholder."""
     stripped = _strip_lean_comments_and_strings(str(replacement or ""))
     return bool(re.search(r"\b(?:sorry|admit|sorryAx)\b", stripped, flags=re.IGNORECASE))
+
+
+def _target_source_text(source_text: str, theorem_id: str) -> str:
+    """Return the exact parsed target declaration text when available."""
+    entry = next(
+        (
+            item
+            for item in _declaration_line_index_from_text(source_text)
+            if _declaration_matches_target(item, theorem_id)
+        ),
+        None,
+    )
+    return str(entry.get("text", "") or "") if entry is not None else ""
+
+
+def _suggestion_rejection_payload(
+    *,
+    action: str,
+    file_path: Path,
+    theorem_id: str,
+    replacement_metadata: Mapping[str, Any],
+    requested_timeout_s: int,
+    effective_timeout_s: int,
+    timeout_adjusted: bool,
+    timeout_policy: str,
+    timeout_ceiling_s: int | None,
+    operation_started: float,
+) -> dict[str, Any]:
+    """Reject diagnostic suggestion tactics as proof-verification candidates."""
+    error = (
+        "suggestion tactics are diagnostic-only; submit the suggested concrete term "
+        "for verification"
+    )
+    return {
+        "success": True,
+        "ok": False,
+        "backend": "deterministic_preflight",
+        "tool": "lean_incremental_check",
+        "action": action,
+        "file": str(file_path),
+        "target": theorem_id,
+        "valid_without_sorry": False,
+        "has_errors": False,
+        "has_sorry": False,
+        "timed_out": False,
+        "retryable": False,
+        "error": error,
+        "error_code": "suggestion_tactic_diagnostic_only",
+        "output": error,
+        "lean_started": False,
+        **dict(replacement_metadata),
+        **_timeout_metadata(
+            requested_timeout_s=requested_timeout_s,
+            effective_timeout_s=effective_timeout_s,
+            timeout_adjusted=timeout_adjusted,
+            timeout_policy=timeout_policy,
+            timeout_ceiling_s=timeout_ceiling_s,
+        ),
+        "leanflow_timing": {
+            "total_s": round(max(0.0, time.monotonic() - operation_started), 3),
+            "admission_wait_s": 0.0,
+            "probe_call_s": 0.0,
+            "session_reclaim_s": 0.0,
+            "postprocess_s": 0.0,
+        },
+    }
 
 
 def _placeholder_rejection_payload(
@@ -1171,6 +1341,29 @@ def lean_incremental_check(
         )
 
     source_text = resolved.read_text(encoding="utf-8")
+    if leanflow_action == "check_helper" and re.search(
+        r"(?m)^\s*#print\s+prefix\b",
+        replacement,
+    ):
+        payload = _error_payload(
+            action=leanflow_action,
+            error=(
+                "Broad `#print prefix` inspection is disabled because it produces large, "
+                "slow environment dumps. Inspect an exact declaration with `#check`, "
+                "`lean_outline`, or a bounded local search."
+            ),
+            error_code="broad_print_prefix_rejected",
+            file_path=resolved,
+            target=theorem_id,
+        )
+        payload.update(
+            {
+                "status": "bounded_symbol_inspection_required",
+                "lean_started": False,
+                "search_progress": False,
+            }
+        )
+        return payload
     if include_axiom_profile and leanflow_action not in {"check_target", "check_helper"}:
         return _error_payload(
             action=leanflow_action,
@@ -1190,6 +1383,28 @@ def lean_incremental_check(
     probe_action = leanflow_action
     probe_replacement = replacement
     replacement_metadata: dict[str, Any] = {}
+    current_candidate = ""
+    if leanflow_action == "check_file":
+        current_candidate = source_text
+    elif leanflow_action == "check_target" and not replacement.strip():
+        current_candidate = _target_source_text(source_text, theorem_id)
+    if current_candidate and _contains_lean_suggestion_tactic(current_candidate):
+        return _suggestion_rejection_payload(
+            action=leanflow_action,
+            file_path=resolved,
+            theorem_id=theorem_id,
+            replacement_metadata={
+                "verification_scope": (
+                    "target_candidate" if leanflow_action == "check_target" else "file"
+                )
+            },
+            requested_timeout_s=requested_timeout_s,
+            effective_timeout_s=effective_timeout_s,
+            timeout_adjusted=timeout_adjusted,
+            timeout_policy=timeout_policy,
+            timeout_ceiling_s=normalized_timeout_ceiling_s,
+            operation_started=operation_started,
+        )
     if leanflow_action == "check_helper":
         if not theorem_id:
             return _error_payload(
@@ -1231,6 +1446,19 @@ def lean_incremental_check(
                 "replacement_mismatch_reason": "",
             }
         )
+        if _contains_lean_suggestion_tactic(replacement):
+            return _suggestion_rejection_payload(
+                action=leanflow_action,
+                file_path=resolved,
+                theorem_id=theorem_id,
+                replacement_metadata=replacement_metadata,
+                requested_timeout_s=requested_timeout_s,
+                effective_timeout_s=effective_timeout_s,
+                timeout_adjusted=timeout_adjusted,
+                timeout_policy=timeout_policy,
+                timeout_ceiling_s=normalized_timeout_ceiling_s,
+                operation_started=operation_started,
+            )
         if _replacement_has_placeholder(replacement):
             return _placeholder_rejection_payload(
                 action=leanflow_action,
@@ -1282,6 +1510,19 @@ def lean_incremental_check(
             replacement,
             theorem_id,
         )
+        if leanflow_action == "check_target" and _contains_lean_suggestion_tactic(replacement):
+            return _suggestion_rejection_payload(
+                action=leanflow_action,
+                file_path=resolved,
+                theorem_id=theorem_id,
+                replacement_metadata=replacement_metadata,
+                requested_timeout_s=requested_timeout_s,
+                effective_timeout_s=effective_timeout_s,
+                timeout_adjusted=timeout_adjusted,
+                timeout_policy=timeout_policy,
+                timeout_ceiling_s=normalized_timeout_ceiling_s,
+                operation_started=operation_started,
+            )
         if (
             leanflow_action == "check_target"
             and _replacement_has_placeholder(replacement)
@@ -1353,6 +1594,11 @@ def lean_incremental_check(
     probe_deadline: LeanProbeDeadlineExceeded | None = None
     with project_lean_heavy_admission(project_root) as admission:
         admission_wait_s = max(0.0, time.monotonic() - admission_started)
+        charged_admission_wait_s = admission_wait_s if admission_wait_s >= 0.01 else 0.0
+        probe_timeout_s = max(
+            0.01,
+            float(effective_timeout_s) - charged_admission_wait_s,
+        )
         probe_started = time.monotonic()
         try:
             probe = _probe()
@@ -1361,10 +1607,10 @@ def lean_incremental_check(
                     probe,
                     "prepare_file",
                     resolved,
-                    deadline_s=effective_timeout_s,
+                    deadline_s=probe_timeout_s,
                     theorem_id=theorem_id,
                     cwd=project_root,
-                    timeout_s=effective_timeout_s,
+                    timeout_s=probe_timeout_s,
                 )
             elif leanflow_action == "check_file":
                 _header, segments = _segment_file(source_text)
@@ -1379,45 +1625,45 @@ def lean_incremental_check(
                         probe,
                         "check_target",
                         resolved,
-                        deadline_s=effective_timeout_s,
+                        deadline_s=probe_timeout_s,
                         theorem_id=final_target,
                         cwd=project_root,
                         replacement="",
                         include_tactics=True,
-                        timeout_s=effective_timeout_s,
+                        timeout_s=probe_timeout_s,
                     )
                 else:
                     payload = call_lean_probe_with_deadline(
                         probe,
                         "prepare_file",
                         resolved,
-                        deadline_s=effective_timeout_s,
+                        deadline_s=probe_timeout_s,
                         theorem_id="",
                         cwd=project_root,
-                        timeout_s=effective_timeout_s,
+                        timeout_s=probe_timeout_s,
                     )
             elif probe_action == "check_target":
                 payload = call_lean_probe_with_deadline(
                     probe,
                     "check_target",
                     resolved,
-                    deadline_s=effective_timeout_s,
+                    deadline_s=probe_timeout_s,
                     theorem_id=theorem_id,
                     cwd=project_root,
                     replacement=probe_replacement,
                     include_tactics=include_tactics,
-                    timeout_s=effective_timeout_s,
+                    timeout_s=probe_timeout_s,
                 )
             elif leanflow_action == "feedback":
                 payload = call_lean_probe_with_deadline(
                     probe,
                     "feedback",
                     resolved,
-                    deadline_s=effective_timeout_s,
+                    deadline_s=probe_timeout_s,
                     theorem_id=theorem_id,
                     cwd=project_root,
                     replacement=replacement,
-                    timeout_s=effective_timeout_s,
+                    timeout_s=probe_timeout_s,
                 )
             else:
                 return _error_payload(
@@ -1467,6 +1713,10 @@ def lean_incremental_check(
                     )
     postprocess_started = time.monotonic()
     result = _normalize_payload(payload, leanflow_action)
+    fallback_timeout_s = max(
+        0.01,
+        float(effective_timeout_s) - max(0.0, time.monotonic() - operation_started),
+    )
     if _incremental_environment_failure(result):
         if leanflow_action == "check_helper":
             result = _normalize_profiled_helper_payload(
@@ -1477,7 +1727,7 @@ def lean_incremental_check(
                     file_path=resolved,
                     project_root=project_root,
                     anchor_skeleton=anchor_skeleton,
-                    timeout_s=effective_timeout_s,
+                    timeout_s=fallback_timeout_s,
                 )
             )
             result.update(
@@ -1500,7 +1750,7 @@ def lean_incremental_check(
                 replacement=replacement,
                 resolved=resolved,
                 project_root=project_root,
-                timeout_s=effective_timeout_s,
+                timeout_s=fallback_timeout_s,
             )
     if inline_axiom_query is not None:
         result = _attach_inline_axiom_profile(result, inline_axiom_query)
@@ -1511,6 +1761,22 @@ def lean_incremental_check(
             anchor_target=theorem_id,
         )
     result.update(replacement_metadata)
+    if (
+        leanflow_action == "check_target"
+        and allow_placeholders_for_elaboration
+        and _replacement_has_placeholder(replacement)
+    ):
+        elaborated = bool(result.get("success")) and not _payload_has_errors(result)
+        result.update(
+            {
+                "ok": False,
+                "target_verified": False,
+                "valid_without_sorry": False,
+                "has_sorry": True,
+                "local_elaboration_only": True,
+                "elaborated_with_placeholders": elaborated,
+            }
+        )
     result.update(
         {
             **_timeout_metadata(

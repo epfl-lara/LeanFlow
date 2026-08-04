@@ -42,9 +42,23 @@ _CONSTRUCTION_WINDOW_KEYS = (
 
 _LEAN_INSPECTION_COMMAND = re.compile(r"(?m)^\s*(?:#(?:check|print|eval|reduce)\b|run_cmd\b)")
 _LEAN_DECLARATION_START = re.compile(
-    r"(?m)^\s*(?:private\s+)?(?:theorem|lemma|example|def|abbrev)\b(?P<header>[^\n]*)"
+    r"(?m)^\s*(?:private\s+)?(?:theorem|lemma|example|def|abbrev)\s+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_']*)(?P<header>[^\n]*)"
 )
 _TRIVIAL_TRUE_DECLARATION = re.compile(r":\s*True\s*(?::=|where|$)")
+_INSPECTION_DECLARATION_NAME = re.compile(
+    r"(?:^|_)(?:inspect|inspection|probe|lookup|typecheck)(?:_|$)",
+    flags=re.IGNORECASE,
+)
+_BARE_IDENTIFIER = r"(?:[A-Za-z_][A-Za-z0-9_']*\.)*[A-Za-z_][A-Za-z0-9_']*"
+_FALSE_IDENTIFIER_PROBE = re.compile(
+    rf":\s*False\s*:=\s*by\s+(?:exact\s+|simpa\s+using\s+){_BARE_IDENTIFIER}\s*$",
+    flags=re.DOTALL,
+)
+_TRIVIAL_BINDING_PROBE = re.compile(
+    r":\s*True\s*:=\s*by\s+(?:have|let)\b.+?(?:\n|;)\s*" r"(?:trivial|exact\s+True\.intro)\s*$",
+    flags=re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -93,6 +107,7 @@ def construction_attempt_request(
     arguments = dict(args or {})
     if function_name in {"patch", "write_file", "apply_verified_patch"}:
         return str(result_status or "").strip().lower() not in {
+            "direct_self_reference_rejected",
             "rejected_candidate_replay",
             "isolated_suggestion_probe_required",
         }
@@ -231,12 +246,24 @@ def is_inspection_only_incremental_check(
     if str(arguments.get("action", "") or "").strip().lower() != "check_helper":
         return False
     replacement = str(arguments.get("replacement", "") or "")
-    if not replacement or not _LEAN_INSPECTION_COMMAND.search(replacement):
+    if not replacement:
         return False
     declarations = list(_LEAN_DECLARATION_START.finditer(replacement))
-    return not declarations or all(
-        _TRIVIAL_TRUE_DECLARATION.search(match.group("header") or "") for match in declarations
-    )
+    if _LEAN_INSPECTION_COMMAND.search(replacement):
+        return not declarations or all(
+            _TRIVIAL_TRUE_DECLARATION.search(match.group("header") or "") for match in declarations
+        )
+    if not declarations:
+        return False
+    for index, declaration in enumerate(declarations):
+        name = str(declaration.group("name") or "")
+        if not _INSPECTION_DECLARATION_NAME.search(name):
+            return False
+        end = declarations[index + 1].start() if index + 1 < len(declarations) else len(replacement)
+        source = replacement[declaration.start() : end].strip()
+        if not (_FALSE_IDENTIFIER_PROBE.search(source) or _TRIVIAL_BINDING_PROBE.search(source)):
+            return False
+    return True
 
 
 def discovery_tool_name(

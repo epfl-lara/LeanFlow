@@ -57,6 +57,31 @@ logger = logging.getLogger(__name__)
 _MEMORY_HEAVY_TOOL_WORKERS_ENV = "LEANFLOW_MAX_MEMORY_HEAVY_TOOL_WORKERS"
 _DEFAULT_MEMORY_HEAVY_TOOL_WORKERS = 1
 
+
+def _project_tool_result_for_model(
+    agent: Any,
+    function_name: str,
+    function_args: Mapping[str, Any],
+    function_result: str,
+    *,
+    audit_result: str | None = None,
+) -> str:
+    """Apply an optional model-facing projection after audit and manager hooks."""
+    callback = getattr(agent, "tool_result_projection_callback", None)
+    if not callable(callback):
+        return function_result
+    try:
+        projected = callback(
+            function_name,
+            function_args,
+            audit_result if audit_result is not None else function_result,
+        )
+    except Exception:
+        logger.debug("tool_result_projection_callback error", exc_info=True)
+        return function_result
+    return projected if isinstance(projected, str) and projected else function_result
+
+
 # These Lean tools only inspect already-materialized text or dispatch work to the
 # separately capacity-controlled research worker pool. Other ``lean_*`` tools
 # may start Lean/Lake or load a semantic-search index and therefore share the
@@ -631,6 +656,7 @@ class ToolExecutor:
         ) -> None:
             """Run the managed completion hook and retain its ordered tool message."""
             function_name, function_args, function_result, _duration, _is_error = result_record
+            audit_function_result = function_result
             max_tool_result_chars = agent._max_tool_result_chars(function_name)
             if len(function_result) > max_tool_result_chars:
                 original_len = len(function_result)
@@ -646,10 +672,19 @@ class ToolExecutor:
             }
             if agent.post_tool_result_callback:
                 try:
-                    agent.post_tool_result_callback(function_name, function_args, function_result)
+                    agent.post_tool_result_callback(
+                        function_name, function_args, audit_function_result
+                    )
                 except Exception as cb_err:
                     logger.debug("post_tool_result_callback error: %s", cb_err)
-                agent._apply_post_tool_result_appendix(tool_msg)
+            tool_msg["content"] = _project_tool_result_for_model(
+                agent,
+                function_name,
+                function_args,
+                function_result,
+                audit_result=audit_function_result,
+            )
+            agent._apply_post_tool_result_appendix(tool_msg)
             message_slots[index] = tool_msg
 
         # Start spinner for CLI mode
@@ -1099,6 +1134,7 @@ class ToolExecutor:
             # blow up the context window. Most tools are capped at 100K chars;
             # Lean advisor/decomposition tools get a larger cap because long
             # proof-strategy output is an intentional use case.
+            audit_function_result = function_result
             max_tool_result_chars = agent._max_tool_result_chars(function_name)
             if len(function_result) > max_tool_result_chars:
                 original_len = len(function_result)
@@ -1133,7 +1169,7 @@ class ToolExecutor:
                     agent,
                     tool=function_name,
                     arguments=function_args,
-                    result=function_result,
+                    result=audit_function_result,
                     duration_seconds=tool_duration,
                     concurrent=False,
                     iteration=api_call_count,
@@ -1143,10 +1179,19 @@ class ToolExecutor:
 
             if agent.post_tool_result_callback:
                 try:
-                    agent.post_tool_result_callback(function_name, function_args, function_result)
+                    agent.post_tool_result_callback(
+                        function_name, function_args, audit_function_result
+                    )
                 except Exception as cb_err:
                     logger.debug("post_tool_result_callback error: %s", cb_err)
-                agent._apply_post_tool_result_appendix(tool_msg)
+            tool_msg["content"] = _project_tool_result_for_model(
+                agent,
+                function_name,
+                function_args,
+                function_result,
+                audit_result=audit_function_result,
+            )
+            agent._apply_post_tool_result_appendix(tool_msg)
 
             if agent._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i

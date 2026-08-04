@@ -90,6 +90,77 @@ class _FakeAgent(_ManagedRunAgentStub):
         self._checkpoint_mgr = _FakeCheckpointManager()
 
 
+def test_foreground_checked_helper_is_retained_before_handoff(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    events = []
+    monkeypatch.setattr(
+        runner, "_record_agent_activity", lambda *args, **kwargs: events.append(kwargs)
+    )
+    declaration = "private lemma checked_helper : True := by\n  trivial"
+    arguments = {
+        "action": "check_helper",
+        "file_path": str(active),
+        "theorem_id": "demo",
+        "replacement": declaration,
+    }
+    result = json.dumps(
+        {
+            "success": True,
+            "ok": True,
+            "valid_without_sorry": True,
+            "has_errors": False,
+            "has_sorry": False,
+            "verification_scope": "helper_candidate",
+            "replacement_matches_target": False,
+            "replacement_declarations": ["checked_helper"],
+        }
+    )
+
+    record = runner._retain_foreground_checked_helper(
+        agent, "lean_incremental_check", arguments, result
+    )
+
+    assert record is not None
+    assert record.helper_name == "checked_helper"
+    assert events[0]["candidate_id"] == record.candidate_id
+    assert "durably retained" in agent._post_tool_result_appendix
+
+
+def test_managed_incremental_success_projects_provider_context():
+    payload = {
+        "success": True,
+        "ok": True,
+        "action": "check_target",
+        "target": "demo",
+        "valid_without_sorry": True,
+        "has_errors": False,
+        "has_sorry": False,
+        "tactics": [{"goal": "large" * 1000} for _ in range(50)],
+    }
+
+    projected = json.loads(
+        runner._project_managed_tool_result("lean_incremental_check", {}, json.dumps(payload))
+    )
+
+    assert projected["ok"] is True
+    assert projected["tactics_truncated"] == {"kept": 0, "total": 50}
+    assert projected["audit_payload_preserved"] is True
+
+
 def test_workflow_log_tee_reports_slow_owner_log_append(monkeypatch):
     writes = []
     events = []
@@ -31658,6 +31729,48 @@ def test_concrete_source_patch_is_not_redirected_as_suggestion(tmp_path):
     )
 
     assert result is None
+
+
+def test_direct_self_reference_patch_is_rejected_before_mutation(tmp_path, monkeypatch):
+    """Do not spend a provider/Lean retry on a non-recursive bare self-reference."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+-  sorry
++  exact demo
+*** End Patch"""
+
+    result = runner._direct_self_reference_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": "demo", "patch": patch},
+        state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "direct_self_reference_rejected"
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == source
+    assert events[-1][0][1] == "direct-self-reference-source-patch-blocked"
 
 
 def test_rejected_verified_patch_reaches_failed_attempt_boundary(tmp_path, monkeypatch):

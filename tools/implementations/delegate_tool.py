@@ -16,14 +16,12 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
-import contextlib
-import io
+import hashlib
 import json
 import logging
 
 logger = logging.getLogger(__name__)
 import os
-import sys
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -48,6 +46,7 @@ MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+DELEGATE_SUMMARY_MAX_CHARS = 128_000
 
 
 def check_delegate_requirements() -> bool:
@@ -231,6 +230,7 @@ def _run_single_child(
     post_tool_result_callback: Callable[[str, dict[str, Any], str], Any] | None = None,
     background_capacity_timeout_s: float | None = None,
     empirical_compute: bool = False,
+    wall_timeout_s: float | None = None,
 ) -> dict[str, Any]:
     """Run one delegated conversation under a research actor-capacity lease.
 
@@ -258,6 +258,7 @@ def _run_single_child(
                     isolate_budget=isolate_budget,
                     pre_tool_call_callback=pre_tool_call_callback,
                     post_tool_result_callback=post_tool_result_callback,
+                    wall_timeout_s=wall_timeout_s,
                 )
     except BackgroundCapacityUnavailable as exc:
         return {
@@ -287,6 +288,7 @@ def _run_single_child_unleased(
     isolate_budget: bool = False,
     pre_tool_call_callback: Callable[[str, dict[str, Any]], Any] | None = None,
     post_tool_result_callback: Callable[[str, dict[str, Any], str], Any] | None = None,
+    wall_timeout_s: float | None = None,
 ) -> dict[str, Any]:
     """
     Spawn and run a single child agent. Called from within a thread.
@@ -391,6 +393,7 @@ def _run_single_child_unleased(
             pre_tool_call_callback=pre_tool_call_callback,
             post_tool_result_callback=child_post_result_cb,
             iteration_budget=shared_budget,
+            wall_timeout_s=wall_timeout_s,
         )
         _report_effective_child_tools(parent_agent, child, child_toolsets)
 
@@ -406,10 +409,10 @@ def _run_single_child_unleased(
         elif hasattr(parent_agent, "_active_children"):
             parent_agent._active_children.append(child)
 
-        # Run with stdout/stderr suppressed to prevent interleaved output
-        devnull = io.StringIO()
-        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-            result = child.run_conversation(user_message=goal)
+        # ``quiet_mode`` owns child presentation. Never redirect process-wide
+        # streams from a worker thread: doing so hides manager heartbeats and
+        # can strand stdout after concurrent delegated lanes finish.
+        result = child.run_conversation(user_message=goal)
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):
@@ -421,11 +424,19 @@ def _run_single_child_unleased(
         duration = round(time.monotonic() - child_start, 2)
 
         summary = result.get("final_response") or ""
+        summary_chars = len(summary)
+        summary_sha256 = ""
+        if summary_chars > DELEGATE_SUMMARY_MAX_CHARS:
+            summary_sha256 = hashlib.sha256(summary.encode("utf-8")).hexdigest()
+            summary = summary[:DELEGATE_SUMMARY_MAX_CHARS] + "\n...[delegated summary truncated]"
         completed = result.get("completed", False)
         interrupted = result.get("interrupted", False)
+        wall_timed_out = bool(result.get("wall_timed_out"))
         api_calls = result.get("api_calls", 0)
 
-        if interrupted:
+        if wall_timed_out:
+            status = "wall-timeout"
+        elif interrupted:
             status = "interrupted"
         elif completed and summary:
             status = "completed"
@@ -469,7 +480,9 @@ def _run_single_child_unleased(
                         tool_trace[-1].update(result_meta)
 
         # Determine exit reason
-        if interrupted:
+        if wall_timed_out:
+            exit_reason = "wall_timeout"
+        elif interrupted:
             exit_reason = "interrupted"
         elif completed:
             exit_reason = "completed"
@@ -495,6 +508,16 @@ def _run_single_child_unleased(
             },
             "tool_trace": tool_trace,
         }
+        if summary_sha256:
+            entry.update(
+                {
+                    "summary_truncated": True,
+                    "summary_original_chars": summary_chars,
+                    "summary_sha256": summary_sha256,
+                }
+            )
+        if wall_timed_out:
+            entry["wall_timeout_s"] = wall_timeout_s
         provider_retry_after = normalize_provider_retry_after(result.get("provider_retry_after"))
         if provider_retry_after:
             # Keep reset authority structured across the process boundary.
@@ -658,17 +681,13 @@ def delegate_task(
             ),
             background_capacity_timeout_s=t.get("_background_capacity_timeout_s"),
             empirical_compute=0 in empirical_indexes,
+            wall_timeout_s=t.get("_wall_timeout_s"),
         )
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
         completed_count = 0
         spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
-
-        # Save stdout/stderr before the executor — redirect_stdout in child
-        # threads races on sys.stdout and can leave it as devnull permanently.
-        _saved_stdout = sys.stdout
-        _saved_stderr = sys.stderr
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
             futures = {}
@@ -694,6 +713,7 @@ def delegate_task(
                     ),
                     background_capacity_timeout_s=t.get("_background_capacity_timeout_s"),
                     empirical_compute=i in empirical_indexes,
+                    wall_timeout_s=t.get("_wall_timeout_s"),
                 )
                 futures[future] = i
 
@@ -742,10 +762,6 @@ def delegate_task(
                         )
                     except Exception as e:
                         logger.debug("Spinner update_text failed: %s", e)
-
-        # Restore stdout/stderr in case redirect_stdout race left them as devnull
-        sys.stdout = _saved_stdout
-        sys.stderr = _saved_stderr
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from leanflow_cli.lean.lean_declarations import declaration_outline, declaration_region
@@ -35,7 +36,22 @@ from tools.implementations.lean_experts import (  # noqa: E402
 from tools.implementations.lean_have_extraction import lean_extract_have_tool  # noqa: E402
 from tools.implementations.lean_patch import apply_verified_patch_tool  # noqa: E402
 from tools.registry import registry
+from tools.utilities.bounded_call import run_bounded_call
 from tools.utilities.lean_inspection_projection import project_exact_symbol_inspection
+
+LEAN_INSPECT_WALL_TIMEOUT_S = 60.0
+
+
+def _lean_inspect_wall_timeout_s() -> float:
+    """Return the bounded end-to-end deadline for one inspection call."""
+    raw = str(os.environ.get("LEANFLOW_LEAN_INSPECT_WALL_TIMEOUT_S", "") or "").strip()
+    if not raw:
+        return LEAN_INSPECT_WALL_TIMEOUT_S
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return LEAN_INSPECT_WALL_TIMEOUT_S
+    return min(300.0, max(0.01, parsed))
 
 
 def check_lean_requirements() -> bool:
@@ -103,12 +119,38 @@ def lean_inspect_tool(
 ) -> str:
     """Return full file state or a bounded model-facing exact-symbol projection."""
     inspection_target = _lean_inspect_target(target, file_path=file_path, cwd=cwd)
-    inspection = lean_inspect(
-        inspection_target,
-        cwd=cwd or None,
-        line=line,
-        symbol=symbol or None,
-    ).to_dict()
+    timeout_s = _lean_inspect_wall_timeout_s()
+    bounded = run_bounded_call(
+        lambda: lean_inspect(
+            inspection_target,
+            cwd=cwd or None,
+            line=line,
+            symbol=symbol or None,
+        ).to_dict(),
+        timeout_s=timeout_s,
+    )
+    if not bounded.completed:
+        return json.dumps(
+            {
+                "success": False,
+                "status": "lean_inspect_timeout",
+                "timed_out": True,
+                "timeout_s": timeout_s,
+                "target": inspection_target,
+                "symbol": str(symbol or "").strip(),
+                "no_progress": True,
+                "action_required": (
+                    "Do not repeat the unchanged inspection. Use an exact file read, declaration "
+                    "outline, cached LeanProbe check, or helper decomposition next."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if bounded.error is not None:
+        raise bounded.error
+    inspection = bounded.value
+    if inspection is None:
+        raise RuntimeError("lean_inspect completed without returning a report")
     wanted = str(symbol or "").strip()
     if wanted:
         inspection_path = Path(str(inspection.get("target", "") or inspection_target)).expanduser()

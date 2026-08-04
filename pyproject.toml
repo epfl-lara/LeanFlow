@@ -162,6 +162,7 @@ files = [
   "tools/implementations/lean_experts.py",
   "tools/utilities/advisor_source_context.py",
   "tools/utilities/advisor_persistence.py",
+  "tools/utilities/bounded_call.py",
   "tools/utilities/decomposer_admission.py",
   "tools/utilities/decomposer_prompt.py",
   "tools/utilities/decomposer_source_guard.py",

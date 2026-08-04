@@ -316,6 +316,52 @@ def test_lean_lemma_suggest_can_skip_expensive_proof_context(monkeypatch, tmp_pa
     assert payload["candidates"]
 
 
+def test_lean_lemma_suggest_prefers_sufficient_local_source_candidates(monkeypatch, tmp_path):
+    source = tmp_path / "Demo.lean"
+    source.write_text(
+        "\n\n".join(
+            [
+                "lemma local_one (xs : List Nat) : 0 ≤ xs.length := by omega",
+                "lemma local_two (xs : List Nat) : xs.length = xs.length := by rfl",
+                "lemma local_three (xs : List Nat) : xs.length ≤ xs.length := by rfl",
+                "theorem demo (xs : List Nat) : xs.length ≤ xs.length := by sorry",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "lean_proof_context",
+        lambda *_args, **_kwargs: {
+            "theorem_statement": (
+                "theorem demo (xs : List Nat) : xs.length ≤ xs.length := by sorry"
+            ),
+            "goal": "⊢ xs.length ≤ xs.length",
+            "hypotheses": ["xs : List Nat"],
+        },
+    )
+    monkeypatch.setattr(
+        lls,
+        "_run_search",
+        lambda *_args, **_kwargs: pytest.fail(
+            "sufficient local candidates must avoid expensive semantic expansion"
+        ),
+    )
+
+    payload = lls.lean_lemma_suggest(str(source), "demo")
+
+    assert payload["local_index_satisfied"] is True
+    assert [candidate["name"] for candidate in payload["candidates"][:3]] == [
+        "local_one",
+        "local_two",
+        "local_three",
+    ]
+    assert all(
+        candidate["provider"] == "project-source-index" for candidate in payload["candidates"][:3]
+    )
+
+
 def test_lean_lemma_suggest_uses_circuit_open_local_context_without_probe(monkeypatch, tmp_path):
     """A local-context suggestion must not reacquire Lean admission via inspect."""
     project = tmp_path / "DemoProject"

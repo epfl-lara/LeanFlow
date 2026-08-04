@@ -1241,6 +1241,26 @@ class TestExecuteToolCalls:
         assert "[manager feedback]" in messages[0]["content"]
         assert agent._post_tool_result_appendix is None
 
+    def test_model_projection_runs_after_raw_audit_and_manager_callback(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        raw_result = "full-audit-result-" + "x" * 2000
+        callbacks = []
+        events = []
+        agent.post_tool_result_callback = lambda name, args, result: callbacks.append(result)
+        agent.tool_result_projection_callback = lambda name, args, result: "bounded-model-result"
+
+        with (
+            patch("run_agent.handle_function_call", return_value=raw_result),
+            patch("run_agent._emit_workflow_event", side_effect=lambda *a, **kw: events.append(kw)),
+        ):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert callbacks == [raw_result]
+        assert events[-1]["result"] == raw_result
+        assert messages[0]["content"] == "bounded-model-result"
+
     def test_interrupt_skips_remaining(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
