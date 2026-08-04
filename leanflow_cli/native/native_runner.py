@@ -7309,6 +7309,7 @@ def _reset_search_progress(agent: Any) -> None:
 def _search_synthesis_pre_tool_guard(
     agent: Any,
     function_name: str,
+    args: Mapping[str, Any] | None,
     autonomy_state: dict[str, Any],
 ) -> str | None:
     """Reject broad search before execution once this assignment owes synthesis."""
@@ -7318,8 +7319,11 @@ def _search_synthesis_pre_tool_guard(
     tracker = dict(autonomy_state.get("search_progress") or {})
     if not target_symbol or not active_file or not tracker:
         return None
+    discovery_name = search_synthesis_admission.discovery_tool_name(function_name, args)
+    if discovery_name is None:
+        return None
     payload = search_synthesis_admission.blocked_search_result(
-        function_name=function_name,
+        function_name=discovery_name,
         tracker=tracker,
         target_symbol=target_symbol,
         active_file=active_file,
@@ -7327,6 +7331,9 @@ def _search_synthesis_pre_tool_guard(
     )
     if payload is None:
         return None
+    payload["blocked_tool"] = function_name
+    if discovery_name != function_name:
+        payload["discovery_kind"] = discovery_name
     # Older checkpoints may have spent the one-turn grace immediately before
     # an interruption while retaining the authoritative hard-route marker.
     # Normalize that shape so the deterministic blocked result follows the
@@ -9244,6 +9251,7 @@ def _managed_pre_tool_call(
         search_synthesis_guard = _search_synthesis_pre_tool_guard(
             agent,
             function_name,
+            args,
             autonomy_state,
         )
         if search_synthesis_guard:
@@ -12793,7 +12801,8 @@ def _handle_delegated_managed_search_result(
     result: str,
 ) -> None:
     """Track delegated search on the executing lane without mutating its owner."""
-    if function_name not in SEARCH_PROGRESS_TOOL_NAMES or executing_agent is None:
+    discovery_name = search_synthesis_admission.discovery_tool_name(function_name, args)
+    if discovery_name is None or executing_agent is None:
         return
     _prepare_delegated_managed_search_state(owner_agent, executing_agent)
     _sync_disabled_tools_from_result(executing_agent, function_name, result)
@@ -12802,7 +12811,7 @@ def _handle_delegated_managed_search_result(
     # Planner/deep-search lanes own their bounded search streak. Do not call
     # the full managed-result hook here: its portfolio poll is a foreground
     # responsibility and could recursively launch research from a child.
-    _track_search_progress(executing_agent, function_name, args, result)
+    _track_search_progress(executing_agent, discovery_name, args, result)
 
 
 def _refresh_live_queue_source_after_managed_edit(
@@ -13119,8 +13128,9 @@ def _handle_managed_tool_result(
             agent._managed_step_boundary_closed = True
         _request_step_boundary_interrupt(agent)
         return
-    if function_name in SEARCH_PROGRESS_TOOL_NAMES:
-        if _track_search_progress(agent, function_name, args, _result):
+    discovery_name = search_synthesis_admission.discovery_tool_name(function_name, args)
+    if discovery_name is not None:
+        if _track_search_progress(agent, discovery_name, args, _result):
             return
     else:
         _note_non_search_tool_progress(

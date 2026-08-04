@@ -8135,6 +8135,128 @@ def test_lean_inspection_calls_enter_search_budget(monkeypatch, tmp_path):
     assert tracker["synthesis_boundary_cycle"] == 4
 
 
+def test_inspection_only_helper_checks_enter_construction_source_budget(monkeypatch, tmp_path):
+    """Count dummy True wrappers around Lean inspection as source discovery."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self.session_id = "incremental-inspection-loop"
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_cycle": 9,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "hard_route_requested": True,
+                    "synthesis_grace_pending": True,
+                },
+            }
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_construction_source_inspection_hard_limit", lambda: 3)
+    agent = _Agent()
+    replacements = (
+        "#check Nat.add_comm\nprivate lemma inspect_one : True := by\n  trivial",
+        "#print Nat.add_comm\nprivate lemma inspect_two : True := by\n  trivial",
+        'run_cmd Lean.logInfo m!"inspect"\nprivate lemma inspect_three : True := by\n  trivial',
+    )
+
+    for replacement in replacements:
+        runner._handle_managed_tool_result(
+            agent,
+            "lean_incremental_check",
+            {"action": "check_helper", "replacement": replacement},
+            json.dumps({"success": True, "ok": True}),
+        )
+
+    tracker = agent._managed_autonomy_state["search_progress"]
+    assert tracker["construction_source_inspection_count"] == 3
+    assert tracker["search_count"] == 12
+    assert agent._managed_step_boundary_closed is True
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+
+
+def test_real_incremental_helper_is_not_classified_as_inspection():
+    """Keep a substantive helper constructive even when it uses #check context."""
+    args = {
+        "action": "check_helper",
+        "replacement": (
+            "#check Nat.add_comm\n"
+            "private lemma add_comm_helper (a b : Nat) : a + b = b + a := by\n"
+            "  exact Nat.add_comm a b"
+        ),
+    }
+
+    assert (
+        runner.search_synthesis_admission.discovery_tool_name("lean_incremental_check", args)
+        is None
+    )
+
+
+def test_search_synthesis_preflight_blocks_incremental_inspection(monkeypatch, tmp_path):
+    """Reject inspection-only helper wrappers at an active synthesis boundary."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_cycle": 7,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "hard_route_requested": True,
+                    "synthesis_grace_pending": True,
+                    "synthesis_boundary_cycle": 7,
+                },
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    agent = _Agent()
+
+    blocked = runner._managed_pre_tool_call(
+        agent,
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": (
+                "#print Nat.add_comm\n" "private lemma inspect_add : True := by\n" "  trivial"
+            ),
+        },
+    )
+
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["status"] == "search_synthesis_required"
+    assert payload["blocked_tool"] == "lean_incremental_check"
+    assert payload["discovery_kind"] == "lean_incremental_check:inspection"
+    assert payload["provider_called"] is False
+
+
 def test_search_synthesis_reservation_bounds_construction_source_inspection(monkeypatch, tmp_path):
     """Yield when a construction turn only rereads source without a proof action."""
     active = tmp_path / "Main.lean"

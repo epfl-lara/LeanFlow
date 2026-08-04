@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+LEAN_INCREMENTAL_INSPECTION_TOOL_NAME = "lean_incremental_check:inspection"
 
 BROAD_SEARCH_TOOL_NAMES = frozenset(
     {"lean_search", "lean_auto_search", "web_search", "web_fetch", "web_download"}
@@ -20,9 +23,16 @@ SOURCE_INSPECTION_TOOL_NAMES = frozenset(
         "lean_outline",
         "lean_proof_context",
         "lean_sorries",
+        LEAN_INCREMENTAL_INSPECTION_TOOL_NAME,
     }
 )
 DISCOVERY_TOOL_NAMES = BROAD_SEARCH_TOOL_NAMES | SOURCE_INSPECTION_TOOL_NAMES
+
+_LEAN_INSPECTION_COMMAND = re.compile(r"(?m)^\s*(?:#(?:check|print|eval|reduce)\b|run_cmd\b)")
+_LEAN_DECLARATION_START = re.compile(
+    r"(?m)^\s*(?:private\s+)?(?:theorem|lemma|example|def|abbrev)\b(?P<header>[^\n]*)"
+)
+_TRIVIAL_TRUE_DECLARATION = re.compile(r":\s*True\s*(?::=|where|$)")
 
 
 @dataclass(frozen=True)
@@ -33,6 +43,43 @@ class SourceInspectionDecision:
     same_request_streak: int = 0
     nudge: bool = False
     close_turn: bool = False
+
+
+def is_inspection_only_incremental_check(
+    function_name: str,
+    args: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether a helper check is only browsing the Lean environment.
+
+    Models sometimes wrap ``#check``, ``#print``, or ``run_cmd`` commands in a
+    dummy ``True`` lemma so ``check_helper`` accepts the request. Such calls do
+    not construct a reusable helper and must consume the bounded discovery
+    window instead of resetting it as kernel-verified proof progress.
+    """
+    if function_name != "lean_incremental_check":
+        return False
+    arguments = dict(args or {})
+    if str(arguments.get("action", "") or "").strip().lower() != "check_helper":
+        return False
+    replacement = str(arguments.get("replacement", "") or "")
+    if not replacement or not _LEAN_INSPECTION_COMMAND.search(replacement):
+        return False
+    declarations = list(_LEAN_DECLARATION_START.finditer(replacement))
+    return not declarations or all(
+        _TRIVIAL_TRUE_DECLARATION.search(match.group("header") or "") for match in declarations
+    )
+
+
+def discovery_tool_name(
+    function_name: str,
+    args: Mapping[str, Any] | None,
+) -> str | None:
+    """Return the discovery accounting name for one managed tool request."""
+    if function_name in DISCOVERY_TOOL_NAMES:
+        return function_name
+    if is_inspection_only_incremental_check(function_name, args):
+        return LEAN_INCREMENTAL_INSPECTION_TOOL_NAME
+    return None
 
 
 def blocked_search_result(
@@ -136,6 +183,10 @@ def request_description(
             )
             if not part.endswith("=")
         )
+    if function_name == LEAN_INCREMENTAL_INSPECTION_TOOL_NAME:
+        replacement = str(arguments.get("replacement", "") or "")
+        normalized = " ".join(replacement.split())
+        return normalized[:1000]
     return ""
 
 
@@ -161,6 +212,13 @@ def source_inspection_fingerprint(
                 str(arguments.get("path", "") or "").strip(),
                 str(arguments.get("offset", "") or "").strip(),
                 str(arguments.get("limit", "") or "").strip(),
+            )
+        )
+    elif function_name == LEAN_INCREMENTAL_INSPECTION_TOOL_NAME:
+        material = "|".join(
+            (
+                function_name,
+                " ".join(str(arguments.get("replacement", "") or "").split()),
             )
         )
     else:
