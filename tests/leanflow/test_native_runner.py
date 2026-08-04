@@ -31698,6 +31698,32 @@ def test_prepare_managed_turn_propagates_campaign_root_provider_gate(monkeypatch
     assert state["campaign_root_provider_blocked"] is True
 
 
+def test_prepare_managed_turn_refreshes_search_correction_budget():
+    """Give every fresh prover conversation one chance to obey a durable fence."""
+    state = {
+        "search_progress": {
+            "target_symbol": "demo",
+            "active_file": "/tmp/Main.lean",
+            "search_count": 12,
+            "hard_route_requested": True,
+            "synthesis_grace_pending": True,
+            "synthesis_rejection_count": 2,
+            "construction_source_inspection_boundary": True,
+            "construction_synthesis_rejection_count": 2,
+        }
+    }
+
+    runner._prepare_managed_turn_state(_ManagedRunAgentStub(), state)
+
+    tracker = state["search_progress"]
+    assert tracker["search_count"] == 12
+    assert tracker["hard_route_requested"] is True
+    assert tracker["synthesis_grace_pending"] is True
+    assert tracker["construction_source_inspection_boundary"] is True
+    assert tracker["synthesis_rejection_count"] == 0
+    assert tracker["construction_synthesis_rejection_count"] == 0
+
+
 def test_failed_attempt_feedback_prints_the_persisted_fallback_reason(
     tmp_path, monkeypatch, capsys
 ):

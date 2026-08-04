@@ -4289,6 +4289,14 @@ def _prepare_managed_turn_state(agent: Any, autonomy_state: dict[str, Any]) -> N
     agent._managed_pending_theorem_feedback = None
     agent._managed_step_boundary_recorded_attempt = False
     agent._managed_step_boundary_closed = False
+    search_progress = autonomy_state.get("search_progress")
+    if isinstance(search_progress, dict):
+        # Search and source debt are assignment-durable, but the small
+        # correction allowance belongs to one provider conversation. Without
+        # this reset, a fresh route can be terminated by its first mistaken
+        # inspection request before the model sees the deterministic fence.
+        search_progress["synthesis_rejection_count"] = 0
+        search_progress["construction_synthesis_rejection_count"] = 0
     autonomy_state.pop(_FINAL_REPORT_FAILURE_CHECK_KEY, None)
     with contextlib.suppress(Exception):
         delattr(agent, _EXACT_CHECK_SOURCE_SNAPSHOT_ATTR)
