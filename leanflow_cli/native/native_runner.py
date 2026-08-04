@@ -7620,6 +7620,53 @@ def _construction_turn_debt_pre_tool_guard(
     )
 
 
+ROLLBACK_REFRESH_READ_STATE_KEY = "rollback_refresh_read_required"
+
+
+def _remember_rollback_refresh_read(
+    autonomy_state: dict[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+) -> None:
+    """Reserve one exact source reread after a rejected edit is restored."""
+    autonomy_state[ROLLBACK_REFRESH_READ_STATE_KEY] = {
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "source_revision_sha256": source_revision_sha256,
+    }
+
+
+def _rollback_refresh_read_matches(
+    autonomy_state: Mapping[str, Any],
+    function_name: str,
+    args: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether this read satisfies the manager's rollback refresh requirement."""
+    if function_name != "read_file":
+        return False
+    pending = dict(autonomy_state.get(ROLLBACK_REFRESH_READ_STATE_KEY) or {})
+    if not pending:
+        return False
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or target_symbol != str(pending.get("target_symbol", "") or "").strip()
+        or not _same_active_file(active_file, str(pending.get("active_file", "") or ""))
+        or _source_revision_sha256(active_file)
+        != str(pending.get("source_revision_sha256", "") or "")
+    ):
+        return False
+    requested_file = str(
+        dict(args or {}).get("path", "") or dict(args or {}).get("file_path", "") or ""
+    ).strip()
+    return bool(requested_file and _same_active_file(requested_file, active_file))
+
+
 def _advisor_circuit_handoff_block(
     live_state: Mapping[str, Any],
     autonomy_state: Mapping[str, Any] | None,
@@ -10005,22 +10052,44 @@ def _managed_pre_tool_call(
         )
         if rejected_candidate_guard:
             return rejected_candidate_guard
-        construction_turn_guard = _construction_turn_debt_pre_tool_guard(
-            agent,
+        rollback_refresh_read = _rollback_refresh_read_matches(
+            autonomy_state,
             function_name,
             args,
-            autonomy_state,
         )
-        if construction_turn_guard:
-            return construction_turn_guard
-        search_synthesis_guard = _search_synthesis_pre_tool_guard(
-            agent,
-            function_name,
-            args,
-            autonomy_state,
-        )
-        if search_synthesis_guard:
-            return search_synthesis_guard
+        if not rollback_refresh_read:
+            construction_turn_guard = _construction_turn_debt_pre_tool_guard(
+                agent,
+                function_name,
+                args,
+                autonomy_state,
+            )
+            if construction_turn_guard:
+                return construction_turn_guard
+            search_synthesis_guard = _search_synthesis_pre_tool_guard(
+                agent,
+                function_name,
+                args,
+                autonomy_state,
+            )
+            if search_synthesis_guard:
+                return search_synthesis_guard
+        else:
+            with contextlib.suppress(Exception):
+                _record_agent_activity(
+                    agent,
+                    "rollback-refresh-read-admitted",
+                    "Admitted the manager-required source reread after exact rollback",
+                    target_symbol=str(
+                        dict(autonomy_state.get("current_queue_assignment") or {}).get(
+                            "target_symbol", ""
+                        )
+                        or ""
+                    ),
+                    active_file=str(dict(args or {}).get("path", "") or ""),
+                    blocked_by_construction_budget=False,
+                    campaign_progress=False,
+                )
         banked_inspection = banked_helper_inspection.reused_lean_inspection(
             agent,
             function_name,
@@ -12474,6 +12543,13 @@ def _finish_queue_step_boundary(
         failed_edit_restored = bool(manager_check.get("failed_edit_restored"))
         if failed_edit_restored:
             restored_revision = _source_revision_sha256(pending_file)
+            if isinstance(autonomy_state, dict):
+                _remember_rollback_refresh_read(
+                    autonomy_state,
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                    source_revision_sha256=restored_revision,
+                )
             rejected_feedback = manager_feedback_reason
             manager_check.update(
                 {
@@ -13653,6 +13729,23 @@ def _handle_managed_tool_result(
     exact_check_source_snapshot = _take_exact_check_source_snapshot(agent, function_name)
     _sync_disabled_tools_from_result(agent, function_name, _result)
     autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+    rollback_refresh_read_completed = bool(
+        isinstance(autonomy_state, dict)
+        and _rollback_refresh_read_matches(autonomy_state, function_name, args)
+        and _managed_tool_result_succeeded(_result)
+    )
+    if rollback_refresh_read_completed and isinstance(autonomy_state, dict):
+        autonomy_state.pop(ROLLBACK_REFRESH_READ_STATE_KEY, None)
+        with contextlib.suppress(Exception):
+            assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+            _record_agent_activity(
+                agent,
+                "rollback-refresh-read-completed",
+                "Completed the manager-required source reread after exact rollback",
+                target_symbol=str(assignment.get("target_symbol", "") or ""),
+                active_file=str(assignment.get("active_file", "") or ""),
+                campaign_progress=False,
+            )
     if _workflow_kind() == "prove" and isinstance(autonomy_state, dict):
         result_status = str(_json_tool_result_payload(_result).get("status", "") or "")
         construction_attempted = search_synthesis_admission.construction_attempt_request(
@@ -13923,7 +14016,12 @@ def _handle_managed_tool_result(
         return
     discovery_name = search_synthesis_admission.discovery_tool_name(function_name, args)
     if discovery_name is not None:
-        if _track_search_progress(agent, discovery_name, args, _result):
+        if not rollback_refresh_read_completed and _track_search_progress(
+            agent,
+            discovery_name,
+            args,
+            _result,
+        ):
             return
     else:
         _note_non_search_tool_progress(

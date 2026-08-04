@@ -259,6 +259,11 @@ def test_restored_edit_feedback_names_discarded_after_image(monkeypatch):
     assert review["feedback_describes_rejected_after_image"] is True
     assert "discarded after-image" in agent._post_tool_result_appendix
     assert "re-read the complete edited region" in agent._post_tool_result_appendix
+    assert autonomy_state[runner.ROLLBACK_REFRESH_READ_STATE_KEY] == {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+        "source_revision_sha256": "restored-sha",
+    }
     assert any(event[0] == "manager-restored-source-reused" for event, _ in events)
 
 
