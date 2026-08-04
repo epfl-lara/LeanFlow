@@ -47,3 +47,31 @@ def test_source_inspection_observation_resets_per_cycle_and_bounds_repeats():
     assert refreshed.close_turn is False
     assert refreshed.count == 1
     assert tracker["construction_source_inspection_cycle"] == 5
+
+
+def test_construction_source_boundary_blocks_only_its_cycle():
+    """Keep an exhausted source window closed until orchestration advances."""
+    tracker = {
+        "construction_source_inspection_cycle": 4,
+        "construction_source_inspection_count": 12,
+        "construction_source_inspection_boundary": True,
+    }
+
+    blocked = search_synthesis_admission.blocked_construction_source_result(
+        function_name="read_file",
+        tracker=tracker,
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        current_cycle=4,
+    )
+    refreshed = search_synthesis_admission.blocked_construction_source_result(
+        function_name="read_file",
+        tracker=tracker,
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        current_cycle=5,
+    )
+
+    assert blocked is not None
+    assert blocked["status"] == "construction_synthesis_required"
+    assert refreshed is None

@@ -143,6 +143,52 @@ def blocked_search_result(
     }
 
 
+def blocked_construction_source_result(
+    *,
+    function_name: str,
+    tracker: Mapping[str, Any],
+    target_symbol: str,
+    active_file: str,
+    current_cycle: int,
+) -> dict[str, object] | None:
+    """Reject source inspection after one construction window is exhausted.
+
+    The threshold-producing read must return to the model so it can synthesize
+    from that result. Only later inspection requests in the same orchestration
+    cycle are rejected; constructive checks and edits remain available.
+    """
+    if function_name not in SOURCE_INSPECTION_TOOL_NAMES:
+        return None
+    if not bool(tracker.get("construction_source_inspection_boundary")):
+        return None
+    stored_cycle = tracker.get("construction_source_inspection_cycle")
+    if stored_cycle is None or int(stored_cycle) != int(current_cycle):
+        return None
+    return {
+        "success": False,
+        "status": "construction_synthesis_required",
+        "blocked_tool": function_name,
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "source_inspection_count": int(tracker.get("construction_source_inspection_count", 0) or 0),
+        "provider_called": False,
+        "required_action": (
+            "Use the source declarations already returned to make or check a concrete "
+            "proof edit. Further source inspection is reserved until orchestration advances."
+        ),
+        "allowed_actions": [
+            "make a proof edit",
+            "check a concrete Lean candidate",
+            "decompose the target into explicit helper lemmas",
+            "respond without a tool call with the concrete construction",
+        ],
+        "reason": (
+            "This construction cycle already received its bounded local source window. "
+            "The threshold read completed successfully and must now be synthesized."
+        ),
+    }
+
+
 def request_description(
     function_name: str,
     args: Mapping[str, Any] | None,
@@ -244,6 +290,8 @@ def observe_source_inspection(
         updated["construction_source_inspection_same_request_streak"] = 0
         updated.pop("construction_source_inspection_last_fingerprint", None)
         updated.pop("construction_source_inspection_nudged", None)
+        updated.pop("construction_source_inspection_boundary", None)
+        updated.pop("construction_synthesis_rejection_count", None)
     fingerprint = source_inspection_fingerprint(function_name, args)
     same_request_streak = (
         int(updated.get("construction_source_inspection_same_request_streak", 0) or 0) + 1

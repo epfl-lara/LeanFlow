@@ -7412,6 +7412,48 @@ def _search_synthesis_pre_tool_guard(
     discovery_name = search_synthesis_admission.discovery_tool_name(function_name, args)
     if discovery_name is None:
         return None
+    construction_payload = search_synthesis_admission.blocked_construction_source_result(
+        function_name=discovery_name,
+        tracker=tracker,
+        target_symbol=target_symbol,
+        active_file=active_file,
+        current_cycle=int(autonomy_state.get("current_cycle", 0) or 0),
+    )
+    if construction_payload is not None:
+        rejection_limit = _search_synthesis_rejection_limit()
+        rejection_count = min(
+            rejection_limit,
+            int(tracker.get("construction_synthesis_rejection_count", 0) or 0) + 1,
+        )
+        tracker["construction_synthesis_rejection_count"] = rejection_count
+        autonomy_state["search_progress"] = tracker
+        construction_payload["blocked_tool"] = function_name
+        if discovery_name != function_name:
+            construction_payload["discovery_kind"] = discovery_name
+        construction_payload["construction_synthesis_rejection_count"] = rejection_count
+        construction_payload["construction_synthesis_rejection_limit"] = rejection_limit
+        if rejection_count >= rejection_limit:
+            construction_payload["required_action"] = (
+                "The bounded construction correction window is exhausted. Preserve the "
+                "source evidence and yield so the outer orchestrator can change routes."
+            )
+        with contextlib.suppress(Exception):
+            _record_agent_activity(
+                agent,
+                "construction-source-tool-blocked",
+                f"Blocked {function_name} after {target_symbol} exhausted local source inspection",
+                target_symbol=target_symbol,
+                active_file=active_file,
+                blocked_tool=function_name,
+                construction_source_inspection_count=int(
+                    tracker.get("construction_source_inspection_count", 0) or 0
+                ),
+                construction_synthesis_rejection_count=rejection_count,
+                construction_synthesis_rejection_limit=rejection_limit,
+                provider_called=False,
+                campaign_progress=False,
+            )
+        return json.dumps(construction_payload, ensure_ascii=False)
     payload = search_synthesis_admission.blocked_search_result(
         function_name=discovery_name,
         tracker=tracker,
@@ -7678,6 +7720,64 @@ def _track_search_progress(
         str(payload.get("status", "") or "") == "search_synthesis_required"
         and payload.get("provider_called") is False
     )
+    construction_rejected = (
+        str(payload.get("status", "") or "") == "construction_synthesis_required"
+        and payload.get("provider_called") is False
+    )
+    if construction_rejected:
+        rejection_count = int(tracker.get("construction_synthesis_rejection_count", 0) or 0)
+        rejection_limit = _search_synthesis_rejection_limit()
+        autonomy_state["search_progress"] = tracker
+        if rejection_count < rejection_limit:
+            _record_agent_activity(
+                agent,
+                "construction-synthesis-debt-enforced",
+                f"Kept {target_symbol} in construction mode after blocking another source read",
+                target_symbol=target_symbol,
+                active_file=active_file,
+                blocked_tool=function_name,
+                construction_source_inspection_count=int(
+                    tracker.get("construction_source_inspection_count", 0) or 0
+                ),
+                construction_synthesis_rejection_count=rejection_count,
+                construction_synthesis_rejection_limit=rejection_limit,
+                provider_called=False,
+                campaign_progress=False,
+            )
+            return False
+        route = "plan"
+        _set_prover_requested_route(
+            autonomy_state,
+            route=route,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        _record_agent_activity(
+            agent,
+            "construction-synthesis-rejection-boundary",
+            f"Repeated source requests for {target_symbol} exhausted the construction correction window",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            construction_source_inspection_count=int(
+                tracker.get("construction_source_inspection_count", 0) or 0
+            ),
+            construction_synthesis_rejection_count=rejection_count,
+            construction_synthesis_rejection_limit=rejection_limit,
+            provider_called=False,
+            route=route,
+            campaign_progress=False,
+        )
+        with contextlib.suppress(Exception):
+            agent._managed_pending_theorem_feedback = None
+            agent._managed_step_boundary_closed = True
+        if not bool(getattr(agent, "quiet_mode", False)):
+            print(
+                f"\n↻ {target_symbol} repeated source inspection after its construction "
+                "window; yielding to a distinct route."
+            )
+        _request_step_boundary_interrupt(agent)
+        return True
     if bool(tracker.get("synthesis_grace_pending")) and preflight_rejected:
         tracker["synthesis_grace_pending"] = True
         autonomy_state["search_progress"] = tracker
@@ -7758,13 +7858,6 @@ def _track_search_progress(
             campaign_progress=False,
         )
         if inspection.close_turn:
-            route = "plan"
-            _set_prover_requested_route(
-                autonomy_state,
-                route=route,
-                target_symbol=target_symbol,
-                active_file=active_file,
-            )
             _append_post_tool_result_message(
                 agent,
                 "\n".join(
@@ -7775,30 +7868,26 @@ def _track_search_progress(
                             f"- observed: {inspection.count} local source reads/searches "
                             "without a successful proof edit or check"
                         ),
-                        "- stop rereading source and yield a concrete construction summary now",
-                        "- preserve exact declarations, dead branches, and the next proposed helper/edit",
-                        "- the outer orchestrator will continue the theorem on a refreshed route",
+                        "- this threshold-producing read completed and is available now",
+                        "- further source inspection is fenced for this construction cycle",
+                        "- use the declarations already read to make or check a concrete proof edit",
+                        "- proof edits, helper decomposition, and LeanProbe checks remain available",
                     ]
                 ),
             )
             _record_agent_activity(
                 agent,
                 "construction-source-inspection-boundary",
-                f"Construction source-only turn for {target_symbol} reached its bounded window",
+                f"Construction source window for {target_symbol} now requires synthesis",
                 target_symbol=target_symbol,
                 active_file=active_file,
-                route=route,
                 construction_source_inspection_count=inspection.count,
                 same_request_streak=inspection.same_request_streak,
                 hard_limit=hard_limit,
                 repeat_hard_limit=repeat_hard_limit,
                 campaign_progress=False,
             )
-            with contextlib.suppress(Exception):
-                agent._managed_pending_theorem_feedback = None
-                agent._managed_step_boundary_closed = True
-            _request_step_boundary_interrupt(agent)
-            return True
+            return False
         if inspection.nudge:
             _append_post_tool_result_message(
                 agent,

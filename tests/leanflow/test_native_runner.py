@@ -8269,8 +8269,9 @@ def test_inspection_only_helper_checks_enter_construction_source_budget(monkeypa
     tracker = agent._managed_autonomy_state["search_progress"]
     assert tracker["construction_source_inspection_count"] == 3
     assert tracker["search_count"] == 12
-    assert agent._managed_step_boundary_closed is True
-    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert tracker["construction_source_inspection_boundary"] is True
+    assert not bool(getattr(agent, "_managed_step_boundary_closed", False))
+    assert agent.interrupt_messages == []
 
 
 def test_real_incremental_helper_is_not_classified_as_inspection():
@@ -8341,7 +8342,7 @@ def test_search_synthesis_preflight_blocks_incremental_inspection(monkeypatch, t
 
 
 def test_search_synthesis_reservation_bounds_construction_source_inspection(monkeypatch, tmp_path):
-    """Yield when a construction turn only rereads source without a proof action."""
+    """Reserve a correction response before yielding a source-only construction turn."""
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
     events: list[tuple[tuple, dict]] = []
@@ -8389,10 +8390,47 @@ def test_search_synthesis_reservation_bounds_construction_source_inspection(monk
 
     tracker = agent._managed_autonomy_state["search_progress"]
     assert tracker["construction_source_inspection_count"] == 3
+    assert tracker["construction_source_inspection_boundary"] is True
+    assert "prover_requested_route" not in agent._managed_autonomy_state
+    assert not bool(getattr(agent, "_managed_step_boundary_closed", False))
+    assert agent.interrupt_messages == []
+    assert any(event[0][0] == "construction-source-inspection-boundary" for event in events)
+
+    blocked = runner._managed_pre_tool_call(
+        agent,
+        "read_file",
+        {"path": str(active), "offset": 1, "limit": 40},
+    )
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["status"] == "construction_synthesis_required"
+    assert payload["provider_called"] is False
+    assert tracker["construction_source_inspection_count"] == 3
+
+    runner._handle_managed_tool_result(
+        agent,
+        "read_file",
+        {"path": str(active), "offset": 1, "limit": 40},
+        blocked,
+    )
+    assert not bool(getattr(agent, "_managed_step_boundary_closed", False))
+    assert agent.interrupt_messages == []
+
+    blocked_again = runner._managed_pre_tool_call(
+        agent,
+        "lean_outline",
+        {"file_path": str(active), "symbol": "demo"},
+    )
+    assert blocked_again is not None
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_outline",
+        {"file_path": str(active), "symbol": "demo"},
+        blocked_again,
+    )
     assert agent._managed_autonomy_state["prover_requested_route"]["route"] == "plan"
     assert agent._managed_step_boundary_closed is True
     assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
-    assert any(event[0][0] == "construction-source-inspection-boundary" for event in events)
 
 
 def test_construction_source_inspection_budget_resets_for_new_cycle(monkeypatch, tmp_path):
