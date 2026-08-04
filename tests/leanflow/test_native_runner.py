@@ -8047,6 +8047,94 @@ def test_search_synthesis_reservation_allows_source_inspection(
     assert tracker["used_tools"] == {function_name: 1}
 
 
+@pytest.mark.parametrize(
+    "function_name,args",
+    [
+        ("lean_outline", {"symbol": "demo"}),
+        ("lean_inspect", {"target": "demo"}),
+        ("lean_proof_context", {"theorem_id": "demo"}),
+        ("search_files", {"path": "/tmp/Main.lean", "pattern": "demo"}),
+    ],
+)
+def test_search_synthesis_reservation_blocks_same_cycle_inspection(
+    monkeypatch, tmp_path, function_name, args
+):
+    """Honor the promised no-tool synthesis turn before more inspection."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_cycle": 7,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "hard_route_requested": True,
+                    "synthesis_grace_pending": True,
+                    "synthesis_boundary_cycle": 7,
+                },
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    agent = _Agent()
+
+    blocked = runner._managed_pre_tool_call(agent, function_name, args)
+
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["status"] == "search_synthesis_required"
+    assert payload["blocked_tool"] == function_name
+    assert payload["provider_called"] is False
+
+
+def test_lean_inspection_calls_enter_search_budget(monkeypatch, tmp_path):
+    """Count Lean-native read-only inspection toward the discovery boundary."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_cycle": 4,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 3)
+    agent = _Agent()
+
+    for function_name in ("lean_outline", "lean_inspect", "lean_proof_context"):
+        runner._handle_managed_tool_result(
+            agent,
+            function_name,
+            {"symbol": "demo"},
+            json.dumps({"success": True}),
+        )
+
+    tracker = agent._managed_autonomy_state["search_progress"]
+    assert tracker["search_count"] == 3
+    assert tracker["synthesis_grace_pending"] is True
+    assert tracker["synthesis_boundary_cycle"] == 4
+
+
 def test_search_synthesis_reservation_bounds_construction_source_inspection(monkeypatch, tmp_path):
     """Yield when a construction turn only rereads source without a proof action."""
     active = tmp_path / "Main.lean"

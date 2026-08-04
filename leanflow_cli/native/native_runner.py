@@ -317,7 +317,7 @@ SEARCH_SYNTHESIS_REJECTION_LIMIT_DEFAULT = 2
 # Construction workers may inspect exact local declarations after broad-search
 # synthesis is reserved, but rereading source indefinitely is still a stalled
 # route. Bound each orchestration cycle while leaving a generous context window.
-CONSTRUCTION_SOURCE_INSPECTION_HARD_LIMIT_DEFAULT = 12
+CONSTRUCTION_SOURCE_INSPECTION_HARD_LIMIT_DEFAULT = 6
 CONSTRUCTION_SOURCE_INSPECTION_REPEAT_HARD_LIMIT_DEFAULT = 4
 SEARCH_PROGRESS_TOOL_NAMES = search_synthesis_admission.DISCOVERY_TOOL_NAMES
 # The foreground conversation executes in a worker thread so the native
@@ -7323,6 +7323,7 @@ def _search_synthesis_pre_tool_guard(
         tracker=tracker,
         target_symbol=target_symbol,
         active_file=active_file,
+        current_cycle=int(autonomy_state.get("current_cycle", 0) or 0),
     )
     if payload is None:
         return None
@@ -7332,7 +7333,10 @@ def _search_synthesis_pre_tool_guard(
     # same durable-debt path below.
     tracker["synthesis_grace_pending"] = True
     rejection_limit = _search_synthesis_rejection_limit()
-    rejection_count = int(tracker.get("synthesis_rejection_count", 0) or 0) + 1
+    rejection_count = min(
+        rejection_limit,
+        int(tracker.get("synthesis_rejection_count", 0) or 0) + 1,
+    )
     tracker["synthesis_rejection_count"] = rejection_count
     autonomy_state["search_progress"] = tracker
     payload["synthesis_rejection_count"] = rejection_count
@@ -7573,7 +7577,59 @@ def _track_search_progress(
             "unique_queries": [],
             "used_tools": {},
         }
-    elif function_name in search_synthesis_admission.SOURCE_INSPECTION_TOOL_NAMES and (
+    preflight_rejected = (
+        str(payload.get("status", "") or "") == "search_synthesis_required"
+        and payload.get("provider_called") is False
+    )
+    if bool(tracker.get("synthesis_grace_pending")) and preflight_rejected:
+        tracker["synthesis_grace_pending"] = True
+        autonomy_state["search_progress"] = tracker
+        rejection_count = int(tracker.get("synthesis_rejection_count", 0) or 0)
+        rejection_limit = _search_synthesis_rejection_limit()
+        if rejection_count >= rejection_limit:
+            _record_agent_activity(
+                agent,
+                "search-synthesis-rejection-boundary",
+                (
+                    f"Repeated blocked searches for {target_symbol} exhausted "
+                    "the synthesis correction window"
+                ),
+                target_symbol=target_symbol,
+                active_file=active_file,
+                blocked_tool=function_name,
+                search_count=int(tracker.get("search_count", 0) or 0),
+                synthesis_rejection_count=rejection_count,
+                synthesis_rejection_limit=rejection_limit,
+                provider_called=False,
+                route=str(tracker.get("hard_route", "") or "plan"),
+                campaign_progress=False,
+            )
+            with contextlib.suppress(Exception):
+                agent._managed_pending_theorem_feedback = None
+                agent._managed_step_boundary_closed = True
+            if not bool(getattr(agent, "quiet_mode", False)):
+                print(
+                    f"\n↻ {target_symbol} repeated a blocked search "
+                    f"{rejection_count} times; yielding to the preserved "
+                    "construction route."
+                )
+            _request_step_boundary_interrupt(agent)
+            return True
+        _record_agent_activity(
+            agent,
+            "search-synthesis-debt-enforced",
+            f"Kept {target_symbol} in construction mode after blocking another search",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            search_count=int(tracker.get("search_count", 0) or 0),
+            synthesis_rejection_count=rejection_count,
+            synthesis_rejection_limit=rejection_limit,
+            provider_called=False,
+            campaign_progress=False,
+        )
+        return False
+    if function_name in search_synthesis_admission.SOURCE_INSPECTION_TOOL_NAMES and (
         bool(tracker.get("synthesis_grace_pending")) or bool(tracker.get("hard_route_requested"))
     ):
         # A construction route still needs exact local source context. Keep the
@@ -7666,58 +7722,6 @@ def _track_search_progress(
         # preflight-rejected search keeps that debt active and returns control
         # to the same worker; closing the turn here would let orchestration
         # grant the unchanged theorem another full search window.
-        preflight_rejected = (
-            str(payload.get("status", "") or "") == "search_synthesis_required"
-            and payload.get("provider_called") is False
-        )
-        if preflight_rejected:
-            tracker["synthesis_grace_pending"] = True
-            autonomy_state["search_progress"] = tracker
-            rejection_count = int(tracker.get("synthesis_rejection_count", 0) or 0)
-            rejection_limit = _search_synthesis_rejection_limit()
-            if rejection_count >= rejection_limit:
-                _record_agent_activity(
-                    agent,
-                    "search-synthesis-rejection-boundary",
-                    (
-                        f"Repeated blocked searches for {target_symbol} exhausted "
-                        "the synthesis correction window"
-                    ),
-                    target_symbol=target_symbol,
-                    active_file=active_file,
-                    blocked_tool=function_name,
-                    search_count=int(tracker.get("search_count", 0) or 0),
-                    synthesis_rejection_count=rejection_count,
-                    synthesis_rejection_limit=rejection_limit,
-                    provider_called=False,
-                    route=str(tracker.get("hard_route", "") or "plan"),
-                    campaign_progress=False,
-                )
-                with contextlib.suppress(Exception):
-                    agent._managed_pending_theorem_feedback = None
-                    agent._managed_step_boundary_closed = True
-                if not bool(getattr(agent, "quiet_mode", False)):
-                    print(
-                        f"\n↻ {target_symbol} repeated a blocked search "
-                        f"{rejection_count} times; yielding to the preserved "
-                        "construction route."
-                    )
-                _request_step_boundary_interrupt(agent)
-                return True
-            _record_agent_activity(
-                agent,
-                "search-synthesis-debt-enforced",
-                f"Kept {target_symbol} in construction mode after blocking another search",
-                target_symbol=target_symbol,
-                active_file=active_file,
-                blocked_tool=function_name,
-                search_count=int(tracker.get("search_count", 0) or 0),
-                synthesis_rejection_count=rejection_count,
-                synthesis_rejection_limit=rejection_limit,
-                provider_called=False,
-                campaign_progress=False,
-            )
-            return False
         # A search result that bypassed preflight (for example from a legacy
         # delegated lane) still closes the inner turn fail-safe.
         tracker["synthesis_grace_pending"] = False
@@ -7773,6 +7777,7 @@ def _track_search_progress(
         tracker["hard_route_requested"] = True
         tracker["hard_route"] = route
         tracker["synthesis_grace_pending"] = True
+        tracker["synthesis_boundary_cycle"] = int(autonomy_state.get("current_cycle", 0) or 0)
         tracker["synthesis_rejection_count"] = 0
         autonomy_state["search_progress"] = tracker
         _set_prover_requested_route(

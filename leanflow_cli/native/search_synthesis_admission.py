@@ -10,7 +10,18 @@ from typing import Any
 BROAD_SEARCH_TOOL_NAMES = frozenset(
     {"lean_search", "lean_auto_search", "web_search", "web_fetch", "web_download"}
 )
-SOURCE_INSPECTION_TOOL_NAMES = frozenset({"read_file", "search_files"})
+SOURCE_INSPECTION_TOOL_NAMES = frozenset(
+    {
+        "read_file",
+        "search_files",
+        "lean_capabilities",
+        "lean_inspect",
+        "lean_lemma_suggest",
+        "lean_outline",
+        "lean_proof_context",
+        "lean_sorries",
+    }
+)
 DISCOVERY_TOOL_NAMES = BROAD_SEARCH_TOOL_NAMES | SOURCE_INSPECTION_TOOL_NAMES
 
 
@@ -30,15 +41,16 @@ def blocked_search_result(
     tracker: Mapping[str, Any],
     target_symbol: str,
     active_file: str,
+    current_cycle: int | None = None,
 ) -> dict[str, object] | None:
-    """Return a deterministic preflight rejection for a forbidden broad search.
+    """Return a deterministic preflight rejection for forbidden discovery.
 
     The reservation belongs to one exact queue assignment. Constructive tools
-    and local source inspection remain available so the prover can turn
-    preserved evidence into a checked candidate instead of being forced to
-    discard useful momentum.
+    remain available so the prover can turn preserved evidence into a checked
+    candidate. Exact source inspection becomes available again only after the
+    outer orchestrator advances to a fresh construction cycle.
     """
-    if function_name not in BROAD_SEARCH_TOOL_NAMES:
+    if function_name not in DISCOVERY_TOOL_NAMES:
         return None
     if not (
         bool(tracker.get("synthesis_grace_pending")) or bool(tracker.get("hard_route_requested"))
@@ -48,6 +60,14 @@ def blocked_search_result(
         str(tracker.get("target_symbol", "") or "") != target_symbol
         or str(tracker.get("active_file", "") or "") != active_file
     ):
+        return None
+    boundary_cycle = tracker.get("synthesis_boundary_cycle")
+    same_cycle = (
+        current_cycle is not None
+        and boundary_cycle is not None
+        and int(boundary_cycle) == int(current_cycle)
+    )
+    if function_name in SOURCE_INSPECTION_TOOL_NAMES and not same_cycle:
         return None
     search_count = int(tracker.get("search_count", 0) or 0)
     return {
