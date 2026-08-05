@@ -617,7 +617,9 @@ def _run_isolated_expert_command(
     )
     active = _ActiveExpertCommand(process=process, process_token=process_token)
     _register_active_expert_command(active, launch_generation=launch_generation)
-    deadline = time.monotonic() + max(1, int(timeout or 0))
+    effective_timeout_s = max(1, int(timeout or 0))
+    started = time.monotonic()
+    deadline = started + effective_timeout_s
     communicate_input: str | None = input
     partial_stdout = ""
     partial_stderr = ""
@@ -653,6 +655,14 @@ def _run_isolated_expert_command(
                 if now >= next_heartbeat_at:
                     with contextlib.suppress(Exception):
                         touch_workflow_runtime_heartbeat()
+                    record_expert_help_activity(
+                        "expert-help-heartbeat",
+                        "Expert help command remains active",
+                        mode="command",
+                        elapsed_s=round(max(0.0, now - started), 1),
+                        timeout_s=effective_timeout_s,
+                        partial_response_available=False,
+                    )
                     next_heartbeat_at = now + _EXPERT_HEARTBEAT_INTERVAL_S
                 continue
 

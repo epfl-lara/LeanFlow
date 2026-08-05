@@ -354,11 +354,17 @@ def test_advisor_timeout_terminates_spawned_grandchild(tmp_path):
 
 def test_long_advisor_refreshes_parent_workflow_heartbeat(monkeypatch, tmp_path):
     heartbeats = []
+    activities = []
     monkeypatch.setattr(expert_help, "_EXPERT_HEARTBEAT_INTERVAL_S", 0.05)
     monkeypatch.setattr(
         expert_help,
         "touch_workflow_runtime_heartbeat",
         lambda: heartbeats.append(time.monotonic()) or True,
+    )
+    monkeypatch.setattr(
+        expert_help,
+        "record_expert_help_activity",
+        lambda *args, **kwargs: activities.append((args, kwargs)),
     )
 
     result = expert_help._run_isolated_expert_command(
@@ -371,6 +377,13 @@ def test_long_advisor_refreshes_parent_workflow_heartbeat(monkeypatch, tmp_path)
     assert result.returncode == 0
     assert result.stdout.strip() == "done"
     assert heartbeats
+    assert activities
+    assert activities[0][0] == (
+        "expert-help-heartbeat",
+        "Expert help command remains active",
+    )
+    assert activities[0][1]["mode"] == "command"
+    assert activities[0][1]["partial_response_available"] is False
 
 
 @pytest.mark.parametrize("detached", [False, True])
