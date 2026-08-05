@@ -1720,8 +1720,9 @@ def test_profiled_check_helper_preserves_elaboration_diagnostics(
     assert payload["ok"] is False
     assert payload["failure_kind"] == "lean_elaboration"
     assert payload["error_code"] == "helper_elaboration_failed"
-    assert payload["error"] == diagnostics[:500]
+    assert payload["error"] == "unsolved goals"
     assert payload["output"] == diagnostics
+    assert {"severity": "error", "message": "unsolved goals"} in payload["messages"]
     assert payload["output_truncated"] is output_truncated
     assert payload["replacement_matches_target"] is False
     assert payload["replacement_mismatch_reason"] == ""
@@ -2326,6 +2327,7 @@ def test_failed_check_payload_keeps_late_error_before_earlier_warnings():
         "message": "actual blocker",
     }
     assert bounded["messages_truncated"]["total"] == 13
+    assert bounded["error"] == "actual blocker"
 
 
 def test_successful_check_keeps_complete_evidence():

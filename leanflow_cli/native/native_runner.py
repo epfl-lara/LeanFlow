@@ -4513,6 +4513,11 @@ def _manager_incremental_check_queue_item(active_file: str, target_symbol: str) 
     # cleanup-feedback helper silently returns "" for `lean_interact`-style
     # warnings and the per-theorem warning-cleanup opportunity never fires.
     structured_messages = list(result.get("messages") or [])
+    preview = (
+        _manager_file_verification_preview(output, structured_messages)
+        if not bool(result.get("ok", False))
+        else _single_line(output, 500)
+    )
     return {
         "ok": bool(result.get("ok", False)),
         "mode": "incremental_target",
@@ -4521,7 +4526,7 @@ def _manager_incremental_check_queue_item(active_file: str, target_symbol: str) 
             result.get("command", "lean_interact check_target") or "lean_interact check_target"
         ),
         "target": str(result.get("target", target) or target),
-        "output": _single_line(output, 500),
+        "output": preview,
         "messages": structured_messages,
         "incremental": result,
     }
@@ -9335,8 +9340,16 @@ def _direct_self_reference_source_patch_guard(
     args: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any],
 ) -> str | None:
-    """Reject a bare assigned-target self-reference before source mutation."""
-    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+    """Reject an immediate assigned-target cycle before mutation or Lean work."""
+    supported_edits = {"patch", "write_file", "apply_verified_patch"}
+    incremental_candidate = function_name == "lean_incremental_check"
+    if function_name not in supported_edits and not incremental_candidate:
+        return None
+    arguments = dict(args or {})
+    if incremental_candidate and str(arguments.get("action", "") or "").strip().lower() not in {
+        "check_target",
+        "feedback",
+    }:
         return None
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
@@ -9355,11 +9368,15 @@ def _direct_self_reference_source_patch_guard(
         before_text = Path(active_file).read_text(encoding="utf-8")
     except OSError:
         return None
-    candidate = _preview_managed_candidate_declaration(
-        function_name,
-        args,
-        before_text=before_text,
-        target_symbol=target_symbol,
+    candidate = (
+        str(arguments.get("replacement", "") or "").strip()
+        if incremental_candidate
+        else _preview_managed_candidate_declaration(
+            function_name,
+            args,
+            before_text=before_text,
+            target_symbol=target_symbol,
+        )
     )
     if not candidate or not direct_self_reference.is_direct_self_reference(
         candidate,
@@ -9369,7 +9386,7 @@ def _direct_self_reference_source_patch_guard(
     with contextlib.suppress(Exception):
         _record_agent_activity(
             agent,
-            "direct-self-reference-source-patch-blocked",
+            "direct-self-reference-candidate-blocked",
             f"Rejected bare self-reference candidate for {target_symbol}",
             target_symbol=target_symbol,
             active_file=active_file,
@@ -9390,9 +9407,9 @@ def _direct_self_reference_source_patch_guard(
             "provider_called": False,
             "lean_started": False,
             "required_action": (
-                "A theorem cannot be proved by a bare reference to itself. Construct a "
-                "different proof, isolate a helper, or use a genuinely recursive call with "
-                "a smaller argument."
+                "A theorem cannot be proved through an immediate circular reference. "
+                "Construct a different proof, isolate a helper, or use a genuinely "
+                "recursive call with a smaller argument."
             ),
         },
         ensure_ascii=False,

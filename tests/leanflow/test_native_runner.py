@@ -19238,6 +19238,35 @@ def test_manager_incremental_check_uses_configurable_timeout(monkeypatch, tmp_pa
     assert calls[0]["timeout_s"] == 180
 
 
+def test_manager_incremental_check_previews_errors_before_earlier_warnings(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    active = project / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(
+        runner,
+        "lean_incremental_check",
+        lambda **kwargs: {
+            "success": True,
+            "ok": False,
+            "backend": "lean_exact_ephemeral",
+            "command": "lake env lean candidate.lean",
+            "target": "demo",
+            "output": "warning: earlier warning\nerror: actual blocker",
+            "messages": [
+                {"severity": "warning", "message": "earlier warning", "line": 1},
+                {"severity": "error", "message": "actual blocker", "line": 2},
+            ],
+        },
+    )
+
+    result = runner._manager_incremental_check_queue_item(str(active), "demo")
+
+    assert result["ok"] is False
+    assert result["output"].startswith("error near line 2: actual blocker")
+
+
 def test_low_memory_manager_skips_incremental_cache(monkeypatch):
     verification = {"ok": True, "command": "lake env lean Main.lean"}
     monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "1")
@@ -32579,7 +32608,46 @@ def test_direct_self_reference_patch_is_rejected_before_mutation(tmp_path, monke
     assert payload["patch_applied"] is False
     assert payload["lean_started"] is False
     assert active.read_text(encoding="utf-8") == source
-    assert events[-1][0][1] == "direct-self-reference-source-patch-blocked"
+    assert events[-1][0][1] == "direct-self-reference-candidate-blocked"
+
+
+def test_direct_self_reference_incremental_candidate_is_rejected_before_lean(tmp_path, monkeypatch):
+    """Reject circular scratch candidates before spending an exact Lean check."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+
+    result = runner._direct_self_reference_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "lean_incremental_check",
+        {
+            "file_path": str(active),
+            "theorem_id": "demo",
+            "action": "check_target",
+            "replacement": "theorem demo : True := by\n  exact demo",
+        },
+        state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "direct_self_reference_rejected"
+    assert payload["lean_started"] is False
+    assert payload["blocked_tool"] == "lean_incremental_check"
+    assert events[-1][0][1] == "direct-self-reference-candidate-blocked"
 
 
 def test_rejected_verified_patch_reaches_failed_attempt_boundary(tmp_path, monkeypatch):

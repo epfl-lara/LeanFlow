@@ -414,8 +414,21 @@ def _canonical_output_messages(output: str) -> list[dict[str, Any]]:
         parsed = diagnostic_items(line)
         if parsed:
             messages.append(parsed[0])
-        else:
-            messages.append({"severity": "information", "message": line})
+            continue
+        bare = re.match(
+            r"^\s*(?P<severity>error|warning)(?:\([^)]*\))?:\s*(?P<message>.*)$",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if bare:
+            messages.append(
+                {
+                    "severity": bare.group("severity").lower(),
+                    "message": bare.group("message").strip(),
+                }
+            )
+            continue
+        messages.append({"severity": "information", "message": line})
     return messages
 
 
@@ -706,6 +719,19 @@ def _bound_failed_check_payload(result: dict[str, Any], max_chars: int) -> dict[
         "check_helper",
     }:
         return result
+    result = dict(result)
+    first_error = next(
+        (
+            str(message.get("message", "") or "").strip()
+            for message in list(result.get("messages") or [])
+            if isinstance(message, Mapping)
+            and str(message.get("severity", "") or "").strip().lower() == "error"
+            and str(message.get("message", "") or "").strip()
+        ),
+        "",
+    )
+    if first_error:
+        result["error"] = first_error
     try:
         if len(json.dumps(result, ensure_ascii=False)) <= max_chars:
             return result
@@ -1462,6 +1488,20 @@ def _normalize_profiled_helper_payload(payload: dict[str, Any]) -> dict[str, Any
     """Return complete fail-closed axiom evidence for an exact helper check."""
     result = dict(payload)
     output = str(result.get("output", "") or "")
+    if output and not list(result.get("messages") or []):
+        result["messages"] = _canonical_output_messages(output)
+    first_error = next(
+        (
+            str(message.get("message", "") or "").strip()
+            for message in list(result.get("messages") or [])
+            if isinstance(message, Mapping)
+            and str(message.get("severity", "") or "").strip().lower() == "error"
+            and str(message.get("message", "") or "").strip()
+        ),
+        "",
+    )
+    if first_error:
+        result["error"] = first_error
     output_truncated = bool(result.get("output_truncated", False))
     raw_axioms = result.get("axiom_profile_axioms")
     if raw_axioms is None:

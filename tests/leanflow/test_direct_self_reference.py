@@ -12,6 +12,10 @@ def test_detects_bare_direct_self_reference():
         "theorem result : True := by\n  simpa using IMO2026P3.result",
         "result",
     )
+    assert is_direct_self_reference(
+        "theorem result : True := by\n  let rec h : True := h\n  exact h",
+        "result",
+    )
 
 
 def test_allows_recursive_call_with_argument_and_other_declaration():
