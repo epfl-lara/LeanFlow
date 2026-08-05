@@ -642,6 +642,121 @@ def test_check_target_uses_canonical_fallback_after_prefix_build_failure(monkeyp
     assert payload["incremental_fallback_error_code"] == "prior_decl_failed"
 
 
+def test_profiled_check_target_uses_canonical_fallback_after_prefix_build_failure(
+    monkeypatch, tmp_path
+):
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
+    )
+    checked_sources = []
+
+    class _FakeProbe:
+        def check_target(self, *args, **kwargs):
+            return {
+                "success": False,
+                "ok": False,
+                "error_code": "prior_decl_failed",
+                "error": "failed to build env before target at prior",
+            }
+
+    monkeypatch.setattr(li, "_probe", lambda: _FakeProbe())
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    def exact_check(source, **kwargs):
+        checked_sources.append(source)
+        begin = re.search(r"LEANFLOW_INCREMENTAL_AXIOMS_BEGIN_[A-F0-9]+", source)
+        end = re.search(r"LEANFLOW_INCREMENTAL_AXIOMS_END_[A-F0-9]+", source)
+        assert begin is not None and end is not None
+        return {
+            "success": True,
+            "ok": True,
+            "output": "\n".join(
+                (
+                    f'"{begin.group(0)}" : String',
+                    "'demo' depends on axioms: [propext]",
+                    f'"{end.group(0)}" : String',
+                )
+            ),
+            "messages": [],
+        }
+
+    monkeypatch.setattr(li, "lean_ephemeral_source_check", exact_check)
+
+    payload = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        include_axiom_profile=True,
+    )
+
+    assert checked_sources
+    assert payload["success"] is True
+    assert payload["ok"] is True
+    assert payload["canonical_fallback"] is True
+    assert payload["axiom_profile_checked"] is True
+    assert payload["axiom_profile_axioms"] == ["propext"]
+
+
+def test_feedback_uses_canonical_fallback_after_prefix_build_failure(monkeypatch, tmp_path):
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  sorry\n",
+    )
+    checked_sources = []
+
+    class _FakeProbe:
+        def feedback(self, *args, **kwargs):
+            return {
+                "success": False,
+                "ok": False,
+                "error_code": "prior_decl_failed",
+                "error": "failed to build env before target at prior",
+            }
+
+    monkeypatch.setattr(li, "_probe", lambda: _FakeProbe())
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    def exact_check(source, **kwargs):
+        checked_sources.append(source)
+        return {
+            "success": False,
+            "ok": False,
+            "timed_out": False,
+            "failure_kind": "lean_elaboration",
+            "error": "unsolved goals",
+            "output": "unsolved goals\n⊢ True",
+            "messages": [],
+        }
+
+    monkeypatch.setattr(li, "lean_ephemeral_source_check", exact_check)
+
+    replacement = "theorem demo : True := by\n  exact ?_"
+    payload = li.lean_incremental_check(
+        action="feedback",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        replacement=replacement,
+    )
+
+    assert checked_sources
+    assert replacement in checked_sources[0]
+    assert payload["success"] is True
+    assert payload["ok"] is False
+    assert payload["canonical_fallback"] is True
+    assert payload["diagnostic_only"] is True
+    assert "⊢ True" in payload["feedback_lean"]
+    assert payload["incremental_fallback_error_code"] == "prior_decl_failed"
+
+
 def test_check_target_can_return_complete_inline_axiom_profile(monkeypatch, tmp_path):
     project, target = _write_project(
         tmp_path,

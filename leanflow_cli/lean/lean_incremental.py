@@ -280,6 +280,71 @@ def _canonical_target_fallback(
     }
 
 
+def _canonical_feedback_fallback(
+    incremental: Mapping[str, Any],
+    *,
+    source_text: str,
+    theorem_id: str,
+    replacement: str,
+    resolved: Path,
+    project_root: Path,
+    timeout_s: int,
+) -> dict[str, Any]:
+    """Return exact full-source diagnostics after incremental feedback replay fails."""
+    candidate = _target_replaced_source(
+        source_text,
+        theorem_id=theorem_id,
+        replacement=replacement,
+    )
+    if candidate is None:
+        return dict(incremental)
+    integrated_source, target_has_placeholder = candidate
+    checked = dict(
+        lean_ephemeral_source_check(
+            integrated_source,
+            cwd=project_root,
+            timeout_s=max(1, int(timeout_s or 1)),
+        )
+        or {}
+    )
+    backend_ok = checked.get("success") is True and checked.get("ok") is True
+    elaboration_ran = backend_ok or (
+        not bool(checked.get("timed_out"))
+        and str(checked.get("failure_kind", "") or "") == "lean_elaboration"
+    )
+    output = str(checked.get("output", "") or checked.get("error", "") or "")
+    incremental_detail = str(
+        incremental.get("error", "")
+        or incremental.get("output", "")
+        or incremental.get("message", "")
+        or ""
+    )
+    return {
+        **checked,
+        "success": elaboration_ran,
+        "ok": False,
+        "backend": "lean_exact_ephemeral",
+        "tool": "lake_env_lean",
+        "action": "feedback",
+        "file": str(resolved),
+        "target": theorem_id,
+        "has_errors": elaboration_ran and not backend_ok,
+        "has_sorry": target_has_placeholder,
+        "valid_without_sorry": False,
+        "target_verified": False,
+        "diagnostic_only": True,
+        "feedback_lean": output,
+        "canonical_fallback": True,
+        "incremental_fallback_error_code": str(incremental.get("error_code", "") or ""),
+        "incremental_fallback_reason": incremental_detail[:1000],
+        "error_code": (
+            ""
+            if elaboration_ran
+            else str(checked.get("error_code", "") or "canonical_feedback_failed")
+        ),
+    }
+
+
 def _canonical_file_fallback(
     incremental: Mapping[str, Any],
     *,
@@ -1985,8 +2050,25 @@ def lean_incremental_check(
                 project_root=project_root,
                 timeout_s=fallback_timeout_s,
             )
-        elif leanflow_action == "check_target" and inline_axiom_query is None:
+        elif leanflow_action == "check_target":
             result = _canonical_target_fallback(
+                result,
+                source_text=source_text,
+                theorem_id=theorem_id,
+                replacement=(probe_replacement if inline_axiom_query is not None else replacement),
+                resolved=resolved,
+                project_root=project_root,
+                timeout_s=fallback_timeout_s,
+            )
+            if inline_axiom_query is not None and result.get("canonical_fallback"):
+                output = str(result.get("output", "") or "")
+                result["messages"] = [
+                    {"severity": "information", "message": line}
+                    for line in output.splitlines()
+                    if line.strip()
+                ]
+        elif leanflow_action == "feedback":
+            result = _canonical_feedback_fallback(
                 result,
                 source_text=source_text,
                 theorem_id=theorem_id,
