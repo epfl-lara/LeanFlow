@@ -21,8 +21,11 @@ SUMMARY_PREFIX = (
     "to save context space. The summary below describes work that was "
     "already completed, and the current session state may still reflect "
     "that work (for example, files may already be changed). Use the summary "
-    "and the current state to continue from where things left off, and "
-    "avoid repeating work:"
+    "and the current state to continue from where things left off. Compaction "
+    "does not start a new task: do not repeat capability discovery, bootstrap "
+    "inspection, broad search, or an already-recorded failed attempt solely "
+    "because context was compacted; resume from the strongest preserved "
+    "checked evidence and recheck only when required state is missing or stale:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 AUXILIARY_SUMMARY_TIMEOUT_S = 10.0
@@ -250,7 +253,9 @@ class CompressionSummaryHandoff:
         footer = (
             "\n\n## Continue\n"
             "Continue from the preserved recent turns and current workspace state. "
-            "Recheck extracted claims with the relevant tools or verifier."
+            "Do not restart capability discovery, bootstrap inspection, or broad search "
+            "solely because compaction occurred. Recheck extracted claims only when the "
+            "required exact evidence is missing or the workspace may have changed."
         )
         body_limit = max_chars - len(SUMMARY_PREFIX) - 1
         entries_budget = max(128, body_limit - len(header) - len(footer))

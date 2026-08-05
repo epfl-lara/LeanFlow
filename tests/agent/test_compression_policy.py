@@ -224,6 +224,28 @@ def test_pre_advisor_compresses_fresh_history_only_once(agent):
     assert out_system == "compressed sys"
 
 
+def test_pre_advisor_admission_callback_avoids_rejected_call_compression(agent):
+    """Honor a side-effect-free managed circuit check before compression."""
+    observed = []
+    agent._advisor_precompression_admission_callback = lambda names: observed.append(names) or False
+
+    admitted = agent._advisor_precompression_admitted({"lean_reasoning_help"})
+
+    assert admitted is False
+    assert observed == [frozenset({"lean_reasoning_help"})]
+
+
+def test_pre_advisor_admission_callback_fails_open(agent):
+    """Do not disable reserve compression when an optional callback crashes."""
+
+    def fail(_names):
+        raise RuntimeError("stale managed state")
+
+    agent._advisor_precompression_admission_callback = fail
+
+    assert agent._advisor_precompression_admitted({"lean_reasoning_help"}) is True
+
+
 # ── suffix-preserving split ─────────────────────────────────────────────────
 
 

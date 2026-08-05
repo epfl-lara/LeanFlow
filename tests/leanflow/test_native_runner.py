@@ -3720,6 +3720,14 @@ def test_managed_pre_tool_call_blocks_durable_advisor_failure_circuit(monkeypatc
         lambda **kwargs: True,
     )
 
+    assert (
+        runner._managed_advisor_precompression_admitted(
+            agent,
+            frozenset({"lean_reasoning_help"}),
+        )
+        is False
+    )
+
     blocked = runner._managed_pre_tool_call(
         agent,
         "lean_reasoning_help",

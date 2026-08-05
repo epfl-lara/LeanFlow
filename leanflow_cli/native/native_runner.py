@@ -10697,6 +10697,77 @@ def _same_revision_timeout_pre_tool_guard(
     return json.dumps(payload, ensure_ascii=False)
 
 
+@dataclass(frozen=True)
+class _AdvisorFailureAdmission:
+    """Describe durable and turn-local admission for one advisor call."""
+
+    target_symbol: str
+    active_file: str
+    source_revision_sha256: str
+    target_revision_sha256: str
+    residual_revision_sha256: str
+    local_blocked: bool
+    durable_blocked: bool
+
+    @property
+    def blocked(self) -> bool:
+        """Return whether either advisor failure circuit rejects the call."""
+        return self.local_blocked or self.durable_blocked
+
+
+def _advisor_failure_admission(
+    autonomy_state: Mapping[str, Any],
+    function_name: str,
+) -> _AdvisorFailureAdmission:
+    """Return side-effect-free advisor admission for the current assignment."""
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    source_revision = _source_revision_sha256(active_file) if active_file else ""
+    target_revision = (
+        _target_declaration_sha256(active_file, target_symbol)
+        if active_file and target_symbol
+        else ""
+    )
+    residual_revision = target_revision or source_revision
+    return _AdvisorFailureAdmission(
+        target_symbol=target_symbol,
+        active_file=active_file,
+        source_revision_sha256=source_revision,
+        target_revision_sha256=target_revision,
+        residual_revision_sha256=residual_revision,
+        local_blocked=tool_result_loop_guard.advisor_preflight_blocked(
+            autonomy_state,
+            function_name=function_name,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            source_revision_sha256=residual_revision,
+        ),
+        durable_blocked=advisor_failure_circuit.preflight_blocked(
+            function_name=function_name,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            source_revision_sha256=source_revision,
+            target_revision_sha256=target_revision,
+            campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
+        ),
+    )
+
+
+def _managed_advisor_precompression_admitted(
+    agent: Any,
+    function_names: frozenset[str],
+) -> bool:
+    """Return whether any requested advisor remains eligible to run."""
+    autonomy_state = getattr(agent, "_managed_autonomy_state", {}) or {}
+    if not isinstance(autonomy_state, Mapping):
+        return True
+    return any(
+        not _advisor_failure_admission(autonomy_state, function_name).blocked
+        for function_name in function_names
+    )
+
+
 def _managed_pre_tool_call(
     agent: Any, function_name: str, args: Mapping[str, Any] | None
 ) -> str | None:
@@ -10837,38 +10908,15 @@ def _managed_pre_tool_call(
                 )
             return json.dumps(banked_inspection, ensure_ascii=False)
         assignment = dict(autonomy_state.get("current_queue_assignment") or {})
-        advisor_target = str(assignment.get("target_symbol", "") or "").strip()
-        advisor_file = str(assignment.get("active_file", "") or "").strip()
-        advisor_source_revision = _source_revision_sha256(advisor_file) if advisor_file else ""
-        advisor_target_revision = (
-            _target_declaration_sha256(advisor_file, advisor_target)
-            if advisor_file and advisor_target
-            else ""
-        )
-        advisor_residual_revision = advisor_target_revision or advisor_source_revision
-        local_advisor_blocked = tool_result_loop_guard.advisor_preflight_blocked(
-            autonomy_state,
-            function_name=function_name,
-            target_symbol=advisor_target,
-            active_file=advisor_file,
-            source_revision_sha256=advisor_residual_revision,
-        )
-        durable_advisor_blocked = advisor_failure_circuit.preflight_blocked(
-            function_name=function_name,
-            target_symbol=advisor_target,
-            active_file=advisor_file,
-            source_revision_sha256=advisor_source_revision,
-            target_revision_sha256=advisor_target_revision,
-            campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
-        )
-        if durable_advisor_blocked and not local_advisor_blocked:
+        advisor_admission = _advisor_failure_admission(autonomy_state, function_name)
+        if advisor_admission.durable_blocked and not advisor_admission.local_blocked:
             tool_result_loop_guard.hydrate_advisor_failure_streak(
                 autonomy_state,
-                target_symbol=advisor_target,
-                active_file=advisor_file,
-                source_revision_sha256=advisor_residual_revision,
+                target_symbol=advisor_admission.target_symbol,
+                active_file=advisor_admission.active_file,
+                source_revision_sha256=advisor_admission.residual_revision_sha256,
             )
-        if local_advisor_blocked or durable_advisor_blocked:
+        if advisor_admission.blocked:
             with contextlib.suppress(Exception):
                 _record_agent_activity(
                     agent,
@@ -10877,8 +10925,8 @@ def _managed_pre_tool_call(
                         "Blocked another expensive advisor request after two "
                         "unchanged-source failures"
                     ),
-                    target_symbol=advisor_target,
-                    active_file=advisor_file,
+                    target_symbol=advisor_admission.target_symbol,
+                    active_file=advisor_admission.active_file,
                     blocked_tool=function_name,
                     provider_called=False,
                     campaign_progress=False,
@@ -10902,10 +10950,10 @@ def _managed_pre_tool_call(
         advisor_failure_circuit.remember_call_source(
             autonomy_state,
             function_name=function_name,
-            target_symbol=advisor_target,
-            active_file=advisor_file,
-            source_revision_sha256=advisor_source_revision,
-            target_revision_sha256=advisor_target_revision,
+            target_symbol=advisor_admission.target_symbol,
+            active_file=advisor_admission.active_file,
+            source_revision_sha256=advisor_admission.source_revision_sha256,
+            target_revision_sha256=advisor_admission.target_revision_sha256,
         )
         placeholder_block = (
             source_placeholder_guard.block_unchanged_target_check(
@@ -22059,6 +22107,12 @@ def _build_agent() -> AIAgent:
         return handoff_seconds
 
     agent.pre_tool_call_callback = _pre_tool_call_callback
+    agent._advisor_precompression_admission_callback = (
+        lambda function_names: _managed_advisor_precompression_admitted(
+            agent,
+            frozenset(function_names),
+        )
+    )
     agent.post_tool_result_callback = _post_tool_result_callback
     agent.tool_result_projection_callback = _project_managed_tool_result
     agent._managed_delegated_post_tool_result_callback = _delegated_post_tool_result_callback

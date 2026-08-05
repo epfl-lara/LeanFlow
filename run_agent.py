@@ -2994,6 +2994,10 @@ class AIAgent:
             effective_task_id=effective_task_id,
         )
 
+    def _advisor_precompression_admitted(self, tool_names: set[str]) -> bool:
+        """Return whether pending advisor calls may trigger reserve compression."""
+        return _resolve_compression_policy(self).advisor_precompression_admitted(tool_names)
+
     def _compress_context_preserving_suffix(
         self,
         messages: list,
@@ -5043,8 +5047,11 @@ class AIAgent:
 
                     _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
                     _advisor_tool_names = {"lean_reasoning_help", "lean_decompose_helpers"}
+                    _requested_advisor_tools = _tc_names & _advisor_tool_names
                     advisor_suffix_start = None
-                    if _tc_names & _advisor_tool_names:
+                    if _requested_advisor_tools and self._advisor_precompression_admitted(
+                        _requested_advisor_tools
+                    ):
                         messages, active_system_prompt = (
                             self._maybe_precompress_before_advisor_tool(
                                 messages,

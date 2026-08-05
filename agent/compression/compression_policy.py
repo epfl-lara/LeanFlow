@@ -56,6 +56,27 @@ class CompressionPolicy:
     def __init__(self, agent: AIAgent) -> None:
         self._agent = agent
 
+    def advisor_precompression_admitted(self, tool_names: set[str]) -> bool:
+        """Return whether a managed advisor call may justify context compression.
+
+        Native workflows can install a side-effect-free admission callback so
+        an advisor request already rejected by a durable circuit does not erase
+        useful context before ordinary tool preflight returns that rejection.
+        Callback failures fail open and preserve the existing behavior.
+        """
+        callback = getattr(
+            self._agent,
+            "_advisor_precompression_admission_callback",
+            None,
+        )
+        if not callable(callback):
+            return True
+        try:
+            return bool(callback(frozenset(tool_names)))
+        except Exception:
+            logger.debug("Advisor precompression admission callback failed", exc_info=True)
+            return True
+
     # ── Core compression ────────────────────────────────────────────────────
     def compress_context(
         self,

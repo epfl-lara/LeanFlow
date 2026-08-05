@@ -68,6 +68,10 @@ _TRIVIAL_BINDING_PROBE_RE = re.compile(
     r":\s*True\s*:=\s*by\s+(?:have|let)\b.+?(?:\n|;)\s*" r"(?:trivial|exact\s+True\.intro)\s*$",
     flags=re.DOTALL,
 )
+_TRIVIAL_TRUE_PROBE_RE = re.compile(
+    r":\s*True\s*:=\s*by\b.+?(?:trivial|exact\s+True\.intro)\s*$",
+    flags=re.DOTALL,
+)
 
 
 def _is_lean_inspection_only_helper_candidate(source: str) -> bool:
@@ -90,6 +94,12 @@ def _is_lean_inspection_only_helper_candidate(source: str) -> bool:
         if not (
             _FALSE_IDENTIFIER_PROBE_RE.search(declaration_source)
             or _TRIVIAL_BINDING_PROBE_RE.search(declaration_source)
+            # Inspection-named declarations with a deliberately trivial
+            # conclusion are diagnostic wrappers even when setup begins with
+            # ``letI``/``haveI`` or contains several nested local facts.  The
+            # useful inner fact must be checked as its own proposition before
+            # LeanFlow treats it as durable proof progress.
+            or _TRIVIAL_TRUE_PROBE_RE.search(declaration_source)
         ):
             return False
     return True

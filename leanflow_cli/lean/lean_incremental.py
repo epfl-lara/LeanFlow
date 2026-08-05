@@ -1346,8 +1346,10 @@ def _mark_inspection_only_helper_payload(payload: Mapping[str, Any]) -> dict[str
                 "Its diagnostics remain available, but it is not a verified reusable lemma."
             ),
             "action_required": (
-                "Use the returned declaration/type information, then submit a substantive helper "
-                "or target proof for verification."
+                "Use the returned declaration/type information. If a checked local `have` is "
+                "useful, resubmit its exact proposition as a substantive, mathematically named "
+                "helper so it remains reusable across turns and context compression; if the "
+                "`have` is already in assigned source, `lean_extract_have` can promote it."
             ),
         }
     )

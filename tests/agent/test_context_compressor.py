@@ -630,6 +630,11 @@ class TestSummaryProviderFallback:
 
 
 class TestSummaryPrefixNormalization:
+    def test_compaction_handoff_forbids_bootstrap_restarts(self):
+        assert "Compaction does not start a new task" in SUMMARY_PREFIX
+        assert "do not repeat capability discovery" in SUMMARY_PREFIX
+        assert "bootstrap inspection" in SUMMARY_PREFIX
+
     def test_legacy_prefix_is_replaced(self):
         summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")
         assert summary == f"{SUMMARY_PREFIX}\ndid work"
