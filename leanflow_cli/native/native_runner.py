@@ -100,6 +100,7 @@ from leanflow_cli.native import (
     determine_answer_policy,
     direct_self_reference,
     final_report_failure_reuse,
+    generated_helper_name_policy,
     helper_integration_admission,
     managed_edit_rollback,
     parent_helper_verification_reuse,
@@ -9083,6 +9084,83 @@ def _suggestion_only_source_patch_guard(
     )
 
 
+def _nonproduction_generated_helper_source_patch_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Reject scratch-named generated helpers before production source mutation."""
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not _managed_edit_targets_assignment(
+            args,
+            active_file,
+            function_name=function_name,
+        )
+    ):
+        return None
+    try:
+        before_text = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    after_text = managed_edit_rollback.preview_candidate_source(
+        function_name,
+        args,
+        before_text,
+    )
+    if not after_text:
+        return None
+    helper_names = generated_helper_name_policy.nonproduction_generated_helpers(
+        before_text,
+        after_text,
+        assigned_target=target_symbol,
+    )
+    if not helper_names:
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "nonproduction-helper-name-blocked",
+            f"Blocked scratch-named generated helper(s) for {target_symbol}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            helper_names=list(helper_names),
+            blocked_tool=function_name,
+            provider_called=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "nonproduction_helper_name",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "helper_names": list(helper_names),
+            "patch_applied": False,
+            "check_passed": False,
+            "provider_called": False,
+            "lean_started": False,
+            "required_action": (
+                "Production helpers need names that state their mathematical role. Rename "
+                f"{', '.join(f'`{name}`' for name in helper_names)} before inserting it. Keep "
+                "temporary experiments in LeanProbe or scratch artifacts; if the route was "
+                "retired, preserve the fragment in the graph/dead-branch record instead of "
+                "publishing it to the Lean source."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _transient_diagnostic_source_patch_guard(
     agent: Any,
     function_name: str,
@@ -10333,6 +10411,14 @@ def _managed_pre_tool_call(
         )
         if helper_priority_guard:
             return helper_priority_guard
+        helper_name_guard = _nonproduction_generated_helper_source_patch_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if helper_name_guard:
+            return helper_name_guard
         suggestion_patch_guard = _suggestion_only_source_patch_guard(
             agent,
             function_name,

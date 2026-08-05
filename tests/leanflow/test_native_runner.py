@@ -21603,6 +21603,46 @@ def test_decompose_route_helper_edit_is_verified_evidence_without_campaign_progr
     assert '"event": "helper-split-recorded"' not in journal
 
 
+def test_scratch_named_helper_patch_is_blocked_before_source_mutation(monkeypatch, tmp_path):
+    """A checked exploratory fragment must receive a mathematical production name."""
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+    monkeypatch.setattr(
+        runner, "_record_agent_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    after = "private lemma test_map : True := by\n  trivial\n\n" + before
+    result = runner._nonproduction_generated_helper_source_patch_guard(
+        _Agent(),
+        "patch",
+        {
+            "path": str(active),
+            "old_string": before,
+            "new_string": after,
+        },
+        _Agent._managed_autonomy_state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "nonproduction_helper_name"
+    assert payload["helper_names"] == ["test_map"]
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == before
+    assert events[0][0][1] == "nonproduction-helper-name-blocked"
+
+
 def test_exactly_integrated_prover_helper_is_proof_support_and_campaign_progress(
     monkeypatch, tmp_path
 ):

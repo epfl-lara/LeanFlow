@@ -171,6 +171,9 @@ tool is reachable through the public registry.
   applications remain available.
   Rejected-edit identity, replay preview, hard-diagnostic classification, and
   atomic exact-after-image restoration live in `managed_edit_rollback.py`.
+  Scratch-style names on newly generated helpers are rejected before source
+  mutation by `generated_helper_name_policy.py`, keeping exploratory fragments
+  in LeanProbe or durable dead-branch artifacts until they have a mathematical role.
   Revision-authenticated successful-gate reuse lives in
   `verified_gate_handoff.py`; it carries a checked queue snapshot across the
   provider boundary without replaying diagnostics, goals, or full-file builds.
