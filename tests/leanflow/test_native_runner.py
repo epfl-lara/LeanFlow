@@ -19267,6 +19267,30 @@ def test_manager_incremental_check_previews_errors_before_earlier_warnings(monke
     assert result["output"].startswith("error near line 2: actual blocker")
 
 
+def test_managed_context_compression_uses_absolute_cap(monkeypatch):
+    """Do not replay tool-heavy Lean history up to a model's oversized percentage threshold."""
+    agent = SimpleNamespace(context_compressor=SimpleNamespace(threshold_tokens=750_000))
+    monkeypatch.delenv("LEANFLOW_NATIVE_CONTEXT_COMPRESSION_TOKENS", raising=False)
+
+    effective = runner._apply_managed_context_compression_cap(agent)
+
+    assert effective == 96_000
+    assert agent.context_compressor.threshold_tokens == 96_000
+
+
+def test_managed_context_compression_respects_lower_model_threshold(monkeypatch):
+    agent = SimpleNamespace(context_compressor=SimpleNamespace(threshold_tokens=48_000))
+    monkeypatch.setenv("LEANFLOW_NATIVE_CONTEXT_COMPRESSION_TOKENS", "64000")
+
+    effective = runner._apply_managed_context_compression_cap(agent)
+
+    assert effective == 48_000
+
+
+def test_managed_context_compression_allows_minimal_agent_stub():
+    assert runner._apply_managed_context_compression_cap(SimpleNamespace()) == 0
+
+
 def test_low_memory_manager_skips_incremental_cache(monkeypatch):
     verification = {"ok": True, "command": "lake env lean Main.lean"}
     monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "1")

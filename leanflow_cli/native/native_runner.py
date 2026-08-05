@@ -21571,6 +21571,31 @@ def _auto_compact_history(
     }
 
 
+def _managed_context_compression_cap_tokens() -> int:
+    """Return the absolute context threshold for managed Lean conversations."""
+    raw = _read_text_env("LEANFLOW_NATIVE_CONTEXT_COMPRESSION_TOKENS", "96000")
+    try:
+        return max(16_000, int(raw))
+    except ValueError:
+        return 96_000
+
+
+def _apply_managed_context_compression_cap(agent: Any) -> int:
+    """Cap percentage-based compression for tool-heavy managed Lean turns.
+
+    Large advertised model windows otherwise let dozens of exact-check payloads
+    accumulate and get replayed on every provider call.  The managed snapshot
+    preserves verified facts and route evidence, so an absolute ceiling keeps
+    proof search economical without discarding its durable state.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return 0
+    configured = _managed_context_compression_cap_tokens()
+    compressor.threshold_tokens = min(int(compressor.threshold_tokens), configured)
+    return int(compressor.threshold_tokens)
+
+
 def _build_agent() -> AIAgent:
     """Instantiate the managed AIAgent from environment configuration: reads model, credentials, max-turns, reasoning-effort, and tool-task overrides; configures pre/post-tool-call callbacks and sets up activity logging."""
     global AIAgent
@@ -21638,6 +21663,7 @@ def _build_agent() -> AIAgent:
         tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 28),
         tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 12),
     )
+    _apply_managed_context_compression_cap(agent)
     agent_holder["agent"] = agent
     project_root = _project_root()
     managed_tool_task_id = f"leanflow-native-{getattr(agent, 'session_id', '') or os.getpid()}"
