@@ -86,6 +86,8 @@ _NON_ASSERTION_PROSE_RE = re.compile(
 # prompt-facing, so keep each deterministic fallback line compact while
 # retaining the authoritative payload elsewhere.
 _UNSYNTHESIZED_GROUNDING_MAX_CHARS = 1200
+_UNSYNTHESIZED_FINDING_LIMIT = 4
+_UNSYNTHESIZED_CANDIDATE_LIMIT = 6
 
 _SYNTH_SYSTEM_PROMPT = (
     "You are the planning synthesizer of an autonomous Lean 4 proving harness. "
@@ -631,7 +633,10 @@ def _persist_unsynthesized_deliverables(
     grounding: list[str] = []
     for lane, deliverable in deliverables.items():
         encoded = json.dumps(
-            dict(deliverable), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            _compact_unsynthesized_deliverable(deliverable),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
         )
         if len(encoded) > _UNSYNTHESIZED_GROUNDING_MAX_CHARS:
             encoded = (
@@ -665,6 +670,74 @@ def _persist_unsynthesized_deliverables(
         }
     )
     return len(grounding)
+
+
+def _compact_unsynthesized_deliverable(
+    deliverable: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a deterministic prompt digest while the journal keeps full evidence."""
+
+    def text(value: Any, limit: int) -> str:
+        rendered = " ".join(str(value or "").split())
+        return rendered if len(rendered) <= limit else rendered[: limit - 3] + "..."
+
+    compact: dict[str, Any] = {}
+    findings: list[dict[str, Any]] = []
+    for raw in list(deliverable.get("findings") or [])[:_UNSYNTHESIZED_FINDING_LIMIT]:
+        if not isinstance(raw, Mapping):
+            continue
+        item: dict[str, Any] = {
+            key: value
+            for key, value in {
+                "claim": text(raw.get("claim"), 260),
+                "source": text(raw.get("source"), 160),
+                "relevance": text(raw.get("relevance"), 240),
+                "candidate_lemmas": [
+                    text(name, 100)
+                    for name in list(raw.get("candidate_lemmas") or [])[:4]
+                    if text(name, 100)
+                ],
+            }.items()
+            if value
+        }
+        if item:
+            findings.append(item)
+    if findings:
+        compact["findings"] = findings
+
+    candidates: list[dict[str, str]] = []
+    for raw in list(deliverable.get("candidates") or [])[:_UNSYNTHESIZED_CANDIDATE_LIMIT]:
+        if not isinstance(raw, Mapping):
+            continue
+        item = {
+            key: value
+            for key, value in {
+                "name": text(raw.get("name"), 120),
+                "signature": text(raw.get("signature"), 260),
+                "why": text(raw.get("why") or raw.get("relevance"), 180),
+            }.items()
+            if value
+        }
+        if item:
+            candidates.append(item)
+    if candidates:
+        compact["candidates"] = candidates
+
+    for key, limit in (
+        ("hypothesis", 260),
+        ("result", 100),
+        ("evidence", 320),
+        ("counterexample", 260),
+    ):
+        value = text(deliverable.get(key), limit)
+        if value:
+            compact[key] = value
+    if "exhausted" in deliverable:
+        compact["exhausted"] = bool(deliverable.get("exhausted"))
+
+    if compact:
+        return compact
+    return {"summary": text(json.dumps(dict(deliverable), ensure_ascii=False), 900)}
 
 
 def _synthesis_prompt(

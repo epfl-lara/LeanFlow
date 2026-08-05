@@ -3494,7 +3494,10 @@ class AIAgent:
                 self._vprint(
                     f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}"
                 )
-            elif self._stream_callback is None:
+            elif (
+                not bool(getattr(self, "_suppress_spinners", False))
+                and self._stream_callback is None
+            ):
                 # Animated thinking spinner in quiet mode (skip during streaming TTS)
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
                 verb = random.choice(KawaiiSpinner.THINKING_VERBS)

@@ -197,6 +197,15 @@ def test_construction_attempt_classifier_excludes_inspection_and_exact_replay():
         },
     )
     assert not search_synthesis_admission.construction_attempt_request(
+        "lean_extract_have",
+        {"action": "inventory", "theorem_id": "demo"},
+        result_status="candidate_inventory",
+    )
+    assert search_synthesis_admission.construction_attempt_request(
+        "lean_extract_have",
+        {"action": "extract", "theorem_id": "demo", "have_name": "h"},
+    )
+    assert not search_synthesis_admission.construction_attempt_request(
         "lean_incremental_check",
         {
             "action": "check_helper",

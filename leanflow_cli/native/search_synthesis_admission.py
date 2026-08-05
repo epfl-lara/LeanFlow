@@ -98,7 +98,15 @@ def construction_attempt_request(
             "rejected_candidate_replay",
             "isolated_suggestion_probe_required",
         }
-    if function_name in {"lean_extract_have", "lean_decompose_helpers"}:
+    if function_name == "lean_extract_have":
+        action = str(arguments.get("action", "extract") or "extract")
+        return action.strip().lower().replace("-", "_") not in {
+            "inventory",
+            "inspect",
+            "list",
+            "plan",
+        }
+    if function_name == "lean_decompose_helpers":
         return True
     if function_name == "lean_multi_attempt":
         attempts = arguments.get("attempts")

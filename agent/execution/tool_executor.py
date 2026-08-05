@@ -689,7 +689,7 @@ class ToolExecutor:
 
         # Start spinner for CLI mode
         spinner = None
-        if agent.quiet_mode:
+        if agent.quiet_mode and not bool(getattr(agent, "_suppress_spinners", False)):
             face = random.choice(run_agent.KawaiiSpinner.KAWAII_WAITING)
             batch_label = f"{num_tools} tools concurrently"
             if memory_heavy_limited:
@@ -1028,7 +1028,7 @@ class ToolExecutor:
                     goal_preview = (function_args.get("goal") or "")[:30]
                     spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
                 spinner = None
-                if agent.quiet_mode:
+                if agent.quiet_mode and not bool(getattr(agent, "_suppress_spinners", False)):
                     face = random.choice(run_agent.KawaiiSpinner.KAWAII_WAITING)
                     spinner = run_agent.KawaiiSpinner(
                         f"{face} {spinner_label}", spinner_type="dots"
@@ -1056,7 +1056,11 @@ class ToolExecutor:
                         spinner.stop(cute_msg)
                     elif agent.quiet_mode:
                         agent._vprint(f"  {cute_msg}")
-            elif agent.quiet_mode and agent._stream_callback is None:
+            elif (
+                agent.quiet_mode
+                and not bool(getattr(agent, "_suppress_spinners", False))
+                and agent._stream_callback is None
+            ):
                 face = random.choice(run_agent.KawaiiSpinner.KAWAII_WAITING)
                 emoji = run_agent._get_tool_emoji(function_name)
                 preview = (

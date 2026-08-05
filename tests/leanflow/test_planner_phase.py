@@ -811,6 +811,36 @@ def test_unsynthesized_lane_projection_replaces_stale_payload_and_records_outcom
     assert "new route" in journal
 
 
+def test_unsynthesized_lane_projection_is_compact_and_keeps_actionable_lemmas(enabled):
+    deliverable = {
+        "findings": [
+            {
+                "claim": "Use the checked local residual lemma.",
+                "source": "Demo.lean",
+                "relevance": "It closes the next explicit subgoal.",
+                "candidate_lemmas": ["residual_bound", "sum_filter_identity"],
+                "raw_receipts": "x" * 20_000,
+            }
+        ],
+        "providers_tried": ["local", "semantic"],
+        "raw": "y" * 20_000,
+    }
+
+    planner_phase._persist_unsynthesized_deliverables(
+        {"mathlib": deliverable},
+        reason="synthesizer timed out",
+        target_symbol="demo",
+        active_file="Demo.lean",
+    )
+
+    grounding = plan_state.load_summary()["grounding_findings"]
+    assert len(grounding) == 1
+    assert "residual_bound" in grounding[0]
+    assert "sum_filter_identity" in grounding[0]
+    assert "raw_receipts" not in grounding[0]
+    assert len(grounding[0]) <= planner_phase._UNSYNTHESIZED_GROUNDING_MAX_CHARS + 40
+
+
 def test_interrupt_after_synthesis_never_enters_graph_or_stub_validation(enabled, monkeypatch):
     from tools.utilities.interrupt import CooperativeInterrupt, set_interrupt
 

@@ -163,7 +163,9 @@ tool is reachable through the public registry.
   assignment transitions, completion policy, durable bounded-search synthesis
   admission, cycle-bounded construction-source inspection, and cross-route
   no-construction debt that fences advisory oscillation
-  (`search_synthesis_admission.py`), same-revision verification-timeout backpressure
+  (`search_synthesis_admission.py`). Delayed transition notices and direct
+  control-plane heartbeats for startup, portfolio, and epoch reconciliation live
+  in `transition_visibility.py`. Native also owns same-revision verification-timeout backpressure
   and structural-recovery handoff, verified companion-module
   publication (`support_module_materialization.py`), checkpoints, and shutdown.
   Direct bare references from an assigned declaration to itself are rejected

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections.abc import Callable, Mapping, MutableMapping
@@ -82,6 +83,59 @@ def run_with_heartbeat(
     if announced.is_set():
         emit(finish_message(result, elapsed))
     return result
+
+
+def run_epoch_transition(
+    operation: Callable[[], T],
+    *,
+    target_symbol: str,
+    previous_epoch: int,
+    reason: str,
+    activity_emit: Callable[..., Any],
+    run_log_emit: Callable[[str], Any],
+    terminal_stream: Any = None,
+    delay_s: float = 5.0,
+    heartbeat_s: float = 30.0,
+) -> T:
+    """Run epoch reconciliation with activity, durable-log, and terminal heartbeats."""
+    label = str(target_symbol or "[project scope]")
+
+    def emit(message: str) -> None:
+        with contextlib.suppress(Exception):
+            activity_emit(
+                "campaign-epoch-transition-heartbeat",
+                message,
+                target_symbol=target_symbol,
+                previous_epoch=previous_epoch,
+                reason=reason,
+                campaign_progress=False,
+            )
+        line = f"{message}\n"
+        with contextlib.suppress(Exception):
+            run_log_emit(line)
+        if terminal_stream is not None:
+            with contextlib.suppress(Exception):
+                terminal_stream.write(line)
+                terminal_stream.flush()
+
+    return run_with_heartbeat(
+        operation,
+        start_message=(
+            f"⏳ Campaign epoch {previous_epoch} transition for {label} "
+            "is reconciling saved state."
+        ),
+        heartbeat_message=lambda elapsed: (
+            f"⏳ Campaign epoch {previous_epoch} transition for {label} "
+            f"remains active ({elapsed:.0f}s elapsed)."
+        ),
+        finish_message=lambda _result, elapsed: (
+            f"✓ Campaign epoch {previous_epoch} transition for {label} "
+            f"finished in {elapsed:.1f}s."
+        ),
+        delay_s=delay_s,
+        heartbeat_s=heartbeat_s,
+        emit=emit,
+    )
 
 
 def report_research_portfolio_progress(

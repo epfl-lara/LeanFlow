@@ -1,5 +1,7 @@
 """Slow transition visibility tests."""
 
+from io import StringIO
+
 from leanflow_cli.native import transition_visibility
 
 
@@ -47,6 +49,37 @@ def test_run_with_heartbeat_reports_progress_until_completion():
     assert result == "ok"
     assert messages[0] == "checking"
     assert messages[-1] == "finished ok"
+
+
+def test_epoch_transition_reaches_activity_log_and_terminal(monkeypatch):
+    events: list[tuple[tuple, dict]] = []
+    durable: list[str] = []
+    terminal = StringIO()
+
+    def run_with_heartbeat(operation, **kwargs):
+        kwargs["emit"](kwargs["start_message"])
+        kwargs["emit"](kwargs["heartbeat_message"](35.0))
+        result = operation()
+        kwargs["emit"](kwargs["finish_message"](result, 36.0))
+        return result
+
+    monkeypatch.setattr(transition_visibility, "run_with_heartbeat", run_with_heartbeat)
+    result = transition_visibility.run_epoch_transition(
+        lambda: "ok",
+        target_symbol="demo",
+        previous_epoch=3,
+        reason="route-no-progress",
+        activity_emit=lambda *args, **kwargs: events.append((args, kwargs)),
+        run_log_emit=durable.append,
+        terminal_stream=terminal,
+    )
+
+    assert result == "ok"
+    assert [args[0] for args, _kwargs in events] == ["campaign-epoch-transition-heartbeat"] * 3
+    assert all(kwargs["target_symbol"] == "demo" for _args, kwargs in events)
+    assert len(durable) == 3
+    assert "remains active (35s elapsed)" in durable[1]
+    assert terminal.getvalue() == "".join(durable)
 
 
 def test_research_portfolio_progress_reports_changes_and_bounded_heartbeat():

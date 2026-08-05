@@ -400,6 +400,10 @@ def _run_single_child_unleased(
         # Set delegation depth so children can't spawn grandchildren
         child._delegate_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
         child._parent_session_id = str(getattr(parent_agent, "session_id", "") or "")
+        # Delegated lanes share the owner's terminal. Their high-frequency
+        # animations cannot overwrite one another reliably, so retain durable
+        # events and concise completion lines without rendering child spinners.
+        child._suppress_spinners = True
 
         # Register child for interrupt propagation. Prefer the thread-safe
         # register_child() (children are spawned concurrently, so registration

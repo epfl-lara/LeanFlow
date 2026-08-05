@@ -414,6 +414,7 @@ class TestDelegateObservability(unittest.TestCase):
             def run_conversation(**_kwargs):
                 self.assertIs(sys.stdout, original_stdout)
                 self.assertIs(sys.stderr, original_stderr)
+                self.assertIs(mock_child._suppress_spinners, True)
                 return {
                     "final_response": "done",
                     "completed": True,

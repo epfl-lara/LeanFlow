@@ -4044,6 +4044,8 @@ def _tool_result_counts_as_theorem_feedback(
         if target and active_file:
             return _same_active_file(target, active_file)
         return True
+    if function_name == "lean_extract_have" and _lean_extract_have_is_read_only(args):
+        return False
     if function_name in {"apply_verified_patch", "lean_extract_have"}:
         return True
     if function_name != "terminal":
@@ -8806,11 +8808,24 @@ def _terminal_command_may_edit(command: str) -> bool:
 
 
 def _queue_edit_snapshot_required(function_name: str, args: Mapping[str, Any] | None) -> bool:
+    if function_name == "lean_extract_have" and _lean_extract_have_is_read_only(args):
+        return False
     if function_name in _MANAGED_SOURCE_EDIT_TOOLS:
         return True
     if function_name == "terminal":
         return _terminal_command_may_edit(str(dict(args or {}).get("command", "") or ""))
     return False
+
+
+def _lean_extract_have_is_read_only(args: Mapping[str, Any] | None) -> bool:
+    """Return whether a local-have request only inventories source structure."""
+    action = str(dict(args or {}).get("action", "extract") or "extract")
+    return action.strip().lower().replace("-", "_") in {
+        "inventory",
+        "inspect",
+        "list",
+        "plan",
+    }
 
 
 def _queue_edit_snapshot_has_identity(snapshot: Mapping[str, Any]) -> bool:
@@ -8828,7 +8843,9 @@ def _queue_edit_finalization_required(
     args: Mapping[str, Any] | None,
 ) -> bool:
     """Return whether this exact source-edit result owns the pending snapshot."""
-    if function_name not in _MANAGED_SOURCE_EDIT_TOOLS:
+    if function_name not in _MANAGED_SOURCE_EDIT_TOOLS or (
+        function_name == "lean_extract_have" and _lean_extract_have_is_read_only(args)
+    ):
         return False
     snapshot = dict(getattr(agent, "_managed_queue_edit_snapshot", {}) or {})
     if not _queue_edit_snapshot_has_identity(snapshot):
@@ -14526,6 +14543,12 @@ def _handle_managed_tool_result(
             _result,
             queue_edit_accepted=queue_edit_accepted,
         )
+
+    if function_name == "lean_extract_have" and _lean_extract_have_is_read_only(args):
+        # Inventory is source inspection, not a transaction. Its successful
+        # candidate list is already in the provider result and must not enter
+        # live-source refresh, queue verification, or failed-attempt accounting.
+        return
 
     if (
         function_name == "lean_verify"
@@ -21637,8 +21660,12 @@ def _build_agent() -> AIAgent:
             allowed_axioms=_allowed_axioms(),
             pending_helper=(pending_helper.to_mapping() if pending_helper is not None else None),
         )
+        extract_have_read_only = bool(
+            function_name == "lean_extract_have" and _lean_extract_have_is_read_only(arguments)
+        )
         if (
             function_name in _FOREGROUND_VERIFICATION_HANDOFF_TOOLS
+            and not extract_have_read_only
             and research_mode.research_mode_enabled()
             and research_mode.research_worker_count() > 0
         ):
@@ -21653,6 +21680,7 @@ def _build_agent() -> AIAgent:
         active_file = str(assignment.get("active_file", "") or "").strip()
         if (
             function_name in {"apply_verified_patch", "lean_extract_have"}
+            and not extract_have_read_only
             and research_mode.research_mode_enabled()
             and research_mode.research_worker_count() > 0
             and _verified_patch_result_passed(result)
@@ -31354,7 +31382,7 @@ def _drive_autonomous_followups(
     return result
 
 
-def _roll_autonomous_campaign_epoch(
+def _roll_autonomous_campaign_epoch_unobserved(
     agent: AIAgent,
     history: list[dict[str, Any]],
     compaction_state: dict[str, Any],
@@ -31463,6 +31491,46 @@ def _roll_autonomous_campaign_epoch(
         phase="busy",
     )
     return fresh_history, campaign_epoch.reset_compaction_state(), checkpoint_state
+
+
+def _roll_autonomous_campaign_epoch(
+    agent: AIAgent,
+    history: list[dict[str, Any]],
+    compaction_state: dict[str, Any],
+    checkpoint_state: dict[str, Any],
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any],
+    *,
+    reason: str,
+    cycle: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """Roll one campaign epoch with direct visibility during slow reconciliation."""
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(
+        assignment.get("target_symbol", "") or live_state.get("target_symbol", "") or ""
+    ).strip()
+    previous_epoch = int(autonomy_state.get("campaign_epoch", 1) or 1)
+
+    return transition_visibility.run_epoch_transition(
+        lambda: _roll_autonomous_campaign_epoch_unobserved(
+            agent,
+            history,
+            compaction_state,
+            checkpoint_state,
+            autonomy_state,
+            live_state,
+            reason=reason,
+            cycle=cycle,
+        ),
+        target_symbol=target_symbol,
+        previous_epoch=previous_epoch,
+        reason=reason,
+        activity_emit=_record_activity,
+        run_log_emit=append_workflow_run_log,
+        terminal_stream=getattr(sys, "__stdout__", None),
+        delay_s=5.0,
+        heartbeat_s=30.0,
+    )
 
 
 def _roll_pending_startup_scope_epoch(

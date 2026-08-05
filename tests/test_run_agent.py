@@ -1457,6 +1457,22 @@ class TestConcurrentToolExecution:
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
 
+    def test_delegated_concurrent_tools_suppress_child_spinner(self, agent):
+        """Keep lane tool batches concise when several children share one terminal."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"beta"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        agent.quiet_mode = True
+        agent._suppress_spinners = True
+
+        with (
+            patch("run_agent.KawaiiSpinner") as spinner,
+            patch("run_agent.handle_function_call", return_value="ok"),
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, [], "child-task")
+
+        spinner.assert_not_called()
+
     def test_concurrent_tools_inherit_capacity_context(self, agent):
         """Worker threads retain the delegated actor lease context."""
         marker: ContextVar[str] = ContextVar("tool-capacity-marker", default="missing")

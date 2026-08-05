@@ -54,6 +54,43 @@ class _FakeCheckpointManager:
         return {"success": True, "restored_to": commit_hash[:8], "reason": "milestone"}
 
 
+def test_epoch_rollover_uses_bounded_transition_heartbeat(monkeypatch):
+    expected = ([{"role": "user", "content": "fresh"}], {}, {"current": None})
+    captured: dict = {}
+
+    monkeypatch.setattr(
+        runner,
+        "_roll_autonomous_campaign_epoch_unobserved",
+        lambda *_args, **_kwargs: expected,
+    )
+
+    def run_epoch_transition(operation, **kwargs):
+        captured.update(kwargs)
+        return operation()
+
+    monkeypatch.setattr(runner.transition_visibility, "run_epoch_transition", run_epoch_transition)
+    result = runner._roll_autonomous_campaign_epoch(
+        object(),
+        [],
+        {},
+        {},
+        {
+            "campaign_epoch": 3,
+            "current_queue_assignment": {"target_symbol": "demo"},
+        },
+        {},
+        reason="route-no-progress",
+        cycle=4,
+    )
+
+    assert result == expected
+    assert captured["delay_s"] == 5.0
+    assert captured["heartbeat_s"] == 30.0
+    assert captured["previous_epoch"] == 3
+    assert captured["target_symbol"] == "demo"
+    assert captured["reason"] == "route-no-progress"
+
+
 class _ManagedRunAgentStub:
     """Minimal managed-run contract surface (see agent/runtime/managed_run.py) for runner tests.
 
@@ -7923,6 +7960,58 @@ def test_incremental_diagnostic_actions_do_not_count_as_theorem_feedback():
         is False
     )
     assert runner._tool_result_counts_as_theorem_feedback("lean_incremental_check", {}) is True
+
+
+def test_extract_have_inventory_is_read_only_queue_inspection(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    args = {"action": "inventory", "theorem_id": "demo", "file_path": str(active)}
+
+    assert runner._lean_extract_have_is_read_only(args)
+    assert not runner._queue_edit_snapshot_required("lean_extract_have", args)
+    assert not runner._tool_result_counts_as_theorem_feedback("lean_extract_have", args)
+    assert runner._queue_edit_snapshot_required("lean_extract_have", {**args, "action": "extract"})
+    assert runner._tool_result_counts_as_theorem_feedback(
+        "lean_extract_have", {**args, "action": "extract"}
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(
+        runner,
+        "_refresh_live_queue_source_after_managed_edit",
+        lambda *_args, **_kwargs: pytest.fail("inventory must not refresh source"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *_args, **_kwargs: pytest.fail("inventory must not enter the theorem gate"),
+    )
+    runner._handle_managed_tool_result(
+        _Agent(),
+        "lean_extract_have",
+        args,
+        json.dumps(
+            {
+                "success": True,
+                "status": "candidate_inventory",
+                "candidate_count": 1,
+            }
+        ),
+    )
 
 
 def test_terminal_lean_check_only_counts_for_assigned_file():
