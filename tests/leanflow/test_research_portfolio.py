@@ -7477,6 +7477,55 @@ def test_research_handoff_persists_dead_ends_for_exact_assignment(monkeypatch):
     ]
 
 
+def test_research_handoff_backfills_dead_ends_from_delivered_findings(monkeypatch):
+    """Repair durable route memory when resuming a campaign from an older build."""
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    active_file = "/tmp/P4.lean"
+    finding = {
+        "job_id": "campaign.ds-already-delivered",
+        "target_symbol": "result",
+        "active_file": active_file,
+        "deliverable": {
+            "dead_ends": [
+                {
+                    "route": "fixed initial state",
+                    "reason": "The invariant requires a state-dependent witness.",
+                }
+            ]
+        },
+    }
+    summary = {"research_findings": [finding]}
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
+    recorded = []
+    monkeypatch.setattr(
+        runner.plan_state,
+        "record_checkpoint_advisory",
+        lambda **kwargs: recorded.append(kwargs) or True,
+    )
+    marker = research_findings.delivery_key(finding["job_id"], "result")
+    state = {
+        "campaign_id": "campaign",
+        "research_findings_delivered": [marker],
+        "current_queue_assignment": {
+            "target_symbol": "result",
+            "active_file": active_file,
+        },
+    }
+
+    prompt = runner._take_research_findings_prompt(state, None)
+
+    assert prompt == ""
+    assert [record["negative_evidence"] for record in recorded] == [
+        ["fixed initial state: The invariant requires a state-dependent witness."]
+    ]
+
+
 def _partial_congruence_finding(*, failed_shape_count: int = 2, checked: bool = False):
     """Return an em-329-shaped finding with an explicitly incomplete residue leaf."""
     return {

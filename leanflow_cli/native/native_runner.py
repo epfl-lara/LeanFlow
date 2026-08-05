@@ -28475,6 +28475,22 @@ def _take_research_findings_prompt_locked(
                 target_symbol=target_symbol,
             )
         )
+        previously_delivered = [
+            finding
+            for finding in findings
+            if research_findings.was_delivered(
+                finding,
+                target_symbol=target_symbol,
+                delivered=delivered,
+            )
+        ]
+        if previously_delivered:
+            research_portfolio.persist_foreground_negative_evidence(
+                previously_delivered,
+                campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
         # Migration for campaigns that consumed a canonical helper before
         # durable parent-action state existed. Receipt means the model saw the
         # finding, not that the current parent rechecked or inserted it; the
