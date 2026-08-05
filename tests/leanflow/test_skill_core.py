@@ -252,6 +252,9 @@ def test_theorem_queue_worker_skill_is_loadable(monkeypatch, tmp_path):
     assert "Do not read raw `summary.json` or `blueprint.json`" in prompt
     normalized = " ".join(prompt.lower().split())
     assert "blocker is never permission to end an unresolved theorem" in normalized
+    assert "failed proof body and diagnostics in workflow state" in normalized
+    assert "failed declarations are not copied into the source as comments" in normalized
+    assert "comments the current failed declaration above the theorem" not in normalized
     assert "stopping with failure" not in normalized
 
 

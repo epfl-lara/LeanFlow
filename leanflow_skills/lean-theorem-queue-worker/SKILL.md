@@ -107,4 +107,4 @@ When a proof shape fails, summarize the blocker in terms the manager can store a
 request a distinct route (`decompose`, `plan`, or `negate`), and keep the assignment active. A blocker is
 never permission to end an unresolved theorem.
 
-If the API step budget is exhausted before you finish, the runner records the current theorem as a failed attempt and, when it has the original untruncated `sorry` slice, comments the current failed declaration above the theorem and restores that declaration to the safe baseline `sorry` body. That is not success and does not skip the theorem; the next queue cycle resumes the same item with the failed-attempt context.
+If the API step budget is exhausted before you finish, the runner records the exact failed proof body and diagnostics in workflow state, the proof graph, and the dead-branch audit trail. Production Lean source stays on the best verified live state or its safe baseline; failed declarations are not copied into the source as comments. That is not success and does not skip the theorem: the next queue cycle resumes the same item with the failed-attempt context and must try a materially different route.
