@@ -227,6 +227,51 @@ def test_check_file_uses_cached_probe_declaration_replay(monkeypatch, tmp_path):
     ]
 
 
+def test_check_file_uses_canonical_fallback_after_prefix_build_failure(monkeypatch, tmp_path):
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem prior : True := by\n  trivial\n\n"
+        "theorem open_target : True := by\n  sorry\n",
+    )
+    checked_sources: list[str] = []
+
+    class _FakeProbe:
+        def check_target(self, *args, **kwargs):
+            return {
+                "success": False,
+                "ok": False,
+                "error_code": "prior_decl_failed",
+                "error": "failed to build env before target at prior: unexpected end of input",
+            }
+
+    monkeypatch.setattr(li, "_probe", lambda: _FakeProbe())
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    def exact_check(source, **kwargs):
+        checked_sources.append(source)
+        return {"success": True, "ok": True, "output": "", "messages": []}
+
+    monkeypatch.setattr(li, "lean_ephemeral_source_check", exact_check)
+
+    payload = li.lean_incremental_check(
+        action="check_file",
+        file_path=str(target),
+        cwd=str(project),
+    )
+
+    assert checked_sources == [target.read_text(encoding="utf-8")]
+    assert payload["success"] is True
+    assert payload["ok"] is False
+    assert payload["has_errors"] is False
+    assert payload["has_sorry"] is True
+    assert payload["canonical_fallback"] is True
+    assert payload["backend"] == "lean_exact_ephemeral"
+    assert payload["incremental_fallback_error_code"] == "prior_decl_failed"
+
+
 def test_segment_file_keeps_doc_comment_with_declaration():
     header, segments = li._segment_file(
         "\n".join(

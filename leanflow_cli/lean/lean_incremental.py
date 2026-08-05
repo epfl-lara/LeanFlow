@@ -280,6 +280,57 @@ def _canonical_target_fallback(
     }
 
 
+def _canonical_file_fallback(
+    incremental: Mapping[str, Any],
+    *,
+    source_text: str,
+    resolved: Path,
+    project_root: Path,
+    timeout_s: int,
+) -> dict[str, Any]:
+    """Replace a cached prefix-build failure with one exact full-source check."""
+    checked = dict(
+        lean_ephemeral_source_check(
+            source_text,
+            cwd=project_root,
+            timeout_s=max(1, int(timeout_s or 1)),
+        )
+        or {}
+    )
+    backend_ok = checked.get("success") is True and checked.get("ok") is True
+    elaboration_ran = backend_ok or (
+        not bool(checked.get("timed_out"))
+        and str(checked.get("failure_kind", "") or "") == "lean_elaboration"
+    )
+    source_has_placeholder = _replacement_has_placeholder(source_text)
+    incremental_detail = str(
+        incremental.get("error", "")
+        or incremental.get("output", "")
+        or incremental.get("message", "")
+        or ""
+    )
+    return {
+        **checked,
+        "success": elaboration_ran,
+        "ok": backend_ok and not source_has_placeholder,
+        "backend": "lean_exact_ephemeral",
+        "tool": "lake_env_lean",
+        "action": "check_file",
+        "file": str(resolved),
+        "has_errors": elaboration_ran and not backend_ok,
+        "has_sorry": source_has_placeholder,
+        "valid_without_sorry": backend_ok and not source_has_placeholder,
+        "canonical_fallback": True,
+        "incremental_fallback_error_code": str(incremental.get("error_code", "") or ""),
+        "incremental_fallback_reason": incremental_detail[:1000],
+        "error_code": (
+            ""
+            if backend_ok
+            else str(checked.get("error_code", "") or "canonical_elaboration_failed")
+        ),
+    }
+
+
 def _find_segment(segments: list[Any], theorem_id: str) -> Any | None:
     wanted = str(theorem_id or "").strip()
     if not wanted:
@@ -1925,6 +1976,14 @@ def lean_incremental_check(
                         or ""
                     )[:1000],
                 }
+            )
+        elif leanflow_action == "check_file":
+            result = _canonical_file_fallback(
+                result,
+                source_text=source_text,
+                resolved=resolved,
+                project_root=project_root,
+                timeout_s=fallback_timeout_s,
             )
         elif leanflow_action == "check_target" and inline_axiom_query is None:
             result = _canonical_target_fallback(
