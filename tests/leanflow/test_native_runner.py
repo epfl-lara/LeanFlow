@@ -17767,6 +17767,62 @@ def test_target_knowledge_includes_current_planner_evidence(monkeypatch, tmp_pat
     assert "adjacent subset sums and common refinement" in rendered
 
 
+def test_decomposer_args_append_current_banked_helper_authority(monkeypatch, tmp_path):
+    """Override stale helper prose with the exact parent helper ledger."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma durable_helper : True := by trivial\n\n" "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    agent = SimpleNamespace()
+    runner.banked_helper_inspection.remember(
+        agent,
+        active_file=str(active),
+        helper_verifications={
+            "durable_helper": {
+                "ok": True,
+                "errors": 0,
+                "sorry": 0,
+            }
+        },
+        project_root=str(tmp_path),
+    )
+    active.write_text(
+        "lemma durable_helper : True := by trivial\n\n"
+        "theorem demo : True := by\n  have : True := trivial\n  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_target_knowledge_for_assignment",
+        lambda *_args, **_kwargs: "durable_helper was not yet banked",
+    )
+    args = {
+        "theorem_id": "demo",
+        "file_path": str(active),
+        "recent_failed_attempts": "stale history",
+    }
+
+    runner._inject_target_knowledge_into_decomposer_args(
+        agent,
+        "lean_decompose_helpers",
+        args,
+        {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        },
+    )
+
+    rendered = str(args["recent_failed_attempts"])
+    assert "durable_helper was not yet banked" in rendered
+    assert "[LEANFLOW AUTHORITATIVE BANKED-HELPER STATUS]" in rendered
+    assert "verified and banked: `durable_helper`" in rendered
+    assert rendered.rfind("verified and banked") > rendered.rfind("not yet banked")
+
+
 def test_review_agent_records_reverse_route_request_phrase(monkeypatch, tmp_path):
     """Preserve the live prover wording as an explicit orchestration event."""
     active = tmp_path / "Main.lean"

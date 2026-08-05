@@ -48,6 +48,7 @@ class DecomposerPromptContext:
     current_attempt: str
     recent_failed_attempts: str
     source_constraints: str
+    source_availability: str
     stats: dict[str, Any]
 
 
@@ -288,6 +289,57 @@ def _render_source_constraints(constraints: Sequence[SourceConstraint]) -> str:
     return _bounded_text("\n".join(parts), SOURCE_CONSTRAINTS_MAX_CHARS)
 
 
+def _render_source_availability(
+    source_context: DecomposerSourceContext,
+    evidence: str,
+) -> tuple[str, int]:
+    """Render mentioned declarations from the authoritative current source index."""
+    lines = str(evidence or "").splitlines()
+    rendered: list[str] = []
+    stale_claim_count = 0
+    for declaration in source_context.declarations:
+        names = tuple(
+            dict.fromkeys(
+                name
+                for name in (declaration.full_name, declaration.name)
+                if str(name or "").strip()
+            )
+        )
+        matching_lines = [
+            line
+            for line in lines
+            if any(re.search(rf"(?<![\w']){re.escape(name)}(?![\w'])", line) for name in names)
+        ]
+        if not matching_lines:
+            continue
+        placeholder_status = (
+            "contains a placeholder"
+            if declaration.has_placeholder
+            else "present without placeholders"
+        )
+        rendered.append(
+            f"- `{declaration.full_name}`: {placeholder_status} at current-source "
+            f"lines {declaration.start_line}-{declaration.end_line}"
+        )
+        if not declaration.has_placeholder and any(
+            re.search(
+                r"(?:not\s+yet\s+(?:banked|inserted|promoted)|"
+                r"not\s+(?:banked|inserted|present)|unbanked)",
+                line,
+                flags=re.IGNORECASE,
+            )
+            for line in matching_lines
+        ):
+            stale_claim_count += 1
+    if not rendered:
+        return "", 0
+    header = (
+        "Current source declaration index (authoritative for presence; overrides stale "
+        "narrative absence or integration claims):"
+    )
+    return _bounded_text("\n".join([header, *rendered[:16]]), 5_000), stale_claim_count
+
+
 def shape_decomposer_prompt_context(
     *,
     theorem_id: str,
@@ -306,6 +358,19 @@ def shape_decomposer_prompt_context(
         target_end_line=source_context.target_end_line,
     )
     attempts, omitted_attempts = shape_failed_attempts(recent_failed_attempts)
+    availability, stale_status_claims = _render_source_availability(
+        source_context,
+        "\n".join(
+            part
+            for part in (
+                current_diagnostics,
+                current_goals,
+                current_attempt,
+                recent_failed_attempts,
+            )
+            if part
+        ),
+    )
     context = DecomposerPromptContext(
         theorem_statement=_shape_theorem_statement(theorem_statement),
         current_diagnostics=diagnostics,
@@ -313,6 +378,7 @@ def shape_decomposer_prompt_context(
         current_attempt=_bounded_text(current_attempt, CURRENT_ATTEMPT_MAX_CHARS),
         recent_failed_attempts=attempts,
         source_constraints=_render_source_constraints(source_context.constraints),
+        source_availability=availability,
         stats={},
     )
     stats = {
@@ -322,6 +388,7 @@ def shape_decomposer_prompt_context(
         "source_constraint_count": len(source_context.constraints),
         "omitted_diagnostic_count": omitted_diagnostics,
         "omitted_failed_attempt_count": omitted_attempts,
+        "stale_source_status_claim_count": stale_status_claims,
         "section_chars": {
             "theorem_statement": len(context.theorem_statement),
             "current_diagnostics": len(context.current_diagnostics),
@@ -329,6 +396,7 @@ def shape_decomposer_prompt_context(
             "current_attempt": len(context.current_attempt),
             "recent_failed_attempts": len(context.recent_failed_attempts),
             "source_constraints": len(context.source_constraints),
+            "source_availability": len(context.source_availability),
         },
     }
     return DecomposerPromptContext(
@@ -338,6 +406,7 @@ def shape_decomposer_prompt_context(
         current_attempt=context.current_attempt,
         recent_failed_attempts=context.recent_failed_attempts,
         source_constraints=context.source_constraints,
+        source_availability=context.source_availability,
         stats=stats,
     )
 
@@ -376,6 +445,7 @@ def compose_decomposer_user_prompt(
             if source_declarations
             else ""
         ),
+        context.source_availability,
         (
             f"Target-scoped current diagnostics:\n{context.current_diagnostics}"
             if context.current_diagnostics

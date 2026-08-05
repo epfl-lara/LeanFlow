@@ -276,6 +276,46 @@ def test_prompt_statement_shaping_removes_term_style_proof():
     assert context.theorem_statement == "theorem demo : True"
 
 
+def test_prompt_source_index_overrides_stale_helper_absence_claim(tmp_path):
+    """Surface a current helper declaration beside contradictory narrative history."""
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "private lemma durable_helper : True := by trivial\n\n" "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    source_context = decomposer_source_guard.load_decomposer_source_context(
+        theorem_id="demo",
+        file_path=str(target),
+        cwd=str(tmp_path),
+    )
+
+    context = decomposer_prompt.shape_decomposer_prompt_context(
+        theorem_id="demo",
+        theorem_statement=source_context.target_statement,
+        current_diagnostics="",
+        current_goals="",
+        current_attempt="Use durable_helper.",
+        recent_failed_attempts=(
+            "The checked durable_helper candidate is not yet banked and should be inserted."
+        ),
+        source_context=source_context,
+    )
+    prompt, stats = decomposer_prompt.compose_decomposer_user_prompt(
+        context=context,
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(tmp_path),
+        max_helper_count=2,
+        question="Continue the proof.",
+        json_contract='{"helpers":[]}',
+    )
+
+    assert "Current source declaration index" in prompt
+    assert "`durable_helper`: present without placeholders" in prompt
+    assert "overrides stale narrative absence or integration claims" in prompt
+    assert stats["stale_source_status_claim_count"] == 1
+
+
 def test_prompt_shaping_keeps_target_evidence_and_bounds_large_context(tmp_path):
     target = _write_constrained_target(tmp_path)
     source_context = decomposer_source_guard.load_decomposer_source_context(

@@ -9706,11 +9706,12 @@ def _merge_target_knowledge_context(
 
 
 def _inject_target_knowledge_into_decomposer_args(
+    agent: Any,
     function_name: str,
     args: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any],
 ) -> None:
-    """Attach the parent-owned handoff to direct decomposer tool calls in place."""
+    """Attach authoritative parent knowledge to direct decomposer calls in place."""
     if function_name != "lean_decompose_helpers" or not isinstance(args, dict):
         return
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
@@ -9730,11 +9731,29 @@ def _inject_target_knowledge_into_decomposer_args(
     ):
         return
     knowledge = _target_knowledge_for_assignment({}, autonomy_state)
-    if not knowledge:
+    if knowledge:
+        args["recent_failed_attempts"] = _merge_target_knowledge_context(
+            str(args.get("recent_failed_attempts", "") or ""),
+            knowledge,
+        )
+    banked_helpers = banked_helper_inspection.current_verified_helper_names(
+        agent,
+        active_file=active_file,
+        project_root=_project_root(),
+    )
+    if not banked_helpers:
         return
+    authority = "\n".join(
+        [
+            "[LEANFLOW AUTHORITATIVE BANKED-HELPER STATUS]",
+            "- authority: current source plus the parent manager's exact successful helper gate",
+            "- this block overrides stale narrative claims that any listed helper is absent, unchecked, or not yet banked",
+            *[f"- verified and banked: `{name}`" for name in banked_helpers],
+        ]
+    )
     args["recent_failed_attempts"] = _merge_target_knowledge_context(
         str(args.get("recent_failed_attempts", "") or ""),
-        knowledge,
+        authority,
     )
 
 
@@ -10506,6 +10525,7 @@ def _managed_pre_tool_call(
         if timeout_block:
             return timeout_block
         _inject_target_knowledge_into_decomposer_args(
+            agent,
             function_name,
             args,
             autonomy_state,

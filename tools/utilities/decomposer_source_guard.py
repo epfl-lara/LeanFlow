@@ -82,6 +82,17 @@ class SourceConstraint:
 
 
 @dataclass(frozen=True)
+class SourceDeclarationStatus:
+    """Describe one declaration's current source presence and placeholder state."""
+
+    name: str
+    full_name: str
+    start_line: int
+    end_line: int
+    has_placeholder: bool
+
+
+@dataclass(frozen=True)
 class DecomposerSourceContext:
     """Hold target location and target-scoped source constraints."""
 
@@ -89,6 +100,7 @@ class DecomposerSourceContext:
     target_end_line: int = 0
     target_statement: str = ""
     constraints: tuple[SourceConstraint, ...] = ()
+    declarations: tuple[SourceDeclarationStatus, ...] = ()
     source_sha256: str = ""
     status: str = "unavailable"
 
@@ -297,11 +309,24 @@ def load_decomposer_source_context(
                 kind=_constraint_kind(declaration.full_name),
             )
         )
+    declaration_statuses = tuple(
+        SourceDeclarationStatus(
+            name=declaration.name,
+            full_name=declaration.full_name,
+            start_line=declaration.start_line,
+            end_line=declaration.end_line,
+            has_placeholder=bool(
+                _PLACEHOLDER_RE.search(_strip_lean_comments_and_strings(declaration.text))
+            ),
+        )
+        for declaration in declarations
+    )
     return DecomposerSourceContext(
         target_start_line=target.start_line,
         target_end_line=target.end_line,
         target_statement=target.statement,
         constraints=tuple(constraints[:6]),
+        declarations=declaration_statuses,
         source_sha256=source_sha256,
         status="loaded",
     )

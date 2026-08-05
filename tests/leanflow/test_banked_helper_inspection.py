@@ -76,6 +76,32 @@ def test_source_change_invalidates_banked_helper_inspection_reuse(tmp_path):
     )
 
 
+def test_verified_helper_status_survives_unrelated_source_change(tmp_path):
+    """Keep exact helper authority when only the surrounding target changes."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma banked : True := by trivial\n\ntheorem target : True := by sorry\n",
+        encoding="utf-8",
+    )
+    agent = SimpleNamespace()
+    banked_helper_inspection.remember(
+        agent,
+        active_file=str(active),
+        helper_verifications={"banked": _verification()},
+        project_root=str(tmp_path),
+    )
+    active.write_text(
+        "lemma banked : True := by trivial\n\ntheorem target : True := by\n  trivial\n",
+        encoding="utf-8",
+    )
+
+    assert banked_helper_inspection.current_verified_helper_names(
+        agent,
+        active_file=str(active),
+        project_root=str(tmp_path),
+    ) == ("banked",)
+
+
 def test_file_wide_or_different_symbol_inspection_still_runs_real_lean(tmp_path):
     """Keep the reuse surface exact rather than suppressing broad diagnostics."""
     active = tmp_path / "Main.lean"

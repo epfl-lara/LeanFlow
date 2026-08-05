@@ -1399,7 +1399,8 @@ def lean_decompose_helpers_tool(
         "The authoritative referenced declarations in the request are exact source, not "
         "informal hints. Never redefine them, replace their bodies with assumed formulas, or "
         "diagnose an unfold/rewrite without first checking the exact supplied body and the "
-        "intermediate Lean goal. "
+        "intermediate Lean goal. Current-source declaration availability and the parent "
+        "manager's banked-helper status override contradictory narrative history. "
         f"{decomposer_admission.DECOMPOSITION_ADMISSION_PROMPT_CONTRACT}"
         "Prefer local/private helper lemmas and concrete proof hints over broad strategy."
     )

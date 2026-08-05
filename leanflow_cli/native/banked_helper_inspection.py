@@ -8,6 +8,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.lean.lean_parsing import _declaration_entries_by_name_from_text
+
 _BANKED_HELPER_STATE_ATTR = "_managed_banked_helper_inspections"
 
 
@@ -30,6 +32,15 @@ def _source_sha256(path: Path) -> str:
         return ""
 
 
+def _declaration_sha256_by_name(source: str) -> dict[str, str]:
+    """Return exact declaration digests keyed by their parsed source names."""
+    return {
+        name: hashlib.sha256(str(entry.get("text", "") or "").encode("utf-8")).hexdigest()
+        for name, entry in _declaration_entries_by_name_from_text(source).items()
+        if str(entry.get("text", "") or "").strip()
+    }
+
+
 def remember(
     agent: Any,
     *,
@@ -44,6 +55,10 @@ def remember(
     source_sha256 = _source_sha256(path)
     if not source_sha256:
         return ()
+    try:
+        declaration_digests = _declaration_sha256_by_name(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        declaration_digests = {}
     raw_state = getattr(agent, _BANKED_HELPER_STATE_ATTR, None)
     state = dict(raw_state) if isinstance(raw_state, Mapping) else {}
     remembered: list[str] = []
@@ -61,11 +76,55 @@ def remember(
             "helper_symbol": helper_name,
             "active_file": str(path),
             "source_sha256": source_sha256,
+            "declaration_sha256": declaration_digests.get(helper_name, ""),
             "verification": verification,
         }
         remembered.append(helper_name)
     setattr(agent, _BANKED_HELPER_STATE_ATTR, state)
     return tuple(remembered)
+
+
+def current_verified_helper_names(
+    agent: Any,
+    *,
+    active_file: str,
+    project_root: str,
+) -> tuple[str, ...]:
+    """Return authenticated helpers still present unchanged in current source.
+
+    An exact whole-file revision match supports records created by older LeanFlow
+    versions. New records also retain the helper declaration digest, allowing an
+    unrelated target edit to change the file while preserving helper authority.
+    """
+    path = _canonical_file(active_file, project_root=project_root)
+    if path is None:
+        return ()
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ()
+    current_source_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    declaration_digests = _declaration_sha256_by_name(source)
+    raw_state = getattr(agent, _BANKED_HELPER_STATE_ATTR, None)
+    state = dict(raw_state) if isinstance(raw_state, Mapping) else {}
+    verified: list[str] = []
+    for raw_name, raw_record in state.items():
+        helper_name = str(raw_name or "").strip()
+        record = dict(raw_record) if isinstance(raw_record, Mapping) else {}
+        if (
+            not helper_name
+            or str(record.get("active_file", "") or "") != str(path)
+            or helper_name not in declaration_digests
+        ):
+            continue
+        exact_source = str(record.get("source_sha256", "") or "") == current_source_sha256
+        recorded_declaration = str(record.get("declaration_sha256", "") or "")
+        exact_declaration = bool(
+            recorded_declaration and declaration_digests.get(helper_name) == recorded_declaration
+        )
+        if exact_source or exact_declaration:
+            verified.append(helper_name)
+    return tuple(sorted(set(verified)))
 
 
 def reused_lean_inspection(
@@ -99,8 +158,9 @@ def reused_lean_inspection(
         return None
     current_sha256 = _source_sha256(requested_file)
     if not current_sha256 or current_sha256 != str(record.get("source_sha256", "") or ""):
-        state.pop(helper_name, None)
-        setattr(agent, _BANKED_HELPER_STATE_ATTR, state)
+        # Exact inspection reuse is whole-file scoped, but keep the declaration
+        # record available for source-index handoffs. Its own digest still
+        # decides whether helper authority survives unrelated source drift.
         return None
 
     verification = dict(record.get("verification") or {})
