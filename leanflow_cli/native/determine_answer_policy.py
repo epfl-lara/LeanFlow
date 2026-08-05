@@ -306,10 +306,142 @@ def prompt(
             f"- {names} elaborated, but remains provisional until `{consumer_target}` verifies",
             "- the dependent theorem is the mathematical acceptance gate; compilation of a set/value guess alone is not evidence that the answer is correct",
             "- if proof search, a counterexample, or verified research contradicts the proposal, revise the coupled answer definition in this turn and continue—do not keep trying to prove a false frozen statement",
+            "- any revision must remain an independent mathematical characterization; never copy the consumer theorem's property into the answer definition merely to make the theorem reflexive",
+            "- proof difficulty alone is not evidence that the proposed answer is false",
             "- preserve the research ledger and record rejected candidate answers and dead branches before changing the proposal",
             f"- only a clean kernel gate for `{consumer_target}` promotes the coupled answer",
         ]
     )
+
+
+def _top_level_token(text: str, token: str, *, start: int = 0) -> int:
+    """Return the first token outside Lean bracket groups, or ``-1``."""
+    opening = {"(": ")", "[": "]", "{": "}"}
+    closing = set(opening.values())
+    stack: list[str] = []
+    index = max(0, start)
+    while index < len(text):
+        character = text[index]
+        if character in opening:
+            stack.append(opening[character])
+        elif character in closing:
+            if stack and character == stack[-1]:
+                stack.pop()
+        elif not stack and text.startswith(token, index):
+            return index
+        index += 1
+    return -1
+
+
+def _declaration_type_and_body(source: str) -> tuple[str, str]:
+    """Return one declaration's top-level type and value/proof body."""
+    stripped = _strip_lean_comments_and_strings(source)
+    declaration = re.search(
+        r"\b(?:def|abbrev|theorem|lemma)\s+[A-Za-z_][A-Za-z0-9_'.]*",
+        stripped,
+    )
+    if declaration is None:
+        return "", ""
+    type_start = _top_level_token(stripped, ":", start=declaration.end())
+    body_start = _top_level_token(stripped, ":=", start=declaration.end())
+    if body_start < 0:
+        return "", ""
+    declaration_type = (
+        stripped[type_start + 1 : body_start].strip() if 0 <= type_start < body_start else ""
+    )
+    return declaration_type, stripped[body_start + 2 :].strip()
+
+
+def _top_level_equality_sides(statement: str) -> tuple[str, str] | None:
+    """Split a determination theorem type at its top-level equality."""
+    equality = _top_level_token(statement, "=")
+    if equality < 0:
+        return None
+    return statement[:equality].strip(), statement[equality + 1 :].strip()
+
+
+def _normalized_expression(source: str) -> str:
+    """Normalize superficial notation used in answer/consumer comparisons."""
+    normalized = re.sub(r"\s+", "", str(source or ""))
+    normalized = normalized.replace("_root_.", "").replace("Real.pi", "π")
+    while normalized.startswith("(") and normalized.endswith(")"):
+        normalized = normalized[1:-1]
+    return normalized
+
+
+def _references_exact_name(source: str, name: str) -> bool:
+    """Return whether an expression references one declaration name exactly."""
+    short = _short_name(name)
+    return bool(
+        short
+        and re.search(
+            rf"(?<![A-Za-z0-9_']){re.escape(short)}(?![A-Za-z0-9_'])",
+            source,
+        )
+    )
+
+
+def trivializing_answer_revisions(
+    state: Mapping[str, Any] | None,
+    *,
+    consumer_target: str,
+    consumer_file: str,
+    before_source: str,
+    after_source: str,
+) -> tuple[str, ...]:
+    """Return coupled answers revised to copy the consumer's opposite equality side.
+
+    A determine answer may be revised while its characterization is proved, but
+    defining it as the exact property being characterized turns the theorem into
+    a tautology. Detect that structural shortcut before source mutation.
+    """
+    editable = editable_answer_names(
+        state,
+        consumer_target=consumer_target,
+        consumer_file=consumer_file,
+    )
+    if not editable:
+        return ()
+    before_entries = _declaration_line_index_from_text(before_source)
+    after_entries = _declaration_line_index_from_text(after_source)
+
+    def declaration(entries: Sequence[Mapping[str, Any]], name: str) -> str:
+        short = _short_name(name)
+        return next(
+            (
+                str(entry.get("text", "") or "")
+                for entry in entries
+                if _short_name(str(entry.get("name", "") or "")) == short
+            ),
+            "",
+        )
+
+    consumer_source = declaration(after_entries, consumer_target)
+    consumer_type, _consumer_body = _declaration_type_and_body(consumer_source)
+    sides = _top_level_equality_sides(consumer_type)
+    if sides is None:
+        return ()
+    left, right = sides
+    blocked: list[str] = []
+    for answer_name in sorted(editable):
+        before_answer = declaration(before_entries, answer_name)
+        after_answer = declaration(after_entries, answer_name)
+        if not before_answer or not after_answer or before_answer == after_answer:
+            continue
+        _answer_type, answer_body = _declaration_type_and_body(after_answer)
+        if not answer_body:
+            continue
+        opposite_sides: list[str] = []
+        if _references_exact_name(left, answer_name):
+            opposite_sides.append(right)
+        if _references_exact_name(right, answer_name):
+            opposite_sides.append(left)
+        if any(
+            _normalized_expression(answer_body) == _normalized_expression(opposite)
+            for opposite in opposite_sides
+        ):
+            blocked.append(answer_name)
+    return tuple(blocked)
 
 
 def without_editable_answers(

@@ -702,6 +702,73 @@ def test_profiled_check_target_uses_canonical_fallback_after_prefix_build_failur
     assert payload["axiom_profile_axioms"] == ["propext"]
 
 
+def test_profiled_canonical_fallback_retains_exact_error_diagnostic(monkeypatch, tmp_path):
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
+    )
+
+    class _FakeProbe:
+        def check_target(self, *args, **kwargs):
+            return {
+                "success": False,
+                "ok": False,
+                "error_code": "prior_decl_failed",
+                "error": "failed to build env before target at prior",
+            }
+
+    monkeypatch.setattr(li, "_probe", lambda: _FakeProbe())
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    def exact_check(source, **kwargs):
+        begin = re.search(r"LEANFLOW_INCREMENTAL_AXIOMS_BEGIN_[A-F0-9]+", source)
+        end = re.search(r"LEANFLOW_INCREMENTAL_AXIOMS_END_[A-F0-9]+", source)
+        assert begin is not None and end is not None
+        return {
+            "success": False,
+            "ok": False,
+            "timed_out": False,
+            "failure_kind": "lean_elaboration",
+            "error": "Main.lean:8:2: error(lean.unsolvedGoals): unsolved goals",
+            "output": "\n".join(
+                (
+                    "Main.lean:3:1: warning: earlier warning",
+                    "Main.lean:8:2: error(lean.unsolvedGoals): unsolved goals",
+                    f'"{begin.group(0)}" : String',
+                    "'demo' depends on axioms: [sorryAx]",
+                    f'"{end.group(0)}" : String',
+                )
+            ),
+            "messages": [],
+        }
+
+    monkeypatch.setattr(li, "lean_ephemeral_source_check", exact_check)
+
+    payload = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        include_axiom_profile=True,
+    )
+
+    assert payload["ok"] is False
+    assert payload["axiom_profile_checked"] is True
+    assert payload["messages"][0] == {
+        "severity": "warning",
+        "message": "earlier warning",
+        "line": 3,
+    }
+    assert payload["messages"][1] == {
+        "severity": "error",
+        "message": "unsolved goals",
+        "line": 8,
+    }
+
+
 def test_feedback_uses_canonical_fallback_after_prefix_build_failure(monkeypatch, tmp_path):
     project, target = _write_project(
         tmp_path,
@@ -2218,6 +2285,26 @@ def test_failed_helper_check_bounds_replayed_diagnostics():
     assert bounded["messages_truncated"] == {"kept": 4, "total": 20}
     assert bounded["tactics_truncated"]["total"] == 30
     assert "diagnostic text truncated" in bounded["feedback_lean"]
+
+
+def test_failed_check_payload_keeps_late_error_before_earlier_warnings():
+    payload = {
+        "ok": False,
+        "action": "check_target",
+        "messages": [
+            *[{"severity": "warning", "message": f"warning {index}"} for index in range(12)],
+            {"severity": "error", "message": "actual blocker"},
+        ],
+        "output": "x" * 30_000,
+    }
+
+    bounded = li._bound_failed_check_payload(payload, max_chars=4_000)
+
+    assert bounded["messages"][0] == {
+        "severity": "error",
+        "message": "actual blocker",
+    }
+    assert bounded["messages_truncated"]["total"] == 13
 
 
 def test_successful_check_keeps_complete_evidence():

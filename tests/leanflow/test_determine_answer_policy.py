@@ -350,6 +350,82 @@ def test_result_turn_queue_guard_allows_coupled_answer_revision(monkeypatch, tmp
     assert "def answer : Set Nat := {2}" in active.read_text(encoding="utf-8")
 
 
+def test_trivializing_answer_revision_is_detected(tmp_path):
+    active = str(tmp_path / "Main.lean")
+    dependency = policy.DetermineAnswerDependency(
+        answer_target="answer",
+        answer_file=active,
+        consumer_target="result",
+        consumer_file=active,
+    )
+    state: dict = {}
+    policy.register(state, dependency, verification=_answer_verification())
+    before = (
+        "def answer : Set ℝ := {θ | θ = 1}\n"
+        "theorem result : {θ : ℝ | 0 < θ ∧ θ < π ∧ Wins θ} = answer := by\n  sorry\n"
+    )
+    after = (
+        "def answer : Set ℝ := {θ : ℝ | 0 < θ ∧ θ < Real.pi ∧ Wins θ}\n"
+        "theorem result : {θ : ℝ | 0 < θ ∧ θ < π ∧ Wins θ} = answer := by\n  rfl\n"
+    )
+
+    assert policy.trivializing_answer_revisions(
+        state,
+        consumer_target="result",
+        consumer_file=active,
+        before_source=before,
+        after_source=after,
+    ) == ("answer",)
+
+
+def test_trivializing_answer_revision_is_blocked_before_edit(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "def answer : Set ℝ := {θ | θ = 1}\n"
+        "theorem result : {θ : ℝ | 0 < θ ∧ θ < π ∧ Wins θ} = answer := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    dependency = policy.DetermineAnswerDependency(
+        answer_target="answer",
+        answer_file=str(active),
+        consumer_target="result",
+        consumer_file=str(active),
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "result",
+            "active_file": str(active),
+        }
+    }
+    policy.register(autonomy_state, dependency, verification=_answer_verification())
+
+    class Agent:
+        _managed_autonomy_state = autonomy_state
+
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+-def answer : Set ℝ := {θ | θ = 1}
++def answer : Set ℝ := {θ : ℝ | 0 < θ ∧ θ < Real.pi ∧ Wins θ}
+@@
+-  sorry
++  rfl
+*** End Patch"""
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+
+    result = runner._determine_answer_trivialization_pre_tool_guard(
+        Agent(),
+        "apply_verified_patch",
+        {"path": str(active), "patch": patch},
+        autonomy_state,
+    )
+
+    assert result is not None
+    assert "determine_answer_trivialization_rejected" in result
+    assert '"lean_started": false' in result
+    assert active.read_text(encoding="utf-8").startswith("def answer : Set ℝ := {θ | θ = 1}")
+
+
 def test_provisional_outcome_is_not_recorded_as_failed_attempt():
     autonomy_state = {
         "current_queue_assignment": {

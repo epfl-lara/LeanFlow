@@ -35,6 +35,19 @@ def test_diagnostic_items_parses_standard_lines():
     ]
 
 
+def test_diagnostic_items_parses_lean_error_codes():
+    out = ld.diagnostic_items(
+        "File.lean:12:7: error(lean.synthInstanceFailed): failed to synthesize Nonempty P"
+    )
+    assert out == [
+        {
+            "severity": "error",
+            "message": "failed to synthesize Nonempty P",
+            "line": 12,
+        }
+    ]
+
+
 def test_diagnostic_items_parses_json_payload():
     # A JSON list of LSP-style diagnostics is normalized to severity/message/line records, with the
     # line read from a nested range.start.line.

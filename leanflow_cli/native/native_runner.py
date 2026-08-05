@@ -9399,6 +9399,85 @@ def _direct_self_reference_source_patch_guard(
     )
 
 
+def _determine_answer_trivialization_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Reject answer revisions that copy the consumer property verbatim."""
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not _managed_edit_targets_assignment(
+            args,
+            active_file,
+            function_name=function_name,
+        )
+    ):
+        return None
+    try:
+        before_text = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    after_text = managed_edit_rollback.preview_candidate_source(
+        function_name,
+        args,
+        before_text,
+    )
+    if not after_text:
+        return None
+    answer_names = determine_answer_policy.trivializing_answer_revisions(
+        autonomy_state,
+        consumer_target=target_symbol,
+        consumer_file=active_file,
+        before_source=before_text,
+        after_source=after_text,
+    )
+    if not answer_names:
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "determine-answer-trivialization-blocked",
+            f"Blocked tautological answer revision while proving {target_symbol}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            answer_names=list(answer_names),
+            blocked_tool=function_name,
+            provider_called=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "determine_answer_trivialization_rejected",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "answer_names": list(answer_names),
+            "patch_applied": False,
+            "check_passed": False,
+            "provider_called": False,
+            "lean_started": False,
+            "required_action": (
+                "Do not define a provisional answer as the exact property on the other side "
+                "of its characterizing equality. That makes the theorem tautological rather "
+                "than determining the requested value. Keep an independent mathematical "
+                "characterization; revise it only from concrete contradictory evidence, then "
+                "prove the original characterization non-reflexively."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _clean_room_queue_support_edit_guard(
     function_name: str,
     args: Mapping[str, Any] | None,
@@ -10586,6 +10665,14 @@ def _managed_pre_tool_call(
         )
         if diagnostic_patch_guard:
             return diagnostic_patch_guard
+        determine_answer_guard = _determine_answer_trivialization_pre_tool_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if determine_answer_guard:
+            return determine_answer_guard
         self_reference_guard = _direct_self_reference_source_patch_guard(
             agent,
             function_name,
@@ -11542,14 +11629,12 @@ def _queue_edit_snapshot_is_accepted(snapshot: Mapping[str, Any]) -> bool:
         current_text,
     ):
         return False
-        before_preamble = _queue_edit_assigned_preamble(before_text, target_symbol)
-        current_preamble = _queue_edit_assigned_preamble(current_text, target_symbol)
-        if (
-            before_preamble is None
-            or current_preamble is None
-            or current_preamble != before_preamble
-        ):
-            return False
+    before_preamble = _queue_edit_assigned_preamble(before_text, target_symbol)
+    current_preamble = _queue_edit_assigned_preamble(current_text, target_symbol)
+    if _workflow_kind() == "prove" and (
+        before_preamble is None or current_preamble is None or current_preamble != before_preamble
+    ):
+        return False
     protected = list(snapshot.get("protected_declarations") or ())
     return not _queue_edit_changed_protected_declarations(protected, current_text)
 

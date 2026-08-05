@@ -24,6 +24,7 @@ from core.project_resource_admission import (
 )
 from core.runtime_modes import dispatch_worker_enabled, low_memory_mode_enabled
 from leanflow_cli.lean.lean_command_timeout import configured_hard_timeout_s
+from leanflow_cli.lean.lean_diagnostics import diagnostic_items
 from leanflow_cli.lean.lean_ephemeral import lean_ephemeral_source_check
 from leanflow_cli.lean.lean_helper_ephemeral import check_helper_ephemerally
 from leanflow_cli.lean.lean_incremental_axioms import (
@@ -396,6 +397,20 @@ def _canonical_file_fallback(
     }
 
 
+def _canonical_output_messages(output: str) -> list[dict[str, Any]]:
+    """Return ordered exact-Lean output lines with actionable severities restored."""
+    messages: list[dict[str, Any]] = []
+    for line in str(output or "").splitlines():
+        if not line.strip():
+            continue
+        parsed = diagnostic_items(line)
+        if parsed:
+            messages.append(parsed[0])
+        else:
+            messages.append({"severity": "information", "message": line})
+    return messages
+
+
 def _find_segment(segments: list[Any], theorem_id: str) -> Any | None:
     wanted = str(theorem_id or "").strip()
     if not wanted:
@@ -704,8 +719,26 @@ def _bound_failed_check_payload(result: dict[str, Any], max_chars: int) -> dict[
 
     messages = bounded.get("messages")
     if isinstance(messages, list):
+        messages = sorted(
+            enumerate(messages),
+            key=lambda item: (
+                {
+                    "error": 0,
+                    "warning": 1,
+                }.get(
+                    (
+                        str(item[1].get("severity", "") or "").lower()
+                        if isinstance(item[1], Mapping)
+                        else ""
+                    ),
+                    2,
+                ),
+                item[0],
+            ),
+        )
+        prioritized_messages = [message for _index, message in messages]
         compact_messages: list[Any] = []
-        for message in messages[:8]:
+        for message in prioritized_messages[:8]:
             if not isinstance(message, dict):
                 compact_messages.append(message)
                 continue
@@ -714,10 +747,10 @@ def _bound_failed_check_payload(result: dict[str, Any], max_chars: int) -> dict[
                 compact["message"] = _truncate_diagnostic_text(compact["message"], 1600)
             compact_messages.append(compact)
         bounded["messages"] = compact_messages
-        if len(messages) > len(compact_messages):
+        if len(prioritized_messages) > len(compact_messages):
             bounded["messages_truncated"] = {
                 "kept": len(compact_messages),
-                "total": len(messages),
+                "total": len(prioritized_messages),
             }
 
     for field in ("error", "output"):
@@ -2062,11 +2095,7 @@ def lean_incremental_check(
             )
             if inline_axiom_query is not None and result.get("canonical_fallback"):
                 output = str(result.get("output", "") or "")
-                result["messages"] = [
-                    {"severity": "information", "message": line}
-                    for line in output.splitlines()
-                    if line.strip()
-                ]
+                result["messages"] = _canonical_output_messages(output)
         elif leanflow_action == "feedback":
             result = _canonical_feedback_fallback(
                 result,

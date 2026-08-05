@@ -148,7 +148,8 @@ def diagnostic_items(text: str) -> list[dict[str, Any]]:
     # realistic diagnostics. (Note: `\s*` can still span a newline, exactly as before — so a
     # diagnostic whose message wraps to a continuation line parses identically to the old regex.)
     pattern = re.compile(
-        r"^(?P<prefix>.*?):(?P<line>\d+):(?P<column>\d+):\s*(?P<severity>error|warning):\s*(?P<message>.*)$",
+        r"^(?P<prefix>.*?):(?P<line>\d+):(?P<column>\d+):\s*"
+        r"(?P<severity>error|warning)(?:\([^)]*\))?:\s*(?P<message>.*)$",
         flags=re.IGNORECASE | re.MULTILINE,
     )
     for match in pattern.finditer(text or ""):
