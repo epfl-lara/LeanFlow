@@ -173,6 +173,9 @@ tool is reachable through the public registry.
   applications remain available.
   Rejected-edit identity, replay preview, hard-diagnostic classification, and
   atomic exact-after-image restoration live in `managed_edit_rollback.py`.
+  One-read recovery after an unchanged verified-patch anchor miss lives in
+  `source_refresh_admission.py`; it admits the exact current-source refresh even
+  when the construction-source window is otherwise closed.
   Scratch-style names on newly generated helpers are rejected before source
   mutation by `generated_helper_name_policy.py`, keeping exploratory fragments
   in LeanProbe or durable dead-branch artifacts until they have a mathematical role.

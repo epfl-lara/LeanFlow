@@ -113,6 +113,7 @@ from leanflow_cli.native import (
     source_only_startup,
     source_order_dependency_guard,
     source_placeholder_guard,
+    source_refresh_admission,
     support_module_materialization,
     terminal_authority,
     terminal_check_policy,
@@ -7822,13 +7823,17 @@ def _remember_rollback_refresh_read(
     target_symbol: str,
     active_file: str,
     source_revision_sha256: str,
+    reason: str = "rollback",
 ) -> None:
-    """Reserve one exact source reread after a rejected edit is restored."""
-    autonomy_state[ROLLBACK_REFRESH_READ_STATE_KEY] = {
+    """Reserve one exact source reread after an edit loses its source anchor."""
+    pending = {
         "target_symbol": target_symbol,
         "active_file": active_file,
         "source_revision_sha256": source_revision_sha256,
     }
+    if reason != "rollback":
+        pending["reason"] = reason
+    autonomy_state[ROLLBACK_REFRESH_READ_STATE_KEY] = pending
 
 
 def _rollback_refresh_read_matches(
@@ -7859,12 +7864,22 @@ def _rollback_refresh_read_matches(
     ).strip()
     if not requested_file or not _same_active_file(requested_file, active_file):
         return False
+    if source_refresh_admission.bounded_patch_anchor_read_matches(
+        pending,
+        function_name=function_name,
+        args=args,
+        active_file=active_file,
+    ):
+        return True
+    try:
+        requested_start = int(dict(args or {}).get("offset", 0) or 0)
+        requested_limit = int(dict(args or {}).get("limit", 0) or 0)
+    except (TypeError, ValueError):
+        return False
     entry = _find_declaration_entry(active_file, target_symbol)
     if entry is None:
         return False
     try:
-        requested_start = int(dict(args or {}).get("offset", 0) or 0)
-        requested_limit = int(dict(args or {}).get("limit", 0) or 0)
         target_start = int(entry.get("line", 0) or 0)
         target_end = int(entry.get("end_line", 0) or 0)
     except (TypeError, ValueError):
@@ -7907,6 +7922,8 @@ def _rollback_refresh_edit_guard(
     if not _rollback_refresh_required_for_assignment(autonomy_state):
         return None
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    pending = dict(autonomy_state.get(ROLLBACK_REFRESH_READ_STATE_KEY) or {})
+    anchor_miss = source_refresh_admission.is_patch_anchor_miss(pending)
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
     active_file = str(assignment.get("active_file", "") or "").strip()
     if not _managed_edit_targets_assignment(args, active_file, function_name=function_name):
@@ -7914,8 +7931,16 @@ def _rollback_refresh_edit_guard(
     with contextlib.suppress(Exception):
         _record_agent_activity(
             agent,
-            "rollback-refresh-edit-blocked",
-            f"Blocked stale follow-up edit for restored declaration {target_symbol}",
+            (
+                "patch-anchor-refresh-edit-blocked"
+                if anchor_miss
+                else "rollback-refresh-edit-blocked"
+            ),
+            (
+                f"Blocked stale follow-up edit after a patch anchor miss for {target_symbol}"
+                if anchor_miss
+                else f"Blocked stale follow-up edit for restored declaration {target_symbol}"
+            ),
             target_symbol=target_symbol,
             active_file=active_file,
             blocked_tool=function_name,
@@ -7934,9 +7959,17 @@ def _rollback_refresh_edit_guard(
             "provider_called": False,
             "lean_started": False,
             "required_action": (
-                "The previous candidate was rolled back. Re-read one source range covering the "
-                "complete restored assigned declaration, then submit the complete corrected edit "
-                "against that restored source rather than a delta against the discarded candidate."
+                (
+                    "The previous patch missed its source anchor. Re-read one bounded current-source "
+                    "range covering the failed insertion or replacement anchor, then submit the same "
+                    "verified construction against that current source."
+                )
+                if anchor_miss
+                else (
+                    "The previous candidate was rolled back. Re-read one source range covering the "
+                    "complete restored assigned declaration, then submit the complete corrected edit "
+                    "against that restored source rather than a delta against the discarded candidate."
+                )
             ),
         },
         ensure_ascii=False,
@@ -14382,19 +14415,58 @@ def _handle_managed_tool_result(
     exact_check_source_snapshot = _take_exact_check_source_snapshot(agent, function_name)
     _sync_disabled_tools_from_result(agent, function_name, _result)
     autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+    patch_anchor_refresh_reserved = False
+    if isinstance(autonomy_state, dict):
+        assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+        anchor_reservation = source_refresh_admission.patch_anchor_miss_reservation(
+            function_name=function_name,
+            args=args,
+            payload=_json_tool_result_payload(_result),
+            target_symbol=str(assignment.get("target_symbol", "") or "").strip(),
+            active_file=str(assignment.get("active_file", "") or "").strip(),
+            source_revision_sha256=_source_revision_sha256(
+                str(assignment.get("active_file", "") or "").strip()
+            ),
+        )
+        if anchor_reservation is not None:
+            autonomy_state[ROLLBACK_REFRESH_READ_STATE_KEY] = anchor_reservation
+            patch_anchor_refresh_reserved = True
+    if patch_anchor_refresh_reserved:
+        with contextlib.suppress(Exception):
+            assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+            _record_agent_activity(
+                agent,
+                "patch-anchor-refresh-read-required",
+                "Reserved one source reread after a managed patch anchor miss",
+                target_symbol=str(assignment.get("target_symbol", "") or ""),
+                active_file=str(assignment.get("active_file", "") or ""),
+                blocked_by_construction_budget=False,
+                campaign_progress=False,
+            )
     rollback_refresh_read_completed = bool(
         isinstance(autonomy_state, dict)
         and _rollback_refresh_read_matches(autonomy_state, function_name, args)
         and _managed_tool_result_succeeded(_result)
     )
     if rollback_refresh_read_completed and isinstance(autonomy_state, dict):
+        refresh_reason = str(
+            dict(autonomy_state.get(ROLLBACK_REFRESH_READ_STATE_KEY) or {}).get("reason", "") or ""
+        )
         autonomy_state.pop(ROLLBACK_REFRESH_READ_STATE_KEY, None)
         with contextlib.suppress(Exception):
             assignment = dict(autonomy_state.get("current_queue_assignment") or {})
             _record_agent_activity(
                 agent,
-                "rollback-refresh-read-completed",
-                "Completed the manager-required source reread after exact rollback",
+                (
+                    "patch-anchor-refresh-read-completed"
+                    if refresh_reason == source_refresh_admission.PATCH_ANCHOR_MISS_REASON
+                    else "rollback-refresh-read-completed"
+                ),
+                (
+                    "Completed the source reread after a managed patch anchor miss"
+                    if refresh_reason == source_refresh_admission.PATCH_ANCHOR_MISS_REASON
+                    else "Completed the manager-required source reread after exact rollback"
+                ),
                 target_symbol=str(assignment.get("target_symbol", "") or ""),
                 active_file=str(assignment.get("active_file", "") or ""),
                 campaign_progress=False,

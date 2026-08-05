@@ -194,6 +194,7 @@ files = [
   "leanflow_cli/native/terminal_check_policy.py",
   "leanflow_cli/native/scope_entry_admission.py",
   "leanflow_cli/native/search_synthesis_admission.py",
+  "leanflow_cli/native/source_refresh_admission.py",
   "leanflow_cli/native/helper_integration_admission.py",
   "leanflow_cli/native/warning_cleanup_guard.py",
   "leanflow_cli/native/transition_visibility.py",
