@@ -9376,7 +9376,12 @@ def _direct_self_reference_source_patch_guard(
     """Reject an immediate assigned-target cycle before mutation or Lean work."""
     supported_edits = {"patch", "write_file", "apply_verified_patch"}
     incremental_candidate = function_name == "lean_incremental_check"
-    if function_name not in supported_edits and not incremental_candidate:
+    multi_attempt_candidate = function_name == "lean_multi_attempt"
+    if (
+        function_name not in supported_edits
+        and not incremental_candidate
+        and not multi_attempt_candidate
+    ):
         return None
     arguments = dict(args or {})
     if incremental_candidate and str(arguments.get("action", "") or "").strip().lower() not in {
@@ -9401,19 +9406,51 @@ def _direct_self_reference_source_patch_guard(
         before_text = Path(active_file).read_text(encoding="utf-8")
     except OSError:
         return None
-    candidate = (
-        str(arguments.get("replacement", "") or "").strip()
-        if incremental_candidate
-        else _preview_managed_candidate_declaration(
-            function_name,
-            args,
-            before_text=before_text,
-            target_symbol=target_symbol,
+    if multi_attempt_candidate:
+        raw_attempts = list(arguments.get("attempts") or [])
+        filtered_attempts = [
+            attempt
+            for attempt in raw_attempts
+            if not direct_self_reference.is_direct_self_reference_tactic(
+                str(attempt or ""),
+                target_symbol,
+            )
+        ]
+        removed_count = len(raw_attempts) - len(filtered_attempts)
+        if not removed_count:
+            return None
+        if filtered_attempts and isinstance(args, MutableMapping):
+            args["attempts"] = filtered_attempts
+            with contextlib.suppress(Exception):
+                _record_agent_activity(
+                    agent,
+                    "direct-self-reference-attempts-filtered",
+                    f"Removed {removed_count} bare self-reference attempt(s) for {target_symbol}",
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    blocked_tool=function_name,
+                    removed_attempts=removed_count,
+                    retained_attempts=len(filtered_attempts),
+                    provider_called=False,
+                    lean_started=False,
+                    campaign_progress=False,
+                )
+            return None
+        candidate = "\n".join(str(attempt or "") for attempt in raw_attempts)
+    else:
+        candidate = (
+            str(arguments.get("replacement", "") or "").strip()
+            if incremental_candidate
+            else _preview_managed_candidate_declaration(
+                function_name,
+                args,
+                before_text=before_text,
+                target_symbol=target_symbol,
+            )
         )
-    )
-    if not candidate or not direct_self_reference.is_direct_self_reference(
-        candidate,
-        target_symbol,
+    if not candidate or (
+        not multi_attempt_candidate
+        and not direct_self_reference.is_direct_self_reference(candidate, target_symbol)
     ):
         return None
     with contextlib.suppress(Exception):

@@ -32747,6 +32747,76 @@ def test_direct_self_reference_incremental_candidate_is_rejected_before_lean(tmp
     assert events[-1][0][1] == "direct-self-reference-candidate-blocked"
 
 
+def test_direct_self_reference_multi_attempts_are_filtered_before_lean(tmp_path, monkeypatch):
+    """Keep useful alternatives while dropping bare circular multi-attempt tactics."""
+    active = tmp_path / "Main.lean"
+    source = "theorem result : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "result",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    arguments = {
+        "file_path": str(active),
+        "line": 1,
+        "attempts": [
+            "exact result",
+            "exact IMO2026P4.result",
+            "exact True.intro",
+        ],
+    }
+
+    result = runner._direct_self_reference_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "lean_multi_attempt",
+        arguments,
+        state,
+    )
+
+    assert result is None
+    assert arguments["attempts"] == ["exact True.intro"]
+    assert events[-1][0][1] == "direct-self-reference-attempts-filtered"
+
+
+def test_all_circular_multi_attempts_are_rejected_before_lean(tmp_path):
+    active = tmp_path / "Main.lean"
+    source = "theorem result : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "result",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+
+    result = runner._direct_self_reference_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "lean_multi_attempt",
+        {
+            "file_path": str(active),
+            "line": 1,
+            "attempts": ["exact result", "simpa using IMO2026P4.result"],
+        },
+        state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "direct_self_reference_rejected"
+    assert payload["blocked_tool"] == "lean_multi_attempt"
+    assert payload["lean_started"] is False
+
+
 def test_rejected_verified_patch_reaches_failed_attempt_boundary(tmp_path, monkeypatch):
     """A transactional rollback must retain the rejected declaration identity."""
     active = tmp_path / "Main.lean"
