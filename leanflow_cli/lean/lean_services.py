@@ -2098,7 +2098,9 @@ def lean_multi_attempt(
 ) -> dict[str, Any]:
     """Test 2-6 short tactics, correcting safe line-only proof locations."""
     report = probe_capabilities(cwd)
+    requested_attempt_count = sum(1 for item in list(attempts or []) if str(item or "").strip())
     normalized_attempts = _normalize_multi_attempt_candidates(attempts)
+    duplicate_attempts_removed = max(0, requested_attempt_count - len(normalized_attempts))
     validation_reasons = _multi_attempt_validation_reasons(normalized_attempts)
     canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
     if validation_reasons:
@@ -2118,6 +2120,7 @@ def lean_multi_attempt(
             "line": line,
             "column": column,
             "attempts": normalized_attempts,
+            "duplicate_attempts_removed": duplicate_attempts_removed,
             "action_required": "provide 2-6 short local tactic candidates at one proof location",
         }
         append_workflow_outcome("lean-multi-attempt", payload)
@@ -2131,6 +2134,7 @@ def lean_multi_attempt(
         "line": resolved_line,
         "column": resolved_column,
         "attempts": normalized_attempts,
+        "duplicate_attempts_removed": duplicate_attempts_removed,
     }
     if adjustment in {"previous_tactic_line_after_blank", "trailing_placeholder"}:
         location_details.update(

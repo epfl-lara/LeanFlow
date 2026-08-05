@@ -1262,6 +1262,8 @@ def journal_delta_changes(changes: Sequence[Mapping[str, Any]], *, generated_by:
 _GROUNDING_CAP = 40
 _STRATEGY_CAP = 20
 _STRATEGY_SCOPE_KEY = "strategy_notes_scope"
+_CHECKPOINT_ADVISORY_CAP = 20
+_CHECKPOINT_ADVISORY_ITEM_CAP = 8
 
 
 def _normalized_strategy_scope(value: Any) -> dict[str, str]:
@@ -1339,6 +1341,77 @@ def merge_planner_findings(
             seen_strategy.add(text)
     merged["strategy_notes"] = current_strategy[:_STRATEGY_CAP]
     return merged
+
+
+def record_checkpoint_advisory(
+    *,
+    checkpoint_id: str,
+    created_at: str,
+    target_symbol: str,
+    active_file: str,
+    negative_evidence: Sequence[str],
+) -> bool:
+    """Persist scoped checkpoint dead-branch evidence and report whether it changed.
+
+    The evidence remains explicitly advisory: it can prevent duplicate route
+    exploration but cannot promote graph truth or replace a fresh Lean check.
+    """
+    scope = _normalized_strategy_scope({"target_symbol": target_symbol, "active_file": active_file})
+    items = []
+    for value in negative_evidence:
+        text = _bounded_line(value, 500)
+        if text and text not in items:
+            items.append(text)
+        if len(items) >= _CHECKPOINT_ADVISORY_ITEM_CAP:
+            break
+    if not scope or not checkpoint_id or not items:
+        return False
+
+    def mutate(summary: dict[str, Any]) -> None:
+        current = [
+            dict(entry)
+            for entry in (summary.get("checkpoint_advisories") or [])
+            if isinstance(entry, Mapping)
+        ]
+        current = [
+            entry for entry in current if str(entry.get("checkpoint_id", "")) != checkpoint_id
+        ]
+        current.append(
+            {
+                "checkpoint_id": checkpoint_id,
+                "created_at": str(created_at or ""),
+                **scope,
+                "negative_evidence": items,
+                "authority": "advisory-negative-evidence",
+            }
+        )
+        summary["checkpoint_advisories"] = current[-_CHECKPOINT_ADVISORY_CAP:]
+
+    update_json_file(plan_state_paths().summary_json, mutate)
+    return True
+
+
+def _current_checkpoint_advisory(
+    summary: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the newest advisory record for the exact live assignment."""
+    if not assignment:
+        return {}
+    for raw in reversed(list(summary.get("checkpoint_advisories") or [])):
+        if not isinstance(raw, Mapping):
+            continue
+        if _strategy_scope_matches(raw, assignment):
+            evidence = []
+            for value in raw.get("negative_evidence") or []:
+                text = _bounded_line(value, 500)
+                if text:
+                    evidence.append(text)
+                if len(evidence) >= _CHECKPOINT_ADVISORY_ITEM_CAP:
+                    break
+            if evidence:
+                return {**dict(raw), "negative_evidence": evidence}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -1702,6 +1775,17 @@ def render_plan_md(
         lines.extend(f"- {_bounded_line(note)}" for note in strategy[:20])
     if not assignment and not current_route and not strategy:
         lines.append("- [none yet]")
+    checkpoint_advisory = _current_checkpoint_advisory(summary, assignment)
+    if checkpoint_advisory:
+        lines.extend(["", "## Advisory dead-branch record", ""])
+        lines.append(
+            "- checkpoint evidence is route-history guidance only; revalidate it against the "
+            "current source and Lean state before relying on it"
+        )
+        lines.extend(
+            f"- {_bounded_line(item, 500)}"
+            for item in checkpoint_advisory.get("negative_evidence", [])
+        )
     lines.extend(["", "## Frontier", ""])
     frontier = _assignment_dependency_frontier(bp, assignment)
     if assignment:
@@ -2006,6 +2090,17 @@ def resume_context_block(*, current_queue_assignment: Mapping[str, Any] | None =
             "- routing metadata boundary: route identities, triggers, sources, epochs, and "
             "diversity streaks are operational only; advisory route rationales are omitted "
             "because they are not kernel-verified mathematical facts"
+        )
+    checkpoint_advisory = _current_checkpoint_advisory(summary, assignment)
+    if checkpoint_advisory:
+        lines.append(
+            "- advisory dead-branch boundary: the following checkpoint conclusions prevent "
+            "duplicate exploration but are not kernel-verified facts; refresh source and Lean "
+            "state before relying on them"
+        )
+        lines.extend(
+            f"- prior negative evidence: {_bounded_line(item, 500)}"
+            for item in checkpoint_advisory.get("negative_evidence", [])
         )
     for node in _assignment_dependency_frontier(bp, assignment)[:8]:
         label = "dependency frontier" if assignment else "frontier"

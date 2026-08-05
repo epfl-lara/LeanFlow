@@ -49,7 +49,15 @@ def _summarize_attempt_diagnostics(attempts: list[dict[str, Any]]) -> list[str]:
 
 
 def _normalize_multi_attempt_candidates(attempts: list[str]) -> list[str]:
-    return [str(item or "").strip() for item in list(attempts or []) if str(item or "").strip()]
+    """Return non-empty, trimmed, order-preserving distinct tactic candidates."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in list(attempts or []):
+        text = str(item or "").strip()
+        if text and text not in seen:
+            normalized.append(text)
+            seen.add(text)
+    return normalized
 
 
 def _multi_attempt_validation_reasons(attempts: list[str]) -> list[str]:

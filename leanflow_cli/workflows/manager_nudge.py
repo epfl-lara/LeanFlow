@@ -2,8 +2,9 @@
 
 The deterministic queue manager and Lean kernel have already judged the
 attempt before this module is consulted. The coach can only acknowledge
-verified progress and encourage the prover to execute its assigned route; it
-cannot select a route, launch work, change a verdict, or stop a campaign.
+verified progress and encourage the prover to execute the route assigned by
+the orchestrator; it cannot select a route, launch work, change a verdict, or
+stop a campaign.
 
 ``LEANFLOW_MANAGER_LLM_MODE`` controls only the model call: ``off`` uses the
 deterministic fallback, ``dark`` logs the model result while still applying
@@ -85,8 +86,9 @@ _SYSTEM_PROMPT = (
     "You are LeanFlow's persistence coach — optimistic, warm, and concrete. A "
     "deterministic Lean kernel gate has already judged this attempt; you can NEVER "
     "change that verdict. Your only job is to encourage the prover to keep executing "
-    "the route already assigned by the "
-    "orchestrator. Difficulty is useful evidence, never permission to stop. Do not "
+    "the route assigned by the orchestrator. If deterministic routing has requested "
+    "a refresh, encourage the prover to follow the next assigned route instead of "
+    "continuing the exhausted one. Difficulty is useful evidence, never permission to stop. Do not "
     "choose a strategy, propose a job, claim success, or use surrender language. "
     "Deterministic code appends any verified proof progress separately. Your message "
     "must not mention or infer Lean or kernel state, proof artifacts, compilation, "
@@ -225,14 +227,21 @@ def fallback_nudge(packet: Mapping[str, Any]) -> NudgeResult:
         )
     else:
         progress_action = "Preserve the effort and diagnostic evidence from this turn"
+    reroute_requested = bool(packet.get("reroute_requested"))
+    if reroute_requested:
+        route_action = "follow the orchestrator's next assigned route"
+        commitment = "execute_assigned_route"
+    else:
+        route_action = f"follow the assigned {assigned_route}"
+        commitment = "continue_current_route"
     message = (
-        f"This rejection is evidence, not an ending. {progress_action}, follow the assigned "
-        f"{assigned_route}, and make the next distinct Lean-checked attempt."
+        f"This rejection is evidence, not an ending. {progress_action}, {route_action}, "
+        "and make the next distinct Lean-checked attempt."
     )
     return NudgeResult(
         message=message,
         progress_acknowledged=_kernel_owned_acknowledgements(packet),
-        commitment="continue_current_route",
+        commitment=commitment,
         raw_status="fallback",
     )
 
@@ -282,8 +291,13 @@ def build_nudge_prompt(report: StruggleReport, packet: Mapping[str, Any]) -> tup
             "new candidate, scaffold, proof shape, or attempt compiled."
         ),
         "",
-        "The orchestrator has already assigned a route. Do not name, restate, or elaborate it.",
-        "Write only positive encouragement to continue the assigned route. You may call "
+        (
+            "Deterministic routing has requested a route refresh. Encourage continued work "
+            "through the orchestrator's next assigned route; do not encourage the exhausted route."
+            if report.severity.value == "reroute"
+            else "The orchestrator has already assigned a route. Do not name, restate, or elaborate it."
+        ),
+        "Write only positive encouragement to execute the assigned route. You may call "
         "the rejection useful evidence or acknowledge effort and a recorded blocker, but "
         "make no Lean or proof-state assertion. Reply with strict JSON only.",
     ]

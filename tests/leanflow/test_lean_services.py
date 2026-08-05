@@ -3094,6 +3094,19 @@ def test_lean_multi_attempt_requires_exact_target_check_for_probe_success(monkey
         exact_calls.append(dict(kwargs))
         if kwargs["action"] == "prepare_file":
             return {"success": True, "ok": True, "cache": {"cache_hit": False}}
+        if str(kwargs.get("replacement", "")).endswith("  nlinarith"):
+            return {
+                "success": True,
+                "target_verified": False,
+                "status": "failed",
+                "messages": [
+                    {"severity": "warning", "message": "try simp instead"},
+                    {
+                        "severity": "error",
+                        "message": "linarith failed at the selected local goal",
+                    },
+                ],
+            }
         return {
             "success": True,
             "target_verified": False,
@@ -3129,6 +3142,8 @@ def test_lean_multi_attempt_requires_exact_target_check_for_probe_success(monkey
     assert payload["items"][0]["goals_available"] is False
     assert payload["items"][0]["exact_check"]["success"] is False
     assert payload["items"][0]["exact_check"]["backend_success"] is True
+    assert payload["exact_checks"][0]["error"] == "linarith failed at the selected local goal"
+    assert payload["items"][0]["diagnostics"][0]["severity"] == "error"
     assert "exact-target" in payload["action_required"]
 
 
@@ -3347,6 +3362,13 @@ def test_lean_multi_attempt_rejects_invalid_candidate_count_before_backend_call(
         "expects 2-6 concrete tactic candidates" in reason for reason in payload["degraded_reasons"]
     )
     assert "patch the file" in " ".join(payload["degraded_reasons"])
+
+    duplicate_payload = lean_services.lean_multi_attempt(
+        "Demo/Main.lean", 12, ["ring", " ring "], cwd=project
+    )
+    assert duplicate_payload["success"] is False
+    assert duplicate_payload["attempts"] == ["ring"]
+    assert duplicate_payload["duplicate_attempts_removed"] == 1
 
 
 def test_lean_multi_attempt_rejects_full_proof_blocks_and_sorry(monkeypatch, tmp_path):

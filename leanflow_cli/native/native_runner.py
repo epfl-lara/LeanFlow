@@ -6045,10 +6045,38 @@ def _maybe_manager_nudge(
                 "attempts": attempt_entries,
                 "api_calls": ctx.api_calls,
                 "max_iterations": ctx.max_iterations,
+                "reroute_requested": report.severity is struggle_signals.Severity.REROUTE,
             }
         )
     except Exception:
         logger.debug("manager nudge state enrichment failed", exc_info=True)
+
+    if report.severity is struggle_signals.Severity.REROUTE:
+        try:
+            event_scope = _orchestrator_event_scope(autonomy_state)
+            epoch = int(autonomy_state.get("campaign_epoch", 0) or 0)
+            watermark = orchestrator_event_watermark.publish_once(
+                autonomy_state,
+                scope=event_scope,
+                source=f"manager-struggle-reroute:epoch-{epoch}",
+                reason=(
+                    f"struggle classifier requested a distinct route for {target_symbol}; "
+                    "the persistence coach must not continue the exhausted route"
+                ),
+            )
+            _record_activity(
+                "manager-struggle-reroute-requested",
+                f"Requested orchestration after persistent rejected work on {target_symbol}",
+                target_symbol=target_symbol,
+                active_file=active_file,
+                epoch=epoch,
+                severity=report.severity.value,
+                signals=report.to_payload()["signals"],
+                orchestrator_event_watermark=watermark,
+                campaign_progress=False,
+            )
+        except Exception:
+            logger.debug("manager struggle reroute publication failed", exc_info=True)
 
     # One provider conversation may submit several distinct temporary proof
     # candidates. Bind coverage to the durable failed-attempt identity and its
@@ -21178,6 +21206,19 @@ def _write_workflow_checkpoint(
     index_entries.append(entry)
     _save_workflow_index(index_entries)
     _write_current_checkpoint(entry)
+    with contextlib.suppress(Exception):
+        active_file = str((live_state or {}).get("active_file", "") or "").strip()
+        if not active_file and len(active_files) == 1:
+            active_file = str(active_files[0])
+        advisory_recorded = plan_state.record_checkpoint_advisory(
+            checkpoint_id=checkpoint_id,
+            created_at=str(entry["created_at"]),
+            target_symbol=target_symbol,
+            active_file=active_file,
+            negative_evidence=checkpoint_handoff.extract_negative_evidence(summary_text),
+        )
+        if advisory_recorded:
+            plan_state.save_plan_md(plan_state.load_blueprint(), plan_state.load_summary())
     _record_activity(
         "checkpoint",
         f"{label} ({trigger})",

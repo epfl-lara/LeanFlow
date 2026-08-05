@@ -12,6 +12,7 @@ from leanflow_cli.lean.lean_parsing import _strip_lean_comments_and_strings
 
 MULTI_ATTEMPT_PREPARE_TIMEOUT_S = 300
 MULTI_ATTEMPT_CANDIDATE_TIMEOUT_S = 30
+MULTI_ATTEMPT_FEEDBACK_CHARS = 900
 
 IncrementalCheck = Callable[..., dict[str, Any]]
 
@@ -44,6 +45,45 @@ def _incremental_check_timed_out(check: Mapping[str, Any]) -> bool:
     )
 
 
+def _actionable_check_error(check: Mapping[str, Any]) -> str:
+    """Return one bounded error-first diagnostic from an incremental check."""
+    direct = str(check.get("error", "") or "").strip()
+    if direct:
+        return direct[:MULTI_ATTEMPT_FEEDBACK_CHARS]
+    messages = [
+        dict(message) for message in (check.get("messages") or []) if isinstance(message, Mapping)
+    ]
+    ordered = sorted(
+        enumerate(messages),
+        key=lambda item: (
+            0 if str(item[1].get("severity", "") or "").strip().lower() == "error" else 1,
+            item[0],
+        ),
+    )
+    for _, message in ordered:
+        text = str(message.get("message", "") or "").strip()
+        if text:
+            return text[:MULTI_ATTEMPT_FEEDBACK_CHARS]
+    return str(check.get("output", "") or "").strip()[:MULTI_ATTEMPT_FEEDBACK_CHARS]
+
+
+def _error_first_messages(check: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return diagnostics with actionable errors before warnings, preserving ties."""
+    messages = [
+        dict(message) for message in (check.get("messages") or []) if isinstance(message, Mapping)
+    ]
+    return [
+        message
+        for _, message in sorted(
+            enumerate(messages),
+            key=lambda item: (
+                0 if str(item[1].get("severity", "") or "").strip().lower() == "error" else 1,
+                item[0],
+            ),
+        )
+    ]
+
+
 def _exact_check_summary(check: Mapping[str, Any], *, verified: bool) -> dict[str, Any]:
     """Build the bounded exact-check fields exposed by multi-attempt results."""
     return {
@@ -51,7 +91,7 @@ def _exact_check_summary(check: Mapping[str, Any], *, verified: bool) -> dict[st
         "backend_success": bool(check.get("success")),
         "target_verified": verified,
         "status": str(check.get("status", "") or ""),
-        "error": str(check.get("error", "") or ""),
+        "error": _actionable_check_error(check),
         "error_code": str(check.get("error_code", "") or ""),
         "timed_out": _incremental_check_timed_out(check),
         "elapsed_s": check.get("elapsed_s", 0),
@@ -167,7 +207,7 @@ def screen_multi_attempts_with_lean_probe(
                 "snippet": snippet,
                 "goals": None,
                 "goals_available": False,
-                "diagnostics": list(check.get("messages") or []),
+                "diagnostics": _error_first_messages(check),
                 "timed_out": exact_check["timed_out"],
                 "probe_closed_goal": verified,
                 "verified": verified,

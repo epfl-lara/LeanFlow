@@ -815,6 +815,51 @@ def test_resume_context_privileges_current_inventory_over_historical_notes(enabl
     assert "FreshShape" not in block  # declaration bodies stay source-owned, not prompt-owned
 
 
+def test_resume_context_preserves_only_exact_scope_checkpoint_negative_evidence(enabled):
+    current_file = "Demo.lean"
+    target = GraphNode(
+        id=plan_state.node_id_for("current_helper", current_file),
+        name="current_helper",
+        file=current_file,
+        statement="theorem current_helper : True := by sorry",
+        status="proving",
+    )
+    plan_state.save_blueprint(Blueprint(goal="prove current_helper", nodes=(target,)))
+    plan_state.save_queue_manager_state(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "current_helper",
+                "active_file": current_file,
+            }
+        }
+    )
+    assert plan_state.record_checkpoint_advisory(
+        checkpoint_id="old-scope",
+        created_at="2026-08-05T00:00:00+00:00",
+        target_symbol="retired_helper",
+        active_file=current_file,
+        negative_evidence=["Do not repeat the stale theorem route."],
+    )
+    assert plan_state.record_checkpoint_advisory(
+        checkpoint_id="current-scope",
+        created_at="2026-08-05T00:01:00+00:00",
+        target_symbol="current_helper",
+        active_file=current_file,
+        negative_evidence=["The predecessor map reaches the forbidden boundary value."],
+    )
+
+    block = plan_state.resume_context_block()
+    plan_state.save_plan_md(plan_state.load_blueprint(), plan_state.load_summary())
+    generated_plan = plan_state.read_generated_plan_prompt_view()
+
+    assert "advisory dead-branch boundary" in block
+    assert "prior negative evidence: The predecessor map reaches" in block
+    assert "stale theorem route" not in block
+    assert "## Advisory dead-branch record" in generated_plan
+    assert "predecessor map reaches" in generated_plan
+    assert "stale theorem route" not in generated_plan
+
+
 def test_write_final_report_is_persisted_and_journaled(enabled):
     plan_state.save_blueprint(_demo_blueprint())
 

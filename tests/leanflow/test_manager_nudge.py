@@ -453,6 +453,20 @@ def test_fallback_is_positive_and_message_only():
     assert no_helpers.progress_acknowledged == ()
 
 
+def test_reroute_fallback_waits_for_next_assignment_instead_of_exhausted_route():
+    fallback = manager_nudge.fallback_nudge(
+        {
+            "proved_helpers": [],
+            "assigned_route": "plan",
+            "reroute_requested": True,
+        }
+    )
+
+    assert fallback.commitment == "execute_assigned_route"
+    assert "next assigned route" in fallback.message
+    assert "assigned plan" not in fallback.message
+
+
 def test_record_nudge_caps_log_and_emits_activity(monkeypatch, tmp_path):
     monkeypatch.setattr(manager_nudge, "workflow_state_root", lambda: tmp_path)
     events: list[tuple] = []
@@ -746,6 +760,41 @@ def test_hook_off_mode_uses_deterministic_fallback(monkeypatch):
 
     assert "[PERSISTENCE COACH]" in guidance
     assert "evidence, not an ending" in guidance
+
+
+def test_hook_reroute_signal_publishes_one_orchestrator_event_per_epoch(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+    monkeypatch.setattr(runner.manager_nudge, "record_nudge", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    state = _hook_state()
+    state["campaign_epoch"] = 7
+    state["current_cycle"] = 4
+
+    first = runner._maybe_manager_nudge(
+        state,
+        {"ok": False, "feedback_kind": "sorry"},
+        target_symbol="demo",
+        active_file="Demo/Main.lean",
+    )
+    produced = state["orchestrator_event_watermark"]
+    state["current_cycle"] = 5
+    state["_failed_attempt_provider_turn"] = {
+        "campaign_id": "campaign",
+        "epoch": 7,
+        "nonce": 2,
+    }
+    second = runner._maybe_manager_nudge(
+        state,
+        {"ok": False, "feedback_kind": "sorry"},
+        target_symbol="demo",
+        active_file="Demo/Main.lean",
+    )
+
+    assert "next assigned route" in first
+    assert "next assigned route" in second
+    assert produced == 1
+    assert state["orchestrator_event_watermark"] == produced
+    assert state["orchestrator_event_acknowledged"] == 0
 
 
 def test_hook_dark_mode_logs_model_but_applies_fallback(monkeypatch):

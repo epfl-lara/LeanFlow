@@ -38,6 +38,9 @@ def test_lean_services_reexports_are_identical():
 
 def test_normalize_multi_attempt_candidates_trims_and_drops_empty():
     assert h._normalize_multi_attempt_candidates(["  simp ", "", "  ", "ring"]) == ["simp", "ring"]
+    assert h._normalize_multi_attempt_candidates(
+        [" exact hfirst ", "linarith [hfirst]", "exact hfirst"]
+    ) == ["exact hfirst", "linarith [hfirst]"]
     assert h._normalize_multi_attempt_candidates(None) == []
 
 
