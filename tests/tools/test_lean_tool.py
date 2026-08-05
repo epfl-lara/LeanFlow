@@ -1174,7 +1174,7 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
     assert "preserve the declaration exactly" not in payload["next_step"]
     assert captured["task"] == "lean_reasoning"
     assert captured["max_tokens"] == 64000
-    assert captured["timeout"] == 360
+    assert captured["timeout"] == 600
     assert captured["isolate"] is True
     system_prompt = captured["messages"][0]["content"]
     assert "advisory only" in system_prompt
@@ -2156,7 +2156,7 @@ def test_advisor_timeout_schemas_keep_bounded_default_and_small_floor():
         "default": lean_experts.LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S,
         "minimum": lean_experts.LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S,
     }
-    assert reasoning_timeout["default"] == decomposition_timeout["default"] == 360
+    assert reasoning_timeout["default"] == decomposition_timeout["default"] == 600
     assert reasoning_timeout["minimum"] == decomposition_timeout["minimum"] == 10
 
 
@@ -2185,7 +2185,7 @@ def test_advisor_registry_preserves_explicit_timeout_and_defaults_only_when_omit
     lean_tool.registry.dispatch(tool_name, {**required, "timeout_s": 0})
     lean_tool.registry.dispatch(tool_name, required)
 
-    assert [call["timeout_s"] for call in captured] == [37, 0, 360]
+    assert [call["timeout_s"] for call in captured] == [37, 0, 600]
 
 
 def test_lean_decompose_helpers_reports_malformed_json(monkeypatch):
