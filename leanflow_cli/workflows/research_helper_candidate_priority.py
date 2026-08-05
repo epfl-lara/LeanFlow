@@ -49,9 +49,9 @@ _HYDRATION_KEY = "_research_helper_candidate_hydration_token"
 _PROCESS_HYDRATION_TOKEN = uuid.uuid4().hex
 _UNSET = object()
 _PARENT_RECHECK_EVIDENCE_VERSION = "parent-helper-recheck-v1"
-_EVIDENCE_ONLY_HELPER_NAME_RE = re.compile(
-    r"(?:^|_)(?:counterexample|probe|obstruction|not_universal|without_universal|"
-    r"false_of)(?:_|$)|(?:^|_)(?:do|does)_not(?:_|$)"
+_NONPRODUCTION_HELPER_NAME_RE = re.compile(
+    r"(?:^|_)(?:scratch|temp|test|tmp|counterexample|probe|obstruction|not_universal|"
+    r"without_universal|false_of)(?:_|$)|(?:^|_)(?:do|does)_not(?:_|$)"
 )
 
 
@@ -78,16 +78,16 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
 
 
-def _helper_name_is_evidence_only(name: str) -> bool:
-    """Return whether a checked declaration is named as route evidence.
+def _helper_name_is_nonproduction(name: str) -> bool:
+    """Return whether a checked declaration is unsuitable for source integration.
 
-    Scratch probes, counterexamples, and explicit method obstructions may be
-    kernel-valid while remaining unsuitable for mandatory production-source
+    Scratch/test helpers, counterexamples, and explicit method obstructions may
+    be kernel-valid while remaining unsuitable for mandatory production-source
     integration. Keep them available to the research graph without letting an
     incorrect worker disposition preempt the foreground proof.
     """
     short_name = str(name or "").strip().rsplit(".", 1)[-1].casefold()
-    return bool(short_name and _EVIDENCE_ONLY_HELPER_NAME_RE.search(short_name))
+    return bool(short_name and _NONPRODUCTION_HELPER_NAME_RE.search(short_name))
 
 
 def _normalized_axioms(values: Sequence[object]) -> tuple[str, ...]:
@@ -398,6 +398,7 @@ class PendingResearchHelperCandidate:
             or candidate.candidate_id != expected_id
             or state not in _VALID_STATES
             or recheck_status not in _VALID_RECHECK_STATUSES
+            or _helper_name_is_nonproduction(helper_name)
         ):
             return None
         return candidate
@@ -725,7 +726,7 @@ def _remember_exact_candidate(
         or len(normalized_declaration) > MAX_DECLARATION_CHARS
         or _text_has_sorry(normalized_declaration)
         or _contains_lean_suggestion_tactic(normalized_declaration)
-        or _helper_name_is_evidence_only(normalized_name)
+        or _helper_name_is_nonproduction(normalized_name)
     ):
         return None
     entries = _declaration_line_index_from_text(normalized_declaration)

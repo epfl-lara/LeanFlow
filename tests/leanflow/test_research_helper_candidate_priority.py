@@ -268,6 +268,28 @@ def test_evidence_named_helper_is_not_registered_despite_worker_disposition(
     )
 
 
+def test_scratch_named_checked_helper_cannot_become_integration_priority(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    finding = _finding(str(active))
+    name = "cast_add_test"
+    declaration = f"private lemma {name} : True := by\n  trivial"
+    finding["deliverable"]["checked_helpers"] = [
+        _checked_helper(str(active), name=name, declaration=declaration)
+    ]
+
+    remembered = priority.remember_from_findings(
+        {},
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert remembered is None
+
+
 def test_legacy_explicitly_nonadvancing_helper_is_not_registered(monkeypatch, tmp_path):
     active = tmp_path / "Demo.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
