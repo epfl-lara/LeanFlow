@@ -9560,6 +9560,65 @@ def _decompose_route_source_revision(active_file: str) -> str:
         return ""
 
 
+def _mechanical_decomposer_circuit_block(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+    target_revision_sha256: str,
+) -> decomposer.DecomposeOutcome | None:
+    """Return a no-provider outcome when the shared advisor budget is exhausted."""
+    if not advisor_failure_circuit.preflight_blocked(
+        function_name="lean_decompose_helpers",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        source_revision_sha256=source_revision_sha256,
+        target_revision_sha256=target_revision_sha256,
+        campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
+    ):
+        return None
+    return decomposer.DecomposeOutcome(
+        ok=False,
+        reason=(
+            "two reasoning/decomposition advisor requests already failed for this "
+            "unchanged declaration; the mechanical route did not make a third provider call"
+        ),
+        advisor_success=False,
+        advisor_status="advisor_retry_exhausted",
+        advisor_provider_called=False,
+    )
+
+
+def _observe_mechanical_decomposer_advisor(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+    target_revision_sha256: str,
+    outcome: decomposer.DecomposeOutcome,
+) -> None:
+    """Charge one provider-backed mechanical decomposition to the shared circuit."""
+    if outcome.advisor_success is None:
+        return
+    payload: dict[str, Any] = {
+        "success": outcome.advisor_success,
+        "status": outcome.advisor_status,
+    }
+    if outcome.advisor_provider_called is not None:
+        payload["provider_called"] = outcome.advisor_provider_called
+    advisor_failure_circuit.observe_result(
+        function_name="lean_decompose_helpers",
+        result_text=json.dumps(payload),
+        target_symbol=target_symbol,
+        active_file=active_file,
+        source_revision_sha256=source_revision_sha256,
+        target_revision_sha256=target_revision_sha256,
+        campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
+    )
+
+
 def _arm_decompose_route_repeat_guard(
     autonomy_state: dict[str, Any],
     *,
@@ -30502,17 +30561,48 @@ def _orchestrator_apply_route(
                     _recent_failed_attempts_summary(autonomy_state, live_state),
                     _target_knowledge_for_assignment(live_state, autonomy_state),
                 )
-                outcome = decomposer.run_decomposer(
+                advisor_source_revision = _source_revision_sha256(active_file)
+                advisor_target_revision = _target_declaration_sha256(
+                    active_file,
+                    target_symbol,
+                )
+                outcome = _mechanical_decomposer_circuit_block(
+                    autonomy_state,
                     target_symbol=target_symbol,
                     active_file=active_file,
-                    statement=str(assignment.get("slice", "") or ""),
-                    diagnostics=str(current.get("diagnostics", "") or ""),
-                    goals=str(current.get("goals", "") or ""),
-                    failed_attempts_text=failed_attempts_context,
-                    allowed_axioms=sorted(_allowed_axioms()),
-                    cwd=_project_root(),
-                    agent=agent,
+                    source_revision_sha256=advisor_source_revision,
+                    target_revision_sha256=advisor_target_revision,
                 )
+                if outcome is None:
+                    outcome = decomposer.run_decomposer(
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        statement=str(assignment.get("slice", "") or ""),
+                        diagnostics=str(current.get("diagnostics", "") or ""),
+                        goals=str(current.get("goals", "") or ""),
+                        failed_attempts_text=failed_attempts_context,
+                        allowed_axioms=sorted(_allowed_axioms()),
+                        cwd=_project_root(),
+                        agent=agent,
+                    )
+                    _observe_mechanical_decomposer_advisor(
+                        autonomy_state,
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        source_revision_sha256=advisor_source_revision,
+                        target_revision_sha256=advisor_target_revision,
+                        outcome=outcome,
+                    )
+                else:
+                    _record_activity(
+                        "advisor-failure-family-blocked",
+                        "Blocked a mechanical decomposition provider call after two unchanged-target failures",
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        blocked_tool="lean_decompose_helpers",
+                        provider_called=False,
+                        campaign_progress=False,
+                    )
                 _record_activity(
                     "decomposer",
                     f"Mechanical decomposition for {target_symbol}: "

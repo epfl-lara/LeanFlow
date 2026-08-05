@@ -2456,12 +2456,21 @@ class TestRunDecomposer:
 
     def test_backend_failure_is_a_clean_fallback(self, monkeypatch, tmp_path):
         active = _file(tmp_path)
-        _backend(monkeypatch, helpers=[], success=False)
+        _backend(
+            monkeypatch,
+            helpers=[],
+            success=False,
+            status="timeout",
+            provider_called=True,
+        )
 
         outcome = run_decomposer(target_symbol="demo", active_file=str(active))
 
         assert not outcome.ok
         assert isinstance(outcome, DecomposeOutcome)
+        assert outcome.advisor_success is False
+        assert outcome.advisor_status == "timeout"
+        assert outcome.advisor_provider_called is True
 
     def test_no_guarded_helpers_reports_reason(self, monkeypatch, tmp_path):
         active = _file(tmp_path)
@@ -2489,6 +2498,7 @@ class TestRunDecomposer:
         assert outcome.to_payload()["first_concrete_next_edit"] == (
             outcome.first_concrete_next_edit
         )
+        assert outcome.advisor_success is True
 
     def test_no_guarded_helpers_bounds_first_concrete_next_edit(self, monkeypatch, tmp_path):
         active = _file(tmp_path)

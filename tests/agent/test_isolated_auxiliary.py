@@ -640,10 +640,15 @@ time.sleep(60)
     owner = threading.Thread(target=run, daemon=True)
     owner.start()
     deadline = time.monotonic() + 3
-    while not child_pid_file.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert child_pid_file.exists()
-    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    child_pid = 0
+    while time.monotonic() < deadline:
+        try:
+            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.01)
+            continue
+        break
+    assert child_pid > 0
 
     started = time.monotonic()
     try:

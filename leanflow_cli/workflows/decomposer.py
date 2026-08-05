@@ -89,6 +89,8 @@ def _bounded_first_concrete_next_edit(value: Any) -> str:
 
 @dataclass(frozen=True)
 class DecomposeOutcome:
+    """Report decomposition placement and the underlying advisor call status."""
+
     ok: bool
     reason: str = ""
     placed: tuple[str, ...] = ()
@@ -98,6 +100,9 @@ class DecomposeOutcome:
     obstacle_summary: str = ""
     recommended_split: str = ""
     first_concrete_next_edit: str = ""
+    advisor_success: bool | None = None
+    advisor_status: str = ""
+    advisor_provider_called: bool | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -110,6 +115,9 @@ class DecomposeOutcome:
             "obstacle_summary": self.obstacle_summary,
             "recommended_split": self.recommended_split,
             "first_concrete_next_edit": self.first_concrete_next_edit,
+            "advisor_success": self.advisor_success,
+            "advisor_status": self.advisor_status,
+            "advisor_provider_called": self.advisor_provider_called,
         }
 
 
@@ -1916,9 +1924,18 @@ def run_decomposer(
     except Exception as exc:
         logger.debug("decomposer backend failed", exc_info=True)
         return DecomposeOutcome(ok=False, reason=f"decomposition backend failed: {exc}")
+    advisor_success = payload.get("success") is True
+    advisor_status = str(payload.get("status", "") or "").strip()
+    advisor_provider_called = payload.get("provider_called")
+    if not isinstance(advisor_provider_called, bool):
+        advisor_provider_called = None
     if not payload.get("success"):
         return DecomposeOutcome(
-            ok=False, reason=str(payload.get("message", "") or "backend returned no helpers")
+            ok=False,
+            reason=str(payload.get("message", "") or "backend returned no helpers"),
+            advisor_success=advisor_success,
+            advisor_status=advisor_status,
+            advisor_provider_called=advisor_provider_called,
         )
     obstacle_summary = str(payload.get("obstacle_summary", "") or "").strip()
     recommended_split = str(payload.get("recommended_split", "") or "").strip()
@@ -2016,6 +2033,9 @@ def run_decomposer(
             obstacle_summary=obstacle_summary,
             recommended_split=recommended_split,
             first_concrete_next_edit=first_concrete_next_edit,
+            advisor_success=advisor_success,
+            advisor_status=advisor_status,
+            advisor_provider_called=advisor_provider_called,
         )
     outcome = place_helpers(
         active_file=active_file,
@@ -2031,6 +2051,9 @@ def run_decomposer(
             obstacle_summary=obstacle_summary,
             recommended_split=recommended_split,
             first_concrete_next_edit=first_concrete_next_edit,
+            advisor_success=advisor_success,
+            advisor_status=advisor_status,
+            advisor_provider_called=advisor_provider_called,
         )
     refresh_queue_edit_guard(agent)
     return replace(
@@ -2039,4 +2062,7 @@ def run_decomposer(
         obstacle_summary=obstacle_summary,
         recommended_split=recommended_split,
         first_concrete_next_edit=first_concrete_next_edit,
+        advisor_success=advisor_success,
+        advisor_status=advisor_status,
+        advisor_provider_called=advisor_provider_called,
     )

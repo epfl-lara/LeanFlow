@@ -3741,6 +3741,113 @@ def test_orchestrator_decompose_fallback_arms_repeat_guard(monkeypatch, tmp_path
     assert "Call `lean_decompose_helpers` now" not in directive
 
 
+def test_orchestrator_decompose_failure_charges_shared_advisor_circuit(monkeypatch, tmp_path):
+    """Count a mechanical provider failure in the same budget as foreground advisors."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem goal : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    outcome = runner.decomposer.DecomposeOutcome(
+        ok=False,
+        reason="expert command timed out",
+        advisor_success=False,
+        advisor_status="timeout",
+        advisor_provider_called=True,
+    )
+    observed: list[dict[str, object]] = []
+    monkeypatch.setattr(runner.decomposer, "run_decomposer", lambda **_kwargs: outcome)
+    monkeypatch.setattr(
+        runner.advisor_failure_circuit,
+        "preflight_blocked",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        runner.advisor_failure_circuit,
+        "observe_result",
+        lambda **kwargs: observed.append(kwargs),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+    state = {
+        "campaign_id": "campaign-1",
+        "current_cycle": 9,
+        "current_queue_assignment": {
+            "target_symbol": "goal",
+            "active_file": str(active),
+            "slice": "theorem goal : True := by sorry",
+        },
+        "_orchestrator_last_ctx": {
+            "target_symbol": "goal",
+            "active_file": str(active),
+        },
+    }
+    route = runner.orchestrator_floor.OrchestratorRoute(
+        route="decompose",
+        reason="split the remaining goal",
+        source="floor",
+    )
+
+    action = runner._orchestrator_apply_route(route, [], state, {}, agent=None)
+
+    assert action == "continue"
+    assert len(observed) == 1
+    assert observed[0]["function_name"] == "lean_decompose_helpers"
+    assert observed[0]["campaign_id"] == "campaign-1"
+    assert json.loads(str(observed[0]["result_text"])) == {
+        "success": False,
+        "status": "timeout",
+        "provider_called": True,
+    }
+
+
+def test_orchestrator_decompose_respects_shared_advisor_circuit(monkeypatch, tmp_path):
+    """Do not bypass an exhausted advisor circuit through a mechanical route."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem goal : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    events: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        runner.advisor_failure_circuit,
+        "preflight_blocked",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        runner.decomposer,
+        "run_decomposer",
+        lambda **_kwargs: pytest.fail("exhausted circuit must skip the provider"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    state = {
+        "campaign_id": "campaign-1",
+        "current_cycle": 9,
+        "current_queue_assignment": {
+            "target_symbol": "goal",
+            "active_file": str(active),
+            "slice": "theorem goal : True := by sorry",
+        },
+        "_orchestrator_last_ctx": {
+            "target_symbol": "goal",
+            "active_file": str(active),
+        },
+    }
+    route = runner.orchestrator_floor.OrchestratorRoute(
+        route="decompose",
+        reason="split the remaining goal",
+        source="floor",
+    )
+
+    action = runner._orchestrator_apply_route(route, [], state, {}, agent=None)
+
+    assert action == "continue"
+    blocked = [event for event in events if event[0][0] == "advisor-failure-family-blocked"]
+    assert len(blocked) == 1
+    assert blocked[0][1]["provider_called"] is False
+    guard = state[runner._DECOMPOSE_ROUTE_REPEAT_GUARD_KEY]
+    assert "did not make a third provider call" in guard["reason"]
+
+
 def test_semantic_portfolio_refresh_rolls_campaign_without_parking(monkeypatch):
     """Semantic exhaustion starts a fresh campaign epoch and remains non-terminal."""
     requested: list[str] = []
