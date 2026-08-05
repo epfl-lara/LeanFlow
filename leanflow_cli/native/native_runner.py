@@ -28615,6 +28615,13 @@ def _take_research_findings_prompt_locked(
             markers=markers,
             prompt=prompt,
         )
+        if staged:
+            research_portfolio.persist_foreground_negative_evidence(
+                batch,
+                campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
         prior_candidate = research_helper_candidate_priority.load(autonomy_state)
         pending_candidate = (
             research_helper_candidate_priority.remember_from_findings(

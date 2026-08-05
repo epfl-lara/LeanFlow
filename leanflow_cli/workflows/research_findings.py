@@ -119,6 +119,7 @@ _EVIDENCE_ONLY_KEY_PARTS = (
     "blocker",
     "counterexample",
     "countermodel",
+    "dead_end",
     "failure",
     "issue",
     "limitation",
@@ -3017,6 +3018,43 @@ def _sanitize_negative_action_text(value: Any) -> Any:
     return " ".join(retained)
 
 
+def negative_evidence_lines(
+    finding: Mapping[str, Any],
+    *,
+    cap: int = 8,
+) -> tuple[str, ...]:
+    """Return bounded explicit dead-route evidence from one research finding.
+
+    Route labels are retained only when they are descriptive rather than Lean
+    action text. This lets later turns avoid a spent mathematical direction
+    without turning an evidence-only result back into an implementation plan.
+    """
+    deliverable = finding.get("deliverable")
+    if not isinstance(deliverable, Mapping):
+        return ()
+    raw_dead_ends = deliverable.get("dead_ends") or []
+    if isinstance(raw_dead_ends, (str, bytes, bytearray)) or not isinstance(
+        raw_dead_ends, Sequence
+    ):
+        raw_dead_ends = [raw_dead_ends]
+    lines: list[str] = []
+    for raw in raw_dead_ends:
+        route = ""
+        reason = ""
+        if isinstance(raw, Mapping):
+            route = str(_sanitize_negative_action_text(raw.get("route", "")) or "").strip()
+            reason = str(_sanitize_negative_action_text(raw.get("reason", "")) or "").strip()
+        else:
+            reason = str(_sanitize_negative_action_text(raw) or "").strip()
+        text = f"{route}: {reason}" if route and reason else route or reason
+        text = " ".join(text.split())[:500].strip()
+        if text and text not in lines:
+            lines.append(text)
+        if len(lines) >= max(1, int(cap)):
+            break
+    return tuple(lines)
+
+
 def _evidence_only_projection(
     value: Any,
     *,
@@ -3235,6 +3273,7 @@ def prompt_payload(
     payload: list[dict[str, Any]] = []
     for finding in findings:
         raw = dict(finding)
+        retired_routes = negative_evidence_lines(raw)
         use_role = foreground_use_role(raw)
         raw.pop("foreground_use_role", None)
         raw.pop("foreground_use_policy", None)
@@ -3288,6 +3327,8 @@ def prompt_payload(
                     )
                 }
             deliverable = {"negative_evidence": negative_evidence}
+            if retired_routes:
+                deliverable["retired_routes"] = list(retired_routes)
             raw = _evidence_only_raw_metadata(raw)
         elif checked:
             item["foreground_use_role"] = "actionable"

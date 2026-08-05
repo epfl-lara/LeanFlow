@@ -1921,6 +1921,46 @@ def foreground_delivery_job_ids(finding: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in values if value))
 
 
+def persist_foreground_negative_evidence(
+    findings: Sequence[Mapping[str, Any]],
+    *,
+    campaign_id: str,
+    target_symbol: str,
+    active_file: str,
+) -> tuple[str, ...]:
+    """Persist delivered research dead ends for the exact foreground assignment."""
+    target = str(target_symbol or "").strip()
+    source_file = str(active_file or "").strip()
+    if not target or not source_file:
+        return ()
+    persisted: list[str] = []
+    fallback_time = _now_iso()
+    for index, finding in enumerate(findings):
+        evidence = research_findings.negative_evidence_lines(finding)
+        if not evidence:
+            continue
+        job_id = str(finding.get("job_id", "") or "").strip() or f"finding-{index}"
+        checkpoint_seed = "\0".join((str(campaign_id or "").strip(), job_id, target, source_file))
+        checkpoint_id = (
+            "research-negative-" + hashlib.sha256(checkpoint_seed.encode("utf-8")).hexdigest()[:20]
+        )
+        created_at = str(
+            finding.get("consumed_at", "")
+            or finding.get("completed_at", "")
+            or finding.get("created_at", "")
+            or fallback_time
+        )
+        if plan_state.record_checkpoint_advisory(
+            checkpoint_id=checkpoint_id,
+            created_at=created_at,
+            target_symbol=target,
+            active_file=source_file,
+            negative_evidence=list(evidence),
+        ):
+            persisted.append(job_id)
+    return tuple(persisted)
+
+
 def _select_distinct_route(
     entries: Sequence[LedgerEntry],
     *,
