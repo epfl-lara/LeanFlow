@@ -485,6 +485,14 @@ def _probe() -> Any:
     if LeanProbe is None:
         raise RuntimeError(_LEAN_PROBE_IMPORT_ERROR)
     if _PROBE is None:
+        # LeanProbe calls its module-local segmenter directly. Route that call
+        # through LeanFlow's compatibility repairs so scoped commands such as
+        # ``variable ... in`` remain attached to the declaration they govern.
+        # Without this, the wrapper is replayed at the end of the preceding
+        # segment and a valid file fails incrementally with an unexpected EOF.
+        from lean_probe import probe as lean_probe_runtime
+
+        lean_probe_runtime.segment_file = _segment_file
         _PROBE = LeanProbe(auto_build=False)
         _PROBE_EVER_STARTED = True
     return _PROBE

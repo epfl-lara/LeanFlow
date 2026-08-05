@@ -436,6 +436,39 @@ def test_segment_file_normalizes_inline_open_scoped_abbrev():
     assert segments[0].declaration_start > segments[0].start
 
 
+def test_probe_uses_scoped_declaration_segment_repairs(monkeypatch):
+    source = "\n".join(
+        [
+            "def first : Nat := 1",
+            "",
+            "variable (P : Type) in",
+            "/-- A scoped alias. -/",
+            "abbrev Scoped := P",
+            "",
+            "theorem last : True := by",
+            "  trivial",
+            "",
+        ]
+    )
+
+    class _FakeProbe:
+        def __init__(self, *, auto_build):
+            assert auto_build is False
+
+    import lean_probe.probe as lean_probe_runtime
+
+    monkeypatch.setattr(li, "_PROBE", None)
+    monkeypatch.setattr(li, "LeanProbe", _FakeProbe)
+    monkeypatch.setattr(lean_probe_runtime, "segment_file", li._probe_segment_file)
+
+    li._probe()
+
+    _header, segments = lean_probe_runtime.segment_file(source)
+    assert [segment.name for segment in segments] == ["first", "Scoped", "last"]
+    assert "variable (P : Type) in" not in segments[0].text
+    assert segments[1].text.startswith("variable (P : Type) in")
+
+
 def test_segment_file_ignores_declaration_keywords_inside_comments_and_strings():
     header, segments = li._segment_file(
         "\n".join(
