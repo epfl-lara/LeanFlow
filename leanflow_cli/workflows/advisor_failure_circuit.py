@@ -1,4 +1,4 @@
-"""Persist residual-target advisor failure budgets across managed process lifetimes."""
+"""Persist advisor failure budgets across managed process lifetimes."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ PENDING_STATE_KEY = "_pending_advisor_source_revisions"
 
 @dataclass(frozen=True)
 class AdvisorFailureSnapshot:
-    """Describe the durable unchanged-residual advisor failure circuit."""
+    """Describe the durable residual-target and campaign-timeout circuit."""
 
     target_symbol: str = ""
     active_file: str = ""
@@ -99,10 +99,17 @@ def _matches(
         if snapshot_target and incoming_target
         else snapshot.source_revision_sha256 == str(source_revision_sha256 or "").strip()
     )
+    campaign_timeout_quarantine = bool(
+        snapshot.last_status == "timeout"
+        and snapshot.consecutive_failures >= FAILURE_THRESHOLD
+        and snapshot.campaign_id
+        and incoming_campaign
+        and snapshot.campaign_id == incoming_campaign
+    )
     return bool(
         snapshot.target_symbol == str(target_symbol or "").strip()
         and snapshot.active_file == _canonical_file(active_file)
-        and revision_matches
+        and (revision_matches or campaign_timeout_quarantine)
         and (
             not snapshot.campaign_id
             or not incoming_campaign
@@ -120,7 +127,7 @@ def preflight_blocked(
     target_revision_sha256: str = "",
     campaign_id: str = "",
 ) -> bool:
-    """Return whether two durable failures exhausted this residual target."""
+    """Return whether the residual budget or campaign timeout quarantine is exhausted."""
     if str(function_name or "").strip() not in ADVISOR_TOOL_NAMES:
         return False
     snapshot = load_snapshot()

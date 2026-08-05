@@ -87,7 +87,7 @@ def test_single_provider_timeout_exhausts_advisor_retry_budget(monkeypatch, tmp_
     )
 
 
-def test_target_declaration_change_releases_durable_advisor_circuit(monkeypatch, tmp_path):
+def test_campaign_timeout_quarantine_survives_target_declaration_change(monkeypatch, tmp_path):
     _configure_state_path(monkeypatch, tmp_path)
     common = {
         "target_symbol": "result",
@@ -100,6 +100,32 @@ def test_target_declaration_change_releases_durable_advisor_circuit(monkeypatch,
         advisor_failure_circuit.observe_result(
             function_name=tool,
             result_text=json.dumps({"success": False, "status": "timeout"}),
+            **common,
+        )
+
+    assert advisor_failure_circuit.preflight_blocked(
+        function_name="lean_reasoning_help",
+        **{
+            **common,
+            "source_revision_sha256": "new-source",
+            "target_revision_sha256": "new-target",
+        },
+    )
+
+
+def test_target_declaration_change_releases_non_timeout_advisor_failures(monkeypatch, tmp_path):
+    _configure_state_path(monkeypatch, tmp_path)
+    common = {
+        "target_symbol": "result",
+        "active_file": str(tmp_path / "Main.lean"),
+        "source_revision_sha256": "old-source",
+        "target_revision_sha256": "old-target",
+        "campaign_id": "campaign-1",
+    }
+    for tool in ("lean_reasoning_help", "lean_decompose_helpers"):
+        advisor_failure_circuit.observe_result(
+            function_name=tool,
+            result_text=json.dumps({"success": False, "status": "unavailable"}),
             **common,
         )
 
