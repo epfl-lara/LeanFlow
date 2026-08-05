@@ -5339,7 +5339,12 @@ def _sync_construction_only_tool_surface(agent: Any, autonomy_state: Mapping[str
         current_cycle = 0
     blocked_names: set[str] = set()
     for name in search_synthesis_admission.DISCOVERY_TOOL_NAMES:
-        if name == search_synthesis_admission.LEAN_INCREMENTAL_INSPECTION_TOOL_NAME:
+        if (
+            name == search_synthesis_admission.LEAN_INCREMENTAL_INSPECTION_TOOL_NAME
+            or name in search_synthesis_admission.PATH_SCOPED_DISCOVERY_TOOL_NAMES
+        ):
+            # Keep path-scoped schemas visible so safe managed-context requests
+            # can pass; concrete source requests still face the pre-tool fence.
             continue
         blocked = search_synthesis_admission.blocked_search_result(
             function_name=name,

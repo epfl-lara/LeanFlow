@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from leanflow_cli.lean.lean_parsing import _is_lean_inspection_only_helper_candidate
+from tools.utilities.workflow_artifact_guard import is_managed_plan_path
 
 LEAN_INCREMENTAL_INSPECTION_TOOL_NAME = "lean_incremental_check:inspection"
 
@@ -28,6 +29,7 @@ SOURCE_INSPECTION_TOOL_NAMES = frozenset(
     }
 )
 DISCOVERY_TOOL_NAMES = BROAD_SEARCH_TOOL_NAMES | SOURCE_INSPECTION_TOOL_NAMES
+PATH_SCOPED_DISCOVERY_TOOL_NAMES = frozenset({"read_file"})
 CONSTRUCTION_DEBT_STATE_KEY = "construction_turn_debt"
 CONSTRUCTION_ATTEMPT_SERIAL_KEY = "construction_attempt_serial"
 
@@ -235,6 +237,12 @@ def discovery_tool_name(
     args: Mapping[str, Any] | None,
 ) -> str | None:
     """Return the discovery accounting name for one managed tool request."""
+    arguments = dict(args or {})
+    if function_name == "read_file" and is_managed_plan_path(str(arguments.get("path", "") or "")):
+        # The file tool already exposes only the bounded generated plan view.
+        # Reading that durable handoff consumes neither source nor remote-search
+        # budget and must remain available when the prover owes construction.
+        return None
     if function_name in DISCOVERY_TOOL_NAMES:
         return function_name
     if is_inspection_only_incremental_check(function_name, args):

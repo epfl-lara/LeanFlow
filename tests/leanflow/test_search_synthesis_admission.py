@@ -5,6 +5,24 @@ from __future__ import annotations
 from leanflow_cli.native import search_synthesis_admission
 
 
+def test_managed_plan_read_is_context_not_discovery():
+    """Keep the bounded generated plan available after search is reserved."""
+    plan_args = {
+        "path": "/tmp/project/.leanflow/workflow-state/plan.md",
+        "offset": 1,
+        "limit": 240,
+    }
+
+    assert search_synthesis_admission.discovery_tool_name("read_file", plan_args) is None
+    assert (
+        search_synthesis_admission.discovery_tool_name(
+            "read_file",
+            {"path": "/tmp/project/Main.lean", "offset": 1, "limit": 240},
+        )
+        == "read_file"
+    )
+
+
 def test_search_file_fingerprint_ignores_presentation_options():
     common = {"path": "/tmp/Main.lean", "pattern": "top_sum_bound"}
 

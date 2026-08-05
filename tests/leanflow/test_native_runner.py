@@ -8292,6 +8292,46 @@ def test_search_synthesis_reservation_blocks_same_cycle_inspection(
     assert payload["provider_called"] is False
 
 
+def test_search_synthesis_reservation_allows_bounded_managed_plan_read(monkeypatch, tmp_path):
+    """Let a construction turn consult durable plan context without reopening search."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    plan = tmp_path / ".leanflow" / "workflow-state" / "plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("# Proving Plan\n\n## Strategy\n\n- use helper\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_cycle": 7,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "hard_route_requested": True,
+                    "synthesis_grace_pending": True,
+                    "synthesis_boundary_cycle": 7,
+                },
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    agent = _Agent()
+    args = {"path": str(plan), "offset": 1, "limit": 240}
+
+    assert runner._managed_pre_tool_call(agent, "read_file", args) is None
+    assert runner.search_synthesis_admission.discovery_tool_name("read_file", args) is None
+    assert agent._managed_autonomy_state["search_progress"]["search_count"] == 12
+
+
 def test_construction_turn_hides_only_currently_forbidden_discovery_tools(monkeypatch, tmp_path):
     """Do not advertise deterministic rejections to a construction-only model turn."""
     active = tmp_path / "Main.lean"
@@ -8337,7 +8377,14 @@ def test_construction_turn_hides_only_currently_forbidden_discovery_tools(monkey
 
     runner._prepare_managed_turn_state(agent, state)
 
-    assert agent.valid_tool_names == {"patch", "lean_incremental_check"}
+    assert agent.valid_tool_names == {"read_file", "patch", "lean_incremental_check"}
+    blocked = runner._managed_pre_tool_call(
+        agent,
+        "read_file",
+        {"path": str(active), "offset": 1, "limit": 40},
+    )
+    assert blocked is not None
+    assert json.loads(blocked)["status"] == "search_synthesis_required"
 
     state["current_cycle"] = 8
     runner._prepare_managed_turn_state(agent, state)
