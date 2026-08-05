@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 # full recovery window promised by the research-workflow contract.
 TRANSIENT_PROVIDER_RETRY_DELAYS_S: tuple[float, ...] = (5.0, 15.0, 45.0)
 TRANSIENT_PROVIDER_MAX_ATTEMPTS = 1 + len(TRANSIENT_PROVIDER_RETRY_DELAYS_S)
+MIN_TRANSIENT_PROVIDER_RETRY_REQUEST_WINDOW_S = 10.0
 
 
 class TransientProviderRetriesExhausted(RuntimeError):
@@ -83,6 +84,25 @@ def transient_provider_retry_delay_s(failed_attempt: int) -> float | None:
     if index < 0 or index >= len(TRANSIENT_PROVIDER_RETRY_DELAYS_S):
         return None
     return TRANSIENT_PROVIDER_RETRY_DELAYS_S[index]
+
+
+def transient_provider_retry_delay_within_deadline_s(
+    failed_attempt: int,
+    *,
+    deadline_monotonic: float | None,
+    now_monotonic: float | None = None,
+    minimum_request_window_s: float = MIN_TRANSIENT_PROVIDER_RETRY_REQUEST_WINDOW_S,
+) -> float | None:
+    """Return a retry delay only when the enclosing deadline leaves useful request time."""
+    delay_s = transient_provider_retry_delay_s(failed_attempt)
+    if delay_s is None or not isinstance(deadline_monotonic, (int, float)):
+        return delay_s
+    now = _ra().time.monotonic() if now_monotonic is None else float(now_monotonic)
+    remaining_s = float(deadline_monotonic) - now
+    useful_window_s = max(1.0, float(minimum_request_window_s))
+    if remaining_s < delay_s + useful_window_s:
+        return None
+    return delay_s
 
 
 def _ra() -> Any:

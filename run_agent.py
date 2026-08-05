@@ -99,7 +99,7 @@ from agent.providers.api_caller import (
     TRANSIENT_PROVIDER_MAX_ATTEMPTS,
     ApiCaller,
     TransientProviderRetriesExhausted,
-    transient_provider_retry_delay_s,
+    transient_provider_retry_delay_within_deadline_s,
 )
 from agent.providers.model_metadata import (
     estimate_messages_tokens_rough,
@@ -3763,9 +3763,32 @@ class AIAgent:
                         # Invalid/empty provider responses are usually rate
                         # limiting in disguise; use the same deterministic
                         # transient schedule as explicit provider errors.
-                        wait_time = transient_provider_retry_delay_s(retry_count)
-                        if wait_time is None:  # Defensive; exhaustion returned above.
-                            raise RuntimeError("provider retry schedule exhausted")
+                        wait_time = transient_provider_retry_delay_within_deadline_s(
+                            retry_count,
+                            deadline_monotonic=self._conversation_deadline_monotonic,
+                        )
+                        if wait_time is None:
+                            self._conversation_wall_timeout_reached = True
+                            _emit_workflow_event(
+                                "provider-retry-skipped-deadline",
+                                "Skipped provider retry because the conversation deadline is exhausted",
+                                **_workflow_agent_event_details(
+                                    self,
+                                    failed_attempt=retry_count,
+                                    max_attempts=max_retries,
+                                    error_type="invalid_response",
+                                    error=", ".join(error_details)[:300],
+                                ),
+                            )
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": "Invalid API response and no useful retry window remains.",
+                                "failed": True,
+                                "provider_retries_exhausted": True,
+                                "provider_retry_skipped_deadline": True,
+                            }
                         self._vprint(
                             f"{self.log_prefix}⏳ Retrying in {wait_time:g}s (managed transient-provider backoff)...",
                             force=True,
@@ -4529,9 +4552,24 @@ class AIAgent:
                         )
                         raise TransientProviderRetriesExhausted(api_error) from api_error
 
-                    wait_time = transient_provider_retry_delay_s(retry_count)
-                    if wait_time is None:  # Defensive; exhaustion raised above.
-                        raise api_error
+                    wait_time = transient_provider_retry_delay_within_deadline_s(
+                        retry_count,
+                        deadline_monotonic=self._conversation_deadline_monotonic,
+                    )
+                    if wait_time is None:
+                        self._conversation_wall_timeout_reached = True
+                        _emit_workflow_event(
+                            "provider-retry-skipped-deadline",
+                            "Skipped provider retry because the conversation deadline is exhausted",
+                            **_workflow_agent_event_details(
+                                self,
+                                failed_attempt=retry_count,
+                                max_attempts=max_retries,
+                                error_type=error_type,
+                                error=safe_api_error[:300],
+                            ),
+                        )
+                        raise TransientProviderRetriesExhausted(api_error) from api_error
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                         wait_time,

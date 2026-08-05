@@ -8716,6 +8716,64 @@ def test_rollback_refresh_read_bypasses_construction_fences_once(monkeypatch, tm
     assert json.loads(blocked_again)["status"] == "concrete_construction_required"
 
 
+def test_rollback_refresh_blocks_stale_edit_until_complete_declaration_reread(
+    monkeypatch, tmp_path
+):
+    """Reject deltas against a discarded candidate until the restored target is fully reread."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "theorem demo : True := by\n  have h : True := True.intro\n  exact h\n",
+        encoding="utf-8",
+    )
+    source_revision = runner._source_revision_sha256(str(active))
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    agent = _Agent()
+    runner._remember_rollback_refresh_read(
+        agent._managed_autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+        source_revision_sha256=source_revision,
+    )
+    edit_args = {"path": str(active), "patch": "unused"}
+
+    blocked = runner._managed_pre_tool_call(agent, "apply_verified_patch", edit_args)
+    assert blocked is not None
+    assert json.loads(blocked)["status"] == "rollback_refresh_read_required"
+    assert not runner._rollback_refresh_read_matches(
+        agent._managed_autonomy_state,
+        "read_file",
+        {"path": str(active), "offset": 2, "limit": 1},
+    )
+
+    read_args = {"path": str(active), "offset": 1, "limit": 3}
+    assert runner._managed_pre_tool_call(agent, "read_file", read_args) is None
+    runner._handle_managed_tool_result(
+        agent,
+        "read_file",
+        read_args,
+        json.dumps({"success": True}),
+    )
+
+    assert runner.ROLLBACK_REFRESH_READ_STATE_KEY not in agent._managed_autonomy_state
+
+
 def test_search_synthesis_reservation_blocks_broad_search_before_execution(monkeypatch, tmp_path):
     """Reject the forbidden extra search before it reaches a provider."""
     active = tmp_path / "Main.lean"

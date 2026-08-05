@@ -5357,7 +5357,7 @@ def _sync_construction_only_tool_surface(agent: Any, autonomy_state: Mapping[str
             )
         if blocked is not None:
             blocked_names.add(name)
-    if _rollback_refresh_read_matches(autonomy_state, "read_file", {"path": active_file}):
+    if _rollback_refresh_required_for_assignment(autonomy_state):
         blocked_names.discard("read_file")
     if not blocked_names:
         return
@@ -7750,9 +7750,9 @@ def _rollback_refresh_read_matches(
     """Return whether this read satisfies the manager's rollback refresh requirement."""
     if function_name != "read_file":
         return False
-    pending = dict(autonomy_state.get(ROLLBACK_REFRESH_READ_STATE_KEY) or {})
-    if not pending:
+    if not _rollback_refresh_required_for_assignment(autonomy_state):
         return False
+    pending = dict(autonomy_state.get(ROLLBACK_REFRESH_READ_STATE_KEY) or {})
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
     active_file = str(assignment.get("active_file", "") or "").strip()
@@ -7768,7 +7768,90 @@ def _rollback_refresh_read_matches(
     requested_file = str(
         dict(args or {}).get("path", "") or dict(args or {}).get("file_path", "") or ""
     ).strip()
-    return bool(requested_file and _same_active_file(requested_file, active_file))
+    if not requested_file or not _same_active_file(requested_file, active_file):
+        return False
+    entry = _find_declaration_entry(active_file, target_symbol)
+    if entry is None:
+        return False
+    try:
+        requested_start = int(dict(args or {}).get("offset", 0) or 0)
+        requested_limit = int(dict(args or {}).get("limit", 0) or 0)
+        target_start = int(entry.get("line", 0) or 0)
+        target_end = int(entry.get("end_line", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        requested_start > 0
+        and requested_limit > 0
+        and requested_start <= target_start
+        and requested_start + requested_limit - 1 >= target_end
+    )
+
+
+def _rollback_refresh_required_for_assignment(autonomy_state: Mapping[str, Any]) -> bool:
+    """Return whether the current restored assignment still requires an exact source reread."""
+    pending = dict(autonomy_state.get(ROLLBACK_REFRESH_READ_STATE_KEY) or {})
+    if not pending:
+        return False
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    return bool(
+        target_symbol
+        and active_file
+        and target_symbol == str(pending.get("target_symbol", "") or "").strip()
+        and _same_active_file(active_file, str(pending.get("active_file", "") or ""))
+        and _source_revision_sha256(active_file)
+        == str(pending.get("source_revision_sha256", "") or "")
+    )
+
+
+def _rollback_refresh_edit_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Require the restored declaration reread before accepting another managed edit."""
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    if not _rollback_refresh_required_for_assignment(autonomy_state):
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if not _managed_edit_targets_assignment(args, active_file, function_name=function_name):
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "rollback-refresh-edit-blocked",
+            f"Blocked stale follow-up edit for restored declaration {target_symbol}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            provider_called=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "rollback_refresh_read_required",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "patch_applied": False,
+            "provider_called": False,
+            "lean_started": False,
+            "required_action": (
+                "The previous candidate was rolled back. Re-read one source range covering the "
+                "complete restored assigned declaration, then submit the complete corrected edit "
+                "against that restored source rather than a delta against the discarded candidate."
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 def _advisor_circuit_handoff_block(
@@ -10206,6 +10289,14 @@ def _managed_pre_tool_call(
         )
         if clean_room_write_guard:
             return clean_room_write_guard
+        rollback_refresh_guard = _rollback_refresh_edit_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if rollback_refresh_guard:
+            return rollback_refresh_guard
         helper_priority_guard = _research_helper_candidate_pre_tool_guard(
             agent,
             function_name,

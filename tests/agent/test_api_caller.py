@@ -20,6 +20,7 @@ from agent.providers.api_caller import (
     ApiCaller,
     TransientProviderRetriesExhausted,
     transient_provider_retry_delay_s,
+    transient_provider_retry_delay_within_deadline_s,
 )
 from run_agent import AIAgent, _resolve_api_caller
 
@@ -140,6 +141,34 @@ def test_transient_provider_retry_policy_is_exactly_three_managed_retries():
         45.0,
         None,
     ]
+
+
+def test_transient_provider_retry_respects_enclosing_deadline():
+    """Do not spend backoff time when no useful request window remains."""
+    assert (
+        transient_provider_retry_delay_within_deadline_s(
+            1,
+            deadline_monotonic=116.0,
+            now_monotonic=100.0,
+        )
+        == 5.0
+    )
+    assert (
+        transient_provider_retry_delay_within_deadline_s(
+            1,
+            deadline_monotonic=114.0,
+            now_monotonic=100.0,
+        )
+        is None
+    )
+    assert (
+        transient_provider_retry_delay_within_deadline_s(
+            2,
+            deadline_monotonic=None,
+            now_monotonic=100.0,
+        )
+        == 15.0
+    )
 
 
 def test_transient_provider_exhaustion_marker_redacts_persisted_message():
