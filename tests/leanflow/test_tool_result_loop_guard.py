@@ -213,6 +213,80 @@ def test_helper_check_changed_statement_resets_the_streak():
     assert changed.streak == 1
 
 
+def test_helper_check_application_mismatch_tracks_symbol_across_statement_variants():
+    state: dict = {}
+    decisions = []
+    for index in range(tool_result_loop_guard.HARD_LIMIT):
+        decisions.append(
+            tool_result_loop_guard.observe(
+                state,
+                function_name="lean_incremental_check",
+                args={
+                    "action": "check_helper",
+                    "replacement": (
+                        f"private lemma candidate_{index} : True := by\n"
+                        f"  have h := exact_dependency argument_{index}\n"
+                        "  trivial\n"
+                    ),
+                },
+                result_text=json.dumps(
+                    {
+                        "success": False,
+                        "ok": False,
+                        "error": "Application type mismatch: The argument",
+                        "output": (
+                            "Application type mismatch: The argument\n"
+                            "  candidate\n"
+                            "has type Nat but is expected to have type Bool\n"
+                            "in the application\n"
+                            f"  exact_dependency argument_{index}"
+                        ),
+                    }
+                ),
+                target_symbol="demo",
+                active_file="/tmp/Main.lean",
+                source_revision_sha256="same-source",
+            )
+        )
+
+    assert decisions[tool_result_loop_guard.NUDGE_LIMIT - 1].nudge is True
+    assert decisions[-1].close_turn is True
+    assert decisions[-1].streak == tool_result_loop_guard.HARD_LIMIT
+    assert decisions[-1].required_symbol == "exact_dependency"
+
+
+def test_helper_check_application_mismatch_resets_for_different_symbol():
+    state: dict = {}
+
+    def observe(symbol: str):
+        return tool_result_loop_guard.observe(
+            state,
+            function_name="lean_incremental_check",
+            args={
+                "action": "check_helper",
+                "replacement": f"private lemma candidate_{symbol} : True := by trivial",
+            },
+            result_text=json.dumps(
+                {
+                    "success": False,
+                    "ok": False,
+                    "error": "Application type mismatch",
+                    "output": f"Application type mismatch\nin the application\n  {symbol} value",
+                }
+            ),
+            target_symbol="demo",
+            active_file="/tmp/Main.lean",
+            source_revision_sha256="same-source",
+        )
+
+    first = observe("dependency_a")
+    second = observe("dependency_a")
+    changed = observe("dependency_b")
+
+    assert (first.streak, second.streak, changed.streak) == (1, 2, 1)
+    assert changed.required_symbol == "dependency_b"
+
+
 def test_verified_result_clears_prior_loop_state():
     state: dict = {}
     common = {

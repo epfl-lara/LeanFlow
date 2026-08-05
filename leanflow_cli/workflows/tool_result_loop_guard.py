@@ -41,6 +41,7 @@ class LoopDecision:
     streak: int = 0
     nudge: bool = False
     close_turn: bool = False
+    required_symbol: str = ""
 
 
 def tool_key(function_name: str, args: Mapping[str, Any] | None = None) -> str:
@@ -128,6 +129,19 @@ def result_signature(result_text: str) -> str:
     else:
         material = _single_line(re.sub(r"\b\d+(?:\.\d+)?s\b", "<time>", text), 320)
     return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _application_mismatch_symbol(payload: Mapping[str, Any]) -> str:
+    """Return the declaration named by a Lean application-mismatch diagnostic."""
+    diagnostic_text = "\n".join(
+        str(payload.get(key, "") or "") for key in ("error", "output", "feedback_lean", "message")
+    )
+    match = re.search(
+        r"\bin the application\s+([A-Za-z_«][\w'.«»]*)",
+        diagnostic_text,
+        flags=re.IGNORECASE,
+    )
+    return str(match.group(1) if match else "")
 
 
 def _multi_attempt_site_signature(args: Mapping[str, Any] | None) -> str:
@@ -308,7 +322,14 @@ def observe(
     elif key == "lean_multi_attempt":
         signature = _multi_attempt_site_signature(args)
     elif key == "lean_incremental_check:check_helper":
-        signature = _helper_candidate_statement_signature(args)
+        required_symbol = (
+            _application_mismatch_symbol(payload) if isinstance(payload, Mapping) else ""
+        )
+        signature = (
+            f"application-mismatch:{required_symbol}"
+            if required_symbol
+            else _helper_candidate_statement_signature(args)
+        )
     elif key == "lean_outline":
         # Different symbols can still form one inspection cycle. Count the
         # whole unchanged-source sequence instead of waiting for an exact
@@ -340,6 +361,7 @@ def observe(
         "tool_key": key,
         "signature": signature,
         "streak": streak,
+        "required_symbol": required_symbol if key == "lean_incremental_check:check_helper" else "",
     }
     state[tracker_state_key] = tracker
 
@@ -358,4 +380,5 @@ def observe(
         streak=streak,
         nudge=streak == bounded_nudge,
         close_turn=streak >= bounded_hard,
+        required_symbol=str(tracker.get("required_symbol", "") or ""),
     )

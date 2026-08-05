@@ -14668,6 +14668,7 @@ def _handle_managed_tool_result(
     )
     if loop_decision.nudge:
         terminal_policy_denial = loop_decision.tool_key == "terminal"
+        application_mismatch = bool(loop_decision.required_symbol)
         _append_post_tool_result_message(
             agent,
             "\n".join(
@@ -14683,17 +14684,27 @@ def _handle_managed_tool_result(
                         "- stop varying forbidden shell/Python commands; the policy denial is "
                         "deterministic"
                         if terminal_policy_denial
-                        else "- stop varying unrelated trailing tactics or repeating the same inspection"
+                        else (
+                            "- stop permuting arguments; inspect the exact declaration of "
+                            f"`{loop_decision.required_symbol}` before another candidate"
+                            if application_mismatch
+                            else "- stop varying unrelated trailing tactics or repeating the same inspection"
+                        )
                     ),
                     (
                         "- use the allowed Lean checks, proof tools, source reads, or request a "
                         "different route"
                         if terminal_policy_denial
-                        else "- read the diagnostic line and column literally, then make one distinct local edit,"
+                        else (
+                            "- use `lean_outline` or a focused source read for that symbol, then make one "
+                            "type-correct construction"
+                            if application_mismatch
+                            else "- read the diagnostic line and column literally, then make one distinct local edit,"
+                        )
                     ),
                     *(
                         []
-                        if terminal_policy_denial
+                        if terminal_policy_denial or application_mismatch
                         else [
                             "  screen only short tactics at that exact position, or request a different route"
                         ]
@@ -14710,6 +14721,7 @@ def _handle_managed_tool_result(
             tool_key=loop_decision.tool_key,
             signature=loop_decision.signature,
             streak=loop_decision.streak,
+            required_symbol=loop_decision.required_symbol,
             campaign_progress=False,
         )
     if loop_decision.close_turn:
@@ -14732,6 +14744,7 @@ def _handle_managed_tool_result(
             tool_key=loop_decision.tool_key,
             signature=loop_decision.signature,
             streak=loop_decision.streak,
+            required_symbol=loop_decision.required_symbol,
             campaign_progress=False,
         )
         with contextlib.suppress(Exception):
