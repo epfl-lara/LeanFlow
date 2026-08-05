@@ -8904,6 +8904,10 @@ def test_search_synthesis_reservation_blocks_broad_search_before_execution(monke
     assert agent._managed_step_boundary_closed is True
     assert agent._managed_autonomy_state["search_progress"]["search_count"] == 12
     assert agent._managed_autonomy_state["search_progress"]["synthesis_rejection_count"] == 2
+    assert (
+        agent._managed_autonomy_state["search_progress"]["construction_source_window_reset_pending"]
+        is True
+    )
     assert any(event[0][0] == "search-synthesis-rejection-boundary" for event in events)
 
 
@@ -9601,6 +9605,7 @@ def test_consumed_search_route_preserves_synthesis_debt(monkeypatch, tmp_path):
     """An unchanged target must not receive another broad-search window."""
     active = tmp_path / "Main.lean"
     state = {
+        "current_cycle": 7,
         "current_queue_assignment": {
             "target_symbol": "demo",
             "active_file": str(active),
@@ -9616,6 +9621,7 @@ def test_consumed_search_route_preserves_synthesis_debt(monkeypatch, tmp_path):
             "search_count": 12,
             "hard_route_requested": True,
             "synthesis_grace_pending": True,
+            "synthesis_boundary_cycle": 7,
         },
     }
     context = runner.orchestrator_floor.RouteContext(
@@ -9640,6 +9646,31 @@ def test_consumed_search_route_preserves_synthesis_debt(monkeypatch, tmp_path):
     assert "prover_requested_route" not in state
     assert state["search_progress"]["search_count"] == 12
     assert state["search_progress"]["synthesis_grace_pending"] is True
+    assert state["search_progress"]["construction_source_window_reset_pending"] is True
+
+    prepared = runner.search_synthesis_admission.prepare_provider_turn(state["search_progress"])
+    assert prepared["search_count"] == 12
+    assert "synthesis_boundary_cycle" not in prepared
+    assert (
+        runner.search_synthesis_admission.blocked_search_result(
+            function_name="read_file",
+            tracker=prepared,
+            target_symbol="demo",
+            active_file=str(active),
+            current_cycle=7,
+        )
+        is None
+    )
+    assert (
+        runner.search_synthesis_admission.blocked_search_result(
+            function_name="lean_search",
+            tracker=prepared,
+            target_symbol="demo",
+            active_file=str(active),
+            current_cycle=7,
+        )
+        is not None
+    )
 
 
 def test_explicit_plan_request_precedes_stale_epoch_negate_replay(monkeypatch, tmp_path):

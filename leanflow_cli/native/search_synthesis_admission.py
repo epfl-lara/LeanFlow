@@ -77,6 +77,10 @@ def prepare_provider_turn(tracker: Mapping[str, Any]) -> dict[str, Any]:
         return updated
     for key in _CONSTRUCTION_WINDOW_KEYS:
         updated.pop(key, None)
+    # The boundary cycle fences local source context only for the provider turn
+    # that exhausted discovery. Preserve the assignment's broad-search debt,
+    # but let the distinct construction route recover exact declarations once.
+    updated.pop("synthesis_boundary_cycle", None)
     return updated
 
 

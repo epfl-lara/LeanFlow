@@ -8295,6 +8295,8 @@ def _track_search_progress(
         rejection_count = int(tracker.get("synthesis_rejection_count", 0) or 0)
         rejection_limit = _search_synthesis_rejection_limit()
         if rejection_count >= rejection_limit:
+            tracker = search_synthesis_admission.schedule_fresh_construction_window(tracker)
+            autonomy_state["search_progress"] = tracker
             _record_agent_activity(
                 agent,
                 "search-synthesis-rejection-boundary",
@@ -29341,8 +29343,14 @@ def _orchestrator_consult(
                 # Preserve the exact assignment's synthesis debt across the
                 # route. It is cleared only by concrete proof progress or an
                 # assignment change; otherwise a weak model can replay twelve
-                # broad searches after every planner handoff.
-                autonomy_state["search_progress"] = prior_search_progress
+                # broad searches after every planner handoff. The distinct
+                # construction provider still receives one bounded local
+                # source-context window for exact declaration recovery.
+                autonomy_state["search_progress"] = (
+                    search_synthesis_admission.schedule_fresh_construction_window(
+                        prior_search_progress
+                    )
+                )
         autonomy_state["orchestrator_current_route"] = route.route
         epoch_refresh = dict(autonomy_state.get(campaign_epoch.EPOCH_ROUTE_REFRESH_STATE_KEY) or {})
         if bool(epoch_refresh.get("required")):

@@ -100,6 +100,7 @@ def test_construction_route_handoff_opens_fresh_provider_window():
     tracker = {
         "target_symbol": "demo",
         "active_file": "/tmp/Main.lean",
+        "synthesis_boundary_cycle": 4,
         "construction_source_inspection_cycle": 4,
         "construction_source_inspection_count": 12,
         "construction_source_inspection_boundary": True,
@@ -115,6 +116,7 @@ def test_construction_route_handoff_opens_fresh_provider_window():
     assert "construction_source_inspection_count" not in refreshed
     assert "construction_source_inspection_boundary" not in refreshed
     assert "construction_synthesis_rejection_count" not in refreshed
+    assert "synthesis_boundary_cycle" not in refreshed
     assert refreshed["target_symbol"] == "demo"
 
 
