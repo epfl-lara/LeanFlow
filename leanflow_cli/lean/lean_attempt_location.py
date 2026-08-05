@@ -252,9 +252,11 @@ def _resolve_multi_attempt_location(
 ) -> tuple[int, int | None, str | None]:
     """Return a safe line, column, and adjustment for multi-attempt screening.
 
-    Preserve explicit columns. For line-only requests, correct either a stale blank declaration
-    end or an inline tactic body. The latter deliberately supplies a column so the upstream MCP
-    uses its exact-position LSP path instead of reconstructing incomplete context in the REPL.
+    Preserve valid explicit columns. Correct an out-of-range explicit column to a unique trailing
+    placeholder in the same declaration, or reject it before any backend call. For line-only
+    requests, correct either a stale blank declaration end or an inline tactic body. The latter
+    deliberately supplies a column so the upstream MCP uses its exact-position LSP path instead
+    of reconstructing incomplete context in the REPL.
     """
     line = int(requested_line)
     resolved_line = _resolve_tactic_line_after_blank(path, line)
@@ -266,6 +268,21 @@ def _resolve_multi_attempt_location(
             return resolved_line, None, "ambiguous_backward_placeholders"
         return resolved_line, None, "previous_tactic_line_after_blank"
     if requested_column is not None:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            lines = []
+        column = int(requested_column)
+        column_valid = 1 <= line <= len(lines) and 1 <= column <= len(lines[line - 1]) + 1
+        if not column_valid:
+            placeholder = _resolve_trailing_placeholder(path, line)
+            if placeholder is not None:
+                return (
+                    placeholder[0],
+                    placeholder[1],
+                    "invalid_column_to_trailing_placeholder",
+                )
+            return line, None, "invalid_column"
         return line, requested_column, None
     placeholder = _resolve_trailing_placeholder(path, line)
     if placeholder is not None:

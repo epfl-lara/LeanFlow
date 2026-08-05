@@ -1181,6 +1181,61 @@ def test_signal_finalization_does_not_retry_mixed_writer_and_runtime_failures(mo
     assert stopped == ["descendants", "project-agents", "research", "runtime"]
 
 
+def test_signal_finalization_checkpoints_after_read_only_runtime_cleanup_failure(monkeypatch):
+    """A stuck LeanProbe close cannot invalidate a snapshot after all writers stopped."""
+    agent = type("Agent", (), {"interrupt": lambda self, _reason: None})()
+    checkpoints: list[dict[str, object]] = []
+    activity: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_terminate_descendant_agents", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_terminate_other_agents", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_shutdown_campaign_research", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda *_args, **_kwargs: ("incremental Lean sessions",),
+    )
+    monkeypatch.setattr(runner, "_mark_finalization_pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+
+    def checkpoint(_history, _agent, state):
+        checkpoints.append(dict(state))
+        return {"checkpoint_id": "ckpt-runtime-warning"}
+
+    monkeypatch.setattr(runner, "_write_signal_interruption_checkpoint", checkpoint)
+    monkeypatch.setattr(
+        runner,
+        "_journal_status",
+        lambda: {"current": {"checkpoint_id": "ckpt-runtime-warning"}},
+    )
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda _agent, event_type, *_args, **kwargs: activity.append((event_type, kwargs)),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        runner.EXIT_INTERRUPTED,
+        agent=agent,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={"target_symbol": "remaining_goal", "sorry_count": 1},
+        reason="signal interrupt",
+    )
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["runtime_cleanup_warnings"]
+    events = [event for event, _details in activity]
+    assert "signal-checkpoint-cleanup-warning" in events
+    assert "checkpoint-failure" not in events
+
+
 def test_signal_finalization_runtime_sweep_drains_active_expert_before_checkpoint(
     monkeypatch, tmp_path
 ):
@@ -18675,6 +18730,39 @@ def test_prepare_queue_assignment_state_warms_incremental_once(monkeypatch, tmp_
 
     assert calls == [(str(active), "demo")]
     assert autonomy_state["current_queue_assignment"]["incremental_prepare"]["success"] is True
+
+
+def test_prepare_queue_assignment_retires_stale_planner_reservation_before_warmup(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem next_target : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "queue-reservation-transition")
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    autonomy_state: dict[str, object] = {}
+    runner.campaign_epoch.ensure_campaign(autonomy_state)
+    runner.campaign_epoch.reserve_planner_capacity(
+        autonomy_state,
+        target_symbol="previous_target",
+        active_file=str(active),
+        reason="pending previous planner",
+    )
+
+    def prepare(_active_file, _target_symbol):
+        assert runner.campaign_epoch.PLANNER_CAPACITY_RESERVATION_STATE_KEY not in autonomy_state
+        return {"success": True, "ok": True, "target": "next_target"}
+
+    monkeypatch.setattr(runner, "_manager_prepare_incremental_queue_item", prepare)
+    live_state = {
+        "active_file": str(active),
+        "current_queue_item": {"label": "next_target"},
+        "current_queue_item_slice": active.read_text(encoding="utf-8"),
+    }
+
+    runner._prepare_queue_assignment_state(autonomy_state, live_state)
+
+    assert autonomy_state["current_queue_assignment"]["target_symbol"] == "next_target"
 
 
 def test_prepare_queue_assignment_defers_warmup_after_startup_timeout(monkeypatch, tmp_path):

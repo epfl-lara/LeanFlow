@@ -34,6 +34,28 @@ def test_resolve_multi_attempt_location_preserves_explicit_column(tmp_path):
     assert location._resolve_multi_attempt_location(target, 3, 10) == (3, 10, None)
 
 
+def test_resolve_multi_attempt_location_repairs_out_of_range_column(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text("theorem target : True := by\n  sorry\n", encoding="utf-8")
+
+    assert location._resolve_multi_attempt_location(target, 1, 90) == (
+        2,
+        3,
+        "invalid_column_to_trailing_placeholder",
+    )
+
+
+def test_resolve_multi_attempt_location_rejects_out_of_range_column_without_hole(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text("theorem target : True := by trivial\n", encoding="utf-8")
+
+    assert location._resolve_multi_attempt_location(target, 1, 90) == (
+        1,
+        None,
+        "invalid_column",
+    )
+
+
 def test_resolve_multi_attempt_location_targets_multiline_trailing_sorry(tmp_path):
     target = tmp_path / "Demo.lean"
     target.write_text("theorem target : True := by\n  sorry\n", encoding="utf-8")

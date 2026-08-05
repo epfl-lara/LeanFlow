@@ -903,6 +903,28 @@ class _NativeOwnedWorkStopError(RuntimeError):
         assert isinstance(error, _NativeWriterQuiescenceError)
         return frozenset(failure.writer_kind for failure in error.failures)
 
+    @property
+    def signal_checkpoint_safe_runtime_cleanup(self) -> bool:
+        """Return whether only read-only Lean runtime services failed to close."""
+        return bool(self.runtime_cleanup_labels) and set(self.runtime_cleanup_labels) <= {
+            "incremental Lean sessions",
+            "MCP servers",
+        }
+
+    @property
+    def runtime_cleanup_labels(self) -> tuple[str, ...]:
+        """Return controlled runtime labels from a runtime-only shutdown failure."""
+        if len(self.failures) != 1:
+            return ()
+        failure = self.failures[0]
+        if failure.subsystem is not _NativeStopSubsystem.RUNTIME_SERVICES:
+            return ()
+        prefix = "runtime shutdown failed for: "
+        message = str(failure.error)
+        if not message.startswith(prefix):
+            return ()
+        return tuple(label.strip() for label in message[len(prefix) :].split(",") if label.strip())
+
 
 def _quiesce_native_writer_threads(agent: Any) -> None:
     """Interrupt and boundedly join foreground conversation/planner writers."""
@@ -1533,6 +1555,7 @@ def _finalize_native_run(
         "live_state": dict(live_state or {}),
     }
     quiescence_errors: list[str] = []
+    runtime_cleanup_warnings: list[str] = []
     pre_authority_errors: list[str] = []
     authority_errors: list[str] = []
     authority_box: dict[str, terminal_authority.TerminalAuthoritySnapshot] = {}
@@ -1546,9 +1569,26 @@ def _finalize_native_run(
                 reason=str(outcome["reason"]),
             )
         except BaseException as exc:
-            quiescence_errors.append(f"{type(exc).__name__}: {str(exc)[:240]}")
             if isinstance(exc, (NativeTerminationSignal, KeyboardInterrupt)):
                 raise
+            if (
+                int(outcome["exit_code"]) == EXIT_INTERRUPTED
+                and isinstance(exc, _NativeOwnedWorkStopError)
+                and exc.signal_checkpoint_safe_runtime_cleanup
+            ):
+                warning = f"{type(exc).__name__}: {str(exc)[:240]}"
+                runtime_cleanup_warnings.append(warning)
+                _record_agent_activity(
+                    agent,
+                    "signal-checkpoint-cleanup-warning",
+                    "Signal checkpoint continued after read-only runtime cleanup warning",
+                    trigger="signal-interrupt",
+                    checkpoint_authoritative=True,
+                    runtime_services=list(exc.runtime_cleanup_labels),
+                    warning=warning,
+                )
+                return
+            quiescence_errors.append(f"{type(exc).__name__}: {str(exc)[:240]}")
             if not (
                 isinstance(exc, _NativeOwnedWorkStopError) and exc.exclusively_writer_quiescence
             ):
@@ -1861,6 +1901,8 @@ def _finalize_native_run(
         )
         if int(outcome["exit_code"]) == EXIT_INTERRUPTED:
             current["interrupt_source"] = "signal"
+        if runtime_cleanup_warnings:
+            current["runtime_cleanup_warnings"] = list(runtime_cleanup_warnings)
         return current
 
     exit_checkpoint_state = checkpoint_state
@@ -16104,6 +16146,14 @@ def _prepare_queue_assignment_state(
             active_file_label=str(current.get("active_file_label", "") or ""),
         )
         print(f"Queue manager assigned {label}")
+    # Retire the preceding theorem's planner reservation before the potentially
+    # expensive incremental warmup. Otherwise status and research admission can
+    # expose the old scope for the whole warmup interval.
+    _reconcile_pending_plan_capacity_for_assignment(
+        autonomy_state,
+        target_symbol=label,
+        active_file=active_file,
+    )
     defer_incremental_warmup = bool(current.get("defer_incremental_warmup"))
     if defer_incremental_warmup:
         prepare_dict = {
@@ -16127,7 +16177,30 @@ def _prepare_queue_assignment_state(
     elif same_assignment and previous_prepare and previous_prepare.success:
         prepare = previous_prepare
     else:
-        prepare_dict = _manager_prepare_incremental_queue_item(active_file, label)
+
+        def emit_warmup_status(message: str) -> None:
+            print(message)
+            _record_activity(
+                "manager-incremental-warmup-heartbeat",
+                message,
+                target_symbol=label,
+                active_file=active_file,
+                campaign_progress=False,
+            )
+
+        prepare_dict = transition_visibility.run_with_heartbeat(
+            lambda: _manager_prepare_incremental_queue_item(active_file, label),
+            start_message=f"⏳ LeanProbe warmup for {label} is still running.",
+            heartbeat_message=lambda elapsed: (
+                f"⏳ LeanProbe warmup for {label} remains active ({elapsed:.0f}s elapsed)."
+            ),
+            finish_message=lambda _result, elapsed: (
+                f"✓ LeanProbe warmup for {label} finished in {elapsed:.1f}s."
+            ),
+            delay_s=5.0,
+            heartbeat_s=30.0,
+            emit=emit_warmup_status,
+        )
         prepare = PrepareState.from_mapping(prepare_dict)
         _record_activity(
             "manager-incremental-warmup",

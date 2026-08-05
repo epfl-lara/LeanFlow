@@ -252,6 +252,53 @@ def test_lean_lemma_suggest_falls_back_to_inspect_goals(monkeypatch):
     assert "no candidate lemmas found for the derived queries" in payload["degraded_reasons"]
 
 
+def test_lean_lemma_suggest_ignores_unavailable_goal_status_and_truncated_context(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "P4.lean"
+    source.write_text(
+        "def answer : Set ℝ := sorry\n\n"
+        "theorem result {f : ℝ → ℝ} (h : Strategy.Winning f answer) : "
+        "answer = Set.univ := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "lean_proof_context",
+        lambda file_path, theorem_id, cwd=None: {
+            "success": True,
+            "theorem_statement": "{θ : ℝ | 0",
+            "hypotheses": [],
+            "goals": "",
+        },
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "lean_inspect",
+        lambda target, cwd=None, symbol=None: SimpleNamespace(
+            goals=(
+                "Lean goals unavailable while the assigned declaration contains `sorry`; "
+                "use lean_incremental_check"
+            )
+        ),
+    )
+    monkeypatch.setattr(lls, "_local_source_hits", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(lls, "_run_search", lambda *_args, **_kwargs: [])
+
+    payload = lls.lean_lemma_suggest(str(source), "result")
+
+    rendered_queries = " ".join(payload["queries"])
+    assert "Lean goals" not in rendered_queries
+    assert "unavailable" not in rendered_queries
+    assert "Lean" not in payload["goal_symbols"]
+    assert "goals" not in payload["goal_symbols"]
+    assert any(symbol in payload["goal_symbols"] for symbol in ("Set.univ", "Set"))
+    assert any(
+        "incomplete declaration statement" in reason for reason in payload["degraded_reasons"]
+    )
+    assert any("live Lean goals unavailable" in reason for reason in payload["degraded_reasons"])
+
+
 def test_lean_lemma_suggest_honors_bounded_search_profile(monkeypatch):
     monkeypatch.setattr(
         lean_services,

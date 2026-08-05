@@ -327,7 +327,7 @@ def test_diagnostics_fallback_does_not_start_lean_after_reclaim_failure(monkeypa
 
 def test_lean_goals_reuses_known_capability_report_without_probe(monkeypatch, tmp_path):
     target = tmp_path / "Main.lean"
-    target.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    target.write_text("theorem demo : True := by trivial\n", encoding="utf-8")
     calls = []
     monkeypatch.setattr(
         lean_services,
@@ -2920,7 +2920,7 @@ def test_auto_probe_and_multi_attempt_use_expected_backend_arguments(monkeypatch
     project.mkdir()
     target = project / "Demo" / "Main.lean"
     target.parent.mkdir(parents=True)
-    target.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    target.write_text("\n" * 11 + "theorem demo : True := by trivial\n", encoding="utf-8")
     report = LeanCapabilityReport(
         cwd=str(project),
         project_root=str(project),
@@ -3381,6 +3381,90 @@ def test_lean_multi_attempt_rejects_ambiguous_backward_location_before_lean(monk
     assert payload["success"] is False
     assert payload["status"] == "ambiguous_placeholder_location"
     assert payload["line_adjustment"] == "ambiguous_backward_placeholders"
+    assert payload["screening_backend"] == "not_started"
+
+
+def test_lean_multi_attempt_repairs_invalid_column_before_leanprobe(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text("theorem target : True := by\n  sorry\n", encoding="utf-8")
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={"multi_attempt": "mcp_lean_lsp_lean_multi_attempt"},
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    calls: list[tuple[int, int | None]] = []
+
+    def _fake_screen(**kwargs):
+        calls.append((kwargs["line"], kwargs["column"]))
+        return {"success": False, "screening_backend": "leanprobe", "items": []}
+
+    monkeypatch.setattr(lean_services, "screen_multi_attempts_with_lean_probe", _fake_screen)
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *_args: pytest.fail("repaired location fell through to MCP"),
+    )
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: None)
+
+    payload = lean_services.lean_multi_attempt(
+        "Main.lean", 1, ["simp", "exact True.intro"], cwd=project, column=90
+    )
+
+    assert calls == [(2, 3)]
+    assert payload["line"] == 2
+    assert payload["column"] == 3
+    assert payload["requested_line"] == 1
+    assert payload["requested_column"] == 90
+    assert payload["column_adjustment"] == "invalid_column_to_trailing_placeholder"
+
+
+def test_lean_multi_attempt_rejects_invalid_column_before_backends(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text("theorem target : True := by trivial\n", encoding="utf-8")
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={"multi_attempt": "mcp_lean_lsp_lean_multi_attempt"},
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_services,
+        "screen_multi_attempts_with_lean_probe",
+        lambda **_kwargs: pytest.fail("invalid location started LeanProbe"),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *_args: pytest.fail("invalid location started MCP"),
+    )
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: None)
+
+    payload = lean_services.lean_multi_attempt(
+        "Main.lean", 1, ["simp", "exact True.intro"], cwd=project, column=90
+    )
+
+    assert payload["success"] is False
+    assert payload["status"] == "invalid_proof_location"
+    assert payload["backend_tool"] == "deterministic_location_guard"
     assert payload["screening_backend"] == "not_started"
 
 

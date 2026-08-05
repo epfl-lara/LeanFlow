@@ -2152,7 +2152,11 @@ def lean_multi_attempt(
         "attempts": normalized_attempts,
         "duplicate_attempts_removed": duplicate_attempts_removed,
     }
-    if adjustment in {"previous_tactic_line_after_blank", "trailing_placeholder"}:
+    if adjustment in {
+        "previous_tactic_line_after_blank",
+        "trailing_placeholder",
+        "invalid_column_to_trailing_placeholder",
+    }:
         location_details.update(
             {
                 "requested_line": requested_line,
@@ -2163,6 +2167,26 @@ def lean_multi_attempt(
             location_details["requested_column"] = column
     if adjustment == "inline_tactic_body":
         location_details["column_adjustment"] = adjustment
+    if adjustment == "invalid_column_to_trailing_placeholder":
+        location_details["column_adjustment"] = adjustment
+    if adjustment == "invalid_column":
+        payload = {
+            "success": False,
+            "backend_success": False,
+            "backend_tool": "deterministic_location_guard",
+            "screening_backend": "not_started",
+            **location_details,
+            "requested_line": requested_line,
+            "requested_column": column,
+            "column_adjustment": adjustment,
+            "status": "invalid_proof_location",
+            "action_required": (
+                "Supply a 1-indexed column within the requested source line or the exact line "
+                "and column of a placeholder; Lean screening was not started."
+            ),
+        }
+        append_workflow_outcome("lean-multi-attempt", payload)
+        return payload
     if adjustment == "ambiguous_backward_placeholders":
         payload = {
             "success": False,

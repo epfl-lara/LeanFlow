@@ -90,6 +90,7 @@ _TYPED_BINDER_RE = re.compile(
     r"[\(\{\[]\s*((?:[A-Za-z_][A-Za-z0-9_']*\s+)*[A-Za-z_][A-Za-z0-9_']*)\s*:"
 )
 _QUANTIFIED_BINDER_RE = re.compile(r"[∀∃]\s+([^,]+),")
+_GOALS_UNAVAILABLE_PREFIX = "lean goals unavailable"
 
 
 def _proof_context(file_path: str, theorem_id: str, cwd: str | None) -> Mapping[str, Any]:
@@ -121,6 +122,11 @@ def _statement_from_disk(file_path: str, theorem_id: str) -> str:
     if not entry:
         return ""
     return str(entry.get("text", "") or "").strip()
+
+
+def _goals_unavailable(text: str) -> bool:
+    """Return whether text is a status sentence rather than a Lean goal."""
+    return str(text or "").strip().casefold().startswith(_GOALS_UNAVAILABLE_PREFIX)
 
 
 def _hypothesis_text(hypotheses: Any) -> list[str]:
@@ -509,16 +515,28 @@ def lean_lemma_suggest(
     context = _proof_context(file_path, theorem_id, cwd_text) if use_proof_context else {}
     degraded: list[str] = [str(r) for r in context.get("degraded_reasons", []) or []]
     statement = str(context.get("theorem_statement", "") or "").strip()
-    if not statement:
-        statement = _statement_from_disk(file_path, theorem_id)
+    disk_statement = _statement_from_disk(file_path, theorem_id)
+    if disk_statement and (not statement or not _DECLARATION_NAME_RE.search(statement)):
+        if statement:
+            degraded.append(
+                "proof context returned an incomplete declaration statement; using source text"
+            )
+        statement = disk_statement
     hypotheses = _hypothesis_text(context.get("hypotheses"))
     goal = str(context.get("goals", "") or context.get("goal", "") or "").strip()
+    if _goals_unavailable(goal):
+        degraded.append("live Lean goals unavailable; deriving queries from source declaration")
+        goal = ""
     local_context = (
         str(context.get("status", "") or "") == "local-fallback"
         or str(context.get("backend_tool", "") or "") == "local-declaration-slice"
     )
     if not goal and use_proof_context and not local_context:
-        goal = _inspect_goals(file_path, theorem_id, cwd_text)
+        inspected_goal = _inspect_goals(file_path, theorem_id, cwd_text)
+        if _goals_unavailable(inspected_goal):
+            degraded.append("live Lean goals unavailable; deriving queries from source declaration")
+        else:
+            goal = inspected_goal
     if not goal:
         goal = statement
 

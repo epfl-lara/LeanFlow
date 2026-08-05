@@ -51,6 +51,10 @@ from tools.utilities.advisor_persistence import (
     REASONING_ADVISOR_NEXT_STEP,
     guard_reasoning_advice,
 )
+from tools.utilities.repository_research_policy import (
+    clean_room_task_labels,
+    solution_research_disabled,
+)
 
 LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S = 600
 LEAN_REASONING_HELP_MIN_TIMEOUT_S = 10
@@ -58,6 +62,24 @@ LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S = LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S
 LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S = LEAN_REASONING_HELP_MIN_TIMEOUT_S
 ADVISOR_MODEL_HEARTBEAT_S = 30.0
 ADVISOR_MODEL_TIMEOUT_GRACE_S = 5.0
+
+
+def _clean_room_advisor_instructions() -> str:
+    """Return the explicit advisor boundary for a clean-room proof campaign."""
+    if not solution_research_disabled():
+        return ""
+    labels = ", ".join(clean_room_task_labels()) or "the active task"
+    return (
+        " This request belongs to a clean-room proof campaign. Do not inspect the project "
+        "filesystem, shell history, Git history, sibling task files, prior run artifacts, or "
+        f"web results for solutions to {labels}. Reason only from the source context and "
+        "diagnostics supplied in this request."
+    )
+
+
+def _command_advisor_allowed(provider: str) -> bool:
+    """Return whether a configured command advisor may receive this request."""
+    return is_command_expert_provider(provider) and not solution_research_disabled()
 
 
 def _advisor_timeout_s(timeout_s: Any, *, minimum_s: int) -> int:
@@ -339,6 +361,7 @@ def lean_reasoning_help_tool(
         "or unification failure. Distinguish the source location where Lean reports an error from "
         "the operation that caused it; inspect the expected theorem type and intermediate goal "
         "before blaming an unfold or rewrite."
+        f"{_clean_room_advisor_instructions()}"
     )
     user_prompt = "\n\n".join(
         part
@@ -370,7 +393,7 @@ def lean_reasoning_help_tool(
     expert_provider = resolve_expert_provider("lean_reasoning")
     command_prompt = f"System instructions:\n{system_prompt}\n\nAdvisor request:\n{user_prompt}"
 
-    if is_command_expert_provider(expert_provider):
+    if _command_advisor_allowed(expert_provider):
         try:
             command_result = run_command_expert_help(
                 provider=expert_provider,
@@ -1403,6 +1426,7 @@ def lean_decompose_helpers_tool(
         "manager's banked-helper status override contradictory narrative history. "
         f"{decomposer_admission.DECOMPOSITION_ADMISSION_PROMPT_CONTRACT}"
         "Prefer local/private helper lemmas and concrete proof hints over broad strategy."
+        f"{_clean_room_advisor_instructions()}"
     )
     json_contract = (
         "{"
@@ -1452,7 +1476,7 @@ def lean_decompose_helpers_tool(
             theorem_id=theorem_id,
             file_path=file_path,
         )
-    if is_command_expert_provider(expert_provider):
+    if _command_advisor_allowed(expert_provider):
         try:
             command_result = run_command_expert_help(
                 provider=expert_provider,

@@ -1382,6 +1382,48 @@ def test_lean_reasoning_help_tool_uses_command_provider(monkeypatch, tmp_path):
     assert captured["timeout"] == 45
 
 
+def test_lean_reasoning_help_clean_room_isolates_command_provider(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("LEANFLOW_DISABLE_SOLUTION_RESEARCH", "1")
+    monkeypatch.setenv("LEANFLOW_CLEAN_ROOM_TASK_LABELS", "IMO2026/P4|P4.lean")
+    monkeypatch.setattr(lean_experts, "resolve_expert_provider", lambda _task: "codex")
+    monkeypatch.setattr(lean_experts, "is_command_expert_provider", lambda _provider: True)
+    monkeypatch.setattr(
+        lean_experts,
+        "run_command_expert_help",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("clean-room advisor must not receive filesystem tools")
+        ),
+    )
+
+    def _fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            model="gpt-5.6-luna",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Use the supplied goal."))],
+        )
+
+    monkeypatch.setattr(lean_experts, "call_llm", _fake_call_llm)
+
+    payload = json.loads(
+        lean_tool.lean_reasoning_help_tool(
+            "result",
+            "IMO2026/P4.lean",
+            theorem_statement="theorem result : True := by",
+            cwd=str(tmp_path),
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["provider"] == "codex"
+    assert payload["mode"] == "model"
+    assert captured["isolate"] is True
+    system_prompt = captured["messages"][0]["content"]
+    assert "clean-room proof campaign" in system_prompt
+    assert "Do not inspect the project filesystem" in system_prompt
+    assert "IMO2026/P4" in system_prompt
+
+
 def test_lean_reasoning_help_command_provider_applies_persistence_guard(monkeypatch):
     monkeypatch.setattr(lean_experts, "resolve_expert_provider", lambda _task: "codex")
     monkeypatch.setattr(lean_experts, "is_command_expert_provider", lambda _provider: True)
@@ -1965,6 +2007,57 @@ def test_lean_decompose_helpers_uses_fallback_command_provider(monkeypatch, tmp_
     assert captured["task"] == "lean_decompose_helpers"
     assert captured["provider"] == "codex"
     assert captured["timeout_s"] == 33
+
+
+def test_lean_decompose_helpers_clean_room_isolates_command_provider(monkeypatch, tmp_path):
+    target = tmp_path / "P4.lean"
+    target.write_text("theorem result : True := by\n  sorry\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+    response_text = json.dumps(
+        {
+            "obstacle_summary": "Use a small helper.",
+            "recommended_split": "Prove helper_ok first.",
+            "insertion_guidance": "Before result.",
+            "first_concrete_next_edit": "Check helper_ok.",
+            "helpers": [],
+        }
+    )
+    monkeypatch.setenv("LEANFLOW_DISABLE_SOLUTION_RESEARCH", "1")
+    monkeypatch.setenv("LEANFLOW_CLEAN_ROOM_TASK_LABELS", "IMO2026/P4|P4.lean")
+    monkeypatch.setattr(lean_experts, "resolve_expert_provider", lambda _task: "codex")
+    monkeypatch.setattr(lean_experts, "is_command_expert_provider", lambda _provider: True)
+    monkeypatch.setattr(
+        lean_experts,
+        "run_command_expert_help",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("clean-room decomposer must not receive filesystem tools")
+        ),
+    )
+
+    def _fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            model="gpt-5.6-luna",
+            choices=[SimpleNamespace(message=SimpleNamespace(content=response_text))],
+        )
+
+    monkeypatch.setattr(lean_experts, "call_llm", _fake_call_llm)
+
+    payload = json.loads(
+        lean_tool.lean_decompose_helpers_tool(
+            "result",
+            str(target),
+            theorem_statement="theorem result : True := by",
+            cwd=str(tmp_path),
+        )
+    )
+
+    assert payload["mode"] == "model"
+    assert payload["provider"] == "codex"
+    assert captured["isolate"] is True
+    system_prompt = captured["messages"][0]["content"]
+    assert "clean-room proof campaign" in system_prompt
+    assert "Do not inspect the project filesystem" in system_prompt
 
 
 def test_lean_decompose_helpers_shares_one_deadline_with_validation(monkeypatch, tmp_path):
