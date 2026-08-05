@@ -34,14 +34,19 @@ __all__ = [
 ]
 
 
+_LEAN_SCOPED_COMMAND_PREFIX_RE = (
+    r"(?:set_option|variable|include|omit|attribute|open(?:\s+scoped)?)"
+)
 LEAN_DECLARATION_PREAMBLE_RE = (
-    r"^\s*(?:(?:set_option|variable)\b[^\n]*\bin\s+)*"
-    r"(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
-    r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
+    rf"^\s*(?:{_LEAN_SCOPED_COMMAND_PREFIX_RE}\b[^\n]*\bin\s+)*"
+    r"(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial|nonrec|scoped|local)\s+)*"
+    r"(theorem|lemma|example|def|abbrev|opaque|axiom|instance|class|structure|inductive)\s+"
+    r"([A-Za-z0-9_'.-]+)?"
 )
 
 _DECLARATION_OPENERS = {"(": ")", "{": "}", "[": "]", "⦃": "⦄", "⟨": "⟩"}
 _DECLARATION_CLOSERS = {closer: opener for opener, closer in _DECLARATION_OPENERS.items()}
+_SCOPED_COMMAND_WRAPPER_LINE_RE = re.compile(rf"^\s*{_LEAN_SCOPED_COMMAND_PREFIX_RE}\b.*\bin\s*$")
 _TYPE_ASSIGNMENT_KEYWORDS = ("let", "have")
 _SUGGESTION_TACTIC_RE = re.compile(r"(?m)^\s*(?:exact|apply|simp|rw|aesop|grind)\?(?:\s|$)")
 _LEAN_INSPECTION_COMMAND_RE = re.compile(r"(?m)^\s*(?:#(?:check|print|eval|reduce)\b|run_cmd\b)")
@@ -507,6 +512,10 @@ def _trim_declaration_region_end(lines: list[str], *, start: int, next_start: in
                 if not found_start:
                     idx = original_idx
                     break
+            changed = True
+            idx = _skip_blank_lines(idx)
+        while idx >= start and _SCOPED_COMMAND_WRAPPER_LINE_RE.match(lines[idx - 1]):
+            idx -= 1
             changed = True
             idx = _skip_blank_lines(idx)
     return max(start, idx)

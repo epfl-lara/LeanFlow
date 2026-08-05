@@ -81,6 +81,48 @@ def test_declaration_index_target_range_ends_on_last_proof_line(tmp_path):
     assert entries[0]["text"] == "theorem target : True := by\n  sorry"
 
 
+def test_declaration_index_excludes_next_scoped_command_preamble(tmp_path):
+    """Keep a following scoped command and its docs out of the prior declaration."""
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "\n".join(
+            [
+                "def first : Nat := 1",
+                "",
+                "variable (P : Type) in",
+                "/-- A scoped declaration. -/",
+                "abbrev Scoped := P",
+                "",
+                "open scoped Classical in",
+                "/-- Another scoped declaration. -/",
+                "def second : Nat := 2",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entries = ld._declaration_index(target)
+
+    assert [entry["name"] for entry in entries] == ["first", "Scoped", "second"]
+    assert entries[0]["end_line"] == 1
+    assert entries[0]["text"] == "def first : Nat := 1"
+    assert entries[1]["end_line"] == 5
+    assert entries[1]["text"] == "abbrev Scoped := P"
+
+
+def test_declaration_index_recognizes_inline_open_scoped_wrapper(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "open scoped Classical in def wrapped : Nat := 1\n",
+        encoding="utf-8",
+    )
+
+    entries = ld._declaration_index(target)
+
+    assert [(entry["kind"], entry["name"]) for entry in entries] == [("def", "wrapped")]
+
+
 def test_declaration_index_missing_file_returns_empty(tmp_path):
     assert ld._declaration_index(tmp_path / "nope.lean") == []
 

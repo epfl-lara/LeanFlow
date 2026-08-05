@@ -399,6 +399,43 @@ def test_segment_file_attaches_variable_wrapper_to_scoped_declaration():
     assert segments[1].declaration_start > segments[1].start
 
 
+def test_segment_file_attaches_open_scoped_wrapper_to_declaration():
+    header, segments = li._segment_file(
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "theorem first : True := by",
+                "  trivial",
+                "",
+                "open scoped Classical in",
+                "def wrapped : Nat := 1",
+                "",
+                "theorem last : True := by",
+                "  trivial",
+                "",
+            ]
+        )
+    )
+
+    assert header == "import Mathlib\n"
+    assert [segment.name for segment in segments] == ["first", "wrapped", "last"]
+    assert "open scoped Classical in" not in segments[0].text
+    assert segments[1].text.startswith("open scoped Classical in")
+    assert segments[1].declaration_start > segments[1].start
+
+
+def test_segment_file_normalizes_inline_open_scoped_abbrev():
+    header, segments = li._segment_file(
+        "import Mathlib\n\nopen scoped Classical in abbrev Wrapped := Nat\n"
+    )
+
+    assert header == "import Mathlib\n\n"
+    assert [segment.name for segment in segments] == ["Wrapped"]
+    assert segments[0].text.startswith("open scoped Classical in ")
+    assert segments[0].declaration_start > segments[0].start
+
+
 def test_segment_file_ignores_declaration_keywords_inside_comments_and_strings():
     header, segments = li._segment_file(
         "\n".join(

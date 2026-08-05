@@ -85,14 +85,15 @@ def _segment_file(text: str) -> tuple[str, list[Any]]:
     return _repair_option_wrapped_segments(text, header, list(segments))
 
 
+_SCOPED_COMMAND_PREFIX_RE = r"(?:set_option|variable|include|omit|attribute|open(?:[ \t]+scoped)?)"
 _SCOPED_COMMAND_WRAPPER_BEFORE_DECL_RE = re.compile(
-    r"(?m)(^[ \t]*(?:(?:set_option|variable)[^\n]*\bin(?:[ \t]*\n[ \t]*|[ \t]+))+)\Z"
+    rf"(?m)(^[ \t]*(?:{_SCOPED_COMMAND_PREFIX_RE}[^\n]*\bin" r"(?:[ \t]*\n[ \t]*|[ \t]+))+)\Z"
 )
 _INLINE_SCOPED_DECLARATION_RE = re.compile(
-    r"(?m)^(?P<wrapper>[ \t]*(?:set_option|variable)\b[^\n]*\bin)"
+    rf"(?m)^(?P<wrapper>[ \t]*{_SCOPED_COMMAND_PREFIX_RE}\b[^\n]*\bin)"
     r"(?P<space>[ \t]+)"
-    r"(?P<declaration>(?:(?:private|protected|noncomputable|unsafe|partial)\s+)*"
-    r"(?:theorem|lemma|example|def|instance|class|structure)\b)"
+    r"(?P<declaration>(?:(?:private|protected|noncomputable|unsafe|partial|nonrec|scoped|local)\s+)*"
+    r"(?:theorem|lemma|example|def|abbrev|opaque|axiom|instance|class|structure|inductive)\b)"
 )
 
 
