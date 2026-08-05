@@ -76,7 +76,8 @@ def test_lean_outline_tool_returns_outline_lines(tmp_path):
     assert payload["count"] == 3
     assert payload["outline"][0] == "def qNum L4-4"
     assert payload["outline"][1] == "theorem qThm L6-7"
-    assert payload["declarations"][2]["name"] == "qLem"
+    assert payload["outline"][2] == "lemma qLem L9-10"
+    assert "declarations" not in payload
 
 
 def test_lean_outline_tool_symbol_returns_region(tmp_path):

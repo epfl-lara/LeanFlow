@@ -410,7 +410,6 @@ def lean_outline_tool(file_path: str, *, symbol: str = "", cwd: str = "") -> str
             "outline": [
                 f"{row['kind']} {row['name']} L{row['line']}-{row['end_line']}" for row in outline
             ],
-            "declarations": outline,
         },
         ensure_ascii=False,
     )

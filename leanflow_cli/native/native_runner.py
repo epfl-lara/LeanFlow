@@ -5572,7 +5572,8 @@ def _manager_final_report_feedback(
     elif blocker_kind == "sorry":
         lines.append(
             "- next step: continue the same theorem; the assigned declaration still contains `sorry`, "
-            "so solve it or report a blocker with a requested route (`decompose` | `negate` | `plan`) and the evidence."
+            "so solve it or report a blocker with a requested route (`decompose` | `negate` | `plan`) and put "
+            "retained counterexamples or ruled-out proof shapes under the exact heading `Negative evidence:`."
         )
     elif blocker_kind == "error":
         lines.append(
@@ -16717,7 +16718,9 @@ def _queue_assignment_block(
                 "Search exhaustion:",
                 "- repeated search attempts have already failed for this theorem",
                 "- do not call `lean_search` again in this turn unless you are changing the query strategy materially",
-                "- your next move should be an edit, `lean_verify`, or a blocker report with a requested route (`decompose` | `negate` | `plan`) and the evidence",
+                "- your next move should be an edit, `lean_verify`, or a blocker report with a requested route "
+                "(`decompose` | `negate` | `plan`); put retained counterexamples or ruled-out proof shapes under "
+                "the exact heading `Negative evidence:`",
             ]
         )
     parts.extend(["", "Task:", f"Repair `{label}` from its current state."])
@@ -23242,7 +23245,8 @@ def _autonomous_continuation_prompt(
             "Do not end this assignment until that gate is satisfied. If the current "
             "proof shape is exhausted, report its evidence with a requested route "
             "(`decompose` | `negate` | `plan`) and immediately continue under the "
-            "manager's next route. A blocker is a routing event, never a conclusion."
+            "manager's next route. Put retained counterexamples or ruled-out proof shapes under the exact "
+            "heading `Negative evidence:`. A blocker is a routing event, never a conclusion."
         )
         if document_handoff_blocked:
             prompt += (
@@ -23280,7 +23284,8 @@ def _autonomous_continuation_prompt(
         prompt = (
             "Continue the autonomous workflow. Do not end an unresolved assignment. "
             "A blocker is evidence for a new route, never permission to halt: report it "
-            "with a requested route (`decompose` | `negate` | `plan`) and continue.\n\n"
+            "with a requested route (`decompose` | `negate` | `plan`), put retained counterexamples or ruled-out "
+            "proof shapes under the exact heading `Negative evidence:`, and continue.\n\n"
             "Follow the loaded native workflow spec as the policy manual. "
             "Use the refreshed live proof state below as the current turn state.\n\n"
             "Verification requires all of the following:\n"

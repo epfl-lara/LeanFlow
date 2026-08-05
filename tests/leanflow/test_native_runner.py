@@ -26213,7 +26213,7 @@ def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeyp
         "Use the refreshed live proof state below as the current turn state.\n\n"
         "This is autonomous continuation cycle 3.\n"
         "Current verification gate: `lean_inspect` on Main.lean, then `lake env lean Main.lean`\n"
-        "Do not end this assignment until that gate is satisfied. If the current proof shape is exhausted, report its evidence with a requested route (`decompose` | `negate` | `plan`) and immediately continue under the manager's next route. A blocker is a routing event, never a conclusion.\n\n"
+        "Do not end this assignment until that gate is satisfied. If the current proof shape is exhausted, report its evidence with a requested route (`decompose` | `negate` | `plan`) and immediately continue under the manager's next route. Put retained counterexamples or ruled-out proof shapes under the exact heading `Negative evidence:`. A blocker is a routing event, never a conclusion.\n\n"
         "Route decision:\n"
         "- skill: lean-theorem-queue-worker\n"
         "- action: queue-worker\n"

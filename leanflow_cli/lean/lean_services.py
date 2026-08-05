@@ -1485,14 +1485,17 @@ def _proof_context_local_fast_path(
     theorem_id: str,
     *,
     cwd: str | os.PathLike[str] | None,
+    include_similar_proofs: bool,
 ) -> dict[str, Any] | None:
-    """Return local context immediately when the managed backend is suppressed.
+    """Return local context for private declarations or a suppressed backend.
 
     A durable timeout circuit is specifically evidence that capability discovery
     would only reacquire the project Lean admission before disabling the same
-    backend. Process-local backend quarantine has the same property. Resolve the
-    project and declaration directly so both the public wrapper and callers such
-    as ``lean_lemma_suggest`` avoid that repeated admission wait.
+    backend. Process-local backend quarantine has the same property. When no
+    similarity search is requested, a private declaration's exact local slice
+    already supplies the complete requested context and avoids the common
+    ``theorem_not_found`` round trip. Keep the backend path when similarity
+    results are requested because it may still enrich a known private theorem.
     """
     project_root, _ = _project_root(cwd)
     base = Path(
@@ -1507,10 +1510,25 @@ def _proof_context_local_fast_path(
         backend_tools
     )
     run_disabled = _disabled_mcp_tools_for_run(scope).intersection(backend_tools)
-    if not campaign_disabled and not run_disabled:
+    canonical_file_path = _canonical_tool_file_path(file_path, cwd=scope)
+    target_path = (
+        Path(canonical_file_path).expanduser().resolve() if canonical_file_path else Path("")
+    )
+    declaration_entry = (
+        _find_declaration_entry(target_path, theorem_id) if canonical_file_path else None
+    )
+    declaration_text = str((declaration_entry or {}).get("text", "") or "").lstrip()
+    is_private_declaration = declaration_text.startswith("private ") and not bool(
+        include_similar_proofs
+    )
+    if not campaign_disabled and not run_disabled and not is_private_declaration:
         return None
 
     degraded_reasons: list[str] = []
+    if is_private_declaration:
+        degraded_reasons.append(
+            "using local declaration context because private declarations are unavailable to the proof-context backend"
+        )
     if campaign_disabled:
         degraded_reasons.append(
             "lean proof context MCP disabled for current campaign after previous backend timeout"
@@ -1519,13 +1537,10 @@ def _proof_context_local_fast_path(
         degraded_reasons.append(
             "lean proof context MCP disabled for current run after previous backend failure"
         )
-    degraded_reasons.append(
-        "using local declaration fallback without capability probing because the backend circuit is open"
-    )
-    canonical_file_path = _canonical_tool_file_path(file_path, cwd=scope)
-    target_path = (
-        Path(canonical_file_path).expanduser().resolve() if canonical_file_path else Path("")
-    )
+    if campaign_disabled or run_disabled:
+        degraded_reasons.append(
+            "using local declaration fallback without capability probing because the backend circuit is open"
+        )
     local_payload = _local_proof_context_payload(
         target_path,
         theorem_id,
@@ -1819,6 +1834,7 @@ def lean_proof_context(
         file_path,
         theorem_id,
         cwd=cwd,
+        include_similar_proofs=include_similar_proofs,
     )
     if fast_local_payload is not None:
         return fast_local_payload

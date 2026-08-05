@@ -24,7 +24,9 @@ Primary specs:
 
 1. Focus only on solving the assigned declaration until the manager's verification gate accepts it. Never end
    an unresolved assignment: a blocker report always carries a requested route (`decompose` | `negate` |
-   `plan`) plus the evidence for it, and a blocker is never permission to end an unresolved theorem.
+   `plan`) plus the evidence for it, and a blocker is never permission to end an unresolved theorem. Put any
+   retained counterexamples or ruled-out proof shapes under the exact heading `Negative evidence:` so the next
+   checkpoint can preserve them without treating arbitrary prose as proof authority.
 2. Do not jump to later theorems in the file, even if they also contain `sorry`.
 3. Treat previous failed attempts as negative guidance:
    - do not blindly repeat the same proof shape

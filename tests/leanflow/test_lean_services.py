@@ -2641,6 +2641,36 @@ def test_lean_proof_context_uses_local_slice_when_backend_is_unavailable(monkeyp
     assert outcomes[-1][1]["backend_tool"] == "local-declaration-slice"
 
 
+def test_lean_proof_context_uses_local_slice_before_backend_for_private_declaration(
+    monkeypatch, tmp_path
+):
+    project = tmp_path / "Demo"
+    target = project / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("private lemma hidden : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: (_ for _ in ()).throw(AssertionError("backend probe should be skipped")),
+    )
+    outcomes = []
+    monkeypatch.setattr(
+        lean_services, "append_workflow_outcome", lambda *args: outcomes.append(args)
+    )
+
+    payload = lean_services.lean_proof_context(
+        "Demo/Main.lean", "hidden", cwd=project, include_similar_proofs=False
+    )
+
+    assert payload["success"] is True
+    assert payload["status"] == "local-fallback"
+    assert payload["backend_tool"] == "local-declaration-slice"
+    assert payload["theorem_statement"] == "private lemma hidden : True"
+    assert payload["original_proof"] == "trivial"
+    assert any("private declarations" in reason for reason in payload["degraded_reasons"])
+    assert outcomes[-1][1]["backend_tool"] == "local-declaration-slice"
+
+
 def test_local_proof_context_uses_scan_location_to_avoid_next_doc_comment(monkeypatch, tmp_path):
     target = tmp_path / "Demo" / "Main.lean"
     target.parent.mkdir(parents=True)
