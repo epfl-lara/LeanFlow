@@ -201,16 +201,24 @@ def _target_replaced_source(
     if segment is None:
         return None
     declaration_start = int(getattr(segment, "declaration_start", -1))
+    segment_start = int(getattr(segment, "start", declaration_start))
     end = int(getattr(segment, "end", -1))
-    if not 0 <= declaration_start <= end <= len(source_text):
+    if not 0 <= segment_start <= declaration_start <= end <= len(source_text):
         return None
     candidate = str(replacement or "").strip()
     original = str(getattr(segment, "text", "") or "")
     target_source = candidate or original
     if not target_source:
         return None
+    preamble = source_text[segment_start:declaration_start]
+    replacement_start = declaration_start
+    if preamble.strip() and target_source.lstrip().startswith(preamble.strip()):
+        # Inline axiom queries are built from the complete LeanProbe segment,
+        # including its doc/attribute preamble. Replace that complete segment
+        # instead of retaining and duplicating the original preamble.
+        replacement_start = segment_start
     integrated = (
-        source_text[:declaration_start] + target_source.rstrip() + "\n\n" + source_text[end:]
+        source_text[:replacement_start] + target_source.rstrip() + "\n\n" + source_text[end:]
     )
     return integrated, _replacement_has_placeholder(target_source)
 

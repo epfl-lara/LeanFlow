@@ -647,7 +647,7 @@ def test_profiled_check_target_uses_canonical_fallback_after_prefix_build_failur
 ):
     project, target = _write_project(
         tmp_path,
-        "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
+        "import Mathlib\n\n/-- Demo documentation. -/\ntheorem demo : True := by\n  trivial\n",
     )
     checked_sources = []
 
@@ -668,6 +668,7 @@ def test_profiled_check_target_uses_canonical_fallback_after_prefix_build_failur
 
     def exact_check(source, **kwargs):
         checked_sources.append(source)
+        assert source.count("/-- Demo documentation. -/") == 1
         begin = re.search(r"LEANFLOW_INCREMENTAL_AXIOMS_BEGIN_[A-F0-9]+", source)
         end = re.search(r"LEANFLOW_INCREMENTAL_AXIOMS_END_[A-F0-9]+", source)
         assert begin is not None and end is not None
@@ -700,6 +701,26 @@ def test_profiled_check_target_uses_canonical_fallback_after_prefix_build_failur
     assert payload["canonical_fallback"] is True
     assert payload["axiom_profile_checked"] is True
     assert payload["axiom_profile_axioms"] == ["propext"]
+
+
+def test_target_replacement_without_preamble_preserves_original_preamble(tmp_path):
+    _project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\n/-- Demo documentation. -/\ntheorem demo : True := by\n  sorry\n",
+    )
+    source = target.read_text(encoding="utf-8")
+
+    replaced = li._target_replaced_source(
+        source,
+        theorem_id="demo",
+        replacement="theorem demo : True := by\n  trivial",
+    )
+
+    assert replaced is not None
+    integrated, has_placeholder = replaced
+    assert integrated.count("/-- Demo documentation. -/") == 1
+    assert "theorem demo : True := by\n  trivial" in integrated
+    assert has_placeholder is False
 
 
 def test_profiled_canonical_fallback_retains_exact_error_diagnostic(monkeypatch, tmp_path):
