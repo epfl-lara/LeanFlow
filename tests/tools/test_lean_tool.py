@@ -775,6 +775,52 @@ def test_apply_verified_patch_tool_records_broad_check_without_claiming_target_v
     assert "exact target gate is still required" in status["message"]
 
 
+def test_apply_verified_patch_rejects_stale_fuzzy_context_before_verification(
+    tmp_path, monkeypatch
+):
+    """Do not relocate a verified patch when its trailing declaration is stale."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    target = tmp_path / "Demo.lean"
+    before = """\
+private lemma safe_branch : True := by
+  trivial
+
+def result : Nat := 0
+"""
+    target.write_text(before, encoding="utf-8")
+
+    monkeypatch.setattr(
+        lean_patch,
+        "lean_incremental_check",
+        lambda **_kwargs: pytest.fail(
+            "a stale fuzzy patch must be rejected before Lean verification"
+        ),
+    )
+    patch = f"""\
+*** Begin Patch
+*** Update File: {target}
+@@
+-private lemma safe_branch : True := by
++private lemma safe_branch : True := by
+@@
+   trivial
++
++private lemma checked_helper : True := by
++  trivial
+ 
+ def stale_successor : Nat := 0
+*** End Patch"""
+
+    payload = json.loads(
+        lean_tool.apply_verified_patch_tool(
+            str(target), patch, cwd=str(tmp_path), theorem_id="result"
+        )
+    )
+    assert payload["success"] is False
+    assert payload["status"] == "patch_failed"
+    assert target.read_text(encoding="utf-8") == before
+
+
 def test_apply_verified_patch_reuses_hash_bound_parent_helper_authority(tmp_path, monkeypatch):
     """Retain one exact helper insertion without replaying an open target."""
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))

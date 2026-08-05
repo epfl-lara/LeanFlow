@@ -333,7 +333,12 @@ def apply_verified_patch_tool(
 
     try:
         file_ops = ShellFileOperations(_LocalShellEnv(base_cwd), cwd=str(base_cwd))
-        patch_result = file_ops.patch_v4a(raw_patch)
+        # Verified edits are high-risk transactions bound to the caller's exact
+        # source image.  Fuzzy relocation can silently replace stale trailing
+        # context (including a neighboring declaration) and then verify a
+        # different edit than the model requested.  Structural freshness must
+        # therefore be resolved by a reread and a new patch, never by guessing.
+        patch_result = file_ops.patch_v4a(raw_patch, strict=True)
     finally:
         if temporary_lock_owner:
             release_file_lock(str(resolved_path), owner_id=temporary_lock_owner)
