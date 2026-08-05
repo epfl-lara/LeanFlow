@@ -21,6 +21,7 @@ import json
 import math
 import os
 import re
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -55,6 +56,8 @@ LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S = 360
 LEAN_REASONING_HELP_MIN_TIMEOUT_S = 10
 LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S = LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S
 LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S = LEAN_REASONING_HELP_MIN_TIMEOUT_S
+ADVISOR_MODEL_HEARTBEAT_S = 30.0
+ADVISOR_MODEL_TIMEOUT_GRACE_S = 5.0
 
 
 def _advisor_timeout_s(timeout_s: Any, *, minimum_s: int) -> int:
@@ -72,6 +75,79 @@ def _remaining_request_timeout_s(deadline: float) -> int:
     if remaining <= 0:
         return 0
     return max(1, math.ceil(remaining))
+
+
+def _call_model_advisor_with_heartbeat(
+    *,
+    task: str,
+    messages: list[dict[str, str]],
+    temperature: float,
+    max_tokens: int,
+    timeout_s: int,
+    provider: str,
+    theorem_id: str,
+    file_path: str,
+    heartbeat_s: float = ADVISOR_MODEL_HEARTBEAT_S,
+) -> Any:
+    """Call one isolated model advisor while persisting bounded wait heartbeats."""
+    finished = threading.Event()
+    outcome: list[tuple[bool, Any]] = []
+
+    def invoke() -> None:
+        try:
+            outcome.append(
+                (
+                    True,
+                    call_llm(
+                        task=task,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        timeout=timeout_s,
+                        isolate=True,
+                    ),
+                )
+            )
+        except BaseException as exc:
+            outcome.append((False, exc))
+        finally:
+            finished.set()
+
+    started = time.monotonic()
+    deadline = started + timeout_s + ADVISOR_MODEL_TIMEOUT_GRACE_S
+    thread = threading.Thread(
+        target=invoke,
+        name=f"leanflow-{task}-advisor",
+        daemon=True,
+    )
+    thread.start()
+    interval_s = max(0.01, float(heartbeat_s))
+    while not finished.wait(timeout=min(interval_s, max(0.01, deadline - time.monotonic()))):
+        elapsed_s = round(max(0.0, time.monotonic() - started), 1)
+        record_expert_help_activity(
+            "expert-help-heartbeat",
+            "Expert model request remains active",
+            provider=provider,
+            mode="model",
+            task=task,
+            theorem_id=theorem_id,
+            file_path=file_path,
+            elapsed_s=elapsed_s,
+            timeout_s=timeout_s,
+            partial_response_available=False,
+        )
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"{provider} expert model exceeded its {timeout_s}s request deadline."
+            )
+    if not outcome:
+        raise RuntimeError(f"{provider} expert model ended without a result.")
+    succeeded, value = outcome[0]
+    if succeeded:
+        return value
+    if isinstance(value, BaseException):
+        raise value
+    raise RuntimeError(str(value))
 
 
 def _advisor_failure(
@@ -369,7 +445,7 @@ def lean_reasoning_help_tool(
             theorem_id=theorem_id,
             file_path=file_path,
         )
-        response = call_llm(
+        response = _call_model_advisor_with_heartbeat(
             task="lean_reasoning",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -377,8 +453,10 @@ def lean_reasoning_help_tool(
             ],
             temperature=0.2,
             max_tokens=max_tokens,
-            timeout=request_timeout_s,
-            isolate=True,
+            timeout_s=request_timeout_s,
+            provider=expert_provider,
+            theorem_id=theorem_id,
+            file_path=file_path,
         )
     except TimeoutError as exc:
         return _advisor_failure("timeout", str(exc), theorem_id=theorem_id, file_path=file_path)
@@ -1427,7 +1505,7 @@ def lean_decompose_helpers_tool(
                 theorem_id=theorem_id,
                 file_path=file_path,
             )
-            response = call_llm(
+            response = _call_model_advisor_with_heartbeat(
                 task="lean_decompose_helpers",
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -1435,8 +1513,10 @@ def lean_decompose_helpers_tool(
                 ],
                 temperature=0.1,
                 max_tokens=max_tokens,
-                timeout=provider_timeout_s,
-                isolate=True,
+                timeout_s=provider_timeout_s,
+                provider=expert_provider,
+                theorem_id=theorem_id,
+                file_path=file_path,
             )
         except TimeoutError as exc:
             return _decompose_failure(

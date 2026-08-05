@@ -49,6 +49,9 @@ def test_lean_capabilities_tool_returns_structured_json(monkeypatch):
     assert payload["success"] is True
     assert payload["project_valid"] is True
     assert payload["workers"] == []
+    assert payload["worker_specs"] == []
+    assert payload["workers_scope"] == "registered_lean_workflow_specs"
+    assert "not live research" in payload["workers_note"]
 
 
 def _inspection_fixture(target: Path) -> LeanInspection:
@@ -1407,6 +1410,39 @@ def test_lean_reasoning_help_codex_default_reads_last_message_file(monkeypatch, 
     assert "--output-last-message" in payload["command"]
     assert payload["advice"].startswith("Final Codex advisor answer.")
     assert "route-change evidence" in payload["advice"]
+
+
+def test_model_advisor_persists_wait_heartbeats(monkeypatch):
+    """Expose long non-streaming advisor calls as live workflow activity."""
+    events = []
+
+    def _slow_call(**kwargs):
+        time.sleep(0.04)
+        return SimpleNamespace(model="test-model", choices=[])
+
+    monkeypatch.setattr(lean_experts, "call_llm", _slow_call)
+    monkeypatch.setattr(
+        lean_experts,
+        "record_expert_help_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+
+    response = lean_experts._call_model_advisor_with_heartbeat(
+        task="lean_reasoning",
+        messages=[{"role": "user", "content": "help"}],
+        temperature=0.2,
+        max_tokens=1000,
+        timeout_s=1,
+        provider="test-provider",
+        theorem_id="demo",
+        file_path="Main.lean",
+        heartbeat_s=0.01,
+    )
+
+    assert response.model == "test-model"
+    assert events
+    assert events[0][0][0] == "expert-help-heartbeat"
+    assert events[0][1]["partial_response_available"] is False
 
 
 def test_lean_reasoning_help_tool_honors_explicit_model_timeout(monkeypatch):

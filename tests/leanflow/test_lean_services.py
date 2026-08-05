@@ -3124,6 +3124,11 @@ def test_lean_multi_attempt_requires_exact_target_check_for_probe_success(monkey
     assert payload["verified_attempts"] == []
     assert payload["items"][0]["probe_closed_goal"] is False
     assert payload["items"][0]["verified"] is False
+    assert payload["items"][0]["candidate_status"] == "rejected"
+    assert payload["items"][0]["goals"] is None
+    assert payload["items"][0]["goals_available"] is False
+    assert payload["items"][0]["exact_check"]["success"] is False
+    assert payload["items"][0]["exact_check"]["backend_success"] is True
     assert "exact-target" in payload["action_required"]
 
 
@@ -3177,7 +3182,9 @@ def test_lean_multi_attempt_stops_after_first_exact_leanprobe_success(monkeypatc
     assert calls[1]["timeout_s"] == 30
     assert payload["success"] is True
     assert payload["verified_attempts"] == ["exact True.intro"]
+    assert payload["items"][0]["candidate_status"] == "target_verified"
     assert payload["items"][1]["screening_skipped"] == "earlier exact candidate verified"
+    assert payload["items"][1]["candidate_status"] == "screening_skipped"
 
 
 def test_lean_multi_attempt_locally_checks_one_hole_with_unrelated_anchor(monkeypatch, tmp_path):
@@ -3239,6 +3246,7 @@ def test_lean_multi_attempt_locally_checks_one_hole_with_unrelated_anchor(monkey
     assert payload["locally_verified_attempts"] == ["exact True.intro"]
     assert payload["status"] == "locally_verified_candidate"
     assert payload["items"][0]["unrelated_placeholder_anchors"] == 1
+    assert payload["items"][0]["candidate_status"] == "local_goal_verified"
     assert "not target-verified" in payload["action_required"]
 
 

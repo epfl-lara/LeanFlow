@@ -25,7 +25,14 @@ class LeanCapabilityReport:
     remote_search_policy: str = "public-fallbacks-enabled"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["worker_specs"] = list(self.workers)
+        payload["workers_scope"] = "registered_lean_workflow_specs"
+        payload["workers_note"] = (
+            "This field reports registered Lean workflow specs, not live research or "
+            "planner-agent capacity."
+        )
+        return payload
 
 
 @dataclass(frozen=True)

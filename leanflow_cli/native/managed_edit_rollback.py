@@ -14,7 +14,7 @@ from typing import Any
 from leanflow_cli.lean.lean_parsing import _contains_lean_suggestion_tactic
 from tools.utilities.patch_parser import preview_v4a_update
 
-_NON_SEMANTIC_CANDIDATE_LINE_RE = re.compile(r"^\s*trace_state\s*$")
+_NON_SEMANTIC_CANDIDATE_LINE_RE = re.compile(r"^\s*trace_state(?:\s*--.*)?$")
 
 
 def normalize_candidate_declaration(declaration: str) -> str:
@@ -25,6 +25,14 @@ def normalize_candidate_declaration(declaration: str) -> str:
         for line in normalized.splitlines()
         if not _NON_SEMANTIC_CANDIDATE_LINE_RE.match(line)
     ).strip()
+
+
+def contains_transient_diagnostic(declaration: str) -> bool:
+    """Return whether source contains a standalone diagnostic-only command."""
+    normalized = str(declaration or "").replace("\r\n", "\n").replace("\r", "\n")
+    return any(
+        _NON_SEMANTIC_CANDIDATE_LINE_RE.match(line) is not None for line in normalized.splitlines()
+    )
 
 
 def contains_suggestion_tactic(declaration: str) -> bool:

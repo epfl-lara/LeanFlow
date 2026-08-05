@@ -211,6 +211,46 @@ def test_workflow_log_tee_collapses_carriage_return_spinner_frames(monkeypatch):
     assert durable == ["Search complete\n"]
 
 
+def test_workflow_log_tee_drops_completed_spinner_frame(monkeypatch):
+    """Do not persist animation when another concurrent writer emits a newline."""
+    durable = []
+
+    class _Stream:
+        def write(self, data):
+            return len(data)
+
+    monkeypatch.setattr(runner, "append_workflow_run_log", durable.append)
+    tee = runner._WorkflowLogTee(_Stream())
+
+    tee.write("\r  ⠋ researching... (4.2s)")
+    tee.write("\n")
+
+    assert durable == []
+
+
+def test_workflow_log_tee_preserves_status_interleaved_after_spinner(monkeypatch):
+    """Retain a real heartbeat appended to an animated progress frame."""
+    durable = []
+
+    class _Stream:
+        def write(self, data):
+            return len(data)
+
+    monkeypatch.setattr(runner, "append_workflow_run_log", durable.append)
+    tee = runner._WorkflowLogTee(_Stream())
+
+    tee.write(
+        "\r  ✷ pondering... (60.0s)"
+        "⏳ Planner phase remains active (603.9s total; research lanes each have a "
+        "600s deadline; synthesis and review are separately bounded)\n"
+    )
+
+    assert durable == [
+        "⏳ Planner phase remains active (603.9s total; research lanes each have a "
+        "600s deadline; synthesis and review are separately bounded)\n"
+    ]
+
+
 def test_verified_workflow_exits_without_prompt_when_stdin_is_not_interactive(monkeypatch):
     class _Stdin:
         def isatty(self):
@@ -8250,6 +8290,59 @@ def test_search_synthesis_reservation_blocks_same_cycle_inspection(
     assert payload["status"] == "search_synthesis_required"
     assert payload["blocked_tool"] == function_name
     assert payload["provider_called"] is False
+
+
+def test_construction_turn_hides_only_currently_forbidden_discovery_tools(monkeypatch, tmp_path):
+    """Do not advertise deterministic rejections to a construction-only model turn."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    def schema(name):
+        return {"type": "function", "function": {"name": name}}
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self.tools = [
+                schema("lean_search"),
+                schema("read_file"),
+                schema("patch"),
+                schema("lean_incremental_check"),
+            ]
+            self.valid_tool_names = {
+                "lean_search",
+                "read_file",
+                "patch",
+                "lean_incremental_check",
+            }
+
+    state = {
+        "current_cycle": 7,
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "search_progress": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "search_count": 12,
+            "hard_route_requested": True,
+            "synthesis_grace_pending": True,
+            "synthesis_boundary_cycle": 7,
+        },
+    }
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    agent = _Agent()
+
+    runner._prepare_managed_turn_state(agent, state)
+
+    assert agent.valid_tool_names == {"patch", "lean_incremental_check"}
+
+    state["current_cycle"] = 8
+    runner._prepare_managed_turn_state(agent, state)
+
+    assert agent.valid_tool_names == {"read_file", "patch", "lean_incremental_check"}
 
 
 def test_lean_inspection_calls_enter_search_budget(monkeypatch, tmp_path):
@@ -31792,6 +31885,80 @@ def test_concrete_source_patch_is_not_redirected_as_suggestion(tmp_path):
 *** End Patch"""
 
     result = runner._suggestion_only_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": "demo", "patch": patch},
+        state,
+    )
+
+    assert result is None
+
+
+def test_transient_diagnostic_source_patch_is_redirected_before_mutation(tmp_path, monkeypatch):
+    """Keep goal-inspection commands in LeanProbe scratch state."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+-  sorry
++  trace_state
++  sorry
+*** End Patch"""
+
+    result = runner._transient_diagnostic_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": "demo", "patch": patch},
+        state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "isolated_diagnostic_probe_required"
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == source
+    assert events[-1][0][1] == "transient-diagnostic-source-patch-blocked"
+
+
+def test_transient_diagnostic_guard_allows_cleanup(tmp_path):
+    """Allow the next managed edit to remove stale trace instrumentation."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  trace_state\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+-  trace_state
+-  sorry
++  exact True.intro
+*** End Patch"""
+
+    result = runner._transient_diagnostic_source_patch_guard(
         _ManagedRunAgentStub(),
         "apply_verified_patch",
         {"path": str(active), "theorem_id": "demo", "patch": patch},

@@ -47,7 +47,8 @@ def _incremental_check_timed_out(check: Mapping[str, Any]) -> bool:
 def _exact_check_summary(check: Mapping[str, Any], *, verified: bool) -> dict[str, Any]:
     """Build the bounded exact-check fields exposed by multi-attempt results."""
     return {
-        "success": bool(check.get("success")),
+        "success": verified,
+        "backend_success": bool(check.get("success")),
         "target_verified": verified,
         "status": str(check.get("status", "") or ""),
         "error": str(check.get("error", "") or ""),
@@ -164,12 +165,22 @@ def screen_multi_attempts_with_lean_probe(
         items.append(
             {
                 "snippet": snippet,
-                "goals": [],
+                "goals": None,
+                "goals_available": False,
                 "diagnostics": list(check.get("messages") or []),
                 "timed_out": exact_check["timed_out"],
                 "probe_closed_goal": verified,
                 "verified": verified,
                 "local_goal_verified": locally_verified,
+                "candidate_status": (
+                    "target_verified"
+                    if verified
+                    else (
+                        "local_goal_verified"
+                        if locally_verified
+                        else ("timed_out" if exact_check["timed_out"] else "rejected")
+                    )
+                ),
                 "unrelated_placeholder_anchors": anchor_count,
                 "exact_check": exact_check,
             }
@@ -183,12 +194,14 @@ def screen_multi_attempts_with_lean_probe(
                 items.append(
                     {
                         "snippet": skipped_snippet,
-                        "goals": [],
+                        "goals": None,
+                        "goals_available": False,
                         "diagnostics": [],
                         "timed_out": False,
                         "probe_closed_goal": False,
                         "verified": False,
                         "local_goal_verified": False,
+                        "candidate_status": "screening_skipped",
                         "screening_skipped": (
                             "earlier exact candidate verified"
                             if verified

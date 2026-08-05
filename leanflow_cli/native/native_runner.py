@@ -4325,6 +4325,7 @@ def _prepare_managed_turn_state(agent: Any, autonomy_state: dict[str, Any]) -> N
             # durable reservation.
             logger.debug("provider-turn identity reservation failed", exc_info=True)
             autonomy_state.pop("_failed_attempt_provider_turn", None)
+    _sync_construction_only_tool_surface(agent, autonomy_state)
 
 
 def _prepare_managed_turn_or_pause(agent: Any, autonomy_state: dict[str, Any]) -> bool:
@@ -5268,6 +5269,109 @@ def _disable_agent_tool_schema(agent: Any, tool_name: str) -> None:
     if name in valid:
         valid.remove(name)
         agent.valid_tool_names = valid
+
+
+_TEMPORARY_TOOL_SCHEMAS_ATTR = "_managed_temporary_tool_schemas"
+
+
+def _restore_temporary_agent_tool_schemas(agent: Any) -> None:
+    """Restore tool schemas hidden only for the previous provider turn."""
+    stored = dict(getattr(agent, _TEMPORARY_TOOL_SCHEMAS_ATTR, {}) or {})
+    if not stored:
+        return
+    autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+    permanently_disabled = {
+        str(entry.get("name", "") or "").strip()
+        for entry in list(dict(autonomy_state or {}).get("disabled_tools_this_run") or [])
+        if isinstance(entry, Mapping)
+    }
+    tools = list(getattr(agent, "tools", []) or [])
+    present = {str(dict(tool.get("function", {}) or {}).get("name", "") or "") for tool in tools}
+    restored_names: set[str] = set()
+    for name, schema in stored.items():
+        if name in permanently_disabled or name in present:
+            continue
+        tools.append(schema)
+        restored_names.add(name)
+    agent.tools = tools
+    valid = set(getattr(agent, "valid_tool_names", set()) or set())
+    valid.update(restored_names)
+    agent.valid_tool_names = valid
+    setattr(agent, _TEMPORARY_TOOL_SCHEMAS_ATTR, {})
+
+
+def _temporarily_disable_agent_tool_schemas(agent: Any, tool_names: set[str]) -> None:
+    """Hide known-unavailable tools until the next managed provider turn."""
+    requested = {str(name or "").strip() for name in tool_names if str(name or "").strip()}
+    if not requested:
+        return
+    tools = list(getattr(agent, "tools", []) or [])
+    stored = dict(getattr(agent, _TEMPORARY_TOOL_SCHEMAS_ATTR, {}) or {})
+    filtered = []
+    for tool in tools:
+        name = str(dict(tool.get("function", {}) or {}).get("name", "") or "")
+        if name in requested:
+            stored.setdefault(name, tool)
+        else:
+            filtered.append(tool)
+    agent.tools = filtered
+    valid = set(getattr(agent, "valid_tool_names", set()) or set())
+    valid.difference_update(requested)
+    agent.valid_tool_names = valid
+    setattr(agent, _TEMPORARY_TOOL_SCHEMAS_ATTR, stored)
+
+
+def _sync_construction_only_tool_surface(agent: Any, autonomy_state: Mapping[str, Any]) -> None:
+    """Hide discovery schemas whose deterministic construction fence is already closed."""
+    _restore_temporary_agent_tool_schemas(agent)
+    if _workflow_kind() != "prove" or not _single_queue_item_turn_enabled():
+        return
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    tracker = dict(autonomy_state.get("search_progress") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file or not tracker:
+        return
+    try:
+        current_cycle = int(autonomy_state.get("current_cycle", 0) or 0)
+    except (TypeError, ValueError):
+        current_cycle = 0
+    blocked_names: set[str] = set()
+    for name in search_synthesis_admission.DISCOVERY_TOOL_NAMES:
+        if name == search_synthesis_admission.LEAN_INCREMENTAL_INSPECTION_TOOL_NAME:
+            continue
+        blocked = search_synthesis_admission.blocked_search_result(
+            function_name=name,
+            tracker=tracker,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            current_cycle=current_cycle,
+        )
+        if blocked is None and current_cycle:
+            blocked = search_synthesis_admission.blocked_construction_source_result(
+                function_name=name,
+                tracker=tracker,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                current_cycle=current_cycle,
+            )
+        if blocked is not None:
+            blocked_names.add(name)
+    if _rollback_refresh_read_matches(autonomy_state, "read_file", {"path": active_file}):
+        blocked_names.discard("read_file")
+    if not blocked_names:
+        return
+    _temporarily_disable_agent_tool_schemas(agent, blocked_names)
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "construction-only-tool-surface",
+            f"Hid {len(blocked_names)} unavailable discovery tools for this provider turn",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            hidden_tools=sorted(blocked_names),
+            campaign_progress=False,
+        )
 
 
 def _record_disabled_tool_this_run(
@@ -8668,8 +8772,8 @@ def _tool_proposed_edit_text(function_name: str, args: Mapping[str, Any] | None)
     return ""
 
 
-def _assigned_candidate_declaration(source: str, target_symbol: str) -> str:
-    """Return one normalized assigned declaration from an in-memory source image."""
+def _assigned_candidate_declaration_raw(source: str, target_symbol: str) -> str:
+    """Return one exact assigned declaration from an in-memory source image."""
     entry = next(
         (
             item
@@ -8678,7 +8782,14 @@ def _assigned_candidate_declaration(source: str, target_symbol: str) -> str:
         ),
         None,
     )
-    return _normalize_failed_attempt_candidate_declaration(str((entry or {}).get("text", "") or ""))
+    return str((entry or {}).get("text", "") or "")
+
+
+def _assigned_candidate_declaration(source: str, target_symbol: str) -> str:
+    """Return one normalized assigned declaration from an in-memory source image."""
+    return _normalize_failed_attempt_candidate_declaration(
+        _assigned_candidate_declaration_raw(source, target_symbol)
+    )
 
 
 def _preview_managed_candidate_declaration(
@@ -8875,6 +8986,81 @@ def _suggestion_only_source_patch_guard(
                 "source. Run the probe through LeanProbe (`lean_multi_attempt` or a temporary "
                 "`lean_incremental_check` candidate), then submit the resulting concrete term "
                 "or tactic script. This probe does not count as proof construction."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _transient_diagnostic_source_patch_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Keep diagnostic-only commands out of managed production declarations."""
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not _managed_edit_targets_assignment(
+            args,
+            active_file,
+            function_name=function_name,
+        )
+    ):
+        return None
+    try:
+        before_text = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    after_text = managed_edit_rollback.preview_candidate_source(
+        function_name,
+        args,
+        before_text,
+    )
+    if not after_text:
+        return None
+    candidate = _assigned_candidate_declaration_raw(after_text, target_symbol)
+    before = _assigned_candidate_declaration_raw(before_text, target_symbol)
+    if (
+        not candidate
+        or candidate == before
+        or not managed_edit_rollback.contains_transient_diagnostic(candidate)
+    ):
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "transient-diagnostic-source-patch-blocked",
+            f"Redirected diagnostic-only source edit for {target_symbol} to LeanProbe",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            provider_called=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "isolated_diagnostic_probe_required",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "patch_applied": False,
+            "check_passed": False,
+            "provider_called": False,
+            "lean_started": False,
+            "required_action": (
+                "Do not write diagnostic-only commands such as `trace_state` into managed "
+                "source. Inspect the goal through LeanProbe (`lean_incremental_check` feedback "
+                "or a temporary candidate), then submit only the concrete proof edit. If the "
+                "command is already present, remove it in the next edit."
             ),
         },
         ensure_ascii=False,
@@ -10036,6 +10222,14 @@ def _managed_pre_tool_call(
         )
         if suggestion_patch_guard:
             return suggestion_patch_guard
+        diagnostic_patch_guard = _transient_diagnostic_source_patch_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if diagnostic_patch_guard:
+            return diagnostic_patch_guard
         self_reference_guard = _direct_self_reference_source_patch_guard(
             agent,
             function_name,
@@ -14016,13 +14210,16 @@ def _handle_managed_tool_result(
         return
     discovery_name = search_synthesis_admission.discovery_tool_name(function_name, args)
     if discovery_name is not None:
-        if not rollback_refresh_read_completed and _track_search_progress(
-            agent,
-            discovery_name,
-            args,
-            _result,
-        ):
-            return
+        if not rollback_refresh_read_completed:
+            search_turn_closed = _track_search_progress(
+                agent,
+                discovery_name,
+                args,
+                _result,
+            )
+            _sync_construction_only_tool_surface(agent, autonomy_state)
+            if search_turn_closed:
+                return
     else:
         _note_non_search_tool_progress(
             agent,
@@ -14734,6 +14931,17 @@ def _managed_agent_float(value: Any) -> float | None:
         return None
 
 
+_TRANSIENT_PROGRESS_FRAME_RE = re.compile(r"^\s{2,}\S+\s+.*?\(\d+(?:\.\d+)?s\)(?P<suffix>.*)$")
+
+
+def _durable_progress_line(line: str) -> str:
+    """Drop animation frames while preserving meaningful interleaved suffixes."""
+    match = _TRANSIENT_PROGRESS_FRAME_RE.match(str(line or ""))
+    if match is None:
+        return line
+    return str(match.group("suffix") or "").lstrip()
+
+
 class _WorkflowLogTee:
     def __init__(self, stream: Any) -> None:
         self._stream = stream
@@ -14752,8 +14960,9 @@ class _WorkflowLogTee:
                     self._carriage_mode = True
                     self._durable_line = ""
                 elif char == "\n":
-                    if self._durable_line.strip():
-                        emitted.append(f"{self._durable_line}\n")
+                    durable_line = _durable_progress_line(self._durable_line)
+                    if durable_line.strip():
+                        emitted.append(f"{durable_line}\n")
                     self._durable_line = ""
                 else:
                     self._durable_line = (self._durable_line + char)[-8192:]
@@ -27230,14 +27439,17 @@ def _run_planner_phase_with_parent_maintenance(
             elapsed_s = round(now - planner_started, 1)
             print(
                 "⏳ Planner phase remains active "
-                f"({elapsed_s:.1f}s elapsed; lane deadline "
-                f"{planner_phase.planner_lane_wall_timeout_s()}s)"
+                f"({elapsed_s:.1f}s total; research lanes each have a "
+                f"{planner_phase.planner_lane_wall_timeout_s()}s deadline; "
+                "synthesis and review are separately bounded)"
             )
             _record_activity(
                 "planner-phase-heartbeat",
                 "Planner phase remains active",
                 elapsed_s=elapsed_s,
                 lane_timeout_s=planner_phase.planner_lane_wall_timeout_s(),
+                timeout_scope="per-research-lane",
+                synthesis_review_separately_bounded=True,
             )
             last_notice = now
 

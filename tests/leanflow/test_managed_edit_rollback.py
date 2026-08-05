@@ -144,3 +144,13 @@ def test_rejected_candidate_identity_ignores_trace_state_instrumentation():
 
     assert matched is not None
     assert matched["attempt"] == 7
+
+
+def test_transient_diagnostic_detection_accepts_comment_but_not_mentions():
+    """Recognize standalone trace instrumentation without matching ordinary source text."""
+    assert managed_edit_rollback.contains_transient_diagnostic(
+        "by\n  trace_state -- temporary\n  sorry"
+    )
+    assert not managed_edit_rollback.contains_transient_diagnostic(
+        'by\n  have label : String := "trace_state"\n  exact True.intro'
+    )
