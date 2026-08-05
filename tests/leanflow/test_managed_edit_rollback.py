@@ -146,10 +146,25 @@ def test_rejected_candidate_identity_ignores_trace_state_instrumentation():
     assert matched["attempt"] == 7
 
 
+def test_rejected_candidate_identity_ignores_unsolved_goal_assertion():
+    """Treat an unsolved-goal assertion as diagnostic candidate presentation."""
+    plain = "theorem demo : True := by\n  exact True.intro"
+    instrumented = (
+        "theorem demo : True := by\n" "  all_goals fail_if_success done\n" "  exact True.intro"
+    )
+
+    assert managed_edit_rollback.normalize_candidate_declaration(
+        instrumented
+    ) == managed_edit_rollback.normalize_candidate_declaration(plain)
+
+
 def test_transient_diagnostic_detection_accepts_comment_but_not_mentions():
     """Recognize standalone trace instrumentation without matching ordinary source text."""
     assert managed_edit_rollback.contains_transient_diagnostic(
         "by\n  trace_state -- temporary\n  sorry"
+    )
+    assert managed_edit_rollback.contains_transient_diagnostic(
+        "by\n  all_goals fail_if_success done\n  sorry"
     )
     assert not managed_edit_rollback.contains_transient_diagnostic(
         'by\n  have label : String := "trace_state"\n  exact True.intro'

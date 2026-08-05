@@ -1653,6 +1653,60 @@ def test_check_helper_never_certifies_suggestion_tactics(monkeypatch, tmp_path, 
     assert payload["verification_scope"] == "helper_candidate"
 
 
+def test_check_helper_marks_dummy_type_probe_as_diagnostic_only(monkeypatch, tmp_path):
+    """Preserve type diagnostics without certifying a trivial inspection wrapper."""
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  sorry\n",
+    )
+
+    class _FakeProbe:
+        def check_target(self, *args, **kwargs):
+            return {
+                "success": True,
+                "ok": False,
+                "has_errors": False,
+                "has_sorry": True,
+                "target": kwargs["theorem_id"],
+                "messages": [
+                    {
+                        "severity": "info",
+                        "message": "h : Nat.succ 0 = 1\n⊢ True",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(li, "_probe", lambda: _FakeProbe())
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="check_helper",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        replacement=(
+            "private lemma probe_nat_succ : True := by\n"
+            "  have h := @Nat.succ_eq_add_one\n"
+            "  trace_state\n"
+            "  trivial"
+        ),
+    )
+
+    assert payload["success"] is True
+    assert payload["ok"] is False
+    assert payload["valid_without_sorry"] is False
+    assert payload["diagnostic_only"] is True
+    assert payload["proof_progress"] is False
+    assert payload["helper_elaborated"] is True
+    assert payload["inspection_completed"] is True
+    assert payload["error_code"] == "inspection_only_helper_candidate"
+    assert payload["verification_scope"] == "helper_candidate"
+    assert payload["messages"][0]["message"].startswith("h :")
+
+
 def test_check_helper_rejects_broad_print_prefix_before_lean(monkeypatch, tmp_path):
     """Steer exact symbol inspection away from slow environment-prefix dumps."""
     project, target = _write_project(

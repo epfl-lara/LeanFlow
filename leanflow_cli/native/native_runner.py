@@ -461,6 +461,7 @@ from leanflow_cli.lean.lean_parsing import (  # noqa: E402
     _declaration_stable_key,
     _extract_target_symbol,
     _find_assignment_marker_for_statement,  # noqa: F401
+    _is_lean_inspection_only_helper_candidate,  # noqa: F401
     _statement_signature_text,
     _strip_lean_comments_and_strings,
     _text_has_any_completed_theorem_or_lemma,
@@ -9140,10 +9141,11 @@ def _transient_diagnostic_source_patch_guard(
             "provider_called": False,
             "lean_started": False,
             "required_action": (
-                "Do not write diagnostic-only commands such as `trace_state` into managed "
-                "source. Inspect the goal through LeanProbe (`lean_incremental_check` feedback "
-                "or a temporary candidate), then submit only the concrete proof edit. If the "
-                "command is already present, remove it in the next edit."
+                "Do not write diagnostic-only proof-state commands such as `trace_state` or "
+                "`fail_if_success done` into managed source. Inspect the goal through LeanProbe "
+                "(`lean_incremental_check` feedback or a temporary candidate), then submit only "
+                "the concrete proof edit. If the command is already present, remove it in the "
+                "next edit."
             ),
         },
         ensure_ascii=False,

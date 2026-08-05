@@ -36,6 +36,7 @@ from leanflow_cli.lean.lean_parsing import (
     _contains_lean_suggestion_tactic,
     _declaration_line_index_from_text,
     _declaration_matches_target,
+    _is_lean_inspection_only_helper_candidate,
     _statement_signature_text,
     _strip_lean_comments_and_strings,
 )
@@ -706,6 +707,14 @@ def compact_successful_check_payload(
         "output",
         "error",
         "error_code",
+        "status",
+        "diagnostic_only",
+        "proof_progress",
+        "helper_elaborated",
+        "inspection_completed",
+        "message",
+        "action_required",
+        "target_verified",
     }
     projected = {key: value for key, value in payload.items() if key in keep_fields}
     if isinstance(tactics, list):
@@ -980,6 +989,34 @@ def _normalize_helper_check_payload(
         result["error"] = "helper candidate contains sorry/admit"
         result["error_code"] = "helper_placeholder"
         result["output"] = result["error"]
+    return result
+
+
+def _mark_inspection_only_helper_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep inspection evidence while denying reusable-helper verification fields."""
+    result = dict(payload)
+    helper_elaborated = bool(result.get("ok"))
+    result.update(
+        {
+            "ok": False,
+            "target_verified": False,
+            "valid_without_sorry": False,
+            "status": "inspection_only_helper",
+            "diagnostic_only": True,
+            "proof_progress": False,
+            "helper_elaborated": helper_elaborated,
+            "inspection_completed": bool(result.get("success")) and not _payload_has_errors(result),
+            "error_code": "inspection_only_helper_candidate",
+            "message": (
+                "The dummy helper elaborated only as an environment/type inspection wrapper. "
+                "Its diagnostics remain available, but it is not a verified reusable lemma."
+            ),
+            "action_required": (
+                "Use the returned declaration/type information, then submit a substantive helper "
+                "or target proof for verification."
+            ),
+        }
+    )
     return result
 
 
@@ -1341,6 +1378,9 @@ def lean_incremental_check(
         )
 
     source_text = resolved.read_text(encoding="utf-8")
+    inspection_only_helper = bool(
+        leanflow_action == "check_helper" and _is_lean_inspection_only_helper_candidate(replacement)
+    )
     if leanflow_action == "check_helper" and re.search(
         r"(?m)^\s*#print\s+prefix\b",
         replacement,
@@ -1494,6 +1534,8 @@ def lean_incremental_check(
                 )
             result = _normalize_profiled_helper_payload(result)
             result.update(replacement_metadata)
+            if inspection_only_helper:
+                result = _mark_inspection_only_helper_payload(result)
             result.update(
                 _timeout_metadata(
                     requested_timeout_s=requested_timeout_s,
@@ -1760,6 +1802,8 @@ def lean_incremental_check(
             helper_source=replacement,
             anchor_target=theorem_id,
         )
+        if inspection_only_helper:
+            result = _mark_inspection_only_helper_payload(result)
     result.update(replacement_metadata)
     if (
         leanflow_action == "check_target"

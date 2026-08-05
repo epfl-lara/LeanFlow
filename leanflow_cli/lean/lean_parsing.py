@@ -14,6 +14,7 @@ from typing import Any
 __all__ = [
     "LEAN_DECLARATION_PREAMBLE_RE",
     "_contains_lean_suggestion_tactic",
+    "_is_lean_inspection_only_helper_candidate",
     "_strip_lean_comments_and_strings",
     "_text_has_theorem_or_lemma",
     "_text_has_sorry",
@@ -43,6 +44,50 @@ _DECLARATION_OPENERS = {"(": ")", "{": "}", "[": "]", "⦃": "⦄", "⟨": "⟩"
 _DECLARATION_CLOSERS = {closer: opener for opener, closer in _DECLARATION_OPENERS.items()}
 _TYPE_ASSIGNMENT_KEYWORDS = ("let", "have")
 _SUGGESTION_TACTIC_RE = re.compile(r"(?m)^\s*(?:exact|apply|simp|rw|aesop|grind)\?(?:\s|$)")
+_LEAN_INSPECTION_COMMAND_RE = re.compile(r"(?m)^\s*(?:#(?:check|print|eval|reduce)\b|run_cmd\b)")
+_HELPER_DECLARATION_START_RE = re.compile(
+    r"(?m)^\s*(?:private\s+)?(?:theorem|lemma|example|def|abbrev)\s+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_']*)(?P<header>[^\n]*)"
+)
+_TRIVIAL_TRUE_DECLARATION_RE = re.compile(r":\s*True\s*(?::=|where|$)")
+_INSPECTION_DECLARATION_NAME_RE = re.compile(
+    r"(?:^|_)(?:inspect|inspection|probe|lookup|typecheck)(?:_|$)",
+    flags=re.IGNORECASE,
+)
+_BARE_IDENTIFIER_PATTERN = r"(?:[A-Za-z_][A-Za-z0-9_']*\.)*[A-Za-z_][A-Za-z0-9_']*"
+_FALSE_IDENTIFIER_PROBE_RE = re.compile(
+    rf":\s*False\s*:=\s*by\s+(?:exact\s+|simpa\s+using\s+){_BARE_IDENTIFIER_PATTERN}\s*$",
+    flags=re.DOTALL,
+)
+_TRIVIAL_BINDING_PROBE_RE = re.compile(
+    r":\s*True\s*:=\s*by\s+(?:have|let)\b.+?(?:\n|;)\s*" r"(?:trivial|exact\s+True\.intro)\s*$",
+    flags=re.DOTALL,
+)
+
+
+def _is_lean_inspection_only_helper_candidate(source: str) -> bool:
+    """Return whether helper source is a dummy wrapper for environment inspection."""
+    replacement = str(source or "")
+    declarations = list(_HELPER_DECLARATION_START_RE.finditer(replacement))
+    if _LEAN_INSPECTION_COMMAND_RE.search(replacement):
+        return not declarations or all(
+            _TRIVIAL_TRUE_DECLARATION_RE.search(match.group("header") or "")
+            for match in declarations
+        )
+    if not declarations:
+        return False
+    for index, declaration in enumerate(declarations):
+        name = str(declaration.group("name") or "")
+        if not _INSPECTION_DECLARATION_NAME_RE.search(name):
+            return False
+        end = declarations[index + 1].start() if index + 1 < len(declarations) else len(replacement)
+        declaration_source = replacement[declaration.start() : end].strip()
+        if not (
+            _FALSE_IDENTIFIER_PROBE_RE.search(declaration_source)
+            or _TRIVIAL_BINDING_PROBE_RE.search(declaration_source)
+        ):
+            return False
+    return True
 
 
 def _next_significant_character(text: str, start: int) -> tuple[int, str] | None:

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+from leanflow_cli.lean.lean_parsing import _is_lean_inspection_only_helper_candidate
 
 LEAN_INCREMENTAL_INSPECTION_TOOL_NAME = "lean_incremental_check:inspection"
 
@@ -38,26 +39,6 @@ _CONSTRUCTION_WINDOW_KEYS = (
     "construction_source_inspection_nudged",
     "construction_source_inspection_boundary",
     "construction_synthesis_rejection_count",
-)
-
-_LEAN_INSPECTION_COMMAND = re.compile(r"(?m)^\s*(?:#(?:check|print|eval|reduce)\b|run_cmd\b)")
-_LEAN_DECLARATION_START = re.compile(
-    r"(?m)^\s*(?:private\s+)?(?:theorem|lemma|example|def|abbrev)\s+"
-    r"(?P<name>[A-Za-z_][A-Za-z0-9_']*)(?P<header>[^\n]*)"
-)
-_TRIVIAL_TRUE_DECLARATION = re.compile(r":\s*True\s*(?::=|where|$)")
-_INSPECTION_DECLARATION_NAME = re.compile(
-    r"(?:^|_)(?:inspect|inspection|probe|lookup|typecheck)(?:_|$)",
-    flags=re.IGNORECASE,
-)
-_BARE_IDENTIFIER = r"(?:[A-Za-z_][A-Za-z0-9_']*\.)*[A-Za-z_][A-Za-z0-9_']*"
-_FALSE_IDENTIFIER_PROBE = re.compile(
-    rf":\s*False\s*:=\s*by\s+(?:exact\s+|simpa\s+using\s+){_BARE_IDENTIFIER}\s*$",
-    flags=re.DOTALL,
-)
-_TRIVIAL_BINDING_PROBE = re.compile(
-    r":\s*True\s*:=\s*by\s+(?:have|let)\b.+?(?:\n|;)\s*" r"(?:trivial|exact\s+True\.intro)\s*$",
-    flags=re.DOTALL,
 )
 
 
@@ -246,24 +227,7 @@ def is_inspection_only_incremental_check(
     if str(arguments.get("action", "") or "").strip().lower() != "check_helper":
         return False
     replacement = str(arguments.get("replacement", "") or "")
-    if not replacement:
-        return False
-    declarations = list(_LEAN_DECLARATION_START.finditer(replacement))
-    if _LEAN_INSPECTION_COMMAND.search(replacement):
-        return not declarations or all(
-            _TRIVIAL_TRUE_DECLARATION.search(match.group("header") or "") for match in declarations
-        )
-    if not declarations:
-        return False
-    for index, declaration in enumerate(declarations):
-        name = str(declaration.group("name") or "")
-        if not _INSPECTION_DECLARATION_NAME.search(name):
-            return False
-        end = declarations[index + 1].start() if index + 1 < len(declarations) else len(replacement)
-        source = replacement[declaration.start() : end].strip()
-        if not (_FALSE_IDENTIFIER_PROBE.search(source) or _TRIVIAL_BINDING_PROBE.search(source)):
-            return False
-    return True
+    return bool(replacement and _is_lean_inspection_only_helper_candidate(replacement))
 
 
 def discovery_tool_name(

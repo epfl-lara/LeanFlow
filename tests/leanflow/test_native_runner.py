@@ -32008,7 +32008,13 @@ def test_concrete_source_patch_is_not_redirected_as_suggestion(tmp_path):
     assert result is None
 
 
-def test_transient_diagnostic_source_patch_is_redirected_before_mutation(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "diagnostic",
+    ["trace_state", "all_goals fail_if_success done", "fail_if_success done"],
+)
+def test_transient_diagnostic_source_patch_is_redirected_before_mutation(
+    tmp_path, monkeypatch, diagnostic
+):
     """Keep goal-inspection commands in LeanProbe scratch state."""
     active = tmp_path / "Main.lean"
     source = "theorem demo : True := by\n  sorry\n"
@@ -32026,12 +32032,12 @@ def test_transient_diagnostic_source_patch_is_redirected_before_mutation(tmp_pat
         "_record_agent_activity",
         lambda *args, **kwargs: events.append((args, kwargs)),
     )
-    patch = """*** Begin Patch
+    patch = f"""*** Begin Patch
 *** Update File: Main.lean
 @@
- theorem demo : True := by
+theorem demo : True := by
 -  sorry
-+  trace_state
++  {diagnostic}
 +  sorry
 *** End Patch"""
 

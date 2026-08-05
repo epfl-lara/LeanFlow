@@ -14,7 +14,9 @@ from typing import Any
 from leanflow_cli.lean.lean_parsing import _contains_lean_suggestion_tactic
 from tools.utilities.patch_parser import preview_v4a_update
 
-_NON_SEMANTIC_CANDIDATE_LINE_RE = re.compile(r"^\s*trace_state(?:\s*--.*)?$")
+_NON_SEMANTIC_CANDIDATE_LINE_RE = re.compile(
+    r"^\s*(?:trace_state|(?:all_goals\s+)?fail_if_success\s+done)(?:\s*--.*)?$"
+)
 
 
 def normalize_candidate_declaration(declaration: str) -> str:
