@@ -71,6 +71,18 @@ def validate_lean_statement_edit(before: str, after: str) -> LeanStatementGuardR
     after_examples = Counter(entry.signature for entry in after_entries if not entry.name)
 
     violations: list[str] = []
+    before_identities = Counter(_entry_identity(entry) for entry in before_entries)
+    after_identities = Counter(_entry_identity(entry) for entry in after_entries)
+    reported_duplicates: set[tuple[str, str, str]] = set()
+    for entry in before_entries:
+        identity = _entry_identity(entry)
+        if (
+            entry.name
+            and identity not in reported_duplicates
+            and after_identities[identity] > before_identities[identity]
+        ):
+            violations.append(f"duplicated existing {entry.kind} {entry.name}")
+            reported_duplicates.add(identity)
     for entry in before_entries:
         if entry.name:
             replacement = after_named.get((entry.kind, entry.name))

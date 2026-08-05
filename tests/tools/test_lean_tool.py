@@ -1065,6 +1065,42 @@ def test_apply_verified_patch_tool_reports_no_changes_without_verifying(tmp_path
     assert load_verified_patch_status()["status"] == "no_changes"
 
 
+def test_apply_verified_patch_rejects_exact_duplicate_helper_before_verifying(
+    tmp_path, monkeypatch
+):
+    """Do not mutate or invoke Lean for an already-present helper insertion."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    target = tmp_path / "Demo.lean"
+    helper = "private lemma checked_map : True := by\n  trivial"
+    original = helper + "\n\ntheorem demo : True := by\n  sorry\n"
+    target.write_text(original, encoding="utf-8")
+    verify_called = {"value": False}
+
+    def _fake_verify(**kwargs):
+        verify_called["value"] = True
+        return {"success": True, "has_errors": False, "timed_out": False}
+
+    monkeypatch.setattr(lean_patch, "lean_incremental_check", _fake_verify)
+    added_helper = helper.replace("\n", "\n+")
+    patch = f"""\
+*** Begin Patch
+*** Update File: {target}
+@@
++{added_helper}
++
+ private lemma checked_map : True := by
+*** End Patch"""
+
+    payload = json.loads(lean_tool.apply_verified_patch_tool(str(target), patch, cwd=str(tmp_path)))
+
+    assert payload["success"] is False
+    assert payload["status"] == "patch_failed"
+    assert payload["patch_applied"] is False
+    assert "duplicated existing lemma checked_map" in payload["message"]
+    assert target.read_text(encoding="utf-8") == original
+    assert verify_called["value"] is False
+
+
 def test_apply_verified_patch_tool_blocks_statement_changes_before_verify(tmp_path, monkeypatch):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     target = tmp_path / "Demo.lean"
