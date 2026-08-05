@@ -136,32 +136,53 @@ def _local_hypotheses_from_statement(statement: str) -> list[str]:
 def _enrich_backend_proof_context(
     payload: dict[str, Any], local_payload: Mapping[str, Any] | None
 ) -> dict[str, Any]:
-    """Fill backend-omitted binders from the exact local declaration slice."""
-    if not isinstance(local_payload, Mapping) or payload.get("hypotheses"):
+    """Merge exact local binders and preceding declarations into backend context."""
+    if not isinstance(local_payload, Mapping):
         return payload
-    if not any(
+    backend_has_declaration = any(
         str(payload.get(key, "") or "").strip() for key in ("theorem_statement", "original_proof")
-    ):
+    )
+    if not backend_has_declaration:
         # Keep the existing all-empty response path intact: lean_proof_context
         # replaces that payload wholesale with its local fallback, including
         # local proof text and degraded-reason provenance.
         return payload
+    enrichment: dict[str, Any] = {}
+    backend_scope = payload.get("in_scope")
+    local_scope = local_payload.get("in_scope")
+    if isinstance(local_scope, list) and local_scope:
+        merged_scope = list(backend_scope) if isinstance(backend_scope, list) else []
+        seen_scope = {str(item).strip() for item in merged_scope if str(item).strip()}
+        added_scope = []
+        for item in local_scope:
+            name = str(item or "").strip()
+            if name and name not in seen_scope:
+                merged_scope.append(name)
+                seen_scope.add(name)
+                added_scope.append(name)
+        if added_scope:
+            payload["in_scope"] = merged_scope
+            enrichment["preceding_local_declarations"] = len(added_scope)
     local_hypotheses = local_payload.get("hypotheses")
-    if not isinstance(local_hypotheses, list) or not local_hypotheses:
+    if not payload.get("hypotheses") and isinstance(local_hypotheses, list) and local_hypotheses:
+        local_statement = str(local_payload.get("theorem_statement", "") or "").strip()
+        payload["hypotheses"] = list(local_hypotheses)
+        statement_enriched = bool(local_statement)
+        if statement_enriched:
+            payload["theorem_statement"] = local_statement
+        enrichment.update(
+            {
+                "theorem_statement": statement_enriched,
+                "hypotheses": True,
+                "reason": "backend omitted explicit declaration binders",
+            }
+        )
+    if not enrichment:
         return payload
-    local_statement = str(local_payload.get("theorem_statement", "") or "").strip()
-    payload["hypotheses"] = list(local_hypotheses)
-    statement_enriched = bool(local_statement)
-    if statement_enriched:
-        payload["theorem_statement"] = local_statement
     metadata = (
         dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}
     )
-    metadata["local_context_enrichment"] = {
-        "theorem_statement": statement_enriched,
-        "hypotheses": True,
-        "reason": "backend omitted explicit declaration binders",
-    }
+    metadata["local_context_enrichment"] = enrichment
     payload["metadata"] = metadata
     return payload
 

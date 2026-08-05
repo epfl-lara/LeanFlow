@@ -2534,6 +2534,27 @@ def test_proof_context_binder_enrichment_defers_all_empty_backend_to_local_fallb
     enriched = lean_services._enrich_backend_proof_context(backend_payload, local_payload)
 
     assert enriched == backend_payload
+
+
+def test_proof_context_enrichment_restores_preceding_private_helpers():
+    backend_payload = {
+        "theorem_statement": "theorem result : True",
+        "original_proof": "sorry",
+        "hypotheses": [],
+        "in_scope": ["Imported.safe"],
+        "metadata": {},
+    }
+    local_payload = {
+        "theorem_statement": "theorem result : True",
+        "original_proof": "sorry",
+        "hypotheses": [],
+        "in_scope": ["private_helper", "Imported.safe"],
+    }
+
+    enriched = lean_services._enrich_backend_proof_context(backend_payload, local_payload)
+
+    assert enriched["in_scope"] == ["Imported.safe", "private_helper"]
+    assert enriched["metadata"]["local_context_enrichment"] == {"preceding_local_declarations": 1}
     assert enriched["hypotheses"] == []
 
 
