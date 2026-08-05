@@ -255,6 +255,25 @@ def _local_proof_context_payload(
         dict(theorem.get("location") or {}) if isinstance(theorem.get("location"), Mapping) else {}
     )
     local_text = _declaration_text_from_location(file_path, location) if location else ""
+    if local_text:
+        indexed_name = str(entry.get("name", "") or "").strip()
+        indexed_kind = str(entry.get("kind", "") or "").strip()
+        source_declarations = [
+            match
+            for line in local_text.splitlines()
+            if (match := re.match(LEAN_DECLARATION_PREAMBLE_RE, line))
+        ]
+        location_matches_entry = any(
+            str(match.group(1) or "").strip() == indexed_kind
+            and str(match.group(2) or "").strip() == indexed_name
+            for match in source_declarations
+        )
+        if not location_matches_entry:
+            # Upstream range scans occasionally report a syntactically valid
+            # location for the first line of the file when asked about a local
+            # ``def`` or ``abbrev``. Never let that stale location override the
+            # exact source declaration already found by the local index.
+            local_text = ""
     if not local_text:
         local_text = str(entry.get("text", "") or "")
     statement, proof = _split_declaration_statement_and_proof(local_text)

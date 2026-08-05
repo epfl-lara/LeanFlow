@@ -1487,15 +1487,16 @@ def _proof_context_local_fast_path(
     cwd: str | os.PathLike[str] | None,
     include_similar_proofs: bool,
 ) -> dict[str, Any] | None:
-    """Return local context for private declarations or a suppressed backend.
+    """Return exact local context when the theorem backend cannot add value.
 
     A durable timeout circuit is specifically evidence that capability discovery
     would only reacquire the project Lean admission before disabling the same
     backend. Process-local backend quarantine has the same property. When no
     similarity search is requested, a private declaration's exact local slice
     already supplies the complete requested context and avoids the common
-    ``theorem_not_found`` round trip. Keep the backend path when similarity
-    results are requested because it may still enrich a known private theorem.
+    ``theorem_not_found`` round trip. Definitions and abbreviations likewise
+    have no theorem proof to enrich. Keep the backend path when similarity
+    results are requested because it may still add useful nearby declarations.
     """
     project_root, _ = _project_root(cwd)
     base = Path(
@@ -1521,13 +1522,26 @@ def _proof_context_local_fast_path(
     is_private_declaration = declaration_text.startswith("private ") and not bool(
         include_similar_proofs
     )
-    if not campaign_disabled and not run_disabled and not is_private_declaration:
+    declaration_kind = str((declaration_entry or {}).get("kind", "") or "").strip()
+    is_definition_declaration = declaration_kind in {"def", "abbrev"} and not bool(
+        include_similar_proofs
+    )
+    if (
+        not campaign_disabled
+        and not run_disabled
+        and not is_private_declaration
+        and not is_definition_declaration
+    ):
         return None
 
     degraded_reasons: list[str] = []
     if is_private_declaration:
         degraded_reasons.append(
             "using local declaration context because private declarations are unavailable to the proof-context backend"
+        )
+    elif is_definition_declaration:
+        degraded_reasons.append(
+            "using exact local declaration context because definitions have no theorem proof to enrich"
         )
     if campaign_disabled:
         degraded_reasons.append(

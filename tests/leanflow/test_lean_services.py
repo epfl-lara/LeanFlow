@@ -2717,6 +2717,36 @@ def test_lean_proof_context_uses_local_slice_before_backend_for_private_declarat
     assert outcomes[-1][1]["backend_tool"] == "local-declaration-slice"
 
 
+def test_lean_proof_context_uses_local_slice_before_backend_for_definition(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    target = project / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("def successor (n : Nat) : Nat :=\n  n + 1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: (_ for _ in ()).throw(AssertionError("backend probe should be skipped")),
+    )
+    outcomes = []
+    monkeypatch.setattr(
+        lean_services, "append_workflow_outcome", lambda *args: outcomes.append(args)
+    )
+
+    payload = lean_services.lean_proof_context(
+        "Demo/Main.lean", "successor", cwd=project, include_similar_proofs=False
+    )
+
+    assert payload["success"] is True
+    assert payload["status"] == "local-fallback"
+    assert payload["backend_tool"] == "local-declaration-slice"
+    assert payload["theorem_statement"] == "def successor (n : Nat) : Nat :="
+    assert payload["original_proof"] == "n + 1"
+    assert any(
+        "definitions have no theorem proof" in reason for reason in payload["degraded_reasons"]
+    )
+    assert outcomes[-1][1]["backend_tool"] == "local-declaration-slice"
+
+
 def test_local_proof_context_uses_scan_location_to_avoid_next_doc_comment(monkeypatch, tmp_path):
     target = tmp_path / "Demo" / "Main.lean"
     target.parent.mkdir(parents=True)
@@ -2778,6 +2808,40 @@ def test_local_proof_context_uses_scan_location_to_avoid_next_doc_comment(monkey
     assert payload["theorem_statement"] == "theorem demo : True"
     assert payload["original_proof"] == "sorry"
     assert "next theorem doc comment" not in payload["original_proof"]
+
+
+def test_local_proof_context_rejects_stale_scan_location_for_definition(tmp_path):
+    target = tmp_path / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "def demo (n : Nat) : Nat :=",
+                "  n + 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = lean_services._local_proof_context_payload(
+        target,
+        "demo",
+        degraded_reasons=["backend theorem not found"],
+        scan_payload={
+            "theorem": {
+                "name": "theorem_at_line_3",
+                "kind": "def",
+                "location": {"decl_start": 1, "decl_end": 1},
+            }
+        },
+    )
+
+    assert payload is not None
+    assert payload["theorem_statement"] == "def demo (n : Nat) : Nat :="
+    assert payload["original_proof"] == "n + 1"
 
 
 def test_local_proof_context_extracts_balanced_explicit_binders(tmp_path):
