@@ -240,6 +240,11 @@ def _failed_provider_result(payload: Mapping[str, Any]) -> bool:
     }
 
 
+def _failure_weight(status: str) -> int:
+    """Charge a full retry budget for a provider call that reaches its timeout."""
+    return FAILURE_THRESHOLD if str(status or "").strip().lower() == "timeout" else 1
+
+
 def observe_result(
     *,
     function_name: str,
@@ -285,13 +290,14 @@ def observe_result(
         return load_snapshot()
 
     status = str(payload.get("status", "") or "").strip().lower() or "error"
+    failure_weight = _failure_weight(status)
     recorded: AdvisorFailureSnapshot = AdvisorFailureSnapshot()
 
     def record(current: dict[str, Any]) -> AdvisorFailureSnapshot:
         nonlocal recorded
         prior = _snapshot(current)
         consecutive = (
-            prior.consecutive_failures + 1
+            prior.consecutive_failures + failure_weight
             if _matches(
                 prior,
                 target_symbol=target,
@@ -300,7 +306,7 @@ def observe_result(
                 target_revision_sha256=target_revision,
                 campaign_id=campaign,
             )
-            else 1
+            else failure_weight
         )
         current.clear()
         current.update(

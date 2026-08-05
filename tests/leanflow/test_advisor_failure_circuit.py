@@ -24,7 +24,7 @@ def test_failures_survive_process_local_state_and_block_third_call(monkeypatch, 
 
     first = advisor_failure_circuit.observe_result(
         function_name="lean_reasoning_help",
-        result_text=json.dumps({"success": False, "status": "timeout"}),
+        result_text=json.dumps({"success": False, "status": "error"}),
         **common,
     )
     second = advisor_failure_circuit.observe_result(
@@ -61,6 +61,29 @@ def test_helper_only_source_change_keeps_durable_advisor_circuit_closed(monkeypa
     assert advisor_failure_circuit.preflight_blocked(
         function_name="lean_reasoning_help",
         **{**common, "source_revision_sha256": "new-source"},
+    )
+
+
+def test_single_provider_timeout_exhausts_advisor_retry_budget(monkeypatch, tmp_path):
+    _configure_state_path(monkeypatch, tmp_path)
+    common = {
+        "target_symbol": "result",
+        "active_file": str(tmp_path / "Main.lean"),
+        "source_revision_sha256": "same-source",
+        "target_revision_sha256": "same-target",
+        "campaign_id": "campaign-1",
+    }
+
+    snapshot = advisor_failure_circuit.observe_result(
+        function_name="lean_decompose_helpers",
+        result_text=json.dumps({"success": False, "status": "timeout"}),
+        **common,
+    )
+
+    assert snapshot.consecutive_failures == advisor_failure_circuit.FAILURE_THRESHOLD
+    assert advisor_failure_circuit.preflight_blocked(
+        function_name="lean_reasoning_help",
+        **common,
     )
 
 
@@ -113,7 +136,7 @@ def test_successful_advisor_clears_matching_durable_circuit(monkeypatch, tmp_pat
     assert advisor_failure_circuit.load_snapshot().consecutive_failures == 0
 
 
-def test_preflight_rejection_does_not_increment_provider_failures(monkeypatch, tmp_path):
+def test_preflight_rejection_does_not_increment_timeout_budget(monkeypatch, tmp_path):
     _configure_state_path(monkeypatch, tmp_path)
     common = {
         "target_symbol": "result",
@@ -138,7 +161,7 @@ def test_preflight_rejection_does_not_increment_provider_failures(monkeypatch, t
         **common,
     )
 
-    assert unchanged.consecutive_failures == 1
+    assert unchanged.consecutive_failures == advisor_failure_circuit.FAILURE_THRESHOLD
 
 
 def test_completed_call_is_charged_to_its_preflight_source_revision(tmp_path):
