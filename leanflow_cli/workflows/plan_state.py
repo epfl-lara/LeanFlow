@@ -34,7 +34,11 @@ from typing import Any
 from core.utils import atomic_json_write
 from leanflow_cli.workflows import planner_candidate_admission, planner_graph_identity
 from leanflow_cli.workflows.queue_models import DEFAULT_FAILED_ATTEMPT_HISTORY, TheoremKey
-from leanflow_cli.workflows.workflow_json_io import read_json_file, update_json_file
+from leanflow_cli.workflows.workflow_json_io import (
+    read_json_file,
+    update_json_file,
+    update_json_file_if_changed,
+)
 from leanflow_cli.workflows.workflow_state import _locked_append
 from leanflow_cli.workflows.workflow_state_paths import workflow_state_root
 from tools.utilities.workflow_artifact_guard import generated_plan_view
@@ -1367,51 +1371,65 @@ def record_checkpoint_advisory(
     if not scope or not checkpoint_id or not items:
         return False
 
-    def mutate(summary: dict[str, Any]) -> None:
+    record = {
+        "checkpoint_id": checkpoint_id,
+        "created_at": str(created_at or ""),
+        **scope,
+        "negative_evidence": items,
+        "authority": "advisory-negative-evidence",
+    }
+
+    def mutate(summary: dict[str, Any]) -> tuple[bool, bool]:
         current = [
             dict(entry)
             for entry in (summary.get("checkpoint_advisories") or [])
             if isinstance(entry, Mapping)
         ]
+        existing = next(
+            (entry for entry in current if str(entry.get("checkpoint_id", "")) == checkpoint_id),
+            None,
+        )
+        if existing == record:
+            return False, False
         current = [
             entry for entry in current if str(entry.get("checkpoint_id", "")) != checkpoint_id
         ]
-        current.append(
-            {
-                "checkpoint_id": checkpoint_id,
-                "created_at": str(created_at or ""),
-                **scope,
-                "negative_evidence": items,
-                "authority": "advisory-negative-evidence",
-            }
-        )
+        current.append(record)
         summary["checkpoint_advisories"] = current[-_CHECKPOINT_ADVISORY_CAP:]
+        return True, True
 
-    update_json_file(plan_state_paths().summary_json, mutate)
-    return True
+    return bool(update_json_file_if_changed(plan_state_paths().summary_json, mutate))
 
 
 def _current_checkpoint_advisory(
     summary: Mapping[str, Any],
     assignment: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return the newest advisory record for the exact live assignment."""
+    """Return bounded accumulated advisories for the exact live assignment.
+
+    A newer checkpoint may summarize only the latest route. Retain distinct
+    exclusions from older checkpoints in the same theorem scope so compaction
+    cannot silently make a previously rejected route look unexplored again.
+    """
     if not assignment:
         return {}
+    newest: dict[str, Any] = {}
+    evidence: list[str] = []
     for raw in reversed(list(summary.get("checkpoint_advisories") or [])):
         if not isinstance(raw, Mapping):
             continue
         if _strategy_scope_matches(raw, assignment):
-            evidence = []
+            if not newest:
+                newest = dict(raw)
             for value in raw.get("negative_evidence") or []:
                 text = _bounded_line(value, 500)
-                if text:
+                if text and text not in evidence:
                     evidence.append(text)
                 if len(evidence) >= _CHECKPOINT_ADVISORY_ITEM_CAP:
                     break
-            if evidence:
-                return {**dict(raw), "negative_evidence": evidence}
-    return {}
+        if len(evidence) >= _CHECKPOINT_ADVISORY_ITEM_CAP:
+            break
+    return {**newest, "negative_evidence": evidence} if newest and evidence else {}
 
 
 # ---------------------------------------------------------------------------
@@ -2017,6 +2035,12 @@ def frontier_digest_block() -> str:
     route = _current_route_decision(summary, recent_orchestrator_routes(limit=1))
     if route and (not assignment or _route_matches_assignment(route, assignment)):
         lines.append(f"- current route: {_route_summary(route)}")
+    checkpoint_advisory = _current_checkpoint_advisory(summary, assignment)
+    for item in checkpoint_advisory.get("negative_evidence", [])[:2]:
+        lines.append(
+            "- advisory route exclusion (revalidate after source change): "
+            f"{_bounded_line(item, 180)}"
+        )
     for outcome in recent_exploration_outcomes(bp, assignment, limit=2):
         detail = _bounded_line(outcome.get("detail", ""), 180)
         suffix = f": {detail}" if detail else ""

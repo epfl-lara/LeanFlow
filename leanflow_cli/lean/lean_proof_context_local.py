@@ -136,7 +136,7 @@ def _local_hypotheses_from_statement(statement: str) -> list[str]:
 def _enrich_backend_proof_context(
     payload: dict[str, Any], local_payload: Mapping[str, Any] | None
 ) -> dict[str, Any]:
-    """Merge exact local binders and preceding declarations into backend context."""
+    """Merge source-authoritative declaration data into backend context."""
     if not isinstance(local_payload, Mapping):
         return payload
     backend_has_declaration = any(
@@ -148,6 +148,15 @@ def _enrich_backend_proof_context(
         # local proof text and degraded-reason provenance.
         return payload
     enrichment: dict[str, Any] = {}
+    source_fields: list[str] = []
+    for key in ("theorem_statement", "original_proof"):
+        local_value = str(local_payload.get(key, "") or "").strip()
+        backend_value = str(payload.get(key, "") or "").strip()
+        if local_value and " ".join(local_value.split()) != " ".join(backend_value.split()):
+            payload[key] = local_value
+            source_fields.append(key)
+    if source_fields:
+        enrichment["source_authoritative_fields"] = source_fields
     backend_scope = payload.get("in_scope")
     local_scope = local_payload.get("in_scope")
     if isinstance(local_scope, list) and local_scope:
@@ -167,7 +176,7 @@ def _enrich_backend_proof_context(
     if not payload.get("hypotheses") and isinstance(local_hypotheses, list) and local_hypotheses:
         local_statement = str(local_payload.get("theorem_statement", "") or "").strip()
         payload["hypotheses"] = list(local_hypotheses)
-        statement_enriched = bool(local_statement)
+        statement_enriched = bool(local_statement) and "theorem_statement" not in source_fields
         if statement_enriched:
             payload["theorem_statement"] = local_statement
         enrichment.update(

@@ -41,13 +41,15 @@ def companion_module_advice(active_file: str, *, project_root: str) -> str:
         return ""
     companion = path.with_name(f"{path.stem}Helpers.lean")
     try:
-        relative = companion.resolve(strict=False).relative_to(
-            Path(project_root).resolve(strict=False)
-        )
+        root = Path(project_root).resolve(strict=False)
+        relative = companion.resolve(strict=False).relative_to(root)
+        active_relative = path.resolve(strict=False).relative_to(root)
         module_name = ".".join(relative.with_suffix("").parts)
+        active_module_name = ".".join(active_relative.with_suffix("").parts)
         companion_label = str(relative)
     except (OSError, ValueError):
         module_name = companion.stem
+        active_module_name = path.stem
         companion_label = str(companion)
     companion_exists = companion.is_file()
     import_line = f"import {module_name}"
@@ -56,23 +58,42 @@ def companion_module_advice(active_file: str, *, project_root: str) -> str:
         for line in source.splitlines()
         if line.lstrip().startswith("import ")
     )
-    return "\n".join(
-        [
-            "Companion-module policy:",
-            f"- active file size: {line_count} lines / {size} bytes",
-            f"- preferred generic-helper module: `{companion_label}` (`{module_name}`)",
-            f"- companion status: {'exists' if companion_exists else 'missing'}; "
-            f"active import status: {'present' if imported else 'missing'}",
-            "- mandatory placement decision before every new top-level helper: if it is "
-            "self-contained over Mathlib/general imports, place it in the companion module, "
-            "not in this oversized target file",
-            f"- create/import with `{import_line}` when the first dependency-safe helper is added",
-            "- keep target-specific or private-dependency helpers beside their target; Lean private "
-            "declarations cannot be imported across modules",
-            "- treat companion creation plus the active-file import as one change and verify the imported "
-            "active module before continuing",
-            "- do not duplicate an existing helper merely to force it across the module boundary",
-            "- in the final report, state the placement decision for every newly banked helper "
-            "(companion or target-local, with the dependency reason)",
-        ]
-    )
+    reverse_import = False
+    if companion_exists:
+        try:
+            reverse_import = any(
+                line.strip() == f"import {active_module_name}"
+                for line in companion.read_text(encoding="utf-8").splitlines()
+                if line.lstrip().startswith("import ")
+            )
+        except OSError:
+            pass
+    lines = [
+        "Companion-module policy:",
+        f"- active file size: {line_count} lines / {size} bytes",
+        f"- preferred generic-helper module: `{companion_label}` (`{module_name}`)",
+        f"- companion status: {'exists' if companion_exists else 'missing'}; "
+        f"active import status: {'present' if imported else 'missing'}",
+        "- mandatory placement decision before every new top-level helper: if it is "
+        "self-contained over Mathlib/general imports, place it in the companion module, "
+        "not in this oversized target file",
+        f"- create/import with `{import_line}` when the first dependency-safe helper is added",
+        "- keep target-specific or private-dependency helpers beside their target; Lean private "
+        "declarations cannot be imported across modules",
+        "- treat companion creation plus the active-file import as one change and verify the imported "
+        "active module before continuing",
+        "- do not duplicate an existing helper merely to force it across the module boundary",
+        "- in the final report, state the placement decision for every newly banked helper "
+        "(companion or target-local, with the dependency reason)",
+    ]
+    if reverse_import:
+        lines.extend(
+            [
+                f"- unsafe reverse import detected: `{companion_label}` imports the active module "
+                f"`{active_module_name}`",
+                "- do not use observations from that reverse-import companion as current-source "
+                "authority: Lean may load a stale compiled active module; remove the reverse import "
+                "and keep only helpers self-contained over earlier/general modules",
+            ]
+        )
+    return "\n".join(lines)

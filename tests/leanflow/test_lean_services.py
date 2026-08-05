@@ -2512,7 +2512,8 @@ def test_lean_proof_context_enriches_backend_that_drops_private_lemma_binders(
         "reason": "target and later same-file declarations are unavailable",
     }
     assert payload["metadata"]["local_context_enrichment"] == {
-        "theorem_statement": True,
+        "source_authoritative_fields": ["theorem_statement", "original_proof"],
+        "theorem_statement": False,
         "hypotheses": True,
         "reason": "backend omitted explicit declaration binders",
     }
@@ -2556,6 +2557,30 @@ def test_proof_context_enrichment_restores_preceding_private_helpers():
     assert enriched["in_scope"] == ["Imported.safe", "private_helper"]
     assert enriched["metadata"]["local_context_enrichment"] == {"preceding_local_declarations": 1}
     assert enriched["hypotheses"] == []
+
+
+def test_proof_context_enrichment_replaces_truncated_or_stale_backend_declaration():
+    backend_payload = {
+        "theorem_statement": "theorem result : {θ : ℝ | 0",
+        "original_proof": "by exact staleCompiledProof",
+        "hypotheses": [],
+        "in_scope": [],
+        "metadata": {},
+    }
+    local_payload = {
+        "theorem_statement": "theorem result : {θ : ℝ | 0 < θ ∧ θ < Real.pi} = answer",
+        "original_proof": "by\n  sorry",
+        "hypotheses": [],
+        "in_scope": [],
+    }
+
+    enriched = lean_services._enrich_backend_proof_context(backend_payload, local_payload)
+
+    assert enriched["theorem_statement"] == local_payload["theorem_statement"]
+    assert enriched["original_proof"] == local_payload["original_proof"]
+    assert enriched["metadata"]["local_context_enrichment"] == {
+        "source_authoritative_fields": ["theorem_statement", "original_proof"]
+    }
 
 
 def test_lean_proof_context_falls_back_when_backend_returns_empty_context(monkeypatch, tmp_path):

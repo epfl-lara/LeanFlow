@@ -847,6 +847,20 @@ def test_resume_context_preserves_only_exact_scope_checkpoint_negative_evidence(
         active_file=current_file,
         negative_evidence=["The predecessor map reaches the forbidden boundary value."],
     )
+    assert plan_state.record_checkpoint_advisory(
+        checkpoint_id="current-scope-newer",
+        created_at="2026-08-05T00:02:00+00:00",
+        target_symbol="current_helper",
+        active_file=current_file,
+        negative_evidence=["Broad simplification was rejected by the kernel."],
+    )
+    assert not plan_state.record_checkpoint_advisory(
+        checkpoint_id="current-scope-newer",
+        created_at="2026-08-05T00:02:00+00:00",
+        target_symbol="current_helper",
+        active_file=current_file,
+        negative_evidence=["Broad simplification was rejected by the kernel."],
+    )
 
     block = plan_state.resume_context_block()
     plan_state.save_plan_md(plan_state.load_blueprint(), plan_state.load_summary())
@@ -854,10 +868,17 @@ def test_resume_context_preserves_only_exact_scope_checkpoint_negative_evidence(
 
     assert "advisory dead-branch boundary" in block
     assert "prior negative evidence: The predecessor map reaches" in block
+    assert "prior negative evidence: Broad simplification" in block
     assert "stale theorem route" not in block
     assert "## Advisory dead-branch record" in generated_plan
     assert "predecessor map reaches" in generated_plan
+    assert "Broad simplification" in generated_plan
     assert "stale theorem route" not in generated_plan
+
+    digest = plan_state.frontier_digest_block()
+    assert "advisory route exclusion" in digest
+    assert "Broad simplification" in digest
+    assert len(digest.splitlines()) <= 10
 
 
 def test_write_final_report_is_persisted_and_journaled(enabled):

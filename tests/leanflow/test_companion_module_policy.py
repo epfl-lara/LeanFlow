@@ -61,3 +61,21 @@ def test_existing_import_is_reported(tmp_path, monkeypatch):
 
     assert "companion status: exists" in advice
     assert "active import status: present" in advice
+
+
+def test_reverse_import_companion_is_flagged_as_stale_source_risk(tmp_path, monkeypatch):
+    active = tmp_path / "IMO2026" / "P4.lean"
+    active.parent.mkdir()
+    active.write_text("\n".join(f"lemma h{i} : True := by trivial" for i in range(12)))
+    companion = active.with_name("P4Helpers.lean")
+    companion.write_text("import IMO2026.P4\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_COMPANION_MODULE_LINE_THRESHOLD", "10")
+    monkeypatch.setenv("LEANFLOW_COMPANION_MODULE_BYTE_THRESHOLD", "100000")
+
+    advice = companion_module_policy.companion_module_advice(
+        str(active),
+        project_root=str(tmp_path),
+    )
+
+    assert "unsafe reverse import detected" in advice
+    assert "stale compiled active module" in advice

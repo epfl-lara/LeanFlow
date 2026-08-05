@@ -1079,6 +1079,7 @@ def test_fallback_checkpoint_summary_prefers_structured_live_state(tmp_path, mon
     assert "Main.lean" in summary
     assert "Old.lean" not in summary
     assert "1 unresolved `sorry`" in summary
+    assert "## Negative evidence\n- [none recorded]" in summary
 
 
 def test_signal_checkpoint_summary_treats_blocker_as_in_progress_evidence(tmp_path, monkeypatch):

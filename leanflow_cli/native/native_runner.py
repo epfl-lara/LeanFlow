@@ -21264,6 +21264,12 @@ def _fallback_checkpoint_summary(
         verified=_live_state_is_verified(live_state),
         blocker_summary=blocker_summary,
     )
+    negative_evidence = checkpoint_handoff.extract_negative_evidence(assistant_report_text)
+    negative_block = (
+        "\n".join(f"- {item}" for item in negative_evidence)
+        if negative_evidence
+        else "- [none recorded]"
+    )
     sections = [
         f"## Goal\nContinue the {_workflow_kind()} workflow for `{metadata['workflow_command']}`.",
         f"## Workflow\nLabel: {label}\nTrigger: {trigger}\nProject root: {metadata['project_root']}",
@@ -21271,6 +21277,7 @@ def _fallback_checkpoint_summary(
         f"## Lean findings\n{diagnostics or 'No recent diagnostics were captured.'}",
         f"## Relevant files\n{', '.join(active_files) if active_files else '[no specific Lean file identified]'}",
         f"## Blockers\n{blocker_summary or 'No blocker declared at this checkpoint.'}",
+        f"## Negative evidence\n{negative_block}",
         f"## Next steps\n{note or 'Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.'}",
     ]
     return "\n\n".join(sections)
@@ -21293,6 +21300,7 @@ Use exactly this structure:
 ## Lean findings
 ## Relevant files
 ## Blockers
+## Negative evidence
 ## Next steps
 
 Requirements:
@@ -21302,6 +21310,7 @@ Requirements:
 - Rank and preserve the strongest kernel-verified candidate, target-local checked fact, exact failed-goal diagnostic, advisor conclusion, and explicit route commitment. Include its exact name or proof shape and the concrete next edit it supports.
 - Never demote a kernel-verified or operator-approved route to optional/likely unnecessary merely because the recent transcript discusses another route. Require the continuation to apply its next edit or produce new Lean evidence that rejects it.
 - Distinguish routes that were kernel-rejected or genuinely exhausted from routes that were only deferred, interrupted, or not yet attempted. Do not silently revive rejected routes or discard unattempted concrete advice.
+- Under ``## Negative evidence``, preserve concrete counterexamples, failed proof shapes, and ruled-out routes as bullets. Write ``- [none recorded]`` when the transcript contains none.
 - Mention important tool usage and results only if they matter for the next steps.
 - Focus on what is already done and what the next assistant should do next.
 - Do not add preamble or markdown fences.
@@ -21360,12 +21369,14 @@ Use exactly this structure:
 ## Lean findings
 ## Relevant files
 ## Blockers
+## Negative evidence
 ## Next steps
 
 Requirements:
 - Mention the checkpoint label and trigger.
 - Preserve theorem targets, Lean files, diagnostics, and blockers.
 - Emphasize what changed since the previous milestone and what should happen next.
+- Under ``## Negative evidence``, preserve concrete counterexamples, kernel-rejected proof shapes, and ruled-out routes as bullets. Write ``- [none recorded]`` when none are present.
 - Be concrete enough that the next assistant can resume without the older transcript.
 - Do not add preamble or markdown fences.
 
@@ -23134,6 +23145,38 @@ def _startup_additional_skill_contracts(active_skill: str = "") -> str:
     ).strip()
 
 
+def _recover_persisted_checkpoint_advisories(
+    live_state: Mapping[str, Any] | None,
+) -> None:
+    """Migrate assignment-local dead branches from legacy checkpoints."""
+    if not plan_state_enabled():
+        return
+    current = dict(live_state or {})
+    target_symbol = str(current.get("target_symbol", "") or "").strip()
+    active_file = str(current.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return
+    records = checkpoint_handoff.checkpoint_advisory_records(
+        _load_workflow_index(),
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    changed = False
+    for record in records:
+        changed = (
+            plan_state.record_checkpoint_advisory(
+                checkpoint_id=str(record["checkpoint_id"]),
+                created_at=str(record["created_at"]),
+                target_symbol=str(record["target_symbol"]),
+                active_file=str(record["active_file"]),
+                negative_evidence=record["negative_evidence"],
+            )
+            or changed
+        )
+    if changed:
+        plan_state.save_plan_md(plan_state.load_blueprint(), plan_state.load_summary())
+
+
 def _startup_user_message(
     resumed_checkpoint: Mapping[str, Any] | None = None,
     *,
@@ -23141,6 +23184,8 @@ def _startup_user_message(
     autonomy_state: Mapping[str, Any] | None = None,
 ) -> str:
     """Build the initial workflow prompt, incorporating the active skill contract, route decision, queue assignment, and resumption context or custom STARTUP_PROMPT, appended with live proof state."""
+    with contextlib.suppress(Exception):
+        _recover_persisted_checkpoint_advisories(live_state)
     startup_prompt = _read_native_env("STARTUP_PROMPT")
     workflow_command = _read_native_env("WORKFLOW_COMMAND")
     workflow_kind = _workflow_kind()
