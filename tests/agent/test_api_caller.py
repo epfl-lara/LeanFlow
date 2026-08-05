@@ -19,6 +19,7 @@ from agent.providers.api_caller import (
     TRANSIENT_PROVIDER_RETRY_DELAYS_S,
     ApiCaller,
     TransientProviderRetriesExhausted,
+    transient_provider_recovery_deadline_monotonic,
     transient_provider_retry_delay_s,
     transient_provider_retry_delay_within_deadline_s,
 )
@@ -131,6 +132,13 @@ def test_timeout_is_clipped_to_conversation_deadline(agent, monkeypatch):
     assert agent._provider_request_timeout_seconds({"timeout": 1200.0}) == 10.0
 
 
+def test_timeout_is_clipped_to_transient_provider_recovery_deadline(agent, monkeypatch):
+    agent._transient_provider_recovery_deadline_monotonic = 108.0
+    monkeypatch.setattr("run_agent.time.monotonic", lambda: 100.0)
+
+    assert agent._provider_request_timeout_seconds({"timeout": 1200.0}) == 8.0
+
+
 def test_transient_provider_retry_policy_is_exactly_three_managed_retries():
     """Expose the 5/15/45 contract independently of real sleeping."""
     assert TRANSIENT_PROVIDER_RETRY_DELAYS_S == (5.0, 15.0, 45.0)
@@ -169,6 +177,30 @@ def test_transient_provider_retry_respects_enclosing_deadline():
         )
         == 15.0
     )
+
+
+def test_transient_provider_recovery_deadline_is_stable_and_clipped(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_PROVIDER_RECOVERY_BUDGET_S", "180")
+
+    first = transient_provider_recovery_deadline_monotonic(
+        current_deadline_monotonic=None,
+        conversation_deadline_monotonic=500.0,
+        now_monotonic=100.0,
+    )
+    repeated = transient_provider_recovery_deadline_monotonic(
+        current_deadline_monotonic=first,
+        conversation_deadline_monotonic=500.0,
+        now_monotonic=150.0,
+    )
+    clipped = transient_provider_recovery_deadline_monotonic(
+        current_deadline_monotonic=None,
+        conversation_deadline_monotonic=200.0,
+        now_monotonic=100.0,
+    )
+
+    assert first == 280.0
+    assert repeated == first
+    assert clipped == 200.0
 
 
 def test_transient_provider_exhaustion_marker_redacts_persisted_message():

@@ -99,6 +99,7 @@ from agent.providers.api_caller import (
     TRANSIENT_PROVIDER_MAX_ATTEMPTS,
     ApiCaller,
     TransientProviderRetriesExhausted,
+    transient_provider_recovery_deadline_monotonic,
     transient_provider_retry_delay_within_deadline_s,
 )
 from agent.providers.model_metadata import (
@@ -3531,6 +3532,8 @@ class AIAgent:
 
             api_start_time = time.time()
             retry_count = 0
+            provider_recovery_deadline_monotonic: float | None = None
+            self._transient_provider_recovery_deadline_monotonic = None
             # One initial provider call plus the managed-workflow 5/15/45s
             # transient retry schedule.  The historical name ``retry_count``
             # below counts failed attempts, so the attempt ceiling is four.
@@ -3670,6 +3673,13 @@ class AIAgent:
 
                         # This is often rate limiting or provider returning malformed response
                         retry_count += 1
+                        provider_recovery_deadline_monotonic = transient_provider_recovery_deadline_monotonic(
+                            current_deadline_monotonic=provider_recovery_deadline_monotonic,
+                            conversation_deadline_monotonic=self._conversation_deadline_monotonic,
+                        )
+                        self._transient_provider_recovery_deadline_monotonic = (
+                            provider_recovery_deadline_monotonic
+                        )
 
                         # Check for error field in response (some providers include this)
                         error_msg = "Unknown"
@@ -3765,13 +3775,12 @@ class AIAgent:
                         # transient schedule as explicit provider errors.
                         wait_time = transient_provider_retry_delay_within_deadline_s(
                             retry_count,
-                            deadline_monotonic=self._conversation_deadline_monotonic,
+                            deadline_monotonic=provider_recovery_deadline_monotonic,
                         )
                         if wait_time is None:
-                            self._conversation_wall_timeout_reached = True
                             _emit_workflow_event(
                                 "provider-retry-skipped-deadline",
-                                "Skipped provider retry because the conversation deadline is exhausted",
+                                "Skipped provider retry because the recovery deadline is exhausted",
                                 **_workflow_agent_event_details(
                                     self,
                                     failed_attempt=retry_count,
@@ -3802,6 +3811,13 @@ class AIAgent:
                                 max_attempts=max_retries,
                                 retry_number=retry_count,
                                 wait_seconds=wait_time,
+                                provider_recovery_remaining_s=round(
+                                    max(
+                                        0.0,
+                                        provider_recovery_deadline_monotonic - time.monotonic(),
+                                    ),
+                                    3,
+                                ),
                                 error_type="invalid_response",
                                 error=", ".join(error_details)[:300],
                             ),
@@ -4552,15 +4568,23 @@ class AIAgent:
                         )
                         raise TransientProviderRetriesExhausted(api_error) from api_error
 
+                    provider_recovery_deadline_monotonic = (
+                        transient_provider_recovery_deadline_monotonic(
+                            current_deadline_monotonic=provider_recovery_deadline_monotonic,
+                            conversation_deadline_monotonic=self._conversation_deadline_monotonic,
+                        )
+                    )
+                    self._transient_provider_recovery_deadline_monotonic = (
+                        provider_recovery_deadline_monotonic
+                    )
                     wait_time = transient_provider_retry_delay_within_deadline_s(
                         retry_count,
-                        deadline_monotonic=self._conversation_deadline_monotonic,
+                        deadline_monotonic=provider_recovery_deadline_monotonic,
                     )
                     if wait_time is None:
-                        self._conversation_wall_timeout_reached = True
                         _emit_workflow_event(
                             "provider-retry-skipped-deadline",
-                            "Skipped provider retry because the conversation deadline is exhausted",
+                            "Skipped provider retry because the recovery deadline is exhausted",
                             **_workflow_agent_event_details(
                                 self,
                                 failed_attempt=retry_count,
@@ -4591,6 +4615,13 @@ class AIAgent:
                             max_attempts=max_retries,
                             retry_number=retry_count,
                             wait_seconds=wait_time,
+                            provider_recovery_remaining_s=round(
+                                max(
+                                    0.0,
+                                    provider_recovery_deadline_monotonic - time.monotonic(),
+                                ),
+                                3,
+                            ),
                             error_type=error_type,
                             error=safe_api_error[:300],
                         ),

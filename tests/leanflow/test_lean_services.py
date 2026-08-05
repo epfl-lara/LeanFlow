@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from leanflow_cli.lean import (
+    lean_attempt_screening,
     lean_axiom_batch,
     lean_command_timeout,
     lean_incremental,
@@ -3145,6 +3146,47 @@ def test_lean_multi_attempt_requires_exact_target_check_for_probe_success(monkey
     assert payload["exact_checks"][0]["error"] == "linarith failed at the selected local goal"
     assert payload["items"][0]["diagnostics"][0]["severity"] == "error"
     assert "exact-target" in payload["action_required"]
+
+
+def test_multi_attempt_projection_keeps_bounded_error_first_summaries():
+    import json
+
+    payload = {
+        "success": False,
+        "file_path": "Main.lean",
+        "attempts": ["linarith", "ring"],
+        "status": "screened_no_verified_candidate",
+        "exact_checks": [
+            {
+                "snippet": "linarith",
+                "target_verified": False,
+                "error": "type mismatch " + "detail " * 1000,
+                "elapsed_s": 0.4,
+            },
+            {
+                "snippet": "ring",
+                "target_verified": False,
+                "error": "unsolved goal",
+                "elapsed_s": 0.3,
+            },
+        ],
+        "items": [
+            {
+                "snippet": "linarith",
+                "diagnostics": [{"message": "large" * 20_000}],
+            }
+        ],
+        "action_required": "Choose a structurally different route.",
+    }
+
+    projected = lean_attempt_screening.compact_multi_attempt_payload(payload, max_chars=3000)
+
+    assert projected["exact_checks"][0]["snippet"] == "linarith"
+    assert projected["exact_checks"][0]["error"].startswith("type mismatch")
+    assert "items" not in projected
+    assert projected["provider_context_projected"] is True
+    assert projected["audit_payload_preserved"] is True
+    assert len(json.dumps(projected, ensure_ascii=False)) <= 3000
 
 
 def test_lean_multi_attempt_stops_after_first_exact_leanprobe_success(monkeypatch, tmp_path):

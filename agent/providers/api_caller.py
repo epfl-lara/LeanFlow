@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 TRANSIENT_PROVIDER_RETRY_DELAYS_S: tuple[float, ...] = (5.0, 15.0, 45.0)
 TRANSIENT_PROVIDER_MAX_ATTEMPTS = 1 + len(TRANSIENT_PROVIDER_RETRY_DELAYS_S)
 MIN_TRANSIENT_PROVIDER_RETRY_REQUEST_WINDOW_S = 10.0
+DEFAULT_TRANSIENT_PROVIDER_RECOVERY_BUDGET_S = 180.0
 
 
 class TransientProviderRetriesExhausted(RuntimeError):
@@ -103,6 +104,37 @@ def transient_provider_retry_delay_within_deadline_s(
     if remaining_s < delay_s + useful_window_s:
         return None
     return delay_s
+
+
+def transient_provider_recovery_budget_s() -> float:
+    """Return the bounded wall-clock budget shared by retries after a first failure."""
+    raw = _ra().os.getenv(
+        "LEANFLOW_PROVIDER_RECOVERY_BUDGET_S",
+        str(DEFAULT_TRANSIENT_PROVIDER_RECOVERY_BUDGET_S),
+    )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_TRANSIENT_PROVIDER_RECOVERY_BUDGET_S
+    return max(30.0, value)
+
+
+def transient_provider_recovery_deadline_monotonic(
+    *,
+    current_deadline_monotonic: float | None,
+    conversation_deadline_monotonic: float | None,
+    now_monotonic: float | None = None,
+) -> float:
+    """Establish one retry deadline and clip it to the owning conversation."""
+    now = _ra().time.monotonic() if now_monotonic is None else float(now_monotonic)
+    deadline = (
+        float(current_deadline_monotonic)
+        if isinstance(current_deadline_monotonic, (int, float))
+        else now + transient_provider_recovery_budget_s()
+    )
+    if isinstance(conversation_deadline_monotonic, (int, float)):
+        deadline = min(deadline, float(conversation_deadline_monotonic))
+    return deadline
 
 
 def _ra() -> Any:
@@ -223,6 +255,12 @@ class ApiCaller:
         deadline = getattr(self._agent, "_conversation_deadline_monotonic", None)
         if isinstance(deadline, (int, float)):
             remaining = max(1.0, float(deadline) - _ra().time.monotonic())
+            timeout_seconds = min(timeout_seconds, remaining)
+        recovery_deadline = getattr(
+            self._agent, "_transient_provider_recovery_deadline_monotonic", None
+        )
+        if isinstance(recovery_deadline, (int, float)):
+            remaining = max(1.0, float(recovery_deadline) - _ra().time.monotonic())
             timeout_seconds = min(timeout_seconds, remaining)
         return timeout_seconds
 

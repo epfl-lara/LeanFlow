@@ -72,8 +72,9 @@ from agent.providers.auxiliary_client import call_llm
 from agent.providers.model_metadata import estimate_messages_tokens_rough
 from leanflow_cli.config import load_config
 from leanflow_cli.lean import negation_probe
+from leanflow_cli.lean.lean_attempt_screening import compact_multi_attempt_payload
 from leanflow_cli.lean.lean_incremental import (
-    compact_successful_check_payload,
+    compact_check_payload,
     lean_incremental_check,
 )
 from leanflow_cli.lean.lean_lemma_suggest import lean_lemma_suggest
@@ -5246,12 +5247,15 @@ def _project_managed_tool_result(
     result: str,
 ) -> str:
     """Return bounded provider context while workflow activity keeps full evidence."""
-    if function_name != "lean_incremental_check":
-        return result
     payload = _json_tool_result_payload(result)
     if not payload:
         return result
-    projected = compact_successful_check_payload(payload)
+    if function_name == "lean_incremental_check":
+        projected = compact_check_payload(payload)
+    elif function_name == "lean_multi_attempt":
+        projected = compact_multi_attempt_payload(payload)
+    else:
+        return result
     return json.dumps(projected, ensure_ascii=False)
 
 

@@ -490,6 +490,7 @@ def _timeout_metadata(
 # would otherwise dominate the model's context (and be replayed each turn); typical feedback is
 # far smaller and untouched. Override with LEANFLOW_INCREMENTAL_FEEDBACK_MAX_CHARS.
 _DEFAULT_FEEDBACK_MAX_CHARS = 16000
+_DEFAULT_PROVIDER_CHECK_MAX_CHARS = 6000
 
 
 def _feedback_max_chars() -> int:
@@ -499,6 +500,15 @@ def _feedback_max_chars() -> int:
     except (TypeError, ValueError):
         value = 0
     return value if value > 0 else _DEFAULT_FEEDBACK_MAX_CHARS
+
+
+def _provider_check_max_chars() -> int:
+    """Return the model-facing check-result ceiling without shrinking audit evidence."""
+    try:
+        value = int(os.getenv("LEANFLOW_INCREMENTAL_PROVIDER_MAX_CHARS", "") or 0)
+    except (TypeError, ValueError):
+        value = 0
+    return value if value > 0 else _DEFAULT_PROVIDER_CHECK_MAX_CHARS
 
 
 def _bound_feedback_payload(result: dict[str, Any], max_chars: int) -> dict[str, Any]:
@@ -643,30 +653,77 @@ def _bound_failed_check_payload(result: dict[str, Any], max_chars: int) -> dict[
     return bounded
 
 
-def compact_successful_check_payload(
+def _compact_provider_messages(messages: Any) -> tuple[list[Any], int]:
+    """Return error-first bounded diagnostics and their original count."""
+    if not isinstance(messages, list):
+        return [], 0
+    ordered = sorted(
+        enumerate(messages),
+        key=lambda item: (
+            (
+                0
+                if isinstance(item[1], Mapping)
+                and str(item[1].get("severity", "") or "").lower() == "error"
+                else 1
+            ),
+            item[0],
+        ),
+    )
+    compact_messages: list[Any] = []
+    for _index, message in ordered[:4]:
+        if not isinstance(message, Mapping):
+            compact_messages.append(_truncate_diagnostic_text(message, 800))
+            continue
+        compact = {
+            key: value
+            for key, value in message.items()
+            if key in {"severity", "message", "start", "end", "file_start", "file_end"}
+        }
+        if compact.get("message"):
+            compact["message"] = _truncate_diagnostic_text(compact["message"], 1200)
+        compact_messages.append(compact)
+    return compact_messages, len(messages)
+
+
+def _provider_relevant_goals(payload: Mapping[str, Any]) -> list[str]:
+    """Extract a small distinct goal sample from a LeanProbe tactic trace."""
+    tactics = payload.get("tactics")
+    if not isinstance(tactics, list):
+        return []
+    goals: list[str] = []
+    for tactic in tactics:
+        if not isinstance(tactic, Mapping) or not tactic.get("goals"):
+            continue
+        goal = _truncate_diagnostic_text(tactic["goals"], 1200)
+        if goal not in goals:
+            goals.append(goal)
+        if len(goals) == 2:
+            break
+    return goals
+
+
+def compact_check_payload(
     result: Mapping[str, Any],
     *,
     max_chars: int | None = None,
 ) -> dict[str, Any]:
-    """Project successful target/helper evidence into bounded model context.
+    """Project target/helper evidence into bounded, error-first model context.
 
     The tool executor records the original result before applying this model-
-    facing projection. Successful tactic traces are useful for audit but add no
-    repair signal, so retain verdict, identity, timing, and bounded warnings.
+    facing projection. Retain verdict, identity, timing, and the first useful
+    diagnostics while leaving complete tactic traces in the durable audit log.
     """
     payload = dict(result)
-    if payload.get("ok") is not True or str(payload.get("action", "") or "") not in {
+    if str(payload.get("action", "") or "") not in {
         "check_target",
         "check_helper",
     }:
         return payload
-    cap = max(2_000, int(max_chars or _feedback_max_chars()))
+    cap = max(2_000, int(max_chars or _provider_check_max_chars()))
     tactics = payload.get("tactics")
     try:
         serialized = json.dumps(payload, ensure_ascii=False)
     except (TypeError, ValueError):
-        return payload
-    if len(serialized) <= cap and not isinstance(tactics, list):
         return payload
 
     keep_fields = {
@@ -678,7 +735,10 @@ def compact_successful_check_payload(
         "command",
         "file",
         "target",
+        "target_kind",
+        "target_range",
         "cache",
+        "elapsed_s",
         "valid_without_sorry",
         "has_errors",
         "has_sorry",
@@ -699,13 +759,7 @@ def compact_successful_check_payload(
         "timeout_adjusted",
         "timeout_policy",
         "timeout_ceiling_s",
-        "resource_admission",
         "leanflow_timing",
-        "messages",
-        "anchor_messages",
-        "feedback_lean",
-        "output",
-        "error",
         "error_code",
         "status",
         "diagnostic_only",
@@ -717,30 +771,53 @@ def compact_successful_check_payload(
         "target_verified",
     }
     projected = {key: value for key, value in payload.items() if key in keep_fields}
+    verified = payload.get("ok") is True and payload.get("valid_without_sorry") is not False
+    projected["verification_status"] = "verified" if verified else "not_verified"
+
+    messages, message_total = _compact_provider_messages(payload.get("messages"))
+    anchor_messages, anchor_message_total = _compact_provider_messages(
+        payload.get("anchor_messages")
+    )
+    if messages:
+        projected["messages"] = messages
+    if anchor_messages:
+        projected["anchor_messages"] = anchor_messages
+    if message_total > len(messages):
+        projected["messages_truncated"] = {
+            "kept": len(messages),
+            "total": message_total,
+        }
+    if anchor_message_total > len(anchor_messages):
+        projected["anchor_messages_truncated"] = {
+            "kept": len(anchor_messages),
+            "total": anchor_message_total,
+        }
+
+    error_messages = [
+        str(message.get("message", "") or "")
+        for message in messages + anchor_messages
+        if isinstance(message, Mapping)
+        and str(message.get("severity", "") or "").lower() == "error"
+        and message.get("message")
+    ]
+    actionable_error = str(payload.get("error", "") or "").strip()
+    if not actionable_error and error_messages:
+        actionable_error = error_messages[0]
+    if not actionable_error and not verified:
+        actionable_error = str(payload.get("output", "") or "").strip()
+    if actionable_error:
+        projected["actionable_error"] = _truncate_diagnostic_text(actionable_error, 1800)
+
+    relevant_goals = _provider_relevant_goals(payload)
+    if relevant_goals:
+        projected["relevant_goals"] = relevant_goals
+
+    if not actionable_error and payload.get("output"):
+        projected["output"] = _truncate_diagnostic_text(payload["output"], 1200)
+    if not verified and not actionable_error and payload.get("feedback_lean"):
+        projected["feedback_lean"] = _truncate_diagnostic_text(payload["feedback_lean"], 1200)
     if isinstance(tactics, list):
         projected["tactics_truncated"] = {"kept": 0, "total": len(tactics)}
-    for field in ("feedback_lean", "output", "error"):
-        if projected.get(field):
-            projected[field] = _truncate_diagnostic_text(projected[field], 1200)
-    for field in ("messages", "anchor_messages"):
-        messages = projected.get(field)
-        if not isinstance(messages, list):
-            continue
-        compact_messages: list[Any] = []
-        for message in messages[:4]:
-            if not isinstance(message, Mapping):
-                compact_messages.append(message)
-                continue
-            compact = dict(message)
-            if compact.get("message"):
-                compact["message"] = _truncate_diagnostic_text(compact["message"], 800)
-            compact_messages.append(compact)
-        projected[field] = compact_messages
-        if len(messages) > len(compact_messages):
-            projected[f"{field}_truncated"] = {
-                "kept": len(compact_messages),
-                "total": len(messages),
-            }
     omitted = sorted(set(payload).difference(projected).difference({"tactics"}))
     projected.update(
         {
@@ -751,7 +828,72 @@ def compact_successful_check_payload(
             "projected_fields_omitted": omitted,
         }
     )
+    while len(json.dumps(projected, ensure_ascii=False)) > cap:
+        if projected.pop("feedback_lean", None) is not None:
+            continue
+        goals = projected.get("relevant_goals")
+        if isinstance(goals, list) and len(goals) > 1:
+            projected["relevant_goals"] = goals[:1]
+            continue
+        if projected.pop("anchor_messages", None) is not None:
+            continue
+        messages = projected.get("messages")
+        if isinstance(messages, list) and len(messages) > 1:
+            projected["messages"] = messages[:1]
+            continue
+        if projected.get("actionable_error"):
+            projected["actionable_error"] = _truncate_diagnostic_text(
+                projected["actionable_error"], 800
+            )
+            if len(json.dumps(projected, ensure_ascii=False)) <= cap:
+                break
+        projected.pop("messages", None)
+        projected.pop("relevant_goals", None)
+        break
+    if len(json.dumps(projected, ensure_ascii=False)) > cap:
+        essential_fields = {
+            "success",
+            "ok",
+            "action",
+            "file",
+            "target",
+            "valid_without_sorry",
+            "has_errors",
+            "has_sorry",
+            "timed_out",
+            "elapsed_s",
+            "error_code",
+            "status",
+            "verification_status",
+            "actionable_error",
+            "relevant_goals",
+            "tactics_truncated",
+            "provider_context_projected",
+            "audit_payload_preserved",
+            "audit_payload_chars",
+            "audit_payload_sha256",
+        }
+        projected = {key: value for key, value in projected.items() if key in essential_fields}
+        if projected.get("actionable_error"):
+            projected["actionable_error"] = _truncate_diagnostic_text(
+                projected["actionable_error"], 500
+            )
+        goals = projected.get("relevant_goals")
+        if isinstance(goals, list):
+            projected["relevant_goals"] = [
+                _truncate_diagnostic_text(goal, 500) for goal in goals[:1]
+            ]
+        projected["projection_emergency_compacted"] = True
     return projected
+
+
+def compact_successful_check_payload(
+    result: Mapping[str, Any],
+    *,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
+    """Preserve the compatibility name for the generalized check projection."""
+    return compact_check_payload(result, max_chars=max_chars)
 
 
 def _normalize_payload(payload: dict[str, Any], action: str) -> dict[str, Any]:

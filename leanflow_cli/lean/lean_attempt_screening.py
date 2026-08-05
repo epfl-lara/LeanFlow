@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -13,6 +15,7 @@ from leanflow_cli.lean.lean_parsing import _strip_lean_comments_and_strings
 MULTI_ATTEMPT_PREPARE_TIMEOUT_S = 300
 MULTI_ATTEMPT_CANDIDATE_TIMEOUT_S = 30
 MULTI_ATTEMPT_FEEDBACK_CHARS = 900
+MULTI_ATTEMPT_PROVIDER_MAX_CHARS = 6000
 
 IncrementalCheck = Callable[..., dict[str, Any]]
 
@@ -96,6 +99,126 @@ def _exact_check_summary(check: Mapping[str, Any], *, verified: bool) -> dict[st
         "timed_out": _incremental_check_timed_out(check),
         "elapsed_s": check.get("elapsed_s", 0),
     }
+
+
+def compact_multi_attempt_payload(
+    result: Mapping[str, Any],
+    *,
+    max_chars: int = MULTI_ATTEMPT_PROVIDER_MAX_CHARS,
+) -> dict[str, Any]:
+    """Project tactic screening into bounded model context while audit keeps full details."""
+    payload = dict(result)
+    cap = max(2_000, int(max_chars or MULTI_ATTEMPT_PROVIDER_MAX_CHARS))
+    try:
+        serialized = json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return payload
+    exact_checks: list[dict[str, Any]] = []
+    for check in payload.get("exact_checks") or []:
+        if not isinstance(check, Mapping):
+            continue
+        compact = {
+            key: value
+            for key, value in check.items()
+            if key
+            in {
+                "snippet",
+                "theorem_id",
+                "unrelated_placeholder_anchors",
+                "local_goal_verified",
+                "success",
+                "backend_success",
+                "target_verified",
+                "status",
+                "error",
+                "error_code",
+                "timed_out",
+                "elapsed_s",
+            }
+        }
+        if compact.get("error"):
+            compact["error"] = str(compact["error"])[:MULTI_ATTEMPT_FEEDBACK_CHARS]
+        exact_checks.append(compact)
+
+    keep_fields = {
+        "success",
+        "degraded_reasons",
+        "file_path",
+        "line",
+        "column",
+        "attempts",
+        "requested_line",
+        "line_adjustment",
+        "duplicate_attempts_removed",
+        "backend_success",
+        "backend_tool",
+        "screening_backend",
+        "target_verified",
+        "verified_attempts",
+        "local_goal_verified",
+        "locally_verified_attempts",
+        "status",
+        "prepare",
+        "action_required",
+        "timed_out",
+        "error",
+        "error_code",
+    }
+    projected = {key: value for key, value in payload.items() if key in keep_fields}
+    projected["exact_checks"] = exact_checks
+    item_count = len(payload.get("items") or []) if isinstance(payload.get("items"), list) else 0
+    if item_count:
+        projected["items_truncated"] = {"kept": 0, "total": item_count}
+    exact_check_count = len(exact_checks)
+    projected.update(
+        {
+            "provider_context_projected": True,
+            "audit_payload_preserved": True,
+            "audit_payload_chars": len(serialized),
+            "audit_payload_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+            "projected_fields_omitted": sorted(
+                set(payload).difference(projected).difference({"items"})
+            ),
+        }
+    )
+    while len(json.dumps(projected, ensure_ascii=False)) > cap and exact_checks:
+        if len(exact_checks) > 1:
+            exact_checks.pop()
+            continue
+        error = str(exact_checks[0].get("error", "") or "")
+        if len(error) > 300:
+            exact_checks[0]["error"] = error[:300]
+            continue
+        break
+    if len(exact_checks) < exact_check_count:
+        projected["exact_checks_truncated"] = {
+            "kept": len(exact_checks),
+            "total": exact_check_count,
+        }
+    if len(json.dumps(projected, ensure_ascii=False)) > cap:
+        projected = {
+            key: value
+            for key, value in projected.items()
+            if key
+            in {
+                "success",
+                "file_path",
+                "line",
+                "status",
+                "target_verified",
+                "local_goal_verified",
+                "action_required",
+                "exact_checks",
+                "exact_checks_truncated",
+                "items_truncated",
+                "provider_context_projected",
+                "audit_payload_preserved",
+                "audit_payload_chars",
+                "audit_payload_sha256",
+            }
+        }
+        projected["projection_emergency_compacted"] = True
+    return projected
 
 
 def _placeholder_count(text: str) -> int:

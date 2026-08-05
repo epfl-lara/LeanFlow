@@ -2096,3 +2096,40 @@ def test_successful_check_projection_drops_tactic_trace_but_keeps_audit_identity
     assert projected["audit_payload_chars"] > 100_000
     assert len(projected["audit_payload_sha256"]) == 64
     assert len(json.dumps(projected, ensure_ascii=False)) < 4000
+
+
+def test_failed_check_projection_is_error_first_and_drops_replayed_source():
+    import json
+
+    payload = {
+        "success": True,
+        "ok": False,
+        "action": "check_helper",
+        "target": "demo",
+        "valid_without_sorry": False,
+        "has_errors": True,
+        "has_sorry": False,
+        "messages": [
+            {"severity": "warning", "message": "unrelated warning"},
+            {"severity": "error", "message": "unsolved goals\n" + "goal " * 1000},
+        ],
+        "tactics": [
+            {"goals": "first useful goal", "proof_state": "trace" * 10_000},
+            {"goals": "second useful goal", "proof_state": "trace" * 10_000},
+        ],
+        "feedback_lean": "complete repeated helper source\n" * 10_000,
+        "resource_admission": {"large": "metadata" * 10_000},
+    }
+
+    projected = li.compact_check_payload(payload, max_chars=4000)
+
+    assert projected["verification_status"] == "not_verified"
+    assert projected["messages"][0]["severity"] == "error"
+    assert projected["actionable_error"].startswith("unsolved goals")
+    assert projected["relevant_goals"] == ["first useful goal", "second useful goal"]
+    assert projected["tactics_truncated"] == {"kept": 0, "total": 2}
+    assert "tactics" not in projected
+    assert "feedback_lean" not in projected
+    assert "resource_admission" not in projected
+    assert projected["audit_payload_preserved"] is True
+    assert len(json.dumps(projected, ensure_ascii=False)) <= 4000

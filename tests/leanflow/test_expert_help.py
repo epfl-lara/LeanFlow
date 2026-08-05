@@ -386,6 +386,41 @@ def test_long_advisor_refreshes_parent_workflow_heartbeat(monkeypatch, tmp_path)
     assert activities[0][1]["partial_response_available"] is False
 
 
+def test_expert_heartbeat_bypasses_suppressed_stdout_and_updates_primary_log(monkeypatch):
+    activities = []
+    run_log = []
+
+    class _Stream:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, value):
+            self.writes.append(value)
+
+        def flush(self):
+            return None
+
+    stream = _Stream()
+    monkeypatch.setattr(
+        expert_help, "append_workflow_activity", lambda *a, **kw: activities.append((a, kw))
+    )
+    monkeypatch.setattr(expert_help, "append_workflow_run_log", run_log.append)
+    monkeypatch.setattr(expert_help.sys, "__stdout__", stream)
+
+    expert_help.record_expert_help_activity(
+        "expert-help-heartbeat",
+        "Expert help command remains active",
+        elapsed_s=45,
+        timeout_s=600,
+        mode="command",
+    )
+
+    assert activities
+    assert run_log == stream.writes
+    assert "45s elapsed" in run_log[0]
+    assert "600s timeout" in run_log[0]
+
+
 @pytest.mark.parametrize("detached", [False, True])
 @pytest.mark.skipif(not hasattr(os, "killpg"), reason="requires POSIX process groups")
 def test_advisor_timeout_finds_grandchild_after_leader_exits(tmp_path, detached):

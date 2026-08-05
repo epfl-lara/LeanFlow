@@ -9,6 +9,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -20,6 +21,7 @@ from typing import Any
 from leanflow_cli.config import get_env_value, load_config
 from leanflow_cli.workflows.workflow_state import (
     append_workflow_activity,
+    append_workflow_run_log,
     touch_workflow_runtime_heartbeat,
 )
 from tools.utilities.interrupt import is_interrupted
@@ -827,5 +829,21 @@ def run_command_expert_help(
 
 
 def record_expert_help_activity(event_type: str, message: str, **details: Any) -> None:
+    """Persist expert activity and expose command heartbeats in the primary console log."""
     with contextlib.suppress(Exception):
         append_workflow_activity(event_type, message, **details)
+    if event_type != "expert-help-heartbeat":
+        return
+    elapsed_s = float(details.get("elapsed_s", 0.0) or 0.0)
+    timeout_s = float(details.get("timeout_s", 0.0) or 0.0)
+    mode = str(details.get("mode", "") or "expert")
+    heartbeat = (
+        f"   ⏳ {message} ({elapsed_s:.0f}s elapsed, " f"{timeout_s:.0f}s timeout, {mode})\n"
+    )
+    with contextlib.suppress(Exception):
+        append_workflow_run_log(heartbeat)
+    stream = getattr(sys, "__stdout__", None)
+    if stream is not None:
+        with contextlib.suppress(Exception):
+            stream.write(heartbeat)
+            stream.flush()

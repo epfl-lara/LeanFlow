@@ -161,6 +161,56 @@ def test_managed_incremental_success_projects_provider_context():
     assert projected["audit_payload_preserved"] is True
 
 
+def test_managed_incremental_failure_projects_error_first_provider_context():
+    payload = {
+        "success": True,
+        "ok": False,
+        "action": "check_helper",
+        "target": "demo",
+        "valid_without_sorry": False,
+        "has_errors": True,
+        "messages": [
+            {"severity": "warning", "message": "warning"},
+            {"severity": "error", "message": "type mismatch"},
+        ],
+        "feedback_lean": "repeated source" * 10_000,
+        "tactics": [{"goals": "wanted goal", "proof_state": "large" * 10_000}],
+    }
+
+    projected = json.loads(
+        runner._project_managed_tool_result("lean_incremental_check", {}, json.dumps(payload))
+    )
+
+    assert projected["verification_status"] == "not_verified"
+    assert projected["messages"][0]["message"] == "type mismatch"
+    assert projected["actionable_error"] == "type mismatch"
+    assert projected["relevant_goals"] == ["wanted goal"]
+    assert "feedback_lean" not in projected
+    assert projected["audit_payload_preserved"] is True
+
+
+def test_managed_multi_attempt_projects_compact_exact_checks():
+    payload = {
+        "success": False,
+        "file_path": "Main.lean",
+        "attempts": ["aesop", "omega"],
+        "status": "screened_no_verified_candidate",
+        "exact_checks": [
+            {"snippet": "aesop", "target_verified": False, "error": "unsolved goals"},
+            {"snippet": "omega", "target_verified": False, "error": "type mismatch"},
+        ],
+        "items": [{"diagnostics": [{"message": "trace" * 20_000}]}],
+    }
+
+    projected = json.loads(
+        runner._project_managed_tool_result("lean_multi_attempt", {}, json.dumps(payload))
+    )
+
+    assert [item["snippet"] for item in projected["exact_checks"]] == ["aesop", "omega"]
+    assert "items" not in projected
+    assert projected["audit_payload_preserved"] is True
+
+
 def test_workflow_log_tee_reports_slow_owner_log_append(monkeypatch):
     writes = []
     events = []
