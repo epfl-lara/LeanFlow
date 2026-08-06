@@ -177,6 +177,62 @@ def test_foreground_checked_helper_is_retained_before_handoff(monkeypatch, tmp_p
     assert "durably retained" in agent._post_tool_result_appendix
 
 
+def test_foreground_checked_scratch_helper_requires_immediate_production_name(
+    monkeypatch, tmp_path
+):
+    """A useful checked scratch helper must not disappear silently between epochs."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    events = []
+    monkeypatch.setattr(
+        runner, "_record_agent_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    declaration = "private lemma test_useful (n : Nat) : n = n := by\n  rfl"
+    arguments = {
+        "action": "check_helper",
+        "file_path": str(active),
+        "theorem_id": "demo",
+        "replacement": declaration,
+    }
+    result = json.dumps(
+        {
+            "success": True,
+            "ok": True,
+            "valid_without_sorry": True,
+            "has_errors": False,
+            "has_sorry": False,
+            "verification_scope": "helper_candidate",
+            "replacement_matches_target": False,
+            "replacement_declarations": ["test_useful"],
+        }
+    )
+
+    record = runner._retain_foreground_checked_helper(
+        agent, "lean_incremental_check", arguments, result
+    )
+
+    assert record is None
+    assert events[0][0][1] == "foreground-helper-production-name-required"
+    assert events[0][1]["helper_name"] == "test_useful"
+    appendix = agent._post_tool_result_appendix
+    assert "was not durably retained" in appendix
+    assert "mathematical production name" in appendix
+    assert "before unrelated work" in appendix
+
+
 def test_managed_incremental_success_projects_provider_context():
     payload = {
         "success": True,
@@ -22109,6 +22165,39 @@ def test_scratch_named_helper_patch_is_blocked_before_source_mutation(monkeypatc
     assert payload["lean_started"] is False
     assert active.read_text(encoding="utf-8") == before
     assert events[0][0][1] == "nonproduction-helper-name-blocked"
+
+
+def test_probe_named_helper_patch_is_blocked_before_source_mutation(monkeypatch, tmp_path):
+    """The source guard must match the broader durable-candidate naming policy."""
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+    after = "private lemma probe_basis_name : True := by\n  trivial\n\n" + before
+    result = runner._nonproduction_generated_helper_source_patch_guard(
+        _Agent(),
+        "patch",
+        {
+            "path": str(active),
+            "old_string": before,
+            "new_string": after,
+        },
+        _Agent._managed_autonomy_state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "nonproduction_helper_name"
+    assert payload["helper_names"] == ["probe_basis_name"]
+    assert active.read_text(encoding="utf-8") == before
 
 
 def test_exactly_integrated_prover_helper_is_proof_support_and_campaign_progress(

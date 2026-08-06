@@ -10,7 +10,8 @@ from leanflow_cli.lean.lean_parsing import (
 )
 
 _NONPRODUCTION_NAME_RE = re.compile(
-    r"(?:^|_)(?:scratch|temp|test|tmp)(?:_|$)",
+    r"(?:^|_)(?:scratch|temp|test|tmp|counterexample|probe|obstruction|not_universal|"
+    r"without_universal|false_of)(?:_|$)|(?:^|_)(?:do|does)_not(?:_|$)",
     flags=re.IGNORECASE,
 )
 

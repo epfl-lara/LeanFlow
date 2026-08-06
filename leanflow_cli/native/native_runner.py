@@ -5271,6 +5271,32 @@ def _retain_foreground_checked_helper(
         active_file=active_file,
     )
     if record is None:
+        helper_name = (
+            research_helper_candidate_priority.successful_nonproduction_foreground_helper_name(
+                arguments,
+                _json_tool_result_payload(result),
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
+        )
+        if helper_name:
+            _record_agent_activity(
+                agent,
+                "foreground-helper-production-name-required",
+                f"Verified scratch helper {helper_name} requires a production name",
+                target_symbol=target_symbol,
+                active_file=active_file,
+                helper_name=helper_name,
+                campaign_progress=False,
+            )
+            agent.stage_tool_result_appendix(
+                f"LeanProbe verified `{helper_name}`, but it was not durably retained because "
+                "scratch-style names cannot enter production integration. If this proposition "
+                "is reusable proof progress, immediately resubmit the same declaration under a "
+                "mathematical production name before unrelated work; LeanFlow will then retain "
+                "and prioritize it across compression and later epochs. If it was only an "
+                "experiment, continue without promotion."
+            )
         return None
     _record_agent_activity(
         agent,

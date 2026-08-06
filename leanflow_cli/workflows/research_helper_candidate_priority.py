@@ -787,18 +787,14 @@ def _remember_exact_candidate(
     return record
 
 
-def remember_from_foreground_check(
-    autonomy_state: dict[str, Any],
+def _successful_foreground_helper(
     arguments: Mapping[str, Any],
     result: Mapping[str, Any],
     *,
-    campaign_id: str,
     target_symbol: str,
     active_file: str,
-) -> PendingResearchHelperCandidate | None:
-    """Persist one exact successful foreground helper check for parent recheck."""
-    if load(autonomy_state) is not None:
-        return None
+) -> tuple[str, str] | None:
+    """Return the declaration identity from one exact successful helper check."""
     action = str(arguments.get("action", "") or "").strip()
     argument_target = str(arguments.get("theorem_id", "") or "").strip()
     argument_file = str(arguments.get("file_path", "") or "").strip()
@@ -827,15 +823,70 @@ def remember_from_foreground_check(
         or str(result.get("verification_scope", "") or "").strip() != "helper_candidate"
         or result.get("timed_out") is True
         or "timeout" in error_code.casefold()
+        or result.get("diagnostic_only") is True
         or len(names) != 1
     ):
         return None
+    declared_names = tuple(
+        str(entry.get("name", "") or "").strip()
+        for entry in _declaration_line_index_from_text(declaration)
+        if str(entry.get("name", "") or "").strip()
+    )
+    if (
+        declared_names != names
+        or _text_has_sorry(declaration)
+        or _contains_lean_suggestion_tactic(declaration)
+    ):
+        return None
+    return names[0], declaration
+
+
+def successful_nonproduction_foreground_helper_name(
+    arguments: Mapping[str, Any],
+    result: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> str:
+    """Return a verified scratch helper name that requires production promotion."""
+    helper = _successful_foreground_helper(
+        arguments,
+        result,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if helper is None or not _helper_name_is_nonproduction(helper[0]):
+        return ""
+    return helper[0]
+
+
+def remember_from_foreground_check(
+    autonomy_state: dict[str, Any],
+    arguments: Mapping[str, Any],
+    result: Mapping[str, Any],
+    *,
+    campaign_id: str,
+    target_symbol: str,
+    active_file: str,
+) -> PendingResearchHelperCandidate | None:
+    """Persist one exact successful foreground helper check for parent recheck."""
+    if load(autonomy_state) is not None:
+        return None
+    helper = _successful_foreground_helper(
+        arguments,
+        result,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if helper is None:
+        return None
+    helper_name, declaration = helper
     check_identity = _sha256(
         "\0".join(
             (
                 _canonical_file(active_file),
                 str(target_symbol or "").strip(),
-                names[0],
+                helper_name,
                 declaration,
             )
         )
@@ -846,7 +897,7 @@ def remember_from_foreground_check(
         job_id=f"foreground-check:{check_identity}",
         target_symbol=target_symbol,
         active_file=active_file,
-        helper_name=names[0],
+        helper_name=helper_name,
         declaration=declaration,
         delivery_markers=("foreground-check",),
     )
