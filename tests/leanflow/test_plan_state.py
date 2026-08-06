@@ -1090,6 +1090,7 @@ def test_save_summary_never_regresses_foreign_keys(enabled):
                 ],
                 "pending_research_helper_candidate": {"candidate_id": "rhcp-current"},
                 "resolved_research_helper_candidates": [{"candidate_id": "rhcp-resolved"}],
+                "target_candidate_checkpoints": [{"candidate_id": "tcc-current"}],
             }
         ),
     )
@@ -1102,6 +1103,7 @@ def test_save_summary_never_regresses_foreign_keys(enabled):
     stale["source_negation_candidate_scans"] = []
     stale["pending_research_helper_candidate"] = {}
     stale["resolved_research_helper_candidates"] = []
+    stale["target_candidate_checkpoints"] = []
     plan_state.save_summary(stale)
 
     current = plan_state.load_summary()
@@ -1134,6 +1136,7 @@ def test_save_summary_never_regresses_foreign_keys(enabled):
     ]
     assert current["pending_research_helper_candidate"] == {"candidate_id": "rhcp-current"}
     assert current["resolved_research_helper_candidates"] == [{"candidate_id": "rhcp-resolved"}]
+    assert current["target_candidate_checkpoints"] == [{"candidate_id": "tcc-current"}]
 
 
 def test_queue_manager_state_has_a_dedicated_non_regressing_writer(enabled):

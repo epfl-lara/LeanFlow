@@ -11263,6 +11263,40 @@ def test_replay_exact_candidate_retires_current_mathematical_rejection(monkeypat
     assert marks[-1][1]["status"] == "mathematically_rejected"
 
 
+def test_partial_exact_candidate_checkpoint_is_persisted_and_observable(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    replacement = "theorem demo : True := by\n  exact missing"
+    captured = []
+    events = []
+    monkeypatch.setattr(
+        runner.target_candidate_checkpoint,
+        "capture_checked_candidate",
+        lambda **kwargs: captured.append(kwargs)
+        or {
+            "candidate_id": "tcc-demo",
+            "replacement_sha256": "a" * 64,
+            "error_count": 1,
+            "first_error_line": 2,
+        },
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    assert runner._capture_partial_exact_candidate(
+        {"campaign_id": "campaign-demo"},
+        {"replacement": replacement},
+        {"has_errors": True},
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert captured[0]["replacement"] == replacement
+    assert captured[0]["campaign_id"] == "campaign-demo"
+    assert events[-1][0][0] == "queue-partial-target-candidate-checkpointed"
+    assert events[-1][1]["authoritative"] is False
+
+
 def test_incremental_unrelated_replacement_is_scratch_not_theorem_feedback(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
@@ -32276,6 +32310,37 @@ def test_queue_assignment_block_includes_exact_tool_path():
 
     assert "- file: Demo/Main.lean" in block
     assert "- exact tool path: /tmp/project/Demo/Main.lean" in block
+
+
+def test_queue_assignment_block_restores_checked_partial_candidate(monkeypatch):
+    monkeypatch.setattr(
+        runner.verification_candidate_replay,
+        "matching_candidate",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runner.target_candidate_checkpoint,
+        "matching_candidate",
+        lambda **_kwargs: {"candidate_id": "tcc-demo"},
+    )
+    monkeypatch.setattr(
+        runner.target_candidate_checkpoint,
+        "candidate_prompt",
+        lambda _record: "[LEANFLOW CHECKED PARTIAL TARGET CANDIDATE]\nexact candidate",
+    )
+
+    block = runner._queue_assignment_block(
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "demo",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+            "current_blocker": "contains sorry",
+        }
+    )
+
+    assert "[LEANFLOW CHECKED PARTIAL TARGET CANDIDATE]" in block
+    assert "exact candidate" in block
 
 
 def test_theorem_transition_handoff_includes_exact_tool_path():

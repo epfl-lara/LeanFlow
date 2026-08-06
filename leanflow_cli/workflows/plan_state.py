@@ -88,6 +88,7 @@ _FOREIGN_SUMMARY_KEYS = frozenset(
         "research_portfolio_failure_backoff",
         "resume_gate_axiom_policy_rejections",
         "source_negation_candidate_scans",
+        "target_candidate_checkpoints",
         "verification_candidate_replays",
     }
 )

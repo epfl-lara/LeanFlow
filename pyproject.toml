@@ -278,6 +278,7 @@ files = [
   "leanflow_cli/workflows/helper_gate_retry.py",
   "leanflow_cli/workflows/helper_integration_pending.py",
   "leanflow_cli/workflows/verification_candidate_replay.py",
+  "leanflow_cli/workflows/target_candidate_checkpoint.py",
   "leanflow_cli/workflows/verification_transaction.py",
   "leanflow_cli/workflows/research_portfolio.py",
   "leanflow_cli/workflows/research_obstruction_dominance.py",

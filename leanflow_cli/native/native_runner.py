@@ -189,6 +189,7 @@ from leanflow_cli.workflows import (
     source_negation_batch,
     source_negation_candidates,
     struggle_signals,
+    target_candidate_checkpoint,
     target_handoff,
     tool_result_loop_guard,
     verification_candidate_replay,
@@ -6359,6 +6360,46 @@ def _capture_operational_exact_candidate(
         candidate_chars=len(replacement),
         reason="candidate-bound axiom profile unavailable",
         resumable=True,
+    )
+    return True
+
+
+def _capture_partial_exact_candidate(
+    autonomy_state: Mapping[str, Any] | None,
+    args: Mapping[str, Any] | None,
+    manager_check: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> bool:
+    """Checkpoint a better placeholder-free target candidate with Lean errors."""
+    arguments = dict(args or {})
+    replacement = str(arguments.get("replacement", "") or "")
+    retained = target_candidate_checkpoint.capture_checked_candidate(
+        target_symbol=target_symbol,
+        active_file=active_file,
+        replacement=replacement,
+        check=dict(manager_check or {}),
+        campaign_id=(
+            str(autonomy_state.get("campaign_id", "") or "")
+            if isinstance(autonomy_state, Mapping)
+            else ""
+        ),
+    )
+    if retained is None:
+        return False
+    _record_activity(
+        "queue-partial-target-candidate-checkpointed",
+        f"Checkpointed the best checked partial candidate for {target_symbol}",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        candidate_id=str(retained.get("candidate_id", "") or ""),
+        replacement_sha256=str(retained.get("replacement_sha256", "") or ""),
+        candidate_chars=len(replacement),
+        error_count=int(retained.get("error_count", 0) or 0),
+        first_error_line=int(retained.get("first_error_line", 0) or 0),
+        resumable=True,
+        authoritative=False,
     )
     return True
 
@@ -15617,6 +15658,13 @@ def _handle_managed_tool_result(
         payload = incremental_payload or _json_tool_result_payload(_result)
         if str(payload.get("action", "") or "") == "check_target":
             manager_verification = payload
+            _capture_partial_exact_candidate(
+                getattr(agent, "_managed_autonomy_state", None),
+                args,
+                payload,
+                target_symbol=pending_target,
+                active_file=pending_file,
+            )
             _capture_operational_exact_candidate(
                 getattr(agent, "_managed_autonomy_state", None),
                 args,
@@ -17201,6 +17249,14 @@ def _queue_assignment_block(
     ready_candidate_block = verification_candidate_replay.ready_candidate_prompt(ready_candidate)
     if ready_candidate_block:
         parts.extend(["", ready_candidate_block])
+    else:
+        partial_candidate = target_candidate_checkpoint.matching_candidate(
+            target_symbol=label,
+            active_file=active_file,
+        )
+        partial_candidate_block = target_candidate_checkpoint.candidate_prompt(partial_candidate)
+        if partial_candidate_block:
+            parts.extend(["", partial_candidate_block])
     disabled_tools = _disabled_tools_summary(autonomy_state)
     if disabled_tools:
         parts.extend(["", "Disabled this run:", f"- {', '.join(disabled_tools)}"])

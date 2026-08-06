@@ -158,7 +158,8 @@ tool is reachable through the public registry.
   plan/graph state, orchestration, research portfolios, decomposition,
   monolithic partial-proof detection, recovery-source hygiene, negation,
   project proving, campaign epochs, repeated-tool loop boundaries,
-  crash-durable residual-target advisor failure circuits, and activity retention.
+  crash-durable residual-target advisor failure circuits, checked partial-target
+  candidate checkpoints across compression/restart, and activity retention.
 - `native/` owns the managed workflow process, startup/resume reconciliation,
   assignment transitions, completion policy, durable bounded-search synthesis
   admission, cycle-bounded construction-source inspection, and cross-route
