@@ -28074,6 +28074,18 @@ def _research_portfolio_poll_is_current(
         return False
     if bool(autonomy_state.get("operational_pause")):
         return False
+    if (
+        isinstance(autonomy_state, dict)
+        and _pending_helper_production_rename(
+            autonomy_state,
+            {
+                "target_symbol": request.target_symbol,
+                "active_file": request.active_file,
+            },
+        )
+        is not None
+    ):
+        return False
     if str(autonomy_state.get("campaign_id", "") or "") != request.campaign_id:
         return False
     try:
@@ -28148,6 +28160,8 @@ def _build_research_portfolio_parent_poll(
         return None
     autonomy_state = getattr(agent, "_managed_autonomy_state", None)
     if not isinstance(autonomy_state, dict):
+        return None
+    if _pending_helper_production_rename(autonomy_state, None) is not None:
         return None
     try:
         request = _research_portfolio_poll_request(autonomy_state, None)
@@ -28356,6 +28370,7 @@ def _maintain_research_portfolio(
         _live_state_is_verified(live_state)
         or _live_state_is_warning_cleanup_only(live_state)
         or autonomy_state.get("terminal_outcome") == "disproved"
+        or _pending_helper_production_rename(autonomy_state, live_state) is not None
     ):
         return
 
@@ -28892,6 +28907,26 @@ def _research_helper_assignment(
     )
 
 
+def _pending_helper_production_rename(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> research_helper_candidate_priority.PendingResearchHelperCandidate | None:
+    """Return the exact scratch helper that owns the next foreground action."""
+    target_symbol, active_file = _research_helper_assignment(autonomy_state, live_state)
+    candidate = research_helper_candidate_priority.matching(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if (
+        candidate is not None
+        and str(getattr(candidate, "state", "") or "")
+        == research_helper_candidate_priority.AWAITING_PRODUCTION_RENAME
+    ):
+        return candidate
+    return None
+
+
 def _sync_research_helper_integration_admission(
     agent: Any,
     autonomy_state: dict[str, Any],
@@ -28977,6 +29012,28 @@ def _research_helper_priority_prompt(
             "integration opportunity is completed or the parent gate rejects it",
             "- this is verified partial progress, never target closure; continue the residual "
             "proof after the helper is banked",
+            "```lean",
+            candidate.declaration,
+            "```",
+        ]
+    )
+
+
+def _research_helper_production_rename_prompt(
+    candidate: research_helper_candidate_priority.PendingResearchHelperCandidate,
+) -> str:
+    """Render one durable name-only promotion obligation with its exact source."""
+    return "\n".join(
+        [
+            "[LEANFLOW VERIFIED HELPER NAME-ONLY PROMOTION]",
+            f"- assigned declaration: {candidate.target_symbol}",
+            f"- verified scratch helper: {candidate.helper_name}",
+            "- required next action: call `lean_incremental_check` with `action=check_helper` "
+            "for the assigned declaration and resubmit this exact source; change only the "
+            "declared name to a concise mathematical production name",
+            "- do not change the statement or proof body, and do not search, inspect, plan, "
+            "decompose, or launch research before this name-only check",
+            "- the exact declaration is durable across turns, compression, and process restart",
             "```lean",
             candidate.declaration,
             "```",
@@ -29131,6 +29188,8 @@ def _recheck_pending_research_helper_if_due(
         return (
             _research_helper_consumption_prompt(autonomy_state, None) if consumption_pending else ""
         )
+    if candidate.state == research_helper_candidate_priority.AWAITING_PRODUCTION_RENAME:
+        return _research_helper_production_rename_prompt(candidate)
     current_signature = research_helper_candidate_priority.target_signature_sha256(
         active_file,
         target_symbol,
@@ -29644,6 +29703,21 @@ def _research_scope_entry_setup(
             # mathematical campaign.
             logger.debug("scope-entry foreground admission lease failed", exc_info=True)
     _maybe_sync_plan_state(autonomy_state, live_state)
+    rename_candidate = _pending_helper_production_rename(autonomy_state, live_state)
+    if rename_candidate is not None:
+        # Exact kernel-checked progress outranks fidelity refresh, finding
+        # migration, portfolio launch, and route consultation. The provider
+        # receives the complete durable receipt in its first prompt and can
+        # perform the only admitted name-only check immediately.
+        autonomy_state["orchestrator_scope_entered"] = True
+        return "\n\n".join(
+            part
+            for part in (
+                initial_message,
+                _research_helper_production_rename_prompt(rename_candidate),
+            )
+            if part
+        )
     # A crash-durable exact-scope negation route already owns this boundary.
     # Detect it immediately after deterministic graph/assignment sync: the
     # model-backed fidelity audit can otherwise delay or fail before the

@@ -12449,6 +12449,87 @@ def test_scope_entry_non_negate_keeps_portfolio_and_finding_order(monkeypatch, t
     assert "route: direct-prove" in prompt
 
 
+def test_scope_entry_rename_candidate_preempts_research_and_parent_recheck(monkeypatch, tmp_path):
+    """Expose an exact rename receipt before any unrelated scope-entry work."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    declaration = "private lemma test_self_eq (n : Nat) : n = n := by\n  rfl"
+    pending = (
+        runner.research_helper_candidate_priority.remember_nonproduction_from_foreground_check(
+            state,
+            {
+                "action": "check_helper",
+                "file_path": str(active),
+                "theorem_id": "demo",
+                "replacement": declaration,
+            },
+            {
+                "success": True,
+                "ok": True,
+                "valid_without_sorry": True,
+                "has_errors": False,
+                "has_sorry": False,
+                "verification_scope": "helper_candidate",
+                "replacement_matches_target": False,
+                "replacement_declarations": ["test_self_eq"],
+            },
+            campaign_id="campaign",
+            target_symbol="demo",
+            active_file=str(active),
+        )
+    )
+    assert pending is not None
+    monkeypatch.setattr(runner.scope_entry_admission, "arm", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_maybe_statement_fidelity_audit",
+        lambda *_args: pytest.fail("rename receipt must preempt fidelity audit"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: pytest.fail("rename receipt must preempt finding migration"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args: pytest.fail("rename receipt must preempt portfolio launch"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_recheck_pending_research_helper_if_due",
+        lambda *_args, **_kwargs: pytest.fail("scratch helper must be renamed before recheck"),
+    )
+
+    prompt = runner._research_scope_entry_setup(
+        "",
+        state,
+        {"target_symbol": "demo", "active_file": str(active)},
+        agent=object(),
+        apply_route=True,
+    )
+
+    assert "[LEANFLOW VERIFIED HELPER NAME-ONLY PROMOTION]" in prompt
+    assert declaration in prompt
+    assert "change only the declared name" in prompt
+    assert state["orchestrator_scope_entered"] is True
+
+
 def test_scope_entry_warning_cleanup_skips_all_research_work(monkeypatch, tmp_path):
     """Do not spend research capacity after the mathematical queue is clean."""
     monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
