@@ -9365,7 +9365,7 @@ def _transient_diagnostic_source_patch_guard(
     args: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any],
 ) -> str | None:
-    """Keep diagnostic-only commands out of managed production declarations."""
+    """Keep newly introduced diagnostic commands out of managed production source."""
     if function_name not in {"patch", "write_file", "apply_verified_patch"}:
         return None
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
@@ -9392,13 +9392,11 @@ def _transient_diagnostic_source_patch_guard(
     )
     if not after_text:
         return None
-    candidate = _assigned_candidate_declaration_raw(after_text, target_symbol)
-    before = _assigned_candidate_declaration_raw(before_text, target_symbol)
-    if (
-        not candidate
-        or candidate == before
-        or not managed_edit_rollback.contains_transient_diagnostic(candidate)
-    ):
+    introduced = managed_edit_rollback.introduced_transient_diagnostics(
+        before_text,
+        after_text,
+    )
+    if not introduced:
         return None
     with contextlib.suppress(Exception):
         _record_agent_activity(
@@ -9408,6 +9406,7 @@ def _transient_diagnostic_source_patch_guard(
             target_symbol=target_symbol,
             active_file=active_file,
             blocked_tool=function_name,
+            diagnostics=list(introduced),
             provider_called=False,
             lean_started=False,
             campaign_progress=False,
@@ -9419,16 +9418,18 @@ def _transient_diagnostic_source_patch_guard(
             "blocked_tool": function_name,
             "target_symbol": target_symbol,
             "active_file": active_file,
+            "diagnostics": list(introduced),
             "patch_applied": False,
             "check_passed": False,
             "provider_called": False,
             "lean_started": False,
             "required_action": (
-                "Do not write diagnostic-only proof-state commands such as `trace_state` or "
-                "`fail_if_success done` into managed source. Inspect the goal through LeanProbe "
-                "(`lean_incremental_check` feedback or a temporary candidate), then submit only "
-                "the concrete proof edit. If the command is already present, remove it in the "
-                "next edit."
+                "Do not write diagnostic-only commands such as `trace_state`, `#check`, "
+                "`#print`, or `run_cmd` into the assigned production source. Inspect through "
+                "LeanProbe (`lean_incremental_check` feedback or a temporary candidate), "
+                "`lean_inspect`, or `lean_proof_context`, then submit only a concrete proof edit. "
+                "The current proof source was not mutated. If a diagnostic command already "
+                "exists, remove it in the next edit."
             ),
         },
         ensure_ascii=False,

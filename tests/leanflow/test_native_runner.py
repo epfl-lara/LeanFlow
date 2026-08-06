@@ -32936,6 +32936,52 @@ def test_transient_diagnostic_guard_allows_cleanup(tmp_path):
     assert result is None
 
 
+@pytest.mark.parametrize(
+    "diagnostic",
+    ["#print prefix Demo", "#check Demo.demo", 'run_cmd logInfo "diagnostic"'],
+)
+def test_command_diagnostic_after_assigned_declaration_is_redirected(
+    tmp_path, monkeypatch, diagnostic
+):
+    """Reject command-level probes appended outside the assigned declaration."""
+    active = tmp_path / "Main.lean"
+    source = "namespace Demo\n\ntheorem demo : True := by\n  sorry\n\nend Demo\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    result = runner._transient_diagnostic_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "patch",
+        {
+            "mode": "replace",
+            "path": str(active),
+            "old_string": "\nend Demo\n",
+            "new_string": f"\n{diagnostic}\n\nend Demo\n",
+        },
+        state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "isolated_diagnostic_probe_required"
+    assert payload["diagnostics"] == [diagnostic]
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == source
+    assert events[-1][0][1] == "transient-diagnostic-source-patch-blocked"
+
+
 def test_direct_self_reference_patch_is_rejected_before_mutation(tmp_path, monkeypatch):
     """Do not spend a provider/Lean retry on a non-recursive bare self-reference."""
     active = tmp_path / "Main.lean"

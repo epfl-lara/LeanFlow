@@ -169,3 +169,31 @@ def test_transient_diagnostic_detection_accepts_comment_but_not_mentions():
     assert not managed_edit_rollback.contains_transient_diagnostic(
         'by\n  have label : String := "trace_state"\n  exact True.intro'
     )
+
+
+def test_transient_diagnostic_detection_covers_command_level_probes():
+    """Recognize command-level introspection that sits outside a declaration."""
+    source = """theorem demo : True := by
+  exact True.intro
+
+#print prefix Demo
+#check Demo.demo
+run_cmd logInfo "diagnostic"
+"""
+
+    assert managed_edit_rollback.transient_diagnostic_markers(source) == (
+        "#print prefix Demo",
+        "#check Demo.demo",
+        'run_cmd logInfo "diagnostic"',
+    )
+
+
+def test_introduced_transient_diagnostics_allows_cleanup_only():
+    """Reject new diagnostics while allowing an edit that removes stale probes."""
+    before = "theorem demo : True := by\n  trace_state\n  sorry\n#check demo\n"
+    after = "theorem demo : True := by\n  exact True.intro\n#check other\n"
+
+    assert managed_edit_rollback.introduced_transient_diagnostics(before, after) == (
+        "#check other",
+    )
+    assert managed_edit_rollback.introduced_transient_diagnostics(after, "") == ()

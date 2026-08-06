@@ -7,6 +7,7 @@ import hashlib
 import os
 import re
 import tempfile
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,10 @@ from tools.utilities.patch_parser import preview_v4a_update
 
 _NON_SEMANTIC_CANDIDATE_LINE_RE = re.compile(
     r"^\s*(?:trace_state|(?:all_goals\s+)?fail_if_success\s+done)(?:\s*--.*)?$"
+)
+_TRANSIENT_DIAGNOSTIC_COMMAND_RE = re.compile(
+    r"^\s*(?:#(?:check|print|synth|eval|reduce|lint|find)\b.*|run_cmd\b.*|"
+    r"set_option\s+trace\.[^\s]+\s+true\b.*)$"
 )
 
 
@@ -31,10 +36,28 @@ def normalize_candidate_declaration(declaration: str) -> str:
 
 def contains_transient_diagnostic(declaration: str) -> bool:
     """Return whether source contains a standalone diagnostic-only command."""
-    normalized = str(declaration or "").replace("\r\n", "\n").replace("\r", "\n")
-    return any(
-        _NON_SEMANTIC_CANDIDATE_LINE_RE.match(line) is not None for line in normalized.splitlines()
+    return bool(transient_diagnostic_markers(declaration))
+
+
+def transient_diagnostic_markers(source: str) -> tuple[str, ...]:
+    """Return normalized standalone diagnostic commands present in Lean source."""
+    normalized = str(source or "").replace("\r\n", "\n").replace("\r", "\n")
+    return tuple(
+        " ".join(line.strip().split())
+        for line in normalized.splitlines()
+        if _NON_SEMANTIC_CANDIDATE_LINE_RE.match(line) is not None
+        or _TRANSIENT_DIAGNOSTIC_COMMAND_RE.match(line) is not None
     )
+
+
+def introduced_transient_diagnostics(before: str, after: str) -> tuple[str, ...]:
+    """Return diagnostic commands newly introduced by one source edit."""
+    before_counts = Counter(transient_diagnostic_markers(before))
+    after_counts = Counter(transient_diagnostic_markers(after))
+    introduced: list[str] = []
+    for marker, count in after_counts.items():
+        introduced.extend([marker] * max(0, count - before_counts[marker]))
+    return tuple(introduced)
 
 
 def contains_suggestion_tactic(declaration: str) -> bool:
