@@ -15,6 +15,7 @@ from typing import Any
 from leanflow_cli.lean.lean_parsing import (
     _contains_lean_suggestion_tactic,
     _declaration_line_index_from_text,
+    _is_lean_inspection_only_helper_candidate,
     _strip_lean_comments_and_strings,
     _text_has_sorry,
 )
@@ -35,13 +36,14 @@ RESOLVED_STATE_KEY = "resolved_research_helper_candidates"
 RESOLVED_SUMMARY_KEY = "resolved_research_helper_candidates"
 CONSUMPTION_STATE_KEY = "research_helper_target_consumption"
 CONSUMPTION_SUMMARY_KEY = "research_helper_target_consumption"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MAX_RESOLVED_CANDIDATES = 128
 MAX_DECLARATION_CHARS = 16_000
 MAX_INTEGRATION_ATTEMPTS = 2
 AWAITING_RECHECK = "awaiting_parent_recheck"
+AWAITING_PRODUCTION_RENAME = "awaiting_production_rename"
 READY_TO_INTEGRATE = "ready_to_integrate"
-_VALID_STATES = frozenset({AWAITING_RECHECK, READY_TO_INTEGRATE})
+_VALID_STATES = frozenset({AWAITING_PRODUCTION_RENAME, AWAITING_RECHECK, READY_TO_INTEGRATE})
 _VALID_RECHECK_STATUSES = frozenset(
     {"not_attempted", "accepted", "operationally_unavailable", "rejected"}
 )
@@ -52,6 +54,10 @@ _PARENT_RECHECK_EVIDENCE_VERSION = "parent-helper-recheck-v1"
 _NONPRODUCTION_HELPER_NAME_RE = re.compile(
     r"(?:^|_)(?:scratch|temp|test|tmp|counterexample|probe|obstruction|not_universal|"
     r"without_universal|false_of)(?:_|$)|(?:^|_)(?:do|does)_not(?:_|$)"
+)
+_DECLARATION_NAME_RE = re.compile(
+    r"(?m)^(?P<prefix>\s*(?:private\s+)?(?:theorem|lemma|example|def|abbrev)\s+)"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_']*)"
 )
 
 
@@ -387,6 +393,11 @@ class PendingResearchHelperCandidate:
             created_at=str(raw.get("created_at", "") or "").strip(),
             updated_at=str(raw.get("updated_at", "") or "").strip(),
         )
+        declared_names = tuple(
+            str(entry.get("name", "") or "").strip()
+            for entry in _declaration_line_index_from_text(declaration)
+            if str(entry.get("name", "") or "").strip()
+        )
         if (
             not candidate.key.is_valid()
             or not candidate.job_id
@@ -398,7 +409,15 @@ class PendingResearchHelperCandidate:
             or candidate.candidate_id != expected_id
             or state not in _VALID_STATES
             or recheck_status not in _VALID_RECHECK_STATUSES
-            or _helper_name_is_nonproduction(helper_name)
+            or declared_names != (helper_name,)
+            or (_helper_name_is_nonproduction(helper_name) != (state == AWAITING_PRODUCTION_RENAME))
+            or (
+                state == AWAITING_PRODUCTION_RENAME
+                and (
+                    recheck_status != "not_attempted"
+                    or _is_lean_inspection_only_helper_candidate(declaration)
+                )
+            )
         ):
             return None
         return candidate
@@ -604,7 +623,19 @@ def matching(
 ) -> PendingResearchHelperCandidate | None:
     """Return the pending candidate only for the exact active assignment."""
     record = load(autonomy_state)
-    return record if record is not None and record.matches(target_symbol, active_file) else None
+    if record is None or not record.matches(target_symbol, active_file):
+        return None
+    if (
+        record.state == AWAITING_PRODUCTION_RENAME
+        and target_signature_sha256(active_file, target_symbol) != record.target_signature_sha256
+    ):
+        resolve(
+            autonomy_state,
+            disposition="stale_target_signature_before_production_rename",
+            require_target_consumption=False,
+        )
+        return None
+    return record
 
 
 def target_consumption_pending(
@@ -704,10 +735,12 @@ def _remember_exact_candidate(
     helper_name: str,
     declaration: str,
     delivery_markers: Sequence[str] = (),
+    state: str = AWAITING_RECHECK,
+    replace_pending: bool = False,
 ) -> PendingResearchHelperCandidate | None:
-    """Persist one exact helper candidate without replacing pending work."""
+    """Persist one exact helper candidate, replacing only an authorized rename fence."""
     existing = load(autonomy_state)
-    if existing is not None:
+    if existing is not None and not replace_pending:
         return existing
     canonical_file = _canonical_file(active_file)
     normalized_target = str(target_symbol or "").strip()
@@ -726,7 +759,11 @@ def _remember_exact_candidate(
         or len(normalized_declaration) > MAX_DECLARATION_CHARS
         or _text_has_sorry(normalized_declaration)
         or _contains_lean_suggestion_tactic(normalized_declaration)
-        or _helper_name_is_nonproduction(normalized_name)
+        or (_helper_name_is_nonproduction(normalized_name) != (state == AWAITING_PRODUCTION_RENAME))
+        or (
+            state == AWAITING_PRODUCTION_RENAME
+            and _is_lean_inspection_only_helper_candidate(normalized_declaration)
+        )
     ):
         return None
     entries = _declaration_line_index_from_text(normalized_declaration)
@@ -762,7 +799,7 @@ def _remember_exact_candidate(
     now = _now_iso()
     record = PendingResearchHelperCandidate(
         candidate_id=candidate_id,
-        state=AWAITING_RECHECK,
+        state=state,
         campaign_id=str(campaign_id or "").strip(),
         job_id=str(job_id or "").strip(),
         delivery_markers=tuple(
@@ -860,6 +897,99 @@ def successful_nonproduction_foreground_helper_name(
     return helper[0]
 
 
+def _declaration_with_name(declaration: str, helper_name: str) -> str:
+    """Return one exact declaration with only its declared name replaced."""
+    normalized_name = str(helper_name or "").strip()
+    match = _DECLARATION_NAME_RE.search(str(declaration or ""))
+    if match is None or not normalized_name:
+        return ""
+    return (
+        str(declaration or "")[: match.start("name")]
+        + normalized_name
+        + str(declaration or "")[match.end("name") :]
+    )
+
+
+def is_exact_production_rename(
+    record: PendingResearchHelperCandidate,
+    arguments: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether a helper check changes only a pending scratch name."""
+    if record.state != AWAITING_PRODUCTION_RENAME or not isinstance(arguments, Mapping):
+        return False
+    action = str(arguments.get("action", "") or "").strip().lower().replace("-", "_")
+    target_symbol = str(
+        arguments.get("theorem_id", "") or arguments.get("target_symbol", "") or ""
+    ).strip()
+    active_file = str(
+        arguments.get("file_path", "") or arguments.get("active_file", "") or ""
+    ).strip()
+    declaration = str(arguments.get("replacement", "") or "").strip()
+    names = tuple(
+        str(entry.get("name", "") or "").strip()
+        for entry in _declaration_line_index_from_text(declaration)
+        if str(entry.get("name", "") or "").strip()
+    )
+    if (
+        action != "check_helper"
+        or target_symbol != record.target_symbol
+        or not _same_file(active_file, record.active_file)
+        or len(names) != 1
+        or _helper_name_is_nonproduction(names[0])
+    ):
+        return False
+    return declaration == _declaration_with_name(record.declaration, names[0])
+
+
+def remember_nonproduction_from_foreground_check(
+    autonomy_state: dict[str, Any],
+    arguments: Mapping[str, Any],
+    result: Mapping[str, Any],
+    *,
+    campaign_id: str,
+    target_symbol: str,
+    active_file: str,
+) -> PendingResearchHelperCandidate | None:
+    """Persist one substantive verified scratch helper until its exact rename."""
+    existing = load(autonomy_state)
+    if existing is not None:
+        return existing if existing.state == AWAITING_PRODUCTION_RENAME else None
+    helper = _successful_foreground_helper(
+        arguments,
+        result,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if helper is None:
+        return None
+    helper_name, declaration = helper
+    if not _helper_name_is_nonproduction(helper_name) or _is_lean_inspection_only_helper_candidate(
+        declaration
+    ):
+        return None
+    check_identity = _sha256(
+        "\0".join(
+            (
+                _canonical_file(active_file),
+                str(target_symbol or "").strip(),
+                helper_name,
+                declaration,
+            )
+        )
+    )[:24]
+    return _remember_exact_candidate(
+        autonomy_state,
+        campaign_id=campaign_id,
+        job_id=f"foreground-rename:{check_identity}",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        helper_name=helper_name,
+        declaration=declaration,
+        delivery_markers=("foreground-check", "production-rename-required"),
+        state=AWAITING_PRODUCTION_RENAME,
+    )
+
+
 def remember_from_foreground_check(
     autonomy_state: dict[str, Any],
     arguments: Mapping[str, Any],
@@ -870,8 +1000,6 @@ def remember_from_foreground_check(
     active_file: str,
 ) -> PendingResearchHelperCandidate | None:
     """Persist one exact successful foreground helper check for parent recheck."""
-    if load(autonomy_state) is not None:
-        return None
     helper = _successful_foreground_helper(
         arguments,
         result,
@@ -881,6 +1009,12 @@ def remember_from_foreground_check(
     if helper is None:
         return None
     helper_name, declaration = helper
+    existing = load(autonomy_state)
+    replace_pending = False
+    if existing is not None:
+        if not is_exact_production_rename(existing, arguments):
+            return None
+        replace_pending = True
     check_identity = _sha256(
         "\0".join(
             (
@@ -900,6 +1034,7 @@ def remember_from_foreground_check(
         helper_name=helper_name,
         declaration=declaration,
         delivery_markers=("foreground-check",),
+        replace_pending=replace_pending,
     )
 
 

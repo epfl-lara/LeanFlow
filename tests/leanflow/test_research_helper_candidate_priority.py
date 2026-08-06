@@ -127,6 +127,72 @@ def test_foreground_helper_check_is_durable_before_parent_recheck(monkeypatch, t
     assert priority.load({priority._HYDRATION_KEY: "prior-process"}) == record
 
 
+def test_foreground_scratch_helper_promotes_only_by_exact_name_change(monkeypatch, tmp_path):
+    """Preserve substantive scratch work while requiring a name-only recheck."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "state"))
+    scratch = "private lemma test_self_eq (n : Nat) : n = n := by\n  rfl"
+    arguments, result = _foreground_helper_check(
+        str(active), declaration=scratch, name="test_self_eq"
+    )
+    state = {}
+
+    pending = priority.remember_nonproduction_from_foreground_check(
+        state,
+        arguments,
+        result,
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert pending is not None
+    assert pending.state == priority.AWAITING_PRODUCTION_RENAME
+    assert priority.load(state) == pending
+    restarted_state = {priority._HYDRATION_KEY: "prior-process"}
+    assert priority.load(restarted_state) == pending
+    production = scratch.replace("test_self_eq", "nat_self_eq")
+    assert priority.is_exact_production_rename(
+        pending,
+        {
+            "action": "check_helper",
+            "file_path": str(active),
+            "theorem_id": "demo",
+            "replacement": production,
+        },
+    )
+    assert not priority.is_exact_production_rename(
+        pending,
+        {
+            "action": "check_helper",
+            "file_path": str(active),
+            "theorem_id": "demo",
+            "replacement": production.replace("rfl", "simp"),
+        },
+    )
+
+    promoted_arguments, promoted_result = _foreground_helper_check(
+        str(active), declaration=production, name="nat_self_eq"
+    )
+    promoted = priority.remember_from_foreground_check(
+        restarted_state,
+        promoted_arguments,
+        promoted_result,
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert promoted is not None
+    assert promoted.state == priority.AWAITING_RECHECK
+    assert promoted.helper_name == "nat_self_eq"
+    assert promoted.declaration == production
+    assert priority.load(restarted_state) == promoted
+    assert priority.load({priority._HYDRATION_KEY: "next-process"}) == promoted
+
+
 @pytest.mark.parametrize(
     ("result_update", "declaration"),
     [

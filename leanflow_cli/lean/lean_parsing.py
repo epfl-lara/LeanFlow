@@ -56,7 +56,7 @@ _HELPER_DECLARATION_START_RE = re.compile(
 )
 _TRIVIAL_TRUE_DECLARATION_RE = re.compile(r":\s*True\s*(?::=|where|$)")
 _INSPECTION_DECLARATION_NAME_RE = re.compile(
-    r"(?:^|_)(?:inspect|inspection|probe|lookup|typecheck)(?:_|$)",
+    r"(?:^|_)(?:inspect|inspection|probe|lookup|typecheck|scratch|temp|test|tmp)(?:_|$)",
     flags=re.IGNORECASE,
 )
 _BARE_IDENTIFIER_PATTERN = r"(?:[A-Za-z_][A-Za-z0-9_']*\.)*[A-Za-z_][A-Za-z0-9_']*"

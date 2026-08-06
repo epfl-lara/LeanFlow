@@ -5271,33 +5271,34 @@ def _retain_foreground_checked_helper(
         active_file=active_file,
     )
     if record is None:
-        helper_name = (
-            research_helper_candidate_priority.successful_nonproduction_foreground_helper_name(
-                arguments,
-                _json_tool_result_payload(result),
-                target_symbol=target_symbol,
-                active_file=active_file,
-            )
+        record = research_helper_candidate_priority.remember_nonproduction_from_foreground_check(
+            autonomy_state,
+            arguments,
+            _json_tool_result_payload(result),
+            campaign_id=str(autonomy_state.get("campaign_id", "") or "campaign"),
+            target_symbol=target_symbol,
+            active_file=active_file,
         )
-        if helper_name:
+        if record is not None:
             _record_agent_activity(
                 agent,
                 "foreground-helper-production-name-required",
-                f"Verified scratch helper {helper_name} requires a production name",
+                f"Verified scratch helper {record.helper_name} requires a production name",
                 target_symbol=target_symbol,
                 active_file=active_file,
-                helper_name=helper_name,
+                helper_name=record.helper_name,
+                candidate_id=record.candidate_id,
+                declaration_sha256=record.declaration_sha256,
                 campaign_progress=False,
             )
             agent.stage_tool_result_appendix(
-                f"LeanProbe verified `{helper_name}`, but it was not durably retained because "
-                "scratch-style names cannot enter production integration. If this proposition "
-                "is reusable proof progress, immediately resubmit the same declaration under a "
-                "mathematical production name before unrelated work; LeanFlow will then retain "
-                "and prioritize it across compression and later epochs. If it was only an "
-                "experiment, continue without promotion."
+                f"LeanProbe verified `{record.helper_name}` and LeanFlow durably preserved the "
+                "exact substantive declaration. Immediately resubmit the same declaration under "
+                "a mathematical production name before unrelated work; change only the declared "
+                "name. LeanFlow will retain and prioritize the renamed helper across compression "
+                "and later epochs."
             )
-        return None
+        return record
     _record_agent_activity(
         agent,
         "foreground-helper-candidate-retained",
@@ -10645,6 +10646,68 @@ def _research_helper_candidate_pre_tool_guard(
     )
 
 
+def _foreground_helper_rename_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: dict[str, Any],
+) -> str | None:
+    """Keep a verified scratch helper in the foreground until its exact rename."""
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    candidate = research_helper_candidate_priority.matching(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if (
+        candidate is None
+        or candidate.state != research_helper_candidate_priority.AWAITING_PRODUCTION_RENAME
+    ):
+        return None
+    if function_name == "lean_incremental_check" and (
+        research_helper_candidate_priority.is_exact_production_rename(candidate, args)
+    ):
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "foreground-helper-production-rename-tool-blocked",
+            f"Blocked {function_name} until verified scratch helper is renamed",
+            candidate_id=candidate.candidate_id,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            helper_symbol=candidate.helper_name,
+            blocked_tool=function_name,
+            declaration_sha256=candidate.declaration_sha256,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "checked_helper_production_rename_required",
+            "blocked_tool": function_name,
+            "candidate_id": candidate.candidate_id,
+            "helper_symbol": candidate.helper_name,
+            "target_symbol": target_symbol,
+            "preserved_declaration": candidate.declaration,
+            "required_action": (
+                "Call lean_incremental_check with action=check_helper for the active theorem. "
+                "Resubmit this exact preserved declaration after changing only its declared "
+                "scratch-style name to a concise mathematical production name. Do not change "
+                "the statement or proof body."
+            ),
+            "reason": (
+                "LeanProbe already verified substantive proof progress. The exact declaration "
+                "is durable, and unrelated exploration is paused until its name-only promotion "
+                "is checked."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _same_revision_timeout_pre_tool_guard(
     agent: Any,
     function_name: str,
@@ -10809,6 +10872,14 @@ def _managed_pre_tool_call(
         )
         if clean_room_write_guard:
             return clean_room_write_guard
+        helper_rename_guard = _foreground_helper_rename_pre_tool_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if helper_rename_guard:
+            return helper_rename_guard
         rollback_refresh_guard = _rollback_refresh_edit_guard(
             agent,
             function_name,

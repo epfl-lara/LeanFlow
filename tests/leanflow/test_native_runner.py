@@ -224,13 +224,40 @@ def test_foreground_checked_scratch_helper_requires_immediate_production_name(
         agent, "lean_incremental_check", arguments, result
     )
 
-    assert record is None
+    assert record is not None
+    assert record.state == runner.research_helper_candidate_priority.AWAITING_PRODUCTION_RENAME
+    assert record.helper_name == "test_useful"
+    assert record.declaration == declaration
     assert events[0][0][1] == "foreground-helper-production-name-required"
     assert events[0][1]["helper_name"] == "test_useful"
     appendix = agent._post_tool_result_appendix
-    assert "was not durably retained" in appendix
+    assert "durably preserved" in appendix
     assert "mathematical production name" in appendix
     assert "before unrelated work" in appendix
+
+    blocked = json.loads(
+        runner._managed_pre_tool_call(
+            agent,
+            "lean_search",
+            {"query": "another route", "file_path": str(active)},
+        )
+    )
+    assert blocked["status"] == "checked_helper_production_rename_required"
+    assert blocked["preserved_declaration"] == declaration
+    renamed = declaration.replace("test_useful", "nat_self_eq")
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "lean_incremental_check",
+            {
+                "action": "check_helper",
+                "file_path": str(active),
+                "theorem_id": "demo",
+                "replacement": renamed,
+            },
+        )
+        is None
+    )
 
 
 def test_managed_incremental_success_projects_provider_context():

@@ -1973,13 +1973,19 @@ def test_check_helper_never_certifies_suggestion_tactics(monkeypatch, tmp_path, 
 
 
 @pytest.mark.parametrize(
-    "setup",
+    ("helper_name", "setup"),
     [
-        "  have h := @Nat.succ_eq_add_one\n",
-        ("  letI : Inhabited Nat := ⟨0⟩\n" "  have h : Nat.succ 0 = 1 := by decide\n"),
+        ("probe_nat_succ", "  have h := @Nat.succ_eq_add_one\n"),
+        (
+            "probe_nat_succ",
+            "  letI : Inhabited Nat := ⟨0⟩\n  have h : Nat.succ 0 = 1 := by decide\n",
+        ),
+        ("test_nat_succ", "  have h := @Nat.succ_eq_add_one\n"),
     ],
 )
-def test_check_helper_marks_dummy_type_probe_as_diagnostic_only(monkeypatch, tmp_path, setup):
+def test_check_helper_marks_dummy_type_probe_as_diagnostic_only(
+    monkeypatch, tmp_path, helper_name, setup
+):
     """Preserve type diagnostics without certifying a trivial inspection wrapper."""
     project, target = _write_project(
         tmp_path,
@@ -2014,7 +2020,7 @@ def test_check_helper_marks_dummy_type_probe_as_diagnostic_only(monkeypatch, tmp
         theorem_id="demo",
         cwd=str(project),
         replacement=(
-            "private lemma probe_nat_succ : True := by\n" f"{setup}" "  trace_state\n" "  trivial"
+            f"private lemma {helper_name} : True := by\n" f"{setup}" "  trace_state\n" "  trivial"
         ),
     )
 
