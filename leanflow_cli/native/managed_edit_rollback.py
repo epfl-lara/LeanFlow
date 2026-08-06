@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from leanflow_cli.lean.lean_parsing import _contains_lean_suggestion_tactic
+from leanflow_cli.lean.lean_parsing import _lean_suggestion_tactic_markers
 from tools.utilities.patch_parser import preview_v4a_update
 
 _NON_SEMANTIC_CANDIDATE_LINE_RE = re.compile(
@@ -62,7 +62,17 @@ def introduced_transient_diagnostics(before: str, after: str) -> tuple[str, ...]
 
 def contains_suggestion_tactic(declaration: str) -> bool:
     """Return whether source still contains an exploratory tactic-suggestion command."""
-    return _contains_lean_suggestion_tactic(declaration)
+    return bool(_lean_suggestion_tactic_markers(declaration))
+
+
+def introduced_suggestion_tactics(before: str, after: str) -> tuple[str, ...]:
+    """Return suggestion tactics newly introduced by one source edit."""
+    before_counts = Counter(_lean_suggestion_tactic_markers(before))
+    after_counts = Counter(_lean_suggestion_tactic_markers(after))
+    introduced: list[str] = []
+    for marker, count in after_counts.items():
+        introduced.extend([marker] * max(0, count - before_counts[marker]))
+    return tuple(introduced)
 
 
 def preview_candidate_source(

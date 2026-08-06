@@ -14,6 +14,7 @@ from typing import Any
 __all__ = [
     "LEAN_DECLARATION_PREAMBLE_RE",
     "_contains_lean_suggestion_tactic",
+    "_lean_suggestion_tactic_markers",
     "_is_lean_inspection_only_helper_candidate",
     "_strip_lean_comments_and_strings",
     "_text_has_theorem_or_lemma",
@@ -48,7 +49,10 @@ _DECLARATION_OPENERS = {"(": ")", "{": "}", "[": "]", "⦃": "⦄", "⟨": "⟩"
 _DECLARATION_CLOSERS = {closer: opener for opener, closer in _DECLARATION_OPENERS.items()}
 _SCOPED_COMMAND_WRAPPER_LINE_RE = re.compile(rf"^\s*{_LEAN_SCOPED_COMMAND_PREFIX_RE}\b.*\bin\s*$")
 _TYPE_ASSIGNMENT_KEYWORDS = ("let", "have")
-_SUGGESTION_TACTIC_RE = re.compile(r"(?m)^\s*(?:exact|apply|simp|rw|aesop|grind)\?(?:\s|$)")
+_SUGGESTION_TACTIC_RE = re.compile(
+    r"(?m)^\s*(?:set_option\b[^\n]*\bin\s+)?"
+    r"(?P<tactic>exact|apply|simp|rw|aesop|grind)\?(?:\s|$)"
+)
 _LEAN_INSPECTION_COMMAND_RE = re.compile(r"(?m)^\s*(?:#(?:check|print|eval|reduce)\b|run_cmd\b)")
 _HELPER_DECLARATION_START_RE = re.compile(
     r"(?m)^\s*(?:private\s+)?(?:theorem|lemma|example|def|abbrev)\s+"
@@ -270,7 +274,16 @@ def _strip_lean_comments_and_strings(text: str) -> str:
 
 def _contains_lean_suggestion_tactic(text: str) -> bool:
     """Return whether executable source contains a diagnostic suggestion tactic."""
-    return bool(_SUGGESTION_TACTIC_RE.search(_strip_lean_comments_and_strings(str(text or ""))))
+    return bool(_lean_suggestion_tactic_markers(text))
+
+
+def _lean_suggestion_tactic_markers(text: str) -> tuple[str, ...]:
+    """Return normalized suggestion tactics present in executable Lean source."""
+    sanitized = _strip_lean_comments_and_strings(str(text or ""))
+    return tuple(
+        " ".join(match.group(0).strip().split())
+        for match in _SUGGESTION_TACTIC_RE.finditer(sanitized)
+    )
 
 
 def _text_has_theorem_or_lemma(text: str) -> bool:

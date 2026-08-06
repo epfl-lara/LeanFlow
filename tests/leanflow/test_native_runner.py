@@ -32857,6 +32857,54 @@ def test_concrete_source_patch_is_not_redirected_as_suggestion(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "suggestion",
+    ["exact?", "set_option maxHeartbeats 2000000 in exact?"],
+)
+def test_suggestion_helper_before_assigned_declaration_is_redirected(
+    tmp_path, monkeypatch, suggestion
+):
+    """Reject suggestion probes introduced in a sibling helper before the target."""
+    active = tmp_path / "Main.lean"
+    source = "namespace Demo\n\ntheorem demo : True := by\n  sorry\n\nend Demo\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    result = runner._suggestion_only_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "patch",
+        {
+            "mode": "replace",
+            "path": str(active),
+            "old_string": "\ntheorem demo",
+            "new_string": (
+                "\nprivate theorem base_case : True := by\n" f"  {suggestion}\n\ntheorem demo"
+            ),
+        },
+        state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "isolated_suggestion_probe_required"
+    assert payload["suggestion_tactics"] == [suggestion]
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == source
+    assert events[-1][0][1] == "suggestion-only-source-patch-blocked"
+
+
+@pytest.mark.parametrize(
     "diagnostic",
     ["trace_state", "all_goals fail_if_success done", "fail_if_success done"],
 )

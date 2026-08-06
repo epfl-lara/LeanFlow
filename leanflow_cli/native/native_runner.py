@@ -466,6 +466,7 @@ from leanflow_cli.lean.lean_parsing import (  # noqa: E402
     _extract_target_symbol,
     _find_assignment_marker_for_statement,  # noqa: F401
     _is_lean_inspection_only_helper_candidate,  # noqa: F401
+    _lean_suggestion_tactic_markers,  # noqa: F401
     _statement_signature_text,
     _strip_lean_comments_and_strings,
     _text_has_any_completed_theorem_or_lemma,
@@ -9220,7 +9221,7 @@ def _suggestion_only_source_patch_guard(
     args: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any],
 ) -> str | None:
-    """Redirect exploratory tactic suggestions away from managed source mutation."""
+    """Redirect newly introduced tactic suggestions away from production source."""
     if function_name not in {"patch", "write_file", "apply_verified_patch"}:
         return None
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
@@ -9240,13 +9241,18 @@ def _suggestion_only_source_patch_guard(
         before_text = Path(active_file).read_text(encoding="utf-8")
     except OSError:
         return None
-    candidate = _preview_managed_candidate_declaration(
+    after_text = managed_edit_rollback.preview_candidate_source(
         function_name,
         args,
-        before_text=before_text,
-        target_symbol=target_symbol,
+        before_text,
     )
-    if not candidate or not managed_edit_rollback.contains_suggestion_tactic(candidate):
+    if not after_text:
+        return None
+    suggestions = managed_edit_rollback.introduced_suggestion_tactics(
+        before_text,
+        after_text,
+    )
+    if not suggestions:
         return None
     with contextlib.suppress(Exception):
         _record_agent_activity(
@@ -9256,6 +9262,7 @@ def _suggestion_only_source_patch_guard(
             target_symbol=target_symbol,
             active_file=active_file,
             blocked_tool=function_name,
+            suggestion_tactics=list(suggestions),
             provider_called=False,
             lean_started=False,
             campaign_progress=False,
@@ -9267,6 +9274,7 @@ def _suggestion_only_source_patch_guard(
             "blocked_tool": function_name,
             "target_symbol": target_symbol,
             "active_file": active_file,
+            "suggestion_tactics": list(suggestions),
             "patch_applied": False,
             "check_passed": False,
             "provider_called": False,
@@ -9275,7 +9283,9 @@ def _suggestion_only_source_patch_guard(
                 "Do not write `exact?`, `apply?`, or another suggestion tactic into managed "
                 "source. Run the probe through LeanProbe (`lean_multi_attempt` or a temporary "
                 "`lean_incremental_check` candidate), then submit the resulting concrete term "
-                "or tactic script. This probe does not count as proof construction."
+                "or tactic script. The current proof source was not mutated. If a suggestion "
+                "tactic already exists, remove it in the next edit. This probe does not count "
+                "as proof construction."
             ),
         },
         ensure_ascii=False,

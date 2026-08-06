@@ -197,3 +197,17 @@ def test_introduced_transient_diagnostics_allows_cleanup_only():
         "#check other",
     )
     assert managed_edit_rollback.introduced_transient_diagnostics(after, "") == ()
+
+
+def test_introduced_suggestion_tactics_cover_scoped_heartbeat_probe():
+    """Detect suggestions outside the target and heartbeat-wrapped retries."""
+    before = "theorem demo : True := by\n  exact?\n"
+    after = (
+        "private theorem helper : True := by\n"
+        "  set_option maxHeartbeats 2000000 in exact?\n\n" + before
+    )
+
+    assert managed_edit_rollback.introduced_suggestion_tactics(before, after) == (
+        "set_option maxHeartbeats 2000000 in exact?",
+    )
+    assert managed_edit_rollback.introduced_suggestion_tactics(before, "") == ()
