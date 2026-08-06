@@ -1457,6 +1457,43 @@ class TestConcurrentToolExecution:
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
 
+    def test_identical_concurrent_lean_verify_calls_share_one_execution(self, agent):
+        """Byte-identical file verification must compile and notify the manager once."""
+        tool_calls = [
+            _mock_tool_call(
+                name="lean_verify",
+                arguments=json.dumps({"target": "Demo/Main.lean", "mode": "file_exact"}),
+                call_id=f"c{index}",
+            )
+            for index in range(4)
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=tool_calls)
+        messages: list[dict] = []
+        callbacks: list[tuple[str, dict, str]] = []
+        agent.post_tool_result_callback = lambda name, args, result: callbacks.append(
+            (name, args, result)
+        )
+
+        with patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "ok": True, "output": "checked"}),
+        ) as handle:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        handle.assert_called_once()
+        assert len(callbacks) == 1
+        assert [message["tool_call_id"] for message in messages] == [
+            "c0",
+            "c1",
+            "c2",
+            "c3",
+        ]
+        assert "checked" in messages[0]["content"]
+        for message in messages[1:]:
+            payload = json.loads(message["content"])
+            assert payload["status"] == "identical_batch_call_reused"
+            assert payload["source_tool_call_id"] == "c0"
+
     def test_delegated_concurrent_tools_suppress_child_spinner(self, agent):
         """Keep lane tool batches concise when several children share one terminal."""
         tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")

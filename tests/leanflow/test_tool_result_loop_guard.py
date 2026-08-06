@@ -323,6 +323,11 @@ def test_exact_check_is_not_tracked_but_feedback_is():
     )
 
 
+def test_proof_context_is_owned_by_the_search_synthesis_fence():
+    """Do not interrupt before a threshold proof-context batch can be synthesized."""
+    assert tool_result_loop_guard.tool_key("lean_proof_context", {}) == ""
+
+
 def test_outline_budget_counts_different_symbols_until_source_changes():
     state: dict = {}
     decisions = [
@@ -413,8 +418,40 @@ def test_alternating_advisor_failures_share_one_bounded_family():
         ),
         **common,
     )
-    assert blocked.close_turn is True
-    assert blocked.streak == tool_result_loop_guard.ADVISOR_HARD_LIMIT == 3
+    assert blocked.close_turn is False
+    assert blocked.streak == tool_result_loop_guard.ADVISOR_NUDGE_LIMIT == 2
+
+
+def test_exhausted_advisor_preflight_preserves_failure_memory_without_closing_turn():
+    """A local circuit rejection must not cancel concrete sibling tool calls."""
+    state: dict = {}
+    common = {
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    tool_result_loop_guard.hydrate_advisor_failure_streak(state, **common)
+
+    decision = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_reasoning_help",
+        args={"theorem_id": "demo"},
+        result_text=json.dumps(
+            {
+                "success": False,
+                "status": "advisor_retry_exhausted",
+                "provider_called": False,
+            }
+        ),
+        **common,
+    )
+
+    assert decision.tool_key == "lean_advisor"
+    assert decision.streak == tool_result_loop_guard.ADVISOR_NUDGE_LIMIT
+    assert decision.close_turn is False
+    assert state[tool_result_loop_guard.ADVISOR_STATE_KEY]["streak"] == (
+        tool_result_loop_guard.ADVISOR_NUDGE_LIMIT
+    )
 
 
 def test_unrelated_tools_do_not_erase_advisor_failure_family():
@@ -478,8 +515,8 @@ def test_durable_advisor_streak_hydrates_process_local_boundary():
         **common,
     )
 
-    assert blocked.streak == tool_result_loop_guard.ADVISOR_HARD_LIMIT
-    assert blocked.close_turn is True
+    assert blocked.streak == tool_result_loop_guard.ADVISOR_NUDGE_LIMIT
+    assert blocked.close_turn is False
 
 
 def test_successful_advisor_answer_clears_failure_family():

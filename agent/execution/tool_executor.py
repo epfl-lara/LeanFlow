@@ -112,6 +112,28 @@ _PROJECT_ADMITTED_LEAN_TOOLS = frozenset(
     }
 )
 
+# File verification is read-only but can launch a full Lean compile and emit a
+# manager boundary from its completion callback. Reuse exact duplicates inside
+# one assistant batch so the compile and callback each happen once while every
+# provider tool-call id still receives a response.
+_BATCH_SINGLE_FLIGHT_TOOL_NAMES = frozenset({"lean_verify"})
+
+
+def _batch_single_flight_key(
+    function_name: str,
+    function_args: Mapping[str, Any],
+) -> str:
+    """Return the exact in-batch reuse identity for an eligible read-only tool."""
+    if function_name not in _BATCH_SINGLE_FLIGHT_TOOL_NAMES:
+        return ""
+    canonical_args = json.dumps(
+        dict(function_args),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"{function_name}:{canonical_args}"
+
 
 def _memory_heavy_tool_worker_limit() -> int:
     """Return the per-batch worker limit for memory-heavy Lean tools."""
@@ -550,11 +572,27 @@ class ToolExecutor:
 
             parsed_calls.append((tool_call, function_name, function_args))
 
+        first_index_by_reuse_key: dict[str, int] = {}
+        leader_by_index: dict[int, int] = {}
+        duplicate_indices_by_leader: dict[int, list[int]] = {}
+        for index, (_tool_call, function_name, function_args) in enumerate(parsed_calls):
+            reuse_key = _batch_single_flight_key(function_name, function_args)
+            if not reuse_key:
+                leader_by_index[index] = index
+                continue
+            leader = first_index_by_reuse_key.setdefault(reuse_key, index)
+            leader_by_index[index] = leader
+            if leader != index:
+                duplicate_indices_by_leader.setdefault(leader, []).append(index)
+        execution_leader_indices = [
+            index for index in range(len(parsed_calls)) if leader_by_index[index] == index
+        ]
+
         memory_heavy_limit = _memory_heavy_tool_worker_limit()
         memory_heavy_indices = [
             index
-            for index, (_tool_call, name, _args) in enumerate(parsed_calls)
-            if _is_memory_heavy_tool(name)
+            for index in execution_leader_indices
+            if _is_memory_heavy_tool(parsed_calls[index][1])
         ]
         memory_heavy_count = len(memory_heavy_indices)
         memory_heavy_priorities = {
@@ -580,6 +618,12 @@ class ToolExecutor:
                 print(
                     f"{agent.log_prefix}│  Memory-heavy Lean concurrency capped at "
                     f"{memory_heavy_limit} ({memory_heavy_count} call(s))"
+                )
+            reused_count = len(parsed_calls) - len(execution_leader_indices)
+            if reused_count:
+                print(
+                    f"{agent.log_prefix}│  Reusing {reused_count} byte-identical "
+                    "read-only verification call(s)"
                 )
             for i, (tc, name, args) in enumerate(parsed_calls, 1):
                 if agent.verbose_logging:
@@ -653,6 +697,8 @@ class ToolExecutor:
         def _prepare_tool_message(
             index: int,
             result_record: tuple[str, dict[str, Any], str, float, bool],
+            *,
+            run_completion_callback: bool = True,
         ) -> None:
             """Run the managed completion hook and retain its ordered tool message."""
             function_name, function_args, function_result, _duration, _is_error = result_record
@@ -670,7 +716,7 @@ class ToolExecutor:
                 "content": function_result,
                 "tool_call_id": parsed_calls[index][0].id,
             }
-            if agent.post_tool_result_callback:
+            if run_completion_callback and agent.post_tool_result_callback:
                 try:
                     agent.post_tool_result_callback(
                         function_name, function_args, audit_function_result
@@ -700,10 +746,10 @@ class ToolExecutor:
             spinner.start()
 
         try:
-            max_workers = min(num_tools, run_agent._MAX_TOOL_WORKERS)
+            max_workers = min(len(execution_leader_indices), run_agent._MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 execution_indices = sorted(
-                    range(len(parsed_calls)),
+                    execution_leader_indices,
                     key=lambda index: (
                         memory_heavy_priorities.get(index, (10, index)),
                         index,
@@ -746,6 +792,34 @@ class ToolExecutor:
                     # slower sibling tool is still running, without racing the
                     # agent's one-shot appendix state across worker threads.
                     _prepare_tool_message(index, result_record)
+                    for duplicate_index in duplicate_indices_by_leader.get(index, []):
+                        function_name, _function_args, _result, _duration, is_error = result_record
+                        source_call_id = parsed_calls[index][0].id
+                        duplicate_result = json.dumps(
+                            {
+                                "success": not is_error,
+                                "ok": not is_error,
+                                "status": "identical_batch_call_reused",
+                                "tool": function_name,
+                                "source_tool_call_id": source_call_id,
+                                "result_reused": True,
+                                "source_result_error": is_error,
+                            },
+                            ensure_ascii=False,
+                        )
+                        duplicate_record = (
+                            function_name,
+                            parsed_calls[duplicate_index][2],
+                            duplicate_result,
+                            0.0,
+                            is_error,
+                        )
+                        result_slots[duplicate_index] = duplicate_record
+                        _prepare_tool_message(
+                            duplicate_index,
+                            duplicate_record,
+                            run_completion_callback=False,
+                        )
         finally:
             if foreground_batch_lease is not None:
                 clear_initial_foreground_lease(

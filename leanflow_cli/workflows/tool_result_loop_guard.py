@@ -18,7 +18,6 @@ TRACKED_TOOLS = frozenset(
         "lean_inspect",
         "lean_multi_attempt",
         "lean_outline",
-        "lean_proof_context",
         "lean_advisor",
         "terminal",
     }
@@ -207,6 +206,14 @@ def _advisor_failed(payload: Mapping[str, Any]) -> bool:
     }
 
 
+def _advisor_preflight_exhausted(payload: Mapping[str, Any]) -> bool:
+    """Return whether the advisor circuit rejected a call without provider work."""
+    return bool(
+        str(payload.get("status", "") or "").strip().lower() == "advisor_retry_exhausted"
+        and payload.get("provider_called") is False
+    )
+
+
 def _terminal_policy_denied(payload: Mapping[str, Any]) -> bool:
     """Return whether the terminal was deterministically denied before execution."""
     status = str(payload.get("status", "") or "").strip().lower()
@@ -295,6 +302,13 @@ def observe(
     except (TypeError, ValueError, json.JSONDecodeError):
         payload = {}
     if key == "lean_advisor":
+        if isinstance(payload, Mapping) and _advisor_preflight_exhausted(payload):
+            previous = dict(state.get(ADVISOR_STATE_KEY) or {})
+            return LoopDecision(
+                tool_key=key,
+                signature=str(previous.get("signature", "") or ""),
+                streak=max(0, int(previous.get("streak", 0) or 0)),
+            )
         if not isinstance(payload, Mapping) or not _advisor_failed(payload):
             state.pop(ADVISOR_STATE_KEY, None)
             previous = dict(state.get(STATE_KEY) or {})
