@@ -11,6 +11,8 @@ from typing import Any
 
 STATE_KEY = "tool_result_loop_guard"
 ADVISOR_STATE_KEY = "advisor_failure_loop_guard"
+EXHAUSTED_STATE_KEY = "tool_result_loop_exhausted"
+EXHAUSTED_RECORD_LIMIT = 16
 TRACKED_TOOLS = frozenset(
     {
         "lean_incremental_check:check_helper",
@@ -192,6 +194,109 @@ def _made_progress(payload: Mapping[str, Any]) -> bool:
     )
 
 
+def _preflight_exhausted(payload: Mapping[str, Any]) -> bool:
+    """Return whether an exhausted unchanged-source call was blocked before work."""
+    return bool(
+        str(payload.get("status", "") or "").strip().lower() == "tool_result_retry_exhausted"
+        and payload.get("lean_started") is False
+    )
+
+
+def _exhausted_records(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return bounded exhausted-loop records from legacy-tolerant state."""
+    raw = state.get(EXHAUSTED_STATE_KEY)
+    if not isinstance(raw, list):
+        return []
+    return [dict(item) for item in raw if isinstance(item, Mapping)][-EXHAUSTED_RECORD_LIMIT:]
+
+
+def _remember_exhausted(state: dict[str, Any], tracker: Mapping[str, Any]) -> None:
+    """Persist one exact unchanged-source exhaustion for pre-tool admission."""
+    incoming = dict(tracker)
+    identity_fields = (
+        "target_symbol",
+        "active_file",
+        "source_revision_sha256",
+        "tool_key",
+        "signature",
+    )
+    retained = [
+        record
+        for record in _exhausted_records(state)
+        if any(
+            str(record.get(key, "") or "") != str(incoming.get(key, "") or "")
+            for key in identity_fields
+        )
+    ]
+    retained.append(incoming)
+    state[EXHAUSTED_STATE_KEY] = retained[-EXHAUSTED_RECORD_LIMIT:]
+
+
+def _forget_exhausted_tool(
+    state: dict[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+    tool_key_value: str,
+) -> None:
+    """Forget exhausted records when that exact tool later makes progress."""
+    retained = [
+        record
+        for record in _exhausted_records(state)
+        if not (
+            str(record.get("target_symbol", "") or "") == target_symbol
+            and str(record.get("active_file", "") or "") == active_file
+            and str(record.get("source_revision_sha256", "") or "") == source_revision_sha256
+            and str(record.get("tool_key", "") or "") == tool_key_value
+        )
+    ]
+    if retained:
+        state[EXHAUSTED_STATE_KEY] = retained
+    else:
+        state.pop(EXHAUSTED_STATE_KEY, None)
+
+
+def _preflight_signature(
+    key: str,
+    args: Mapping[str, Any] | None,
+) -> str:
+    """Return a result-independent signature when admission can prove repetition."""
+    if key == "lean_multi_attempt":
+        return _multi_attempt_site_signature(args)
+    if key == "lean_outline":
+        return "unchanged-source-outline-budget"
+    if key == "lean_incremental_check:check_helper":
+        return _helper_candidate_statement_signature(args)
+    return ""
+
+
+def exhausted_preflight(
+    state: Mapping[str, Any],
+    *,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+) -> dict[str, Any] | None:
+    """Return an exhausted exact-call record before repeating expensive work."""
+    key = tool_key(function_name, args)
+    signature = _preflight_signature(key, args)
+    if not key or not signature or not target_symbol or not active_file:
+        return None
+    for record in reversed(_exhausted_records(state)):
+        if (
+            str(record.get("target_symbol", "") or "") == target_symbol
+            and str(record.get("active_file", "") or "") == active_file
+            and str(record.get("source_revision_sha256", "") or "") == source_revision_sha256
+            and str(record.get("tool_key", "") or "") == key
+            and str(record.get("signature", "") or "") == signature
+        ):
+            return record
+    return None
+
+
 def _advisor_failed(payload: Mapping[str, Any]) -> bool:
     """Return whether an advisor result supplied no usable answer."""
     if payload.get("success") is True:
@@ -319,8 +424,25 @@ def observe(
         if not isinstance(payload, Mapping) or not _terminal_policy_denied(payload):
             state.pop(STATE_KEY, None)
             return LoopDecision(tool_key=key)
+    elif isinstance(payload, Mapping) and _preflight_exhausted(payload):
+        previous = dict(state.get(STATE_KEY) or {})
+        return LoopDecision(
+            tool_key=key,
+            signature=str(payload.get("signature", "") or previous.get("signature", "") or ""),
+            streak=max(
+                0,
+                int(payload.get("streak", 0) or previous.get("streak", 0) or 0),
+            ),
+        )
     elif isinstance(payload, Mapping) and _made_progress(payload):
         state.pop(STATE_KEY, None)
+        _forget_exhausted_tool(
+            state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            source_revision_sha256=source_revision_sha256,
+            tool_key_value=key,
+        )
         return LoopDecision(tool_key=key)
 
     # Varying candidate text and backend rejection shapes do not constitute
@@ -388,7 +510,7 @@ def observe(
     else:
         bounded_nudge = max(2, int(nudge_limit))
         bounded_hard = max(bounded_nudge + 1, int(hard_limit))
-    return LoopDecision(
+    decision = LoopDecision(
         tool_key=key,
         signature=signature,
         streak=streak,
@@ -396,3 +518,6 @@ def observe(
         close_turn=streak >= bounded_hard,
         required_symbol=str(tracker.get("required_symbol", "") or ""),
     )
+    if decision.close_turn:
+        _remember_exhausted(state, tracker)
+    return decision

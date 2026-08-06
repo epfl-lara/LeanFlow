@@ -10909,6 +10909,71 @@ def _managed_advisor_precompression_admitted(
     )
 
 
+def _tool_result_loop_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Reject an exhausted exact Lean probe before starting Lean again."""
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return None
+    source_revision = _source_revision_sha256(active_file)
+    exhausted = tool_result_loop_guard.exhausted_preflight(
+        autonomy_state,
+        function_name=function_name,
+        args=args,
+        target_symbol=target_symbol,
+        active_file=active_file,
+        source_revision_sha256=source_revision,
+    )
+    if exhausted is None:
+        return None
+    tool_key = str(exhausted.get("tool_key", "") or function_name)
+    signature = str(exhausted.get("signature", "") or "")
+    streak = max(0, int(exhausted.get("streak", 0) or 0))
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "tool-result-loop-preflight-blocked",
+            f"Blocked exhausted unchanged-source call to {tool_key} before Lean",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            tool_key=tool_key,
+            signature=signature,
+            streak=streak,
+            source_revision_sha256=source_revision,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "tool_result_retry_exhausted",
+            "blocked_tool": function_name,
+            "tool_key": tool_key,
+            "signature": signature,
+            "streak": streak,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "source_revision_sha256": source_revision,
+            "lean_started": False,
+            "provider_called": False,
+            "required_action": (
+                "This exact unchanged-source probe site has exhausted its bounded retry "
+                "budget. Use the returned diagnostics to make a concrete source edit, "
+                "probe a genuinely different location, or use a different proof route. "
+                "The probe becomes available again after checked source progress."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _managed_pre_tool_call(
     agent: Any, function_name: str, args: Mapping[str, Any] | None
 ) -> str | None:
@@ -10996,6 +11061,14 @@ def _managed_pre_tool_call(
         )
         if rejected_candidate_guard:
             return rejected_candidate_guard
+        tool_loop_guard = _tool_result_loop_pre_tool_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if tool_loop_guard:
+            return tool_loop_guard
         rollback_refresh_read = _rollback_refresh_read_matches(
             autonomy_state,
             function_name,

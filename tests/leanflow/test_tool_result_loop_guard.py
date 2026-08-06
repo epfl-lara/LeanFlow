@@ -56,6 +56,97 @@ def test_repeated_result_nudges_then_closes_the_turn():
     assert decisions[-1].streak == tool_result_loop_guard.HARD_LIMIT
 
 
+def test_exhausted_screening_site_is_blocked_before_another_result():
+    state: dict = {}
+    common = {
+        "function_name": "lean_multi_attempt",
+        "args": {
+            "file_path": "/tmp/Main.lean",
+            "line": 102,
+            "attempts": ["simp", "omega"],
+        },
+        "result_text": _failed_screen(),
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    for _ in range(tool_result_loop_guard.HARD_LIMIT):
+        tool_result_loop_guard.observe(state, **common)
+
+    # A later tracked tool may become the current streak, but it must not
+    # erase the exhausted exact screening site.
+    tool_result_loop_guard.observe(
+        state,
+        function_name="lean_outline",
+        args={"file_path": "/tmp/Main.lean", "symbol": "helper"},
+        result_text=json.dumps({"success": True, "symbol": "helper"}),
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        source_revision_sha256="same-source",
+    )
+
+    blocked = tool_result_loop_guard.exhausted_preflight(
+        state,
+        function_name="lean_multi_attempt",
+        args=common["args"],
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        source_revision_sha256="same-source",
+    )
+    changed_site = tool_result_loop_guard.exhausted_preflight(
+        state,
+        function_name="lean_multi_attempt",
+        args={**common["args"], "line": 103},
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        source_revision_sha256="same-source",
+    )
+    changed_source = tool_result_loop_guard.exhausted_preflight(
+        state,
+        function_name="lean_multi_attempt",
+        args=common["args"],
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        source_revision_sha256="changed-source",
+    )
+
+    assert blocked is not None
+    assert blocked["streak"] == tool_result_loop_guard.HARD_LIMIT
+    assert changed_site is None
+    assert changed_source is None
+
+
+def test_exhausted_preflight_result_does_not_reopen_or_close_the_turn():
+    state: dict = {}
+    common = {
+        "function_name": "lean_multi_attempt",
+        "args": {"file_path": "/tmp/Main.lean", "line": 102, "attempts": ["simp", "omega"]},
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    for _ in range(tool_result_loop_guard.HARD_LIMIT):
+        tool_result_loop_guard.observe(state, result_text=_failed_screen(), **common)
+
+    decision = tool_result_loop_guard.observe(
+        state,
+        result_text=json.dumps(
+            {
+                "success": False,
+                "status": "tool_result_retry_exhausted",
+                "lean_started": False,
+                "signature": state[tool_result_loop_guard.STATE_KEY]["signature"],
+                "streak": tool_result_loop_guard.HARD_LIMIT,
+            }
+        ),
+        **common,
+    )
+
+    assert decision.streak == tool_result_loop_guard.HARD_LIMIT
+    assert decision.close_turn is False
+    assert tool_result_loop_guard.EXHAUSTED_STATE_KEY in state
+
+
 def test_changed_source_or_screening_location_resets_the_streak():
     state: dict = {}
     common = {

@@ -8353,6 +8353,66 @@ def test_repeated_multi_attempt_result_requests_plan_and_closes_turn(monkeypatch
     assert len([event for event in events if event[0][0] == "tool-result-loop-route-change"]) == 1
 
 
+def test_exhausted_multi_attempt_is_rejected_before_lean(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    source_revision = runner._source_revision_sha256(str(active))
+    args = {
+        "file_path": str(active),
+        "line": 2,
+        "attempts": ["simp", "omega"],
+    }
+    state: dict = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    failed = json.dumps(
+        {
+            "success": False,
+            "status": "screened_no_verified_candidate",
+            "backend_tool": "lean_probe",
+            "items": [],
+        }
+    )
+    for _ in range(runner.tool_result_loop_guard.HARD_LIMIT):
+        runner.tool_result_loop_guard.observe(
+            state,
+            function_name="lean_multi_attempt",
+            args=args,
+            result_text=failed,
+            target_symbol="demo",
+            active_file=str(active),
+            source_revision_sha256=source_revision,
+        )
+
+    class _Agent:
+        _managed_autonomy_state = state
+
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *event_args, **event_kwargs: events.append((event_args, event_kwargs)),
+    )
+
+    blocked = runner._tool_result_loop_pre_tool_guard(
+        _Agent(),
+        "lean_multi_attempt",
+        args,
+        state,
+    )
+
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["status"] == "tool_result_retry_exhausted"
+    assert payload["lean_started"] is False
+    assert payload["provider_called"] is False
+    assert payload["streak"] == runner.tool_result_loop_guard.HARD_LIMIT
+    assert events[0][0][1] == "tool-result-loop-preflight-blocked"
+
+
 def test_record_turn_prompt_fingerprint_tracks_change_and_size(monkeypatch):
     events = []
     monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: events.append((a, k)))
