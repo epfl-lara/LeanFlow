@@ -8032,6 +8032,66 @@ def _rollback_refresh_read_matches(
     )
 
 
+def _normalize_rollback_refresh_read_args(
+    agent: Any,
+    autonomy_state: Mapping[str, Any],
+    function_name: str,
+    args: Mapping[str, Any] | None,
+) -> None:
+    """Expand a rollback reread to the complete restored declaration in place."""
+    if function_name != "read_file" or not isinstance(args, dict):
+        return
+    if not _rollback_refresh_required_for_assignment(autonomy_state):
+        return
+    pending = dict(autonomy_state.get(ROLLBACK_REFRESH_READ_STATE_KEY) or {})
+    if source_refresh_admission.is_patch_anchor_miss(pending):
+        return
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    requested_file = str(args.get("path", "") or args.get("file_path", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not requested_file
+        or not _same_active_file(requested_file, active_file)
+        or _rollback_refresh_read_matches(
+            autonomy_state,
+            function_name,
+            args,
+        )
+    ):
+        return
+    entry = _find_declaration_entry(active_file, target_symbol)
+    if entry is None:
+        return
+    try:
+        target_start = int(entry.get("line", 0) or 0)
+        target_end = int(entry.get("end_line", 0) or 0)
+    except (TypeError, ValueError):
+        return
+    if target_start <= 0 or target_end < target_start:
+        return
+    prior_offset = args.get("offset")
+    prior_limit = args.get("limit")
+    args["offset"] = target_start
+    args["limit"] = target_end - target_start + 1
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "rollback-refresh-read-range-expanded",
+            f"Expanded rollback refresh read to the complete {target_symbol} declaration",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            requested_offset=prior_offset,
+            requested_limit=prior_limit,
+            admitted_offset=target_start,
+            admitted_limit=target_end - target_start + 1,
+            blocked_by_construction_budget=False,
+            campaign_progress=False,
+        )
+
+
 def _rollback_refresh_required_for_assignment(autonomy_state: Mapping[str, Any]) -> bool:
     """Return whether the current restored assignment still requires an exact source reread."""
     pending = dict(autonomy_state.get(ROLLBACK_REFRESH_READ_STATE_KEY) or {})
@@ -11336,6 +11396,12 @@ def _managed_pre_tool_call(
         )
         if tool_loop_guard:
             return tool_loop_guard
+        _normalize_rollback_refresh_read_args(
+            agent,
+            autonomy_state,
+            function_name,
+            args,
+        )
         rollback_refresh_read = _rollback_refresh_read_matches(
             autonomy_state,
             function_name,

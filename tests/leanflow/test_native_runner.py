@@ -9276,6 +9276,74 @@ def test_rollback_refresh_read_bypasses_construction_fences_once(monkeypatch, tm
     assert json.loads(blocked_again)["status"] == "concrete_construction_required"
 
 
+def test_partial_rollback_refresh_read_is_expanded_before_construction_fence(monkeypatch, tmp_path):
+    """Make the manager-required reread self-correcting after an exact rollback."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "private lemma helper : True := by\n"
+        "  trivial\n\n"
+        "theorem demo : True := by\n"
+        "  have h : True := True.intro\n"
+        "  exact h\n",
+        encoding="utf-8",
+    )
+    source_revision = runner._source_revision_sha256(str(active))
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_cycle": 11,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "hard_route_requested": True,
+                    "synthesis_grace_pending": True,
+                    "construction_source_inspection_cycle": 11,
+                    "construction_source_inspection_count": 6,
+                    "construction_source_inspection_boundary": True,
+                    "construction_synthesis_rejection_count": 1,
+                },
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    agent = _Agent()
+    runner._remember_rollback_refresh_read(
+        agent._managed_autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+        source_revision_sha256=source_revision,
+    )
+    read_args = {"path": str(active), "offset": 5, "limit": 2}
+
+    assert runner._managed_pre_tool_call(agent, "read_file", read_args) is None
+    assert read_args["offset"] == 4
+    assert read_args["limit"] == 3
+    assert (
+        agent._managed_autonomy_state["search_progress"]["construction_synthesis_rejection_count"]
+        == 1
+    )
+
+    runner._handle_managed_tool_result(
+        agent,
+        "read_file",
+        read_args,
+        json.dumps({"success": True}),
+    )
+
+    assert runner.ROLLBACK_REFRESH_READ_STATE_KEY not in agent._managed_autonomy_state
+
+
 def test_patch_anchor_miss_reread_bypasses_construction_fence_once(monkeypatch, tmp_path):
     """Let a failed managed hunk refresh its anchor without reopening discovery."""
     active = tmp_path / "Main.lean"
