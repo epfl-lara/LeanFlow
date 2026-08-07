@@ -8235,6 +8235,26 @@ def _search_synthesis_pre_tool_guard(
     discovery_name = search_synthesis_admission.discovery_tool_name(function_name, args)
     if discovery_name is None:
         return None
+    if discovery_name == "lean_lemma_suggest":
+        duplicate_payload = search_synthesis_admission.duplicate_lemma_suggest_result(
+            tracker,
+            args=args,
+            current_cycle=int(autonomy_state.get("current_cycle", 0) or 0),
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        if duplicate_payload is not None:
+            with contextlib.suppress(Exception):
+                _record_agent_activity(
+                    agent,
+                    "duplicate-lemma-suggest-blocked",
+                    f"Blocked repeated lemma suggestions for {target_symbol}",
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    provider_called=False,
+                    campaign_progress=False,
+                )
+            return json.dumps(duplicate_payload, ensure_ascii=False)
     construction_payload = search_synthesis_admission.blocked_construction_source_result(
         function_name=discovery_name,
         tracker=tracker,

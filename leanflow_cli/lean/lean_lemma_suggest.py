@@ -125,8 +125,21 @@ def _statement_from_disk(file_path: str, theorem_id: str) -> str:
 
 
 def _goals_unavailable(text: str) -> bool:
-    """Return whether text is a status sentence rather than a Lean goal."""
-    return str(text or "").strip().casefold().startswith(_GOALS_UNAVAILABLE_PREFIX)
+    """Return whether text is operational diagnostics rather than a Lean goal."""
+    normalized = " ".join(str(text or "").strip().casefold().split())
+    if normalized.startswith(_GOALS_UNAVAILABLE_PREFIX):
+        return True
+    return any(
+        marker in normalized
+        for marker in (
+            "request timed out",
+            "read timed out",
+            "timed out after",
+            "tool call failed",
+            "mcp call failed",
+            "timeouterror",
+        )
+    )
 
 
 def _hypothesis_text(hypotheses: Any) -> list[str]:

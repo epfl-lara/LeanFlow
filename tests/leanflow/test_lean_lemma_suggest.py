@@ -299,6 +299,40 @@ def test_lean_lemma_suggest_ignores_unavailable_goal_status_and_truncated_contex
     assert any("live Lean goals unavailable" in reason for reason in payload["degraded_reasons"])
 
 
+def test_lean_lemma_suggest_ignores_timeout_text_as_goal(monkeypatch, tmp_path):
+    source = tmp_path / "P4.lean"
+    source.write_text(
+        "theorem result (h : True) : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "lean_proof_context",
+        lambda file_path, theorem_id, cwd=None: {
+            "success": True,
+            "theorem_statement": "theorem result (h : True) : True := by",
+            "hypotheses": [],
+            "goals": "Request\nRequest timed out after 600 seconds",
+        },
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "lean_inspect",
+        lambda target, cwd=None, symbol=None: SimpleNamespace(
+            goals="MCP call failed: read timed out after 12 seconds"
+        ),
+    )
+    monkeypatch.setattr(lls, "_local_source_hits", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(lls, "_run_search", lambda *_args, **_kwargs: [])
+
+    payload = lls.lean_lemma_suggest(str(source), "result")
+
+    rendered_queries = " ".join(payload["queries"]).casefold()
+    assert "request" not in rendered_queries
+    assert "timed out" not in rendered_queries
+    assert "request" not in {symbol.casefold() for symbol in payload["goal_symbols"]}
+
+
 def test_lean_lemma_suggest_honors_bounded_search_profile(monkeypatch):
     monkeypatch.setattr(
         lean_services,

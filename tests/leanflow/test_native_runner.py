@@ -8754,6 +8754,41 @@ def test_search_synthesis_reservation_allows_source_inspection(
     assert tracker["used_tools"] == {function_name: 1}
 
 
+def test_search_synthesis_guard_blocks_duplicate_lemma_suggest(tmp_path):
+    """Fence a repeated expensive theorem search before the second tool call."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    args = {"file_path": str(active), "theorem_id": "demo", "max_candidates": 50}
+    fingerprint = runner.search_synthesis_admission.source_inspection_fingerprint(
+        "lean_lemma_suggest", args
+    )
+    autonomy_state = {
+        "current_cycle": 7,
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "search_progress": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "search_count": 12,
+            "hard_route_requested": True,
+            "synthesis_grace_pending": True,
+            "construction_source_inspection_cycle": 7,
+            "construction_source_inspection_last_fingerprint": fingerprint,
+        },
+    }
+
+    result = runner._search_synthesis_pre_tool_guard(
+        _ManagedRunAgentStub(), "lean_lemma_suggest", args, autonomy_state
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "duplicate_lemma_suggest_blocked"
+    assert payload["provider_called"] is False
+
+
 @pytest.mark.parametrize(
     "function_name,args",
     [

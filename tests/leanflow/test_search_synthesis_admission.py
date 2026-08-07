@@ -38,6 +38,49 @@ def test_search_file_fingerprint_ignores_presentation_options():
     assert content == files_only
 
 
+def test_lemma_suggest_fingerprint_ignores_search_breadth():
+    common = {"file_path": "/tmp/Main.lean", "theorem_id": "result"}
+
+    narrow = search_synthesis_admission.source_inspection_fingerprint(
+        "lean_lemma_suggest", {**common, "max_candidates": 10}
+    )
+    broad = search_synthesis_admission.source_inspection_fingerprint(
+        "lean_lemma_suggest", {**common, "max_candidates": 50}
+    )
+
+    assert narrow == broad
+
+
+def test_duplicate_lemma_suggest_is_blocked_in_same_construction_cycle():
+    args = {"file_path": "/tmp/Main.lean", "theorem_id": "result"}
+    fingerprint = search_synthesis_admission.source_inspection_fingerprint(
+        "lean_lemma_suggest", args
+    )
+    tracker = {
+        "construction_source_inspection_cycle": 4,
+        "construction_source_inspection_last_fingerprint": fingerprint,
+    }
+
+    blocked = search_synthesis_admission.duplicate_lemma_suggest_result(
+        tracker,
+        args=args,
+        current_cycle=4,
+        target_symbol="result",
+        active_file="/tmp/Main.lean",
+    )
+    refreshed = search_synthesis_admission.duplicate_lemma_suggest_result(
+        tracker,
+        args=args,
+        current_cycle=5,
+        target_symbol="result",
+        active_file="/tmp/Main.lean",
+    )
+
+    assert blocked is not None
+    assert blocked["status"] == "duplicate_lemma_suggest_blocked"
+    assert refreshed is None
+
+
 def test_source_inspection_observation_resets_per_cycle_and_bounds_repeats():
     tracker: dict = {}
     for _ in range(3):

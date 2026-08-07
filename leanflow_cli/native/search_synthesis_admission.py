@@ -409,6 +409,15 @@ def request_description(
             )
             if not part.endswith("=")
         )
+    if function_name == "lean_lemma_suggest":
+        return " ".join(
+            part
+            for part in (
+                f"file={arguments.get('file_path', '')}",
+                f"theorem={arguments.get('theorem_id', '')}",
+            )
+            if not part.endswith("=")
+        )
     if function_name == LEAN_INCREMENTAL_INSPECTION_TOOL_NAME:
         replacement = str(arguments.get("replacement", "") or "")
         normalized = " ".join(replacement.split())
@@ -447,9 +456,59 @@ def source_inspection_fingerprint(
                 " ".join(str(arguments.get("replacement", "") or "").split()),
             )
         )
+    elif function_name == "lean_lemma_suggest":
+        material = "|".join(
+            (
+                function_name,
+                str(arguments.get("file_path", "") or "").strip(),
+                str(arguments.get("theorem_id", "") or "").strip(),
+            )
+        )
     else:
         return ""
     return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def duplicate_lemma_suggest_result(
+    tracker: Mapping[str, Any],
+    *,
+    args: Mapping[str, Any] | None,
+    current_cycle: int,
+    target_symbol: str,
+    active_file: str,
+) -> dict[str, Any] | None:
+    """Reject an unchanged theorem-scoped lemma search already returned this cycle."""
+    fingerprint = source_inspection_fingerprint("lean_lemma_suggest", args)
+    if not fingerprint:
+        return None
+    construction_duplicate = bool(
+        int(tracker.get("construction_source_inspection_cycle", -1) or -1) == int(current_cycle)
+        and str(tracker.get("construction_source_inspection_last_fingerprint", "") or "")
+        == fingerprint
+    )
+    description = request_description("lean_lemma_suggest", args)
+    ordinary_duplicate = bool(
+        str(tracker.get("last_request_fingerprint", "") or "")
+        == f"lean_lemma_suggest:{description}"
+    )
+    if not construction_duplicate and not ordinary_duplicate:
+        return None
+    return {
+        "success": False,
+        "status": "duplicate_lemma_suggest_blocked",
+        "provider_called": False,
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "request": description,
+        "reason": (
+            "The same theorem-scoped lemma search already completed against the "
+            "unchanged assignment."
+        ),
+        "required_action": (
+            "Use the candidate list already returned, inspect a specific candidate, "
+            "or make and check a concrete proof edit."
+        ),
+    }
 
 
 def observe_source_inspection(
