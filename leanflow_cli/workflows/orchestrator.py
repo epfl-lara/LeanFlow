@@ -502,6 +502,29 @@ def _declaration_is_counterexample_evidence(statement: str) -> bool:
     return bool(re.match(r"^False\b", result_type))
 
 
+def _canonical_proposition_text(value: str) -> str:
+    """Return a whitespace-insensitive proposition identity for exact matching."""
+    return re.sub(r"\s+", "", _strip_result_type_outer_parens(value))
+
+
+def _declaration_directly_negates_target(statement: str, target_statement: str) -> bool:
+    """Return whether a declaration concludes the exact target proposition's negation."""
+    result_type = _strip_result_type_outer_parens(_declaration_result_type(statement))
+    target_type = _declaration_result_type(target_statement)
+    if not result_type or not target_type:
+        return False
+    operand = ""
+    if result_type.startswith("¬"):
+        operand = result_type[1:].strip()
+    else:
+        match = re.match(r"^Not\b(.*)$", result_type, flags=re.DOTALL)
+        if match is not None:
+            operand = match.group(1).strip()
+    return bool(
+        operand and _canonical_proposition_text(operand) == _canonical_proposition_text(target_type)
+    )
+
+
 def _checked_counterexample_declarations(
     findings: Sequence[Mapping[str, Any]],
     *,
@@ -591,8 +614,21 @@ def verified_counterexample_evidence(
             name.split(".")[-1] for name in matched_names
         }
         explicit_negative = _declaration_is_counterexample_evidence(node.statement)
+        direct_target_negation = _declaration_directly_negates_target(
+            node.statement,
+            target_node.statement,
+        )
         named_counterexample = bool(_COUNTEREXAMPLE_NAME_RE.search(node.name))
-        if not explicit_negative and not (named_counterexample and matched_finding):
+        # A negative conclusion on an evidence edge is commonly an ordinary
+        # proof premise (for example, an arithmetic non-equality). It earns a
+        # negation route only when it directly negates the target, carries an
+        # explicit counterexample name, or is authenticated by a structured
+        # checked-counterexample finding.
+        if not (
+            direct_target_negation
+            or (named_counterexample and explicit_negative)
+            or matched_finding
+        ):
             continue
         seen.add(node.id)
         evidence.append(
@@ -601,9 +637,13 @@ def verified_counterexample_evidence(
                 "name": node.name,
                 "statement": _truncate(node.statement, 1800),
                 "basis": (
-                    "proved-negative-target-evidence"
-                    if explicit_negative
-                    else "proved-target-evidence-matched-structured-finding"
+                    "proved-direct-target-negation"
+                    if direct_target_negation
+                    else (
+                        "proved-named-negative-target-evidence"
+                        if named_counterexample and explicit_negative
+                        else "proved-target-evidence-matched-structured-finding"
+                    )
                 ),
             }
         )

@@ -12498,6 +12498,64 @@ def test_scope_entry_replays_exact_inflight_negate_before_helper_recheck(monkeyp
     assert state["orchestrator_scope_entered"] is True
 
 
+def test_scope_entry_drops_evidence_negate_when_counterexample_authority_regresses(
+    monkeypatch, tmp_path
+):
+    """Do not let stale evidence metadata preempt a current checked helper."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    pending = {
+        "route": "negate",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "token": "route-token",
+        "target": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "verified_counterexample_evidence": ["n-stale-support"],
+        },
+    }
+    completions: list[dict] = []
+
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "reusable_inflight_route",
+        lambda *_args, **_kwargs: pending,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "complete_inflight_route",
+        lambda *_args, **kwargs: completions.append(dict(kwargs)) or True,
+    )
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+
+    assert runner._scope_entry_reusable_negate_route(state, None) is False
+    assert completions == [
+        {
+            "token": "route-token",
+            "outcome": "dropped",
+            "dropped_reason": "counterexample-evidence-regressed",
+        }
+    ]
+    assert events[-1][0][0] == "campaign-stale-counterexample-route-dropped"
+
+
 def test_scope_entry_non_negate_keeps_portfolio_and_finding_order(monkeypatch, tmp_path):
     """Keep fail-closed scope delivery ahead of non-negation routing."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))

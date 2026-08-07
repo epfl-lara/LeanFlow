@@ -689,6 +689,88 @@ def test_negative_characterization_is_not_counterexample_evidence(tmp_path):
     assert orchestrator_route(ctx).route == "direct-prove"
 
 
+def test_negative_support_fact_is_not_counterexample_evidence(tmp_path):
+    """A negative-looking support lemma does not itself refute the target."""
+    active = str(tmp_path / "Demo.lean")
+    target_id = node_id_for("demo", active)
+    helper_id = node_id_for("support_avoids_multiple", active)
+    blueprint = Blueprint(
+        nodes=(
+            GraphNode(
+                id=target_id,
+                name="demo",
+                file=active,
+                statement="theorem demo : {x : Nat | x = 1} = {1} := by\n  sorry",
+                status="proving",
+            ),
+            GraphNode(
+                id=helper_id,
+                name="support_avoids_multiple",
+                file=active,
+                statement=(
+                    "private lemma support_avoids_multiple : "
+                    "∀ z : Int, (3 : Int) ≠ z * 2 := by\n  omega"
+                ),
+                status="proved",
+            ),
+        ),
+        edges=(GraphEdge(source=helper_id, target=target_id, kind="evidence"),),
+    )
+
+    ctx = build_route_context(
+        trigger="event",
+        autonomy_state={
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": active,
+            }
+        },
+        blueprint=blueprint,
+    )
+
+    assert ctx.verified_counterexample_evidence == ()
+    assert orchestrator_route(ctx).route == "direct-prove"
+
+
+def test_direct_target_negation_is_counterexample_evidence(tmp_path):
+    """An exact proved negation remains authenticated without name heuristics."""
+    active = str(tmp_path / "Demo.lean")
+    target_id = node_id_for("demo", active)
+    helper_id = node_id_for("impossible_case", active)
+    blueprint = Blueprint(
+        nodes=(
+            GraphNode(
+                id=target_id,
+                name="demo",
+                file=active,
+                statement="theorem demo : True := by\n  sorry",
+                status="proving",
+            ),
+            GraphNode(
+                id=helper_id,
+                name="impossible_case",
+                file=active,
+                statement="private lemma impossible_case : ¬ True := by\n  simp",
+                status="proved",
+            ),
+        ),
+        edges=(GraphEdge(source=helper_id, target=target_id, kind="evidence"),),
+    )
+
+    ctx = build_route_context(
+        trigger="event",
+        autonomy_state={
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": active,
+            }
+        },
+        blueprint=blueprint,
+    )
+
+    assert [item["node_id"] for item in ctx.verified_counterexample_evidence] == [helper_id]
+
+
 def test_explicit_negate_with_verified_evidence_survives_spent_scratch_budget():
     evidence = ({"node_id": "n-counterexample", "name": "demo_counterexample"},)
 

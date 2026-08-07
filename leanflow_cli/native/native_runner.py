@@ -29991,7 +29991,50 @@ def _scope_entry_reusable_negate_route(
         target_symbol=target_symbol,
         active_file=active_file,
     )
-    return str(pending.get("route", "") or "").strip().lower() == "negate"
+    if str(pending.get("route", "") or "").strip().lower() != "negate":
+        return False
+    route_target = dict(pending.get("target") or {})
+    claimed_evidence = {
+        str(node_id or "").strip()
+        for node_id in (route_target.get("verified_counterexample_evidence") or ())
+        if str(node_id or "").strip()
+    }
+    if not claimed_evidence:
+        return True
+    current_evidence = {
+        str(item.get("node_id", "") or "").strip()
+        for item in _verified_counterexample_evidence_for_assignment(
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        if str(item.get("node_id", "") or "").strip()
+    }
+    if claimed_evidence.issubset(current_evidence):
+        return True
+    completed = campaign_epoch.complete_inflight_route(
+        autonomy_state,
+        token=str(pending.get("token", "") or ""),
+        outcome="dropped",
+        dropped_reason="counterexample-evidence-regressed",
+    )
+    if not completed:
+        # Fail closed: a persistence error cannot silently discard a selected
+        # mechanical route. The next boundary retries the same revalidation.
+        return True
+    autonomy_state.pop(_INFLIGHT_ROUTE_REPLAY_TOKEN_KEY, None)
+    _record_activity(
+        "campaign-stale-counterexample-route-dropped",
+        "Dropped stale evidence-backed negation route before helper priority",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        route="negate",
+        route_token=str(pending.get("token", "") or ""),
+        claimed_evidence=sorted(claimed_evidence),
+        current_evidence=sorted(current_evidence),
+        reason="counterexample-evidence-regressed",
+        campaign_progress=False,
+    )
+    return False
 
 
 def _research_scope_entry_setup(
