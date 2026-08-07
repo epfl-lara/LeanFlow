@@ -1905,7 +1905,12 @@ def _rerun_source_promotion(
     )
     if harness is None:
         return PromotionResult(False, "source promotion proof tactic no longer matches declaration")
-    scratch_source = "\n".join([*lines[:insert_at], harness.declaration, *lines[insert_at:]]) + "\n"
+    # The candidate's declaration prefix contains its complete elaboration
+    # context. Later commands cannot affect the candidate or the inserted alias,
+    # but a slow or broken assigned theorem there can poison this compatibility
+    # check and cause the same unrelated full-file failure to be replayed for
+    # every support lemma.
+    scratch_source = "\n".join([*lines[:insert_at], harness.declaration]) + "\n"
     rerun = _run_authoritative_source_check(
         scratch_source,
         cwd=str(project_root),
@@ -3954,9 +3959,10 @@ def promote_source_negation(
                     retryable=True,
                     scan_may_continue=True,
                 )
-            scratch_source = (
-                "\n".join([*lines[:insert_at], harness.declaration, *lines[insert_at:]]) + "\n"
-            )
+            # Check only the exact source prefix needed to elaborate the
+            # candidate and alias. Subsequent declarations are irrelevant and
+            # may independently fail or exhaust Lean's heartbeat budget.
+            scratch_source = "\n".join([*lines[:insert_at], harness.declaration]) + "\n"
             rerun = _run_authoritative_source_check(
                 scratch_source,
                 cwd=str(project_root),

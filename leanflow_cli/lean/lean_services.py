@@ -2639,7 +2639,7 @@ def lean_auto_try(
 
 
 def _axiom_harness_source(target_file: Path, target: str) -> str:
-    """Return current source with an axiom query inserted in declaration scope."""
+    """Return the exact declaration prefix followed by an axiom query."""
     source = target_file.read_text(encoding="utf-8")
     lines = source.splitlines()
     entries = _declaration_index(target_file)
@@ -2682,7 +2682,7 @@ def _axiom_harness_source(target_file: Path, target: str) -> str:
                     cursor -= 1
                     continue
                 break
-    lines.insert(insertion_index, f"#print axioms {print_target}")
+    lines = [*lines[:insertion_index], f"#print axioms {print_target}"]
     return "\n".join(lines) + "\n"
 
 

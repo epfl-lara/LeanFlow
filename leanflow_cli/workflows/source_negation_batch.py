@@ -43,7 +43,7 @@ class BatchCandidateRegion:
 
 @dataclass(frozen=True)
 class SourceNegationBatchHarness:
-    """Contain one full-source check and every inserted candidate range."""
+    """Contain one source-prefix check and every inserted candidate range."""
 
     source: str
     candidates: tuple[BatchCandidateRegion, ...]
@@ -65,10 +65,13 @@ def build_batch_harness(
     source: str,
     candidates: Sequence[BatchCandidateInput],
 ) -> SourceNegationBatchHarness:
-    """Insert unique aliases after their declarations in one source copy.
+    """Insert unique aliases after their declarations in one bounded source prefix.
 
     Source-order insertion preserves private and namespace scope. Returned line
     ranges refer to the generated source consumed by Lean, not the original.
+    Commands after the final candidate are deliberately omitted: they cannot
+    contribute to candidate compatibility and may contain an unrelated slow or
+    broken declaration that would make every verdict spuriously uncertain.
     """
     lines = str(source).splitlines()
     indexed = list(enumerate(candidates))
@@ -103,7 +106,6 @@ def build_batch_harness(
             end_line=len(generated),
         )
         cursor = candidate.insert_at
-    generated.extend(lines[cursor:])
     return SourceNegationBatchHarness(
         source="\n".join(generated) + "\n",
         candidates=tuple(regions_by_index[index] for index in range(len(candidates))),
@@ -248,7 +250,7 @@ def classify_batch_check(
     *,
     allowed_axioms: Set[str],
 ) -> tuple[BatchCandidateVerdict, ...]:
-    """Classify aliases conservatively after one exact full-source check.
+    """Classify aliases conservatively after one exact source-prefix check.
 
     A compatible verdict is only scheduling evidence: the caller must rerun
     the existing single-candidate authoritative promotion gate before changing

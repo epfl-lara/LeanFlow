@@ -1391,7 +1391,7 @@ def _axiom_batch_output(harness: str) -> str:
     return "\n".join(output)
 
 
-def test_lean_axioms_reuses_one_exact_batch_for_distinct_targets(monkeypatch, tmp_path):
+def test_lean_axioms_reuses_one_prefix_batch_for_distinct_targets(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()
     target = project / "Main.lean"
@@ -1411,8 +1411,8 @@ def test_lean_axioms_reuses_one_exact_batch_for_distinct_targets(monkeypatch, tm
 
     monkeypatch.setattr(lean_services, "_run_command", fake_run)
 
-    first = lean_services.lean_axioms("first", cwd=project, file_path=str(target))
     second = lean_services.lean_axioms("second", cwd=project, file_path=str(target))
+    first = lean_services.lean_axioms("first", cwd=project, file_path=str(target))
 
     assert len(calls) == 1
     assert calls[0].count("#print axioms") == 2
@@ -1658,11 +1658,11 @@ def test_lean_axioms_batch_failure_falls_back_to_exact_single_target(monkeypatch
         calls.append(harness)
         if harness.count("#print axioms") > 1:
             return 1, "an opportunistic sibling query failed"
-        return 0, "'first' depends on axioms: [Quot.sound]"
+        return 0, "'second' depends on axioms: [Quot.sound]"
 
     monkeypatch.setattr(lean_services, "_run_command", fake_run)
 
-    report = lean_services.lean_axioms("first", cwd=project, file_path=str(target))
+    report = lean_services.lean_axioms("second", cwd=project, file_path=str(target))
 
     assert len(calls) == 2
     assert calls[0].count("#print axioms") == 2
@@ -1687,7 +1687,7 @@ def test_axiom_batch_harness_keeps_queries_in_declaration_scope(tmp_path):
     plan = lean_axiom_batch.build_axiom_batch_plan(
         source,
         lean_services._declaration_index(target),
-        "helper",
+        "verified",
     )
 
     assert plan is not None
@@ -1697,7 +1697,7 @@ def test_axiom_batch_harness_keeps_queries_in_declaration_scope(tmp_path):
     assert harness.index("private lemma helper") < harness.index(helper_query)
     assert harness.index(helper_query) < harness.index("/-- Main theorem docs. -/")
     assert harness.index("theorem verified") < harness.index(verified_query)
-    assert harness.index(verified_query) < harness.index("end Demo")
+    assert "end Demo" not in harness
 
 
 def test_module_name_for_numeric_file_component_uses_lean_quoted_identifier(tmp_path):
@@ -1709,7 +1709,7 @@ def test_module_name_for_numeric_file_component_uses_lean_quoted_identifier(tmp_
     )
 
 
-def test_axiom_harness_queries_last_declaration_before_namespace_end(tmp_path):
+def test_axiom_harness_omits_namespace_tail_after_last_declaration(tmp_path):
     target = tmp_path / "Main.lean"
     target.write_text(
         "namespace Demo\n\ntheorem verified : True := by trivial\n\nend Demo\n",
@@ -1719,10 +1719,10 @@ def test_axiom_harness_queries_last_declaration_before_namespace_end(tmp_path):
     harness = lean_services._axiom_harness_source(target, "verified")
 
     assert harness.index("theorem verified") < harness.index("#print axioms verified")
-    assert harness.index("#print axioms verified") < harness.index("end Demo")
+    assert "end Demo" not in harness
 
 
-def test_axiom_harness_queries_before_next_declaration_metadata(tmp_path):
+def test_axiom_harness_omits_next_declaration_metadata(tmp_path):
     target = tmp_path / "Main.lean"
     target.write_text(
         "namespace Demo\n\n"
@@ -1737,9 +1737,9 @@ def test_axiom_harness_queries_before_next_declaration_metadata(tmp_path):
     harness = lean_services._axiom_harness_source(target, "helper")
 
     assert harness.index("private lemma helper") < harness.index("#print axioms helper")
-    assert harness.index("#print axioms helper") < harness.index("/-- Main theorem docs. -/")
-    assert harness.index("/-- Main theorem docs. -/") < harness.index("@[simp]")
-    assert harness.index("@[simp]") < harness.index("theorem verified")
+    assert "/-- Main theorem docs. -/" not in harness
+    assert "@[simp]" not in harness
+    assert "theorem verified" not in harness
 
 
 def test_lean_search_marks_repeated_empty_search_loop(monkeypatch, tmp_path):

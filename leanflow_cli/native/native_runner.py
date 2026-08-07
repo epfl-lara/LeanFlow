@@ -11082,20 +11082,39 @@ def _timeout_refactor_edit_pre_tool_guard(
     args: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any],
 ) -> str | None:
-    """Reject a heartbeat-only edit after the current proof shape timed out."""
-    if _workflow_kind() != "prove" or function_name not in _MANAGED_SOURCE_EDIT_TOOLS:
+    """Reject a heartbeat-only edit or candidate check after an exact timeout."""
+    incremental_candidate = function_name == "lean_incremental_check"
+    if _workflow_kind() != "prove" or (
+        function_name not in _MANAGED_SOURCE_EDIT_TOOLS and not incremental_candidate
+    ):
         return None
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
     active_file = str(assignment.get("active_file", "") or "").strip()
-    if (
-        not target_symbol
-        or not active_file
-        or not _managed_edit_targets_assignment(
-            args,
-            active_file,
-            function_name=function_name,
-        )
+    if not target_symbol or not active_file:
+        return None
+    arguments = dict(args or {})
+    if incremental_candidate:
+        action = str(arguments.get("action", "check_target") or "check_target")
+        requested_target = str(
+            arguments.get("theorem_id", "") or arguments.get("target_symbol", "") or ""
+        ).strip()
+        requested_file = str(
+            arguments.get("file_path", "") or arguments.get("active_file", "") or ""
+        ).strip()
+        replacement = str(arguments.get("replacement", "") or "").strip()
+        if (
+            action.strip().lower().replace("-", "_") != "check_target"
+            or requested_target != target_symbol
+            or not requested_file
+            or not _same_active_file(requested_file, active_file)
+            or not replacement
+        ):
+            return None
+    elif not _managed_edit_targets_assignment(
+        args,
+        active_file,
+        function_name=function_name,
     ):
         return None
     timeout_reason = _restored_assignment_verification_timeout_reason(
@@ -11109,15 +11128,18 @@ def _timeout_refactor_edit_pre_tool_guard(
         before_text = Path(active_file).read_text(encoding="utf-8")
     except OSError:
         return None
-    after_text = managed_edit_rollback.preview_candidate_source(
-        function_name,
-        args,
-        before_text,
-    )
-    if not after_text:
-        return None
     before_declaration = _assigned_candidate_declaration_raw(before_text, target_symbol)
-    after_declaration = _assigned_candidate_declaration_raw(after_text, target_symbol)
+    if incremental_candidate:
+        after_declaration = replacement
+    else:
+        after_text = managed_edit_rollback.preview_candidate_source(
+            function_name,
+            args,
+            before_text,
+        )
+        if not after_text:
+            return None
+        after_declaration = _assigned_candidate_declaration_raw(after_text, target_symbol)
     if not timeout_refactor_guard.is_heartbeat_only_change(
         before_declaration,
         after_declaration,

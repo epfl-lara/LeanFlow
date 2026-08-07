@@ -135,8 +135,16 @@ def build_axiom_batch_plan(
     *,
     requested_targets: Sequence[str] = (),
     prefetch_siblings: bool = True,
+    truncate_after_last_query: bool = True,
 ) -> AxiomBatchPlan | None:
-    """Build a marked harness for requested declarations and sibling proofs."""
+    """Build a marked harness for requested declarations.
+
+    Sibling prefetch is limited to declarations at or before the latest
+    requested target. Later declarations cannot affect an existing target's
+    axiom profile and may be slow, broken, or intentionally unresolved, so
+    ordinary axiom inspection truncates after the last query. Exact helper
+    checks can retain their temporary parent skeleton by disabling truncation.
+    """
     targets = tuple(
         dict.fromkeys(
             value
@@ -154,16 +162,18 @@ def build_axiom_batch_plan(
         return None
     requested_index = requested_indices[targets[0]]
     explicitly_requested = set(requested_indices.values())
+    latest_requested_index = max(explicitly_requested)
     selected_indices = [
         index
         for index, entry in enumerate(entries)
         if (
             prefetch_siblings
+            and index <= latest_requested_index
             and str(entry.get("kind", "") or "").strip().lower() in _PREFETCH_KINDS
         )
         or index in explicitly_requested
     ]
-    if not selected_indices or (prefetch_siblings and len(selected_indices) < 2):
+    if not selected_indices:
         return None
 
     lines = source.splitlines()
@@ -203,6 +213,12 @@ def build_axiom_batch_plan(
             f"#print axioms {query.target}",
             f'#check ("{query.end_marker}" : String)',
         ]
+    final_insertion_index = max(insertion_index for insertion_index, _query in insertions)
+    inserted_before_final = sum(
+        3 for insertion_index, _query in insertions if insertion_index <= final_insertion_index
+    )
+    if truncate_after_last_query:
+        lines = lines[: final_insertion_index + inserted_before_final]
     return AxiomBatchPlan(
         source="\n".join(lines) + "\n",
         queries=tuple(query for _, query in insertions),

@@ -39,6 +39,17 @@ def test_batch_harness_preserves_schedule_order_and_maps_generated_lines():
     )
 
 
+def test_batch_harness_omits_commands_after_the_final_candidate():
+    harness = source_negation_batch.build_batch_harness(
+        "lemma candidate : True := by trivial\n" "theorem unrelated_slow_tail : True := by simp\n",
+        (_candidate("candidate", insert_at=1),),
+    )
+
+    assert "lemma candidate" in harness.source
+    assert "leanflowNegationPromotion_candidate" in harness.source
+    assert "unrelated_slow_tail" not in harness.source
+
+
 def test_batch_classifies_four_local_failures_from_one_exact_check():
     harness = source_negation_batch.build_batch_harness(
         "\n".join(f"lemma c{index} : True := by trivial" for index in range(4)) + "\n",

@@ -1717,10 +1717,8 @@ def test_authoritative_source_check_records_the_first_lean_error(monkeypatch, tm
     assert completed["failure_detail"] == result["failure_detail"]
 
 
-def test_source_negation_exact_project_harness_preserves_next_declaration_metadata(
-    monkeypatch, tmp_path
-):
-    """Whole-source reruns must insert before the next theorem's doc and attributes."""
+def test_source_negation_exact_project_harness_omits_later_declarations(monkeypatch, tmp_path):
+    """Candidate checks must not elaborate unrelated declarations after the alias."""
     source, _node_id, _entry = _setup(monkeypatch, tmp_path, sublemma=True)
     source.write_text(
         "import Mathlib\n\n"
@@ -1768,10 +1766,9 @@ def test_source_negation_exact_project_harness_preserves_next_declaration_metada
     assert result.ok is True
     assert len(harnesses) == 1
     harness = harnesses[0]
-    alias_index = harness.index("theorem leanflowNegationPromotion_")
-    doc_index = harness.index("/-- A doc containing")
-    assert alias_index < doc_index
-    assert "@[category research open]\ntheorem next_declaration" in harness
+    assert "theorem leanflowNegationPromotion_" in harness
+    assert "/-- A doc containing" not in harness
+    assert "next_declaration" not in harness
     assert source.read_bytes() == original
 
 

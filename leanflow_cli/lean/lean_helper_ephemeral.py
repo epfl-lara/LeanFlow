@@ -226,6 +226,7 @@ def _build_harness(
         declarations[0],
         requested_targets=declarations[1:],
         prefetch_siblings=False,
+        truncate_after_last_query=False,
     )
     if plan is None:
         return None, "helper_axiom_harness_failed", "could not build helper axiom harness"

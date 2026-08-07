@@ -29039,6 +29039,48 @@ def test_timed_out_declaration_rejects_heartbeat_only_verified_patch(tmp_path, m
     assert events[-1][0][1] == "timeout-heartbeat-only-edit-blocked"
 
 
+def test_timed_out_declaration_rejects_heartbeat_only_incremental_candidate(tmp_path, monkeypatch):
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  aesop\n"
+    active.write_text(source, encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "maximum number of heartbeats exceeded",
+            }
+        ],
+    }
+    replacement = "set_option maxHeartbeats 1000000 in\n" "theorem demo : True := by\n" "  aesop"
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = state
+
+    result = runner._managed_pre_tool_call(
+        agent,
+        "lean_incremental_check",
+        {
+            "action": "check_target",
+            "file_path": str(active),
+            "theorem_id": "demo",
+            "replacement": replacement,
+        },
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "timeout_structural_refactor_required"
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == source
+
+
 def test_timed_out_declaration_allows_material_verified_patch(tmp_path, monkeypatch):
     active = tmp_path / "Main.lean"
     source = "theorem demo : True := by\n  aesop\n"
