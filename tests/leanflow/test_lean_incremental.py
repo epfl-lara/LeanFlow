@@ -2370,6 +2370,30 @@ def test_normalize_payload_only_bounds_feedback(monkeypatch):
     assert "tactics_truncated" not in check
 
 
+def test_normalize_payload_marks_diagnostic_heartbeat_timeout():
+    payload = li._normalize_payload(
+        {
+            "success": True,
+            "ok": False,
+            "timed_out": False,
+            "output": (
+                "error: (deterministic) timeout at `whnf`, maximum number of "
+                "heartbeats (200000) has been reached"
+            ),
+            "messages": [
+                {
+                    "severity": "error",
+                    "message": "maximum number of heartbeats has been reached",
+                }
+            ],
+        },
+        "feedback",
+    )
+
+    assert payload["timed_out"] is True
+    assert payload["timed_out_inferred_from_diagnostics"] is True
+
+
 def test_failed_helper_check_bounds_replayed_diagnostics():
     import json
 
