@@ -10,7 +10,7 @@ from urllib.parse import unquote, urlparse
 
 from leanflow_cli.lean.lean_declarations import _declaration_index
 
-__all__ = ["partition_source_order_results"]
+__all__ = ["enrich_local_source_results", "partition_source_order_results"]
 
 
 def _canonical_path(value: object, *, cwd: str) -> Path | None:
@@ -117,6 +117,80 @@ def _result_is_same_file(
         active_file=active_file,
         cwd=cwd,
     )
+
+
+def _source_namespace_names(active_file: Path) -> set[str]:
+    """Return namespace names explicitly opened by the active source file."""
+    try:
+        source = active_file.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    return {
+        match.group(1)
+        for match in re.finditer(
+            r"(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_'.]*)\s*(?:--.*)?$",
+            source,
+        )
+    }
+
+
+def enrich_local_source_results(
+    payload: Mapping[str, Any],
+    *,
+    active_file: str = "",
+    cwd: str = "",
+) -> dict[str, Any]:
+    """Attach exact active-file declarations to unstructured local-search symbols.
+
+    The MCP local index sometimes returns only ``match=Namespace.privateName``.
+    Resolve that value only when its short name is unique in the active file and
+    its qualifier agrees with an explicit local namespace (or it is unqualified).
+    This both exposes the usable declaration signature and gives the source-order
+    fence enough evidence to hide current or future declarations.
+    """
+    enriched = dict(payload)
+    active = _canonical_path(active_file, cwd=cwd)
+    raw_results = enriched.get("results")
+    if active is None or not active.is_file() or not isinstance(raw_results, list):
+        return enriched
+    entries = _declaration_index(active)
+    namespaces = _source_namespace_names(active)
+    changed = False
+    results: list[Any] = []
+    for raw in raw_results:
+        if not isinstance(raw, Mapping) or str(raw.get("provider", "") or "") != (
+            "mcp-local-search"
+        ):
+            results.append(raw)
+            continue
+        result = dict(raw)
+        symbol = str(result.get("name", "") or result.get("match", "") or "").strip()
+        if not re.fullmatch(r"(?:[A-Za-z_][A-Za-z0-9_']*\.)*[A-Za-z_][A-Za-z0-9_']*", symbol):
+            results.append(raw)
+            continue
+        qualifier, _, short = symbol.rpartition(".")
+        if qualifier and qualifier not in namespaces:
+            results.append(raw)
+            continue
+        declaration = _unique_declaration(entries, short)
+        if declaration is None:
+            results.append(raw)
+            continue
+        result.update(
+            {
+                "name": str(declaration.get("name", "") or short),
+                "file": str(active),
+                "line": int(declaration.get("line", 0) or 0),
+                "end_line": int(declaration.get("end_line", 0) or 0),
+                "declaration": str(declaration.get("text", "") or ""),
+                "local_source_enriched": True,
+            }
+        )
+        results.append(result)
+        changed = True
+    if changed:
+        enriched["results"] = results
+    return enriched
 
 
 def partition_source_order_results(

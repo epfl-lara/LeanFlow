@@ -82,6 +82,9 @@ class TestGetStatus:
         status = compressor.get_status()
         assert "last_prompt_tokens" in status
         assert "threshold_tokens" in status
+        assert "percent_threshold_tokens" in status
+        assert "base_threshold_tokens" in status
+        assert "absolute_threshold_tokens" in status
         assert "context_length" in status
         assert "usage_percent" in status
         assert "compression_count" in status
@@ -90,6 +93,38 @@ class TestGetStatus:
         compressor.last_prompt_tokens = 50000
         status = compressor.get_status()
         assert status["usage_percent"] == 50.0
+
+    def test_absolute_cap_description_is_truthful(self):
+        with patch(
+            "agent.compression.context_compressor.get_model_context_length",
+            return_value=200_000,
+        ):
+            compressor = ContextCompressor(
+                model="test",
+                threshold_percent=0.75,
+                absolute_threshold_tokens=96_000,
+                quiet_mode=True,
+            )
+
+        assert compressor.threshold_tokens == 96_000
+        assert "managed cap 96,000 = 48%" in compressor.threshold_description()
+        assert "base policy 75% = 150,000" in compressor.threshold_description()
+
+    def test_output_reserve_description_does_not_claim_percentage_equality(self):
+        with patch(
+            "agent.compression.context_compressor.get_model_context_length",
+            return_value=100_000,
+        ):
+            compressor = ContextCompressor(
+                model="test",
+                threshold_percent=0.75,
+                reserved_output_tokens=40_000,
+                quiet_mode=True,
+            )
+
+        assert compressor.threshold_tokens == 60_000
+        assert "base threshold 60,000 after output reserve" in compressor.threshold_description()
+        assert "percentage policy 75% = 75,000" in compressor.threshold_description()
 
 
 class TestCompress:

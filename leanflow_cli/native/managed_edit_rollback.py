@@ -12,7 +12,11 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from leanflow_cli.lean.lean_parsing import _lean_suggestion_tactic_markers
+from leanflow_cli.lean.lean_parsing import (
+    LEAN_DECLARATION_PREAMBLE_RE,
+    _declaration_line_index_from_text,
+    _lean_suggestion_tactic_markers,
+)
 from tools.utilities.patch_parser import preview_v4a_update
 
 _NON_SEMANTIC_CANDIDATE_LINE_RE = re.compile(
@@ -22,6 +26,9 @@ _TRANSIENT_DIAGNOSTIC_COMMAND_RE = re.compile(
     r"^\s*(?:#(?:check|print|synth|eval|reduce|lint|find)\b.*|run_cmd\b.*|"
     r"set_option\s+trace\.[^\s]+\s+true\b.*)$"
 )
+REJECTED_HELPER_REPLAY_STATE_KEY = "rejected_helper_candidates"
+_REJECTED_HELPER_REPLAY_LIMIT = 48
+_DECLARATION_PREAMBLE_PATTERN = re.compile(LEAN_DECLARATION_PREAMBLE_RE)
 
 
 def normalize_candidate_declaration(declaration: str) -> str:
@@ -119,6 +126,169 @@ def matching_rejected_candidate(
         attempt = dict(raw)
         if str(attempt.get("declaration_hash", "") or "").strip() == candidate_hash:
             return attempt
+    return None
+
+
+def _name_insensitive_declaration(declaration: str) -> str:
+    """Return one declaration identity with only its declared name erased."""
+    normalized = normalize_candidate_declaration(declaration)
+    match = _DECLARATION_PREAMBLE_PATTERN.match(normalized)
+    if not normalized or match is None or match.start(2) < 0:
+        return ""
+    anonymous = normalized[: match.start(2)] + "<helper>" + normalized[match.end(2) :]
+    return " ".join(anonymous.split())
+
+
+def helper_candidate_fingerprint(declaration: str) -> str:
+    """Return a proof-sensitive fingerprint that ignores the helper's name."""
+    anonymous = _name_insensitive_declaration(declaration)
+    if not anonymous:
+        return ""
+    return hashlib.sha256(anonymous.encode("utf-8", "replace")).hexdigest()
+
+
+def _declaration_fingerprints(source: str) -> list[dict[str, str]]:
+    """Return named declaration fingerprints from one in-memory Lean source image."""
+    records: list[dict[str, str]] = []
+    for entry in _declaration_line_index_from_text(str(source or "")):
+        declaration = str(entry.get("text", "") or "")
+        fingerprint = helper_candidate_fingerprint(declaration)
+        name = str(entry.get("name", "") or "").strip()
+        if fingerprint and name:
+            records.append(
+                {
+                    "name": name,
+                    "fingerprint": fingerprint,
+                    "declaration": normalize_candidate_declaration(declaration),
+                }
+            )
+    return records
+
+
+def remember_rejected_helper_check(
+    state: dict[str, Any],
+    *,
+    args: Mapping[str, Any] | None,
+    result: Mapping[str, Any] | None,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+) -> list[dict[str, Any]]:
+    """Remember concrete failed ``check_helper`` candidates for pre-edit replay fencing."""
+    arguments = dict(args or {})
+    payload = dict(result or {})
+    if str(arguments.get("action", "") or "") != "check_helper":
+        return []
+    status = str(payload.get("status", "") or "").lower()
+    if (
+        payload.get("ok") is True
+        or payload.get("valid_without_sorry") is True
+        or payload.get("lean_started") is False
+        or payload.get("timed_out") is True
+        or "timeout" in status
+        or not target_symbol
+        or not active_file
+        or len(source_revision_sha256) != 64
+    ):
+        return []
+    messages = payload.get("messages")
+    concrete_error = payload.get("has_errors") is True or payload.get("error_count", 0) not in {
+        0,
+        "0",
+        None,
+    }
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        concrete_error = concrete_error or any(
+            isinstance(message, Mapping)
+            and str(message.get("severity", "") or "").lower() == "error"
+            for message in messages
+        )
+    if not concrete_error:
+        return []
+    reason = str(payload.get("error", "") or "").strip()
+    if not reason and isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        reason = next(
+            (
+                str(message.get("message", "") or "").strip()
+                for message in messages
+                if isinstance(message, Mapping)
+                and str(message.get("severity", "") or "").lower() == "error"
+            ),
+            "",
+        )
+    remembered: list[dict[str, Any]] = []
+    records = list(state.get(REJECTED_HELPER_REPLAY_STATE_KEY) or [])
+    existing = {
+        (
+            str(record.get("fingerprint", "") or ""),
+            str(record.get("target_symbol", "") or ""),
+            str(record.get("active_file", "") or ""),
+            str(record.get("source_revision_sha256", "") or ""),
+        )
+        for record in records
+        if isinstance(record, Mapping)
+    }
+    for candidate in _declaration_fingerprints(str(arguments.get("replacement", "") or "")):
+        identity = (
+            candidate["fingerprint"],
+            target_symbol,
+            active_file,
+            source_revision_sha256,
+        )
+        if identity in existing:
+            continue
+        record: dict[str, Any] = {
+            **candidate,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "source_revision_sha256": source_revision_sha256,
+            "reason": " ".join(reason.split())[:500],
+        }
+        records.append(record)
+        remembered.append(record)
+        existing.add(identity)
+    state[REJECTED_HELPER_REPLAY_STATE_KEY] = records[-_REJECTED_HELPER_REPLAY_LIMIT:]
+    return remembered
+
+
+def matching_new_rejected_helper(
+    state: Mapping[str, Any],
+    *,
+    before_source: str,
+    after_source: str,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+) -> dict[str, Any] | None:
+    """Return a renamed failed helper newly introduced at the same source revision."""
+    before_counts = Counter(
+        record["fingerprint"]
+        for record in _declaration_fingerprints(before_source)
+        if record["name"] != target_symbol
+    )
+    added: list[dict[str, str]] = []
+    for candidate in _declaration_fingerprints(after_source):
+        if candidate["name"] == target_symbol:
+            continue
+        fingerprint = candidate["fingerprint"]
+        if before_counts[fingerprint]:
+            before_counts[fingerprint] -= 1
+        else:
+            added.append(candidate)
+    if not added:
+        return None
+    rejected = [
+        dict(record)
+        for record in state.get(REJECTED_HELPER_REPLAY_STATE_KEY, [])
+        if isinstance(record, Mapping)
+        and str(record.get("target_symbol", "") or "") == target_symbol
+        and str(record.get("active_file", "") or "") == active_file
+        and str(record.get("source_revision_sha256", "") or "") == source_revision_sha256
+    ]
+    for candidate in added:
+        for record in reversed(rejected):
+            if record.get("fingerprint") == candidate["fingerprint"]:
+                return {**record, "replayed_name": candidate["name"]}
     return None
 
 

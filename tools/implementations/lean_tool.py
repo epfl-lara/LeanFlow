@@ -10,7 +10,10 @@ from pathlib import Path
 from leanflow_cli.lean.lean_declarations import declaration_outline, declaration_region
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
 from leanflow_cli.lean.lean_lemma_suggest import lean_lemma_suggest
-from leanflow_cli.lean.lean_search_horizon import partition_source_order_results
+from leanflow_cli.lean.lean_search_horizon import (
+    enrich_local_source_results,
+    partition_source_order_results,
+)
 from leanflow_cli.lean.lean_services import (
     LEAN_WORKER_DISPATCH_ENABLED,
     LeanWorkerRequest,
@@ -227,10 +230,14 @@ def lean_search_tool(
     """Search Lean declarations and hide confirmed future same-file results."""
     result = lean_search(query, cwd=cwd or None, mode=mode, limit=limit, file_path=file_path)
     payload = partition_source_order_results(
-        {
-            "success": True,
-            **result.to_dict(),
-        },
+        enrich_local_source_results(
+            {
+                "success": True,
+                **result.to_dict(),
+            },
+            active_file=_leanflow_source_horizon_file,
+            cwd=cwd,
+        ),
         active_file=_leanflow_source_horizon_file,
         target_symbol=_leanflow_source_horizon_target,
         cwd=cwd,

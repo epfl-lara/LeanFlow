@@ -5357,6 +5357,16 @@ def _disable_agent_tool_schema(agent: Any, tool_name: str) -> None:
 
 
 _TEMPORARY_TOOL_SCHEMAS_ATTR = "_managed_temporary_tool_schemas"
+_AUTHORITATIVE_RESUME_BOOTSTRAP_KEY = "authoritative_resume_bootstrap"
+_RESUME_BOOTSTRAP_TOOL_NAMES = frozenset(
+    {
+        "lean_capabilities",
+        "lean_inspect",
+        "lean_lemma_suggest",
+        "lean_search",
+        "lean_sorries",
+    }
+)
 
 
 def _restore_temporary_agent_tool_schemas(agent: Any) -> None:
@@ -5412,6 +5422,36 @@ def _sync_construction_only_tool_surface(agent: Any, autonomy_state: Mapping[str
     if _workflow_kind() != "prove" or not _single_queue_item_turn_enabled():
         return
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    resume_bootstrap = dict(autonomy_state.get(_AUTHORITATIVE_RESUME_BOOTSTRAP_KEY) or {})
+    if isinstance(autonomy_state, dict):
+        autonomy_state.pop(_AUTHORITATIVE_RESUME_BOOTSTRAP_KEY, None)
+    if resume_bootstrap:
+        target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+        active_file = str(assignment.get("active_file", "") or "").strip()
+        if (
+            target_symbol == str(resume_bootstrap.get("target_symbol", "") or "").strip()
+            and _same_active_file(
+                active_file,
+                str(resume_bootstrap.get("active_file", "") or "").strip(),
+            )
+            and _source_revision_sha256(active_file)
+            == str(resume_bootstrap.get("source_revision_sha256", "") or "").strip()
+        ):
+            _temporarily_disable_agent_tool_schemas(
+                agent,
+                set(_RESUME_BOOTSTRAP_TOOL_NAMES),
+            )
+            with contextlib.suppress(Exception):
+                _record_agent_activity(
+                    agent,
+                    "authoritative-resume-tool-surface",
+                    "Suppressed redundant bootstrap tools for the first resumed provider turn",
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    hidden_tools=sorted(_RESUME_BOOTSTRAP_TOOL_NAMES),
+                    source_revision_sha256=_source_revision_sha256(active_file),
+                    campaign_progress=False,
+                )
     tracker = dict(autonomy_state.get("search_progress") or {})
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
     active_file = str(assignment.get("active_file", "") or "").strip()
@@ -9140,7 +9180,7 @@ def _rejected_candidate_replay_pre_tool_guard(
     args: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any],
 ) -> str | None:
-    """Reject an exact assigned-theorem source candidate already rejected by Lean."""
+    """Reject an assigned candidate or renamed helper already rejected by Lean."""
     if function_name not in {"patch", "write_file", "apply_verified_patch"}:
         return None
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
@@ -9160,6 +9200,59 @@ def _rejected_candidate_replay_pre_tool_guard(
         before_text = Path(active_file).read_text(encoding="utf-8")
     except OSError:
         return None
+    after_text = managed_edit_rollback.preview_candidate_source(
+        function_name,
+        args,
+        before_text,
+    )
+    rejected_helper = managed_edit_rollback.matching_new_rejected_helper(
+        autonomy_state,
+        before_source=before_text,
+        after_source=after_text,
+        target_symbol=target_symbol,
+        active_file=active_file,
+        source_revision_sha256=_source_revision_sha256(active_file),
+    )
+    if rejected_helper is not None:
+        with contextlib.suppress(Exception):
+            _record_agent_activity(
+                agent,
+                "rejected-helper-replay-blocked",
+                (
+                    "Blocked renamed replay of rejected helper "
+                    f"{rejected_helper.get('replayed_name', '')}"
+                ),
+                target_symbol=target_symbol,
+                active_file=active_file,
+                blocked_tool=function_name,
+                rejected_helper_name=str(rejected_helper.get("name", "") or ""),
+                replayed_helper_name=str(rejected_helper.get("replayed_name", "") or ""),
+                provider_called=False,
+                lean_started=False,
+                campaign_progress=False,
+            )
+        return json.dumps(
+            {
+                "success": False,
+                "status": "rejected_helper_replay",
+                "blocked_tool": function_name,
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+                "patch_applied": False,
+                "check_passed": False,
+                "provider_called": False,
+                "lean_started": False,
+                "rejected_helper_name": rejected_helper.get("name", ""),
+                "replayed_helper_name": rejected_helper.get("replayed_name", ""),
+                "prior_rejection": rejected_helper.get("reason", ""),
+                "required_action": (
+                    "This helper has the same statement and proof as a concrete failed "
+                    "check_helper candidate; renaming it does not change the rejection. "
+                    "Use the retained diagnostic and make a materially different helper."
+                ),
+            },
+            ensure_ascii=False,
+        )
     candidate = _preview_managed_candidate_declaration(
         function_name,
         args,
@@ -10537,7 +10630,21 @@ def _research_helper_candidate_pre_tool_guard(
                 function_name=function_name,
             )
         )
-        if contains_exact_candidate:
+        verified_patch_for_assignment = bool(
+            function_name == "apply_verified_patch"
+            and _managed_edit_targets_assignment(
+                arguments,
+                active_file,
+                function_name=function_name,
+            )
+            and str(
+                arguments.get("theorem_id", "")
+                or arguments.get("target_symbol", "")
+                or target_symbol
+            ).strip()
+            == target_symbol
+        )
+        if contains_exact_candidate or verified_patch_for_assignment:
             if function_name != "apply_verified_patch":
                 with contextlib.suppress(Exception):
                     _record_agent_activity(
@@ -10634,6 +10741,7 @@ def _research_helper_candidate_pre_tool_guard(
                                 before_source_revision_sha256=before_sha256,
                                 integrated_source_revision_sha256=after_sha256,
                                 patch_normalized=supplied_patch != exact_patch,
+                                model_patch_contained_exact_candidate=contains_exact_candidate,
                                 campaign_progress=False,
                             )
                         return None
@@ -14926,6 +15034,31 @@ def _handle_managed_tool_result(
     )
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
     active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        isinstance(autonomy_state, dict)
+        and function_name == "lean_incremental_check"
+        and target_symbol
+        and active_file
+    ):
+        rejected_helpers = managed_edit_rollback.remember_rejected_helper_check(
+            autonomy_state,
+            args=args,
+            result=_json_tool_result_payload(_result),
+            target_symbol=target_symbol,
+            active_file=active_file,
+            source_revision_sha256=_source_revision_sha256(active_file),
+        )
+        if rejected_helpers:
+            with contextlib.suppress(Exception):
+                _record_agent_activity(
+                    agent,
+                    "rejected-helper-check-recorded",
+                    f"Recorded {len(rejected_helpers)} concretely rejected helper candidate(s)",
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    helper_names=[record["name"] for record in rejected_helpers],
+                    campaign_progress=False,
+                )
     if (
         isinstance(autonomy_state, dict)
         and function_name in advisor_failure_circuit.ADVISOR_TOOL_NAMES
@@ -22080,6 +22213,7 @@ def _build_agent() -> AIAgent:
         log_preview_chars=logging_cfg.get("preview_chars", 1600),
         tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 28),
         tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 12),
+        compression_threshold_tokens=_managed_context_compression_cap_tokens(),
     )
     _apply_managed_context_compression_cap(agent)
     agent_holder["agent"] = agent
@@ -23579,6 +23713,13 @@ def _startup_user_message(
     ):
         if handoff:
             queue_block += f"\n\n{handoff}"
+    if dict(autonomy_state or {}).get(_AUTHORITATIVE_RESUME_BOOTSTRAP_KEY):
+        queue_block += (
+            "\n\n[LEANFLOW AUTHORITATIVE RESUME]\n"
+            "- the injected queue, plan, source revision, and route state are current\n"
+            "- do not repeat capabilities, whole-target inspection, sorry inventory, broad semantic search, or lemma-suggestion bootstrap\n"
+            "- begin with the preserved route's concrete source action, focused declaration lookup, or LeanProbe check"
+        )
     organization_block = ""
     if _document_formalization_organization_phase_active(live_state, autonomy_state):
         organization_block = (
@@ -33491,6 +33632,17 @@ def main() -> int:
             plan_resume_block,
             autonomy_state,
         )
+        if plan_resume_block:
+            assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+            resume_target = str(assignment.get("target_symbol", "") or "").strip()
+            resume_file = str(assignment.get("active_file", "") or "").strip()
+            resume_revision = _source_revision_sha256(resume_file)
+            if resume_target and resume_file and resume_revision:
+                autonomy_state[_AUTHORITATIVE_RESUME_BOOTSTRAP_KEY] = {
+                    "target_symbol": resume_target,
+                    "active_file": resume_file,
+                    "source_revision_sha256": resume_revision,
+                }
         initial_message = _attach_live_proof_state(
             _startup_user_message(
                 None if plan_resume_block else resumed_checkpoint,

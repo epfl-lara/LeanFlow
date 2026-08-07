@@ -1494,6 +1494,75 @@ class TestConcurrentToolExecution:
             assert payload["status"] == "identical_batch_call_reused"
             assert payload["source_tool_call_id"] == "c0"
 
+    def test_identical_concurrent_lean_reads_share_one_execution(self, agent):
+        """Identical outlines and proof contexts should each run only once per batch."""
+        tool_calls = [
+            _mock_tool_call(
+                name=name,
+                arguments=json.dumps({"file_path": "Demo.lean", "theorem_id": "demo"}),
+                call_id=f"c{index}",
+            )
+            for index, name in enumerate(
+                ["lean_outline", "lean_outline", "lean_proof_context", "lean_proof_context"]
+            )
+        ]
+        messages: list[dict] = []
+
+        with patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "result": "read"}),
+        ) as handle:
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=tool_calls),
+                messages,
+                "task-1",
+            )
+
+        assert handle.call_count == 2
+        assert json.loads(messages[1]["content"])["status"] == "identical_batch_call_reused"
+        assert json.loads(messages[3]["content"])["status"] == "identical_batch_call_reused"
+
+    def test_concurrent_lean_search_results_compact_later_overlap(self, agent):
+        """Keep first search evidence full and replace later duplicate bodies with references."""
+        tool_calls = [
+            _mock_tool_call(
+                name="lean_search",
+                arguments=json.dumps({"query": query}),
+                call_id=f"c{index}",
+            )
+            for index, query in enumerate(["foo", "bar"])
+        ]
+
+        def search_result(_name, args, _task_id, **_kwargs):
+            return json.dumps(
+                {
+                    "success": True,
+                    "results": [
+                        {
+                            "provider": "local",
+                            "name": "Demo.shared",
+                            "declaration": "theorem Demo.shared : " + args["query"] * 100,
+                        },
+                        {"provider": "local", "name": f"Demo.{args['query']}"},
+                    ],
+                }
+            )
+
+        messages: list[dict] = []
+        with patch("run_agent.handle_function_call", side_effect=search_result):
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=tool_calls),
+                messages,
+                "task-1",
+            )
+
+        first = json.loads(messages[0]["content"])
+        second = json.loads(messages[1]["content"])
+        assert "declaration" in first["results"][0]
+        assert second["results"][0]["repeated_result"] is True
+        assert "declaration" not in second["results"][0]
+        assert second["results"][1]["name"] == "Demo.bar"
+
     def test_delegated_concurrent_tools_suppress_child_spinner(self, agent):
         """Keep lane tool batches concise when several children share one terminal."""
         tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")

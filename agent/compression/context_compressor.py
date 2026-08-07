@@ -50,6 +50,7 @@ class ContextCompressor:
         main_provider: str = "",
         main_api_mode: str = "",
         reserved_output_tokens: int = 0,
+        absolute_threshold_tokens: int | None = None,
         prune_tool_output: bool = False,
         prune_keep_recent_user_turns: int = 2,
     ) -> None:
@@ -70,13 +71,20 @@ class ContextCompressor:
 
         self.context_length = get_model_context_length(model, base_url=base_url, api_key=api_key)
         percent_threshold = int(self.context_length * threshold_percent)
+        self.percent_threshold_tokens = percent_threshold
         reserved_threshold = (
             max(0, self.context_length - self.reserved_output_tokens)
             if self.reserved_output_tokens
             else percent_threshold
         )
-        self.threshold_tokens = (
+        self.base_threshold_tokens = (
             min(percent_threshold, reserved_threshold) if reserved_threshold else percent_threshold
+        )
+        self.absolute_threshold_tokens = max(0, int(absolute_threshold_tokens or 0))
+        self.threshold_tokens = (
+            min(self.base_threshold_tokens, self.absolute_threshold_tokens)
+            if self.absolute_threshold_tokens
+            else self.base_threshold_tokens
         )
         self.compression_count = 0
         self._context_probed = False  # True after a step-down from context error
@@ -157,6 +165,9 @@ class ContextCompressor:
         return {
             "last_prompt_tokens": self.last_prompt_tokens,
             "threshold_tokens": self.threshold_tokens,
+            "percent_threshold_tokens": self.percent_threshold_tokens,
+            "base_threshold_tokens": self.base_threshold_tokens,
+            "absolute_threshold_tokens": self.absolute_threshold_tokens,
             "context_length": self.context_length,
             "usage_percent": (
                 (self.last_prompt_tokens / self.context_length * 100) if self.context_length else 0
@@ -187,6 +198,24 @@ class ContextCompressor:
             main_circuit_failure=self._summary_main_failure,
             on_main_failure=self._disable_summary_main,
         )
+
+    def threshold_description(self) -> str:
+        """Describe the effective threshold without mislabeling an absolute cap."""
+        percent = self.threshold_tokens / self.context_length * 100 if self.context_length else 0.0
+        if self.base_threshold_tokens == self.percent_threshold_tokens:
+            base = (
+                f"base policy {self.threshold_percent * 100:.0f}% = "
+                f"{self.base_threshold_tokens:,}"
+            )
+        else:
+            base = (
+                f"base threshold {self.base_threshold_tokens:,} after output reserve; "
+                f"percentage policy {self.threshold_percent * 100:.0f}% = "
+                f"{self.percent_threshold_tokens:,}"
+            )
+        if self.absolute_threshold_tokens and self.threshold_tokens < self.base_threshold_tokens:
+            return f"managed cap {self.threshold_tokens:,} = {percent:.0f}%; {base}"
+        return base
 
     def _disable_summary_auxiliary(self, failure_type: str) -> None:
         """Open this compressor's circuit after one auxiliary exception."""
@@ -396,7 +425,8 @@ class ContextCompressor:
                 f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)"
             )
             print(
-                f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent * 100:.0f}% = {self.threshold_tokens:,})"
+                f"   📊 Model context limit: {self.context_length:,} tokens "
+                f"({self.threshold_description()})"
             )
 
         if not self.quiet_mode:

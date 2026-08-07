@@ -116,7 +116,7 @@ _PROJECT_ADMITTED_LEAN_TOOLS = frozenset(
 # manager boundary from its completion callback. Reuse exact duplicates inside
 # one assistant batch so the compile and callback each happen once while every
 # provider tool-call id still receives a response.
-_BATCH_SINGLE_FLIGHT_TOOL_NAMES = frozenset({"lean_verify"})
+_BATCH_SINGLE_FLIGHT_TOOL_NAMES = frozenset({"lean_outline", "lean_proof_context", "lean_verify"})
 
 
 def _batch_single_flight_key(
@@ -133,6 +133,53 @@ def _batch_single_flight_key(
         separators=(",", ":"),
     )
     return f"{function_name}:{canonical_args}"
+
+
+def _search_result_identity(result: Mapping[str, Any]) -> str:
+    """Return the strongest stable identity exposed by one Lean search result."""
+    for key in ("name", "source_link", "match"):
+        value = str(result.get(key, "") or "").strip()
+        if value:
+            return f"{key}:{value}"
+    return ""
+
+
+def _compact_repeated_batch_search_results(content: str, seen: set[str]) -> str:
+    """Compact repeated Lean search hits while preserving the first full result."""
+    try:
+        payload, end = json.JSONDecoder().raw_decode(content)
+    except (json.JSONDecodeError, TypeError):
+        return content
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("results"), list):
+        return content
+    compacted_count = 0
+    projected_results: list[Any] = []
+    for raw in payload["results"]:
+        if not isinstance(raw, Mapping):
+            projected_results.append(raw)
+            continue
+        identity = _search_result_identity(raw)
+        if not identity or identity not in seen:
+            if identity:
+                seen.add(identity)
+            projected_results.append(raw)
+            continue
+        compacted_count += 1
+        projected_results.append(
+            {key: raw[key] for key in ("provider", "name", "source_link", "match") if key in raw}
+            | {
+                "repeated_result": True,
+                "reference": "earlier lean_search result in this assistant batch",
+            }
+        )
+    if not compacted_count:
+        return content
+    projected = {
+        **dict(payload),
+        "results": projected_results,
+        "repeated_results_compacted": compacted_count,
+    }
+    return json.dumps(projected, ensure_ascii=False) + content[end:]
 
 
 def _memory_heavy_tool_worker_limit() -> int:
@@ -623,7 +670,7 @@ class ToolExecutor:
             if reused_count:
                 print(
                     f"{agent.log_prefix}│  Reusing {reused_count} byte-identical "
-                    "read-only verification call(s)"
+                    "read-only tool call(s)"
                 )
             for i, (tc, name, args) in enumerate(parsed_calls, 1):
                 if agent.verbose_logging:
@@ -835,6 +882,7 @@ class ToolExecutor:
                 )
 
         # ── Post-execution: display per-tool results ─────────────────────
+        seen_search_result_ids: set[str] = set()
         for i, (tc, name, args) in enumerate(parsed_calls):
             r = result_slots[i]
             if r is None:
@@ -894,6 +942,11 @@ class ToolExecutor:
                 _prepare_tool_message(i, r)
                 tool_msg = message_slots[i]
             if tool_msg is not None:
+                if name == "lean_search":
+                    tool_msg["content"] = _compact_repeated_batch_search_results(
+                        tool_msg["content"],
+                        seen_search_result_ids,
+                    )
                 messages.append(tool_msg)
 
         if not agent.quiet_mode:

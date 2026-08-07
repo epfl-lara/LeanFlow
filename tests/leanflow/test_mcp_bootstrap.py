@@ -244,6 +244,24 @@ def test_bootstrap_patches_lean_lsp_loogle_project_paths(tmp_path):
     assert loogle_py.read_text(encoding="utf-8") == rendered
 
 
+def test_bootstrap_patches_proof_auto_rich_logging_to_stderr(tmp_path):
+    package_dir = tmp_path / "lib" / "python3.12" / "site-packages" / "lean_interact"
+    package_dir.mkdir(parents=True)
+    utils_py = package_dir / "utils.py"
+    utils_py.write_text(
+        "from rich.logging import RichHandler\n" "handler = RichHandler(rich_tracebacks=True)\n",
+        encoding="utf-8",
+    )
+
+    assert mcp_bootstrap._patch_lean_proof_auto_stdio_logging(tmp_path) is True
+
+    rendered = utils_py.read_text(encoding="utf-8")
+    assert "from rich.console import Console" in rendered
+    assert "console=Console(stderr=True)" in rendered
+    assert mcp_bootstrap._patch_lean_proof_auto_stdio_logging(tmp_path) is True
+    assert utils_py.read_text(encoding="utf-8") == rendered
+
+
 def test_managed_mcp_bootstrap_pins_setuptools_below_torch_conflict(monkeypatch, tmp_path):
     python_path = tmp_path / "python"
     python_path.write_text("#!/usr/bin/env python\n", encoding="utf-8")

@@ -336,6 +336,7 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        compression_threshold_tokens: int | None = None,
     ):
         """
         Initialize the AI Agent.
@@ -910,6 +911,7 @@ class AIAgent:
             main_provider=self.provider,
             main_api_mode=self.api_mode,
             reserved_output_tokens=compression_reserved_output,
+            absolute_threshold_tokens=compression_threshold_tokens,
             prune_tool_output=compression_prune_tool_output,
             prune_keep_recent_user_turns=compression_prune_keep_recent_user_turns,
         )
@@ -927,7 +929,7 @@ class AIAgent:
             if compression_enabled:
                 print(
                     f"📊 Context limit: {self.context_compressor.context_length:,} tokens "
-                    f"(compress at {int(compression_threshold * 100)}% = {self.context_compressor.threshold_tokens:,}, "
+                    f"(compress at {self.context_compressor.threshold_description()}, "
                     f"reserve {self.context_compressor.reserved_output_tokens:,} for output)"
                 )
             else:

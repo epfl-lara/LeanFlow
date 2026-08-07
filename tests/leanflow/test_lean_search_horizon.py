@@ -230,3 +230,58 @@ def test_missing_horizon_context_leaves_payload_unchanged():
     payload = _payload({"provider": "leanexplore-local", "name": "Demo.future"})
 
     assert lean_search_horizon.partition_source_order_results(payload) == payload
+
+
+def test_mcp_local_symbol_is_enriched_with_exact_private_declaration(tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text(
+        "namespace Demo\n\n"
+        "private lemma prior_helper (n : Nat) : n = n := by\n"
+        "  rfl\n\n"
+        "theorem assigned : True := by\n"
+        "  sorry\n\n"
+        "private lemma future_helper : True := by\n"
+        "  trivial\n\n"
+        "end Demo\n",
+        encoding="utf-8",
+    )
+    enriched = lean_search_horizon.enrich_local_source_results(
+        _payload(
+            {"provider": "mcp-local-search", "match": "Demo.prior_helper"},
+            {"provider": "mcp-local-search", "match": "Demo.future_helper"},
+        ),
+        active_file=str(active),
+        cwd=str(tmp_path),
+    )
+
+    assert enriched["results"][0]["name"] == "prior_helper"
+    assert "private lemma prior_helper" in enriched["results"][0]["declaration"]
+    assert enriched["results"][0]["local_source_enriched"] is True
+
+    projected = lean_search_horizon.partition_source_order_results(
+        enriched,
+        active_file=str(active),
+        target_symbol="assigned",
+        cwd=str(tmp_path),
+    )
+    assert [result["name"] for result in projected["results"]] == ["prior_helper"]
+    assert projected["source_order_inaccessible_results"][0]["name"] == "future_helper"
+
+
+def test_mcp_local_symbol_with_unrelated_namespace_fails_open(tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text(
+        "namespace Demo\nprivate lemma helper : True := by trivial\nend Demo\n",
+        encoding="utf-8",
+    )
+    result = {"provider": "mcp-local-search", "match": "Imported.helper"}
+    payload = _payload(result)
+
+    assert (
+        lean_search_horizon.enrich_local_source_results(
+            payload,
+            active_file=str(active),
+            cwd=str(tmp_path),
+        )
+        == payload
+    )

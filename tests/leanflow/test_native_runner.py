@@ -13053,17 +13053,16 @@ def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_sea
     verified_patch = {
         "path": str(active),
         "theorem_id": "demo",
-        "patch": (
-            "*** Begin Patch\n"
-            f"*** Update File: {active}\n"
-            "@@\n"
-            f"+{declaration.replace(chr(10), chr(10) + '+')}\n"
-            "+\n"
-            " theorem demo : True := by\n"
-            "*** End Patch\n"
-        ),
+        "patch": "stale model-authored patch replaced by manager authority",
     }
     assert runner._managed_pre_tool_call(_Agent(), "apply_verified_patch", verified_patch) is None
+    assert verified_patch["patch"] == (
+        runner.parent_helper_verification_reuse.exact_integrated_source_patch(
+            active.read_text(encoding="utf-8"),
+            runner.research_helper_candidate_priority.load(state),
+            path=str(active),
+        )
+    )
     assert runner._managed_pre_tool_call(_Agent(), "apply_verified_patch", verified_patch) is None
     assert (
         runner.research_helper_candidate_priority.load(state).integration_attempts
@@ -26838,6 +26837,79 @@ def test_startup_user_message_surfaces_effective_prompt(monkeypatch):
     prompt = runner._startup_user_message(live_state={}, autonomy_state={})
 
     assert "User prompt: use abs_abs_sub first" in prompt
+
+
+def test_authoritative_resume_hides_bootstrap_tools_for_one_provider_turn(monkeypatch, tmp_path):
+    """Resume from injected state without paying for a redundant bootstrap replay."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", str(active))
+    tool_names = [*runner._RESUME_BOOTSTRAP_TOOL_NAMES, "read_file", "lean_proof_context"]
+    agent = SimpleNamespace(
+        tools=[
+            {"type": "function", "function": {"name": name, "parameters": {}}}
+            for name in tool_names
+        ],
+        valid_tool_names=set(tool_names),
+        _managed_autonomy_state={},
+    )
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        runner._AUTHORITATIVE_RESUME_BOOTSTRAP_KEY: {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "source_revision_sha256": runner._source_revision_sha256(str(active)),
+        },
+    }
+    agent._managed_autonomy_state = state
+
+    runner._sync_construction_only_tool_surface(agent, state)
+
+    visible = {tool["function"]["name"] for tool in agent.tools}
+    assert visible == {"read_file", "lean_proof_context"}
+    assert runner._AUTHORITATIVE_RESUME_BOOTSTRAP_KEY not in state
+
+    runner._sync_construction_only_tool_surface(agent, state)
+    assert {tool["function"]["name"] for tool in agent.tools} == set(tool_names)
+
+
+def test_startup_user_message_marks_authoritative_resume(monkeypatch, tmp_path):
+    """Tell the resumed model that durable queue and plan state replace bootstrap probes."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", str(active))
+    monkeypatch.setattr(runner, "_runner_lean_prompt_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_startup_active_skill_contract", lambda _name: "")
+    monkeypatch.setattr(runner, "_startup_additional_skill_contracts", lambda _name: "")
+    monkeypatch.setattr(runner, "_queue_assignment_block", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(runner, "artifact_context_block", lambda: "")
+    monkeypatch.setattr(runner, "_target_knowledge_for_assignment", lambda *_args: "")
+    monkeypatch.setattr(runner.learnings, "scope_entry_priors_block", lambda: "")
+    monkeypatch.setattr(runner, "_swarm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *_args, **_kwargs: SimpleNamespace(to_dict=lambda: {}),
+    )
+    state = {
+        runner._AUTHORITATIVE_RESUME_BOOTSTRAP_KEY: {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "source_revision_sha256": runner._source_revision_sha256(str(active)),
+        }
+    }
+
+    prompt = runner._startup_user_message(live_state={}, autonomy_state=state)
+
+    assert "[LEANFLOW AUTHORITATIVE RESUME]" in prompt
+    assert "do not repeat capabilities" in prompt
+    assert "LeanProbe check" in prompt
 
 
 def test_startup_user_message_surfaces_durable_advisor_circuit(monkeypatch, tmp_path):

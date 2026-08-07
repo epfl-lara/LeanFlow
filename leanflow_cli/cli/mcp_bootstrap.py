@@ -467,6 +467,44 @@ def _patch_lean_lsp_loogle_project_paths(venv_dir: Path) -> bool:
     return True
 
 
+def _patch_lean_proof_auto_stdio_logging(venv_dir: Path) -> bool:
+    """Route lean-interact's Rich logger to stderr for JSON-RPC stdio safety.
+
+    ``lean-interact`` installs a module-level ``RichHandler`` whose default
+    console writes to stdout.  The proof-auto MCP server later emits REPL/Git
+    warnings through that logger, corrupting its protocol stream even though
+    LeanFlow separately captures subprocess stderr.  Patch the managed isolated
+    dependency at bootstrap so diagnostics remain available in the MCP stderr
+    log while stdout contains JSON-RPC frames only.
+    """
+    candidates = [
+        *venv_dir.glob("lib/python*/site-packages/lean_interact/utils.py"),
+        venv_dir / "Lib" / "site-packages" / "lean_interact" / "utils.py",
+    ]
+    target = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if target is None:
+        return False
+    text = target.read_text(encoding="utf-8")
+    marker = "RichHandler(rich_tracebacks=True, console=Console(stderr=True))"
+    if marker in text:
+        return True
+    import_needle = "from rich.logging import RichHandler\n"
+    handler_needle = "handler = RichHandler(rich_tracebacks=True)\n"
+    if import_needle not in text or handler_needle not in text:
+        return False
+    patched = text.replace(
+        import_needle,
+        "from rich.console import Console\nfrom rich.logging import RichHandler\n",
+        1,
+    ).replace(
+        handler_needle,
+        f"handler = {marker}\n",
+        1,
+    )
+    target.write_text(patched, encoding="utf-8")
+    return True
+
+
 def managed_mcp_power_status(
     home: str | os.PathLike[str] | None = None,
     *,
@@ -622,6 +660,8 @@ def bootstrap_lean_mcp(
             _patch_lean_lsp_loogle_project_paths(venv_dir)
             patch_lean_lsp_loogle_build_lock(venv_dir)
             patch_lean_lsp_loogle_lifecycle(venv_dir)
+        elif spec.name == "lean-proof-auto":
+            _patch_lean_proof_auto_stdio_logging(venv_dir)
         installed_servers.append(
             {
                 "name": spec.name,
