@@ -181,7 +181,35 @@ def test_resolve_multi_attempt_location_does_not_infer_term_proof_column(tmp_pat
     target = tmp_path / "Demo.lean"
     target.write_text("theorem target : True := sorry\n", encoding="utf-8")
 
-    assert location._resolve_multi_attempt_location(target, 1, None) == (1, None, None)
+    assert location._resolve_multi_attempt_location(target, 1, None) == (
+        1,
+        None,
+        "non_tactic_source_line",
+    )
+
+
+def test_resolve_multi_attempt_location_rejects_import_line(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "import Mathlib\n\ntheorem target : True := by\n  trivial\n", encoding="utf-8"
+    )
+
+    assert location._resolve_multi_attempt_location(target, 1, None) == (
+        1,
+        None,
+        "non_tactic_source_line",
+    )
+
+
+def test_resolve_multi_attempt_location_advances_header_to_first_tactic(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text("theorem target : True := by\n  trivial\n", encoding="utf-8")
+
+    assert location._resolve_multi_attempt_location(target, 1, None) == (
+        2,
+        None,
+        "first_tactic_line",
+    )
 
 
 def test_multi_attempt_replacement_candidate_builds_complete_declaration(tmp_path):

@@ -128,6 +128,40 @@ def _resolve_inline_tactic_column(path: Path, requested_line: int) -> int | None
     return tactic_start - line_start + 1
 
 
+def _first_tactic_body_line(path: Path, requested_line: int) -> int | None:
+    """Return the first tactic line for the declaration containing a source line."""
+    line = int(requested_line)
+    if line <= 0:
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    entry = next(
+        (
+            candidate
+            for candidate in _declaration_index(path)
+            if int(candidate.get("line", 0) or 0) <= line <= int(candidate.get("end_line", 0) or 0)
+        ),
+        None,
+    )
+    if entry is None:
+        return None
+    start_line = int(entry.get("line", 0) or 0)
+    end_line = int(entry.get("end_line", 0) or 0)
+    declaration = "\n".join(lines[start_line - 1 : end_line])
+    marker = _find_assignment_marker_for_statement(declaration)
+    if marker < 0:
+        return None
+    by_start = _skip_lean_trivia(declaration, marker + 2)
+    if not re.match(r"by\b", declaration[by_start:]):
+        return None
+    tactic_start = _skip_lean_trivia(declaration, by_start + 2)
+    if tactic_start >= len(declaration):
+        return None
+    return start_line + declaration.count("\n", 0, tactic_start)
+
+
 def _resolve_trailing_placeholder(
     path: Path,
     requested_line: int,
@@ -292,4 +326,9 @@ def _resolve_multi_attempt_location(
     inline_column = _resolve_inline_tactic_column(path, line)
     if inline_column is not None:
         return line, inline_column, "inline_tactic_body"
+    tactic_line = _first_tactic_body_line(path, line)
+    if tactic_line is None:
+        return line, None, "non_tactic_source_line"
+    if line < tactic_line:
+        return tactic_line, None, "first_tactic_line"
     return line, None, None

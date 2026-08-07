@@ -3578,6 +3578,49 @@ def test_lean_multi_attempt_rejects_invalid_column_before_backends(monkeypatch, 
     assert payload["screening_backend"] == "not_started"
 
 
+def test_lean_multi_attempt_rejects_import_line_before_backends(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text(
+        "import Mathlib\n\ntheorem target : True := by\n  trivial\n", encoding="utf-8"
+    )
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={"multi_attempt": "mcp_lean_lsp_lean_multi_attempt"},
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_services,
+        "screen_multi_attempts_with_lean_probe",
+        lambda **_kwargs: pytest.fail("non-tactic location started LeanProbe"),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *_args: pytest.fail("non-tactic location started MCP"),
+    )
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: None)
+
+    payload = lean_services.lean_multi_attempt(
+        "Main.lean", 1, ["simp", "exact True.intro"], cwd=project
+    )
+
+    assert payload["success"] is False
+    assert payload["status"] == "invalid_proof_location"
+    assert payload["backend_tool"] == "deterministic_location_guard"
+    assert payload["screening_backend"] == "not_started"
+    assert payload["line_adjustment"] == "non_tactic_source_line"
+
+
 def test_lean_multi_attempt_rejects_invalid_candidate_count_before_backend_call(
     monkeypatch, tmp_path
 ):

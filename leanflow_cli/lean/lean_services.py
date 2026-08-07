@@ -2181,6 +2181,13 @@ def lean_multi_attempt(
             location_details["requested_column"] = column
     if adjustment == "inline_tactic_body":
         location_details["column_adjustment"] = adjustment
+    if adjustment == "first_tactic_line":
+        location_details.update(
+            {
+                "requested_line": requested_line,
+                "line_adjustment": adjustment,
+            }
+        )
     if adjustment == "invalid_column_to_trailing_placeholder":
         location_details["column_adjustment"] = adjustment
     if adjustment == "invalid_column":
@@ -2214,6 +2221,22 @@ def lean_multi_attempt(
             "action_required": (
                 "Multiple placeholders precede the requested line. Supply the exact line and "
                 "column of the intended hole; Lean screening was not started."
+            ),
+        }
+        append_workflow_outcome("lean-multi-attempt", payload)
+        return payload
+    if adjustment == "non_tactic_source_line":
+        payload = {
+            "success": False,
+            "backend_success": False,
+            "backend_tool": "deterministic_location_guard",
+            "screening_backend": "not_started",
+            **location_details,
+            "requested_line": requested_line,
+            "line_adjustment": adjustment,
+            "status": "invalid_proof_location",
+            "action_required": (
+                "Supply a source line inside a `:= by` tactic proof; Lean screening was not started."
             ),
         }
         append_workflow_outcome("lean-multi-attempt", payload)
