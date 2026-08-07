@@ -50,8 +50,10 @@ _DECLARATION_CLOSERS = {closer: opener for opener, closer in _DECLARATION_OPENER
 _SCOPED_COMMAND_WRAPPER_LINE_RE = re.compile(rf"^\s*{_LEAN_SCOPED_COMMAND_PREFIX_RE}\b.*\bin\s*$")
 _TYPE_ASSIGNMENT_KEYWORDS = ("let", "have")
 _SUGGESTION_TACTIC_RE = re.compile(
-    r"(?m)^\s*(?:set_option\b[^\n]*\bin\s+)?"
-    r"(?P<tactic>exact|apply|simp|rw|aesop|grind)\?(?:\s|$)"
+    r"(?m)(?:^[ \t]*set_option\b[^\n]*\bin[ \t]+)?"
+    r"(?<![A-Za-z0-9_'])"
+    r"(?P<tactic>exact|apply|simp|rw|aesop|grind)\?"
+    r"(?=\s|$|[\)\]\},;|])"
 )
 _LEAN_INSPECTION_COMMAND_RE = re.compile(r"(?m)^\s*(?:#(?:check|print|eval|reduce)\b|run_cmd\b)")
 _HELPER_DECLARATION_START_RE = re.compile(

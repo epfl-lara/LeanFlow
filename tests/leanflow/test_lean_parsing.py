@@ -135,3 +135,33 @@ def test_extract_target_symbol_prefers_theorem_then_lemma_then_def():
     assert lean_parsing._extract_target_symbol("lemma foo : True") == "foo"
     assert lean_parsing._extract_target_symbol("def d := 1\ntheorem bar : True") == "bar"
     assert lean_parsing._extract_target_symbol("no declarations here") == ""
+
+
+def test_suggestion_tactic_inside_parenthesized_term_is_detected():
+    source = """theorem demo : True := by
+  exact helper (hstep := by
+    intro n hn h
+    exact?) n hn
+"""
+
+    assert lean_parsing._lean_suggestion_tactic_markers(source) == ("exact?",)
+
+
+def test_suggestion_tactics_are_detected_after_tactic_combinators():
+    source = """theorem demo : True := by
+  first
+  | exact?
+  | all_goals simp?
+"""
+
+    assert lean_parsing._lean_suggestion_tactic_markers(source) == ("exact?", "simp?")
+
+
+def test_suggestion_like_text_in_identifiers_comments_and_strings_is_ignored():
+    source = """theorem demo : True := by
+  let myexact := "apply?"
+  -- exact?
+  trivial
+"""
+
+    assert lean_parsing._lean_suggestion_tactic_markers(source) == ()

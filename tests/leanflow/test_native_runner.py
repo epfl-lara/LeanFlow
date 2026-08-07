@@ -33615,6 +33615,38 @@ def test_suggestion_only_source_patch_is_redirected_before_mutation(
     assert events[-1][0][1] == "suggestion-only-source-patch-blocked"
 
 
+def test_parenthesized_suggestion_source_patch_is_redirected_before_mutation(tmp_path, monkeypatch):
+    """Reject a suggestion tactic followed immediately by a closing delimiter."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  exact helper (hstep := by\n    sorry)\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    result = runner._suggestion_only_source_patch_guard(
+        _ManagedRunAgentStub(),
+        "patch",
+        {
+            "mode": "replace",
+            "path": str(active),
+            "old_string": "    sorry)\n",
+            "new_string": "    exact?)\n",
+        },
+        state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "isolated_suggestion_probe_required"
+    assert payload["suggestion_tactics"] == ["exact?"]
+    assert payload["patch_applied"] is False
+    assert active.read_text(encoding="utf-8") == source
+
+
 def test_concrete_source_patch_is_not_redirected_as_suggestion(tmp_path):
     """Allow ordinary concrete proof edits through the suggestion fence."""
     active = tmp_path / "Main.lean"
