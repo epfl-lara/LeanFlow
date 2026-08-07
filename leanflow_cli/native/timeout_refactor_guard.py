@@ -28,3 +28,17 @@ def is_heartbeat_only_change(before_declaration: str, after_declaration: str) ->
         return " ".join(without_wrappers.split())
 
     return normalize(before) == normalize(after)
+
+
+def is_same_tactic_with_budget_wrapper(before_tactic: str, candidate_tactic: str) -> bool:
+    """Return whether a local candidate only rewraps the same tactic invocation."""
+
+    def normalize(tactic: str) -> str:
+        text = _HEARTBEAT_WRAPPER_RE.sub("", str(tactic or ""))
+        text = re.sub(r"^\s*exact\s+by\s+", "", text)
+        text = re.sub(r"^\s*classical(?:\s*;\s*|\s+)", "", text)
+        return " ".join(text.split())
+
+    before = normalize(before_tactic)
+    candidate = normalize(candidate_tactic)
+    return bool(before and candidate and before == candidate)

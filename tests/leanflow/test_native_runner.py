@@ -29081,6 +29081,111 @@ def test_timed_out_declaration_rejects_heartbeat_only_incremental_candidate(tmp_
     assert active.read_text(encoding="utf-8") == source
 
 
+def test_timed_out_declaration_rejects_equivalent_local_tactic_batch(tmp_path, monkeypatch):
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  aesop\n"
+    active.write_text(source, encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "maximum number of heartbeats exceeded",
+            }
+        ],
+    }
+    events = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = state
+
+    result = runner._managed_pre_tool_call(
+        agent,
+        "lean_multi_attempt",
+        {
+            "file_path": str(active),
+            "line": 2,
+            "attempts": [
+                "set_option maxHeartbeats 1000000 in aesop",
+                "exact by classical aesop",
+                "obtain ⟨m⟩ := move_exists t; aesop",
+            ],
+        },
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "timeout_structural_refactor_required"
+    assert payload["blocked_tool"] == "lean_multi_attempt"
+    assert payload["removed_attempts"] == 2
+    assert payload["retained_attempts"] == 1
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == source
+    assert events[-1][0][1] == "timeout-heartbeat-only-edit-blocked"
+
+
+def test_timed_out_declaration_filters_equivalent_local_attempts(tmp_path, monkeypatch):
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  aesop\n"
+    active.write_text(source, encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "maximum number of heartbeats exceeded",
+            }
+        ],
+    }
+    events = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = state
+    arguments = {
+        "file_path": str(active),
+        "line": 2,
+        "attempts": [
+            "set_option maxHeartbeats 1000000 in aesop",
+            "exact by classical aesop",
+            "exact True.intro",
+            "simp only [True_iff]",
+        ],
+    }
+
+    result = runner._timeout_refactor_edit_pre_tool_guard(
+        agent,
+        "lean_multi_attempt",
+        arguments,
+        state,
+    )
+
+    assert result is None
+    assert arguments["attempts"] == ["exact True.intro", "simp only [True_iff]"]
+    assert events[-1][0][1] == "timeout-replayed-local-attempts-filtered"
+
+
 def test_timed_out_declaration_allows_material_verified_patch(tmp_path, monkeypatch):
     active = tmp_path / "Main.lean"
     source = "theorem demo : True := by\n  aesop\n"

@@ -11249,8 +11249,11 @@ def _timeout_refactor_edit_pre_tool_guard(
 ) -> str | None:
     """Reject a heartbeat-only edit or candidate check after an exact timeout."""
     incremental_candidate = function_name == "lean_incremental_check"
+    multi_attempt_candidate = function_name == "lean_multi_attempt"
     if _workflow_kind() != "prove" or (
-        function_name not in _MANAGED_SOURCE_EDIT_TOOLS and not incremental_candidate
+        function_name not in _MANAGED_SOURCE_EDIT_TOOLS
+        and not incremental_candidate
+        and not multi_attempt_candidate
     ):
         return None
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
@@ -11294,7 +11297,49 @@ def _timeout_refactor_edit_pre_tool_guard(
     except OSError:
         return None
     before_declaration = _assigned_candidate_declaration_raw(before_text, target_symbol)
-    if incremental_candidate:
+    removed_attempts = 0
+    retained_attempts = 0
+    if multi_attempt_candidate:
+        try:
+            requested_line = int(arguments.get("line", 0) or 0)
+        except (TypeError, ValueError):
+            requested_line = 0
+        source_lines = before_text.splitlines()
+        if requested_line <= 0 or requested_line > len(source_lines):
+            return None
+        source_tactic = source_lines[requested_line - 1].strip()
+        raw_attempts = [str(item or "").strip() for item in arguments.get("attempts") or []]
+        filtered_attempts = [
+            attempt
+            for attempt in raw_attempts
+            if attempt
+            and not timeout_refactor_guard.is_same_tactic_with_budget_wrapper(
+                source_tactic,
+                attempt,
+            )
+        ]
+        removed_attempts = len([item for item in raw_attempts if item]) - len(filtered_attempts)
+        retained_attempts = len(filtered_attempts)
+        if not removed_attempts:
+            return None
+        if retained_attempts >= 2 and isinstance(args, MutableMapping):
+            args["attempts"] = filtered_attempts
+            with contextlib.suppress(Exception):
+                _record_agent_activity(
+                    agent,
+                    "timeout-replayed-local-attempts-filtered",
+                    f"Removed {removed_attempts} timeout-equivalent local attempt(s) for {target_symbol}",
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    blocked_tool=function_name,
+                    removed_attempts=removed_attempts,
+                    retained_attempts=retained_attempts,
+                    lean_started=False,
+                    campaign_progress=False,
+                )
+            return None
+        after_declaration = before_declaration
+    elif incremental_candidate:
         after_declaration = replacement
     else:
         after_text = managed_edit_rollback.preview_candidate_source(
@@ -11305,9 +11350,8 @@ def _timeout_refactor_edit_pre_tool_guard(
         if not after_text:
             return None
         after_declaration = _assigned_candidate_declaration_raw(after_text, target_symbol)
-    if not timeout_refactor_guard.is_heartbeat_only_change(
-        before_declaration,
-        after_declaration,
+    if not multi_attempt_candidate and not timeout_refactor_guard.is_heartbeat_only_change(
+        before_declaration, after_declaration
     ):
         return None
     with contextlib.suppress(Exception):
@@ -11319,6 +11363,8 @@ def _timeout_refactor_edit_pre_tool_guard(
             active_file=active_file,
             blocked_tool=function_name,
             timeout_reason=timeout_reason,
+            removed_attempts=removed_attempts,
+            retained_attempts=retained_attempts,
             declaration_sha256=_failed_attempt_declaration_hash(
                 active_file,
                 target_symbol,
@@ -11340,9 +11386,11 @@ def _timeout_refactor_edit_pre_tool_guard(
             "check_passed": False,
             "lean_started": False,
             "target_attempt_consumed": False,
+            "removed_attempts": removed_attempts,
+            "retained_attempts": retained_attempts,
             "required_action": (
                 "The current declaration already exhausted its exact verification budget. "
-                "This edit only raises `maxHeartbeats` around the same proof shape, so it was "
+                "This edit or local tactic batch only rewraps the same timed-out proof shape, so it was "
                 "rejected before mutation or Lean execution. Extract cohesive local `have` "
                 "proofs into top-level helper theorems with `lean_extract_have`, verify each "
                 "helper independently with LeanProbe, or submit a materially different proof "
