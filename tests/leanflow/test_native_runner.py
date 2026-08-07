@@ -28919,6 +28919,130 @@ def test_same_revision_verification_timeout_is_invalidated_by_source_edit(tmp_pa
     )
 
 
+def test_timed_out_declaration_rejects_heartbeat_only_verified_patch(tmp_path, monkeypatch):
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  aesop\n"
+    active.write_text(source, encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "maximum number of heartbeats exceeded",
+            }
+        ],
+    }
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+-  aesop
++  set_option maxHeartbeats 2000000 in
++    aesop
+*** End Patch"""
+    events = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = state
+
+    result = runner._managed_pre_tool_call(
+        agent,
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": "demo", "patch": patch},
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "timeout_structural_refactor_required"
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == source
+    assert events[-1][0][1] == "timeout-heartbeat-only-edit-blocked"
+
+
+def test_timed_out_declaration_allows_material_verified_patch(tmp_path, monkeypatch):
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  aesop\n"
+    active.write_text(source, encoding="utf-8")
+    declaration_hash = runner._failed_attempt_declaration_hash(str(active), "demo", None)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": declaration_hash,
+                "gate_verdict": "maximum number of heartbeats exceeded",
+            }
+        ],
+    }
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+-  aesop
++  exact True.intro
+*** End Patch"""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = state
+
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "apply_verified_patch",
+            {"path": str(active), "theorem_id": "demo", "patch": patch},
+        )
+        is None
+    )
+
+
+def test_heartbeat_only_verified_patch_is_allowed_without_prior_timeout(tmp_path, monkeypatch):
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  aesop\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+-  aesop
++  set_option maxHeartbeats 2000000 in
++    aesop
+*** End Patch"""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = state
+
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "apply_verified_patch",
+            {"path": str(active), "theorem_id": "demo", "patch": patch},
+        )
+        is None
+    )
+
+
 def test_file_timeout_does_not_backpressure_exact_target_resume_gate(tmp_path):
     """A slow canonical sweep must not suppress a distinct LeanProbe target check."""
     active = tmp_path / "Main.lean"

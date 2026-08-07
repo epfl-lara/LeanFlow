@@ -118,6 +118,7 @@ from leanflow_cli.native import (
     support_module_materialization,
     terminal_authority,
     terminal_check_policy,
+    timeout_refactor_guard,
     transition_visibility,
     verification_batch_admission,
     verified_gate_handoff,
@@ -11014,6 +11015,96 @@ def _same_revision_timeout_pre_tool_guard(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _timeout_refactor_edit_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Reject a heartbeat-only edit after the current proof shape timed out."""
+    if _workflow_kind() != "prove" or function_name not in _MANAGED_SOURCE_EDIT_TOOLS:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not _managed_edit_targets_assignment(
+            args,
+            active_file,
+            function_name=function_name,
+        )
+    ):
+        return None
+    timeout_reason = _restored_assignment_verification_timeout_reason(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if not timeout_reason:
+        return None
+    try:
+        before_text = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    after_text = managed_edit_rollback.preview_candidate_source(
+        function_name,
+        args,
+        before_text,
+    )
+    if not after_text:
+        return None
+    before_declaration = _assigned_candidate_declaration_raw(before_text, target_symbol)
+    after_declaration = _assigned_candidate_declaration_raw(after_text, target_symbol)
+    if not timeout_refactor_guard.is_heartbeat_only_change(
+        before_declaration,
+        after_declaration,
+    ):
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "timeout-heartbeat-only-edit-blocked",
+            f"Blocked heartbeat-only retry of timed-out declaration {target_symbol}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            timeout_reason=timeout_reason,
+            declaration_sha256=_failed_attempt_declaration_hash(
+                active_file,
+                target_symbol,
+                None,
+            ),
+            patch_applied=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "timeout_structural_refactor_required",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "timeout_reason": timeout_reason,
+            "patch_applied": False,
+            "check_passed": False,
+            "lean_started": False,
+            "target_attempt_consumed": False,
+            "required_action": (
+                "The current declaration already exhausted its exact verification budget. "
+                "This edit only raises `maxHeartbeats` around the same proof shape, so it was "
+                "rejected before mutation or Lean execution. Extract cohesive local `have` "
+                "proofs into top-level helper theorems with `lean_extract_have`, verify each "
+                "helper independently with LeanProbe, or submit a materially different proof "
+                "construction before retrying the parent."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 @dataclass(frozen=True)
 class _AdvisorFailureAdmission:
     """Describe durable and turn-local admission for one advisor call."""
@@ -11390,6 +11481,14 @@ def _managed_pre_tool_call(
         )
         if timeout_block:
             return timeout_block
+        timeout_refactor_block = _timeout_refactor_edit_pre_tool_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if timeout_refactor_block:
+            return timeout_refactor_block
         _inject_target_knowledge_into_decomposer_args(
             agent,
             function_name,

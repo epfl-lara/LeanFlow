@@ -43,6 +43,11 @@ The native runtime delegates per-provider-turn diagnostic feedback budgeting to
 diagnostic-only turn; source edits and exact Lean verification remain governed
 by the queue manager and continue with fresh route budgets.
 
+After an exact proof shape times out, `leanflow_cli/native/timeout_refactor_guard.py`
+prevents a heartbeat-only source edit from bypassing structural-refactor
+backpressure. Substantive proof changes and independently checked helper
+extraction remain admissible.
+
 The shell launches managed workflows as child processes. Inside a managed
 process, `native_runner` constructs `AIAgent` directly and coordinates its
 turns with Lean verification and durable workflow state.
