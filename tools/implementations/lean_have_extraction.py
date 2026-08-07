@@ -82,14 +82,160 @@ def _extracted_statement(payload: dict[str, Any], helper_name: str) -> str:
     return match.group(0).strip() if match else ""
 
 
-def _private_helper(statement: str, candidate: HaveCandidate) -> str:
+def _private_helper(
+    statement: str,
+    candidate: HaveCandidate,
+    *,
+    context_prefix: str = "",
+) -> str:
     """Combine the extracted context signature with the original checked proof body."""
-    declaration = re.sub(r"^theorem\b", "private lemma", statement, count=1)
-    declaration = re.sub(r":=\s*(?:by\s*)?sorry\s*$", ":= by", declaration)
-    if declaration == statement:
+    declaration = _freshen_explicit_universes(statement)
+    let_prelude = _leading_result_let_prelude(
+        declaration,
+        context_prefix=context_prefix,
+        indent=candidate.indent,
+    )
+    declaration = re.sub(r"^theorem\b", "private lemma", declaration, count=1)
+    declaration, replacement_count = re.subn(
+        r":=\s*(?:by\s*)?sorry\s*$",
+        ":= by",
+        declaration,
+    )
+    if replacement_count != 1:
         return ""
     proof = textwrap.dedent(candidate.proof).strip()
-    return declaration + ("\n" + textwrap.indent(proof, "  ") if proof else "")
+    body_parts = [part for part in (let_prelude, proof) if part]
+    return declaration + ("\n" + textwrap.indent("\n".join(body_parts), "  ") if body_parts else "")
+
+
+def _freshen_explicit_universes(statement: str) -> str:
+    """Rename ``extract_goal`` universe binders away from the active file scope.
+
+    Mathlib's ``extract_goal`` prints the anchor declaration's generated universe
+    names verbatim.  Re-inserting a helper such as ``foo.{u_2, u_1}`` before the
+    anchor can therefore redeclare names that the file already owns.  Give every
+    explicit binder a deterministic declaration-local name and rewrite its uses
+    before the helper reaches LeanProbe.
+    """
+    match = re.match(
+        r"(?s)^(theorem\s+[^\s.{]+)\.\{([^{}]+)\}(.*)$",
+        str(statement or ""),
+    )
+    if match is None:
+        return statement
+    names = [name.strip() for name in match.group(2).split(",")]
+    if not names or any(not re.fullmatch(r"[A-Za-z_][\w']*", name) for name in names):
+        return statement
+    digest = hashlib.sha256(statement.encode("utf-8")).hexdigest()[:10]
+    rewritten_tail = match.group(3)
+    fresh_names: list[str] = []
+    for index, name in enumerate(names, start=1):
+        fresh = f"leanflow_u_{digest}_{index}"
+        fresh_names.append(fresh)
+        rewritten_tail = re.sub(
+            rf"(?<![\w']){re.escape(name)}(?![\w'])",
+            fresh,
+            rewritten_tail,
+        )
+    return f"{match.group(1)}.{{{', '.join(fresh_names)}}}{rewritten_tail}"
+
+
+def _top_level_character(text: str, wanted: str, *, start: int = 0) -> int:
+    """Return the first delimiter-free character offset in generated Lean text."""
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    closing = set(pairs.values())
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for index in range(max(0, start), len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char in pairs:
+            stack.append(pairs[char])
+            continue
+        if char in closing:
+            if stack and char == stack[-1]:
+                stack.pop()
+            continue
+        if char == wanted and not stack:
+            return index
+    return -1
+
+
+def _source_local_let(
+    context_prefix: str,
+    name: str,
+    *,
+    indent: str,
+) -> str:
+    """Return the last exact source-level local let with the requested name."""
+    lines = str(context_prefix or "").splitlines()
+    start_pattern = re.compile(rf"^{re.escape(indent)}let\s+{re.escape(name)}\b")
+    starts = [index for index, line in enumerate(lines) if start_pattern.match(line)]
+    if not starts:
+        return ""
+    start = starts[-1]
+    end = len(lines)
+    base_width = len(indent.expandtabs(2))
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if not line.strip():
+            continue
+        line_indent = line[: len(line) - len(line.lstrip(" \t"))]
+        if len(line_indent.expandtabs(2)) <= base_width:
+            end = index
+            break
+    return textwrap.dedent("\n".join(lines[start:end])).strip()
+
+
+def _leading_result_let_prelude(
+    statement: str,
+    *,
+    context_prefix: str = "",
+    indent: str = "",
+) -> str:
+    """Recreate result-level ``let`` binders as named locals for a copied proof.
+
+    ``extract_goal`` reverts local let declarations into the result type.  The
+    original proof still refers to those local names, so introduce the same lets
+    in the helper body and change the zeta-reduced goal back to the named form.
+    """
+    end_match = re.search(r":=\s*(?:by\s*)?sorry\s*$", statement)
+    if end_match is None:
+        return ""
+    result_start = _top_level_character(statement[: end_match.start()], ":")
+    if result_start < 0:
+        return ""
+    result = statement[result_start + 1 : end_match.start()].strip()
+    bindings: list[tuple[str, str]] = []
+    while result.startswith("let "):
+        semicolon = _top_level_character(result, ";")
+        if semicolon < 0:
+            return ""
+        binding = result[:semicolon].strip()
+        name_match = re.match(r"let\s+([A-Za-z_«][\w'.«»]*)\b", binding)
+        if name_match is None:
+            return ""
+        bindings.append((name_match.group(1), binding))
+        result = result[semicolon + 1 :].strip()
+    if not bindings or not result:
+        return ""
+    change = "change " + result.replace("\n", "\n  ")
+    source_bindings = [
+        _source_local_let(context_prefix, name, indent=indent) or generated
+        for name, generated in bindings
+    ]
+    return "\n".join([*source_bindings, change])
 
 
 def _switched_candidate(candidate: HaveCandidate, helper_name: str) -> str:
@@ -268,7 +414,11 @@ def lean_extract_have_tool(
                 diagnostics=probe,
                 completed_plans=reports,
             )
-        helper = _private_helper(statement, candidate)
+        helper = _private_helper(
+            statement,
+            candidate,
+            context_prefix=rewritten[: candidate.start],
+        )
         if not helper:
             return _failure(
                 "goal_extraction_failed",

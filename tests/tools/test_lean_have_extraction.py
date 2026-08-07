@@ -62,6 +62,79 @@ def _successful_checks():
     )
 
 
+def test_private_helper_freshens_extract_goal_universe_binders():
+    """Avoid redeclaring generated universe names from the active file scope."""
+    candidate = extraction.HaveCandidate(
+        name="hstep",
+        header="  have hstep : True := by",
+        proof="    trivial",
+        source="  have hstep : True := by\n    trivial",
+        start=0,
+        end=43,
+        indent="  ",
+        line_count=2,
+    )
+    statement = "theorem extracted.{u_2, u_1} {V : Type u_1} {P : Type u_2} : True := sorry"
+
+    helper = extraction._private_helper(statement, candidate)
+
+    match = extraction.re.search(r"private lemma extracted\.\{([^,]+), ([^}]+)\}", helper)
+    assert match is not None
+    first, second = match.groups()
+    assert first.startswith("leanflow_u_")
+    assert second.startswith("leanflow_u_")
+    assert first != second
+    assert f"P : Type {first}" in helper
+    assert f"V : Type {second}" in helper
+    assert ".{u_2, u_1}" not in helper
+
+
+def test_private_helper_recreates_result_level_let_for_original_proof():
+    """Keep local let names available after ``extract_goal`` reverts context."""
+    candidate = extraction.HaveCandidate(
+        name="hstep",
+        header="  have hstep : x = n + 1 := by",
+        proof="    simpa [x]",
+        source="  have hstep : x = n + 1 := by\n    simpa [x]",
+        start=0,
+        end=49,
+        indent="  ",
+        line_count=2,
+    )
+    statement = "theorem extracted (n : Nat) :\n" "  let x := n + 1;\n" "  x = n + 1 := sorry"
+
+    helper = extraction._private_helper(statement, candidate)
+
+    assert ":= by\n  let x := n + 1" in helper
+    assert "\n  change x = n + 1\n" in helper
+    assert helper.endswith("  simpa [x]")
+
+
+def test_private_helper_reuses_typed_source_let_declaration():
+    """Preserve a local let's expected type when its value is ambiguous alone."""
+    candidate = extraction.HaveCandidate(
+        name="hstep",
+        header="  have hstep : Box x := by",
+        proof="    simpa [x]",
+        source="  have hstep : Box x := by\n    simpa [x]",
+        start=0,
+        end=43,
+        indent="  ",
+        line_count=2,
+    )
+    statement = "theorem extracted (a : Nat) :\n" "  let x := { value := a };\n" "  Box x := sorry"
+    context = "  let x : Container Nat := { value := a }\n"
+
+    helper = extraction._private_helper(
+        statement,
+        candidate,
+        context_prefix=context,
+    )
+
+    assert "\n  let x : Container Nat := { value := a }\n" in helper
+    assert "\n  change Box x\n" in helper
+
+
 def test_tool_verifies_helper_and_switch_before_applying(monkeypatch, tmp_path):
     """Commit only after independent helper and rewritten-prefix checks pass."""
     target = tmp_path / "Demo.lean"

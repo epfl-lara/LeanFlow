@@ -44,6 +44,15 @@ def test_declaration_line_index_from_text_indexes_kind_name_and_sorry():
     assert lean_parsing._text_has_theorem_or_lemma_without_sorry(src) is True
 
 
+def test_declaration_index_excludes_explicit_universe_suffix_separator():
+    """Keep the declaration name separate from ``.{...}`` universe binders."""
+    src = "theorem Space.example.{u_2, u_1} {A : Type u_1} : True := by trivial\n"
+
+    entries = lean_parsing._declaration_line_index_from_text(src)
+
+    assert [entry["name"] for entry in entries] == ["Space.example"]
+
+
 def test_declaration_region_excludes_next_declaration_docs_and_attributes():
     src = "\n".join(
         [

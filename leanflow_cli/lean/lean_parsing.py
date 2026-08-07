@@ -42,7 +42,7 @@ LEAN_DECLARATION_PREAMBLE_RE = (
     rf"^\s*(?:{_LEAN_SCOPED_COMMAND_PREFIX_RE}\b[^\n]*\bin\s+)*"
     r"(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial|nonrec|scoped|local)\s+)*"
     r"(theorem|lemma|example|def|abbrev|opaque|axiom|instance|class|structure|inductive)\s+"
-    r"([A-Za-z0-9_'.-]+)?"
+    r"([A-Za-z0-9_'-]+(?:\.[A-Za-z0-9_'-]+)*)?"
 )
 
 _DECLARATION_OPENERS = {"(": ")", "{": "}", "[": "]", "⦃": "⦄", "⟨": "⟩"}
