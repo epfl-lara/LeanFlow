@@ -48,6 +48,11 @@ prevents a heartbeat-only source edit from bypassing structural-refactor
 backpressure. Substantive proof changes and independently checked helper
 extraction remain admissible.
 
+When a sorry-free assigned theorem fails its exact file check,
+`leanflow_cli/native/failed_verification_assignment.py` keeps that declaration
+as the active queue item. A transiently empty diagnostic scan therefore cannot
+retire the theorem or send the planner an unknown target.
+
 The shell launches managed workflows as child processes. Inside a managed
 process, `native_runner` constructs `AIAgent` directly and coordinates its
 turns with Lean verification and durable workflow state.

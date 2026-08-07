@@ -137,6 +137,7 @@ files = [
   "leanflow_cli/native/managed_edit_rollback.py",
   "leanflow_cli/native/diagnostic_loop_guard.py",
   "leanflow_cli/native/timeout_refactor_guard.py",
+  "leanflow_cli/native/failed_verification_assignment.py",
   "leanflow_cli/native/generated_helper_name_policy.py",
   "agent/display/log_formatting.py",
   "agent/runtime/workflow_events.py",

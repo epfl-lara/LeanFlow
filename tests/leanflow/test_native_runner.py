@@ -31306,6 +31306,48 @@ def test_promote_live_state_accepts_warning_only_final_file_sweep(monkeypatch, t
     assert runner._queue_needs_final_file_sweep(promoted) is False
 
 
+def test_failed_final_sweep_restores_durable_theorem_assignment(monkeypatch, tmp_path):
+    """A failed sorry-free exact check cannot leave the next planner targetless."""
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("theorem result : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda _root: (0, []))
+    failure = "error: maximum heartbeats exceeded at theorem result"
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "result",
+            "active_file": str(active),
+            "slice": "theorem result : True := by\n  trivial",
+        }
+    }
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "declaration_queue": [],
+            "current_queue_item": {},
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "sorry_count": 0,
+            "queue_needs_final_file_sweep": True,
+        },
+        autonomy_state,
+        focused_verification=(False, failure),
+    )
+
+    assert promoted["verification_ok"] is False
+    assert promoted["target_symbol"] == "result"
+    assert promoted["current_queue_item"]["label"] == "result"
+    assert promoted["declaration_queue_total"] == 1
+    assert "maximum heartbeats" in promoted["current_blocker"]
+    assert promoted["queue_needs_final_file_sweep"] is False
+
+
 def test_promote_live_state_accepts_unnecessary_simpa_without_model_cleanup(monkeypatch, tmp_path):
     """A cosmetic linter recommendation cannot reopen a proved file."""
     project = tmp_path / "Demo"

@@ -101,6 +101,7 @@ from leanflow_cli.native import (
     determine_answer_policy,
     diagnostic_loop_guard,
     direct_self_reference,
+    failed_verification_assignment,
     final_report_failure_reuse,
     generated_helper_name_policy,
     helper_integration_admission,
@@ -21868,6 +21869,42 @@ def _promote_live_state_to_verified(
 
     normalized["last_verification"] = _last_verification_record(autonomy_state, normalized)
     normalized["verification_ok"] = bool(verification_ok)
+    if not verification_ok and isinstance(autonomy_state, Mapping):
+        assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+        assigned_target = str(assignment.get("target_symbol", "") or "").strip()
+        assigned_file = str(assignment.get("active_file", "") or "").strip()
+        declaration = (
+            _find_declaration_entry(assigned_file, assigned_target)
+            if assigned_file and assigned_target
+            else None
+        )
+        normalized = failed_verification_assignment.restore_failed_assignment(
+            normalized,
+            assignment,
+            queue_item=(
+                {**declaration, "label": assigned_target} if declaration is not None else None
+            ),
+            declaration_prefix=(
+                _declaration_prefix_text(assigned_file, assigned_target)
+                if declaration is not None
+                else ""
+            ),
+            declaration_slice=(
+                _declaration_slice_text(assigned_file, assigned_target)
+                if declaration is not None
+                else ""
+            ),
+            failure=build_status,
+        )
+        if normalized.get("current_queue_item"):
+            queue = list(normalized.get("declaration_queue") or [])
+            normalized["declaration_queue_summary"] = _format_declaration_queue(queue)
+            normalized["route_decision"] = route_workflow_step(
+                _workflow_kind(),
+                normalized,
+                configured_skill=_base_active_skill(),
+                cwd=_project_root(),
+            ).to_dict()
     cleanup_status = str(normalized.get("warning_cleanup_status", "") or "").strip().lower()
     if cleanup_status in {"verified", "accepted", "skipped", "blocked"}:
         _record_final_sweep_cleanup_outcome_once(
