@@ -11112,6 +11112,21 @@ def _research_helper_candidate_pre_tool_guard(
                 research_helper_candidate_priority.parent_recheck_evidence_authenticated(candidate)
             )
             if helper_only_verified_patch and not authenticated_parent_evidence:
+                with contextlib.suppress(Exception):
+                    agent._managed_pending_theorem_feedback = None
+                    agent._managed_step_boundary_closed = True
+                _record_agent_activity(
+                    agent,
+                    "research-helper-parent-recheck-boundary",
+                    f"Yielded checked helper {candidate.helper_name} for manager authentication",
+                    candidate_id=candidate.candidate_id,
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    helper_symbol=candidate.helper_name,
+                    blocked_tool=function_name,
+                    campaign_progress=False,
+                )
+                _request_step_boundary_interrupt(agent)
                 return json.dumps(
                     {
                         "success": False,
@@ -11124,9 +11139,9 @@ def _research_helper_candidate_pre_tool_guard(
                         "lean_started": False,
                         "required_action": (
                             "The helper is preserved, but its exact parent/axiom recheck is not "
-                            "yet authenticated. Continue useful proof exploration or end the "
-                            "turn so the manager can run that focused recheck; do not launch a "
-                            "broad check of the unchanged assigned theorem."
+                            "yet authenticated. LeanFlow ended this provider turn at a safe "
+                            "boundary so the manager can run that focused recheck; do not launch "
+                            "a broad check of the unchanged assigned theorem."
                         ),
                     },
                     ensure_ascii=False,

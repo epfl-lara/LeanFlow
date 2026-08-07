@@ -270,6 +270,12 @@ def test_helper_only_verified_patch_waits_for_authenticated_parent_recheck(
         lambda: False,
     )
     monkeypatch.setattr(runner, "_record_agent_activity", lambda *_args, **_kwargs: None)
+    boundary_agents: list[object] = []
+    monkeypatch.setattr(
+        runner,
+        "_request_step_boundary_interrupt",
+        lambda agent: boundary_agents.append(agent),
+    )
     active, before, _expected, _declaration, state, ready = _ready_candidate(tmp_path)
     pending = runner.research_helper_candidate_priority.reset_for_source_change(
         state,
@@ -290,9 +296,10 @@ def test_helper_only_verified_patch_waits_for_authenticated_parent_recheck(
         def is_interrupted() -> bool:
             return False
 
+    agent = Agent()
     payload = json.loads(
         runner._managed_pre_tool_call(
-            Agent(),
+            agent,
             "apply_verified_patch",
             {
                 "path": str(active),
@@ -306,6 +313,8 @@ def test_helper_only_verified_patch_waits_for_authenticated_parent_recheck(
     assert payload["helper_symbol"] == pending.helper_name
     assert payload["patch_applied"] is False
     assert payload["lean_started"] is False
+    assert boundary_agents == [agent]
+    assert agent._managed_step_boundary_closed is True
     assert active.read_text(encoding="utf-8") == before
 
 
