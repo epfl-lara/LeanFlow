@@ -127,6 +127,79 @@ def test_foreground_helper_check_is_durable_before_parent_recheck(monkeypatch, t
     assert priority.load({priority._HYDRATION_KEY: "prior-process"}) == record
 
 
+def test_foreground_helper_preempts_stale_candidate_without_losing_it(monkeypatch, tmp_path):
+    """Prioritize fresh foreground proof progress and durably queue older work."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "state"))
+    state: dict = {}
+    older_declaration = "private lemma older_helper : True := by\n  trivial"
+    older_arguments, older_result = _foreground_helper_check(
+        str(active), declaration=older_declaration, name="older_helper"
+    )
+    older = priority.remember_from_foreground_check(
+        state,
+        older_arguments,
+        older_result,
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert older is not None
+
+    newer_declaration = "private lemma newer_helper (n : Nat) : n = n := by\n  rfl"
+    newer_arguments, newer_result = _foreground_helper_check(
+        str(active), declaration=newer_declaration, name="newer_helper"
+    )
+    newer = priority.remember_from_foreground_check(
+        state,
+        newer_arguments,
+        newer_result,
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert newer is not None
+    assert priority.load(state) == newer
+    assert priority.backlog(state) == (older,)
+    restarted: dict = {priority._HYDRATION_KEY: "prior-process"}
+    assert priority.load(restarted) == newer
+    assert priority.backlog(restarted) == (older,)
+
+    assert priority.resolve(restarted, disposition="parent_recheck_rejected") == newer
+    assert priority.load(restarted) == older
+    assert priority.backlog(restarted) == ()
+
+
+def test_retiring_active_helper_promotes_durable_backlog(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    state: dict = {}
+    records = []
+    for name in ("older_helper", "newer_helper"):
+        declaration = f"private lemma {name} : True := by\n  trivial"
+        arguments, result = _foreground_helper_check(
+            str(active), declaration=declaration, name=name
+        )
+        record = priority.remember_from_foreground_check(
+            state,
+            arguments,
+            result,
+            campaign_id="campaign",
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        assert record is not None
+        records.append(record)
+
+    assert priority.retire(state) == records[1]
+    assert priority.load(state) == records[0]
+    assert priority.backlog(state) == ()
+
+
 def test_foreground_scratch_helper_promotes_only_by_exact_name_change(monkeypatch, tmp_path):
     """Preserve substantive scratch work while requiring a name-only recheck."""
     active = tmp_path / "Demo.lean"

@@ -5264,6 +5264,7 @@ def _retain_foreground_checked_helper(
     active_file = str(assignment.get("active_file", "") or "").strip()
     if not target_symbol or not active_file:
         return None
+    prior = research_helper_candidate_priority.load(autonomy_state)
     record = research_helper_candidate_priority.remember_from_foreground_check(
         autonomy_state,
         arguments,
@@ -5301,20 +5302,47 @@ def _retain_foreground_checked_helper(
                 "and later epochs."
             )
         return record
+    displaced = (
+        prior
+        if prior is not None
+        and prior.candidate_id != record.candidate_id
+        and any(
+            candidate.candidate_id == prior.candidate_id
+            for candidate in research_helper_candidate_priority.backlog(autonomy_state)
+        )
+        else None
+    )
     _record_agent_activity(
         agent,
-        "foreground-helper-candidate-retained",
-        f"Retained verified helper candidate {record.helper_name} for parent recheck",
+        (
+            "foreground-helper-candidate-preempted"
+            if displaced is not None
+            else "foreground-helper-candidate-retained"
+        ),
+        (
+            f"Retained verified helper candidate {record.helper_name}; preserved "
+            f"older candidate {displaced.helper_name} in the durable backlog"
+            if displaced is not None
+            else f"Retained verified helper candidate {record.helper_name} for parent recheck"
+        ),
         target_symbol=target_symbol,
         active_file=active_file,
         helper_name=record.helper_name,
         candidate_id=record.candidate_id,
         declaration_sha256=record.declaration_sha256,
+        displaced_candidate_id=(displaced.candidate_id if displaced is not None else ""),
+        displaced_helper_name=(displaced.helper_name if displaced is not None else ""),
         campaign_progress=False,
     )
     agent.stage_tool_result_appendix(
         "LeanFlow durably retained the exact checked helper "
-        f"`{record.helper_name}`. Before unrelated work, the manager will recheck it "
+        f"`{record.helper_name}`. "
+        + (
+            f"The older checked helper `{displaced.helper_name}` remains queued behind it. "
+            if displaced is not None
+            else ""
+        )
+        + "Before unrelated work, the manager will recheck it "
         "against the current parent file and offer authenticated integration."
     )
     return record

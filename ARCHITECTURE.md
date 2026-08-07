@@ -156,6 +156,8 @@ tool is reachable through the public registry.
   Lean shaping, and the statement-review handoff.
 - `workflows/` owns proof queues, verification transactions, persistent
   plan/graph state, orchestration, research portfolios, decomposition,
+  the durable foreground-verified helper priority and bounded promotion queue
+  (`research_helper_candidate_priority.py`, `research_helper_candidate_backlog.py`),
   monolithic partial-proof detection, recovery-source hygiene, negation,
   project proving, campaign epochs, repeated-tool loop boundaries,
   crash-durable residual-target advisor failure circuits, checked partial-target
@@ -261,6 +263,7 @@ The workflow state includes:
 - declaration queues and failed-attempt history
 - plan and proof-graph snapshots backed by an append-only journal
 - research dispatch ledgers and delivery receipts
+- active and queued kernel-checked helper candidates awaiting parent integration
 - campaign epochs, route decisions, and learnings
 - file locks and live-run ownership metadata
 

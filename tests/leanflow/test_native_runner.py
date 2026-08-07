@@ -177,6 +177,66 @@ def test_foreground_checked_helper_is_retained_before_handoff(monkeypatch, tmp_p
     assert "durably retained" in agent._post_tool_result_appendix
 
 
+def test_foreground_checked_helper_preempts_stale_slot_and_logs_backlog(monkeypatch, tmp_path):
+    """Do not drop a verified helper behind an older single-slot candidate."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    events = []
+    monkeypatch.setattr(
+        runner, "_record_agent_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    def retain(name: str, proof: str):
+        declaration = f"private lemma {name} : True := by\n  {proof}"
+        return runner._retain_foreground_checked_helper(
+            agent,
+            "lean_incremental_check",
+            {
+                "action": "check_helper",
+                "file_path": str(active),
+                "theorem_id": "demo",
+                "replacement": declaration,
+            },
+            json.dumps(
+                {
+                    "success": True,
+                    "ok": True,
+                    "valid_without_sorry": True,
+                    "has_errors": False,
+                    "has_sorry": False,
+                    "verification_scope": "helper_candidate",
+                    "replacement_matches_target": False,
+                    "replacement_declarations": [name],
+                }
+            ),
+        )
+
+    older = retain("older_helper", "trivial")
+    newer = retain("newer_helper", "exact True.intro")
+
+    assert older is not None and newer is not None
+    assert runner.research_helper_candidate_priority.load(agent._managed_autonomy_state) == newer
+    assert runner.research_helper_candidate_priority.backlog(agent._managed_autonomy_state) == (
+        older,
+    )
+    assert events[-1][0][1] == "foreground-helper-candidate-preempted"
+    assert events[-1][1]["displaced_candidate_id"] == older.candidate_id
+    assert "remains queued behind it" in agent._post_tool_result_appendix
+
+
 def test_foreground_checked_scratch_helper_requires_immediate_production_name(
     monkeypatch, tmp_path
 ):

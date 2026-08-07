@@ -1,4 +1,4 @@
-"""Persist one exact worker-checked helper until the parent acts on it."""
+"""Persist and prioritize exact checked helpers until the parent acts."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from leanflow_cli.workflows import (
     plan_state,
     queue_edit_guard,
     research_findings,
+    research_helper_candidate_backlog,
     research_helper_source_coverage,
 )
 from leanflow_cli.workflows.queue_manager import TheoremKey
@@ -32,6 +33,8 @@ from leanflow_cli.workflows.workflow_json_io import read_json_file, update_json_
 
 STATE_KEY = "pending_research_helper_candidate"
 SUMMARY_KEY = "pending_research_helper_candidate"
+BACKLOG_STATE_KEY = "research_helper_candidate_backlog"
+BACKLOG_SUMMARY_KEY = "research_helper_candidate_backlog"
 RESOLVED_STATE_KEY = "resolved_research_helper_candidates"
 RESOLVED_SUMMARY_KEY = "resolved_research_helper_candidates"
 CONSUMPTION_STATE_KEY = "research_helper_target_consumption"
@@ -446,6 +449,15 @@ def _resolved_entries(raw: object) -> tuple[dict[str, str], ...]:
     return tuple(entries[-MAX_RESOLVED_CANDIDATES:])
 
 
+def _backlog_entries(raw: object) -> tuple[PendingResearchHelperCandidate, ...]:
+    """Return a bounded valid candidate backlog in promotion order."""
+    return research_helper_candidate_backlog.normalize(
+        raw,
+        parse=PendingResearchHelperCandidate.from_mapping,
+        candidate_id=lambda candidate: candidate.candidate_id,
+    )
+
+
 def _merge_resolved_entries(*values: object) -> tuple[dict[str, str], ...]:
     """Merge monotonic resolved identities from checkpoint and durable state."""
     by_id: dict[str, dict[str, str]] = {}
@@ -464,6 +476,7 @@ def _merge_resolved_entries(*values: object) -> tuple[dict[str, str], ...]:
 def _update_durable_state(
     *,
     pending: object = _UNSET,
+    backlog: object = _UNSET,
     resolved: object = _UNSET,
     consumption: object = _UNSET,
 ) -> None:
@@ -474,6 +487,10 @@ def _update_durable_state(
     def mutate(summary: dict[str, Any]) -> None:
         if pending is not _UNSET:
             summary[SUMMARY_KEY] = dict(pending) if isinstance(pending, Mapping) else {}
+        if backlog is not _UNSET:
+            summary[BACKLOG_SUMMARY_KEY] = [
+                record.to_mapping() for record in _backlog_entries(backlog)
+            ]
         if resolved is not _UNSET:
             summary[RESOLVED_SUMMARY_KEY] = [dict(entry) for entry in _resolved_entries(resolved)]
         if consumption is not _UNSET:
@@ -493,6 +510,16 @@ def _set_memory_pending(
         autonomy_state.pop(STATE_KEY, None)
     else:
         autonomy_state[STATE_KEY] = record.to_mapping()
+
+
+def _set_memory_backlog(
+    autonomy_state: dict[str, Any],
+    records: Sequence[PendingResearchHelperCandidate],
+) -> None:
+    """Mirror the ordered candidate backlog into process state."""
+    autonomy_state[BACKLOG_STATE_KEY] = [
+        record.to_mapping() for record in _backlog_entries(records)
+    ]
 
 
 def _set_memory_resolved(
@@ -526,6 +553,20 @@ def _persist(
     autonomy_state[_HYDRATION_KEY] = _PROCESS_HYDRATION_TOKEN
 
 
+def _persist_pending_and_backlog(
+    autonomy_state: dict[str, Any],
+    pending: PendingResearchHelperCandidate | None,
+    backlog: Sequence[PendingResearchHelperCandidate],
+) -> None:
+    """Atomically commit the active candidate and its promotion backlog."""
+    pending_payload = pending.to_mapping() if pending is not None else {}
+    normalized_backlog = _backlog_entries(backlog)
+    _update_durable_state(pending=pending_payload, backlog=normalized_backlog)
+    _set_memory_pending(autonomy_state, pending)
+    _set_memory_backlog(autonomy_state, normalized_backlog)
+    autonomy_state[_HYDRATION_KEY] = _PROCESS_HYDRATION_TOKEN
+
+
 def _hydrate_state(autonomy_state: dict[str, Any]) -> None:
     """Reconcile a possibly stale checkpoint with current durable authority once."""
     if autonomy_state.get(_HYDRATION_KEY) == _PROCESS_HYDRATION_TOKEN:
@@ -537,9 +578,11 @@ def _hydrate_state(autonomy_state: dict[str, Any]) -> None:
         else None
     )
     memory_resolved = _resolved_entries(autonomy_state.get(RESOLVED_STATE_KEY))
+    memory_backlog = _backlog_entries(autonomy_state.get(BACKLOG_STATE_KEY))
     memory_consumption = _consumption_record(autonomy_state.get(CONSUMPTION_STATE_KEY))
     if not plan_state.plan_state_enabled():
         _set_memory_pending(autonomy_state, memory_pending)
+        _set_memory_backlog(autonomy_state, memory_backlog)
         _set_memory_resolved(autonomy_state, memory_resolved)
         _set_memory_consumption(autonomy_state, memory_consumption)
         autonomy_state[_HYDRATION_KEY] = _PROCESS_HYDRATION_TOKEN
@@ -553,6 +596,7 @@ def _hydrate_state(autonomy_state: dict[str, Any]) -> None:
         else None
     )
     disk_resolved = _resolved_entries(summary.get(RESOLVED_SUMMARY_KEY))
+    disk_backlog = _backlog_entries(summary.get(BACKLOG_SUMMARY_KEY))
     disk_consumption = _consumption_record(summary.get(CONSUMPTION_SUMMARY_KEY))
     resolved = _merge_resolved_entries(memory_resolved, disk_resolved)
     resolved_ids = {entry["candidate_id"] for entry in resolved}
@@ -568,6 +612,18 @@ def _hydrate_state(autonomy_state: dict[str, Any]) -> None:
     if pending is not None and pending.candidate_id in resolved_ids:
         pending = None
 
+    if BACKLOG_SUMMARY_KEY in summary:
+        backlog = disk_backlog
+    else:
+        # One-time migration for checkpoints written before the backlog key.
+        backlog = memory_backlog
+    backlog = tuple(
+        candidate
+        for candidate in backlog
+        if candidate.candidate_id not in resolved_ids
+        and (pending is None or candidate.candidate_id != pending.candidate_id)
+    )
+
     desired_pending = pending.to_mapping() if pending is not None else {}
     desired_resolved = [dict(entry) for entry in resolved]
     disk_pending_payload = dict(disk_pending_raw) if isinstance(disk_pending_raw, Mapping) else {}
@@ -575,19 +631,26 @@ def _hydrate_state(autonomy_state: dict[str, Any]) -> None:
         SUMMARY_KEY in summary and disk_pending_payload != desired_pending
     )
     resolved_changed = [dict(entry) for entry in disk_resolved] != desired_resolved
+    desired_backlog = [record.to_mapping() for record in backlog]
+    disk_backlog_payload = [record.to_mapping() for record in disk_backlog]
+    backlog_changed = (BACKLOG_SUMMARY_KEY not in summary and bool(backlog)) or (
+        BACKLOG_SUMMARY_KEY in summary and disk_backlog_payload != desired_backlog
+    )
     if CONSUMPTION_SUMMARY_KEY in summary:
         consumption = disk_consumption
     else:
         # One-time migration for checkpoints written before the owner key.
         consumption = memory_consumption
     consumption_changed = CONSUMPTION_SUMMARY_KEY not in summary and bool(consumption)
-    if pending_changed or resolved_changed or consumption_changed:
+    if pending_changed or backlog_changed or resolved_changed or consumption_changed:
         _update_durable_state(
             pending=desired_pending if pending_changed else _UNSET,
+            backlog=desired_backlog if backlog_changed else _UNSET,
             resolved=desired_resolved if resolved_changed else _UNSET,
             consumption=consumption if consumption_changed else _UNSET,
         )
     _set_memory_pending(autonomy_state, pending)
+    _set_memory_backlog(autonomy_state, backlog)
     _set_memory_resolved(autonomy_state, resolved)
     _set_memory_consumption(autonomy_state, consumption)
     autonomy_state[_HYDRATION_KEY] = _PROCESS_HYDRATION_TOKEN
@@ -613,6 +676,21 @@ def load(autonomy_state: dict[str, Any]) -> PendingResearchHelperCandidate | Non
         return record
     _set_memory_pending(autonomy_state, None)
     return None
+
+
+def backlog(
+    autonomy_state: dict[str, Any],
+) -> tuple[PendingResearchHelperCandidate, ...]:
+    """Return verified candidates waiting behind the active candidate."""
+    _hydrate_state(autonomy_state)
+    resolved = resolved_candidate_ids(autonomy_state)
+    records = tuple(
+        record
+        for record in _backlog_entries(autonomy_state.get(BACKLOG_STATE_KEY))
+        if record.candidate_id not in resolved
+    )
+    _set_memory_backlog(autonomy_state, records)
+    return records
 
 
 def matching(
@@ -737,11 +815,15 @@ def _remember_exact_candidate(
     delivery_markers: Sequence[str] = (),
     state: str = AWAITING_RECHECK,
     replace_pending: bool = False,
+    preempt_pending: bool = False,
 ) -> PendingResearchHelperCandidate | None:
-    """Persist one exact helper candidate, replacing only an authorized rename fence."""
+    """Persist one exact helper candidate without discarding checked work.
+
+    A newly verified foreground helper may preempt an older unchecked active
+    candidate. The displaced record enters a bounded durable backlog and is
+    promoted after the newer helper receives an authoritative disposition.
+    """
     existing = load(autonomy_state)
-    if existing is not None and not replace_pending:
-        return existing
     canonical_file = _canonical_file(active_file)
     normalized_target = str(target_symbol or "").strip()
     normalized_name = str(helper_name or "").strip()
@@ -796,6 +878,10 @@ def _remember_exact_candidate(
     )
     if candidate_id in resolved_candidate_ids(autonomy_state):
         return None
+    if existing is not None and existing.candidate_id == candidate_id:
+        return existing
+    if existing is not None and not replace_pending and not preempt_pending:
+        return existing
     now = _now_iso()
     record = PendingResearchHelperCandidate(
         candidate_id=candidate_id,
@@ -820,7 +906,16 @@ def _remember_exact_candidate(
         created_at=now,
         updated_at=now,
     )
-    _persist(autonomy_state, record)
+    if existing is not None and preempt_pending:
+        queued = research_helper_candidate_backlog.prepend(
+            existing,
+            backlog(autonomy_state),
+            candidate_id=lambda candidate: candidate.candidate_id,
+            exclude_id=record.candidate_id,
+        )
+        _persist_pending_and_backlog(autonomy_state, record, queued)
+    else:
+        _persist(autonomy_state, record)
     return record
 
 
@@ -952,8 +1047,8 @@ def remember_nonproduction_from_foreground_check(
 ) -> PendingResearchHelperCandidate | None:
     """Persist one substantive verified scratch helper until its exact rename."""
     existing = load(autonomy_state)
-    if existing is not None:
-        return existing if existing.state == AWAITING_PRODUCTION_RENAME else None
+    if existing is not None and existing.state == AWAITING_PRODUCTION_RENAME:
+        return existing
     helper = _successful_foreground_helper(
         arguments,
         result,
@@ -987,6 +1082,7 @@ def remember_nonproduction_from_foreground_check(
         declaration=declaration,
         delivery_markers=("foreground-check", "production-rename-required"),
         state=AWAITING_PRODUCTION_RENAME,
+        preempt_pending=existing is not None,
     )
 
 
@@ -1011,10 +1107,12 @@ def remember_from_foreground_check(
     helper_name, declaration = helper
     existing = load(autonomy_state)
     replace_pending = False
+    preempt_pending = False
     if existing is not None:
-        if not is_exact_production_rename(existing, arguments):
-            return None
-        replace_pending = True
+        if is_exact_production_rename(existing, arguments):
+            replace_pending = True
+        else:
+            preempt_pending = True
     check_identity = _sha256(
         "\0".join(
             (
@@ -1035,6 +1133,7 @@ def remember_from_foreground_check(
         declaration=declaration,
         delivery_markers=("foreground-check",),
         replace_pending=replace_pending,
+        preempt_pending=preempt_pending,
     )
 
 
@@ -1302,9 +1401,10 @@ def inserted_candidate_matches(record: PendingResearchHelperCandidate) -> bool:
 
 
 def retire(autonomy_state: dict[str, Any]) -> PendingResearchHelperCandidate | None:
-    """Clear and return the active pending helper candidate."""
+    """Retire the active candidate and promote the next checked helper."""
     existing = load(autonomy_state)
-    _persist(autonomy_state, None)
+    promoted, queued = research_helper_candidate_backlog.promote(backlog(autonomy_state))
+    _persist_pending_and_backlog(autonomy_state, promoted, queued)
     return existing
 
 
@@ -1358,9 +1458,16 @@ def resolve(
                 "helper_name": existing.helper_name,
                 "integrated_at": _now_iso(),
             }
-    _update_durable_state(pending={}, resolved=payload, consumption=consumption)
+    promoted, queued = research_helper_candidate_backlog.promote(backlog(autonomy_state))
+    _update_durable_state(
+        pending=promoted.to_mapping() if promoted is not None else {},
+        backlog=queued,
+        resolved=payload,
+        consumption=consumption,
+    )
     _set_memory_resolved(autonomy_state, payload)
-    _set_memory_pending(autonomy_state, None)
+    _set_memory_pending(autonomy_state, promoted)
+    _set_memory_backlog(autonomy_state, queued)
     if consumption is not _UNSET:
         _set_memory_consumption(
             autonomy_state,
