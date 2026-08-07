@@ -15877,6 +15877,52 @@ def test_clean_room_queue_blocks_ad_hoc_scripts_but_allows_companion_and_state(
     )
 
 
+def test_managed_queue_blocks_companion_reverse_import_outside_clean_room(monkeypatch, tmp_path):
+    """Reject stale-olean companion cycles in regular and sandbox proof runs too."""
+    active = tmp_path / "IMO2026" / "P4.lean"
+    active.parent.mkdir()
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    companion = active.with_name("P4Helpers.lean")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "solution_research_disabled", lambda: False)
+    agent = _Agent()
+
+    blocked = runner._managed_pre_tool_call(
+        agent,
+        "write_file",
+        {"path": str(companion), "content": "import IMO2026.P4\n"},
+    )
+
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["status"] == "companion_reverse_import_denied"
+    assert payload["blocked_by"] == "managed_companion_dependency_policy"
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert (
+        runner._managed_pre_tool_call(
+            agent,
+            "write_file",
+            {"path": str(companion), "content": "import Mathlib\n"},
+        )
+        is None
+    )
+
+
 def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(monkeypatch, capsys):
     class _Agent(_ManagedRunAgentStub):
         def __init__(self):

@@ -9,6 +9,27 @@ DEFAULT_LINE_THRESHOLD = 600
 DEFAULT_BYTE_THRESHOLD = 64 * 1024
 
 
+def active_module_name(active_file: str, *, project_root: str) -> str:
+    """Return the project-relative module name for an active Lean source file."""
+    path = Path(str(active_file or "")).resolve(strict=False)
+    root = Path(str(project_root or ".")).resolve(strict=False)
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        relative = Path(path.name)
+    return ".".join(relative.with_suffix("").parts)
+
+
+def imports_active_module(source: str, active_file: str, *, project_root: str) -> bool:
+    """Return whether companion source reverse-imports its active module."""
+    module_name = active_module_name(active_file, project_root=project_root)
+    return any(
+        line.strip() == f"import {module_name}"
+        for line in str(source or "").splitlines()
+        if line.lstrip().startswith("import ")
+    )
+
+
 def _positive_env(name: str, default: int) -> int:
     """Return one positive integer environment override."""
     try:
@@ -45,11 +66,11 @@ def companion_module_advice(active_file: str, *, project_root: str) -> str:
         relative = companion.resolve(strict=False).relative_to(root)
         active_relative = path.resolve(strict=False).relative_to(root)
         module_name = ".".join(relative.with_suffix("").parts)
-        active_module_name = ".".join(active_relative.with_suffix("").parts)
+        active_module = ".".join(active_relative.with_suffix("").parts)
         companion_label = str(relative)
     except (OSError, ValueError):
         module_name = companion.stem
-        active_module_name = path.stem
+        active_module = path.stem
         companion_label = str(companion)
     companion_exists = companion.is_file()
     import_line = f"import {module_name}"
@@ -61,10 +82,10 @@ def companion_module_advice(active_file: str, *, project_root: str) -> str:
     reverse_import = False
     if companion_exists:
         try:
-            reverse_import = any(
-                line.strip() == f"import {active_module_name}"
-                for line in companion.read_text(encoding="utf-8").splitlines()
-                if line.lstrip().startswith("import ")
+            reverse_import = imports_active_module(
+                companion.read_text(encoding="utf-8"),
+                str(path),
+                project_root=project_root,
             )
         except OSError:
             pass
@@ -90,7 +111,7 @@ def companion_module_advice(active_file: str, *, project_root: str) -> str:
         lines.extend(
             [
                 f"- unsafe reverse import detected: `{companion_label}` imports the active module "
-                f"`{active_module_name}`",
+                f"`{active_module}`",
                 "- do not use observations from that reverse-import companion as current-source "
                 "authority: Lean may load a stale compiled active module; remove the reverse import "
                 "and keep only helpers self-contained over earlier/general modules",

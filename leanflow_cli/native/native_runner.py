@@ -9742,12 +9742,8 @@ def _clean_room_queue_support_edit_guard(
     args: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any],
 ) -> str | None:
-    """Restrict clean-room queue writes to proof source and durable workflow state."""
-    if (
-        _workflow_kind() != "prove"
-        or not solution_research_disabled()
-        or function_name not in _MANAGED_SOURCE_EDIT_TOOLS
-    ):
+    """Reject reverse imports and scope clean-room writes to proof workflow files."""
+    if _workflow_kind() != "prove" or function_name not in _MANAGED_SOURCE_EDIT_TOOLS:
         return None
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     active_file = str(assignment.get("active_file", "") or "").strip()
@@ -9759,6 +9755,48 @@ def _clean_room_queue_support_edit_guard(
     companion_path = active_path.with_name(f"{active_path.stem}Helpers.lean")
     state_root = project_root / ".leanflow" / "workflow-state"
     allowed_state_suffixes = {".json", ".jsonl", ".md", ".txt"}
+    arguments = dict(args or {})
+    reverse_imports: list[str] = []
+    for path in edit_paths:
+        resolved = path.resolve(strict=False)
+        if resolved != companion_path:
+            continue
+        try:
+            before = resolved.read_text(encoding="utf-8")
+        except OSError:
+            before = ""
+        if function_name == "write_file":
+            content = arguments.get("content")
+            after = content if isinstance(content, str) else ""
+        else:
+            after = managed_edit_rollback.preview_candidate_source(function_name, args, before)
+        if after and companion_module_policy.imports_active_module(
+            after,
+            str(active_path),
+            project_root=str(project_root),
+        ):
+            reverse_imports.append(str(resolved))
+    if reverse_imports:
+        return json.dumps(
+            {
+                "success": False,
+                "status": "companion_reverse_import_denied",
+                "blocked_by": "managed_companion_dependency_policy",
+                "active_file": str(active_path),
+                "blocked_paths": reverse_imports,
+                "patch_applied": False,
+                "lean_started": False,
+                "error": (
+                    "A managed `Helpers.lean` companion must not import its active module: "
+                    "Lean may resolve that cycle through a stale compiled `.olean`. Keep the "
+                    "companion self-contained over Mathlib or earlier modules, then import the "
+                    "companion from the active file when its helpers are ready."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if not solution_research_disabled():
+        return None
     blocked: list[str] = []
     for path in edit_paths:
         resolved = path.resolve(strict=False)

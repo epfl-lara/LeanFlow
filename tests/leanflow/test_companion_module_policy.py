@@ -79,3 +79,19 @@ def test_reverse_import_companion_is_flagged_as_stale_source_risk(tmp_path, monk
 
     assert "unsafe reverse import detected" in advice
     assert "stale compiled active module" in advice
+
+
+def test_imports_active_module_uses_project_relative_name(tmp_path):
+    active = tmp_path / "IMO2026" / "P4.lean"
+    active.parent.mkdir()
+
+    assert companion_module_policy.imports_active_module(
+        "import Mathlib\nimport IMO2026.P4\n",
+        str(active),
+        project_root=str(tmp_path),
+    )
+    assert not companion_module_policy.imports_active_module(
+        "import Mathlib\n",
+        str(active),
+        project_root=str(tmp_path),
+    )
