@@ -99,6 +99,7 @@ from leanflow_cli.native import (
     companion_module_policy,
     completion_policy,
     determine_answer_policy,
+    diagnostic_loop_guard,
     direct_self_reference,
     final_report_failure_reuse,
     generated_helper_name_policy,
@@ -4342,6 +4343,7 @@ def _managed_edit_targets_assignment(
 def _prepare_managed_turn_state(agent: Any, autonomy_state: dict[str, Any]) -> None:
     """Bind runner state and reserve one stable failed-attempt turn identity."""
     agent._managed_autonomy_state = autonomy_state
+    diagnostic_loop_guard.reset(agent)
     agent._managed_pending_theorem_feedback = None
     agent._managed_step_boundary_recorded_attempt = False
     agent._managed_step_boundary_closed = False
@@ -22380,6 +22382,46 @@ def _build_agent() -> AIAgent:
             queue_edit_candidate_declaration=queue_edit_candidate_declaration,
             queue_removed_generated_assignment=edit_verdict.removed_generated_assignment,
         )
+        assignment = (
+            dict(managed_autonomy.get("current_queue_assignment") or {})
+            if isinstance(managed_autonomy, dict)
+            else {}
+        )
+        active_file = str(assignment.get("active_file", "") or "").strip()
+        loop_decision = diagnostic_loop_guard.observe(
+            agent,
+            function_name=function_name,
+            args=_args,
+            source_revision_sha256=_source_revision_sha256(active_file),
+        )
+        if loop_decision is not None and not _agent_interrupted(agent):
+            message = "\n".join(
+                [
+                    "[LEANFLOW-NATIVE DIAGNOSTIC WINDOW COMPLETE]",
+                    (
+                        f"- diagnostic-only feedback calls used: "
+                        f"{loop_decision.attempts}/{loop_decision.limit}"
+                    ),
+                    "- no authenticated source revision changed during this feedback window",
+                    "- result: end this provider turn and continue the same theorem on a distinct construction or decomposition route",
+                    "- preserve concrete Lean terms and negative evidence already recorded; do not replay the exhausted diagnostic family",
+                ]
+            )
+            agent.stage_tool_result_appendix(message)
+            agent._managed_pending_theorem_feedback = None
+            agent._managed_step_boundary_closed = True
+            _record_agent_activity(
+                agent,
+                "diagnostic-feedback-window-exhausted",
+                "Ended a no-progress diagnostic feedback loop at a safe tool boundary",
+                target_symbol=str(assignment.get("target_symbol", "") or ""),
+                active_file=active_file,
+                attempts=loop_decision.attempts,
+                limit=loop_decision.limit,
+                source_revision_sha256=loop_decision.source_revision_sha256,
+                campaign_progress=False,
+            )
+            _request_step_boundary_interrupt(agent)
         if isinstance(managed_autonomy, dict):
             assignment = dict(managed_autonomy.get("current_queue_assignment") or {})
             with contextlib.suppress(Exception):

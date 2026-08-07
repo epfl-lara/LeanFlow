@@ -135,6 +135,7 @@ files = [
   "leanflow_cli/lean/lean_probe_deadline.py",
   "leanflow_cli/native/support_module_materialization.py",
   "leanflow_cli/native/managed_edit_rollback.py",
+  "leanflow_cli/native/diagnostic_loop_guard.py",
   "leanflow_cli/native/generated_helper_name_policy.py",
   "agent/display/log_formatting.py",
   "agent/runtime/workflow_events.py",

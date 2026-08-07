@@ -38,6 +38,11 @@ them.
 - `leanflow_cli.native.native_runner` → the long-running native Lean workflow
   runtime
 
+The native runtime delegates per-provider-turn diagnostic feedback budgeting to
+`leanflow_cli/native/diagnostic_loop_guard.py`. The guard ends only a repeated
+diagnostic-only turn; source edits and exact Lean verification remain governed
+by the queue manager and continue with fresh route budgets.
+
 The shell launches managed workflows as child processes. Inside a managed
 process, `native_runner` constructs `AIAgent` directly and coordinates its
 turns with Lean verification and durable workflow state.
