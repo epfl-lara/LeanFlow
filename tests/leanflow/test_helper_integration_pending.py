@@ -36,7 +36,17 @@ def test_pending_helper_integration_is_bounded_and_durable(monkeypatch, tmp_path
     assert attempted.matches("demo", active)
     assert not attempted.matches("other", active)
 
-    assert pending.retire(state) == attempted
+    refreshed = pending.remember(
+        state,
+        target_symbol="demo",
+        active_file=active,
+        helper_names=["new_helper"],
+    )
+    assert refreshed is not None
+    assert refreshed.gate_attempts == 0
+    assert "new_helper" in refreshed.helper_names
+
+    assert pending.retire(state) == refreshed
     assert pending.STATE_KEY not in state
     assert plan_state.load_summary()[pending.SUMMARY_KEY] == {}
 

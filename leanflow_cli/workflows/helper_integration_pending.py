@@ -125,8 +125,20 @@ def remember(
         return load(autonomy_state)
     existing = load(autonomy_state)
     if existing is not None and existing.matches(target_symbol, active_file):
-        merged = _helper_names((*existing.helper_names, *helpers))
-        record = replace(existing, helper_names=merged)
+        fresh_helpers = tuple(name for name in helpers if name not in existing.helper_names)
+        merged = (
+            _helper_names((*fresh_helpers, *existing.helper_names))
+            if fresh_helpers
+            else existing.helper_names
+        )
+        # A newly authenticated helper is fresh structural evidence. Its first
+        # parent integration attempts must not inherit a nearly exhausted gate
+        # budget from older helpers on the same long-running assignment.
+        record = replace(
+            existing,
+            helper_names=merged,
+            gate_attempts=(0 if fresh_helpers else existing.gate_attempts),
+        )
     else:
         record = PendingHelperIntegration(
             target_symbol=str(target_symbol or "").strip(),

@@ -33352,6 +33352,118 @@ def test_rejected_candidate_replay_guard_blocks_exact_assigned_edit(tmp_path, mo
     assert events[-1][0][1] == "rejected-candidate-replay-blocked"
 
 
+def test_rejected_candidate_replay_guard_allows_banked_helper_in_new_context(tmp_path, monkeypatch):
+    """Retry an old parent candidate after its referenced helper is authenticated."""
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "0")
+    active = tmp_path / "Main.lean"
+    source = "private lemma helper : True := by\n  trivial\n\ntheorem demo : True := by\n  sorry\n"
+    candidate = "theorem demo : True := by\n  exact helper\n"
+    active.write_text(source, encoding="utf-8")
+    candidate_hash = runner.hashlib.sha256(candidate.strip().encode()).hexdigest()
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        },
+        "failed_attempts": [
+            {
+                "attempt": 9,
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": candidate_hash,
+                "proof_shape": "+ exact helper",
+                "reason": f"failed and restored at revision {'0' * 64}",
+            }
+        ],
+        runner.helper_integration_pending.STATE_KEY: {
+            "version": 1,
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "helper_names": ["helper"],
+            "gate_attempts": 0,
+        },
+    }
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+-  sorry
++  exact helper
+*** End Patch"""
+
+    result = runner._rejected_candidate_replay_pre_tool_guard(
+        _ManagedRunAgentStub(),
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": "demo", "patch": patch},
+        state,
+    )
+
+    assert result is None
+    assert events[-1][0][1] == "rejected-candidate-replay-context-refreshed"
+    assert events[-1][1]["referenced_helpers"] == ["helper"]
+
+
+def test_rejected_candidate_replay_guard_blocks_banked_helper_in_same_context(
+    tmp_path, monkeypatch
+):
+    """Keep blocking an unchanged failed parent even when it references a helper."""
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "0")
+    active = tmp_path / "Main.lean"
+    source = "private lemma helper : True := by\n  trivial\n\ntheorem demo : True := by\n  sorry\n"
+    candidate = "theorem demo : True := by\n  exact helper\n"
+    active.write_text(source, encoding="utf-8")
+    revision = runner._source_revision_sha256(str(active))
+    candidate_hash = runner.hashlib.sha256(candidate.strip().encode()).hexdigest()
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        },
+        "failed_attempts": [
+            {
+                "attempt": 10,
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "declaration_hash": candidate_hash,
+                "proof_shape": "+ exact helper",
+                "reason": f"failed and restored at revision {revision}",
+            }
+        ],
+        runner.helper_integration_pending.STATE_KEY: {
+            "version": 1,
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "helper_names": ["helper"],
+            "gate_attempts": 0,
+        },
+    }
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+ theorem demo : True := by
+-  sorry
++  exact helper
+*** End Patch"""
+
+    result = runner._rejected_candidate_replay_pre_tool_guard(
+        _ManagedRunAgentStub(),
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": "demo", "patch": patch},
+        state,
+    )
+
+    assert result is not None
+    assert json.loads(result)["status"] == "rejected_candidate_replay"
+
+
 @pytest.mark.parametrize("suggestion", ["exact?", "apply?", "simp?", "aesop?"])
 def test_suggestion_only_source_patch_is_redirected_before_mutation(
     tmp_path, monkeypatch, suggestion

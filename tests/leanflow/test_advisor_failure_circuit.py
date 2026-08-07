@@ -113,6 +113,33 @@ def test_campaign_timeout_quarantine_survives_target_declaration_change(monkeypa
     )
 
 
+def test_new_semantic_evidence_releases_campaign_timeout_quarantine(monkeypatch, tmp_path):
+    """Give a changed verified-evidence context one fresh advisor budget."""
+    _configure_state_path(monkeypatch, tmp_path)
+    common = {
+        "target_symbol": "result",
+        "active_file": str(tmp_path / "Main.lean"),
+        "source_revision_sha256": "old-source",
+        "target_revision_sha256": "same-target",
+        "evidence_revision_sha256": "old-evidence",
+        "campaign_id": "campaign-1",
+    }
+    advisor_failure_circuit.observe_result(
+        function_name="lean_decompose_helpers",
+        result_text=json.dumps({"success": False, "status": "timeout"}),
+        **common,
+    )
+
+    assert advisor_failure_circuit.preflight_blocked(
+        function_name="lean_reasoning_help",
+        **common,
+    )
+    assert not advisor_failure_circuit.preflight_blocked(
+        function_name="lean_reasoning_help",
+        **{**common, "evidence_revision_sha256": "new-evidence"},
+    )
+
+
 def test_target_declaration_change_releases_non_timeout_advisor_failures(monkeypatch, tmp_path):
     _configure_state_path(monkeypatch, tmp_path)
     common = {
@@ -200,6 +227,7 @@ def test_completed_call_is_charged_to_its_preflight_source_revision(tmp_path):
         active_file=active,
         source_revision_sha256="source-before-call",
         target_revision_sha256="target-before-call",
+        evidence_revision_sha256="evidence-before-call",
     )
 
     identity = advisor_failure_circuit.consume_call_identity(
@@ -209,8 +237,10 @@ def test_completed_call_is_charged_to_its_preflight_source_revision(tmp_path):
         active_file=active,
         fallback_source_revision_sha256="source-after-worker-edit",
         fallback_target_revision_sha256="target-after-worker-edit",
+        fallback_evidence_revision_sha256="evidence-after-worker-edit",
     )
 
     assert identity.source_revision_sha256 == "source-before-call"
     assert identity.target_revision_sha256 == "target-before-call"
+    assert identity.evidence_revision_sha256 == "evidence-before-call"
     assert advisor_failure_circuit.PENDING_STATE_KEY not in state

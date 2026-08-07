@@ -8188,6 +8188,11 @@ def _advisor_circuit_handoff_block(
         return ""
     source_revision = _source_revision_sha256(active_file)
     target_revision = _target_declaration_sha256(active_file, target_symbol)
+    evidence_revision = _advisor_semantic_evidence_sha256(
+        dict(autonomy_state or {}),
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
     campaign_id = str(dict(autonomy_state or {}).get("campaign_id", "") or "")
     blocked = [
         tool
@@ -8198,6 +8203,7 @@ def _advisor_circuit_handoff_block(
             active_file=active_file,
             source_revision_sha256=source_revision,
             target_revision_sha256=target_revision,
+            evidence_revision_sha256=evidence_revision,
             campaign_id=campaign_id,
         )
     ]
@@ -9266,6 +9272,45 @@ def _pending_managed_candidate_declaration(
     )
 
 
+def _pending_helper_refreshes_rejected_candidate_context(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    candidate: str,
+    previous: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Return newly banked helpers that make an older rejection context stale."""
+    if not isinstance(autonomy_state, dict):
+        return ()
+    pending = helper_integration_pending.load(autonomy_state)
+    if pending is None or pending.exhausted or not pending.matches(target_symbol, active_file):
+        return ()
+    referenced = tuple(
+        name
+        for name in pending.helper_names
+        if re.search(
+            rf"(?<![A-Za-z0-9_']){re.escape(name)}(?![A-Za-z0-9_'])",
+            candidate,
+        )
+    )
+    if not referenced:
+        return ()
+    prior_revision = str(previous.get("source_revision_sha256", "") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", prior_revision):
+        detail = " ".join(str(previous.get(key, "") or "") for key in ("reason", "gate_verdict"))
+        match = re.search(
+            r"\brestored at revision\s+([0-9a-f]{64})\b",
+            detail,
+            flags=re.IGNORECASE,
+        )
+        prior_revision = match.group(1).lower() if match is not None else ""
+    current_revision = _source_revision_sha256(active_file).lower()
+    if not prior_revision or not current_revision or prior_revision == current_revision:
+        return ()
+    return referenced
+
+
 def _rejected_candidate_replay_pre_tool_guard(
     agent: Any,
     function_name: str,
@@ -9362,6 +9407,33 @@ def _rejected_candidate_replay_pre_tool_guard(
         candidate,
     )
     if previous is None:
+        return None
+    refreshed_helpers = _pending_helper_refreshes_rejected_candidate_context(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+        candidate=candidate,
+        previous=previous,
+    )
+    if refreshed_helpers:
+        with contextlib.suppress(Exception):
+            _record_agent_activity(
+                agent,
+                "rejected-candidate-replay-context-refreshed",
+                (
+                    f"Admitted one previously rejected candidate for {target_symbol} "
+                    "after authenticated helper insertion changed its elaboration context"
+                ),
+                target_symbol=target_symbol,
+                active_file=active_file,
+                admitted_tool=function_name,
+                prior_attempt=previous.get("attempt"),
+                referenced_helpers=list(refreshed_helpers),
+                source_revision_sha256=_source_revision_sha256(active_file),
+                provider_called=False,
+                lean_started=False,
+                campaign_progress=False,
+            )
         return None
     with contextlib.suppress(Exception):
         _record_agent_activity(
@@ -10096,12 +10168,18 @@ def _mechanical_decomposer_circuit_block(
     target_revision_sha256: str,
 ) -> decomposer.DecomposeOutcome | None:
     """Return a no-provider outcome when the shared advisor budget is exhausted."""
+    evidence_revision = _advisor_semantic_evidence_sha256(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
     if not advisor_failure_circuit.preflight_blocked(
         function_name="lean_decompose_helpers",
         target_symbol=target_symbol,
         active_file=active_file,
         source_revision_sha256=source_revision_sha256,
         target_revision_sha256=target_revision_sha256,
+        evidence_revision_sha256=evidence_revision,
         campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
     ):
         return None
@@ -10142,6 +10220,11 @@ def _observe_mechanical_decomposer_advisor(
         active_file=active_file,
         source_revision_sha256=source_revision_sha256,
         target_revision_sha256=target_revision_sha256,
+        evidence_revision_sha256=_advisor_semantic_evidence_sha256(
+            autonomy_state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        ),
         campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
     )
 
@@ -11196,6 +11279,7 @@ class _AdvisorFailureAdmission:
     active_file: str
     source_revision_sha256: str
     target_revision_sha256: str
+    evidence_revision_sha256: str
     residual_revision_sha256: str
     local_blocked: bool
     durable_blocked: bool
@@ -11204,6 +11288,57 @@ class _AdvisorFailureAdmission:
     def blocked(self) -> bool:
         """Return whether either advisor failure circuit rejects the call."""
         return self.local_blocked or self.durable_blocked
+
+
+def _advisor_semantic_evidence_sha256(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> str:
+    """Return a bounded fingerprint of verified structure available to advisors."""
+    evidence: dict[str, Any] = {}
+    if isinstance(autonomy_state, dict):
+        pending = helper_integration_pending.load(autonomy_state)
+        if (
+            pending is not None
+            and not pending.exhausted
+            and pending.matches(target_symbol, active_file)
+        ):
+            evidence["pending_helpers"] = sorted(pending.helper_names)
+    campaign = campaign_epoch.campaign_snapshot()
+    last_progress = campaign.get("last_verified_graph_progress")
+    if isinstance(last_progress, Mapping):
+        node_ids = sorted(
+            {
+                str(node_id or "").strip()
+                for node_id in (last_progress.get("node_ids") or [])
+                if str(node_id or "").strip()
+            }
+        )
+        if node_ids:
+            evidence["verified_graph_nodes"] = node_ids
+            evidence["verified_graph_recorded_at"] = str(
+                last_progress.get("recorded_at", "") or ""
+            ).strip()
+    if not evidence:
+        return ""
+    encoded = json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _advisor_residual_revision_sha256(
+    *,
+    source_revision_sha256: str,
+    target_revision_sha256: str,
+    evidence_revision_sha256: str,
+) -> str:
+    """Return the local circuit key for one residual target and evidence context."""
+    residual = str(target_revision_sha256 or source_revision_sha256 or "").strip()
+    evidence = str(evidence_revision_sha256 or "").strip()
+    if not residual or not evidence:
+        return residual
+    return hashlib.sha256(f"{residual}:{evidence}".encode()).hexdigest()
 
 
 def _advisor_failure_admission(
@@ -11220,12 +11355,22 @@ def _advisor_failure_admission(
         if active_file and target_symbol
         else ""
     )
-    residual_revision = target_revision or source_revision
+    evidence_revision = _advisor_semantic_evidence_sha256(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    residual_revision = _advisor_residual_revision_sha256(
+        source_revision_sha256=source_revision,
+        target_revision_sha256=target_revision,
+        evidence_revision_sha256=evidence_revision,
+    )
     return _AdvisorFailureAdmission(
         target_symbol=target_symbol,
         active_file=active_file,
         source_revision_sha256=source_revision,
         target_revision_sha256=target_revision,
+        evidence_revision_sha256=evidence_revision,
         residual_revision_sha256=residual_revision,
         local_blocked=tool_result_loop_guard.advisor_preflight_blocked(
             autonomy_state,
@@ -11240,6 +11385,7 @@ def _advisor_failure_admission(
             active_file=active_file,
             source_revision_sha256=source_revision,
             target_revision_sha256=target_revision,
+            evidence_revision_sha256=evidence_revision,
             campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
         ),
     )
@@ -11532,6 +11678,7 @@ def _managed_pre_tool_call(
             active_file=advisor_admission.active_file,
             source_revision_sha256=advisor_admission.source_revision_sha256,
             target_revision_sha256=advisor_admission.target_revision_sha256,
+            evidence_revision_sha256=advisor_admission.evidence_revision_sha256,
         )
         placeholder_block = (
             source_placeholder_guard.block_unchanged_target_check(
@@ -15326,6 +15473,11 @@ def _handle_managed_tool_result(
                 if active_file and target_symbol
                 else ""
             )
+            current_evidence_revision = _advisor_semantic_evidence_sha256(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
             advisor_identity = advisor_failure_circuit.consume_call_identity(
                 autonomy_state,
                 function_name=function_name,
@@ -15333,6 +15485,7 @@ def _handle_managed_tool_result(
                 active_file=active_file,
                 fallback_source_revision_sha256=current_source_revision,
                 fallback_target_revision_sha256=current_target_revision,
+                fallback_evidence_revision_sha256=current_evidence_revision,
             )
             advisor_failure_circuit.observe_result(
                 function_name=function_name,
@@ -15341,6 +15494,7 @@ def _handle_managed_tool_result(
                 active_file=active_file,
                 source_revision_sha256=advisor_identity.source_revision_sha256,
                 target_revision_sha256=advisor_identity.target_revision_sha256,
+                evidence_revision_sha256=advisor_identity.evidence_revision_sha256,
                 campaign_id=str(autonomy_state.get("campaign_id", "") or ""),
             )
     loop_decision = (
@@ -15352,7 +15506,15 @@ def _handle_managed_tool_result(
             target_symbol=target_symbol,
             active_file=active_file,
             source_revision_sha256=(
-                _target_declaration_sha256(active_file, target_symbol)
+                _advisor_residual_revision_sha256(
+                    source_revision_sha256=_source_revision_sha256(active_file),
+                    target_revision_sha256=_target_declaration_sha256(active_file, target_symbol),
+                    evidence_revision_sha256=_advisor_semantic_evidence_sha256(
+                        autonomy_state,
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                    ),
+                )
                 if function_name in advisor_failure_circuit.ADVISOR_TOOL_NAMES
                 and active_file
                 and target_symbol
