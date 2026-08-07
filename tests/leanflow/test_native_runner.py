@@ -13236,6 +13236,32 @@ def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_sea
     assert disguised["status"] == "checked_helper_integration_required"
     blocked_unverified = json.loads(runner._managed_pre_tool_call(_Agent(), "patch", exact_patch))
     assert blocked_unverified["status"] == "checked_helper_verified_patch_required"
+    different_declaration = "private lemma other_family : True := by\n  trivial"
+    mismatched_helper_patch = {
+        "path": str(active),
+        "theorem_id": "demo",
+        "patch": (
+            "*** Begin Patch\n"
+            f"*** Update File: {active}\n"
+            "@@\n"
+            f"+{different_declaration.replace(chr(10), chr(10) + '+')}\n"
+            "+\n"
+            " theorem demo : True := by\n"
+            "*** End Patch\n"
+        ),
+    }
+    mismatched = json.loads(
+        runner._managed_pre_tool_call(
+            _Agent(),
+            "apply_verified_patch",
+            mismatched_helper_patch,
+        )
+    )
+    assert mismatched["status"] == "checked_helper_verified_patch_mismatch"
+    assert mismatched["helper_symbol"] == "checked_family"
+    assert mismatched["patch_applied"] is False
+    assert mismatched["lean_started"] is False
+    assert "other_family" in mismatched_helper_patch["patch"]
     verified_patch = {
         "path": str(active),
         "theorem_id": "demo",
@@ -21456,6 +21482,10 @@ def test_rejected_priority_singleton_is_retired_after_source_rollback(monkeypatc
         active_file=str(active),
     )
     assert candidate is not None
+    expected_integrated_source = runner.parent_helper_verification_reuse.expected_integrated_source(
+        before, candidate
+    )
+    assert expected_integrated_source
     ready = runner.research_helper_candidate_priority.mark_parent_recheck(
         state,
         candidate_id=candidate.candidate_id,
@@ -21464,6 +21494,10 @@ def test_rejected_priority_singleton_is_retired_after_source_rollback(monkeypatc
             runner.research_helper_candidate_priority.source_revision_sha256(str(active))
         ),
         detail="parent exact helper check and axiom profile passed",
+        expected_integrated_source_revision_sha256=runner.hashlib.sha256(
+            expected_integrated_source.encode("utf-8")
+        ).hexdigest(),
+        axiom_profile_axioms=(),
     )
     assert ready is not None and ready.ready
     args = {
@@ -21583,6 +21617,10 @@ def test_priority_singleton_restore_failure_keeps_candidate_pending(monkeypatch,
         active_file=str(active),
     )
     assert candidate is not None
+    expected_integrated_source = runner.parent_helper_verification_reuse.expected_integrated_source(
+        before, candidate
+    )
+    assert expected_integrated_source
     runner.research_helper_candidate_priority.mark_parent_recheck(
         state,
         candidate_id=candidate.candidate_id,
@@ -21590,6 +21628,10 @@ def test_priority_singleton_restore_failure_keeps_candidate_pending(monkeypatch,
         source_revision_sha256=(
             runner.research_helper_candidate_priority.source_revision_sha256(str(active))
         ),
+        expected_integrated_source_revision_sha256=runner.hashlib.sha256(
+            expected_integrated_source.encode("utf-8")
+        ).hexdigest(),
+        axiom_profile_axioms=(),
     )
     args = {
         "path": str(active),

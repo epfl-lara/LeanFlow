@@ -258,6 +258,57 @@ def test_helper_priority_authorizes_exact_atomic_patch_without_target_replay(
     assert active.read_text(encoding="utf-8") == expected
 
 
+def test_helper_only_verified_patch_waits_for_authenticated_parent_recheck(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Never replay an unchanged parent while exact helper evidence is pending."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *_args, **_kwargs: None)
+    active, before, _expected, _declaration, state, ready = _ready_candidate(tmp_path)
+    pending = runner.research_helper_candidate_priority.reset_for_source_change(
+        state,
+        candidate_id=ready.candidate_id,
+    )
+    assert pending is not None and not pending.ready
+    patch = parent_helper_verification_reuse.exact_integrated_source_patch(
+        before,
+        pending,
+        path=str(active),
+    )
+    assert patch
+
+    class Agent:
+        _managed_autonomy_state = state
+
+        @staticmethod
+        def is_interrupted() -> bool:
+            return False
+
+    payload = json.loads(
+        runner._managed_pre_tool_call(
+            Agent(),
+            "apply_verified_patch",
+            {
+                "path": str(active),
+                "theorem_id": "demo",
+                "patch": patch,
+            },
+        )
+    )
+
+    assert payload["status"] == "checked_helper_parent_recheck_pending"
+    assert payload["helper_symbol"] == pending.helper_name
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == before
+
+
 def test_helper_priority_normalizes_model_patch_to_parent_checked_location(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

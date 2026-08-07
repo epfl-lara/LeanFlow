@@ -11014,6 +11014,40 @@ def _research_helper_candidate_pre_tool_guard(
             ).strip()
             == target_symbol
         )
+        helper_only_verified_patch = bool(
+            verified_patch_for_assignment
+            and not _proposed_edit_changes_assigned_declaration(
+                function_name,
+                arguments,
+                active_file=active_file,
+                target_symbol=target_symbol,
+            )
+        )
+        if helper_only_verified_patch and not contains_exact_candidate:
+            return json.dumps(
+                {
+                    "success": False,
+                    "status": "checked_helper_verified_patch_mismatch",
+                    "blocked_tool": function_name,
+                    "candidate_id": candidate.candidate_id,
+                    "helper_symbol": candidate.helper_name,
+                    "target_symbol": target_symbol,
+                    "patch_applied": False,
+                    "lean_started": False,
+                    "required_action": (
+                        "This helper-only verified patch does not insert the active checked "
+                        "helper. Use an ordinary managed `patch` for a different previously "
+                        "checked helper so LeanFlow can verify only that declaration, or wait "
+                        "for the active candidate's parent recheck before applying its exact "
+                        "authenticated insertion."
+                    ),
+                    "reason": (
+                        "Letting a mismatched helper-only `apply_verified_patch` continue would "
+                        "replay the still-open assigned theorem even though its body is unchanged."
+                    ),
+                },
+                ensure_ascii=False,
+            )
         if contains_exact_candidate or verified_patch_for_assignment:
             if function_name != "apply_verified_patch":
                 with contextlib.suppress(Exception):
@@ -11054,7 +11088,30 @@ def _research_helper_candidate_pre_tool_guard(
                     },
                     ensure_ascii=False,
                 )
-            if research_helper_candidate_priority.parent_recheck_evidence_authenticated(candidate):
+            authenticated_parent_evidence = (
+                research_helper_candidate_priority.parent_recheck_evidence_authenticated(candidate)
+            )
+            if helper_only_verified_patch and not authenticated_parent_evidence:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "status": "checked_helper_parent_recheck_pending",
+                        "blocked_tool": function_name,
+                        "candidate_id": candidate.candidate_id,
+                        "helper_symbol": candidate.helper_name,
+                        "target_symbol": target_symbol,
+                        "patch_applied": False,
+                        "lean_started": False,
+                        "required_action": (
+                            "The helper is preserved, but its exact parent/axiom recheck is not "
+                            "yet authenticated. Continue useful proof exploration or end the "
+                            "turn so the manager can run that focused recheck; do not launch a "
+                            "broad check of the unchanged assigned theorem."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            if authenticated_parent_evidence:
                 try:
                     before_bytes = Path(active_file).read_bytes()
                     before_text = before_bytes.decode("utf-8")
