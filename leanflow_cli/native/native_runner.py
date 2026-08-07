@@ -11502,10 +11502,21 @@ def _timeout_refactor_edit_pre_tool_guard(
         if not after_text:
             return None
         after_declaration = _assigned_candidate_declaration_raw(after_text, target_symbol)
-    if not multi_attempt_candidate and not timeout_refactor_guard.is_heartbeat_only_change(
-        before_declaration, after_declaration
-    ):
-        return None
+    if not multi_attempt_candidate:
+        heartbeat_only = timeout_refactor_guard.is_heartbeat_only_change(
+            before_declaration,
+            after_declaration,
+        )
+        if not heartbeat_only and not incremental_candidate:
+            # A command-scoped option can sit immediately before ``theorem`` and
+            # therefore outside the declaration slice. Compare the source
+            # envelope as well so that syntax cannot bypass timeout backpressure.
+            heartbeat_only = timeout_refactor_guard.is_heartbeat_only_change(
+                before_text,
+                after_text,
+            )
+        if not heartbeat_only:
+            return None
     with contextlib.suppress(Exception):
         _record_agent_activity(
             agent,
