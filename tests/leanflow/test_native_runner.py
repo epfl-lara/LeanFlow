@@ -33668,6 +33668,117 @@ def test_transient_diagnostic_guard_allows_cleanup(tmp_path):
     assert result is None
 
 
+@pytest.mark.parametrize("placeholder", ["exact ?_", "exact True.intro ?_", "sorry", "admit"])
+def test_unresolved_helper_patch_is_rejected_before_mutation(tmp_path, monkeypatch, placeholder):
+    """Keep incomplete helper skeletons in temporary LeanProbe candidates."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+
+    result = runner._unresolved_source_placeholder_patch_guard(
+        _ManagedRunAgentStub(),
+        "patch",
+        {
+            "mode": "replace",
+            "path": str(active),
+            "old_string": "theorem demo",
+            "new_string": (
+                "private lemma incomplete : True := by\n" f"  {placeholder}\n\n" "theorem demo"
+            ),
+        },
+        state,
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "unresolved_source_placeholder_patch"
+    assert payload["unresolved_term_holes"] + len(payload["placeholders"]) == 1
+    assert payload["patch_applied"] is False
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == source
+    assert events[-1][0][1] == "unresolved-source-placeholder-patch-blocked"
+
+
+def test_unresolved_source_placeholder_guard_allows_cleanup(tmp_path):
+    """Allow a managed edit that resolves an existing explicit metavariable."""
+    active = tmp_path / "Main.lean"
+    source = (
+        "private lemma incomplete : True := by\n"
+        "  exact ?_\n\n"
+        "theorem demo : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+
+    result = runner._unresolved_source_placeholder_patch_guard(
+        _ManagedRunAgentStub(),
+        "patch",
+        {
+            "mode": "replace",
+            "path": str(active),
+            "old_string": "exact ?_",
+            "new_string": "exact True.intro",
+        },
+        state,
+    )
+
+    assert result is None
+
+
+def test_unresolved_source_placeholder_guard_allows_closed_refine_goals(tmp_path):
+    """Do not confuse ordinary focused `refine` goals with unresolved term holes."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+
+    result = runner._unresolved_source_placeholder_patch_guard(
+        _ManagedRunAgentStub(),
+        "patch",
+        {
+            "mode": "replace",
+            "path": str(active),
+            "old_string": "theorem demo",
+            "new_string": (
+                "private lemma pair : True ∧ True := by\n"
+                "  refine ⟨?_, ?_⟩\n"
+                "  · trivial\n"
+                "  · trivial\n\n"
+                "theorem demo"
+            ),
+        },
+        state,
+    )
+
+    assert result is None
+
+
 @pytest.mark.parametrize(
     "diagnostic",
     ["#print prefix Demo", "#check Demo.demo", 'run_cmd logInfo "diagnostic"'],

@@ -16,6 +16,7 @@ from leanflow_cli.lean.lean_parsing import (
     LEAN_DECLARATION_PREAMBLE_RE,
     _declaration_line_index_from_text,
     _lean_suggestion_tactic_markers,
+    _strip_lean_comments_and_strings,
 )
 from tools.utilities.patch_parser import preview_v4a_update
 
@@ -26,6 +27,10 @@ _TRANSIENT_DIAGNOSTIC_COMMAND_RE = re.compile(
     r"^\s*(?:#(?:check|print|synth|eval|reduce|lint|find)\b.*|run_cmd\b.*|"
     r"set_option\s+trace\.[^\s]+\s+true\b.*)$"
 )
+_UNRESOLVED_TERM_METAVARIABLE_RE = re.compile(
+    r"(?m)^\s*(?:·\s*)?(?:exact\b[^\n]*|[^\n]*\bfrom\s+|[^\n]*:=\s*)\?_(?=\s|\)|,|$)"
+)
+_SOURCE_PLACEHOLDER_RE = re.compile(r"\b(?:sorry|admit|sorryAx)\b", re.IGNORECASE)
 REJECTED_HELPER_REPLAY_STATE_KEY = "rejected_helper_candidates"
 _REJECTED_HELPER_REPLAY_LIMIT = 48
 _DECLARATION_PREAMBLE_PATTERN = re.compile(LEAN_DECLARATION_PREAMBLE_RE)
@@ -61,6 +66,35 @@ def introduced_transient_diagnostics(before: str, after: str) -> tuple[str, ...]
     """Return diagnostic commands newly introduced by one source edit."""
     before_counts = Counter(transient_diagnostic_markers(before))
     after_counts = Counter(transient_diagnostic_markers(after))
+    introduced: list[str] = []
+    for marker, count in after_counts.items():
+        introduced.extend([marker] * max(0, count - before_counts[marker]))
+    return tuple(introduced)
+
+
+def unresolved_term_metavariable_markers(source: str) -> tuple[str, ...]:
+    """Return term holes that tactics cannot promote to ordinary focused goals."""
+    sanitized = _strip_lean_comments_and_strings(str(source or ""))
+    return tuple("?_" for _match in _UNRESOLVED_TERM_METAVARIABLE_RE.finditer(sanitized))
+
+
+def introduced_unresolved_term_metavariables(before: str, after: str) -> tuple[str, ...]:
+    """Return unresolved term holes newly introduced by one source edit."""
+    before_count = len(unresolved_term_metavariable_markers(before))
+    after_count = len(unresolved_term_metavariable_markers(after))
+    return tuple("?_" for _index in range(max(0, after_count - before_count)))
+
+
+def source_placeholder_markers(source: str) -> tuple[str, ...]:
+    """Return unresolved proof placeholders outside comments and strings."""
+    sanitized = _strip_lean_comments_and_strings(str(source or ""))
+    return tuple(match.group(0).lower() for match in _SOURCE_PLACEHOLDER_RE.finditer(sanitized))
+
+
+def introduced_source_placeholders(before: str, after: str) -> tuple[str, ...]:
+    """Return proof placeholders newly introduced by one source edit."""
+    before_counts = Counter(source_placeholder_markers(before))
+    after_counts = Counter(source_placeholder_markers(after))
     introduced: list[str] = []
     for marker, count in after_counts.items():
         introduced.extend([marker] * max(0, count - before_counts[marker]))

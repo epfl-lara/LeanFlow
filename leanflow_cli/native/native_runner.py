@@ -9703,6 +9703,88 @@ def _transient_diagnostic_source_patch_guard(
     )
 
 
+def _unresolved_source_placeholder_patch_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Keep newly introduced proof placeholders in temporary LeanProbe candidates."""
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not _managed_edit_targets_assignment(
+            args,
+            active_file,
+            function_name=function_name,
+        )
+    ):
+        return None
+    try:
+        before_text = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    after_text = managed_edit_rollback.preview_candidate_source(
+        function_name,
+        args,
+        before_text,
+    )
+    if not after_text:
+        return None
+    placeholders = managed_edit_rollback.introduced_source_placeholders(
+        before_text,
+        after_text,
+    )
+    term_holes = managed_edit_rollback.introduced_unresolved_term_metavariables(
+        before_text,
+        after_text,
+    )
+    if not placeholders and not term_holes:
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "unresolved-source-placeholder-patch-blocked",
+            f"Blocked incomplete source edit for {target_symbol} before mutation",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            placeholders=list(placeholders),
+            unresolved_term_holes=len(term_holes),
+            provider_called=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "unresolved_source_placeholder_patch",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "placeholders": list(placeholders),
+            "unresolved_term_holes": len(term_holes),
+            "patch_applied": False,
+            "check_passed": False,
+            "provider_called": False,
+            "lean_started": False,
+            "required_action": (
+                "Do not add `sorry`, `admit`, `sorryAx`, or term-level `?_` holes to managed "
+                "Lean source. Test the incomplete helper or target as a temporary LeanProbe "
+                "candidate, resolve every generated goal, then submit the complete declaration. "
+                "Ordinary `refine ... ?_` focused goals remain allowed when the following tactic "
+                "script closes them. The current proof source was not mutated."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _direct_self_reference_source_patch_guard(
     agent: Any,
     function_name: str,
@@ -11525,6 +11607,14 @@ def _managed_pre_tool_call(
         )
         if suggestion_patch_guard:
             return suggestion_patch_guard
+        placeholder_patch_guard = _unresolved_source_placeholder_patch_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if placeholder_patch_guard:
+            return placeholder_patch_guard
         diagnostic_patch_guard = _transient_diagnostic_source_patch_guard(
             agent,
             function_name,
