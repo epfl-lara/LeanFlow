@@ -51,7 +51,10 @@ extraction remain admissible.
 When a sorry-free assigned theorem fails its exact file check,
 `leanflow_cli/native/failed_verification_assignment.py` keeps that declaration
 as the active queue item. A transiently empty diagnostic scan therefore cannot
-retire the theorem or send the planner an unknown target.
+retire the theorem or send the planner an unknown target. After repeated
+same-revision timeouts, the resulting one-shot decomposition request outranks
+spent route and semantic ledgers so structural recovery reaches the splitter
+before another campaign rollover.
 
 The shell launches managed workflows as child processes. Inside a managed
 process, `native_runner` constructs `AIAgent` directly and coordinates its

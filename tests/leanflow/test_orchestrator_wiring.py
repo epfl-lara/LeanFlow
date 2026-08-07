@@ -171,6 +171,48 @@ def test_repeated_current_revision_timeouts_request_decomposition(enabled, monke
     )
 
 
+def test_repeated_timeout_decomposition_survives_spent_route_ledger(enabled, monkeypatch, tmp_path):
+    """A spent persistence ledger cannot rotate new timeout recovery into refresh."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "spent-timeout-decompose")
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "_restored_assignment_verification_timeout_reason",
+        lambda *_args, **_kwargs: "LeanProbe timed out after 300 seconds",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_assignment_verification_timeout_count",
+        lambda *_args, **_kwargs: 3,
+    )
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    state = _autonomy_state(str(active))
+    state["orchestrator_routes_used"] = 4
+    state[runner.campaign_epoch.SEMANTIC_ROUTE_HISTORY_STATE_KEY] = [
+        {
+            "route": route,
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+        for route in ("decompose", "negate", "plan")
+    ]
+    live_state = {
+        "active_file": str(active),
+        "target_symbol": "demo",
+        "proof_state_authority": "lean_inspect",
+        "deferred_exact_verification": True,
+        "sorry_count": 0,
+    }
+
+    selected = runner._orchestrator_consult("scope-entry", state, live_state)
+
+    assert selected is not None and selected.route == "decompose"
+    assert selected.source == "deterministic-timeout-recovery"
+    assert selected.target["timeout_decomposition_recovery"] is True
+
+
 def test_repeated_live_state_timeouts_request_decomposition(enabled, monkeypatch, tmp_path):
     """Apply timeout structural recovery during a live campaign, not only startup."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))

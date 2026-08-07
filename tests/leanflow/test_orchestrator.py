@@ -521,6 +521,34 @@ def test_requested_route_cannot_bypass_spent_campaign_refresh():
     )
 
 
+def test_repeated_timeout_decomposition_outranks_spent_campaign_refresh():
+    """New exact-timeout evidence must reach the splitter before another rollover."""
+    ctx = _ctx(
+        requested_route="decompose",
+        requested_route_reason=(
+            "Reason: repeated verification timeouts on a sorry-free declaration require "
+            "structural recovery through cohesive top-level helpers"
+        ),
+        routes_used_this_scope=4,
+        semantic_route_history=tuple(
+            {
+                "route": route,
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+            }
+            for route in ("decompose", "negate", "plan")
+        ),
+    )
+
+    proposed = orchestrator_route(ctx)
+    admitted = admit_semantically_distinct_route(ctx, proposed)
+
+    assert proposed.route == "decompose"
+    assert proposed.source == "deterministic-timeout-recovery"
+    assert proposed.target["timeout_decomposition_recovery"] is True
+    assert admitted == proposed
+
+
 def test_builder_accepts_only_current_assignment_route_request(tmp_path):
     active = tmp_path / "Demo.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")

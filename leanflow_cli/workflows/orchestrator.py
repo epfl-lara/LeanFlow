@@ -1197,6 +1197,27 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
             target={"target_symbol": ctx.target_symbol, "active_file": ctx.active_file},
         )
 
+    # The runtime raises this one-shot request only after the same sorry-free
+    # declaration has failed bounded exact verification more than once. It is
+    # newer evidence than the semantic/route ledger and must reach the
+    # mechanical splitter before another epoch refresh can consume the scope.
+    if timeout_decomposition_requested and ctx.has_queue_item():
+        return OrchestratorRoute(
+            route="decompose",
+            reason=(
+                "repeated verification timeouts require structural decomposition; "
+                f"{ctx.requested_route_reason}"
+            ),
+            target={
+                "target_symbol": ctx.target_symbol,
+                "active_file": ctx.active_file,
+                "prover_requested_route": "decompose",
+                "prover_request_reason": ctx.requested_route_reason,
+                "timeout_decomposition_recovery": True,
+            },
+            source="deterministic-timeout-recovery",
+        )
+
     # Row 8 — the campaign's no-progress route streak is spent. This guard
     # intentionally precedes both explicit prover requests and the happy-path
     # passthrough: neither branch may evade a due fresh-context epoch. Kernel
@@ -1492,6 +1513,16 @@ def admit_semantically_distinct_route(
     turn for the same route family and mathematical target hypothesis.
     """
     candidates = _persistence_route_candidates(ctx)
+    if (
+        proposed.route == "decompose"
+        and ctx.requested_route == "decompose"
+        and "repeated verification timeouts" in ctx.requested_route_reason.lower()
+        and dict(proposed.target or {}).get("timeout_decomposition_recovery") is True
+    ):
+        # This authenticated one-shot request responds to new kernel/resource
+        # evidence. Rotating it through the older semantic ledger would roll
+        # epochs forever without giving the splitter a construction boundary.
+        return proposed
     if proposed.route not in candidates or not ctx.has_queue_item():
         return proposed
     if ctx.semantic_refresh_work_due:
