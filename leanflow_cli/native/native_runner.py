@@ -9626,6 +9626,81 @@ def _nonproduction_generated_helper_source_patch_guard(
     )
 
 
+def _duplicate_declaration_source_patch_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any],
+) -> str | None:
+    """Reject edits that add a second declaration with an existing name."""
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not _managed_edit_targets_assignment(
+            args,
+            active_file,
+            function_name=function_name,
+        )
+    ):
+        return None
+    try:
+        before_text = Path(active_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    after_text = managed_edit_rollback.preview_candidate_source(
+        function_name,
+        args,
+        before_text,
+    )
+    if not after_text:
+        return None
+    duplicate_names = managed_edit_rollback.introduced_duplicate_declarations(
+        before_text,
+        after_text,
+    )
+    if not duplicate_names:
+        return None
+    with contextlib.suppress(Exception):
+        _record_agent_activity(
+            agent,
+            "duplicate-declaration-source-patch-blocked",
+            f"Blocked duplicate declaration insertion for {target_symbol}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            blocked_tool=function_name,
+            duplicate_declarations=list(duplicate_names),
+            provider_called=False,
+            lean_started=False,
+            campaign_progress=False,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "status": "duplicate_declaration_rejected",
+            "blocked_tool": function_name,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "duplicate_declarations": list(duplicate_names),
+            "patch_applied": False,
+            "check_passed": False,
+            "provider_called": False,
+            "lean_started": False,
+            "required_action": (
+                "The proposed edit adds another declaration with a name already present in "
+                "the active file. Reuse or inspect the existing declaration, or choose a "
+                "distinct mathematical helper name if the statements differ. The source was "
+                "not mutated and Lean was not started."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _transient_diagnostic_source_patch_guard(
     agent: Any,
     function_name: str,
@@ -11647,6 +11722,14 @@ def _managed_pre_tool_call(
         )
         if helper_name_guard:
             return helper_name_guard
+        duplicate_declaration_guard = _duplicate_declaration_source_patch_guard(
+            agent,
+            function_name,
+            args,
+            autonomy_state,
+        )
+        if duplicate_declaration_guard:
+            return duplicate_declaration_guard
         suggestion_patch_guard = _suggestion_only_source_patch_guard(
             agent,
             function_name,

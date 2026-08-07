@@ -13355,7 +13355,11 @@ def test_helper_pretool_guard_rejects_same_name_source_collision(monkeypatch, tm
         },
     )
 
-    assert result is None
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "duplicate_declaration_rejected"
+    assert payload["duplicate_declarations"] == ["checked_family"]
+    assert payload["lean_started"] is False
     assert runner.research_helper_candidate_priority.load(state) is None
     assert active.read_text(encoding="utf-8") == source
 
@@ -33645,6 +33649,49 @@ def test_parenthesized_suggestion_source_patch_is_redirected_before_mutation(tmp
     assert payload["suggestion_tactics"] == ["exact?"]
     assert payload["patch_applied"] is False
     assert active.read_text(encoding="utf-8") == source
+
+
+def test_duplicate_declaration_source_patch_is_rejected_before_lean(tmp_path, monkeypatch):
+    active = tmp_path / "Main.lean"
+    source = (
+        "private lemma helper : True := by\n  trivial\n\n" "theorem demo : True := by\n  sorry\n"
+    )
+    active.write_text(source, encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    events = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = state
+
+    result = runner._managed_pre_tool_call(
+        agent,
+        "patch",
+        {
+            "mode": "replace",
+            "path": str(active),
+            "old_string": "\ntheorem demo",
+            "new_string": ("\nprivate lemma helper : True := by\n  trivial\n\ntheorem demo"),
+        },
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["status"] == "duplicate_declaration_rejected"
+    assert payload["duplicate_declarations"] == ["helper"]
+    assert payload["lean_started"] is False
+    assert active.read_text(encoding="utf-8") == source
+    assert events[-1][0][1] == "duplicate-declaration-source-patch-blocked"
 
 
 def test_concrete_source_patch_is_not_redirected_as_suggestion(tmp_path):

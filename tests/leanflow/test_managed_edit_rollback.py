@@ -210,4 +210,18 @@ def test_introduced_suggestion_tactics_cover_scoped_heartbeat_probe():
     assert managed_edit_rollback.introduced_suggestion_tactics(before, after) == (
         "set_option maxHeartbeats 2000000 in exact?",
     )
+
+
+def test_introduced_duplicate_declarations_reports_new_name_collision():
+    before = "private lemma helper : True := by\n  trivial\n"
+    after = before + "\nprivate lemma helper : True := by\n  trivial\n"
+
+    assert managed_edit_rollback.introduced_duplicate_declarations(before, after) == ("helper",)
+
+
+def test_introduced_duplicate_declarations_ignores_unrelated_edit():
+    before = "private lemma helper : True := by\n  trivial\n"
+    after = before + "\ntheorem result : True := by\n  trivial\n"
+
+    assert managed_edit_rollback.introduced_duplicate_declarations(before, after) == ()
     assert managed_edit_rollback.introduced_suggestion_tactics(before, "") == ()

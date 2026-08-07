@@ -116,6 +116,23 @@ def introduced_suggestion_tactics(before: str, after: str) -> tuple[str, ...]:
     return tuple(introduced)
 
 
+def introduced_duplicate_declarations(before: str, after: str) -> tuple[str, ...]:
+    """Return declaration names whose multiplicity an edit raises above one."""
+    before_counts = Counter(
+        str(entry.get("name", "") or "").strip()
+        for entry in _declaration_line_index_from_text(str(before or ""))
+    )
+    after_counts = Counter(
+        str(entry.get("name", "") or "").strip()
+        for entry in _declaration_line_index_from_text(str(after or ""))
+    )
+    return tuple(
+        name
+        for name, count in after_counts.items()
+        if name and count > 1 and count > before_counts[name]
+    )
+
+
 def preview_candidate_source(
     function_name: str,
     args: Mapping[str, Any] | None,
