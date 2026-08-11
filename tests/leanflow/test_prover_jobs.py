@@ -117,7 +117,7 @@ def test_build_job_env_hygiene(monkeypatch):
     assert env["LEANFLOW_WORKFLOW_PARENT_RUN_ID"] == "prove-parent-run"  # N3 edge
     assert env["LEANFLOW_DISPATCH_JOB_ID"] == "run.orchestrator.pv-001"
     assert env["LEANFLOW_JOB_LINEAGE"] == "run.orchestrator.pv-001"
-    assert env["AGENT_MAX_TURNS"] == "40"
+    assert env["LEANFLOW_NATIVE_AGENT_MAX_TURNS"] == "40"
     assert env["LEANFLOW_NATIVE_RUNNER_OWNER"] == ""  # never release parent locks
     assert env["LEANFLOW_FORMALIZATION_DOCUMENT_RELATIVE"] == ""
     assert env["LEANFLOW_FORMALIZATION_BLUEPRINT"] == ""
@@ -137,9 +137,9 @@ def test_prover_light_tier_overrides_job_model(monkeypatch):
 
 def test_research_mode_doubles_job_turns(monkeypatch):
     monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
-    assert prover_jobs.build_job_env(_spec())["AGENT_MAX_TURNS"] == "80"
+    assert prover_jobs.build_job_env(_spec())["LEANFLOW_NATIVE_AGENT_MAX_TURNS"] == "80"
     monkeypatch.delenv("LEANFLOW_RESEARCH_MODE", raising=False)
-    assert prover_jobs.build_job_env(_spec())["AGENT_MAX_TURNS"] == "40"
+    assert prover_jobs.build_job_env(_spec())["LEANFLOW_NATIVE_AGENT_MAX_TURNS"] == "40"
 
 
 # ---------------------------------------------------------------------------

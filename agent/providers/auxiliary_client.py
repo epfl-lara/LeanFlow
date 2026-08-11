@@ -37,6 +37,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from agent.runtime.workflow_events import _emit_workflow_event
 from core.constants import OPENROUTER_BASE_URL
 from core.provider_capacity import (
     acquire_background_provider_lease,
@@ -53,6 +54,29 @@ from leanflow_cli.runtime.auth import (
 from leanflow_cli.runtime.runtime_provider import resolve_runtime_provider
 
 logger = logging.getLogger(__name__)
+
+
+def _build_openai_client(**client_kwargs: Any) -> OpenAI:
+    """Build a synchronous OpenAI client with SDK retries disabled."""
+    effective_kwargs = dict(client_kwargs)
+    effective_kwargs["max_retries"] = 0
+    return OpenAI(**effective_kwargs)
+
+
+def _emit_unmetered_auxiliary_attempt(
+    *, task: str | None, provider: str, model: str | None, attempt: int
+) -> None:
+    """Mark one auxiliary SDK attempt as outside durable usage accounting."""
+    _emit_workflow_event(
+        "api-usage-unmetered",
+        "Auxiliary provider attempt is outside durable usage accounting",
+        reason="auxiliary-provider-attempt",
+        auxiliary_task=str(task or ""),
+        provider=str(provider or ""),
+        model=str(model or ""),
+        provider_attempt=max(1, int(attempt)),
+    )
+
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: dict[str, str] = {
@@ -238,7 +262,7 @@ def _resolve_api_key_provider() -> tuple[OpenAI | None, str | None]:
         extra = {}
         if "api.kimi.com" in base_url.lower():
             extra["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
-        return OpenAI(api_key=api_key, base_url=base_url, **extra), model
+        return _build_openai_client(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
 
@@ -254,6 +278,9 @@ def _get_auxiliary_provider(task: str = "") -> str:
     then falls back to "auto".  Returns one of: "auto", "openrouter", "nous", "main".
     """
     if task:
+        native = os.getenv(f"LEANFLOW_NATIVE_AUXILIARY_{task.upper()}_PROVIDER", "").strip().lower()
+        if native and native != "auto":
+            return native
         for prefix in ("AUXILIARY_", "CONTEXT_"):
             val = os.getenv(f"{prefix}{task.upper()}_PROVIDER", "").strip().lower()
             if val and val != "auto":
@@ -265,6 +292,9 @@ def _get_auxiliary_env_override(task: str, suffix: str) -> str | None:
     """Read an auxiliary env override from AUXILIARY_* or CONTEXT_* prefixes."""
     if not task:
         return None
+    native = os.getenv(f"LEANFLOW_NATIVE_AUXILIARY_{task.upper()}_{suffix}", "").strip()
+    if native:
+        return native
     for prefix in ("AUXILIARY_", "CONTEXT_"):
         val = os.getenv(f"{prefix}{task.upper()}_{suffix}", "").strip()
         if val:
@@ -297,7 +327,11 @@ def _try_openrouter() -> tuple[OpenAI | None, str | None]:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return (
-        OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL, default_headers=_OR_HEADERS),
+        _build_openai_client(
+            api_key=or_key,
+            base_url=OPENROUTER_BASE_URL,
+            default_headers=_OR_HEADERS,
+        ),
         _OPENROUTER_MODEL,
     )
 
@@ -310,7 +344,7 @@ def _try_nous() -> tuple[OpenAI | None, str | None]:
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
     return (
-        OpenAI(api_key=_nous_api_key(nous), base_url=_nous_base_url()),
+        _build_openai_client(api_key=_nous_api_key(nous), base_url=_nous_base_url()),
         _NOUS_MODEL,
     )
 
@@ -379,7 +413,7 @@ def _try_custom_endpoint() -> tuple[OpenAI | None, str | None]:
         return None, None
     model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s)", model)
-    return OpenAI(api_key=custom_key, base_url=custom_base), model
+    return _build_openai_client(api_key=custom_key, base_url=custom_base), model
 
 
 def _try_codex(*, allow_legacy_store: bool | None = None) -> tuple[Any | None, str | None]:
@@ -394,7 +428,7 @@ def _try_codex(*, allow_legacy_store: bool | None = None) -> tuple[Any | None, s
         return None, None
     codex_model = _explicit_codex_model() if allow_legacy_store else _CODEX_AUX_MODEL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", codex_model)
-    real_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
+    real_client = _build_openai_client(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
     return CodexAuxiliaryClient(real_client, codex_model), codex_model
 
 
@@ -605,7 +639,10 @@ def resolve_provider_client(
                 )
                 return None, None
             final_model = model or _explicit_codex_model()
-            raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
+            raw_client = _build_openai_client(
+                api_key=codex_token,
+                base_url=_CODEX_AUX_BASE_URL,
+            )
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
         client, default = _try_codex(allow_legacy_store=True)
@@ -630,7 +667,7 @@ def resolve_provider_client(
                 )
                 return None, None
             final_model = model or _read_main_model() or "gpt-4o-mini"
-            client = OpenAI(api_key=custom_key, base_url=custom_base)
+            client = _build_openai_client(api_key=custom_key, base_url=custom_base)
             return _to_async_client(client, final_model) if async_mode else (client, final_model)
         # Try custom first, then codex, then API-key providers
         for try_fn in (_try_custom_endpoint, _try_codex, _resolve_api_key_provider):
@@ -697,7 +734,7 @@ def resolve_provider_client(
         if "api.kimi.com" in base_url.lower():
             headers["User-Agent"] = "KimiCLI/1.0"
 
-        client = OpenAI(
+        client = _build_openai_client(
             api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {})
         )
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
@@ -1256,6 +1293,12 @@ def call_llm(
     # the foreground control plane and must never wait for a long research job.
     with background_provider_lease(enabled=background_actor_context_active()):
         # Handle max_tokens vs max_completion_tokens retry under one lease.
+        _emit_unmetered_auxiliary_attempt(
+            task=task,
+            provider=resolved_provider,
+            model=final_model,
+            attempt=1,
+        )
         try:
             return client.chat.completions.create(**kwargs)
         except Exception as first_err:
@@ -1263,6 +1306,12 @@ def call_llm(
             if "max_tokens" in err_str or "unsupported_parameter" in err_str:
                 kwargs.pop("max_tokens", None)
                 kwargs["max_completion_tokens"] = max_tokens
+                _emit_unmetered_auxiliary_attempt(
+                    task=task,
+                    provider=resolved_provider,
+                    model=final_model,
+                    attempt=2,
+                )
                 return client.chat.completions.create(**kwargs)
             raise
 
@@ -1327,6 +1376,12 @@ async def async_call_llm(
         enabled=background_actor_context_active(),
     )
     try:
+        _emit_unmetered_auxiliary_attempt(
+            task=task,
+            provider=resolved_provider,
+            model=final_model,
+            attempt=1,
+        )
         try:
             return await client.chat.completions.create(**kwargs)
         except Exception as first_err:
@@ -1334,6 +1389,12 @@ async def async_call_llm(
             if "max_tokens" in err_str or "unsupported_parameter" in err_str:
                 kwargs.pop("max_tokens", None)
                 kwargs["max_completion_tokens"] = max_tokens
+                _emit_unmetered_auxiliary_attempt(
+                    task=task,
+                    provider=resolved_provider,
+                    model=final_model,
+                    attempt=2,
+                )
                 return await client.chat.completions.create(**kwargs)
             raise
     finally:

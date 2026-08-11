@@ -879,7 +879,10 @@ class AIAgent:
             str(compression_cfg.get("enabled", True)).lower(),
         ).lower() in ("true", "1", "yes")
         compression_summary_model = (
-            os.getenv("CONTEXT_COMPRESSION_MODEL") or compression_cfg.get("summary_model") or None
+            os.getenv("LEANFLOW_NATIVE_CONTEXT_COMPRESSION_MODEL")
+            or os.getenv("CONTEXT_COMPRESSION_MODEL")
+            or compression_cfg.get("summary_model")
+            or None
         )
         compression_reserved_output = int(
             os.getenv(
@@ -2353,12 +2356,21 @@ class AIAgent:
                 self.client = None
                 self._client_kwargs = {}
             else:
-                # Swap OpenAI client and config in-place
+                # Adopt the router's client directly so provider-specific
+                # construction and the resolver patch seam remain authoritative.
+                # The router disables SDK retries; keep retry-safe kwargs for
+                # worker-local client clones and credential refreshes.
+                fallback_kwargs = self._provider_client_factory().client_kwargs_from_routed_client(
+                    fb_client
+                )
+                old_client = self.client
                 self.client = fb_client
-                self._client_kwargs = {
-                    "api_key": fb_client.api_key,
-                    "base_url": fb_base_url,
-                }
+                self._client_kwargs = fallback_kwargs
+                self._close_openai_client(
+                    old_client,
+                    reason="replace:provider_fallback",
+                    shared=True,
+                )
 
             self.context_compressor.bind_main_summary_route(
                 model=fb_model,
@@ -2668,6 +2680,16 @@ class AIAgent:
             except RuntimeError:
                 _aux_available = False
                 response = None
+
+            if not _aux_available:
+                _emit_workflow_event(
+                    "api-usage-unmetered",
+                    "Memory-flush primary fallback is outside turn accounting",
+                    **_workflow_agent_event_details(
+                        self,
+                        reason="memory-flush-primary-fallback",
+                    ),
+                )
 
             if not _aux_available and self.api_mode == "codex_responses":
                 # No auxiliary client -- use the Codex Responses path directly
@@ -3056,7 +3078,6 @@ class AIAgent:
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
-
         summary_request = (
             "You've reached the maximum number of tool-calling iterations allowed. "
             "Please provide a final response summarizing what you've found and accomplished so far, "
@@ -3099,6 +3120,19 @@ class AIAgent:
             if _is_nous:
                 summary_extra_body["tags"] = ["product=leanflow-agent"]
 
+            # This direct summary request sits outside the ordinary metered
+            # turn loop. Mark each actual attempt so durable metrics cannot
+            # claim complete token/cost or request-count coverage.
+            _emit_workflow_event(
+                "api-usage-unmetered",
+                "Iteration-limit summary request is outside ordinary usage accounting",
+                **_workflow_agent_event_details(
+                    self,
+                    reason="iteration-limit-summary",
+                    iteration=api_call_count,
+                    provider_attempt=1,
+                ),
+            )
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs.pop("tools", None)
@@ -3170,6 +3204,16 @@ class AIAgent:
                     )
             else:
                 # Retry summary generation
+                _emit_workflow_event(
+                    "api-usage-unmetered",
+                    "Iteration-limit summary retry is outside ordinary usage accounting",
+                    **_workflow_agent_event_details(
+                        self,
+                        reason="iteration-limit-summary",
+                        iteration=api_call_count,
+                        provider_attempt=2,
+                    ),
+                )
                 if self.api_mode == "codex_responses":
                     codex_kwargs = self._build_api_kwargs(api_messages)
                     codex_kwargs.pop("tools", None)
@@ -3564,8 +3608,25 @@ class AIAgent:
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
             usage_dict: dict[str, int] = {}
+            provider_attempt_count = 0
 
             while retry_count < max_retries:
+                provider_attempt_count += 1
+                if provider_attempt_count > 1:
+                    # Retries do not advance api_call_count and failed provider
+                    # attempts may not expose billable usage. Preserve that
+                    # uncertainty explicitly instead of publishing an exact
+                    # conversation total that silently omits the retry.
+                    _emit_workflow_event(
+                        "api-usage-unmetered",
+                        "Provider retry attempt is outside ordinary turn accounting",
+                        **_workflow_agent_event_details(
+                            self,
+                            reason="provider-retry-attempt",
+                            iteration=api_call_count,
+                            provider_attempt=provider_attempt_count,
+                        ),
+                    )
                 try:
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self.api_mode == "codex_responses":

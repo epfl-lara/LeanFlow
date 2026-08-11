@@ -164,8 +164,12 @@ def _read_task_env(task: str, suffix: str) -> str:
     task_key = str(task or "").strip().upper()
     if not task_key:
         return ""
-    name = f"AUXILIARY_{task_key}_{suffix}"
-    return str(os.getenv(name, "") or get_env_value(name, "") or "").strip()
+    native_name = f"LEANFLOW_NATIVE_AUXILIARY_{task_key}_{suffix}"
+    native_value = str(os.getenv(native_name, "") or "").strip()
+    if native_value:
+        return native_value
+    legacy_name = f"AUXILIARY_{task_key}_{suffix}"
+    return str(os.getenv(legacy_name, "") or get_env_value(legacy_name, "") or "").strip()
 
 
 def _provider_env_name(provider: str) -> str:
@@ -741,6 +745,14 @@ def run_command_expert_help(
             command=command,
             cwd=workdir,
             timeout_s=timeout_s,
+        )
+        record_expert_help_activity(
+            "api-usage-unmetered",
+            "Command expert provider attempt is outside durable usage accounting",
+            reason="command-expert-provider-attempt",
+            provider=provider,
+            mode="command",
+            task=task,
         )
         completed = _run_isolated_expert_command(
             command,

@@ -83,6 +83,9 @@ def build_anthropic_client(api_key: str, base_url: str = None):
 
     kwargs = {
         "timeout": Timeout(timeout=1200.0, connect=10.0),
+        # LeanFlow's managed outer loop owns retries and records each attempt.
+        # Hidden SDK retries would make durable request coverage undercount.
+        "max_retries": 0,
     }
     if base_url:
         kwargs["base_url"] = base_url

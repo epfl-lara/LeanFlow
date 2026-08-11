@@ -2417,10 +2417,37 @@ class TestHandleMaxIterations:
         agent.client.chat.completions.create.return_value = resp
         agent._cached_system_prompt = "You are helpful."
         messages = [{"role": "user", "content": "do stuff"}]
-        result = agent._handle_max_iterations(messages, 60)
+        with patch("run_agent._emit_workflow_event") as emit_event:
+            result = agent._handle_max_iterations(messages, 60)
         assert isinstance(result, str)
         assert len(result) > 0
         assert "summary" in result.lower()
+        unmetered = [
+            call
+            for call in emit_event.call_args_list
+            if call.args and call.args[0] == "api-usage-unmetered"
+        ]
+        assert len(unmetered) == 1
+        assert unmetered[0].kwargs["reason"] == "iteration-limit-summary"
+        assert unmetered[0].kwargs["provider_attempt"] == 1
+
+    def test_empty_summary_retry_marks_both_unmetered_attempts(self, agent):
+        empty = _mock_response(content="")
+        final = _mock_response(content="Recovered summary")
+        agent.client.chat.completions.create.side_effect = [empty, final]
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        with patch("run_agent._emit_workflow_event") as emit_event:
+            result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Recovered summary"
+        unmetered = [
+            call
+            for call in emit_event.call_args_list
+            if call.args and call.args[0] == "api-usage-unmetered"
+        ]
+        assert [call.kwargs["provider_attempt"] for call in unmetered] == [1, 2]
 
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
@@ -3024,6 +3051,12 @@ class TestRetryExhaustion:
         ]
         assert scheduled == [5.0, 15.0, 45.0]
         assert len(exhausted) == 1
+        unmetered_attempts = [
+            call.kwargs["provider_attempt"]
+            for call in emit_event.call_args_list
+            if call.args and call.args[0] == "api-usage-unmetered"
+        ]
+        assert unmetered_attempts == [2, 3, 4]
         assert secret not in repr(emit_event.call_args_list)
         assert secret not in capsys.readouterr().out
         assert secret not in caplog.text
@@ -3253,6 +3286,7 @@ class TestNousCredentialRefresh:
         assert captured["force_mint"] is True
         assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
         assert rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
+        assert rebuilt["kwargs"]["max_retries"] == 0
         assert "default_headers" not in rebuilt["kwargs"]
         assert isinstance(agent.client, _RebuiltClient)
 
@@ -3830,15 +3864,20 @@ class TestFallbackAnthropicProvider:
         mock_client.base_url = "https://openrouter.ai/api/v1"
         mock_client.api_key = "sk-or-test"
 
-        with patch(
-            "agent.providers.auxiliary_client.resolve_provider_client",
-            return_value=(mock_client, None),
+        with (
+            patch(
+                "agent.providers.auxiliary_client.resolve_provider_client",
+                return_value=(mock_client, None),
+            ),
+            patch.object(agent, "_create_openai_client") as rebuild,
         ):
             result = agent._try_activate_fallback()
 
         assert result is True
         assert agent.api_mode == "chat_completions"
         assert agent.client is mock_client
+        rebuild.assert_not_called()
+        assert agent._client_kwargs["max_retries"] == 0
 
 
 class TestAnthropicBaseUrlPassthrough:

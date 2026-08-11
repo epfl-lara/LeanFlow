@@ -247,6 +247,12 @@ def test_build_api_kwargs_codex(monkeypatch):
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0}
+    activities = []
+    monkeypatch.setattr(
+        run_agent,
+        "_emit_workflow_event",
+        lambda *args, **kwargs: activities.append((args, kwargs)),
+    )
 
     def _fake_stream(**kwargs):
         calls["stream"] += 1
@@ -266,11 +272,20 @@ def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     response = agent._run_codex_stream(_codex_request_kwargs())
     assert calls["stream"] == 2
     assert response.output[0].content[0].text == "stream ok"
+    unmetered = [item for item in activities if item[0][0] == "api-usage-unmetered"]
+    assert [item[1]["reason"] for item in unmetered] == ["codex-responses-stream-retry"]
+    assert unmetered[0][1]["provider_attempt"] == 2
 
 
 def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0, "create": 0}
+    activities = []
+    monkeypatch.setattr(
+        run_agent,
+        "_emit_workflow_event",
+        lambda *args, **kwargs: activities.append((args, kwargs)),
+    )
 
     def _fake_stream(**kwargs):
         calls["stream"] += 1
@@ -293,6 +308,11 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
     assert calls["stream"] == 2
     assert calls["create"] == 1
     assert response.output[0].content[0].text == "create fallback ok"
+    unmetered = [item for item in activities if item[0][0] == "api-usage-unmetered"]
+    assert [item[1]["reason"] for item in unmetered] == [
+        "codex-responses-stream-retry",
+        "codex-responses-create-fallback",
+    ]
 
 
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
@@ -480,6 +500,7 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     assert closed["value"] is True
     assert rebuilt["kwargs"]["api_key"] == "new-codex-token"
     assert rebuilt["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert rebuilt["kwargs"]["max_retries"] == 0
     assert isinstance(agent.client, _RebuiltClient)
 
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import secrets
 import shlex
 import subprocess
@@ -12,6 +14,7 @@ from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from core.process_identity import PROCESS_TOKEN_ENV
 from leanflow_cli.cli.commands import (
@@ -206,7 +209,9 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
         "project": plan.project.label,
         "project_root": str(plan.project.root),
         "provider": provider_label,
-        "base_url": str(plan.runtime.get("base_url", "") or ""),
+        "base_url": _redacted_env_value(
+            "LEANFLOW_NATIVE_BASE_URL", str(plan.runtime.get("base_url", "") or "")
+        ),
         "model": runtime_model,
         "skill": plan.active_skill,
         "agents": str(plan.workflow.parallel_agents),
@@ -257,6 +262,216 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
             plan.workflow.autoformalizer_verifier_command_template
         )
     return summary
+
+
+#: Child-environment keys whose values must never leave the process in a preview.
+_SECRET_ENV_SUFFIXES = ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
+_URL_ENV_SUFFIXES = ("URL", "URI", "ENDPOINT")
+_PROMPT_CONTENT_ENV_KEYS = frozenset(
+    {
+        "LEANFLOW_FORMALIZATION_CONTEXT",
+        "LEANFLOW_FORMALIZATION_EXTRACTED_TEXT",
+        "LEANFLOW_NATIVE_EFFECTIVE_PROMPT",
+        "LEANFLOW_NATIVE_EXPLICIT_GOAL",
+        "LEANFLOW_NATIVE_STARTUP_PROMPT",
+        "LEANFLOW_NATIVE_USER_PROMPT",
+        "LEANFLOW_WORKFLOW_CONTEXT",
+    }
+)
+_PROMPT_CONTENT_ENV_SUFFIXES = (
+    "_COMMAND_TEMPLATE",
+    "_PROMPT",
+    "_CONTEXT",
+    "_EXPLICIT_GOAL",
+    "_USER_GOAL",
+    "_EXTRACTED_TEXT",
+)
+_URL_IN_TEXT_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
+_CREDENTIAL_QUERY_PARTS = frozenset(
+    {
+        "auth",
+        "authorization",
+        "bearer",
+        "code",
+        "credential",
+        "jwt",
+        "key",
+        "passwd",
+        "password",
+        "secret",
+        "session",
+        "sig",
+        "signature",
+        "token",
+    }
+)
+
+
+def _credential_query_key(key: str) -> bool:
+    """Return whether a URL query key conventionally carries a credential."""
+    normalized = str(key or "").casefold()
+    parts = {part for part in re.split(r"[^a-z0-9]+", normalized) if part}
+    compact = "".join(parts)
+    # URL libraries preserve camelCase keys, so ``accessToken`` does not have
+    # a separator that the token-set check can see. Match the compact spelling
+    # too; query-key names are metadata, and false-positive redaction is safer
+    # than persisting a credential in provenance.
+    return bool(
+        parts & _CREDENTIAL_QUERY_PARTS or any(part in compact for part in _CREDENTIAL_QUERY_PARTS)
+    )
+
+
+def _redact_url_query(component: str) -> str:
+    """Redact credential-shaped values in one query or fragment component."""
+    pairs = parse_qsl(component, keep_blank_values=True)
+    if not pairs:
+        return component
+    return urlencode(
+        [(key, "[redacted]" if _credential_query_key(key) else value) for key, value in pairs],
+        doseq=True,
+    )
+
+
+def redact_url_credentials(value: str) -> str:
+    """Return a URL with userinfo and credential query/fragment values removed."""
+    raw = str(value or "")
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        # A credential-bearing URL with malformed authority syntax must fail
+        # closed rather than fall back to the original printable value.
+        return "[redacted-url]"
+    netloc = parsed.netloc
+    if "@" in netloc:
+        _userinfo, _separator, host = netloc.rpartition("@")
+        # Remove userinfo entirely. A bracketed redaction marker in netloc is
+        # not itself a valid round-trippable URL (``urlsplit`` treats it as an
+        # IPv6 literal), while host/path/query retain the endpoint identity.
+        netloc = host
+    fragment = parsed.fragment
+    if "?" in fragment:
+        prefix, separator, fragment_query = fragment.partition("?")
+        fragment = f"{prefix}{separator}{_redact_url_query(fragment_query)}"
+    else:
+        fragment = _redact_url_query(fragment)
+    return urlunsplit(
+        (
+            parsed.scheme,
+            netloc,
+            parsed.path,
+            _redact_url_query(parsed.query),
+            fragment,
+        )
+    )
+
+
+def _is_prompt_content_env_key(key: str) -> bool:
+    """Return whether an environment value may contain full prompt content."""
+    normalized = str(key or "").upper()
+    return normalized in _PROMPT_CONTENT_ENV_KEYS or normalized.endswith(
+        _PROMPT_CONTENT_ENV_SUFFIXES
+    )
+
+
+def _redacted_env_value(key: str, value: str) -> str:
+    from agent.accounting.redact import redact_sensitive_text
+
+    normalized_key = str(key or "").upper()
+    if any(normalized_key.endswith(suffix) for suffix in _SECRET_ENV_SUFFIXES):
+        return "[redacted]" if value else ""
+    if value and _is_prompt_content_env_key(normalized_key):
+        # Prompts can contain source text, unpublished mathematics, or pasted
+        # credentials. Their digest is sufficient to distinguish two launches;
+        # the content itself never belongs in a durable metrics artifact.
+        digest = hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
+        return f"[content-sha256:{digest};chars:{len(value)}]"
+    value = redact_sensitive_text(value, force=True)
+    if value and any(normalized_key.endswith(suffix) for suffix in _URL_ENV_SUFFIXES):
+        return redact_url_credentials(value)
+    return _URL_IN_TEXT_RE.sub(lambda match: redact_url_credentials(match.group(0)), value)
+
+
+def launch_plan_payload(plan: NativeLaunchPlan) -> dict[str, Any]:
+    """Return the complete resolved launch as JSON, safe to print or store.
+
+    ``describe_launch_plan`` is built for a terminal panel and drops anything the
+    user does not need to read. A preview consumer needs more: the exact argv, the
+    working directory, and the ``LEANFLOW_*`` delta the child would receive, so two
+    launches can be diffed without starting either. Credential-shaped values are
+    replaced rather than omitted, so their presence still shows up in the diff.
+    """
+    parent_env = os.environ
+    env_delta = {
+        key: _redacted_env_value(key, value)
+        for key, value in sorted(plan.child_env.items())
+        if key.startswith("LEANFLOW_") and (key not in parent_env or parent_env[key] != value)
+    }
+    env_effective = {
+        key: _redacted_env_value(key, value)
+        for key, value in sorted(plan.child_env.items())
+        if key.startswith("LEANFLOW_")
+    }
+    workflow = plan.workflow
+    summary = describe_launch_plan(plan)
+    for key in (
+        "prompt",
+        "expert_command_template",
+        "blueprint_verifier_command_template",
+        "autoformalizer_verifier_command_template",
+    ):
+        value = summary.get(key)
+        if value:
+            summary[key] = _redacted_env_value(f"LEANFLOW_NATIVE_{key.upper()}", value)
+    deferred: list[str] = []
+    if workflow.workflow_kind == "formalize" and plan.formalization_document is None:
+        deferred.append(
+            "formalization document intake (source selection, manifest, target Lean file) "
+            "runs at launch, not in a preview"
+        )
+    return {
+        "version": 1,
+        "deferred": deferred,
+        "summary": summary,
+        "argv": list(plan.argv),
+        "cwd": str(plan.project.root),
+        "project": {
+            "label": plan.project.label,
+            "root": str(plan.project.root),
+            "lean_root": str(getattr(plan.project, "lean_root", plan.project.root)),
+        },
+        "workflow": {
+            "kind": workflow.workflow_kind,
+            "canonical_command": workflow.canonical_command,
+            "backend_command": workflow.backend_command,
+            "args": workflow.workflow_args,
+            "parallel_agents": workflow.parallel_agents,
+            "research_mode": workflow.research_mode,
+            "research_workers": workflow.research_workers,
+            "clean_room": workflow.clean_room,
+            "clean_room_labels": list(workflow.clean_room_labels),
+            "human_review": workflow.human_review,
+            "allowed_axioms": workflow.allowed_axioms,
+            "explicit_goal": _redacted_env_value(
+                "LEANFLOW_NATIVE_EXPLICIT_GOAL", workflow.explicit_goal
+            ),
+        },
+        "runtime": {
+            key: (
+                _redacted_env_value(f"LEANFLOW_NATIVE_{key.upper()}", value)
+                if isinstance(value, str)
+                else value
+            )
+            for key, value in sorted(plan.runtime.items())
+            if not isinstance(value, (dict, list))
+        },
+        "active_skill": plan.active_skill,
+        "additional_skills": list(plan.additional_skills),
+        "toolset": plan.toolset_name,
+        "env_delta": env_delta,
+        # Research sweeps need the complete effective safe child environment,
+        # not only values that differ from this preview process's parent.
+        "env_effective": env_effective,
+    }
 
 
 def rewrite_forgiving_workflow_command(raw: str) -> str:
@@ -501,8 +716,15 @@ def resolve_workflow_request(
     active_cwd: str | os.PathLike[str] | None = None,
     requested_provider: str | None = None,
     active_skill: str | None = None,
+    preview: bool = False,
 ) -> NativeLaunchPlan:
-    """Resolve a raw workflow command into a complete NativeLaunchPlan by discovering the project, resolving runtime, normalizing file paths, preparing formalization context if needed, selecting skills, and populating the environment for the native runner subprocess."""
+    """Resolve a raw workflow command into a complete NativeLaunchPlan by discovering the project, resolving runtime, normalizing file paths, preparing formalization context if needed, selecting skills, and populating the environment for the native runner subprocess.
+
+    ``preview`` resolves the same plan without the resource-provisioning side
+    effects a real launch performs. A caller that only wants to show or diff the
+    plan — ``--dry-run``, an editor form — must not start a background local
+    Loogle build every time the user changes a field.
+    """
     workflow = parse_workflow_command(command)
     explicit_research_profile = workflow.research_mode
     from leanflow_cli.workflows.research_mode import (
@@ -524,7 +746,7 @@ def resolve_workflow_request(
     # otherwise builds it with a pinned toolchain that may not match the
     # project. Full research campaigns retain foreground lean-lsp but skip the
     # additional resident index unless explicitly memory-provisioned.
-    if research_local_loogle_enabled(research=workflow.research_mode):
+    if not preview and research_local_loogle_enabled(research=workflow.research_mode):
         try:
             from leanflow_cli.cli.loogle_local import ensure_local_loogle_for_project_async
 
@@ -543,7 +765,11 @@ def resolve_workflow_request(
         )
     formalization_document: FormalizationDocumentContext | None = None
     normalized_workflow_args = _normalize_workflow_args(project.root, cwd, workflow.workflow_args)
-    if workflow.workflow_kind == "formalize":
+    if workflow.workflow_kind == "formalize" and not preview:
+        # Document intake scaffolds the state directory, writes manifests, and
+        # initializes the target Lean file. A preview must not create any of
+        # that, so it reports the plan without the intake and leaves the
+        # document fields unresolved until the real launch.
         formalization_document = prepare_formalization_document_context(
             project_root=project.root,
             cwd=cwd,
@@ -551,6 +777,10 @@ def resolve_workflow_request(
             project_label=project.label,
         )
         normalized_workflow_args = formalization_document.source_relative
+    # Preserve the normalized source/target scope independently of the active
+    # Lean file. Formalization replaces ACTIVE_FILE with generated output, but
+    # provenance still needs the requested source target.
+    requested_target = normalized_workflow_args
     if normalized_workflow_args != workflow.workflow_args:
         workflow = replace(
             workflow,
@@ -606,7 +836,7 @@ def resolve_workflow_request(
         # flags intact, but do not let the profile identity activate research
         # runtime semantics inside review/formalization workflows.
         child_env["LEANFLOW_RESEARCH_MODE"] = "0"
-    child_env.setdefault("AGENT_MAX_TURNS", agent_max_turns)
+    child_env.setdefault("LEANFLOW_NATIVE_AGENT_MAX_TURNS", agent_max_turns)
     child_env.update(
         {
             "LEANFLOW_PROJECT_ROOT": str(project.root),
@@ -626,6 +856,7 @@ def resolve_workflow_request(
             "LEANFLOW_NATIVE_USER_PROMPT": workflow.explicit_goal,
             "LEANFLOW_NATIVE_EFFECTIVE_PROMPT": workflow.explicit_goal,
             "LEANFLOW_NATIVE_TOOLSET": toolset_name,
+            "LEANFLOW_NATIVE_REQUESTED_TARGET": requested_target,
             "LEANFLOW_NATIVE_ACTIVE_FILE": normalized_active_file,
             "LEANFLOW_HUMAN_REVIEW_ENABLED": "1" if workflow.human_review else "0",
         }
@@ -633,7 +864,7 @@ def resolve_workflow_request(
     if workflow.model_override:
         # A workflow-local model choice applies to every model call that would
         # otherwise silently reuse the global compression model.
-        child_env["CONTEXT_COMPRESSION_MODEL"] = workflow.model_override
+        child_env["LEANFLOW_NATIVE_CONTEXT_COMPRESSION_MODEL"] = workflow.model_override
     if workflow.clean_room:
         labels = _clean_room_labels(
             workflow,
@@ -677,23 +908,25 @@ def resolve_workflow_request(
             }
         )
     if workflow.expert_provider:
-        child_env["AUXILIARY_LEAN_REASONING_PROVIDER"] = workflow.expert_provider
+        child_env["LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_PROVIDER"] = workflow.expert_provider
     if workflow.expert_command_template:
-        child_env["AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] = workflow.expert_command_template
+        child_env["LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] = (
+            workflow.expert_command_template
+        )
     if workflow.blueprint_verifier_provider:
-        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] = (
+        child_env["LEANFLOW_NATIVE_AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] = (
             workflow.blueprint_verifier_provider
         )
     if workflow.blueprint_verifier_command_template:
-        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] = (
+        child_env["LEANFLOW_NATIVE_AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] = (
             workflow.blueprint_verifier_command_template
         )
     if workflow.autoformalizer_verifier_provider:
-        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] = (
+        child_env["LEANFLOW_NATIVE_AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] = (
             workflow.autoformalizer_verifier_provider
         )
     if workflow.autoformalizer_verifier_command_template:
-        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] = (
+        child_env["LEANFLOW_NATIVE_AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] = (
             workflow.autoformalizer_verifier_command_template
         )
     if formalization_document is not None:

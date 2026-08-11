@@ -392,7 +392,24 @@ def _resolve_codex_model() -> str:
     return CODEX_MAIN_DEFAULT_MODEL
 
 
+def _configured_agent_reasoning_effort() -> str:
+    """Return an explicit managed-agent effort, leaving ``auto`` to runtime discovery."""
+    config = load_config()
+    agent_cfg = config.get("agent")
+    if not isinstance(agent_cfg, Mapping):
+        return ""
+    effort = str(agent_cfg.get("reasoning_effort", "") or "").strip().lower()
+    return "" if effort in {"", "auto"} else effort
+
+
 def _resolve_codex_reasoning_effort() -> str:
+    configured_effort = _configured_agent_reasoning_effort()
+    if configured_effort:
+        # The managed runner gives an explicit agent setting precedence over
+        # its runtime environment. Resolve the launch summary and child env
+        # the same way so the banner describes the process that will run.
+        return configured_effort
+
     env_effort = _read_provider_env("LEANFLOW_CODEX_REASONING_EFFORT", "CODEX_REASONING_EFFORT")
     if env_effort:
         return env_effort.strip().lower()

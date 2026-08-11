@@ -61,6 +61,7 @@ class TestBuildAnthropicClient:
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
             assert "api_key" not in kwargs
+            assert kwargs["max_retries"] == 0
 
     def test_api_key_uses_api_key(self):
         with patch("agent.providers.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -73,6 +74,7 @@ class TestBuildAnthropicClient:
             assert "interleaved-thinking-2025-05-14" in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
+            assert kwargs["max_retries"] == 0
 
     def test_custom_base_url(self):
         with patch("agent.providers.anthropic_adapter._anthropic_sdk") as mock_sdk:

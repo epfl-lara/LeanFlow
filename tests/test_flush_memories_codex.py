@@ -129,9 +129,17 @@ class TestFlushMemoriesUsesAuxiliaryClient:
         agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
         agent.client = MagicMock()
         agent.client.chat.completions.create.return_value = _chat_response_with_memory_call()
+        activities = []
 
-        with patch(
-            "agent.providers.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")
+        with (
+            patch(
+                "agent.providers.auxiliary_client.call_llm",
+                side_effect=RuntimeError("no provider"),
+            ),
+            patch(
+                "run_agent._emit_workflow_event",
+                side_effect=lambda *args, **kwargs: activities.append((args, kwargs)),
+            ),
         ):
             messages = [
                 {"role": "user", "content": "Hello"},
@@ -142,6 +150,8 @@ class TestFlushMemoriesUsesAuxiliaryClient:
                 agent.flush_memories(messages)
 
         agent.client.chat.completions.create.assert_called_once()
+        unmetered = [item for item in activities if item[0][0] == "api-usage-unmetered"]
+        assert [item[1]["reason"] for item in unmetered] == ["memory-flush-primary-fallback"]
 
     def test_flush_executes_memory_tool_calls(self, monkeypatch):
         """Verify that memory tool calls from the flush response actually get executed."""
@@ -216,6 +226,7 @@ class TestFlushMemoriesCodexFallback:
             model="gpt-5-codex",
         )
 
+        activities = []
         with (
             patch(
                 "agent.providers.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")
@@ -225,6 +236,10 @@ class TestFlushMemoriesCodexFallback:
             patch(
                 "tools.implementations.memory_tool.memory_tool", return_value="Saved."
             ) as mock_memory,
+            patch(
+                "run_agent._emit_workflow_event",
+                side_effect=lambda *args, **kwargs: activities.append((args, kwargs)),
+            ),
         ):
             mock_build.return_value = {
                 "model": "gpt-5-codex",
@@ -243,3 +258,5 @@ class TestFlushMemoriesCodexFallback:
         mock_stream.assert_called_once()
         mock_memory.assert_called_once()
         assert mock_memory.call_args.kwargs["content"] == "Codex flush test"
+        unmetered = [item for item in activities if item[0][0] == "api-usage-unmetered"]
+        assert [item[1]["reason"] for item in unmetered] == ["memory-flush-primary-fallback"]

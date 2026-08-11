@@ -3404,6 +3404,55 @@ def test_campaign_outcome_write_failure_corrects_math_exit_to_pause(
 
 
 @pytest.mark.parametrize("math_exit", [0, runner.EXIT_DISPROVED])
+def test_post_commit_metrics_snapshot_failure_preserves_truthful_math_exit(
+    monkeypatch,
+    tmp_path,
+    math_exit,
+):
+    """Research snapshot failure cannot rewrite an authoritative native exit."""
+    from leanflow_cli.cli import run_metrics
+
+    calls: list[dict[str, object]] = []
+
+    class _CommittedFinalizer:
+        finalized = False
+
+        def finalize(self, _exit_code, **_kwargs):
+            self.finalized = True
+            return math_exit
+
+    def fail_snapshot(*_args, **kwargs):
+        calls.append(dict(kwargs))
+        raise OSError("snapshot storage unavailable")
+
+    monkeypatch.setattr(run_metrics, "finalize_run_snapshot", fail_snapshot)
+    monkeypatch.setattr(runner, "_workflow_state_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(runner, "_workflow_run_id", lambda: "metrics-failure")
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_read_native_env", lambda _name, default="": default)
+    monkeypatch.setattr(runner, "_maybe_record_learnings", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_generate_final_report", lambda *args, **kwargs: None)
+
+    result = runner._finalize_native_run(
+        _CommittedFinalizer(),
+        math_exit,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={},
+        reason="committed mathematical outcome",
+    )
+
+    assert result == math_exit
+    assert len(calls) == 1
+    assert calls[0]["run_id"] == "metrics-failure"
+    assert dict(calls[0]["outcome"])["exit_code"] == math_exit
+
+
+@pytest.mark.parametrize("math_exit", [0, runner.EXIT_DISPROVED])
 def test_post_commit_derivative_failure_preserves_truthful_math_exit(
     monkeypatch,
     math_exit,
@@ -4648,6 +4697,7 @@ def test_persist_live_status_keeps_mathematical_prove_blocker_active(monkeypatch
         "save_workflow_live_status",
         lambda payload: payloads.append(dict(payload)),
     )
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "prove-live-analytics")
 
     runner._persist_live_status(
         [],
@@ -4662,6 +4712,7 @@ def test_persist_live_status_keeps_mathematical_prove_blocker_active(monkeypatch
     )
 
     assert payloads[-1]["phase"] == "in-progress"
+    assert payloads[-1]["run_id"] == "prove-live-analytics"
     assert payloads[-1]["current_blocker"] == "current proof shape is exhausted"
     assert payloads[-1]["diagnostics"] == "error: unsolved goals"
 
@@ -28048,7 +28099,7 @@ def test_build_agent_uses_leanflow_native_toolset(monkeypatch):
     monkeypatch.setenv("LEANFLOW_NATIVE_API_KEY", "sk-test")
     monkeypatch.setenv("LEANFLOW_NATIVE_PROVIDER", "zai")
     monkeypatch.setenv("LEANFLOW_NATIVE_API_MODE", "responses")
-    monkeypatch.setenv("AGENT_MAX_TURNS", "77")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AGENT_MAX_TURNS", "77")
 
     runner._build_agent()
 
