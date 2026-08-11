@@ -177,6 +177,113 @@ def test_foreground_checked_helper_is_retained_before_handoff(monkeypatch, tmp_p
     assert "durably retained" in agent._post_tool_result_appendix
 
 
+def test_negate_route_helper_check_does_not_reserve_generic_integration(monkeypatch, tmp_path):
+    """Keep route-audit facts as evidence until exact negation is authenticated."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : False := by\n  sorry\n", encoding="utf-8")
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "prover_requested_route": {
+            "route": "negate",
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    events = []
+    monkeypatch.setattr(
+        runner, "_record_agent_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    declaration = "private lemma audit_fact (n : Nat) : n + 0 = n := by\n  simp"
+    arguments = {
+        "action": "check_helper",
+        "file_path": str(active),
+        "theorem_id": "demo",
+        "replacement": declaration,
+    }
+    result = json.dumps(
+        {
+            "success": True,
+            "ok": True,
+            "valid_without_sorry": True,
+            "has_errors": False,
+            "has_sorry": False,
+            "verification_scope": "helper_candidate",
+            "replacement_matches_target": False,
+            "replacement_declarations": ["audit_fact"],
+        }
+    )
+
+    assert (
+        runner._retain_foreground_checked_helper(agent, "lean_incremental_check", arguments, result)
+        is None
+    )
+    assert runner.research_helper_candidate_priority.load(agent._managed_autonomy_state) is None
+    assert events[-1][0][1] == "negate-route-helper-retained-as-evidence"
+
+
+def test_completed_negate_route_helper_check_does_not_reserve_generic_integration(
+    monkeypatch, tmp_path
+):
+    """Keep negate-route helper evidence safe after transient markers are consumed."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : False := by\n  sorry\n", encoding="utf-8")
+    agent = _ManagedRunAgentStub()
+    agent._managed_autonomy_state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        runner._ROUTE_EXECUTION_STATE_KEY: runner.route_execution.RouteExecution.recorded(
+            route="negate",
+            target_symbol="demo",
+            active_file=str(active),
+            outcome="inconclusive",
+            evidence_kind="negation-probe",
+        ).to_payload(),
+    }
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    declaration = "private lemma audit_fact (n : Nat) : n + 0 = n := by\n  simp"
+    arguments = {
+        "action": "check_helper",
+        "file_path": str(active),
+        "theorem_id": "demo",
+        "replacement": declaration,
+    }
+    result = json.dumps(
+        {
+            "success": True,
+            "ok": True,
+            "valid_without_sorry": True,
+            "has_errors": False,
+            "has_sorry": False,
+            "verification_scope": "helper_candidate",
+            "replacement_matches_target": False,
+            "replacement_declarations": ["audit_fact"],
+        }
+    )
+
+    assert (
+        runner._retain_foreground_checked_helper(agent, "lean_incremental_check", arguments, result)
+        is None
+    )
+    assert runner.research_helper_candidate_priority.load(agent._managed_autonomy_state) is None
+
+
 def test_foreground_checked_helper_preempts_stale_slot_and_logs_backlog(monkeypatch, tmp_path):
     """Do not drop a verified helper behind an older single-slot candidate."""
     active = tmp_path / "Demo.lean"
@@ -260,7 +367,7 @@ def test_foreground_checked_scratch_helper_requires_immediate_production_name(
     monkeypatch.setattr(
         runner, "_record_agent_activity", lambda *args, **kwargs: events.append((args, kwargs))
     )
-    declaration = "private lemma test_useful (n : Nat) : n = n := by\n  rfl"
+    declaration = "private lemma test_useful (n : Nat) : n + 0 = n := by\n  simp"
     arguments = {
         "action": "check_helper",
         "file_path": str(active),
@@ -4090,6 +4197,30 @@ def test_orchestrator_decompose_respects_shared_advisor_circuit(monkeypatch, tmp
     assert blocked[0][1]["provider_called"] is False
     guard = state[runner._DECOMPOSE_ROUTE_REPEAT_GUARD_KEY]
     assert "did not make a third provider call" in guard["reason"]
+
+
+def test_advisor_semantic_evidence_changes_after_banked_helper(monkeypatch, tmp_path):
+    """Treat a newly proved source helper as a fresh advisor context."""
+    active = str(tmp_path / "Demo.lean")
+    target = SimpleNamespace(id="target", name="goal", file=active, status="proving")
+    first = SimpleNamespace(id="helper-1", name="first_helper", file=active, status="proved")
+    nodes = [target, first]
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.plan_state,
+        "load_blueprint",
+        lambda: SimpleNamespace(nodes=list(nodes)),
+    )
+    monkeypatch.setattr(runner.plan_state, "node_id_for", lambda *_args: "target")
+    monkeypatch.setattr(runner.campaign_epoch, "campaign_snapshot", lambda: {})
+
+    before = runner._advisor_semantic_evidence_sha256({}, target_symbol="goal", active_file=active)
+    nodes.append(SimpleNamespace(id="helper-2", name="new_helper", file=active, status="proved"))
+    after = runner._advisor_semantic_evidence_sha256({}, target_symbol="goal", active_file=active)
+
+    assert before
+    assert after
+    assert after != before
 
 
 def test_semantic_portfolio_refresh_rolls_campaign_without_parking(monkeypatch):
@@ -8147,6 +8278,55 @@ def test_handle_managed_incremental_feedback_is_diagnostic_only(monkeypatch):
     assert agent.interrupt_messages == []
 
 
+def test_handle_instrumented_target_check_does_not_consume_proof_attempt(monkeypatch):
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                },
+                "failed_attempts": [{"attempt": 1, "reason": "kernel rejection"}],
+            }
+            self._managed_pending_theorem_feedback = None
+
+    payload = {
+        "success": True,
+        "ok": False,
+        "action": "check_target",
+        "target": "demo",
+        "diagnostic_only": True,
+        "status": "inspection_only_target",
+        "replacement_matches_target": True,
+    }
+    boundary_calls = []
+    events = []
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *args, **kwargs: boundary_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append(args))
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_incremental_check",
+        {"action": "check_target"},
+        json.dumps(payload),
+    )
+
+    assert agent._managed_autonomy_state["failed_attempts"] == [
+        {"attempt": 1, "reason": "kernel rejection"}
+    ]
+    assert boundary_calls == []
+    assert any(event[0] == "queue-target-inspection-checked" for event in events)
+    assert "does not consume a proof attempt" in agent._post_tool_result_appendix
+
+
 def test_incremental_diagnostic_actions_do_not_count_as_theorem_feedback():
     assert (
         runner._tool_result_counts_as_theorem_feedback(
@@ -8700,7 +8880,7 @@ def test_source_inspection_loop_uses_search_budget(monkeypatch, tmp_path):
     assert tracker["used_tools"] == {"search_files": 2, "read_file": 1}
 
 
-@pytest.mark.parametrize("function_name", ["read_file", "search_files"])
+@pytest.mark.parametrize("function_name", ["read_file", "search_files", "lean_axioms"])
 def test_search_synthesis_reservation_allows_source_inspection(
     monkeypatch, tmp_path, function_name
 ):
@@ -8730,11 +8910,12 @@ def test_search_synthesis_reservation_allows_source_inspection(
 
     monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    args = (
-        {"path": str(active)}
-        if function_name == "read_file"
-        else {"path": str(tmp_path), "pattern": "angle"}
-    )
+    if function_name == "read_file":
+        args = {"path": str(active)}
+    elif function_name == "search_files":
+        args = {"path": str(tmp_path), "pattern": "angle"}
+    else:
+        args = {"file_path": str(active), "target": "demo"}
 
     agent = _Agent()
     assert runner._managed_pre_tool_call(agent, function_name, args) is None
@@ -9009,12 +9190,16 @@ def test_inspection_only_helper_checks_enter_construction_source_budget(monkeypa
             self.interrupt_messages.append(message)
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_construction_source_inspection_hard_limit", lambda: 3)
+    monkeypatch.setattr(runner, "_construction_source_inspection_hard_limit", lambda: 4)
     agent = _Agent()
     replacements = (
         "#check Nat.add_comm\nprivate lemma inspect_one : True := by\n  trivial",
         "#print Nat.add_comm\nprivate lemma inspect_two : True := by\n  trivial",
         'run_cmd Lean.logInfo m!"inspect"\nprivate lemma inspect_three : True := by\n  trivial',
+        (
+            "private lemma probe_existing_type {P : Type*} : True := by\n"
+            "  exact existing_declaration (P := P)"
+        ),
     )
 
     for replacement in replacements:
@@ -9026,7 +9211,7 @@ def test_inspection_only_helper_checks_enter_construction_source_budget(monkeypa
         )
 
     tracker = agent._managed_autonomy_state["search_progress"]
-    assert tracker["construction_source_inspection_count"] == 3
+    assert tracker["construction_source_inspection_count"] == 4
     assert tracker["search_count"] == 12
     assert tracker["construction_source_inspection_boundary"] is True
     assert not bool(getattr(agent, "_managed_step_boundary_closed", False))
@@ -9197,6 +9382,69 @@ def test_search_synthesis_reservation_bounds_construction_source_inspection(monk
     refreshed_tracker = agent._managed_autonomy_state["search_progress"]
     assert "construction_source_inspection_boundary" not in refreshed_tracker
     assert "construction_source_inspection_count" not in refreshed_tracker
+
+
+def test_delegated_search_boundary_forces_no_tool_synthesis_without_interrupt(
+    monkeypatch, tmp_path
+):
+    """Preserve collected lane evidence long enough to emit its final report."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    def schema(name):
+        return {"type": "function", "function": {"name": name}}
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._delegate_depth = 1
+            self.tools = [schema("lean_outline"), schema("patch")]
+            self.valid_tool_names = {"lean_outline", "patch"}
+            self._managed_autonomy_state = {
+                "current_cycle": 9,
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+                "search_progress": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "search_count": 12,
+                    "hard_route_requested": True,
+                    "synthesis_grace_pending": True,
+                    "synthesis_boundary_cycle": 9,
+                    "construction_source_inspection_boundary": True,
+                    "construction_source_inspection_count": 3,
+                    "construction_source_inspection_cycle": 9,
+                },
+            }
+            self.interrupt_messages = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_synthesis_rejection_limit", lambda: 1)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    agent = _Agent()
+    args = {"file_path": str(active), "symbol": "demo"}
+    blocked = runner._search_synthesis_pre_tool_guard(
+        agent,
+        "lean_outline",
+        args,
+        agent._managed_autonomy_state,
+    )
+
+    assert blocked is not None
+    assert json.loads(blocked)["status"] == "construction_synthesis_required"
+    runner._track_search_progress(agent, "lean_outline", args, blocked)
+
+    assert agent.interrupt_messages == []
+    assert not bool(getattr(agent, "_managed_step_boundary_closed", False))
+    assert agent.valid_tool_names == {"patch"}
+    assert "final response without another tool call" in agent._post_tool_result_appendix
 
 
 def test_construction_source_inspection_budget_resets_for_new_cycle(monkeypatch, tmp_path):
@@ -12782,7 +13030,7 @@ def test_scope_entry_rename_candidate_preempts_research_and_parent_recheck(monke
             "active_file": str(active),
         },
     }
-    declaration = "private lemma test_self_eq (n : Nat) : n = n := by\n  rfl"
+    declaration = "private lemma test_add_zero (n : Nat) : n + 0 = n := by\n  simp"
     pending = (
         runner.research_helper_candidate_priority.remember_nonproduction_from_foreground_check(
             state,
@@ -12800,7 +13048,7 @@ def test_scope_entry_rename_candidate_preempts_research_and_parent_recheck(monke
                 "has_sorry": False,
                 "verification_scope": "helper_candidate",
                 "replacement_matches_target": False,
-                "replacement_declarations": ["test_self_eq"],
+                "replacement_declarations": ["test_add_zero"],
             },
             campaign_id="campaign",
             target_symbol="demo",
@@ -13077,6 +13325,101 @@ def test_scope_entry_new_decomposer_child_preempts_fresh_epoch_negate(monkeypatc
     assert state["orchestrator_scope_entered"] is True
 
 
+def test_scope_entry_proved_split_helper_preempts_replanning_parent(monkeypatch, tmp_path):
+    """A proved decomposition child must get one parent-assembly turn."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "private lemma bridge : True := by\n"
+        "  trivial\n\n"
+        "theorem result : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    active_file = str(active.resolve())
+    target_id = runner.plan_state.node_id_for("result", active_file)
+    helper_id = runner.plan_state.node_id_for("bridge", active_file)
+    blueprint = runner.plan_state.Blueprint(
+        nodes=(
+            runner.plan_state.GraphNode(
+                id=target_id,
+                name="result",
+                file=active_file,
+                statement="theorem result : True := by\n  sorry",
+                status="proving",
+                generated_by="queue-sync",
+            ),
+            runner.plan_state.GraphNode(
+                id=helper_id,
+                kind="lemma",
+                name="bridge",
+                file=active_file,
+                statement="private lemma bridge : True := by\n  trivial",
+                status="proved",
+                generated_by="decomposer",
+            ),
+        ),
+        edges=(
+            runner.plan_state.GraphEdge(helper_id, target_id, "split_of"),
+            runner.plan_state.GraphEdge(target_id, helper_id, "depends_on"),
+        ),
+    )
+    summary = {
+        "queue_manager_state": {
+            "theorem_outcomes": {
+                f"{active_file}::bridge": {
+                    "target_symbol": "bridge",
+                    "active_file": active_file,
+                    "status": "solved",
+                }
+            }
+        }
+    }
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "result",
+            "active_file": active_file,
+        },
+        "prover_requested_route": {
+            "route": "plan",
+            "target_symbol": "result",
+            "active_file": active_file,
+        },
+    }
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: blueprint)
+    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args, **_kwargs: pytest.fail("proved helper handback launched research"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_orchestrator_consult",
+        lambda *_args, **_kwargs: pytest.fail("proved helper handback replanned parent"),
+    )
+
+    prompt = runner._research_scope_entry_setup(
+        "",
+        state,
+        {
+            "target_symbol": "result",
+            "active_file": active_file,
+            "current_queue_item": {"label": "result"},
+        },
+        agent=object(),
+        apply_route=True,
+    )
+
+    assert "[LEANFLOW PROVED-HELPER PARENT HANDBACK]" in prompt
+    assert "`bridge`" in prompt
+    assert state["orchestrator_scope_entered"] is True
+    assert "prover_requested_route" not in state
+
+
 def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_search(
     monkeypatch, tmp_path
 ):
@@ -13142,6 +13485,84 @@ def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_sea
         campaign_id="campaign",
         target_symbol="demo",
         active_file=str(active),
+    )
+    pending_before_recheck = runner.research_helper_candidate_priority.load(state)
+    assert pending_before_recheck is not None
+    assert (
+        pending_before_recheck.state == runner.research_helper_candidate_priority.AWAITING_RECHECK
+    )
+
+    class _PendingAgent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, reason):
+            self._interrupt_reason = reason
+
+    awaiting_recheck_block = json.loads(
+        runner._managed_pre_tool_call(
+            _PendingAgent(),
+            "lean_search",
+            {"query": "another route", "file_path": str(active)},
+        )
+    )
+    assert awaiting_recheck_block["status"] == "checked_helper_parent_recheck_required"
+    assert awaiting_recheck_block["helper_symbol"] == "checked_family"
+    assert awaiting_recheck_block["preserved_declaration"] == declaration
+    unrelated_helper_block = runner._managed_pre_tool_call(
+        _PendingAgent(),
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "file_path": str(active),
+            "theorem_id": "demo",
+            "replacement": "private lemma unrelated : True := by\n  trivial",
+        },
+    )
+    assert unrelated_helper_block is None
+    target_probe = runner._managed_pre_tool_call(
+        _PendingAgent(),
+        "lean_incremental_check",
+        {
+            "action": "check_target",
+            "file_path": str(active),
+            "theorem_id": "demo",
+            "replacement": "theorem demo : True := by\n  trivial",
+        },
+    )
+    assert target_probe is None
+    boundary_agent = _PendingAgent()
+    reformatted_declaration = (
+        "private lemma checked_family\n" "    (n : Nat) :\n" "    True := by\n" "  trivial"
+    )
+    parent_boundary = json.loads(
+        runner._managed_pre_tool_call(
+            boundary_agent,
+            "apply_verified_patch",
+            {
+                "path": str(active),
+                "theorem_id": "demo",
+                "patch": (
+                    "*** Begin Patch\n"
+                    f"*** Update File: {active}\n"
+                    "@@\n"
+                    f"+{reformatted_declaration.replace(chr(10), chr(10) + '+')}\n"
+                    "+\n"
+                    " theorem demo : True := by\n"
+                    "*** End Patch\n"
+                ),
+            },
+        )
+    )
+    assert parent_boundary["status"] == "checked_helper_parent_recheck_pending"
+    assert parent_boundary["patch_applied"] is False
+    assert parent_boundary["lean_started"] is False
+    assert parent_boundary["preserved_declaration"] == declaration
+    assert boundary_agent._managed_step_boundary_closed is True
+    assert (
+        state[runner._RESEARCH_HELPER_RECHECK_BOUNDARY_KEY] == pending_before_recheck.candidate_id
     )
     checks = []
     admission_order: list[str] = []
@@ -13215,16 +13636,19 @@ def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_sea
         lambda *_args, **_kwargs: pytest.fail("orchestrator ran before helper integration"),
     )
 
-    prompt = runner._research_scope_entry_setup(
-        "",
+    state["prover_requested_route"] = {
+        "route": "plan",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "reason": "existing requested route must survive the promised parent check",
+    }
+    prompt = runner._consume_research_helper_parent_recheck_boundary(
         state,
         {"target_symbol": "demo", "active_file": str(active)},
         agent=SimpleNamespace(),
-        apply_route=True,
     )
 
     assert admission_order == [
-        "scope-entry",
         "pending parent helper recheck for checked_family",
         "parent-transaction-enter",
         "parent-check",
@@ -13240,7 +13664,8 @@ def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_sea
     assert pending.expected_integrated_source_revision_sha256
     assert runner.research_helper_candidate_priority.parent_recheck_evidence_authenticated(pending)
     assert declaration in prompt
-    assert state["orchestrator_scope_entered"] is True
+    assert state["prover_requested_route"]["route"] == "plan"
+    assert runner._RESEARCH_HELPER_RECHECK_BOUNDARY_KEY not in state
 
     class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = state
@@ -13257,6 +13682,7 @@ def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_sea
     )
     assert blocked["status"] == "checked_helper_integration_required"
     assert blocked["helper_symbol"] == "checked_family"
+    assert blocked["preserved_declaration"] == declaration
     exact_patch = {
         "path": str(active),
         "old_string": "theorem demo : True := by\n  sorry",
@@ -13299,10 +13725,12 @@ def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_sea
     assert "other_family" in mismatched_helper_patch["patch"]
     verified_patch = {
         "path": str(active),
-        "theorem_id": "demo",
+        # Models may omit theorem_id for a helper-only edit.
         "patch": "stale model-authored patch replaced by manager authority",
     }
     assert runner._managed_pre_tool_call(_Agent(), "apply_verified_patch", verified_patch) is None
+    assert verified_patch["theorem_id"] == "demo"
+    assert verified_patch["_leanflow_verified_edit_authority"]
     assert verified_patch["patch"] == (
         runner.parent_helper_verification_reuse.exact_integrated_source_patch(
             active.read_text(encoding="utf-8"),
@@ -13702,7 +14130,7 @@ def test_integrated_helper_consumption_allows_target_work_before_next_priority(
     )
     second_finding = checked_finding(
         helper_name="second_helper",
-        declaration="private lemma second_helper (n : Nat) : n = n := by\n  rfl",
+        declaration="private lemma second_helper (n : Nat) : n + 0 = n := by\n  simp",
         job_id="campaign.orchestrator.ds-second",
     )
     second = runner.research_helper_candidate_priority.remember_from_findings(
@@ -15960,12 +16388,15 @@ def test_autonomous_provider_nonce_gate_pauses_before_conversation(monkeypatch):
     assert runner._workflow_completion_exit_code(final_live, autonomy_state) == runner.EXIT_PAUSED
 
 
-def test_support_file_write_does_not_verify_or_reject_assigned_theorem(monkeypatch, tmp_path):
+def test_support_file_write_publishes_module_without_verifying_assigned_theorem(
+    monkeypatch, tmp_path
+):
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
     support = tmp_path / "Probe.lean"
     support.write_text("example : True := by trivial\n", encoding="utf-8")
     events = []
+    publications = []
 
     class _Agent(_ManagedRunAgentStub):
         def __init__(self):
@@ -15983,6 +16414,13 @@ def test_support_file_write_does_not_verify_or_reject_assigned_theorem(monkeypat
             return False
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.support_module_materialization,
+        "materialize_verified_support_module",
+        lambda file_path, **kwargs: publications.append((file_path, kwargs))
+        or {"ok": True, "command": "lake build Probe", "output": ""},
+    )
     monkeypatch.setattr(
         runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
     )
@@ -16004,7 +16442,67 @@ def test_support_file_write_does_not_verify_or_reject_assigned_theorem(monkeypat
 
     assert "failed_attempts" not in agent._managed_autonomy_state
     assert agent._managed_pending_theorem_feedback is None
+    assert publications == [(str(support), {"project_root": str(tmp_path)})]
+    assert "built successfully" in agent._post_tool_result_appendix
     assert any(args[0] == "queue-support-file-edit" for args, _kwargs in events)
+
+
+def test_plain_support_patch_materializes_module_before_parent_import(monkeypatch, tmp_path):
+    """Build a companion after a plain patch so its next import sees a current olean."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    support = tmp_path / "MainHelpers.lean"
+    support.write_text("theorem helper : True := by trivial\n", encoding="utf-8")
+    publications = []
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.support_module_materialization,
+        "materialize_verified_support_module",
+        lambda file_path, **kwargs: publications.append((file_path, kwargs))
+        or {"ok": True, "command": "lake build MainHelpers", "output": ""},
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_args, **_kwargs: pytest.fail("support publication must not verify the parent"),
+    )
+    agent = _Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        {"path": str(support)},
+        json.dumps({"success": True}),
+    )
+
+    assert publications == [(str(support), {"project_root": str(tmp_path)})]
+    assert "built successfully" in agent._post_tool_result_appendix
+    assert any(args[0] == "queue-support-module-materialized" for args, _kwargs in events)
+    assert any(
+        args[0] == "queue-support-file-edit" and kwargs["module_published"] is True
+        for args, kwargs in events
+    )
 
 
 def test_verified_support_patch_materializes_module_before_parent_reuse(monkeypatch, tmp_path):
@@ -16072,10 +16570,8 @@ def test_verified_support_patch_materializes_module_before_parent_reuse(monkeypa
     )
 
 
-def test_clean_room_queue_blocks_ad_hoc_scripts_but_allows_companion_and_state(
-    monkeypatch, tmp_path
-):
-    """Keep clean-room proof writes scoped without disabling modular Lean work."""
+def test_clean_room_queue_blocks_raw_companion_and_allows_state_writes(monkeypatch, tmp_path):
+    """Keep clean-room writes scoped and route Lean companions transactionally."""
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
     companion = tmp_path / "MainHelpers.lean"
@@ -16110,14 +16606,13 @@ def test_clean_room_queue_blocks_ad_hoc_scripts_but_allows_companion_and_state(
     assert payload["status"] == "clean_room_queue_write_denied"
     assert payload["blocked_paths"] == [str(tmp_path / "verify.py")]
 
-    assert (
-        runner._managed_pre_tool_call(
-            agent,
-            "write_file",
-            {"path": str(companion), "content": "import Mathlib\n"},
-        )
-        is None
+    companion_block = runner._managed_pre_tool_call(
+        agent,
+        "write_file",
+        {"path": str(companion), "content": "import Mathlib\n"},
     )
+    assert companion_block is not None
+    assert json.loads(companion_block)["status"] == "support_lean_verified_patch_required"
     assert (
         runner._managed_pre_tool_call(
             agent,
@@ -16164,14 +16659,55 @@ def test_managed_queue_blocks_companion_reverse_import_outside_clean_room(monkey
     assert payload["blocked_by"] == "managed_companion_dependency_policy"
     assert payload["patch_applied"] is False
     assert payload["lean_started"] is False
-    assert (
-        runner._managed_pre_tool_call(
-            agent,
-            "write_file",
-            {"path": str(companion), "content": "import Mathlib\n"},
-        )
-        is None
+    safe_write = runner._managed_pre_tool_call(
+        agent,
+        "write_file",
+        {"path": str(companion), "content": "import Mathlib\n"},
     )
+    assert safe_write is not None
+    assert json.loads(safe_write)["status"] == "support_lean_verified_patch_required"
+
+
+def test_managed_queue_requires_transactional_patch_for_lean_support_file(monkeypatch, tmp_path):
+    """Do not leave a support module broken after a failed raw Lean edit."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    companion = tmp_path / "MainHelpers.lean"
+    companion.write_text("import Mathlib\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "solution_research_disabled", lambda: False)
+
+    blocked = runner._managed_pre_tool_call(
+        _Agent(),
+        "patch",
+        {
+            "path": str(companion),
+            "mode": "replace",
+            "old_string": "import Mathlib\n",
+            "new_string": "import Mathlib\n\nlemma broken : True := by\n  exact False.elim (by trivial)\n",
+        },
+    )
+
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["status"] == "support_lean_verified_patch_required"
+    assert payload["blocked_paths"] == [str(companion)]
+    assert payload["required_tool"] == "apply_verified_patch"
+    assert payload["patch_applied"] is False
 
 
 def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(monkeypatch, capsys):
@@ -17573,6 +18109,48 @@ def test_handle_managed_tool_result_disables_auto_try_schema_for_run(monkeypatch
     assert agent._managed_autonomy_state["disabled_tools_this_run"][0]["name"] == "lean_auto_try"
 
 
+def test_handle_managed_tool_result_disables_empty_auto_search_for_run(monkeypatch):
+    """Persist a zero-attempt backend outage instead of repeating it after compression."""
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self.tools = [
+                {"type": "function", "function": {"name": "lean_auto_search"}},
+                {"type": "function", "function": {"name": "lean_inspect"}},
+            ]
+            self.valid_tool_names = {"lean_auto_search", "lean_inspect"}
+            self._managed_autonomy_state = {}
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    agent = _Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_auto_search",
+        {},
+        json.dumps(
+            {
+                "success": False,
+                "status": "unavailable_no_attempts",
+                "attempts": 0,
+                "explored_sets": 0,
+                "unavailable_reason": "backend explored no candidate sets",
+            }
+        ),
+    )
+
+    assert "lean_auto_search" not in agent.valid_tool_names
+    assert [tool["function"]["name"] for tool in agent.tools] == ["lean_inspect"]
+    assert agent._managed_autonomy_state["disabled_tools_this_run"][0] == {
+        "name": "lean_auto_search",
+        "reason": "backend explored no candidate sets",
+    }
+
+
 def test_handle_managed_tool_result_does_not_treat_inspect_as_verification_feedback(monkeypatch):
     class _Agent(_ManagedRunAgentStub):
         def __init__(self):
@@ -18692,6 +19270,11 @@ def test_reasoning_help_records_advice_pending_and_blocks_repeat(monkeypatch, tm
         lambda **kwargs: advisor_evidence.append(dict(kwargs)) or True,
     )
     monkeypatch.setattr(
+        runner.planner_evidence,
+        "matching_advisor_evidence",
+        lambda **_kwargs: ({"source": "lean_reasoning_help", "text": "try tangent signs"},),
+    )
+    monkeypatch.setattr(
         runner.campaign_epoch,
         "record_planner_terminal_obstacle",
         lambda _state, payload: persisted.append(dict(payload)) or dict(payload),
@@ -18729,7 +19312,10 @@ def test_reasoning_help_records_advice_pending_and_blocks_repeat(monkeypatch, tm
         agent._managed_autonomy_state,
     )
     assert blocked is not None
-    assert json.loads(blocked)["status"] == "completed_advice_pending"
+    blocked_payload = json.loads(blocked)
+    assert blocked_payload["status"] == "completed_advice_pending"
+    assert blocked_payload["prior_advice"] == "try tangent signs"
+    assert blocked_payload["prior_advice_source"] == "lean_reasoning_help"
 
     active.write_text(
         "theorem demo : True := by\n  have h : True := trivial\n  sorry\n",
@@ -26644,6 +27230,46 @@ def test_verified_startup_preflight_preserves_pending_warning_cleanup(monkeypatc
     assert result == pending
 
 
+def test_verified_startup_preflight_keeps_granted_cleanup_on_verified_gate(monkeypatch, tmp_path):
+    """A queue-boundary gate must not erase a cleanup window granted just after it."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  trivial\n"
+    active.write_text(source, encoding="utf-8")
+    recovered = {
+        "active_file": str(active),
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "diagnostics": "",
+        "goals": "no goals",
+        "sorry_count": 0,
+        "verification_ok": True,
+        "last_verification": {"ok": True, "scope": "file", "tool": "lean_verify"},
+    }
+    autonomy_state = {
+        "final_sweep_cleanup_attempted": True,
+        "final_sweep_warning_count": 1,
+        "final_sweep_warning_summary": "- line 2: unused tactic",
+        "final_sweep_baseline": {
+            "active_file": str(active.resolve()),
+            "content": source,
+        },
+    }
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner.verified_gate_handoff,
+        "take_mapping",
+        lambda _state: dict(recovered),
+    )
+
+    result = runner._verified_startup_preflight([], {}, autonomy_state)
+
+    assert result["verification_ok"] is False
+    assert result["final_sweep_warning_cleanup_pending"] is True
+    assert result["warning_cleanup_status"] == "pending"
+    assert result["warning_cleanup_warning_count"] == 1
+    assert result["proof_solved"] is True
+
+
 def test_verified_startup_preflight_defers_slow_sorry_free_resume(monkeypatch, tmp_path):
     """A timed-out preflight must reach the model without replaying Lean at startup."""
     active = tmp_path / "Main.lean"
@@ -27188,6 +27814,51 @@ def test_authoritative_resume_hides_bootstrap_tools_for_one_provider_turn(monkey
 
     runner._sync_construction_only_tool_surface(agent, state)
     assert {tool["function"]["name"] for tool in agent.tools} == set(tool_names)
+
+
+def test_provider_tool_surface_hides_exhausted_advisor_until_evidence_changes(
+    monkeypatch, tmp_path
+):
+    """Do not advertise an advisor that its durable circuit will reject immediately."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    blocked = {"lean_decompose_helpers"}
+    monkeypatch.setattr(
+        runner,
+        "_advisor_failure_admission",
+        lambda _state, name: SimpleNamespace(blocked=name in blocked),
+    )
+    tool_names = ["lean_decompose_helpers", "lean_reasoning_help", "lean_incremental_check"]
+    agent = SimpleNamespace(
+        tools=[
+            {"type": "function", "function": {"name": name, "parameters": {}}}
+            for name in tool_names
+        ],
+        valid_tool_names=set(tool_names),
+        _managed_autonomy_state={},
+    )
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+
+    runner._sync_construction_only_tool_surface(agent, state)
+
+    assert {tool["function"]["name"] for tool in agent.tools} == {
+        "lean_reasoning_help",
+        "lean_incremental_check",
+    }
+    assert "lean_decompose_helpers" not in agent.valid_tool_names
+
+    blocked.clear()
+    runner._sync_construction_only_tool_surface(agent, state)
+
+    assert {tool["function"]["name"] for tool in agent.tools} == set(tool_names)
+    assert agent.valid_tool_names == set(tool_names)
 
 
 def test_startup_user_message_marks_authoritative_resume(monkeypatch, tmp_path):
@@ -28251,6 +28922,86 @@ def test_excluded_live_queue_clears_stale_assignment_and_routes_plan(monkeypatch
         autonomy_state=autonomy_state,
     )
     assert runner.orchestrator_floor.orchestrator_route(context).route == "plan"
+
+
+def test_default_queue_selection_respects_unresolved_graph_dependencies(monkeypatch, tmp_path):
+    """Dependency safety must not depend on optional frontier ordering."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem difference_le : True := by",
+                "  sorry",
+                "",
+                "theorem constant_difference : True := by",
+                "  sorry",
+                "",
+                "theorem affine_witness : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    active_file = str(active.resolve())
+    difference_id = runner.plan_state.node_id_for("difference_le", active_file)
+    constant_id = runner.plan_state.node_id_for("constant_difference", active_file)
+    affine_id = runner.plan_state.node_id_for("affine_witness", active_file)
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_ORCHESTRATOR_ENABLED", "0")
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "0")
+    runner.plan_state.save_blueprint(
+        runner.plan_state.Blueprint(
+            nodes=(
+                runner.plan_state.GraphNode(
+                    id=difference_id,
+                    name="difference_le",
+                    file=active_file,
+                    status="stated",
+                ),
+                runner.plan_state.GraphNode(
+                    id=constant_id,
+                    name="constant_difference",
+                    file=active_file,
+                    status="stated",
+                ),
+                runner.plan_state.GraphNode(
+                    id=affine_id,
+                    name="affine_witness",
+                    file=active_file,
+                    status="proving",
+                ),
+            ),
+            edges=(
+                runner.plan_state.GraphEdge(constant_id, difference_id, "depends_on"),
+                runner.plan_state.GraphEdge(affine_id, constant_id, "depends_on"),
+            ),
+        )
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "affine_witness",
+            "active_file": active_file,
+        }
+    }
+    queue = [
+        {"label": "affine_witness", "reasons": ["contains sorry"]},
+        {"label": "constant_difference", "reasons": ["contains sorry"]},
+        {"label": "difference_le", "reasons": ["contains sorry"]},
+    ]
+
+    precedence = runner._graph_frontier_precedence(
+        autonomy_state,
+        active_file=active_file,
+        queue_labels=tuple(item["label"] for item in queue),
+    )
+
+    assert precedence is not None
+    assert precedence("difference_le") == 1
+    assert precedence("constant_difference") == 2
+    assert precedence("affine_witness") == 2
+    assert runner._current_queue_item(queue, active_file, precedence)["label"] == "difference_le"
 
 
 def test_build_live_proof_state_refreshes_goals_after_queue_rotation(monkeypatch, tmp_path):
@@ -30047,6 +30798,11 @@ def test_requested_route_preempts_ready_research_helper_before_next_prover_turn(
     monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", fidelity_audit)
     monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *a: None)
     monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *a: "")
+    monkeypatch.setattr(
+        runner,
+        "_consume_research_helper_parent_recheck_boundary",
+        lambda *a, **k: ordering.append("boundary-helper-recheck") or "",
+    )
 
     def recheck_helper(*_args, **_kwargs):
         ordering.append("helper-recheck")
@@ -30112,6 +30868,7 @@ def test_requested_route_preempts_ready_research_helper_before_next_prover_turn(
     assert ordering == [
         "maintenance-barrier",
         "fidelity-audit",
+        "boundary-helper-recheck",
         "orchestrator-consult",
         "route-applied",
         "maintenance-barrier",
@@ -33147,7 +33904,8 @@ def test_queue_assignment_block_restores_checked_partial_candidate(monkeypatch):
     assert "exact candidate" in block
 
 
-def test_theorem_transition_handoff_includes_exact_tool_path():
+def test_theorem_transition_handoff_includes_exact_tool_path(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_NATIVE_REASONING_EFFORT", "xhigh")
     message = runner._theorem_transition_handoff_message(
         {
             "target_symbol": "previous_demo",
@@ -33174,6 +33932,7 @@ def test_theorem_transition_handoff_includes_exact_tool_path():
     assert "- file: Demo/Main.lean" in message
     assert "- exact tool path: /tmp/project/Demo/Main.lean" in message
     assert "- pending count: 1 pending" in message
+    assert "- reasoning effort: xhigh" in message
     assert "future_demo" not in message
     assert "future queue items: hidden until the manager assigns them (1 pending)" in message
 
@@ -33696,7 +34455,10 @@ def test_rejected_candidate_replay_guard_blocks_banked_helper_in_same_context(
     assert json.loads(result)["status"] == "rejected_candidate_replay"
 
 
-@pytest.mark.parametrize("suggestion", ["exact?", "apply?", "simp?", "aesop?"])
+@pytest.mark.parametrize(
+    "suggestion",
+    ["exact?", "apply?", "simp?", "aesop?", "library_search"],
+)
 def test_suggestion_only_source_patch_is_redirected_before_mutation(
     tmp_path, monkeypatch, suggestion
 ):

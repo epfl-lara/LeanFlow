@@ -38,6 +38,7 @@ from leanflow_cli.workflows.workflow_state import (
 )
 from tools.implementations.file_operations import ShellFileOperations
 from tools.utilities.patch_parser import OperationType, parse_v4a_patch
+from tools.utilities.read_freshness import note_write
 
 
 class _LocalShellEnv:
@@ -211,7 +212,6 @@ def apply_verified_patch_tool(
     verified_edit_authority_token: str = "",
 ) -> str:
     """Apply a one-file Lean patch and immediately verify the touched scope."""
-    del task_id
     raw_path = str(path or "").strip()
     raw_patch = str(patch or "")
     normalized_check = _normalize_verified_patch_check_mode(check_mode)
@@ -523,6 +523,18 @@ def apply_verified_patch_tool(
             )
         ),
     }
+    if check_passed or rolled_back:
+        # The verified-patch transaction writes outside file_tools, but it is
+        # still part of the same model tool session. Refresh that session's
+        # read-before-edit image after either a committed patch or an exact
+        # rollback so the next edit is not rejected as stale solely because of
+        # LeanFlow's own managed write.
+        try:
+            current_content = resolved_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+        else:
+            note_write(task_id, str(resolved_path), current_content)
     save_verified_patch_status(payload)
     append_workflow_outcome("apply-verified-patch", payload)
     return json.dumps(payload, ensure_ascii=False)

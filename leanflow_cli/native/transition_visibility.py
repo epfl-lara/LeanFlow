@@ -164,8 +164,12 @@ def report_research_portfolio_progress(
     consumed = tuple(
         str(job_id) for job_id in (payload.get("consumed") or []) if str(job_id or "").strip()
     )
-    active_count = max(len(active_jobs), int(payload.get("active", 0) or 0))
-    signature = "|".join(active_jobs) if active_jobs else f"count:{active_count}"
+    portfolio_active_count = max(len(active_jobs), int(payload.get("active", 0) or 0))
+    planner_active = bool(state.get("_planner_phase_active"))
+    active_count = portfolio_active_count + int(planner_active)
+    signature = ("|".join(active_jobs) if active_jobs else f"count:{portfolio_active_count}") + (
+        "|planner" if planner_active else ""
+    )
     current = time.monotonic() if now is None else float(now)
     try:
         last_notice = float(state.get(_PORTFOLIO_NOTICE_AT_KEY, 0.0) or 0.0)
@@ -184,6 +188,8 @@ def report_research_portfolio_progress(
         details.append(f"launched {len(launched)}")
     if consumed:
         details.append(f"completed {len(consumed)}")
+    if planner_active:
+        details.append("planner active")
     if heartbeat_due and not launched and not consumed and not changed:
         details.append("still working")
     emit(f"🔬 Research portfolio for {label}: " + ", ".join(details) + ".")

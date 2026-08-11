@@ -32,6 +32,46 @@ def _write_project(tmp_path: Path, text: str):
     return project, target
 
 
+def test_instrumented_target_payload_cannot_verify_production_target():
+    payload = li._mark_inspection_only_target_payload(
+        {
+            "success": True,
+            "ok": True,
+            "valid_without_sorry": True,
+            "target_verified": True,
+            "has_errors": False,
+        }
+    )
+
+    assert payload["ok"] is False
+    assert payload["target_verified"] is False
+    assert payload["valid_without_sorry"] is False
+    assert payload["diagnostic_only"] is True
+    assert payload["proof_progress"] is False
+    assert payload["status"] == "inspection_only_target"
+
+
+def test_suggestion_rejection_payload_is_diagnostic_only(tmp_path: Path):
+    payload = li._suggestion_rejection_payload(
+        action="check_target",
+        file_path=tmp_path / "Main.lean",
+        theorem_id="demo",
+        replacement_metadata={"replacement_matches_target": True},
+        requested_timeout_s=60,
+        effective_timeout_s=60,
+        timeout_adjusted=False,
+        timeout_policy="requested",
+        timeout_ceiling_s=None,
+        operation_started=time.monotonic(),
+    )
+
+    assert payload["ok"] is False
+    assert payload["target_verified"] is False
+    assert payload["diagnostic_only"] is True
+    assert payload["proof_progress"] is False
+    assert payload["status"] == "suggestion_tactic_diagnostic_only"
+
+
 def test_probe_outer_deadline_bounds_a_call_that_ignores_its_timeout():
     release = threading.Event()
 
@@ -133,7 +173,9 @@ def test_incremental_check_returns_retryable_payload_on_probe_outer_timeout(monk
             )
 
     fake = _DeadlineProbe()
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
     monkeypatch.setattr(li, "_PROBE", fake)
+    monkeypatch.setattr(li, "_PROBE_EVER_STARTED", True)
     monkeypatch.setattr(li, "_probe", lambda: fake)
     monkeypatch.setattr(li, "_local_repl_dir", lambda root: root / ".lake" / "build")
     monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
@@ -152,6 +194,17 @@ def test_incremental_check_returns_retryable_payload_on_probe_outer_timeout(monk
     assert payload["probe_worker_stopped"] is True
     assert payload["resource_admission"]["incremental_session_reclaimed"] is True
     assert li._PROBE is None
+
+    retry = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        timeout_s=7,
+    )
+
+    assert retry["effective_timeout_s"] == li.RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S
+    assert retry["timeout_policy"] == "research_cold_start_floor"
 
 
 def test_low_memory_mode_never_starts_leanprobe(monkeypatch, tmp_path):
@@ -1182,6 +1235,53 @@ def test_project_admission_wait_consumes_the_end_to_end_probe_deadline(monkeypat
     assert 0.5 < fake.timeout_s < 0.98
 
 
+def test_scheduler_scale_admission_jitter_does_not_shave_timeout_floor(monkeypatch, tmp_path):
+    """Keep a stable probe timeout when lock setup incurs only tiny jitter."""
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
+    )
+
+    class _Admission:
+        def __enter__(self):
+            time.sleep(0.02)
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def to_dict(self):
+            return {}
+
+        def retain_until_process_exit(self, _reason):
+            return None
+
+    class _FakeProbe:
+        timeout_s = 0.0
+
+        def check_target(self, *args, **kwargs):
+            self.timeout_s = float(kwargs["timeout_s"])
+            return {"success": True, "ok": True, "target": "demo"}
+
+    fake = _FakeProbe()
+    monkeypatch.setattr(li, "project_lean_heavy_admission", lambda _root: _Admission())
+    monkeypatch.setattr(li, "project_lean_service_reclaim_enabled", lambda: False)
+    monkeypatch.setattr(li, "_probe", lambda: fake)
+    monkeypatch.setattr(li, "_local_repl_dir", lambda root: root / ".lake" / "packages" / "repl")
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        timeout_s=1,
+    )
+
+    assert payload["ok"] is True
+    assert fake.timeout_s == 1.0
+
+
 def test_foreground_incremental_session_stays_warm_between_checks(monkeypatch, tmp_path):
     project, target = _write_project(
         tmp_path,
@@ -1363,6 +1463,7 @@ def test_foreground_research_applies_cold_start_timeout_floor(
     fake = _FakeProbe()
     monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
     monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setattr(li, "_PROBE", None)
     monkeypatch.setattr(li, "_PROBE_EVER_STARTED", False)
     monkeypatch.setattr(li, "_probe", lambda: fake)
     monkeypatch.setattr(
@@ -1402,6 +1503,7 @@ def test_foreground_research_honors_requested_timeout_after_probe_warmup(monkeyp
     fake = _FakeProbe()
     monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
     monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setattr(li, "_PROBE", fake)
     monkeypatch.setattr(li, "_PROBE_EVER_STARTED", True)
     monkeypatch.setattr(li, "_probe", lambda: fake)
     monkeypatch.setattr(
@@ -1439,6 +1541,7 @@ def test_authoritative_timeout_ceiling_caps_research_cold_start_floor(monkeypatc
     fake = _FakeProbe()
     monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
     monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setattr(li, "_PROBE", None)
     monkeypatch.setattr(li, "_PROBE_EVER_STARTED", False)
     monkeypatch.setattr(li, "_probe", lambda: fake)
     monkeypatch.setattr(
@@ -1481,6 +1584,7 @@ def test_run_hard_timeout_caps_research_incremental_cold_start(monkeypatch, tmp_
     monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
     monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
     monkeypatch.setenv("LEANFLOW_LEAN_COMMAND_HARD_TIMEOUT_S", "600")
+    monkeypatch.setattr(li, "_PROBE", None)
     monkeypatch.setattr(li, "_PROBE_EVER_STARTED", False)
     monkeypatch.setattr(li, "_probe", lambda: fake)
     monkeypatch.setattr(
@@ -2036,6 +2140,185 @@ def test_check_helper_marks_dummy_type_probe_as_diagnostic_only(
     assert payload["messages"][0]["message"].startswith("h :")
     assert "mathematically named helper" in payload["action_required"]
     assert "context compression" in payload["action_required"]
+
+
+def test_check_helper_marks_failed_bare_term_type_probe_as_diagnostic_only(monkeypatch, tmp_path):
+    """Charge inspection wrappers that expose a declaration type via mismatch."""
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  sorry\n",
+    )
+
+    class _FakeProbe:
+        def check_target(self, *args, **kwargs):
+            return {
+                "success": True,
+                "ok": False,
+                "has_errors": True,
+                "has_sorry": False,
+                "target": kwargs["theorem_id"],
+                "messages": [
+                    {
+                        "severity": "error",
+                        "message": (
+                            "Type mismatch: existing_declaration has type Nat -> Nat "
+                            "but is expected to have type True"
+                        ),
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(li, "_probe", lambda: _FakeProbe())
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="check_helper",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        replacement=(
+            "private lemma probe_existing_type {P : Type*} : True := by\n"
+            "  exact existing_declaration (P := P)"
+        ),
+    )
+
+    assert payload["success"] is True
+    assert payload["ok"] is False
+    assert payload["valid_without_sorry"] is False
+    assert payload["diagnostic_only"] is True
+    assert payload["proof_progress"] is False
+    assert payload["error_code"] == "inspection_only_helper_candidate"
+
+
+def test_check_helper_marks_traced_nontrivial_failure_probe_as_diagnostic_only(
+    monkeypatch, tmp_path
+):
+    """Charge a traced mismatch wrapper even when its proposition is substantive."""
+    project, target = _write_project(
+        tmp_path,
+        "import Mathlib\n\ntheorem demo : True := by\n  sorry\n",
+    )
+
+    class _FakeProbe:
+        def check_target(self, *args, **kwargs):
+            return {
+                "success": True,
+                "ok": False,
+                "has_errors": True,
+                "has_sorry": False,
+                "target": kwargs["theorem_id"],
+                "messages": [
+                    {
+                        "severity": "error",
+                        "message": "Type mismatch: h has type True but is expected to have type False",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(li, "_probe", lambda: _FakeProbe())
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="check_helper",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        replacement=(
+            "private lemma result_hstep_probe (h : True) : False := by\n"
+            "  have hrev := h\n"
+            "  trace_state\n"
+            "  fail_if_success done\n"
+            "  exact h\n"
+        ),
+    )
+
+    assert payload["success"] is True
+    assert payload["ok"] is False
+    assert payload["diagnostic_only"] is True
+    assert payload["proof_progress"] is False
+    assert payload["error_code"] == "inspection_only_helper_candidate"
+
+
+def test_constructive_traced_helper_is_not_inspection_only():
+    """Keep traced helpers constructive without the deliberate failure-probe shape."""
+    replacement = (
+        "private lemma result_hstep_probe (h : True) : True := by\n" "  trace_state\n" "  exact h\n"
+    )
+
+    assert li._is_lean_inspection_only_helper_candidate(replacement) is False
+
+
+def test_bound_declaration_head_probe_is_inspection_only():
+    """Recognize bare declaration-head mismatches under a substantive wrapper."""
+    replacement = (
+        "private lemma result_hstep_type_probe (h : True) : False := by\n"
+        "  have z := @Strategy.Winning (V := V) (P := P)\n"
+        "  exact z\n"
+    )
+
+    assert li._is_lean_inspection_only_helper_candidate(replacement) is True
+
+
+def test_assigned_target_bound_declaration_head_probe_is_inspection_only():
+    """Do not count a whole-target declaration-signature probe as a proof attempt."""
+    replacement = (
+        "theorem result (h : True) : False := by\n"
+        "  have inspected := @existing_bridge\n"
+        "  exact inspected\n"
+    )
+
+    assert li._is_lean_inspection_only_target_candidate(replacement) is True
+
+
+def test_assigned_target_constructive_binding_is_not_inspection_only():
+    """Keep an applied local theorem binding eligible as a real target proof."""
+    replacement = (
+        "theorem result (h : True) : True := by\n"
+        "  have resolved := existing_bridge h\n"
+        "  exact resolved\n"
+    )
+
+    assert li._is_lean_inspection_only_target_candidate(replacement) is False
+
+
+def test_trivial_binding_probe_is_inspection_only_without_probe_name():
+    """Recognize semantic signature wrappers even when their name says ``try``."""
+    replacement = (
+        "private lemma try_branch_signature (h : True) : True := by\n"
+        "  have dependency := h\n"
+        "  trivial\n"
+    )
+
+    assert li._is_lean_inspection_only_helper_candidate(replacement) is True
+
+
+def test_nontrivial_true_helper_is_not_inspection_only_without_probe_name():
+    """Keep a helper constructive when its body actually uses its hypothesis."""
+    replacement = "private lemma preserve_true (h : True) : True := by\n  exact h\n"
+
+    assert li._is_lean_inspection_only_helper_candidate(replacement) is False
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "WinsNow t theta ↔ WinsNow t theta",
+        "f x = f x",
+    ],
+)
+def test_reflexive_helper_is_nonadvancing_regardless_of_name(statement):
+    """Keep reflexive facts out of mandatory helper production."""
+    replacement = (
+        "private lemma mathematically_named (t theta f x : Nat) : " f"{statement} := by\n  rfl"
+    )
+
+    assert li._is_lean_inspection_only_helper_candidate(replacement) is True
 
 
 def test_check_helper_rejects_broad_print_prefix_before_lean(monkeypatch, tmp_path):

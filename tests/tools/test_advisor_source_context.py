@@ -71,3 +71,31 @@ theorem result (n : Nat) : 0 < finalValue n := by
         )
         == ()
     )
+
+
+def test_advisor_allows_evidence_based_revision_of_provisional_determine_answer(tmp_path):
+    target = tmp_path / "Main.lean"
+    target.write_text(
+        """\
+/-- The answer to be determined. -/
+def answer : Set Nat := Set.univ
+theorem result : {n : Nat | P n} = answer := by
+  sorry
+""",
+        encoding="utf-8",
+    )
+    context = load_advisor_source_context(
+        theorem_id="result",
+        file_path=str(target),
+        evidence="Determine whether answer should be revised.",
+    )
+
+    assert context.provisional_names == ("answer",)
+    assert "current bodies are conjectures" in context.render()
+    assert (
+        advisor_source_conflicts(
+            "The definition of `answer` should instead be the singleton {2}.",
+            context,
+        )
+        == ()
+    )

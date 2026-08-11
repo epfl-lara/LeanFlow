@@ -139,6 +139,26 @@ def test_timeout_is_clipped_to_transient_provider_recovery_deadline(agent, monke
     assert agent._provider_request_timeout_seconds({"timeout": 1200.0}) == 8.0
 
 
+def test_request_client_uses_effective_managed_timeout(agent):
+    """Keep the request transport timeout aligned with managed heartbeats."""
+    agent.client = object()
+    agent._client_kwargs = {
+        "api_key": "test-key-1234567890",
+        "base_url": "https://example.test/v1",
+    }
+    request_client = object()
+    with (
+        patch.object(agent, "_is_openai_client_closed", return_value=False),
+        patch.object(agent, "_provider_request_timeout_seconds", return_value=1200.0) as timeout,
+        patch.object(agent, "_create_openai_client", return_value=request_client) as create,
+    ):
+        result = agent._create_request_openai_client(reason="test_request")
+
+    assert result is request_client
+    timeout.assert_called_once_with({})
+    assert create.call_args.args[0]["timeout"] == 1200.0
+
+
 def test_transient_provider_retry_policy_is_exactly_three_managed_retries():
     """Expose the 5/15/45 contract independently of real sleeping."""
     assert TRANSIENT_PROVIDER_RETRY_DELAYS_S == (5.0, 15.0, 45.0)

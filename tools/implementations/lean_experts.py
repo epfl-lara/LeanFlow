@@ -205,6 +205,7 @@ def _reasoning_source_payload(
         "status": context.status,
         "source_sha256": context.source_sha256,
         "referenced_names": list(context.referenced_names),
+        "provisional_names": list(context.provisional_names),
         "caller_statement_overridden": bool(
             source_statement
             and caller
@@ -1458,6 +1459,7 @@ def lean_decompose_helpers_tool(
             ),
             "referenced_source_status": advisor_context.status,
             "referenced_source_names": list(advisor_context.referenced_names),
+            "provisional_source_names": list(advisor_context.provisional_names),
             "referenced_source_sha256": advisor_context.source_sha256,
         }
     )

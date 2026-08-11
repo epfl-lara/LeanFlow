@@ -2421,6 +2421,50 @@ class TestRunDecomposer:
         assert provenance["parent"] == "demo"
         assert [helper["name"] for helper in provenance["helpers"]] == ["abs_step"]
 
+    def test_managed_placement_preserves_helper_dependency_order(
+        self, monkeypatch, tmp_path, plan_enabled
+    ):
+        active = _file(tmp_path)
+        _ok_check(monkeypatch)
+        first = "private lemma abs_nonneg_step (a : ℝ) : 0 ≤ |a| := by sorry"
+        second = "private lemma abs_self_step (a : ℝ) : |a| = |a| := by sorry"
+        _backend(
+            monkeypatch,
+            helpers=[
+                {
+                    "name": "abs_nonneg_step",
+                    "lean_skeleton": first,
+                    "dependencies": [],
+                    "ready_to_insert": True,
+                    "validation_order": 1,
+                },
+                {
+                    "name": "abs_self_step",
+                    "lean_skeleton": second,
+                    "dependencies": ["abs_nonneg_step"],
+                    "ready_to_insert": True,
+                    "validation_order": 2,
+                },
+            ],
+        )
+
+        outcome = run_decomposer(
+            target_symbol="demo",
+            active_file=str(active),
+            statement=PARENT,
+            cwd=str(tmp_path),
+        )
+
+        assert outcome.ok
+        first_id = plan_state.node_id_for("abs_nonneg_step", str(active))
+        second_id = plan_state.node_id_for("abs_self_step", str(active))
+        blueprint = plan_state.load_blueprint()
+        assert plan_state.GraphEdge(second_id, first_id, "depends_on") in blueprint.edges
+        assert [node.name for node in blueprint.frontier()] == ["abs_nonneg_step"]
+        provenance = plan_state.load_summary()["decomposition_provenance"][-1]
+        by_name = {helper["name"]: helper for helper in provenance["helpers"]}
+        assert by_name["abs_self_step"]["dependencies"] == ["abs_nonneg_step"]
+
     def test_backfill_links_only_explicit_known_helpers(self, tmp_path, plan_enabled):
         active = _file(
             tmp_path,

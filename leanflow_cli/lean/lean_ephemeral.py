@@ -15,6 +15,7 @@ from core.project_resource_admission import (
     ProjectLeanAdmissionRetained,
     project_lean_heavy_admission,
 )
+from leanflow_cli.lean.lean_diagnostics import diagnostic_items
 
 _OUTPUT_LIMIT_BYTES = 1024 * 1024
 _OUTPUT_EDGE_BYTES = 448 * 1024
@@ -102,6 +103,20 @@ def _retryable_project_failure(output: str) -> bool:
     """Return whether diagnostics show an unavailable project import environment."""
     normalized = str(output or "").lower()
     return any(pattern in normalized for pattern in _RETRYABLE_PROJECT_OUTPUT)
+
+
+def _concise_failure_error(output: str) -> str:
+    """Return the first Lean error instead of an earlier warning prefix."""
+    for item in diagnostic_items(output):
+        if str(item.get("severity", "") or "").strip().lower() != "error":
+            continue
+        message = str(item.get("message", "") or "").strip()
+        line = item.get("line")
+        if message and isinstance(line, int):
+            return f"Lean error at line {line}: {message}"[:2000]
+        if message:
+            return message[:2000]
+    return str(output or "").strip()[:500]
 
 
 def _reclaim_incremental_before_exact_check(admission: ProjectLeanAdmission) -> bool:
@@ -246,7 +261,7 @@ def lean_ephemeral_source_check(
             ),
             "returncode": returncode,
             "command": command,
-            "error": "" if returncode == 0 else output[:500],
+            "error": "" if returncode == 0 else _concise_failure_error(output),
             "output": output,
             "output_truncated": truncated,
             "messages": [],

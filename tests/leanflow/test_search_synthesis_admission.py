@@ -23,6 +23,34 @@ def test_managed_plan_read_is_context_not_discovery():
     )
 
 
+def test_instrumented_target_check_counts_as_bounded_inspection():
+    """Route temporary target instrumentation through the discovery budget."""
+    args = {
+        "action": "check_target",
+        "replacement": "theorem demo : True := by\n  trace_state\n  trivial",
+    }
+
+    assert search_synthesis_admission.is_inspection_only_incremental_check(
+        "lean_incremental_check", args
+    )
+    assert (
+        search_synthesis_admission.discovery_tool_name("lean_incremental_check", args)
+        == search_synthesis_admission.LEAN_INCREMENTAL_INSPECTION_TOOL_NAME
+    )
+
+
+def test_clean_target_check_remains_a_construction_attempt():
+    args = {
+        "action": "check_target",
+        "replacement": "theorem demo : True := by\n  trivial",
+    }
+
+    assert not search_synthesis_admission.is_inspection_only_incremental_check(
+        "lean_incremental_check", args
+    )
+    assert search_synthesis_admission.discovery_tool_name("lean_incremental_check", args) is None
+
+
 def test_search_file_fingerprint_ignores_presentation_options():
     common = {"path": "/tmp/Main.lean", "pattern": "top_sum_bound"}
 
@@ -49,6 +77,20 @@ def test_lemma_suggest_fingerprint_ignores_search_breadth():
     )
 
     assert narrow == broad
+
+
+def test_lean_axioms_is_source_inspection_with_target_fingerprint():
+    """Count and distinguish axiom inspection in construction discovery."""
+    args = {"file_path": "/tmp/Main.lean", "target": "helper"}
+
+    assert search_synthesis_admission.discovery_tool_name("lean_axioms", args) == "lean_axioms"
+    fingerprint = search_synthesis_admission.source_inspection_fingerprint("lean_axioms", args)
+    assert fingerprint == search_synthesis_admission.source_inspection_fingerprint(
+        "lean_axioms", dict(args)
+    )
+    assert fingerprint != search_synthesis_admission.source_inspection_fingerprint(
+        "lean_axioms", {**args, "target": "other"}
+    )
 
 
 def test_duplicate_lemma_suggest_is_blocked_in_same_construction_cycle():
@@ -271,6 +313,34 @@ def test_construction_attempt_classifier_excludes_inspection_and_exact_replay():
                 "  have h := guessed_identifier\n"
                 "  trivial"
             ),
+        },
+    )
+    assert not search_synthesis_admission.construction_attempt_request(
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": (
+                "private lemma probe_existing_type {P : Type*} : True := by\n"
+                "  exact existing_declaration (P := P)"
+            ),
+        },
+    )
+    assert not search_synthesis_admission.construction_attempt_request(
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": (
+                "private lemma lookup_predicate_type {P : Type*} "
+                "(s : Strategy P) (theta : Real) : True := by\n"
+                "  exact s.Winning theta"
+            ),
+        },
+    )
+    assert search_synthesis_admission.construction_attempt_request(
+        "lean_incremental_check",
+        {
+            "action": "check_helper",
+            "replacement": "private lemma useful : True := by\n  exact True.intro",
         },
     )
     assert search_synthesis_admission.construction_attempt_request(

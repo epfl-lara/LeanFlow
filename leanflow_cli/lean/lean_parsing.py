@@ -16,6 +16,7 @@ __all__ = [
     "_contains_lean_suggestion_tactic",
     "_lean_suggestion_tactic_markers",
     "_is_lean_inspection_only_helper_candidate",
+    "_is_lean_inspection_only_target_candidate",
     "_strip_lean_comments_and_strings",
     "_text_has_theorem_or_lemma",
     "_text_has_sorry",
@@ -52,10 +53,12 @@ _TYPE_ASSIGNMENT_KEYWORDS = ("let", "have")
 _SUGGESTION_TACTIC_RE = re.compile(
     r"(?m)(?:^[ \t]*set_option\b[^\n]*\bin[ \t]+)?"
     r"(?<![A-Za-z0-9_'])"
-    r"(?P<tactic>exact|apply|simp|rw|aesop|grind)\?"
+    r"(?P<tactic>(?:exact|apply|simp|rw|aesop|grind|linarith|omega|norm_num|ring)\?"
+    r"|library_search)"
     r"(?=\s|$|[\)\]\},;|])"
 )
 _LEAN_INSPECTION_COMMAND_RE = re.compile(r"(?m)^\s*(?:#(?:check|print|eval|reduce)\b|run_cmd\b)")
+_STANDALONE_TRACE_STATE_RE = re.compile(r"(?m)^\s*trace_state\s*$")
 _HELPER_DECLARATION_START_RE = re.compile(
     r"(?m)^\s*(?:private\s+)?(?:theorem|lemma|example|def|abbrev)\s+"
     r"(?P<name>[A-Za-z_][A-Za-z0-9_']*)(?P<header>[^\n]*)"
@@ -74,10 +77,77 @@ _TRIVIAL_BINDING_PROBE_RE = re.compile(
     r":\s*True\s*:=\s*by\s+(?:have|let)\b.+?(?:\n|;)\s*" r"(?:trivial|exact\s+True\.intro)\s*$",
     flags=re.DOTALL,
 )
+_TRUE_TERM_TYPE_PROBE_RE = re.compile(
+    r":\s*True\s*:=\s*by\s+"
+    r"(?:exact\s+|simpa(?:\s+only)?(?:\s*\[[^\]]*\])?\s+using\s+)"
+    r"\S.+\s*$",
+    flags=re.DOTALL,
+)
 _TRIVIAL_TRUE_PROBE_RE = re.compile(
     r":\s*True\s*:=\s*by\b.+?(?:trivial|exact\s+True\.intro)\s*$",
     flags=re.DOTALL,
 )
+_TRACED_FAILURE_PROBE_RE = re.compile(
+    rf":=\s*by\b(?=[\s\S]*?^\s*trace_state\s*(?:--.*)?$)"
+    rf"(?=[\s\S]*?^\s*(?:all_goals\s+)?fail_if_success\s+done\s*(?:--.*)?$)"
+    rf"[\s\S]*?^\s*(?:exact\s+|simpa\s+using\s+){_BARE_IDENTIFIER_PATTERN}\s*$",
+    flags=re.MULTILINE,
+)
+_BOUND_DECLARATION_TYPE_PROBE_RE = re.compile(
+    rf"^\s*have\s+(?P<bound>[A-Za-z_][A-Za-z0-9_']*)\s*:=\s*@{_BARE_IDENTIFIER_PATTERN}"
+    rf"(?:\s+\([^\n]*\))*\s*$[\s\S]*?^\s*exact\s+(?P=bound)\s*$",
+    flags=re.MULTILINE,
+)
+
+
+def _top_level_relation_sides(expression: str) -> tuple[str, str] | None:
+    """Return the two sides of one top-level equality or equivalence."""
+    opening_to_closing = {"(": ")", "[": "]", "{": "}", "⦃": "⦄", "⟨": "⟩"}
+    closing = {value: key for key, value in opening_to_closing.items()}
+    stack: list[str] = []
+    for index, char in enumerate(expression):
+        if char in opening_to_closing:
+            stack.append(char)
+            continue
+        if char in closing:
+            if stack and stack[-1] == closing[char]:
+                stack.pop()
+            continue
+        if stack:
+            continue
+        if char == "↔":
+            return expression[:index], expression[index + 1 :]
+        if char == "=" and not (index > 0 and expression[index - 1] in {":", "!", "<", ">"}):
+            return expression[:index], expression[index + 1 :]
+    return None
+
+
+def _reflexive_helper_statement(source: str) -> bool:
+    """Return whether a declaration merely states ``P ↔ P`` or ``x = x``."""
+    sanitized = _strip_lean_comments_and_strings(source)
+    proof = re.search(r":=\s*by\b", sanitized)
+    if proof is None:
+        return False
+    header = sanitized[: proof.start()]
+    stack: list[str] = []
+    last_conclusion_colon = -1
+    opening_to_closing = {"(": ")", "[": "]", "{": "}", "⦃": "⦄", "⟨": "⟩"}
+    closing = {value: key for key, value in opening_to_closing.items()}
+    for index, char in enumerate(header):
+        if char in opening_to_closing:
+            stack.append(char)
+        elif char in closing:
+            if stack and stack[-1] == closing[char]:
+                stack.pop()
+        elif char == ":" and not stack:
+            last_conclusion_colon = index
+    if last_conclusion_colon < 0:
+        return False
+    sides = _top_level_relation_sides(header[last_conclusion_colon + 1 :])
+    if sides is None:
+        return False
+    left, right = (" ".join(side.strip().split()) for side in sides)
+    return bool(left and left == right)
 
 
 def _is_lean_inspection_only_helper_candidate(source: str) -> bool:
@@ -93,22 +163,62 @@ def _is_lean_inspection_only_helper_candidate(source: str) -> bool:
         return False
     for index, declaration in enumerate(declarations):
         name = str(declaration.group("name") or "")
-        if not _INSPECTION_DECLARATION_NAME_RE.search(name):
-            return False
         end = declarations[index + 1].start() if index + 1 < len(declarations) else len(replacement)
         declaration_source = replacement[declaration.start() : end].strip()
+        # Reflexive facts elaborate but cannot discharge a distinct open
+        # dependency. Treat them as non-advancing evidence regardless of the
+        # model-authored name so they never reserve production integration.
+        if _reflexive_helper_statement(declaration_source):
+            continue
+        # A helper that binds a declaration only to finish the proposition
+        # ``True`` with ``trivial`` cannot provide reusable proof progress.
+        # Classify this semantic shape before consulting naming conventions;
+        # models otherwise evade the discovery budget by replacing ``probe``
+        # with names such as ``try`` or ``candidate``.
+        if _TRIVIAL_BINDING_PROBE_RE.search(declaration_source):
+            continue
+        if not _INSPECTION_DECLARATION_NAME_RE.search(name):
+            return False
         if not (
             _FALSE_IDENTIFIER_PROBE_RE.search(declaration_source)
-            or _TRIVIAL_BINDING_PROBE_RE.search(declaration_source)
+            # A common type-inspection idiom deliberately asks Lean to use an
+            # existing declaration as a proof of ``True``.  The resulting type
+            # mismatch is useful discovery evidence, never a reusable helper.
+            or _TRUE_TERM_TYPE_PROBE_RE.search(declaration_source)
             # Inspection-named declarations with a deliberately trivial
             # conclusion are diagnostic wrappers even when setup begins with
             # ``letI``/``haveI`` or contains several nested local facts.  The
             # useful inner fact must be checked as its own proposition before
             # LeanFlow treats it as durable proof progress.
             or _TRIVIAL_TRUE_PROBE_RE.search(declaration_source)
+            # Inspection-named helpers sometimes wrap a substantive target
+            # solely to expose a local context or dependency type.  The
+            # deliberate ``fail_if_success done`` plus terminal bare-term
+            # mismatch makes this diagnostic regardless of the proposition.
+            or _TRACED_FAILURE_PROBE_RE.search(declaration_source)
+            # Another signature-discovery idiom binds an unapplied declaration
+            # head and deliberately submits that function/type as the proof.
+            # It is diagnostic when the helper is explicitly inspection-named,
+            # even if the wrapper proposition itself is nontrivial.
+            or _BOUND_DECLARATION_TYPE_PROBE_RE.search(declaration_source)
         ):
             return False
     return True
+
+
+def _is_lean_inspection_only_target_candidate(source: str) -> bool:
+    """Return whether assigned-target source contains temporary inspection commands.
+
+    LeanFlow may run an instrumented replacement to expose proof state, but it
+    must not count as a production proof attempt or pass the target gate until
+    the model resubmits a clean declaration.
+    """
+    sanitized = _strip_lean_comments_and_strings(str(source or ""))
+    return bool(
+        _LEAN_INSPECTION_COMMAND_RE.search(sanitized)
+        or _STANDALONE_TRACE_STATE_RE.search(sanitized)
+        or _BOUND_DECLARATION_TYPE_PROBE_RE.search(sanitized)
+    )
 
 
 def _next_significant_character(text: str, start: int) -> tuple[int, str] | None:

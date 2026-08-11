@@ -1,9 +1,9 @@
-"""Reject redundant exact-target checks of unchanged placeholder source."""
+"""Keep assigned target checks on canonical source and skip known placeholders."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,6 +55,84 @@ def _canonical_file(value: str, project_root: str) -> str:
         return str(path.resolve())
     except OSError:
         return str(path)
+
+
+def normalize_assigned_target_check(
+    function_name: str,
+    arguments: MutableMapping[str, Any] | None,
+    assignment: Mapping[str, Any] | None,
+    *,
+    project_root: str,
+) -> tuple[str, str] | None:
+    """Route an assigned target check to its canonical queue-owned file.
+
+    A model-authored path is not authoritative once the manager has selected a
+    target. Rewrite only exact ``check_target`` calls for that same target; an
+    explicit request for another declaration remains untouched.
+    """
+    if str(function_name or "").strip() != "lean_incremental_check" or arguments is None:
+        return None
+    action = str(arguments.get("action", "") or "check_target").strip().casefold().replace("-", "_")
+    if action != "check_target":
+        return None
+    current = dict(assignment or {})
+    target_symbol = str(current.get("target_symbol", "") or "").strip()
+    active_file = _canonical_file(str(current.get("active_file", "") or ""), project_root)
+    requested_target = str(
+        arguments.get("theorem_id", "") or arguments.get("target_symbol", "") or ""
+    ).strip()
+    if (
+        not target_symbol
+        or not active_file
+        or not Path(active_file).is_file()
+        or (requested_target and requested_target != target_symbol)
+    ):
+        return None
+    requested_file = str(
+        arguments.get("file_path", "") or arguments.get("active_file", "") or ""
+    ).strip()
+    canonical_requested = _canonical_file(requested_file, project_root)
+    if canonical_requested == active_file and requested_target == target_symbol:
+        return None
+    arguments["file_path"] = active_file
+    arguments["theorem_id"] = target_symbol
+    return canonical_requested, active_file
+
+
+def normalize_assigned_declaration_context(
+    function_name: str,
+    arguments: MutableMapping[str, Any] | None,
+    assignment: Mapping[str, Any] | None,
+    *,
+    project_root: str,
+) -> tuple[str, str, str] | None:
+    """Recover a declaration name misplaced in a proof-context file field.
+
+    Repair only an unambiguous local typo: the requested path must not exist,
+    no theorem id may be present, and the path basename must exactly name a
+    declaration in the queue-owned source file.
+    """
+    if str(function_name or "").strip() != "lean_proof_context" or arguments is None:
+        return None
+    if str(arguments.get("theorem_id", "") or "").strip():
+        return None
+    current = dict(assignment or {})
+    active_file = _canonical_file(str(current.get("active_file", "") or ""), project_root)
+    requested_file = str(arguments.get("file_path", "") or "").strip()
+    canonical_requested = _canonical_file(requested_file, project_root)
+    if not active_file or not Path(active_file).is_file() or not canonical_requested:
+        return None
+    requested_path = Path(canonical_requested)
+    if requested_path.exists():
+        return None
+    candidate = requested_path.name
+    if candidate.endswith(".lean"):
+        candidate = candidate[: -len(".lean")]
+    if not candidate or _find_declaration_entry(active_file, candidate) is None:
+        return None
+    arguments["file_path"] = active_file
+    arguments["theorem_id"] = candidate
+    return canonical_requested, active_file, candidate
 
 
 def block_unchanged_target_check(

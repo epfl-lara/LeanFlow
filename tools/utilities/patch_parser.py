@@ -580,6 +580,43 @@ def _apply_hunk(
     if region is not None:
         r_start, r_end = region
         window = content[r_start:r_end]
+        window_exact_hits = _strategy_exact(window, search_pattern)
+        if len(window_exact_hits) == 1:
+            start, end = window_exact_hits[0]
+            new_window = window[:start] + replacement + window[end:]
+            return (
+                content[:r_start] + new_window + content[r_end:],
+                None,
+                "exact",
+                1.0,
+            )
+
+        # An implicit declaration anchor can be a trailing context line when the
+        # edit inserts immediately before that declaration. Its region begins too
+        # late to contain the preceding context, so accept only a unique exact
+        # whole-file match before attempting anchored fuzzy recovery. Explicit
+        # ``@@ hint @@`` anchors remain authoritative and never escape their region.
+        if not hunk.context_hint and not window_exact_hits:
+            whole_file_exact_hits = _strategy_exact(content, search_pattern)
+            if len(whole_file_exact_hits) == 1:
+                start, end = whole_file_exact_hits[0]
+                return (
+                    content[:start] + replacement + content[end:],
+                    None,
+                    "exact",
+                    1.0,
+                )
+            if len(whole_file_exact_hits) > 1:
+                return (
+                    None,
+                    (
+                        f"Found {len(whole_file_exact_hits)} exact matches for the hunk; "
+                        "add an explicit @@ anchor @@ or more context lines to make it unique."
+                    ),
+                    None,
+                    None,
+                )
+
         wm = fuzzy_find_and_replace_ex(window, search_pattern, replacement, config=config)
         if wm.count > 0 and wm.error is None:
             new_content = content[:r_start] + wm.content + content[r_end:]

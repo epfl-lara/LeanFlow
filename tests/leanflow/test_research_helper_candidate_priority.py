@@ -18,7 +18,7 @@ from leanflow_cli.workflows.workflow_json_io import WorkflowStateCorruptionError
 
 
 def _finding(active_file: str, *, job_id: str = "campaign.orchestrator.em-1"):
-    declaration = "private lemma checked_helper (n : Nat) : n = n := by\n  rfl"
+    declaration = "private lemma checked_helper (n : Nat) : n + 0 = n := by\n  simp"
     return {
         "job_id": job_id,
         "target_symbol": "demo",
@@ -107,7 +107,7 @@ def test_foreground_helper_check_is_durable_before_parent_recheck(monkeypatch, t
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
     monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
     monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "state"))
-    declaration = "private lemma checked_helper (n : Nat) : n = n := by\n  rfl"
+    declaration = "private lemma checked_helper (n : Nat) : n + 0 = n := by\n  simp"
     arguments, result = _foreground_helper_check(str(active), declaration=declaration)
 
     record = priority.remember_from_foreground_check(
@@ -148,7 +148,7 @@ def test_foreground_helper_preempts_stale_candidate_without_losing_it(monkeypatc
     )
     assert older is not None
 
-    newer_declaration = "private lemma newer_helper (n : Nat) : n = n := by\n  rfl"
+    newer_declaration = "private lemma newer_helper (n : Nat) : n + 0 = n := by\n  simp"
     newer_arguments, newer_result = _foreground_helper_check(
         str(active), declaration=newer_declaration, name="newer_helper"
     )
@@ -206,9 +206,9 @@ def test_foreground_scratch_helper_promotes_only_by_exact_name_change(monkeypatc
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
     monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
     monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "state"))
-    scratch = "private lemma test_self_eq (n : Nat) : n = n := by\n  rfl"
+    scratch = "private lemma test_add_zero (n : Nat) : n + 0 = n := by\n  simp"
     arguments, result = _foreground_helper_check(
-        str(active), declaration=scratch, name="test_self_eq"
+        str(active), declaration=scratch, name="test_add_zero"
     )
     state = {}
 
@@ -226,7 +226,7 @@ def test_foreground_scratch_helper_promotes_only_by_exact_name_change(monkeypatc
     assert priority.load(state) == pending
     restarted_state = {priority._HYDRATION_KEY: "prior-process"}
     assert priority.load(restarted_state) == pending
-    production = scratch.replace("test_self_eq", "nat_self_eq")
+    production = scratch.replace("test_add_zero", "nat_add_zero")
     assert priority.is_exact_production_rename(
         pending,
         {
@@ -242,12 +242,11 @@ def test_foreground_scratch_helper_promotes_only_by_exact_name_change(monkeypatc
             "action": "check_helper",
             "file_path": str(active),
             "theorem_id": "demo",
-            "replacement": production.replace("rfl", "simp"),
+            "replacement": production.replace("simp", "omega"),
         },
     )
-
     promoted_arguments, promoted_result = _foreground_helper_check(
-        str(active), declaration=production, name="nat_self_eq"
+        str(active), declaration=production, name="nat_add_zero"
     )
     promoted = priority.remember_from_foreground_check(
         restarted_state,
@@ -260,10 +259,74 @@ def test_foreground_scratch_helper_promotes_only_by_exact_name_change(monkeypatc
 
     assert promoted is not None
     assert promoted.state == priority.AWAITING_RECHECK
-    assert promoted.helper_name == "nat_self_eq"
+    assert promoted.helper_name == "nat_add_zero"
     assert promoted.declaration == production
     assert priority.load(restarted_state) == promoted
     assert priority.load({priority._HYDRATION_KEY: "next-process"}) == promoted
+
+
+def test_direct_forwarding_scratch_helper_never_reserves_production_rename(monkeypatch, tmp_path):
+    """Treat a one-line alias of an existing theorem as inspection, not progress."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    declaration = (
+        "private lemma test_call {n : Nat} (hn : n = n) : n = n := by\n" "  exact Eq.refl n"
+    )
+    arguments, result = _foreground_helper_check(
+        str(active), declaration=declaration, name="test_call"
+    )
+    state: dict = {}
+
+    assert (
+        priority.successful_nonproduction_foreground_helper_name(
+            arguments,
+            result,
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        == ""
+    )
+    assert (
+        priority.remember_nonproduction_from_foreground_check(
+            state,
+            arguments,
+            result,
+            campaign_id="campaign",
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        is None
+    )
+    assert priority.load(state) is None
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "private lemma winsNow_refl (p : Prop) : p ↔ p := by\n  rfl",
+        "private lemma value_refl (n : Nat) : n = n := by\n  rfl",
+    ],
+)
+def test_reflexive_foreground_helper_never_reserves_integration(monkeypatch, tmp_path, declaration):
+    """Treat a checked tautology as evidence, not mandatory source growth."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    name = "winsNow_refl" if "winsNow" in declaration else "value_refl"
+    arguments, result = _foreground_helper_check(str(active), declaration=declaration, name=name)
+
+    assert (
+        priority.remember_from_foreground_check(
+            {},
+            arguments,
+            result,
+            campaign_id="campaign",
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -523,7 +586,7 @@ def test_stale_parametric_partial_helper_remains_actionable(monkeypatch, tmp_pat
     finding = _finding(str(active), job_id="campaign.orchestrator.ds-parametric")
     finding.pop("semantic_novelty")
     finding["deliverable"]["status"] = "partial_general_reduction_checked"
-    declaration = "private lemma checked_helper (n : Nat) (h : 0 < n) : n = n := by\n" "  rfl"
+    declaration = "private lemma checked_helper (n : Nat) (h : 0 < n) : n + 0 = n := by\n" "  simp"
     helper = finding["deliverable"]["checked_helpers"][0]
     helper["declaration"] = declaration
     helper["declaration_sha256"] = hashlib.sha256(declaration.encode()).hexdigest()
@@ -632,10 +695,7 @@ def test_refreshed_proved_eventual_graph_node_cannot_suppress_useful_helper(monk
             ),
         )
     )
-    stale = (
-        "private lemma demo_odd_case (n : Nat) (h : n % 2 = 1) : n = n := by\n"
-        "  exact demo_base n n h"
-    )
+    stale = "private lemma demo_odd_case (n : Nat) (h : n % 2 = 1) : n + 0 = n := by\n" "  simp"
     delta = (
         "private lemma demo_parametric_delta (a n : Nat) (h : a ≤ n) : a ≤ n := by\n" "  exact h"
     )
@@ -727,7 +787,7 @@ def test_same_name_source_declaration_is_detected_before_insertion(monkeypatch, 
     active.write_text(target + "\n", encoding="utf-8")
     monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
     file = str(active)
-    collision = "theorem checked_helper (n : Nat) : n = n := by\n  exact n"
+    collision = "theorem checked_helper (n : Nat) : n + 0 = n := by\n  simp"
     finding = _finding(file, job_id="campaign.orchestrator.ds-name-collision")
     finding["deliverable"]["checked_helpers"] = [
         _checked_helper(file, name="checked_helper", declaration=collision),
@@ -794,9 +854,7 @@ def test_preexisting_pending_eventual_candidate_is_not_retired_from_graph_status
     active.write_text("\n\n".join((base, eventual, target)) + "\n", encoding="utf-8")
     monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
     file = str(active)
-    candidate = (
-        "private lemma demo_case (n : Nat) (h : 0 < n) : n = n := by\n" "  exact demo_base n"
-    )
+    candidate = "private lemma demo_case (n : Nat) (h : 0 < n) : n + 0 = n := by\n" "  simp"
     finding = _finding(file, job_id="campaign.orchestrator.ds-resumed")
     finding["deliverable"]["checked_helpers"] = [
         _checked_helper(file, name="demo_case", declaration=candidate)

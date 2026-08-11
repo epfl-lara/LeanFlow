@@ -107,7 +107,7 @@ _COUNTEREXAMPLE_DELIVERABLE_KEYS = frozenset(
     }
 )
 _COUNTEREXAMPLE_NAME_RE = re.compile(
-    r"(?:^|[._'])(?:counterexample|countermodel|refutation|refutes?)(?:$|[._'])",
+    r"(?:^|[._'])(?:counterexample|countermodel|false|is_false|negation|refutation|refutes?)(?:$|[._'])",
     flags=re.IGNORECASE,
 )
 _EVIDENCE_SUPPORTED_NEGATE_REQUEST_RE = re.compile(

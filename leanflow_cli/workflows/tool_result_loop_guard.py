@@ -1,4 +1,4 @@
-"""Bound repeated non-progress Lean tool results within one theorem turn."""
+"""Bound repeated non-progress tool results within one theorem assignment."""
 
 from __future__ import annotations
 
@@ -11,11 +11,15 @@ from typing import Any
 
 STATE_KEY = "tool_result_loop_guard"
 ADVISOR_STATE_KEY = "advisor_failure_loop_guard"
+TERMINAL_STATE_KEY = "terminal_policy_denial_loop_guard"
+TARGET_STATE_KEY = "target_diagnostic_loop_guard"
 EXHAUSTED_STATE_KEY = "tool_result_loop_exhausted"
+SUGGESTION_STATE_KEY = "suggestion_probe_family"
 EXHAUSTED_RECORD_LIMIT = 16
 TRACKED_TOOLS = frozenset(
     {
         "lean_incremental_check:check_helper",
+        "lean_incremental_check:check_target",
         "lean_incremental_check:feedback",
         "lean_inspect",
         "lean_multi_attempt",
@@ -31,6 +35,7 @@ OUTLINE_HARD_LIMIT = 16
 ADVISOR_NUDGE_LIMIT = 2
 ADVISOR_HARD_LIMIT = 3
 _ADVISOR_TOOL_NAMES = frozenset({"lean_reasoning_help", "lean_decompose_helpers"})
+_SUGGESTION_TACTIC_RE = re.compile(r"^\s*(?:exact|apply|aesop|simp)\?\s*$")
 
 
 @dataclass(frozen=True)
@@ -65,7 +70,7 @@ def _single_line(value: Any, limit: int = 240) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def _first_diagnostic(payload: Mapping[str, Any]) -> str:
+def _first_diagnostic(payload: Mapping[str, Any], *, include_location: bool = True) -> str:
     items = payload.get("items")
     if isinstance(items, list):
         for item in items:
@@ -85,7 +90,7 @@ def _first_diagnostic(payload: Mapping[str, Any]) -> str:
                     continue
                 line = int(diagnostic.get("line", 0) or 0)
                 column = int(diagnostic.get("column", 0) or 0)
-                return f"{message}|{line}:{column}"
+                return f"{message}|{line}:{column}" if include_location else message
     messages = payload.get("messages")
     if isinstance(messages, list):
         for diagnostic in messages:
@@ -100,11 +105,11 @@ def _first_diagnostic(payload: Mapping[str, Any]) -> str:
             start = dict(diagnostic.get("file_start") or diagnostic.get("start") or {})
             line = int(start.get("line", 0) or 0)
             column = int(start.get("column", 0) or 0)
-            return f"{message}|{line}:{column}"
+            return f"{message}|{line}:{column}" if include_location else message
     return ""
 
 
-def result_signature(result_text: str) -> str:
+def result_signature(result_text: str, *, include_location: bool = True) -> str:
     """Return a stable blocker fingerprint while discarding candidate verbosity."""
     text = str(result_text or "")
     try:
@@ -112,7 +117,7 @@ def result_signature(result_text: str) -> str:
     except (TypeError, ValueError, json.JSONDecodeError):
         decoded = None
     if isinstance(decoded, Mapping):
-        diagnostic = _first_diagnostic(decoded)
+        diagnostic = _first_diagnostic(decoded, include_location=include_location)
         fallback = (
             decoded.get("error")
             or decoded.get("action_required")
@@ -159,8 +164,56 @@ def _multi_attempt_site_signature(args: Mapping[str, Any] | None) -> str:
     return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def _suggestion_tactics_from_payload(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return provisional suggestion tactics reported by one screening batch."""
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return ()
+    suggestions: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping) or item.get("verified") is True:
+            continue
+        snippet = str(item.get("snippet", "") or "").strip()
+        if _SUGGESTION_TACTIC_RE.fullmatch(snippet):
+            suggestions.append(snippet)
+    return tuple(dict.fromkeys(suggestions))
+
+
+def filter_repeated_suggestion_attempts(
+    state: Mapping[str, Any],
+    *,
+    args: Mapping[str, Any] | None,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Remove suggestion tactics after one provisional batch at the same proof site."""
+    payload = dict(args or {})
+    attempts = payload.get("attempts")
+    if not isinstance(attempts, list):
+        return (), ()
+    record = dict(state.get(SUGGESTION_STATE_KEY) or {})
+    same_site = bool(
+        str(record.get("target_symbol", "") or "") == target_symbol
+        and str(record.get("active_file", "") or "") == active_file
+        and str(record.get("source_revision_sha256", "") or "") == source_revision_sha256
+        and str(record.get("site_signature", "") or "") == _multi_attempt_site_signature(args)
+    )
+    if not same_site:
+        return (), tuple(str(item) for item in attempts)
+    removed = tuple(
+        str(item).strip() for item in attempts if _SUGGESTION_TACTIC_RE.fullmatch(str(item).strip())
+    )
+    retained = tuple(
+        str(item) for item in attempts if not _SUGGESTION_TACTIC_RE.fullmatch(str(item).strip())
+    )
+    if removed and isinstance(args, dict):
+        args["attempts"] = list(retained)
+    return removed, retained
+
+
 def _helper_candidate_statement_signature(args: Mapping[str, Any] | None) -> str:
-    """Return a proof-insensitive fingerprint for checked helper statements."""
+    """Return a proof- and declaration-name-insensitive helper fingerprint."""
     replacement = str(dict(args or {}).get("replacement", "") or "")
     declaration_starts = list(
         re.finditer(
@@ -179,6 +232,12 @@ def _helper_candidate_statement_signature(args: Mapping[str, Any] | None) -> str
         proof = re.search(r"\s*:=\s*by\b", block)
         statement = block[: proof.start()] if proof else block
         normalized = " ".join(statement.split())
+        normalized = re.sub(
+            r"^((?:private\s+)?(?:theorem|lemma|example|def|instance|class|structure)\s+)"
+            r"[A-Za-z_][A-Za-z0-9_']*",
+            r"\1<helper>",
+            normalized,
+        )
         if normalized:
             statements.append(normalized)
     material = "\n".join(statements) or " ".join(replacement.split())
@@ -422,7 +481,6 @@ def observe(
             return LoopDecision(tool_key=key)
     elif key == "terminal":
         if not isinstance(payload, Mapping) or not _terminal_policy_denied(payload):
-            state.pop(STATE_KEY, None)
             return LoopDecision(tool_key=key)
     elif isinstance(payload, Mapping) and _preflight_exhausted(payload):
         previous = dict(state.get(STATE_KEY) or {})
@@ -435,7 +493,12 @@ def observe(
             ),
         )
     elif isinstance(payload, Mapping) and _made_progress(payload):
-        state.pop(STATE_KEY, None)
+        state.pop(
+            TARGET_STATE_KEY if key == "lean_incremental_check:check_target" else STATE_KEY,
+            None,
+        )
+        if key == "lean_multi_attempt":
+            state.pop(SUGGESTION_STATE_KEY, None)
         _forget_exhausted_tool(
             state,
             target_symbol=target_symbol,
@@ -444,6 +507,17 @@ def observe(
             tool_key_value=key,
         )
         return LoopDecision(tool_key=key)
+
+    if key == "lean_multi_attempt" and isinstance(payload, Mapping):
+        suggestions = _suggestion_tactics_from_payload(payload)
+        if suggestions:
+            state[SUGGESTION_STATE_KEY] = {
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+                "source_revision_sha256": source_revision_sha256,
+                "site_signature": _multi_attempt_site_signature(args),
+                "suggestions": list(suggestions),
+            }
 
     # Varying candidate text and backend rejection shapes do not constitute
     # progress when the model keeps screening the same unchanged proof site.
@@ -466,6 +540,11 @@ def observe(
             if required_symbol
             else _helper_candidate_statement_signature(args)
         )
+    elif key == "lean_incremental_check:check_target":
+        # Candidate line numbers and the surrounding source revision can move
+        # when unrelated helpers are inserted. Keep the diagnostic family
+        # attached to the assigned theorem until its blocker actually changes.
+        signature = result_signature(result_text, include_location=False)
     elif key == "lean_outline":
         # Different symbols can still form one inspection cycle. Count the
         # whole unchanged-source sequence instead of waiting for an exact
@@ -473,12 +552,26 @@ def observe(
         signature = "unchanged-source-outline-budget"
     else:
         signature = result_signature(result_text)
-    tracker_state_key = ADVISOR_STATE_KEY if key == "lean_advisor" else STATE_KEY
+    tracker_state_key = (
+        ADVISOR_STATE_KEY
+        if key == "lean_advisor"
+        else (
+            TERMINAL_STATE_KEY
+            if key == "terminal"
+            else (TARGET_STATE_KEY if key == "lean_incremental_check:check_target" else STATE_KEY)
+        )
+    )
     previous = dict(state.get(tracker_state_key) or {})
+    # Clean-room policy is assignment-scoped. A checked helper insertion or
+    # another source-only proof edit cannot make a forbidden runtime command
+    # newly admissible, so do not reset this circuit on source revisions.
+    identity_source_revision = (
+        "" if key in {"terminal", "lean_incremental_check:check_target"} else source_revision_sha256
+    )
     identity = (
         target_symbol,
         active_file,
-        source_revision_sha256,
+        identity_source_revision,
         key,
         signature,
     )
@@ -493,7 +586,7 @@ def observe(
     tracker = {
         "target_symbol": target_symbol,
         "active_file": active_file,
-        "source_revision_sha256": source_revision_sha256,
+        "source_revision_sha256": identity_source_revision,
         "tool_key": key,
         "signature": signature,
         "streak": streak,
@@ -507,6 +600,12 @@ def observe(
     elif key == "lean_advisor":
         bounded_nudge = ADVISOR_NUDGE_LIMIT
         bounded_hard = ADVISOR_HARD_LIMIT
+    elif key == "terminal":
+        # Clean-room denials are deterministic and normalized across command
+        # spellings. Warn immediately, then end the provider turn on the first
+        # retry so another route starts without spending four more model calls.
+        bounded_nudge = 1
+        bounded_hard = 2
     else:
         bounded_nudge = max(2, int(nudge_limit))
         bounded_hard = max(bounded_nudge + 1, int(hard_limit))

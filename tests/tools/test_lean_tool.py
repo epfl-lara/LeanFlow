@@ -24,6 +24,7 @@ from leanflow_cli.workflows.workflow_state import (
     load_verified_patch_status,
     save_verified_patch_status,
 )
+from tools.utilities.read_freshness import check_freshness, record_read
 
 
 def test_lean_capabilities_tool_returns_structured_json(monkeypatch):
@@ -408,6 +409,55 @@ def test_lean_search_tool_preserves_provider_provenance(monkeypatch):
 
     assert payload["success"] is True
     assert payload["results"][0]["provider"] == "mcp-leanfinder"
+
+
+def test_lean_search_tool_filters_sibling_benchmark_matches(monkeypatch, tmp_path):
+    benchmark = tmp_path / "IMO2026"
+    benchmark.mkdir()
+    active = benchmark / "P6.lean"
+    sibling = benchmark / "P1.lean"
+    active.write_text("theorem active : True := by trivial\n", encoding="utf-8")
+    sibling.write_text("theorem hidden : True := by trivial\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_DISABLE_SOLUTION_RESEARCH", "1")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", str(active))
+    monkeypatch.setattr(
+        lean_tool,
+        "lean_search",
+        lambda *args, **kwargs: LeanSearchResult(
+            query="dvd_prod_of_mem",
+            mode="local",
+            attempted_providers=["project-rg"],
+            results=[
+                {
+                    "provider": "project-rg",
+                    "file": str(sibling),
+                    "line": 12,
+                    "preview": "exact hidden_solution",
+                },
+                {
+                    "provider": "project-rg",
+                    "file": str(active),
+                    "line": 4,
+                    "preview": "exact active_fact",
+                },
+            ],
+            degraded_reasons=[],
+        ),
+    )
+
+    payload = json.loads(lean_tool.lean_search_tool("dvd_prod_of_mem", cwd=str(tmp_path)))
+
+    assert payload["results"] == [
+        {
+            "provider": "project-rg",
+            "file": str(active),
+            "line": 4,
+            "preview": "exact active_fact",
+        }
+    ]
+    assert payload["clean_room_omitted_results"] == 1
+    assert "Sibling benchmark" in payload["clean_room_guidance"]
 
 
 def test_lean_search_tool_partitions_confirmed_future_same_file_results(monkeypatch, tmp_path):
@@ -819,6 +869,46 @@ def result : Nat := 0
     assert payload["success"] is False
     assert payload["status"] == "patch_failed"
     assert target.read_text(encoding="utf-8") == before
+
+
+def test_apply_verified_patch_refreshes_caller_file_freshness(tmp_path, monkeypatch):
+    """Treat a committed verified patch as the caller's current source image."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    target = tmp_path / "Demo.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    after = "theorem demo : True := by\n  trivial\n"
+    target.write_text(before, encoding="utf-8")
+    record_read("provider-turn", str(target), before)
+    monkeypatch.setattr(
+        lean_patch,
+        "lean_incremental_check",
+        lambda **_kwargs: {
+            "success": True,
+            "ok": True,
+            "has_errors": False,
+            "has_sorry": False,
+        },
+    )
+    patch = f"""\
+*** Begin Patch
+*** Update File: {target}
+ theorem demo : True := by
+-  sorry
++  trivial
+*** End Patch"""
+
+    payload = json.loads(
+        lean_tool.apply_verified_patch_tool(
+            str(target),
+            patch,
+            cwd=str(tmp_path),
+            theorem_id="demo",
+            task_id="provider-turn",
+        )
+    )
+
+    assert payload["success"] is True
+    assert check_freshness("provider-turn", str(target), after).status == "fresh"
 
 
 def test_apply_verified_patch_reuses_hash_bound_parent_helper_authority(tmp_path, monkeypatch):

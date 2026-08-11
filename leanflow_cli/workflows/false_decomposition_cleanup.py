@@ -94,6 +94,7 @@ _DEPENDENT_INVALIDATION_FIELDS = frozenset(
     {"node_id", "name", "file", "source_sha256", "declaration_sha256"}
 )
 _V3_DEPENDENT_INVALIDATION_FIELDS = frozenset({*_DEPENDENT_INVALIDATION_FIELDS, "source_kind"})
+_UNRESOLVED_DECOMPOSER_STATUSES = frozenset({"stated", "conjectured"})
 
 # Lean names may be qualified and may contain primes.  Matching a complete
 # lexical name after comments and strings are removed avoids treating a doc
@@ -1397,7 +1398,9 @@ def _dependent_invalidation_closure(
     """Return exact unresolved decomposer nodes made impossible by a false helper.
 
     The closure follows incoming ``depends_on`` edges. Only same-revision,
-    same-file conjectures with an unresolved source declaration are removable.
+    same-file pending obligations with an unresolved source declaration are removable.
+    This includes untouched ``stated`` stubs and queued ``conjectured`` stubs;
+    active, reviewed, and verified states remain outside cleanup authority.
     A legacy migration may additionally retire source-less planner artifacts
     that belong to the same parent. Verified, externally owned, or
     evidence-bearing dependents make cleanup pause instead of deleting source
@@ -1471,7 +1474,7 @@ def _dependent_invalidation_closure(
                 or len([node for node in blueprint.nodes if node.id == dependent.id]) != 1
                 or dependent.id != plan_state.node_id_for(dependent.name, helper.file)
                 or dependent.file != helper.file
-                or dependent.status != "conjectured"
+                or dependent.status not in _UNRESOLVED_DECOMPOSER_STATUSES
                 or not (source_owned or graph_only_owned)
                 or not unresolved_statement
                 or blueprint.edges.count(edge) != 1

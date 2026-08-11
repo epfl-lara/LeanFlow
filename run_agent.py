@@ -2109,6 +2109,11 @@ class AIAgent:
             return primary_client
         with self._openai_client_lock():
             request_kwargs = dict(self._client_kwargs)
+        # Codex Responses preflight intentionally strips transport-only request
+        # fields. Configure the worker-local client with the same effective
+        # deadline so the SDK's shorter default read timeout cannot contradict
+        # the timeout advertised by the managed provider heartbeat.
+        request_kwargs.setdefault("timeout", self._provider_request_timeout_seconds({}))
         return self._create_openai_client(request_kwargs, reason=reason, shared=False)
 
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:

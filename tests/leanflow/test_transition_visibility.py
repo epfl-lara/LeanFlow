@@ -129,3 +129,19 @@ def test_research_portfolio_progress_reports_changes_and_bounded_heartbeat():
         "🔬 Research portfolio for result: active 1, still working.",
         "🔬 Research portfolio for result: active 0, completed 1.",
     ]
+
+
+def test_research_portfolio_counts_live_planner_phase():
+    """Never report zero activity while planner-owned work is still live."""
+    state = {"_planner_phase_active": True}
+    messages = []
+
+    assert transition_visibility.report_research_portfolio_progress(
+        state,
+        {"active": 0, "active_jobs": [], "consumed": ["campaign.ds-001"]},
+        target_symbol="result",
+        now=10.0,
+        emit=messages.append,
+    )
+
+    assert messages == ["🔬 Research portfolio for result: active 1, completed 1, planner active."]

@@ -17,6 +17,7 @@ import pytest
 from core.process_identity import PROCESS_TOKEN_ENV, process_token_sha256
 from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import (
+    campaign_epoch,
     dispatch_ledger_compaction,
     dispatch_service,
     orchestrator,
@@ -6485,6 +6486,67 @@ def test_epoch_refresh_retires_open_workers_and_refills_distinct_routes(monkeypa
     }
     assert len(refreshed["launched"]) == 2
     assert refreshed_signatures.isdisjoint(first_signatures)
+
+
+def test_semantic_epoch_refresh_carries_current_epoch_worker_once(monkeypatch, tmp_path):
+    """Do not kill freshly launched research at a short semantic rollover."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_DISPATCH_ENABLED", "1")
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        research_portfolio,
+        "append_workflow_activity",
+        lambda event, _message, **details: events.append((event, details)),
+    )
+    campaign_id = "campaign-semantic-carry"
+    active_file = str(tmp_path / "Main.lean")
+    service = dispatch_service.DispatchService(root_job_id=campaign_id)
+    spec = research_portfolio._job_spec(
+        service,
+        archetype="deep_search",
+        generation=1,
+        target_symbol="hard_goal",
+        active_file=active_file,
+        attempt_count=3,
+        campaign_epoch_number=15,
+    )
+    service.propose(spec)
+    service._transition(spec.job_id, "deployed")
+    service._transition(
+        spec.job_id,
+        "running",
+        started_at=dispatch_service._now_iso(),
+    )
+
+    killed = research_portfolio.refresh_portfolio_for_epoch(
+        campaign_id=campaign_id,
+        target_symbol="hard_goal",
+        active_file=active_file,
+        previous_epoch=15,
+        new_epoch=16,
+        reason=campaign_epoch.SEMANTIC_PORTFOLIO_ROLLOVER_REASON,
+        refill=False,
+    )
+
+    assert killed == []
+    assert service._entry(spec.job_id).state == "running"
+    refresh_events = [
+        details for event, details in events if event == "research-portfolio-epoch-refresh"
+    ]
+    assert refresh_events[-1]["carried"] == [spec.job_id]
+
+    killed_next = research_portfolio.refresh_portfolio_for_epoch(
+        campaign_id=campaign_id,
+        target_symbol="hard_goal",
+        active_file=active_file,
+        previous_epoch=16,
+        new_epoch=17,
+        reason=campaign_epoch.SEMANTIC_PORTFOLIO_ROLLOVER_REASON,
+        refill=False,
+    )
+
+    assert killed_next == [spec.job_id]
+    assert service._entry(spec.job_id).state == "killed"
 
 
 def test_fresh_epoch_relaxes_only_older_semantic_cooldowns_to_refill_distinct_routes(

@@ -110,6 +110,38 @@ def test_actual_lean_elaboration_error_is_not_retryable(monkeypatch, tmp_path):
     assert result["failure_kind"] == "lean_elaboration"
 
 
+def test_exact_check_surfaces_error_after_earlier_warnings(monkeypatch, tmp_path):
+    """Put the first Lean error in the concise field even after noisy warnings."""
+    project = tmp_path / "project"
+    project.mkdir()
+
+    class Process:
+        returncode = 1
+        pid = 1234
+
+        def __init__(self, _command, **kwargs):
+            self.output = kwargs["stdout"]
+
+        def wait(self, timeout):
+            assert timeout == 120
+            self.output.write(
+                b"Probe.lean:1:1: warning: unused variable\n"
+                b"The binding can be removed.\n"
+                b"Probe.lean:20:7: error: application type mismatch\n"
+            )
+            self.output.flush()
+            return 1
+
+    monkeypatch.setattr(lean_ephemeral.subprocess, "Popen", Process)
+
+    result = lean_ephemeral.lean_ephemeral_source_check(
+        "theorem broken : False := by trivial\n", cwd=project
+    )
+
+    assert result["error"] == "Lean error at line 20: application type mismatch"
+    assert "warning" in result["output"]
+
+
 def test_timeout_is_retryable_and_reaps_process_group(monkeypatch, tmp_path):
     project = tmp_path / "project"
     project.mkdir()

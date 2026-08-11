@@ -258,6 +258,86 @@ def test_helper_priority_authorizes_exact_atomic_patch_without_target_replay(
     assert active.read_text(encoding="utf-8") == expected
 
 
+def test_exact_helper_patch_recovers_transiently_cleared_queue_assignment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Keep parent evidence when a step boundary temporarily clears queue identity."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    active, _before, _expected, declaration, state, ready = _ready_candidate(tmp_path)
+    state.pop("current_queue_assignment")
+
+    class Agent:
+        _managed_autonomy_state = state
+
+        @staticmethod
+        def is_interrupted() -> bool:
+            return False
+
+    arguments = {
+        "path": str(active),
+        "theorem_id": "demo",
+        "patch": (
+            "*** Begin Patch\n"
+            f"*** Update File: {active}\n"
+            "@@\n"
+            f"+{declaration.replace(chr(10), chr(10) + '+')}\n"
+            "+\n"
+            " theorem demo : True := by\n"
+            "*** End Patch\n"
+        ),
+    }
+
+    assert runner._managed_pre_tool_call(Agent(), "apply_verified_patch", arguments) is None
+    assert arguments.get("_leanflow_verified_edit_authority")
+    assert state["current_queue_assignment"]["target_symbol"] == "demo"
+    assert state["current_queue_assignment"]["active_file"] == str(active)
+    recovered = next(
+        kwargs for args, kwargs in events if args[1] == "research-helper-assignment-recovered"
+    )
+    assert recovered["candidate_id"] == ready.candidate_id
+    assert recovered["lean_started"] is False
+
+
+def test_helper_assignment_recovery_rejects_a_different_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Never infer queue identity from a patch aimed at another theorem."""
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    active, _before, _expected, declaration, state, _ready = _ready_candidate(tmp_path)
+    state.pop("current_queue_assignment")
+    arguments = {
+        "path": str(active),
+        "theorem_id": "other",
+        "patch": declaration,
+    }
+
+    recovered = runner._recover_ready_helper_assignment_for_exact_patch(
+        state,
+        "apply_verified_patch",
+        arguments,
+    )
+
+    assert recovered is None
+    assert "current_queue_assignment" not in state
+
+
 def test_helper_only_verified_patch_waits_for_authenticated_parent_recheck(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

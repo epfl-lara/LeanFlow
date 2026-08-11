@@ -7,7 +7,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from leanflow_cli.lean.lean_parsing import _is_lean_inspection_only_helper_candidate
+from leanflow_cli.lean.lean_parsing import (
+    _is_lean_inspection_only_helper_candidate,
+    _is_lean_inspection_only_target_candidate,
+)
 from tools.utilities.workflow_artifact_guard import is_managed_plan_path
 
 LEAN_INCREMENTAL_INSPECTION_TOOL_NAME = "lean_incremental_check:inspection"
@@ -20,6 +23,7 @@ SOURCE_INSPECTION_TOOL_NAMES = frozenset(
         "read_file",
         "search_files",
         "lean_capabilities",
+        "lean_axioms",
         "lean_inspect",
         "lean_lemma_suggest",
         "lean_outline",
@@ -228,7 +232,7 @@ def is_inspection_only_incremental_check(
     function_name: str,
     args: Mapping[str, Any] | None,
 ) -> bool:
-    """Return whether a helper check is only browsing the Lean environment.
+    """Return whether an incremental check is only browsing the Lean environment.
 
     Models sometimes wrap ``#check``, ``#print``, or ``run_cmd`` commands in a
     dummy ``True`` lemma so ``check_helper`` accepts the request. Such calls do
@@ -238,10 +242,13 @@ def is_inspection_only_incremental_check(
     if function_name != "lean_incremental_check":
         return False
     arguments = dict(args or {})
-    if str(arguments.get("action", "") or "").strip().lower() != "check_helper":
-        return False
+    action = str(arguments.get("action", "") or "").strip().lower()
     replacement = str(arguments.get("replacement", "") or "")
-    return bool(replacement and _is_lean_inspection_only_helper_candidate(replacement))
+    if action == "check_helper":
+        return bool(replacement and _is_lean_inspection_only_helper_candidate(replacement))
+    if action == "check_target":
+        return bool(replacement and _is_lean_inspection_only_target_candidate(replacement))
+    return False
 
 
 def discovery_tool_name(
@@ -456,12 +463,12 @@ def source_inspection_fingerprint(
                 " ".join(str(arguments.get("replacement", "") or "").split()),
             )
         )
-    elif function_name == "lean_lemma_suggest":
+    elif function_name in {"lean_axioms", "lean_lemma_suggest"}:
         material = "|".join(
             (
                 function_name,
                 str(arguments.get("file_path", "") or "").strip(),
-                str(arguments.get("theorem_id", "") or "").strip(),
+                str(arguments.get("theorem_id", "") or arguments.get("target", "") or "").strip(),
             )
         )
     else:

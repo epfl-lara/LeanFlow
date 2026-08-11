@@ -49,6 +49,15 @@ class QueuedHelperCandidate:
     name_only_adaptation: bool = False
 
 
+@dataclass(frozen=True)
+class ProvedHelperHandback:
+    """Describe a proved decomposition child awaiting parent integration."""
+
+    target_symbol: str
+    active_file: str
+    helper_symbol: str
+
+
 def _same_file(left: str, right: str) -> bool:
     """Return whether two paths identify the same source under the project root."""
     if not left or not right:
@@ -62,6 +71,118 @@ def _same_file(left: str, right: str) -> bool:
         return str(path.resolve(strict=False))
 
     return canonical(left) == canonical(right)
+
+
+def _solved_queue_outcome(
+    summary: Mapping[str, Any], *, target_symbol: str, active_file: str
+) -> bool:
+    """Return whether the queue manager durably accepted the exact declaration."""
+    manager_state = summary.get("queue_manager_state")
+    if not isinstance(manager_state, Mapping):
+        return False
+    raw_outcomes = manager_state.get("theorem_outcomes")
+    if isinstance(raw_outcomes, Mapping):
+        outcomes: Sequence[object] = tuple(raw_outcomes.values())
+    elif isinstance(raw_outcomes, Sequence) and not isinstance(
+        raw_outcomes, (str, bytes, bytearray)
+    ):
+        outcomes = raw_outcomes
+    else:
+        return False
+    for raw_outcome in reversed(outcomes):
+        if not isinstance(raw_outcome, Mapping):
+            continue
+        if (
+            str(raw_outcome.get("target_symbol", "") or "").strip() == target_symbol
+            and _same_file(str(raw_outcome.get("active_file", "") or ""), active_file)
+            and str(raw_outcome.get("status", "") or "").strip().lower()
+            in {"solved", "proved", "verified", "success"}
+        ):
+            return True
+    return False
+
+
+def proved_helper_handback(
+    summary: Mapping[str, Any],
+    blueprint: plan_state.Blueprint,
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> ProvedHelperHandback | None:
+    """Return a newly proved split helper that the unresolved parent has not consumed.
+
+    Graph status alone is advisory. Require the reciprocal decomposition edges,
+    a durable successful queue outcome, exact source declarations, and an
+    unresolved parent body that does not yet reference the helper. The parent
+    still receives an ordinary foreground proving turn and remains subject to
+    the normal kernel and placeholder gates.
+    """
+    target = str(target_symbol or "").strip()
+    file_label = str(active_file or "").strip()
+    if not target or not file_label:
+        return None
+    parent_nodes = [
+        node
+        for node in blueprint.nodes
+        if node.name == target and _same_file(node.file, file_label)
+    ]
+    if len(parent_nodes) != 1:
+        return None
+    parent = parent_nodes[0]
+    if parent.status not in {"stated", "audited", "proving", "blocked"}:
+        return None
+    source_path = Path(file_label).expanduser()
+    if not source_path.is_absolute():
+        source_path = Path(str(os.getenv("LEANFLOW_PROJECT_ROOT", "") or os.getcwd())) / source_path
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    parent_slice = decomposition_provenance.declaration_slice(source, target)
+    if parent_slice is None or not re.search(
+        r"\b(?:sorry|admit|sorryAx)\b", parent_slice.text, flags=re.IGNORECASE
+    ):
+        return None
+    dependency_ids = {
+        edge.target
+        for edge in blueprint.edges
+        if edge.kind == "depends_on" and edge.source == parent.id
+    }
+    split_ids = {
+        edge.source
+        for edge in blueprint.edges
+        if edge.kind == "split_of" and edge.target == parent.id
+    }
+    candidates = [
+        node
+        for node in blueprint.nodes
+        if node.id in dependency_ids & split_ids
+        and node.status == "proved"
+        and node.generated_by == "decomposer"
+        and _same_file(node.file, file_label)
+        and _solved_queue_outcome(
+            summary,
+            target_symbol=node.name,
+            active_file=file_label,
+        )
+    ]
+    for helper in reversed(candidates):
+        helper_slice = decomposition_provenance.declaration_slice(source, helper.name)
+        if helper_slice is None or re.search(
+            r"\b(?:sorry|admit|sorryAx)\b", helper_slice.text, flags=re.IGNORECASE
+        ):
+            continue
+        if re.search(
+            rf"(?<![A-Za-z0-9_']){re.escape(helper.name)}(?![A-Za-z0-9_'])",
+            parent_slice.text,
+        ):
+            continue
+        return ProvedHelperHandback(
+            target_symbol=target,
+            active_file=str(source_path.resolve(strict=False)),
+            helper_symbol=helper.name,
+        )
+    return None
 
 
 def _matching_helper_record(

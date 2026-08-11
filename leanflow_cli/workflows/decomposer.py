@@ -310,6 +310,7 @@ def place_helpers(
     target_symbol: str,
     skeletons: Sequence[str],
     allowed_axioms: Sequence[str],
+    helper_dependencies: Mapping[str, Sequence[str]] | None = None,
     cwd: str = "",
 ) -> DecomposeOutcome:
     """Write guarded helper stubs before the target and verify them in place.
@@ -326,6 +327,7 @@ def place_helpers(
                 target_symbol=target_symbol,
                 skeletons=skeletons,
                 allowed_axioms=allowed_axioms,
+                helper_dependencies=helper_dependencies,
                 cwd=cwd,
             )
     except (OSError, RuntimeError) as exc:
@@ -338,6 +340,7 @@ def _place_helpers_under_lease(
     target_symbol: str,
     skeletons: Sequence[str],
     allowed_axioms: Sequence[str],
+    helper_dependencies: Mapping[str, Sequence[str]] | None,
     cwd: str,
 ) -> DecomposeOutcome:
     """Place and validate helpers while holding one pinned source lifecycle lease."""
@@ -374,6 +377,16 @@ def _place_helpers_under_lease(
             ok=False,
             reason="helper skeleton names are missing or duplicated",
         )
+    requested_name_set = set(requested_names)
+    managed_dependencies = {
+        name: tuple(
+            dependency
+            for raw_dependency in (helper_dependencies or {}).get(name, ())
+            if (dependency := str(raw_dependency or "").strip()) in requested_name_set
+            and dependency != name
+        )
+        for name in requested_names
+    }
     existing_declarations = _existing_declarations_by_name(before_text)
     existing_names: list[str] = []
     source_stubs: list[str] = []
@@ -401,6 +414,7 @@ def _place_helpers_under_lease(
                 active_file=str(path),
                 placed=requested_names,
                 skeletons=graph_skeletons,
+                helper_dependencies=managed_dependencies,
             )
         except Exception as exc:
             return DecomposeOutcome(
@@ -436,6 +450,7 @@ def _place_helpers_under_lease(
             after_text=after_text,
             before_bytes=before_bytes,
             after_bytes=after_bytes,
+            helper_dependencies=managed_dependencies,
             cwd=cwd,
             operation=operation,
         )
@@ -641,6 +656,7 @@ def _place_helpers_under_lease(
             active_file=str(path),
             placed=requested_names,
             skeletons=graph_skeletons,
+            helper_dependencies=managed_dependencies,
         )
     except Exception as exc:
         logger.debug("decomposer graph transaction failed", exc_info=True)
@@ -703,6 +719,7 @@ def _record_helper_entries_in_graph(
     entries: Sequence[Mapping[str, Any]],
     generated_by: str,
     evidence_helper_names: Sequence[str] = (),
+    helper_dependencies: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[str, ...]:
     """Record explicit helper declarations and their graph relationship.
 
@@ -754,6 +771,7 @@ def _record_helper_entries_in_graph(
     created_helpers: list[tuple[str, str]] = []
     updated_helpers: list[tuple[str, str]] = []
     linked_helpers: list[tuple[str, str, bool]] = []
+    linked_dependencies: list[tuple[str, str, str, str]] = []
     if bp.node_by_id(target_id) is None:
         bp = bp.replace_node(
             plan_state.GraphNode(
@@ -859,6 +877,25 @@ def _record_helper_entries_in_graph(
         if helper_linked:
             linked_helpers.append((helper_id, name, helper_is_evidence))
 
+    helper_names = {name for name, *_rest in helpers}
+    for name, *_rest in helpers:
+        helper_id = plan_state.node_id_for(name, file_path)
+        for raw_dependency in (helper_dependencies or {}).get(name, ()):
+            dependency = str(raw_dependency or "").strip()
+            if not dependency or dependency == name or dependency not in helper_names:
+                continue
+            dependency_id = plan_state.node_id_for(dependency, file_path)
+            edge = plan_state.GraphEdge(
+                source=helper_id,
+                target=dependency_id,
+                kind="depends_on",
+            )
+            if edge in edges:
+                continue
+            edges.append(edge)
+            linked_dependencies.append((helper_id, name, dependency_id, dependency))
+            changed = True
+
     if not changed:
         return tuple(name for name, *_rest in helpers)
     bp = replace(bp, edges=tuple(edges))
@@ -911,6 +948,21 @@ def _record_helper_entries_in_graph(
             )
         except Exception:
             logger.debug("decomposer edge journal write failed", exc_info=True)
+    for helper_id, name, dependency_id, dependency in linked_dependencies:
+        try:
+            plan_state.append_journal_event(
+                {
+                    "event": "helper-dependency-recorded",
+                    "node_id": helper_id,
+                    "name": name,
+                    "dependency_node_id": dependency_id,
+                    "dependency": dependency,
+                    "target": target,
+                    "via": generated_by,
+                }
+            )
+        except Exception:
+            logger.debug("decomposer dependency journal write failed", exc_info=True)
     return tuple(name for name, *_rest in helpers)
 
 
@@ -1700,7 +1752,12 @@ def backfill_known_prover_helpers(
 
 
 def _record_split_in_graph(
-    *, target_symbol: str, active_file: str, placed: Sequence[str], skeletons: Mapping[str, str]
+    *,
+    target_symbol: str,
+    active_file: str,
+    placed: Sequence[str],
+    skeletons: Mapping[str, str],
+    helper_dependencies: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[str, ...]:
     """Stated helper nodes + split_of/depends_on edges (journaled)."""
     entries: list[dict[str, Any]] = []
@@ -1714,6 +1771,7 @@ def _record_split_in_graph(
         active_file=active_file,
         entries=entries,
         generated_by="decomposer",
+        helper_dependencies=helper_dependencies,
     )
 
 
@@ -2042,6 +2100,12 @@ def run_decomposer(
         target_symbol=target_symbol,
         skeletons=[str(h["lean_skeleton"]) for h in ready],
         allowed_axioms=allowed_axioms,
+        helper_dependencies={
+            str(helper.get("name", "") or ""): tuple(
+                str(dependency or "") for dependency in (helper.get("dependencies") or [])
+            )
+            for helper in ready
+        },
         cwd=cwd,
     )
     if not outcome.ok:

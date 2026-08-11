@@ -178,7 +178,8 @@ def _declaration_diagnostic_feedback_reason(
     # warnings as plain `warning: ...` lines that the regex cannot locate, so
     # the structured path is the only way to honour the spec's per-theorem
     # warning-cleanup opportunity for warnings the targeted check surfaced.
-    for diagnostic in structured_items or ():
+    structured_in_range: list[tuple[int, Mapping[str, Any]]] = []
+    for position, diagnostic in enumerate(structured_items or ()):
         if not isinstance(diagnostic, Mapping):
             continue
         line = _structured_diagnostic_line(diagnostic)
@@ -187,6 +188,17 @@ def _declaration_diagnostic_feedback_reason(
         severity = str(diagnostic.get("severity", "") or "diagnostic").strip().lower()
         if severity not in {"warning", "error"}:
             continue
+        structured_in_range.append((position, diagnostic))
+    structured_in_range.sort(
+        key=lambda item: (
+            0 if str(item[1].get("severity", "") or "").strip().lower() == "error" else 1,
+            item[0],
+        )
+    )
+    for _, diagnostic in structured_in_range:
+        line = _structured_diagnostic_line(diagnostic)
+        assert isinstance(line, int)
+        severity = str(diagnostic.get("severity", "") or "diagnostic").strip().lower()
         message = _single_line(str(diagnostic.get("message", "") or ""), 180)
         return (
             f"{severity} near line {line}: {message}" if message else f"{severity} near line {line}"
@@ -195,6 +207,11 @@ def _declaration_diagnostic_feedback_reason(
         if not text:
             continue
         parsed_items = diagnostic_items(text)
+        parsed_items.sort(
+            key=lambda diagnostic: (
+                0 if str(diagnostic.get("severity", "") or "").strip().lower() == "error" else 1
+            )
+        )
         for diagnostic in parsed_items:
             line = diagnostic.get("line")
             if isinstance(line, int) and start <= line <= max(start, end):

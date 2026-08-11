@@ -378,6 +378,152 @@ def test_trivializing_answer_revision_is_detected(tmp_path):
     ) == ("answer",)
 
 
+def test_coupled_algebraic_restatement_revision_is_detected(tmp_path):
+    active = str(tmp_path / "Main.lean")
+    dependency = policy.DetermineAnswerDependency(
+        answer_target="answer",
+        answer_file=active,
+        consumer_target="result",
+        consumer_file=active,
+    )
+    state: dict = {}
+    policy.register(state, dependency, verification=_answer_verification())
+    before = (
+        "def answer : Set (ℝ → ℝ) := {f | ∃ c, ∀ x, f x = x + c}\n"
+        "theorem result : {f : ℝ → ℝ | ∀ x y : ℝ, "
+        "P (f x) (f y) x y ∧ Q (f x) (f y) x y} = answer := by\n  sorry\n"
+    )
+    after = (
+        "def answer : Set (ℝ → ℝ) := {f | ∀ x y : ℝ, "
+        "P' (f x) (f y) x y ∧ Q' (f x) (f y) x y}\n"
+        "theorem result : {f : ℝ → ℝ | ∀ x y : ℝ, "
+        "P (f x) (f y) x y ∧ Q (f x) (f y) x y} = answer := by\n  sorry\n"
+    )
+
+    assert policy.trivializing_answer_revisions(
+        state,
+        consumer_target="result",
+        consumer_file=active,
+        before_source=before,
+        after_source=after,
+    ) == ("answer",)
+
+
+def test_initial_definition_target_copy_is_detected_without_registered_state():
+    before = (
+        "def expected : Set ℝ := sorry\n"
+        "theorem result : {θ : ℝ | 0 < θ ∧ θ < π ∧ Wins θ} = expected := by\n  sorry\n"
+    )
+    after = (
+        "def expected : Set ℝ := {θ : ℝ | 0 < θ ∧ θ < Real.pi ∧ Wins θ}\n"
+        "theorem result : {θ : ℝ | 0 < θ ∧ θ < π ∧ Wins θ} = expected := by\n  sorry\n"
+    )
+
+    assert policy.target_copying_definition_consumers(
+        "expected",
+        before_source=before,
+        after_source=after,
+    ) == ("result",)
+
+
+def test_initial_definition_allows_independent_characterization():
+    before = (
+        "def expected : Set ℝ := sorry\n"
+        "theorem result : {θ : ℝ | 0 < θ ∧ θ < π ∧ Wins θ} = expected := by\n  sorry\n"
+    )
+    after = (
+        "def expected : Set ℝ := {θ : ℝ | θ = π / 3}\n"
+        "theorem result : {θ : ℝ | 0 < θ ∧ θ < π ∧ Wins θ} = expected := by\n  sorry\n"
+    )
+
+    assert not policy.target_copying_definition_consumers(
+        "expected",
+        before_source=before,
+        after_source=after,
+    )
+
+
+def test_algebraic_predicate_restatement_is_detected():
+    before = (
+        "def expected : Set (ℝ → ℝ) := sorry\n"
+        "theorem result : {f : ℝ → ℝ | ∀ x y : ℝ, "
+        "(f x + y) / 2 ≤ √((x ^ 2 + f y ^ 2) / 2) ∧ "
+        "√(x * f y) ≤ (f x + y) / 2} = expected := by\n  sorry\n"
+    )
+    after = (
+        "def expected : Set (ℝ → ℝ) := {f | ∀ x y : ℝ, "
+        "4 * x * f y ≤ (f x + y) ^ 2 ∧ "
+        "(f x + y) ^ 2 ≤ 2 * x ^ 2 + 2 * f y ^ 2}\n"
+        "theorem result : {f : ℝ → ℝ | ∀ x y : ℝ, "
+        "(f x + y) / 2 ≤ √((x ^ 2 + f y ^ 2) / 2) ∧ "
+        "√(x * f y) ≤ (f x + y) / 2} = expected := by\n  sorry\n"
+    )
+
+    assert policy.restating_definition_consumers(
+        "expected",
+        before_source=before,
+        after_source=after,
+    ) == ("result",)
+
+
+def test_explicit_family_is_not_a_predicate_restatement():
+    before = (
+        "def expected : Set (ℝ → ℝ) := sorry\n"
+        "theorem result : {f : ℝ → ℝ | ∀ x y : ℝ, P (f x) (f y) x y ∧ "
+        "Q (f x) (f y) x y} = expected := by\n  sorry\n"
+    )
+    after = (
+        "def expected : Set (ℝ → ℝ) := "
+        "{f | ∃ c : ℝ, 0 ≤ c ∧ ∀ x, f x = x + c}\n"
+        "theorem result : {f : ℝ → ℝ | ∀ x y : ℝ, P (f x) (f y) x y ∧ "
+        "Q (f x) (f y) x y} = expected := by\n  sorry\n"
+    )
+
+    assert not policy.restating_definition_consumers(
+        "expected",
+        before_source=before,
+        after_source=after,
+    )
+
+
+def test_initial_definition_target_copy_is_blocked_before_edit(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "def expected : Set ℝ := sorry\n"
+        "theorem result : {θ : ℝ | 0 < θ ∧ θ < π ∧ Wins θ} = expected := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "expected",
+            "active_file": str(active),
+        }
+    }
+
+    class Agent:
+        _managed_autonomy_state = autonomy_state
+
+    patch = """*** Begin Patch
+*** Update File: Main.lean
+@@
+-def expected : Set ℝ := sorry
++def expected : Set ℝ := {θ : ℝ | 0 < θ ∧ θ < Real.pi ∧ Wins θ}
+*** End Patch"""
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+
+    result = runner._determine_answer_trivialization_pre_tool_guard(
+        Agent(),
+        "apply_verified_patch",
+        {"path": str(active), "patch": patch},
+        autonomy_state,
+    )
+
+    assert result is not None
+    assert "determine_answer_trivialization_rejected" in result
+    assert '"consumer_targets": ["result"]' in result
+    assert active.read_text(encoding="utf-8").startswith("def expected : Set ℝ := sorry")
+
+
 def test_trivializing_answer_revision_is_blocked_before_edit(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(

@@ -391,3 +391,63 @@ class TestNearMissOnFailure:
         # A concrete "did you mean" snippet, not a generic message.
         assert "Closest region" in result.error
         assert "return sum(items)" in result.error
+
+
+def test_implicit_trailing_declaration_anchor_allows_unique_exact_preceding_insertion():
+    """Insert before a declaration when the implicit anchor is trailing context."""
+    content = """\
+private lemma prior : True := by
+  trivial
+
+theorem result : True := by
+  trivial
+"""
+    blank_context = " "
+    patch = f"""\
+*** Begin Patch
+*** Update File: Main.lean
+@@
+   trivial
++
++private lemma inserted : True := by
++  trivial
+{blank_context}
+ theorem result : True := by
+*** End Patch"""
+    ops, err = parse_v4a_patch(patch)
+    assert err is None
+    fo = _FakeFileOps(content)
+
+    result = apply_v4a_operations(ops, fo, strict=True)
+
+    assert result.success is True
+    assert fo.written.count("private lemma inserted") == 1
+    assert fo.written.index("private lemma inserted") < fo.written.index("theorem result")
+
+
+def test_explicit_anchor_does_not_escape_for_preceding_context():
+    """Keep explicit anchor regions authoritative for ambiguous preceding edits."""
+    content = """\
+private lemma prior : True := by
+  trivial
+
+theorem result : True := by
+  trivial
+"""
+    blank_context = " "
+    patch = f"""\
+*** Begin Patch
+*** Update File: Main.lean
+@@ theorem result : True := by @@
+   trivial
+{blank_context}
+ theorem result : True := by
+*** End Patch"""
+    ops, err = parse_v4a_patch(patch)
+    assert err is None
+    fo = _FakeFileOps(content)
+
+    result = apply_v4a_operations(ops, fo, strict=True)
+
+    assert result.success is False
+    assert "anchor region" in (result.error or "")

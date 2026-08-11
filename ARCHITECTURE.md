@@ -186,7 +186,9 @@ tool is reachable through the public registry.
   no-construction debt that fences advisory oscillation
   (`search_synthesis_admission.py`). Delayed transition notices and direct
   control-plane heartbeats for startup, portfolio, and epoch reconciliation live
-  in `transition_visibility.py`. Native also owns same-revision verification-timeout backpressure
+  in `transition_visibility.py`. Foreground strategy-route obligations that keep
+  deferred `decompose`, `negate`, `plan`, and portfolio-refresh handoffs visible
+  to the model live in `route_prompt.py`. Native also owns same-revision verification-timeout backpressure
   and structural-recovery handoff, verified companion-module
   publication (`support_module_materialization.py`), checkpoints, and shutdown.
   Direct bare references from an assigned declaration to itself are rejected

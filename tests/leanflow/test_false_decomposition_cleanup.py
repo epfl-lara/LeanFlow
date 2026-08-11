@@ -2059,6 +2059,65 @@ def test_false_dependent_cleanup_retires_transitive_conjecture_chain(cleanup_pro
     ]
 
 
+def test_false_dependent_cleanup_retires_untouched_stated_chain(cleanup_project):
+    """Retire source-backed decomposer stubs that have not entered the queue yet."""
+    root, _state_root, source = cleanup_project
+    source_text = _live_multi_evidence_source().replace(
+        "theorem neg_bad_helper",
+        "theorem dependent_consequence : True := by sorry\n\n" "theorem neg_bad_helper",
+    )
+    source.write_text(source_text, encoding="utf-8")
+    promotion = _promotion(source)
+    _seed_current_provenance(source)
+    _seed_graph(source)
+    _evidence, dependent_edge = _seed_live_multi_evidence_and_dependent_tombstone(
+        source,
+        promotion,
+        dependent_status="stated",
+    )
+    consequence_declaration = decomposition_provenance.declaration_slice(
+        source_text, "dependent_consequence"
+    )
+    assert consequence_declaration is not None
+    consequence = GraphNode(
+        id=plan_state.node_id_for("dependent_consequence", str(source)),
+        name="dependent_consequence",
+        file=str(source),
+        statement=consequence_declaration.text,
+        source_sha256=str(promotion["source_revision_sha256"]),
+        status="stated",
+        generated_by="decomposer",
+    )
+    blueprint = plan_state.load_blueprint()
+    plan_state.save_blueprint(
+        replace(
+            blueprint,
+            nodes=(*blueprint.nodes, consequence),
+            edges=(
+                *blueprint.edges,
+                GraphEdge(
+                    source=consequence.id,
+                    target=dependent_edge.source,
+                    kind="depends_on",
+                ),
+            ),
+        )
+    )
+    _seed_promotion(promotion)
+
+    cleaned = false_decomposition_cleanup.reconcile_false_decompositions(
+        [promotion], cwd=str(root), validate_promotion=_valid
+    )
+
+    assert cleaned.cleaned == 1
+    current = plan_state.load_blueprint()
+    assert current.node_by_id(dependent_edge.source) is None
+    assert current.node_by_id(consequence.id) is None
+    text = source.read_text(encoding="utf-8")
+    assert decomposition_provenance.declaration_slice(text, "dependent_candidate") is None
+    assert decomposition_provenance.declaration_slice(text, "dependent_consequence") is None
+
+
 @pytest.mark.parametrize("drift", [False, True])
 def test_committed_v1_live_shape_migrates_or_quarantines_drift(cleanup_project, drift: bool):
     """Upgrade the exact stale tombstone shape retained by an older campaign."""

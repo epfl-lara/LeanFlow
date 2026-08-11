@@ -2241,6 +2241,25 @@ def lean_multi_attempt(
         }
         append_workflow_outcome("lean-multi-attempt", payload)
         return payload
+    if adjustment == "cross_line_structural_suffix":
+        payload = {
+            "success": False,
+            "backend_success": False,
+            "backend_tool": "deterministic_location_guard",
+            "screening_backend": "not_started",
+            **location_details,
+            "requested_line": requested_line,
+            "line_adjustment": adjustment,
+            "status": "unsafe_line_replacement_location",
+            "action_required": (
+                "The selected tactic line closes syntax opened on an earlier line, so replacing "
+                "the whole line would make the declaration unparsable. Move the local goal to a "
+                "standalone placeholder or submit a complete declaration replacement; Lean "
+                "screening was not started."
+            ),
+        }
+        append_workflow_outcome("lean-multi-attempt", payload)
+        return payload
     from leanflow_cli.lean.lean_incremental import lean_incremental_check
 
     incremental_payload = screen_multi_attempts_with_lean_probe(
@@ -3017,6 +3036,40 @@ def lean_axioms_many(
     return reports
 
 
+_PENDING_ROUTE_STATE_KEYS = (
+    "prover_requested_route",
+    "campaign_inflight_route",
+    "campaign_epoch_route_selection",
+)
+_PROMPT_STRATEGY_ROUTES = frozenset({"decompose", "negate", "plan", "refresh-portfolio"})
+
+
+def _pending_prompt_strategy_route(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> tuple[str, str]:
+    """Return an exact-scope strategy route still owed a foreground turn."""
+    if not target_symbol or not active_file:
+        return "", ""
+    for key in _PENDING_ROUTE_STATE_KEYS:
+        raw = autonomy_state.get(key)
+        payload = dict(raw) if isinstance(raw, Mapping) else {}
+        route = str(payload.get("route", "") or "").strip().lower()
+        route_target = str(payload.get("target_symbol", "") or "").strip()
+        route_file = str(payload.get("active_file", "") or "").strip()
+        if (
+            route in _PROMPT_STRATEGY_ROUTES
+            and route_target == target_symbol
+            and route_file
+            and os.path.realpath(route_file) == os.path.realpath(active_file)
+        ):
+            reason = str(payload.get("reason", "") or "").strip()
+            return route, reason
+    return "", ""
+
+
 def route_workflow_step(
     workflow_kind: str,
     live_state: Mapping[str, Any] | None,
@@ -3123,6 +3176,16 @@ def route_workflow_step(
             recommended_worker = "sorry-filler-deep"
             route_action = "delegate-sorry-filler-deep"
             reason = "queue item remains blocked after repeated attempts/search exhaustion"
+
+    pending_route, pending_reason = _pending_prompt_strategy_route(
+        autonomy,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    if normalized_workflow == "prove" and pending_route:
+        route_action = pending_route
+        recommended_worker = ""
+        reason = pending_reason or f"pending exact-scope orchestrator route: {pending_route}"
 
     decision = WorkflowRouteDecision(
         workflow_kind=normalized_workflow,

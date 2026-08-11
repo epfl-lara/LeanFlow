@@ -799,6 +799,51 @@ def test_direct_target_negation_is_counterexample_evidence(tmp_path):
     assert [item["node_id"] for item in ctx.verified_counterexample_evidence] == [helper_id]
 
 
+def test_named_exact_negation_with_arrow_form_routes_as_counterexample_evidence(tmp_path):
+    """Route a checked negative helper even when binder syntax defeats text identity."""
+    active = str(tmp_path / "Demo.lean")
+    target_id = node_id_for("demo", active)
+    helper_id = node_id_for("audit_exact_demo_negation", active)
+    blueprint = Blueprint(
+        nodes=(
+            GraphNode(
+                id=target_id,
+                name="demo",
+                file=active,
+                statement=("theorem demo {a : Nat} (h : 0 < a) : a = a := by\n" "  sorry"),
+                status="proving",
+            ),
+            GraphNode(
+                id=helper_id,
+                name="audit_exact_demo_negation",
+                file=active,
+                statement=(
+                    "private lemma audit_exact_demo_negation : "
+                    "¬ (∀ {a : Nat}, 0 < a → a = a) := by\n"
+                    "  sorry"
+                ),
+                status="proved",
+                generated_by="prover-edit",
+            ),
+        ),
+        edges=(GraphEdge(source=helper_id, target=target_id, kind="evidence"),),
+    )
+
+    ctx = build_route_context(
+        trigger="event",
+        autonomy_state={
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": active,
+            }
+        },
+        blueprint=blueprint,
+    )
+
+    assert [item["node_id"] for item in ctx.verified_counterexample_evidence] == [helper_id]
+    assert orchestrator_route(ctx).route == "negate"
+
+
 def test_explicit_negate_with_verified_evidence_survives_spent_scratch_budget():
     evidence = ({"node_id": "n-counterexample", "name": "demo_counterexample"},)
 

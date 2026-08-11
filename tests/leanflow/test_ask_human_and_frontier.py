@@ -330,9 +330,12 @@ def test_parked_skip_active_without_frontier_flag(enabled, monkeypatch):
     )
     assert selected.label == "ready_one"
 
-    # Orchestrator off too: fully legacy (no precedence at all).
+    # Orchestrator ownership does not disable graph safety.
     monkeypatch.delenv("LEANFLOW_ORCHESTRATOR_ENABLED", raising=False)
-    assert runner._graph_frontier_precedence() is None
+    precedence = runner._graph_frontier_precedence()
+    assert precedence is not None
+    assert precedence("parked_one") == 3
+    assert precedence("ready_one") == 1
 
 
 def test_runner_precedence_builder(enabled, monkeypatch):
@@ -353,11 +356,17 @@ def test_runner_precedence_builder(enabled, monkeypatch):
         )
     )
 
-    # Frontier flag off (orchestrator on): parked-skip mode only — covered
-    # by test_parked_skip_active_without_frontier_flag. Fully off => None.
+    # With rich frontier ordering off, dependency safety remains active and
+    # ready nodes retain stable source-order rank 1.
     monkeypatch.delenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", raising=False)
     monkeypatch.delenv("LEANFLOW_ORCHESTRATOR_ENABLED", raising=False)
-    assert runner._graph_frontier_precedence() is None
+    precedence = runner._graph_frontier_precedence()
+    assert precedence is not None
+    assert precedence("ready_one") == 1
+    assert precedence("parked_one") == 3
+    assert precedence("dep") == 2
+    assert precedence("waiting_one") == 2
+    assert precedence("SomeFile.lean") == 1
 
     monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
     precedence = runner._graph_frontier_precedence()

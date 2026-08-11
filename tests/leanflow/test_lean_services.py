@@ -2018,6 +2018,72 @@ def test_route_workflow_step_marks_search_exhausted_from_recent_empty_search_str
     assert decision.route_action == "queue-worker"
 
 
+def test_route_workflow_step_preserves_exact_scope_pending_orchestrator_route(
+    monkeypatch, tmp_path
+):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    active = project / "Main.lean"
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True},
+            mcp_tools={},
+            search_providers=["project-rg"],
+            helper_tools={},
+            workers=[],
+            degraded_reasons=[],
+        ),
+    )
+    monkeypatch.setattr(
+        lean_services, "recent_empty_search_streak", lambda workflow_command, limit=6: 0
+    )
+    live_state = {
+        "active_file": str(active),
+        "current_queue_item": {"label": "demo", "reasons": ["open goals"]},
+        "current_blocker": "successor type mismatch",
+        "diagnostics": "type mismatch",
+        "goals": "open goal",
+        "build_status": "failed",
+    }
+    autonomy_state = {
+        "campaign_inflight_route": {
+            "route": "negate",
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "reason": "test the exact target for a counterexample",
+        }
+    }
+
+    decision = lean_services.route_workflow_step(
+        "prove",
+        live_state,
+        configured_skill="lean-theorem-queue-worker",
+        autonomy_state=autonomy_state,
+        cwd=project,
+    )
+
+    assert decision.route_action == "negate"
+    assert decision.recommended_worker == ""
+    assert decision.reason == "test the exact target for a counterexample"
+
+    autonomy_state["campaign_inflight_route"]["active_file"] = str(project / "Other.lean")
+    mismatched = lean_services.route_workflow_step(
+        "prove",
+        live_state,
+        configured_skill="lean-theorem-queue-worker",
+        autonomy_state=autonomy_state,
+        cwd=project,
+    )
+    assert mismatched.route_action == "queue-worker"
+
+
 def test_discover_lean_mcp_tools_prefers_raw_managed_tools_over_native_wrappers(monkeypatch):
     monkeypatch.setattr("tools.mcp.mcp_tool.discover_mcp_tools", lambda: None)
     monkeypatch.setattr(
@@ -3491,6 +3557,49 @@ def test_lean_multi_attempt_rejects_ambiguous_backward_location_before_lean(monk
     assert payload["success"] is False
     assert payload["status"] == "ambiguous_placeholder_location"
     assert payload["line_adjustment"] == "ambiguous_backward_placeholders"
+    assert payload["screening_backend"] == "not_started"
+
+
+def test_lean_multi_attempt_rejects_cross_line_structural_suffix_before_lean(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text(
+        "theorem target : True := by\n" "  exact id (by\n" "    exact True.intro)\n",
+        encoding="utf-8",
+    )
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={"multi_attempt": "mcp_lean_lsp_lean_multi_attempt"},
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_incremental,
+        "lean_incremental_check",
+        lambda **kwargs: pytest.fail("unsafe line started LeanProbe"),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *_args: pytest.fail("unsafe line started LSP"),
+    )
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: None)
+
+    payload = lean_services.lean_multi_attempt(
+        "Main.lean", 3, ["exact True.intro", "trivial"], cwd=project
+    )
+
+    assert payload["success"] is False
+    assert payload["status"] == "unsafe_line_replacement_location"
+    assert payload["line_adjustment"] == "cross_line_structural_suffix"
     assert payload["screening_backend"] == "not_started"
 
 

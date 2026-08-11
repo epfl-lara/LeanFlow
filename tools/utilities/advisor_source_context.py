@@ -34,6 +34,7 @@ class AdvisorSourceContext:
     target_statement: str = ""
     referenced_declarations: tuple[str, ...] = ()
     referenced_names: tuple[str, ...] = ()
+    provisional_names: tuple[str, ...] = ()
     source_sha256: str = ""
     status: str = "unavailable"
 
@@ -46,6 +47,12 @@ class AdvisorSourceContext:
             parts.append(
                 "Exact referenced declarations already in scope:\n"
                 + "\n\n".join(self.referenced_declarations)
+            )
+        if self.provisional_names:
+            parts.append(
+                "Provisional determine declarations (their current bodies are conjectures, "
+                "not established answers, and may be revised from mathematical evidence):\n"
+                + ", ".join(self.provisional_names)
             )
         return _bounded_text("\n\n".join(parts), SOURCE_CONTEXT_MAX_CHARS)
 
@@ -155,10 +162,24 @@ def load_advisor_source_context(
 
     declarations = tuple(_entry_text(entry) for _, _, entry in selected)
     names = tuple(str(entry.get("name", "") or "").strip() for _, _, entry in selected)
+    source_lines = source.splitlines()
+    provisional_names = tuple(
+        str(entry.get("name", "") or "").strip()
+        for _, _, entry in selected
+        if "answer to be determined"
+        in "\n".join(
+            source_lines[
+                max(0, int(entry.get("line", 1) or 1) - 9) : max(
+                    0, int(entry.get("line", 1) or 1) - 1
+                )
+            ]
+        ).lower()
+    )
     return AdvisorSourceContext(
         target_statement=_statement(str(target.get("text", "") or "")),
         referenced_declarations=declarations,
         referenced_names=names,
+        provisional_names=provisional_names,
         source_sha256=source_sha256,
         status="loaded",
     )
@@ -168,7 +189,10 @@ def advisor_source_conflicts(advice: str, context: AdvisorSourceContext) -> tupl
     """Return known declarations that the advisor treats as hypothetical or redefines."""
     text = str(advice or "")
     conflicts: list[str] = []
+    provisional = {_leaf_name(name) for name in context.provisional_names}
     for full_name in context.referenced_names:
+        if _leaf_name(full_name) in provisional:
+            continue
         name = re.escape(_leaf_name(full_name))
         patterns = (
             rf"\b(?:noncomputable\s+)?def\s+`?{name}`?\b",

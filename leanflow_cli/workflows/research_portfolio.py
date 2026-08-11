@@ -2526,6 +2526,28 @@ def _entry_predates_epoch_refresh(entry: LedgerEntry, refresh: Mapping[str, Any]
     return entry_epoch < new_epoch
 
 
+def _entry_survives_semantic_epoch_refresh(
+    entry: LedgerEntry,
+    refresh: Mapping[str, Any],
+) -> bool:
+    """Carry one freshly launched worker across a short semantic rollover.
+
+    A foreground turn can exhaust its local route portfolio within minutes of
+    launching background research. Preserve workers from exactly the epoch
+    being closed so they get one additional epoch to publish a finding; an
+    older worker is still retired on the next rollover.
+    """
+    if str(refresh.get("reason", "") or "") != campaign_epoch.SEMANTIC_PORTFOLIO_ROLLOVER_REASON:
+        return False
+    try:
+        entry_epoch = int(dict(entry.spec.inputs).get("campaign_epoch", 0) or 0)
+        previous_epoch = int(refresh.get("previous_epoch", 0) or 0)
+        new_epoch = int(refresh.get("new_epoch", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return previous_epoch > 0 and new_epoch == previous_epoch + 1 and entry_epoch == previous_epoch
+
+
 def _job_matches_refresh_assignment(entry: LedgerEntry, refresh: Mapping[str, Any]) -> bool:
     """Return whether a worker belongs to the refresh's recorded assignment."""
     target_symbol = str(refresh.get("target_symbol", "") or "")
@@ -2716,7 +2738,7 @@ def _reconcile_epoch_worker_refresh(
     campaign_id: str,
     refresh: Mapping[str, Any],
     complete_durable: bool,
-) -> tuple[list[str], bool]:
+) -> tuple[list[str], bool, list[str]]:
     """Harvest results, retire spent workers, and complete one refresh token.
 
     The operation is replay-safe. A crash after only some kills leaves the
@@ -2730,12 +2752,25 @@ def _reconcile_epoch_worker_refresh(
         if entry.state == "running":
             service.poll(entry.spec.job_id)
 
+    def should_retire(entry: LedgerEntry) -> bool:
+        """Return whether this refresh owns retirement of one open worker."""
+        return (
+            _entry_predates_epoch_refresh(entry, refresh)
+            and _job_matches_refresh_assignment(entry, refresh)
+            and not _entry_survives_semantic_epoch_refresh(entry, refresh)
+        )
+
+    carried = [
+        entry.spec.job_id
+        for entry in service.open_jobs()
+        if _entry_predates_epoch_refresh(entry, refresh)
+        and _job_matches_refresh_assignment(entry, refresh)
+        and _entry_survives_semantic_epoch_refresh(entry, refresh)
+    ]
     killed: list[str] = []
     reconciliation_failed = False
     for entry in service.open_jobs():
-        if not _entry_predates_epoch_refresh(entry, refresh) or not _job_matches_refresh_assignment(
-            entry, refresh
-        ):
+        if not should_retire(entry):
             continue
         try:
             outcome = service.kill(
@@ -2751,27 +2786,20 @@ def _reconcile_epoch_worker_refresh(
     terminal_process_survivors = [
         entry.spec.job_id
         for entry in service.entries()
-        if _entry_predates_epoch_refresh(entry, refresh)
-        and _job_matches_refresh_assignment(entry, refresh)
-        and not _terminal_killed_process_released(entry, service=service)
+        if should_retire(entry) and not _terminal_killed_process_released(entry, service=service)
     ]
 
     # A result can publish while the cancellation boundary is being reaped.
     # Recover it before deciding whether any pre-refresh worker is still open.
     service.recover_completed_artifacts()
-    remaining = [
-        entry.spec.job_id
-        for entry in service.open_jobs()
-        if _entry_predates_epoch_refresh(entry, refresh)
-        and _job_matches_refresh_assignment(entry, refresh)
-    ]
+    remaining = [entry.spec.job_id for entry in service.open_jobs() if should_retire(entry)]
     completed = not reconciliation_failed and not remaining and not terminal_process_survivors
     if completed and complete_durable:
         completed = campaign_epoch.complete_worker_refresh(
             refresh_token=token,
             killed_job_ids=killed,
         ) or not campaign_epoch.pending_worker_refresh(campaign_id=campaign_id)
-    return killed, completed
+    return killed, completed, carried
 
 
 def _maintain_portfolio_once(
@@ -2809,9 +2837,14 @@ def _maintain_portfolio_once(
 
     epoch_refresh = campaign_epoch.pending_worker_refresh(campaign_id=campaign_id)
     epoch_refresh_killed: list[str] = []
+    epoch_refresh_carried: list[str] = []
     epoch_refresh_completed = True
     if epoch_refresh:
-        epoch_refresh_killed, epoch_refresh_completed = _reconcile_epoch_worker_refresh(
+        (
+            epoch_refresh_killed,
+            epoch_refresh_completed,
+            epoch_refresh_carried,
+        ) = _reconcile_epoch_worker_refresh(
             service,
             campaign_id=campaign_id,
             refresh=epoch_refresh,
@@ -2966,6 +2999,8 @@ def _maintain_portfolio_once(
             status["still_active"] = [entry.spec.job_id for entry in active]
         if epoch_refresh_killed:
             status["epoch_refresh_killed"] = epoch_refresh_killed
+        if epoch_refresh_carried:
+            status["epoch_refresh_carried"] = epoch_refresh_carried
         if provider_retry_after:
             status.update(
                 {
@@ -3015,6 +3050,7 @@ def _maintain_portfolio_once(
             "consumed": consumed,
             "epoch_refresh_pending": True,
             "epoch_refresh_killed": epoch_refresh_killed,
+            "epoch_refresh_carried": epoch_refresh_carried,
             **replacement_status,
         }
     if not refill:
@@ -3470,6 +3506,8 @@ def _maintain_portfolio_once(
         status["failure_backoff_retries"] = retried_archetypes
     if epoch_refresh_killed:
         status["epoch_refresh_killed"] = epoch_refresh_killed
+    if epoch_refresh_carried:
+        status["epoch_refresh_carried"] = epoch_refresh_carried
     return status
 
 
@@ -3811,7 +3849,7 @@ def refresh_portfolio_for_epoch(
             "target_symbol": str(target_symbol or ""),
             "active_file": str(active_file or ""),
         }
-        killed, completed = _reconcile_epoch_worker_refresh(
+        killed, completed, carried = _reconcile_epoch_worker_refresh(
             service,
             campaign_id=normalized_campaign,
             refresh=refresh,
@@ -3852,7 +3890,11 @@ def refresh_portfolio_for_epoch(
             disposition = "the next maintenance tick may refill distinct routes"
         append_workflow_activity(
             "research-portfolio-epoch-refresh",
-            (f"Retired {len(killed)} old-epoch research worker(s); " f"{disposition}"),
+            (
+                f"Retired {len(killed)} old-epoch research worker(s); "
+                f"carried {len(carried)} fresh worker(s) across one rollover; "
+                f"{disposition}"
+            ),
             campaign_id=normalized_campaign,
             target_symbol=target_symbol,
             active_file=active_file,
@@ -3860,6 +3902,7 @@ def refresh_portfolio_for_epoch(
             new_epoch=new_epoch,
             reason=reason,
             killed=killed,
+            carried=carried,
             refresh_token=str(refresh.get("token", "") or ""),
             completed=completed,
             replacement_intent_id=str(pending_intent.get("intent_id", "") or ""),

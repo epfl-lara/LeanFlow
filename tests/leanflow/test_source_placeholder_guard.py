@@ -8,6 +8,88 @@ from leanflow_cli.native import native_runner as runner
 from leanflow_cli.native import source_placeholder_guard
 
 
+def test_assigned_target_check_normalizes_hallucinated_file(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    arguments = {
+        "action": "check_target",
+        "theorem_id": "demo",
+        "file_path": str(tmp_path / "invented-20260808?"),
+        "replacement": "theorem demo : True := by\n  trivial",
+    }
+
+    normalized = source_placeholder_guard.normalize_assigned_target_check(
+        "lean_incremental_check",
+        arguments,
+        {"target_symbol": "demo", "active_file": str(active)},
+        project_root=str(tmp_path),
+    )
+
+    assert normalized == (str(tmp_path / "invented-20260808?"), str(active.resolve()))
+    assert arguments["file_path"] == str(active.resolve())
+    assert arguments["theorem_id"] == "demo"
+
+
+@pytest.mark.parametrize("action", ["check_helper", "feedback"])
+def test_assigned_target_check_preserves_non_target_routes(tmp_path, action):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    arguments = {
+        "action": action,
+        "theorem_id": "demo",
+        "file_path": "scratch.lean",
+    }
+
+    assert (
+        source_placeholder_guard.normalize_assigned_target_check(
+            "lean_incremental_check",
+            arguments,
+            {"target_symbol": "demo", "active_file": str(active)},
+            project_root=str(tmp_path),
+        )
+        is None
+    )
+    assert arguments["file_path"] == "scratch.lean"
+
+
+def test_declaration_context_recovers_name_misplaced_as_file(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "private lemma local_bridge : True := by\n  trivial\n",
+        encoding="utf-8",
+    )
+    misplaced = tmp_path / "local_bridge"
+    arguments = {"file_path": str(misplaced), "include_similar_proofs": False}
+
+    normalized = source_placeholder_guard.normalize_assigned_declaration_context(
+        "lean_proof_context",
+        arguments,
+        {"target_symbol": "demo", "active_file": str(active)},
+        project_root=str(tmp_path),
+    )
+
+    assert normalized == (str(misplaced), str(active.resolve()), "local_bridge")
+    assert arguments["file_path"] == str(active.resolve())
+    assert arguments["theorem_id"] == "local_bridge"
+
+
+def test_declaration_context_does_not_guess_unknown_basename(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    arguments = {"file_path": str(tmp_path / "invented_helper")}
+
+    assert (
+        source_placeholder_guard.normalize_assigned_declaration_context(
+            "lean_proof_context",
+            arguments,
+            {"target_symbol": "demo", "active_file": str(active)},
+            project_root=str(tmp_path),
+        )
+        is None
+    )
+    assert arguments == {"file_path": str(tmp_path / "invented_helper")}
+
+
 @pytest.mark.parametrize("action", ["check_target", ""])
 def test_guard_blocks_explicit_or_default_check_target_without_replacement(tmp_path, action):
     active = tmp_path / "Main.lean"

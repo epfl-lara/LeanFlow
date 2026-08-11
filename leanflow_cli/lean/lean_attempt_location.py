@@ -162,6 +162,19 @@ def _first_tactic_body_line(path: Path, requested_line: int) -> int | None:
     return start_line + declaration.count("\n", 0, tactic_start)
 
 
+def _line_closes_prior_syntax(path: Path, requested_line: int) -> bool:
+    """Return whether replacing a whole tactic line would drop prior delimiters."""
+    try:
+        source_line = path.read_text(encoding="utf-8").splitlines()[requested_line - 1]
+    except (IndexError, OSError, UnicodeError):
+        return False
+    sanitized = _strip_lean_comments_and_strings(source_line)
+    return any(
+        sanitized.count(closing) > sanitized.count(opening)
+        for opening, closing in (("(", ")"), ("[", "]"), ("{", "}"))
+    )
+
+
 def _resolve_trailing_placeholder(
     path: Path,
     requested_line: int,
@@ -331,4 +344,6 @@ def _resolve_multi_attempt_location(
         return line, None, "non_tactic_source_line"
     if line < tactic_line:
         return tactic_line, None, "first_tactic_line"
+    if _line_closes_prior_syntax(path, line):
+        return line, None, "cross_line_structural_suffix"
     return line, None, None

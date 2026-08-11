@@ -41,8 +41,39 @@ from tools.implementations.lean_patch import apply_verified_patch_tool  # noqa: 
 from tools.registry import registry
 from tools.utilities.bounded_call import run_bounded_call
 from tools.utilities.lean_inspection_projection import project_exact_symbol_inspection
+from tools.utilities.repository_research_policy import clean_room_path_block_reason
 
 LEAN_INSPECT_WALL_TIMEOUT_S = 60.0
+
+
+def _filter_clean_room_lean_search_results(
+    payload: dict[str, object],
+    *,
+    cwd: str = "",
+) -> dict[str, object]:
+    """Remove sibling benchmark source matches before returning Lean search output."""
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, list):
+        return payload
+    kept: list[object] = []
+    omitted = 0
+    for raw in raw_results:
+        if isinstance(raw, dict):
+            candidate = str(raw.get("file", "") or raw.get("path", "") or "")
+            if candidate and clean_room_path_block_reason(candidate, cwd=cwd):
+                omitted += 1
+                continue
+        kept.append(raw)
+    if not omitted:
+        return payload
+    filtered = dict(payload)
+    filtered["results"] = kept
+    filtered["clean_room_omitted_results"] = omitted
+    filtered["clean_room_guidance"] = (
+        "Sibling benchmark source matches were omitted. Search the active task, shared project "
+        "infrastructure, imported libraries, or external non-solution sources instead."
+    )
+    return filtered
 
 
 def _lean_inspect_wall_timeout_s() -> float:
@@ -229,12 +260,16 @@ def lean_search_tool(
 ) -> str:
     """Search Lean declarations and hide confirmed future same-file results."""
     result = lean_search(query, cwd=cwd or None, mode=mode, limit=limit, file_path=file_path)
+    clean_room_payload = _filter_clean_room_lean_search_results(
+        {
+            "success": True,
+            **result.to_dict(),
+        },
+        cwd=cwd,
+    )
     payload = partition_source_order_results(
         enrich_local_source_results(
-            {
-                "success": True,
-                **result.to_dict(),
-            },
+            clean_room_payload,
             active_file=_leanflow_source_horizon_file,
             cwd=cwd,
         ),

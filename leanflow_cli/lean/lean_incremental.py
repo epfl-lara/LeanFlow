@@ -38,6 +38,7 @@ from leanflow_cli.lean.lean_parsing import (
     _declaration_line_index_from_text,
     _declaration_matches_target,
     _is_lean_inspection_only_helper_candidate,
+    _is_lean_inspection_only_target_candidate,
     _statement_signature_text,
     _strip_lean_comments_and_strings,
 )
@@ -57,6 +58,7 @@ LEAN_INCREMENTAL_TIMEOUT_DEFAULT_S: Final[int] = 60
 DISPATCH_WORKER_INCREMENTAL_TIMEOUT_FLOOR_S: Final[int] = 900
 RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S: Final[int] = 900
 PROFILED_HELPER_TIMEOUT_FLOOR_S: Final[int] = 900
+_ADMISSION_DEADLINE_CHARGE_THRESHOLD_S: Final[float] = 0.05
 
 _PROBE: Any | None = None
 _PROBE_EVER_STARTED = False
@@ -610,7 +612,7 @@ def _effective_incremental_timeout_s(
         policy = "dispatch_worker_cold_start_floor"
     elif (
         research_mode_enabled()
-        and not _PROBE_EVER_STARTED
+        and _PROBE is None
         and requested < RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S
     ):
         effective = RESEARCH_INCREMENTAL_TIMEOUT_FLOOR_S
@@ -1381,6 +1383,33 @@ def _mark_inspection_only_helper_payload(payload: Mapping[str, Any]) -> dict[str
     return result
 
 
+def _mark_inspection_only_target_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Preserve target diagnostics without treating instrumentation as proof progress."""
+    result = dict(payload)
+    result.update(
+        {
+            "ok": False,
+            "target_verified": False,
+            "valid_without_sorry": False,
+            "status": "inspection_only_target",
+            "diagnostic_only": True,
+            "proof_progress": False,
+            "inspection_completed": bool(result.get("success")) and not _payload_has_errors(result),
+            "error_code": "inspection_only_target_candidate",
+            "message": (
+                "The assigned-target replacement contains temporary Lean inspection "
+                "commands. Its diagnostics remain available, but it is not a production "
+                "proof candidate."
+            ),
+            "action_required": (
+                "Use the returned proof state, then submit a clean target replacement "
+                "without `trace_state`, `#check`, `#print`, `#eval`, `#reduce`, or `run_cmd`."
+            ),
+        }
+    )
+    return result
+
+
 def _replacement_has_placeholder(replacement: str) -> bool:
     """Return whether executable replacement source contains a proof placeholder."""
     stripped = _strip_lean_comments_and_strings(str(replacement or ""))
@@ -1427,6 +1456,7 @@ def _suggestion_rejection_payload(
         "file": str(file_path),
         "target": theorem_id,
         "valid_without_sorry": False,
+        "target_verified": False,
         "has_errors": False,
         "has_sorry": False,
         "timed_out": False,
@@ -1435,6 +1465,9 @@ def _suggestion_rejection_payload(
         "error_code": "suggestion_tactic_diagnostic_only",
         "output": error,
         "lean_started": False,
+        "status": "suggestion_tactic_diagnostic_only",
+        "diagnostic_only": True,
+        "proof_progress": False,
         **dict(replacement_metadata),
         **_timeout_metadata(
             requested_timeout_s=requested_timeout_s,
@@ -1756,6 +1789,9 @@ def lean_incremental_check(
     inspection_only_helper = bool(
         leanflow_action == "check_helper" and _is_lean_inspection_only_helper_candidate(replacement)
     )
+    inspection_only_target = bool(
+        leanflow_action == "check_target" and _is_lean_inspection_only_target_candidate(replacement)
+    )
     if leanflow_action == "check_helper" and re.search(
         r"(?m)^\s*#print\s+prefix\b",
         replacement,
@@ -2011,7 +2047,13 @@ def lean_incremental_check(
     probe_deadline: LeanProbeDeadlineExceeded | None = None
     with project_lean_heavy_admission(project_root) as admission:
         admission_wait_s = max(0.0, time.monotonic() - admission_started)
-        charged_admission_wait_s = admission_wait_s if admission_wait_s >= 0.01 else 0.0
+        # Lock setup and scheduler jitter can consume a few milliseconds even
+        # without meaningful contention. Do not shave that noise from an
+        # advertised cold-start floor; charge only an admission delay large
+        # enough to matter to the end-to-end deadline.
+        charged_admission_wait_s = (
+            admission_wait_s if admission_wait_s >= _ADMISSION_DEADLINE_CHARGE_THRESHOLD_S else 0.0
+        )
         probe_timeout_s = max(
             0.01,
             float(effective_timeout_s) - charged_admission_wait_s,
@@ -2200,6 +2242,8 @@ def lean_incremental_check(
         )
         if inspection_only_helper:
             result = _mark_inspection_only_helper_payload(result)
+    elif inspection_only_target:
+        result = _mark_inspection_only_target_payload(result)
     result.update(replacement_metadata)
     if (
         leanflow_action == "check_target"

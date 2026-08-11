@@ -645,6 +645,9 @@ def _record_identity(record: Mapping[str, Any]) -> str:
             {
                 "name": str(item.get("name", "") or ""),
                 "signature_sha256": str(item.get("signature_sha256", "") or ""),
+                "dependencies": [
+                    str(dependency or "") for dependency in (item.get("dependencies") or [])
+                ],
             }
             for item in (record.get("helpers") or [])
             if isinstance(item, Mapping)
@@ -702,6 +705,7 @@ def begin_decomposition(
     after_text: str,
     before_bytes: bytes | None = None,
     after_bytes: bytes | None = None,
+    helper_dependencies: Mapping[str, Sequence[str]] | None = None,
     cwd: str = "",
     operation: SourceOperation | None = None,
 ) -> dict[str, Any]:
@@ -740,6 +744,12 @@ def begin_decomposition(
                 "inserted_declaration": helper.text,
                 "declaration_sha256": helper.declaration_sha256,
                 "signature_sha256": helper.signature_sha256,
+                "dependencies": [
+                    dependency
+                    for raw_dependency in (helper_dependencies or {}).get(helper.name, ())
+                    if (dependency := str(raw_dependency or "").strip())
+                    and dependency != helper.name
+                ],
             }
         )
     record: dict[str, Any] = {
@@ -824,6 +834,13 @@ def _ensure_pending_decomposition_graph(record: Mapping[str, Any]) -> None:
         active_file=active_file,
         placed=tuple(skeletons),
         skeletons=skeletons,
+        helper_dependencies={
+            str(item.get("name", "") or ""): tuple(
+                str(dependency or "") for dependency in (item.get("dependencies") or [])
+            )
+            for item in (record.get("helpers") or [])
+            if isinstance(item, Mapping)
+        },
     )
     if set(recorded) != set(skeletons):
         raise ValueError("pending decomposition graph recovery was incomplete")

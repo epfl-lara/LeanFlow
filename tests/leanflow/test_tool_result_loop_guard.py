@@ -304,6 +304,83 @@ def test_helper_check_changed_statement_resets_the_streak():
     assert changed.streak == 1
 
 
+def test_helper_check_rename_does_not_reset_same_statement_streak():
+    """Bound renamed retries of the same helper proposition at one source revision."""
+    state: dict = {}
+    common = {
+        "function_name": "lean_incremental_check",
+        "result_text": json.dumps(
+            {
+                "success": True,
+                "ok": False,
+                "action": "check_helper",
+                "messages": [{"severity": "error", "message": "failed"}],
+            }
+        ),
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    first = tool_result_loop_guard.observe(
+        state,
+        args={
+            "action": "check_helper",
+            "replacement": "private lemma result_hstep_probe : False := by\n  exact h\n",
+        },
+        **common,
+    )
+    renamed = tool_result_loop_guard.observe(
+        state,
+        args={
+            "action": "check_helper",
+            "replacement": "private lemma result_hstep_probe2 : False := by\n  exact h\n",
+        },
+        **common,
+    )
+
+    assert (first.streak, renamed.streak) == (1, 2)
+
+
+def test_exhausted_helper_statement_blocks_renamed_preflight():
+    """Reject a renamed exhausted helper before starting Lean again."""
+    state: dict = {}
+    common = {
+        "function_name": "lean_incremental_check",
+        "args": {
+            "action": "check_helper",
+            "replacement": "private lemma probe_a : False := by\n  exact h\n",
+        },
+        "result_text": json.dumps(
+            {
+                "success": True,
+                "ok": False,
+                "action": "check_helper",
+                "messages": [{"severity": "error", "message": "failed"}],
+            }
+        ),
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    for _ in range(tool_result_loop_guard.HARD_LIMIT):
+        tool_result_loop_guard.observe(state, **common)
+
+    blocked = tool_result_loop_guard.exhausted_preflight(
+        state,
+        function_name="lean_incremental_check",
+        args={
+            "action": "check_helper",
+            "replacement": "private lemma probe_b : False := by\n  exact h\n",
+        },
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        source_revision_sha256="same-source",
+    )
+
+    assert blocked is not None
+    assert blocked["streak"] == tool_result_loop_guard.HARD_LIMIT
+
+
 def test_helper_check_application_mismatch_tracks_symbol_across_statement_variants():
     state: dict = {}
     decisions = []
@@ -404,9 +481,10 @@ def test_verified_result_clears_prior_loop_state():
     assert tool_result_loop_guard.STATE_KEY not in state
 
 
-def test_exact_check_is_not_tracked_but_feedback_is():
+def test_exact_check_and_feedback_are_tracked_separately():
     assert (
-        tool_result_loop_guard.tool_key("lean_incremental_check", {"action": "check_target"}) == ""
+        tool_result_loop_guard.tool_key("lean_incremental_check", {"action": "check_target"})
+        == "lean_incremental_check:check_target"
     )
     assert (
         tool_result_loop_guard.tool_key("lean_incremental_check", {"action": "feedback"})
@@ -583,6 +661,75 @@ def test_unrelated_tools_do_not_erase_advisor_failure_family():
     )
 
 
+def test_repeated_suggestion_family_is_filtered_at_unchanged_site():
+    state: dict = {}
+    common = {
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    tool_result_loop_guard.observe(
+        state,
+        function_name="lean_multi_attempt",
+        args={"file_path": "/tmp/Main.lean", "line": 12, "attempts": ["exact?", "aesop"]},
+        result_text=json.dumps(
+            {
+                "success": False,
+                "status": "screened_no_verified_candidate",
+                "items": [
+                    {"snippet": "exact?", "probe_closed_goal": True, "verified": False},
+                    {"snippet": "aesop", "probe_closed_goal": False, "verified": False},
+                ],
+            }
+        ),
+        **common,
+    )
+    retry = {
+        "file_path": "/tmp/Main.lean",
+        "line": 12,
+        "attempts": ["apply?", "solve_by_elim"],
+    }
+
+    removed, retained = tool_result_loop_guard.filter_repeated_suggestion_attempts(
+        state, args=retry, **common
+    )
+
+    assert removed == ("apply?",)
+    assert retained == ("solve_by_elim",)
+    assert retry["attempts"] == ["solve_by_elim"]
+
+
+def test_suggestion_family_filter_resets_after_source_progress():
+    state = {
+        tool_result_loop_guard.SUGGESTION_STATE_KEY: {
+            "target_symbol": "demo",
+            "active_file": "/tmp/Main.lean",
+            "source_revision_sha256": "old-source",
+            "site_signature": tool_result_loop_guard._multi_attempt_site_signature(
+                {"file_path": "/tmp/Main.lean", "line": 12}
+            ),
+            "suggestions": ["exact?"],
+        }
+    }
+    retry = {
+        "file_path": "/tmp/Main.lean",
+        "line": 12,
+        "attempts": ["apply?"],
+    }
+
+    removed, retained = tool_result_loop_guard.filter_repeated_suggestion_attempts(
+        state,
+        args=retry,
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        source_revision_sha256="new-source",
+    )
+
+    assert removed == ()
+    assert retained == ("apply?",)
+    assert retry["attempts"] == ["apply?"]
+
+
 def test_durable_advisor_streak_hydrates_process_local_boundary():
     state: dict = {}
     common = {
@@ -669,12 +816,13 @@ def test_varying_terminal_policy_denials_share_one_family():
         )
     ]
 
-    assert decisions[tool_result_loop_guard.NUDGE_LIMIT - 1].nudge is True
+    assert decisions[0].nudge is True
+    assert decisions[1].close_turn is True
     assert decisions[-1].close_turn is True
     assert decisions[-1].streak == tool_result_loop_guard.HARD_LIMIT
 
 
-def test_successful_terminal_clears_policy_denial_streak():
+def test_successful_allowed_terminal_preserves_policy_denial_streak():
     state: dict = {}
     common = {
         "target_symbol": "result",
@@ -699,3 +847,152 @@ def test_successful_terminal_clears_policy_denial_streak():
 
     assert decision.streak == 0
     assert tool_result_loop_guard.STATE_KEY not in state
+    assert tool_result_loop_guard.TERMINAL_STATE_KEY in state
+
+
+def test_terminal_policy_denial_survives_intervening_tool_progress():
+    state: dict = {}
+    common = {
+        "target_symbol": "result",
+        "active_file": "Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    first = tool_result_loop_guard.observe(
+        state,
+        function_name="terminal",
+        args={"command": "python3 probe.py"},
+        result_text=json.dumps({"success": False, "status": "clean_room_terminal_denied"}),
+        **common,
+    )
+    tool_result_loop_guard.observe(
+        state,
+        function_name="lean_outline",
+        args={"symbol": "result"},
+        result_text=json.dumps({"success": True, "ok": True}),
+        **common,
+    )
+    second = tool_result_loop_guard.observe(
+        state,
+        function_name="terminal",
+        args={"command": "node probe.js"},
+        result_text=json.dumps({"success": False, "status": "clean_room_terminal_denied"}),
+        **common,
+    )
+
+    assert first.nudge is True
+    assert second.streak == 2
+    assert second.close_turn is True
+
+
+def test_terminal_policy_denial_survives_source_only_progress():
+    state: dict = {}
+    common = {
+        "target_symbol": "result",
+        "active_file": "Main.lean",
+    }
+    tool_result_loop_guard.observe(
+        state,
+        function_name="terminal",
+        args={"command": "python3 probe.py"},
+        result_text=json.dumps({"success": False, "status": "clean_room_terminal_denied"}),
+        source_revision_sha256="before-helper",
+        **common,
+    )
+    decision = tool_result_loop_guard.observe(
+        state,
+        function_name="terminal",
+        args={"command": "python3 -c 'print(1)'"},
+        result_text=json.dumps({"success": False, "status": "clean_room_terminal_denied"}),
+        source_revision_sha256="after-helper",
+        **common,
+    )
+
+    assert decision.streak == 2
+    assert decision.close_turn is True
+
+
+def test_target_diagnostic_survives_unrelated_helper_source_progress():
+    """Keep one target blocker family across authenticated helper insertions."""
+    state: dict = {}
+    common = {
+        "target_symbol": "result",
+        "active_file": "Main.lean",
+    }
+    first = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_incremental_check",
+        args={"action": "check_target", "replacement": "theorem result : True := by"},
+        result_text=json.dumps(
+            {
+                "success": True,
+                "ok": False,
+                "messages": [
+                    {
+                        "severity": "error",
+                        "message": "dependent elimination failed",
+                        "file_start": {"line": 100, "column": 4},
+                    }
+                ],
+            }
+        ),
+        source_revision_sha256="before-helper",
+        **common,
+    )
+    tool_result_loop_guard.observe(
+        state,
+        function_name="lean_incremental_check",
+        args={"action": "check_helper", "replacement": "private lemma h : True := by trivial"},
+        result_text=json.dumps({"success": True, "ok": True}),
+        source_revision_sha256="after-helper",
+        **common,
+    )
+    second = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_incremental_check",
+        args={"action": "check_target", "replacement": "theorem result : True := by\n  simp"},
+        result_text=json.dumps(
+            {
+                "success": True,
+                "ok": False,
+                "messages": [
+                    {
+                        "severity": "error",
+                        "message": "dependent elimination failed",
+                        "file_start": {"line": 240, "column": 11},
+                    }
+                ],
+            }
+        ),
+        source_revision_sha256="after-helper",
+        **common,
+    )
+
+    assert first.streak == 1
+    assert second.streak == 2
+    assert tool_result_loop_guard.TARGET_STATE_KEY in state
+
+
+def test_successful_target_check_clears_target_diagnostic_family():
+    state = {
+        tool_result_loop_guard.TARGET_STATE_KEY: {
+            "target_symbol": "result",
+            "active_file": "Main.lean",
+            "source_revision_sha256": "",
+            "tool_key": "lean_incremental_check:check_target",
+            "signature": "old",
+            "streak": 4,
+        }
+    }
+
+    decision = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_incremental_check",
+        args={"action": "check_target"},
+        result_text=json.dumps({"success": True, "ok": True, "target_verified": True}),
+        target_symbol="result",
+        active_file="Main.lean",
+        source_revision_sha256="new-source",
+    )
+
+    assert decision.streak == 0
+    assert tool_result_loop_guard.TARGET_STATE_KEY not in state

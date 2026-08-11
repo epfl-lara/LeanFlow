@@ -212,6 +212,20 @@ def test_resolve_multi_attempt_location_advances_header_to_first_tactic(tmp_path
     )
 
 
+def test_resolve_multi_attempt_location_rejects_cross_line_closing_suffix(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "theorem target : True := by\n" "  exact id (by\n" "    exact True.intro)\n",
+        encoding="utf-8",
+    )
+
+    assert location._resolve_multi_attempt_location(target, 3, None) == (
+        3,
+        None,
+        "cross_line_structural_suffix",
+    )
+
+
 def test_multi_attempt_replacement_candidate_builds_complete_declaration(tmp_path):
     target = tmp_path / "Demo.lean"
     target.write_text("theorem target : True := by\n  sorry\n", encoding="utf-8")

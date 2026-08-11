@@ -841,11 +841,8 @@ def _remember_exact_candidate(
         or len(normalized_declaration) > MAX_DECLARATION_CHARS
         or _text_has_sorry(normalized_declaration)
         or _contains_lean_suggestion_tactic(normalized_declaration)
+        or _is_lean_inspection_only_helper_candidate(normalized_declaration)
         or (_helper_name_is_nonproduction(normalized_name) != (state == AWAITING_PRODUCTION_RENAME))
-        or (
-            state == AWAITING_PRODUCTION_RENAME
-            and _is_lean_inspection_only_helper_candidate(normalized_declaration)
-        )
     ):
         return None
     entries = _declaration_line_index_from_text(normalized_declaration)
@@ -968,6 +965,7 @@ def _successful_foreground_helper(
         declared_names != names
         or _text_has_sorry(declaration)
         or _contains_lean_suggestion_tactic(declaration)
+        or _is_lean_inspection_only_helper_candidate(declaration)
     ):
         return None
     return names[0], declaration
@@ -987,9 +985,22 @@ def successful_nonproduction_foreground_helper_name(
         target_symbol=target_symbol,
         active_file=active_file,
     )
-    if helper is None or not _helper_name_is_nonproduction(helper[0]):
+    if (
+        helper is None
+        or not _helper_name_is_nonproduction(helper[0])
+        or _is_direct_forwarding_wrapper(helper[1])
+    ):
         return ""
     return helper[0]
+
+
+def _is_direct_forwarding_wrapper(declaration: str) -> bool:
+    """Return whether a scratch helper only forwards to one existing declaration."""
+    proof = re.search(r":=\s*by\b", str(declaration or ""))
+    if proof is None:
+        return False
+    body = " ".join(str(declaration or "")[proof.end() :].split())
+    return bool(re.fullmatch(r"exact\s+[A-Za-z_«][\w'.«»]*(?:\s+[^;]+)?", body))
 
 
 def _declaration_with_name(declaration: str, helper_name: str) -> str:
@@ -1058,8 +1069,10 @@ def remember_nonproduction_from_foreground_check(
     if helper is None:
         return None
     helper_name, declaration = helper
-    if not _helper_name_is_nonproduction(helper_name) or _is_lean_inspection_only_helper_candidate(
-        declaration
+    if (
+        not _helper_name_is_nonproduction(helper_name)
+        or _is_lean_inspection_only_helper_candidate(declaration)
+        or _is_direct_forwarding_wrapper(declaration)
     ):
         return None
     check_identity = _sha256(

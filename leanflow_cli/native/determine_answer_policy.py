@@ -436,12 +436,225 @@ def trivializing_answer_revisions(
             opposite_sides.append(right)
         if _references_exact_name(right, answer_name):
             opposite_sides.append(left)
-        if any(
-            _normalized_expression(answer_body) == _normalized_expression(opposite)
-            for opposite in opposite_sides
-        ):
+        if any(_copies_or_restates_predicate(answer_body, opposite) for opposite in opposite_sides):
             blocked.append(answer_name)
     return tuple(blocked)
+
+
+def target_copying_definition_consumers(
+    assigned_target: str,
+    *,
+    before_source: str,
+    after_source: str,
+) -> tuple[str, ...]:
+    """Return later consumers trivialized by an assigned definition edit.
+
+    A placeholder definition may be the first item in a determine-style queue,
+    before its coupling has been persisted.  Reject filling that definition with
+    the exact opposite side of a later equality that references it: such an edit
+    only rewrites the future theorem into reflexivity.  The check is structural
+    and name-independent, and applies only when the assigned definition contained
+    a source placeholder before the edit.
+    """
+    target = _short_name(assigned_target)
+    if not target:
+        return ()
+    before_entries = _declaration_line_index_from_text(before_source)
+    after_entries = _declaration_line_index_from_text(after_source)
+
+    def matching_entry(
+        entries: Sequence[Mapping[str, Any]],
+    ) -> tuple[int, Mapping[str, Any]] | None:
+        return next(
+            (
+                (index, entry)
+                for index, entry in enumerate(entries)
+                if _short_name(str(entry.get("name", "") or "")) == target
+            ),
+            None,
+        )
+
+    before_match = matching_entry(before_entries)
+    after_match = matching_entry(after_entries)
+    if before_match is None or after_match is None:
+        return ()
+    _before_index, before_entry = before_match
+    after_index, after_entry = after_match
+    if str(before_entry.get("kind", "") or "") not in {"def", "abbrev"}:
+        return ()
+    if str(after_entry.get("kind", "") or "") not in {"def", "abbrev"}:
+        return ()
+    before_declaration = str(before_entry.get("text", "") or "")
+    after_declaration = str(after_entry.get("text", "") or "")
+    if before_declaration == after_declaration or not re.search(
+        r"\b(?:sorry|admit)\b",
+        _strip_lean_comments_and_strings(before_declaration),
+    ):
+        return ()
+    _definition_type, definition_body = _declaration_type_and_body(after_declaration)
+    if not definition_body or re.search(
+        r"\b(?:sorry|admit)\b",
+        _strip_lean_comments_and_strings(after_declaration),
+    ):
+        return ()
+
+    copied_by: list[str] = []
+    for entry in after_entries[after_index + 1 :]:
+        if str(entry.get("kind", "") or "") not in {"theorem", "lemma"}:
+            continue
+        consumer_type, _consumer_body = _declaration_type_and_body(str(entry.get("text", "") or ""))
+        sides = _top_level_equality_sides(consumer_type)
+        if sides is None:
+            continue
+        left, right = sides
+        opposite_sides: list[str] = []
+        if _references_exact_name(left, assigned_target):
+            opposite_sides.append(right)
+        if _references_exact_name(right, assigned_target):
+            opposite_sides.append(left)
+        if any(
+            _normalized_expression(definition_body) == _normalized_expression(opposite)
+            for opposite in opposite_sides
+        ):
+            consumer = str(entry.get("name", "") or "").strip()
+            if consumer:
+                copied_by.append(consumer)
+    return tuple(copied_by)
+
+
+def _set_builder_predicate_skeleton(
+    source: str,
+) -> tuple[int, frozenset[str], int, tuple[int, ...]] | None:
+    """Return a conservative structural fingerprint for a set-builder predicate."""
+    text = _strip_lean_comments_and_strings(source).strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    inner = text[1:-1].strip()
+    separator = _top_level_token(inner, "|")
+    if separator < 0:
+        return None
+    binder = inner[:separator].strip()
+    predicate = inner[separator + 1 :].strip()
+    binder_match = re.match(r"([A-Za-z_][A-Za-z0-9_']*)", binder)
+    if binder_match is None or not predicate.startswith("∀"):
+        return None
+    function_name = binder_match.group(1)
+    quantifier_end = _top_level_token(predicate, ",")
+    if quantifier_end < 0:
+        return None
+    quantified_head = predicate[1:quantifier_end].strip()
+    names_source = quantified_head.partition(":")[0]
+    quantified_names = tuple(re.findall(r"[A-Za-z_][A-Za-z0-9_']*", names_source))
+    if not quantified_names:
+        return None
+    body = predicate[quantifier_end + 1 :]
+    applications = tuple(
+        re.findall(
+            rf"(?<![A-Za-z0-9_']){re.escape(function_name)}\s+" r"([A-Za-z_][A-Za-z0-9_']*)",
+            body,
+        )
+    )
+    connectors = tuple(body.count(token) for token in ("∧", "∨", "→", "↔"))
+    return len(quantified_names), frozenset(applications), len(applications), connectors
+
+
+def _copies_or_restates_predicate(proposed: str, consumer_side: str) -> bool:
+    """Return whether a proposal copies or conservatively restates a predicate."""
+    if _normalized_expression(proposed) == _normalized_expression(consumer_side):
+        return True
+    proposed_skeleton = _set_builder_predicate_skeleton(proposed)
+    consumer_skeleton = _set_builder_predicate_skeleton(consumer_side)
+    if proposed_skeleton is None or consumer_skeleton is None:
+        return False
+    universal_count, _applications, application_count, connectors = proposed_skeleton
+    return (
+        universal_count >= 2
+        and application_count >= 2
+        and any(connectors)
+        and proposed_skeleton == consumer_skeleton
+    )
+
+
+def restating_definition_consumers(
+    assigned_target: str,
+    *,
+    before_source: str,
+    after_source: str,
+) -> tuple[str, ...]:
+    """Return later consumers restated by a placeholder definition edit.
+
+    Exact text comparison does not catch algebraically rewritten copies.  This
+    conservative second gate rejects a proposed set-builder that preserves the
+    later consumer's complete leading universal-variable, function-application,
+    and logical-branch skeleton.  Explicit classifications such as a singleton,
+    finite set, or existentially parameterized family do not share that skeleton.
+    """
+    target = _short_name(assigned_target)
+    if not target:
+        return ()
+    before_entries = _declaration_line_index_from_text(before_source)
+    after_entries = _declaration_line_index_from_text(after_source)
+    before_entry = next(
+        (
+            entry
+            for entry in before_entries
+            if _short_name(str(entry.get("name", "") or "")) == target
+        ),
+        None,
+    )
+    after_index = next(
+        (
+            index
+            for index, entry in enumerate(after_entries)
+            if _short_name(str(entry.get("name", "") or "")) == target
+        ),
+        -1,
+    )
+    if before_entry is None or after_index < 0:
+        return ()
+    after_entry = after_entries[after_index]
+    if str(before_entry.get("kind", "") or "") not in {"def", "abbrev"} or str(
+        after_entry.get("kind", "") or ""
+    ) not in {"def", "abbrev"}:
+        return ()
+    before_declaration = str(before_entry.get("text", "") or "")
+    after_declaration = str(after_entry.get("text", "") or "")
+    if before_declaration == after_declaration or not re.search(
+        r"\b(?:sorry|admit)\b",
+        _strip_lean_comments_and_strings(before_declaration),
+    ):
+        return ()
+    _definition_type, definition_body = _declaration_type_and_body(after_declaration)
+    proposed_skeleton = _set_builder_predicate_skeleton(definition_body)
+    if proposed_skeleton is None:
+        return ()
+    universal_count, applications, application_count, connectors = proposed_skeleton
+    if universal_count < 2 or application_count < 2 or not any(connectors):
+        return ()
+
+    restated_by: list[str] = []
+    for entry in after_entries[after_index + 1 :]:
+        if str(entry.get("kind", "") or "") not in {"theorem", "lemma"}:
+            continue
+        consumer_type, _consumer_body = _declaration_type_and_body(str(entry.get("text", "") or ""))
+        sides = _top_level_equality_sides(consumer_type)
+        if sides is None:
+            continue
+        left, right = sides
+        opposite_sides: list[str] = []
+        if _references_exact_name(left, assigned_target):
+            opposite_sides.append(right)
+        if _references_exact_name(right, assigned_target):
+            opposite_sides.append(left)
+        if any(
+            _set_builder_predicate_skeleton(opposite)
+            == (universal_count, applications, application_count, connectors)
+            for opposite in opposite_sides
+        ):
+            consumer = str(entry.get("name", "") or "").strip()
+            if consumer:
+                restated_by.append(consumer)
+    return tuple(restated_by)
 
 
 def without_editable_answers(
