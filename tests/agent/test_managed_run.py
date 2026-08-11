@@ -98,6 +98,7 @@ def test_aiagent_satisfies_managed_run_protocol(agent):
     for attr in (
         "pre_tool_call_callback",
         "post_tool_result_callback",
+        "tool_result_projection_callback",
         "tool_progress_callback",
         "step_callback",
     ):

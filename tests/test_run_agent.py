@@ -8,7 +8,11 @@ are made.
 import json
 import logging
 import re
+import threading
+import time
 import uuid
+from contextlib import nullcontext
+from contextvars import ContextVar
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +22,7 @@ import pytest
 
 import run_agent
 from agent.prompting.prompt_builder import DEFAULT_AGENT_IDENTITY
+from core.home import leanflow_home
 from run_agent import AIAgent
 
 # ---------------------------------------------------------------------------
@@ -83,7 +88,7 @@ def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
-    error_log_path = (run_agent._leanflow_home / "logs" / "errors.log").resolve()
+    error_log_path = (leanflow_home() / "logs" / "errors.log").resolve()
 
     try:
         for handler in list(root_logger.handlers):
@@ -134,6 +139,45 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
+def test_aiagent_optional_logs_tolerate_unwritable_runtime_home(monkeypatch, tmp_path):
+    """An invalid optional-log home cannot prevent AIAgent construction."""
+    blocked_home = tmp_path / "not-a-directory"
+    blocked_home.write_text("occupied", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_HOME", str(blocked_home))
+    root_logger = logging.getLogger()
+    original_handlers = list(root_logger.handlers)
+
+    try:
+        for handler in list(root_logger.handlers):
+            root_logger.removeHandler(handler)
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            created = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert created.logs_dir == blocked_home / "sessions"
+        assert created.session_log_file.parent == created.logs_dir
+        assert not created.logs_dir.exists()
+    finally:
+        for handler in list(root_logger.handlers):
+            root_logger.removeHandler(handler)
+            if handler not in original_handlers:
+                handler.close()
+        for handler in original_handlers:
+            root_logger.addHandler(handler)
+
+
 def test_aiagent_suppresses_optional_web_warning_for_native_lean_toolset(capsys):
     with (
         patch(
@@ -153,6 +197,16 @@ def test_aiagent_suppresses_optional_web_warning_for_native_lean_toolset(capsys)
 
     output = capsys.readouterr().out
     assert "missing requirements: ['web']" not in output
+
+
+def test_aiagent_binds_effective_main_route_to_context_compressor(agent):
+    """Compression fallback must inherit the resolved main provider mode."""
+    assert agent.context_compressor.main_provider == agent.provider
+    assert agent.context_compressor.main_api_mode == agent.api_mode
+    assert agent.context_compressor.main_model == agent.model
+    assert agent.context_compressor.model == agent.model
+    assert agent.context_compressor.base_url == agent.base_url
+    assert agent.context_compressor.api_key == agent.api_key
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +437,43 @@ def test_workflow_agent_event_details_include_session_metadata(agent):
         assert "visible" in result
 
 
+def test_api_request_workflow_event_is_bounded_and_keeps_diagnostic_metadata(agent):
+    """API telemetry must not duplicate the accumulated model conversation."""
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.tool_delay = 0
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    prompt = "sensitive proof context " + ("x" * 100_000)
+    response = _mock_response(content="Final answer", finish_reason="stop")
+    agent.client.chat.completions.create.return_value = response
+    emitted: list[tuple[str, str, dict]] = []
+
+    def capture(event_type, message, **details):
+        emitted.append((event_type, message, details))
+
+    with (
+        patch("run_agent._emit_workflow_event", side_effect=capture),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation(prompt)
+
+    assert result["completed"] is True
+    details = next(details for kind, _message, details in emitted if kind == "api-request")
+    assert "messages" not in details
+    assert details["message_count"] == 2
+    assert details["approx_tokens"] > 0
+    assert details["total_chars"] >= len(prompt)
+    assert details["available_tools"] == ["web_search"]
+    assert details["message_roles"] == {"system": 1, "user": 1}
+    assert details["last_message_role"] == "user"
+    assert len(details["last_message_preview"]) <= 500
+    assert len(details["message_history_sha256"]) == 64
+    assert len(json.dumps(details)) < 4_000
+
+
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):
         msg = _mock_assistant_msg(reasoning="thinking hard")
@@ -517,15 +608,36 @@ class TestMaskApiKey:
     def test_none_returns_none(self, agent):
         assert agent._mask_api_key_for_logs(None) is None
 
-    def test_short_key_returns_stars(self, agent):
-        assert agent._mask_api_key_for_logs("short") == "***"
+    def test_short_key_uses_fixed_redaction_marker(self, agent):
+        assert agent._mask_api_key_for_logs("short") == "[REDACTED]"
 
-    def test_long_key_masked(self, agent):
+    def test_long_key_fully_redacted(self, agent):
         key = "sk-or-v1-abcdefghijklmnop"
         result = agent._mask_api_key_for_logs(key)
-        assert result.startswith("sk-or-v1")
-        assert result.endswith("mnop")
-        assert "..." in result
+        assert result == "[REDACTED]"
+        assert key[:8] not in result
+        assert key[-4:] not in result
+
+
+def test_api_request_dump_contains_no_credential_material(agent, tmp_path, monkeypatch, capsys):
+    """Request diagnostics redact credentials in headers, errors, files, and stdout."""
+    secret = "sk-requestdump-start-abcdefghijklmnopqrstuvwxyz-requestdump-end"
+    agent.logs_dir = tmp_path
+    agent.client = SimpleNamespace(api_key=secret)
+    monkeypatch.setenv("LEANFLOW_DUMP_REQUEST_STDOUT", "1")
+
+    dump_path = agent._dump_api_request_debug(
+        {"model": "test-model", "messages": [{"role": "user", "content": "hello"}]},
+        reason="provider-error",
+        error=RuntimeError(f"Authorization: Bearer {secret}"),
+    )
+
+    assert dump_path is not None
+    rendered = dump_path.read_text(encoding="utf-8") + capsys.readouterr().out
+    assert secret not in rendered
+    assert secret[:20] not in rendered
+    assert secret[-20:] not in rendered
+    assert "Bearer [REDACTED]" in rendered
 
 
 # ===================================================================
@@ -534,6 +646,100 @@ class TestMaskApiKey:
 
 
 class TestInit:
+    @pytest.mark.parametrize(
+        ("provider", "api_mode", "base_url"),
+        [
+            ("openrouter", "chat_completions", "https://openrouter.ai/api/v1"),
+            (
+                "openai-codex",
+                "codex_responses",
+                "https://chatgpt.com/backend-api/codex",
+            ),
+        ],
+    )
+    def test_openai_compatible_startup_never_renders_credential_material(
+        self, provider, api_mode, base_url, capsys
+    ):
+        """Provider startup reports credential presence without key-derived text."""
+        secret = "secret-start-abcdefghijklmnopqrstuvwxyz-secret-end"
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            AIAgent(
+                api_key=secret,
+                base_url=base_url,
+                provider=provider,
+                api_mode=api_mode,
+                quiet_mode=False,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        output = capsys.readouterr().out
+        assert "Using configured API credentials" in output
+        assert "Using API key:" not in output
+        assert secret not in output
+        assert secret[:8] not in output
+        assert secret[-10:] not in output
+
+    def test_native_anthropic_startup_never_renders_credential_material(self, capsys):
+        """Native Anthropic startup reports credential presence without token fragments."""
+        secret = "credfragx-start-abcdefghijklmnopqrstuvwxyz-credfragx-end"
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch(
+                "agent.providers.anthropic_adapter.build_anthropic_client",
+                return_value=MagicMock(),
+            ),
+        ):
+            AIAgent(
+                api_key=secret,
+                provider="anthropic",
+                api_mode="anthropic_messages",
+                quiet_mode=False,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        output = capsys.readouterr().out
+        assert "Using configured API credentials" in output
+        assert "Using token:" not in output
+        assert secret not in output
+        assert secret[:8] not in output
+        assert secret[-10:] not in output
+
+    @pytest.mark.parametrize("credential", ["tiny-key", "dummy-key", ""])
+    def test_invalid_or_missing_startup_never_echoes_credential(self, credential, capsys):
+        """Credential warnings contain status only, including the routed missing-key path."""
+        routed = {
+            "api_key": credential,
+            "base_url": "https://openrouter.ai/api/v1",
+        }
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch.object(
+                run_agent.ProviderClientFactory,
+                "build_routed_client_kwargs",
+                return_value=routed,
+            ),
+        ):
+            AIAgent(
+                quiet_mode=False,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        output = capsys.readouterr().out
+        assert "API credentials appear invalid or missing" in output
+        assert "got:" not in output
+        if credential:
+            assert credential not in output
+
     def test_anthropic_base_url_accepted(self):
         """Anthropic base URLs should route to native Anthropic client."""
         with (
@@ -1035,6 +1241,26 @@ class TestExecuteToolCalls:
         assert "[manager feedback]" in messages[0]["content"]
         assert agent._post_tool_result_appendix is None
 
+    def test_model_projection_runs_after_raw_audit_and_manager_callback(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        raw_result = "full-audit-result-" + "x" * 2000
+        callbacks = []
+        events = []
+        agent.post_tool_result_callback = lambda name, args, result: callbacks.append(result)
+        agent.tool_result_projection_callback = lambda name, args, result: "bounded-model-result"
+
+        with (
+            patch("run_agent.handle_function_call", return_value=raw_result),
+            patch("run_agent._emit_workflow_event", side_effect=lambda *a, **kw: events.append(kw)),
+        ):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert callbacks == [raw_result]
+        assert events[-1]["result"] == raw_result
+        assert messages[0]["content"] == "bounded-model-result"
+
     def test_interrupt_skips_remaining(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
@@ -1104,6 +1330,92 @@ class TestConcurrentToolExecution:
                 mock_seq.assert_called_once()
                 mock_con.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "edit_tool",
+        ["patch", "write_file", "apply_verified_patch"],
+    )
+    def test_managed_source_edit_forces_entire_batch_sequential(self, agent, edit_tool):
+        """A source edit cannot overlap even a read-only sibling in its batch."""
+        edit = _mock_tool_call(name=edit_tool, arguments='{"path":"Demo.lean"}', call_id="c1")
+        read = _mock_tool_call(name="read_file", arguments='{"path":"Demo.lean"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[edit, read])
+
+        with (
+            patch.object(agent, "_execute_tool_calls_sequential") as mock_seq,
+            patch.object(agent, "_execute_tool_calls_concurrent") as mock_con,
+        ):
+            agent._execute_tool_calls(mock_msg, [], "task-1")
+
+        mock_seq.assert_called_once()
+        mock_con.assert_not_called()
+
+    def test_concurrent_entry_serializes_managed_edits_before_snapshot_overwrite(self, agent):
+        """The defensive concurrent entry cannot let sibling edits steal snapshot ownership."""
+        patch_call = _mock_tool_call(
+            name="patch",
+            arguments='{"path":"Demo.lean","old_string":"a","new_string":"b"}',
+            call_id="c1",
+        )
+        write_call = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"Demo.lean","content":"replacement"}',
+            call_id="c2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[patch_call, write_call])
+        first_edit_started = threading.Event()
+        second_preflight_completed = threading.Event()
+        trace: list[str] = []
+        violations: list[str] = []
+
+        def preflight(name, _args):
+            if name == "write_file":
+                first_edit_started.wait(timeout=1.0)
+            trace.append(f"pre:{name}")
+            pending = getattr(agent, "_managed_queue_edit_snapshot", None)
+            if pending is not None:
+                violations.append(f"{name} replaced pending {pending['owner']}")
+            agent._managed_queue_edit_snapshot = {"owner": name}
+            if name == "write_file":
+                second_preflight_completed.set()
+
+        def handle(name, _args, _task_id, **_kwargs):
+            trace.append(f"run:{name}")
+            if name == "patch":
+                first_edit_started.set()
+                # A genuinely concurrent sibling deterministically reaches its
+                # preflight here; a serialized sibling starts after this call.
+                second_preflight_completed.wait(timeout=0.05)
+            owner = dict(getattr(agent, "_managed_queue_edit_snapshot", {}) or {}).get("owner")
+            if owner != name:
+                violations.append(f"{name} ran with {owner or 'no'} snapshot")
+            return json.dumps({"success": True, "tool": name})
+
+        def complete(name, _args, _result):
+            trace.append(f"post:{name}")
+            owner = dict(getattr(agent, "_managed_queue_edit_snapshot", {}) or {}).get("owner")
+            if owner != name:
+                violations.append(f"{name} finalized with {owner or 'no'} snapshot")
+            if hasattr(agent, "_managed_queue_edit_snapshot"):
+                delattr(agent, "_managed_queue_edit_snapshot")
+
+        agent.pre_tool_call_callback = preflight
+        agent.post_tool_result_callback = complete
+
+        with patch("run_agent.handle_function_call", side_effect=handle):
+            # Exercise the lower-level entry too: callers cannot bypass the
+            # batch policy by selecting the concurrent strategy directly.
+            agent._execute_tool_calls_concurrent(mock_msg, [], "task-1")
+
+        assert violations == []
+        assert trace == [
+            "pre:patch",
+            "run:patch",
+            "post:patch",
+            "pre:write_file",
+            "run:write_file",
+            "post:write_file",
+        ]
+
     def test_multiple_tools_uses_concurrent_path(self, agent):
         """Multiple non-interactive tools should use concurrent path."""
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -1144,6 +1456,644 @@ class TestConcurrentToolExecution:
         assert "alpha" in messages[0]["content"]
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
+
+    def test_identical_concurrent_lean_verify_calls_share_one_execution(self, agent):
+        """Byte-identical file verification must compile and notify the manager once."""
+        tool_calls = [
+            _mock_tool_call(
+                name="lean_verify",
+                arguments=json.dumps({"target": "Demo/Main.lean", "mode": "file_exact"}),
+                call_id=f"c{index}",
+            )
+            for index in range(4)
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=tool_calls)
+        messages: list[dict] = []
+        callbacks: list[tuple[str, dict, str]] = []
+        agent.post_tool_result_callback = lambda name, args, result: callbacks.append(
+            (name, args, result)
+        )
+
+        with patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "ok": True, "output": "checked"}),
+        ) as handle:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        handle.assert_called_once()
+        assert len(callbacks) == 1
+        assert [message["tool_call_id"] for message in messages] == [
+            "c0",
+            "c1",
+            "c2",
+            "c3",
+        ]
+        assert "checked" in messages[0]["content"]
+        for message in messages[1:]:
+            payload = json.loads(message["content"])
+            assert payload["status"] == "identical_batch_call_reused"
+            assert payload["source_tool_call_id"] == "c0"
+
+    def test_identical_concurrent_lean_reads_share_one_execution(self, agent):
+        """Identical outlines and proof contexts should each run only once per batch."""
+        tool_calls = [
+            _mock_tool_call(
+                name=name,
+                arguments=json.dumps({"file_path": "Demo.lean", "theorem_id": "demo"}),
+                call_id=f"c{index}",
+            )
+            for index, name in enumerate(
+                ["lean_outline", "lean_outline", "lean_proof_context", "lean_proof_context"]
+            )
+        ]
+        messages: list[dict] = []
+
+        with patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"success": True, "result": "read"}),
+        ) as handle:
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=tool_calls),
+                messages,
+                "task-1",
+            )
+
+        assert handle.call_count == 2
+        assert json.loads(messages[1]["content"])["status"] == "identical_batch_call_reused"
+        assert json.loads(messages[3]["content"])["status"] == "identical_batch_call_reused"
+
+    def test_concurrent_lean_search_results_compact_later_overlap(self, agent):
+        """Keep first search evidence full and replace later duplicate bodies with references."""
+        tool_calls = [
+            _mock_tool_call(
+                name="lean_search",
+                arguments=json.dumps({"query": query}),
+                call_id=f"c{index}",
+            )
+            for index, query in enumerate(["foo", "bar"])
+        ]
+
+        def search_result(_name, args, _task_id, **_kwargs):
+            return json.dumps(
+                {
+                    "success": True,
+                    "results": [
+                        {
+                            "provider": "local",
+                            "name": "Demo.shared",
+                            "declaration": "theorem Demo.shared : " + args["query"] * 100,
+                        },
+                        {"provider": "local", "name": f"Demo.{args['query']}"},
+                    ],
+                }
+            )
+
+        messages: list[dict] = []
+        with patch("run_agent.handle_function_call", side_effect=search_result):
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=tool_calls),
+                messages,
+                "task-1",
+            )
+
+        first = json.loads(messages[0]["content"])
+        second = json.loads(messages[1]["content"])
+        assert "declaration" in first["results"][0]
+        assert second["results"][0]["repeated_result"] is True
+        assert "declaration" not in second["results"][0]
+        assert second["results"][1]["name"] == "Demo.bar"
+
+    def test_delegated_concurrent_tools_suppress_child_spinner(self, agent):
+        """Keep lane tool batches concise when several children share one terminal."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"beta"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        agent.quiet_mode = True
+        agent._suppress_spinners = True
+
+        with (
+            patch("run_agent.KawaiiSpinner") as spinner,
+            patch("run_agent.handle_function_call", return_value="ok"),
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, [], "child-task")
+
+        spinner.assert_not_called()
+
+    def test_concurrent_tools_inherit_capacity_context(self, agent):
+        """Worker threads retain the delegated actor lease context."""
+        marker: ContextVar[str] = ContextVar("tool-capacity-marker", default="missing")
+        token = marker.set("actor-lease")
+        try:
+            tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+            tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
+            mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+            observed: list[str] = []
+
+            def fake_handle(name, args, task_id, **kwargs):
+                observed.append(marker.get())
+                return "ok"
+
+            with patch("run_agent.handle_function_call", side_effect=fake_handle):
+                agent._execute_tool_calls_concurrent(mock_msg, [], "task-1")
+        finally:
+            marker.reset(token)
+
+        assert observed == ["actor-lease", "actor-lease"]
+
+    def test_concurrent_memory_heavy_lean_tools_are_serialized(self, agent):
+        """A large Lean search batch must not load several semantic states at once."""
+        tool_calls = [
+            _mock_tool_call(
+                name="lean_search",
+                arguments=json.dumps({"query": f"query-{index}"}),
+                call_id=f"c{index}",
+            )
+            for index in range(6)
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=tool_calls)
+        messages = []
+        lock = threading.Lock()
+        active = 0
+        max_active = 0
+
+        def fake_handle(name, args, task_id, **kwargs):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.03)
+                return json.dumps({"result": args["query"]})
+            finally:
+                with lock:
+                    active -= 1
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert max_active == 1
+        assert [message["tool_call_id"] for message in messages] == [
+            f"c{index}" for index in range(6)
+        ]
+
+    def test_reasoning_advisor_overlaps_heavy_lean_gate_without_unserializing_searches(self, agent):
+        """Advisor work bypasses the Lean-memory gate while heavy calls stay serialized."""
+        tool_calls = [
+            _mock_tool_call(
+                name="lean_search",
+                arguments=json.dumps({"query": "first-heavy"}),
+                call_id="c1",
+            ),
+            _mock_tool_call(
+                name="lean_reasoning_help",
+                arguments=json.dumps(
+                    {
+                        "theorem_id": "demo",
+                        "file_path": "Demo/Main.lean",
+                    }
+                ),
+                call_id="c2",
+            ),
+            _mock_tool_call(
+                name="lean_search",
+                arguments=json.dumps({"query": "second-heavy"}),
+                call_id="c3",
+            ),
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=tool_calls)
+        messages: list[dict] = []
+        first_heavy_started = threading.Event()
+        release_first_heavy = threading.Event()
+        second_heavy_started = threading.Event()
+        advisor_started = threading.Event()
+        lock = threading.Lock()
+        active_heavy = 0
+        max_active_heavy = 0
+
+        def fake_handle(name, args, task_id, **kwargs):
+            nonlocal active_heavy, max_active_heavy
+            if name == "lean_reasoning_help":
+                advisor_started.set()
+                return json.dumps({"status": "answered"})
+
+            with lock:
+                active_heavy += 1
+                max_active_heavy = max(max_active_heavy, active_heavy)
+                is_first = not first_heavy_started.is_set()
+                if is_first:
+                    first_heavy_started.set()
+                else:
+                    second_heavy_started.set()
+            try:
+                if is_first and not release_first_heavy.wait(timeout=5):
+                    raise TimeoutError("test did not release first heavy tool")
+                return json.dumps({"result": args["query"]})
+            finally:
+                with lock:
+                    active_heavy -= 1
+
+        def run_batch():
+            with patch("run_agent.handle_function_call", side_effect=fake_handle):
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        batch_thread = threading.Thread(target=run_batch)
+        batch_thread.start()
+        try:
+            assert first_heavy_started.wait(timeout=2)
+            assert advisor_started.wait(timeout=2)
+            assert not second_heavy_started.is_set()
+            assert batch_thread.is_alive()
+        finally:
+            release_first_heavy.set()
+            batch_thread.join(timeout=5)
+
+        assert not batch_thread.is_alive()
+        assert second_heavy_started.is_set()
+        assert max_active_heavy == 1
+        assert [message["tool_call_id"] for message in messages] == ["c1", "c2", "c3"]
+
+    def test_research_heavy_tools_reclaim_resident_lean_services(self, agent, monkeypatch):
+        """Release owned LeanProbe state before the project slot admits another actor."""
+        monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+        monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
+        tool_calls = [
+            _mock_tool_call(
+                name="lean_verify",
+                arguments=json.dumps({"target": f"File{index}.lean"}),
+                call_id=f"c{index}",
+            )
+            for index in range(2)
+        ]
+        calls: list[str] = []
+        admission = SimpleNamespace(
+            to_dict=lambda: {}, retain_until_process_exit=lambda reason: None
+        )
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch(
+                "agent.execution.tool_executor.project_lean_heavy_admission",
+                side_effect=lambda root: calls.append("admit") or nullcontext(admission),
+            ),
+            patch(
+                "leanflow_cli.lean.lean_incremental.close_incremental_sessions",
+                side_effect=lambda: calls.append("incremental") or True,
+            ),
+        ):
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=tool_calls), [], "task-1"
+            )
+
+        assert calls.count("incremental") == 2
+        assert calls.count("admit") == 2
+
+    def test_single_sequential_lean_tool_uses_project_admission(self, agent, monkeypatch):
+        """A one-tool turn shares the same admission/reclaim boundary as a batch."""
+        monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+        monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
+        calls: list[str] = []
+        admission = SimpleNamespace(
+            to_dict=lambda: {}, retain_until_process_exit=lambda reason: None
+        )
+        tool_call = _mock_tool_call(
+            name="lean_verify",
+            arguments=json.dumps({"target": "Demo/Main.lean"}),
+            call_id="c1",
+        )
+
+        with (
+            patch(
+                "run_agent.handle_function_call",
+                side_effect=lambda *args, **kwargs: calls.append("invoke") or "ok",
+            ),
+            patch(
+                "agent.execution.tool_executor.project_lean_heavy_admission",
+                side_effect=lambda root: calls.append("admit") or nullcontext(admission),
+            ),
+            patch(
+                "leanflow_cli.lean.lean_incremental.close_incremental_sessions",
+                side_effect=lambda: calls.append("close") or True,
+            ),
+        ):
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tool_call]), [], "task-1"
+            )
+
+        assert calls == ["admit", "invoke", "close"]
+
+    def test_clean_candidate_reserves_handoff_before_foreground_admission_exits(self, monkeypatch):
+        """Publish commit priority before releasing the candidate check's main slot."""
+        from agent.execution.tool_executor import ToolExecutor
+
+        calls: list[object] = []
+
+        class _Admission:
+            def to_dict(self):
+                return {}
+
+            def retain_until_process_exit(self, reason):
+                calls.append(("retain", reason))
+
+            def reserve_foreground_handoff(self, seconds, *, reason):
+                calls.append(("reserve", seconds, reason))
+                return seconds
+
+        class _AdmissionContext:
+            def __enter__(self):
+                calls.append("admit")
+                return _Admission()
+
+            def __exit__(self, *_args):
+                calls.append("release")
+
+        agent = SimpleNamespace(valid_tool_names=[], session_id="candidate-test")
+        agent._project_lean_handoff_request_callback = lambda function_name, arguments, result: (
+            calls.append(("callback", function_name, arguments, result)) or 60.0
+        )
+        arguments = {
+            "action": "check_target",
+            "file_path": "Demo/Main.lean",
+            "theorem_id": "demo",
+            "replacement": "theorem demo : True := by trivial",
+        }
+        result = json.dumps({"success": True, "ok": True})
+
+        with (
+            patch(
+                "run_agent.handle_function_call",
+                side_effect=lambda *args, **kwargs: calls.append("invoke") or result,
+            ),
+            patch(
+                "agent.execution.tool_executor.project_lean_heavy_admission",
+                return_value=_AdmissionContext(),
+            ),
+            patch(
+                "agent.execution.tool_executor._close_admitted_incremental_session",
+                side_effect=lambda: calls.append("close") or True,
+            ),
+        ):
+            returned = ToolExecutor(agent).invoke_registered_tool(
+                "lean_incremental_check",
+                arguments,
+                "task-1",
+            )
+
+        assert returned == result
+        assert calls[0:2] == ["admit", "invoke"]
+        assert calls[2][0:2] == ("callback", "lean_incremental_check")
+        assert calls[3] == (
+            "reserve",
+            60.0,
+            "native exact-candidate commit handoff after lean_incremental_check",
+        )
+        assert calls[4:] == ["close", "release"]
+
+    def test_admitted_tool_emits_correlated_waiting_event_before_acquisition(
+        self, agent, monkeypatch, tmp_path
+    ):
+        """Expose queue time before a foreground Lean-heavy tool is admitted."""
+        project = tmp_path / "Demo"
+        project.mkdir()
+        (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+        monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+        monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+        tool_call = _mock_tool_call(
+            name="lean_verify",
+            arguments=json.dumps({"target": "Demo/Main.lean"}),
+            call_id="c1",
+        )
+        order = []
+        admission = SimpleNamespace(
+            to_dict=lambda: {"waited_s": 1.25, "contended": True},
+            retain_until_process_exit=lambda reason: None,
+        )
+
+        def emit(event_type, message, **details):
+            order.append(("event", event_type, details))
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch(
+                "agent.execution.tool_executor.project_lean_heavy_admission",
+                side_effect=lambda root: order.append(("acquire", root)) or nullcontext(admission),
+            ),
+            patch(
+                "leanflow_cli.lean.lean_incremental.close_incremental_sessions",
+                return_value=True,
+            ),
+            patch("run_agent._emit_workflow_event", side_effect=emit),
+        ):
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tool_call]), [], "task-1"
+            )
+
+        waiting = next(item for item in order if item[:2] == ("event", "lean-resource-waiting"))
+        admitted = next(item for item in order if item[:2] == ("event", "lean-resource-admission"))
+        assert order.index(waiting) < next(
+            index for index, item in enumerate(order) if item[0] == "acquire"
+        )
+        assert waiting[2]["admission_role"] == "foreground"
+        assert waiting[2]["admission_request_id"]
+        assert admitted[2]["admission_request_id"] == waiting[2]["admission_request_id"]
+        assert admitted[2]["admission_role"] == "foreground"
+        assert admitted[2]["waited_s"] == 1.25
+
+    def test_composite_tool_observes_its_actual_inner_project_admission(
+        self, agent, monkeypatch, tmp_path
+    ):
+        """Report inner capability or verifier gates without leasing the whole tool."""
+        from core.project_resource_admission import project_lean_heavy_admission
+
+        project = tmp_path / "Demo"
+        project.mkdir()
+        (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+        monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+        tool_call = _mock_tool_call(
+            name="lean_inspect",
+            arguments=json.dumps({"target": "Demo/Main.lean"}),
+            call_id="c1",
+        )
+        emitted = []
+
+        def handle(*args, **kwargs):
+            with project_lean_heavy_admission(project):
+                return "ok"
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=handle),
+            patch(
+                "run_agent._emit_workflow_event",
+                side_effect=lambda event_type, message, **details: emitted.append(
+                    (event_type, details)
+                ),
+            ),
+        ):
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tool_call]), [], "task-1"
+            )
+
+        resource_events = [
+            (event_type, details)
+            for event_type, details in emitted
+            if event_type.startswith("lean-resource-")
+        ]
+        assert [event_type for event_type, _details in resource_events] == [
+            "lean-resource-waiting",
+            "lean-resource-admission",
+            "lean-resource-released",
+        ]
+        request_ids = {details["admission_request_id"] for _event_type, details in resource_events}
+        assert len(request_ids) == 1
+        assert all(
+            details["admission_source"] == "inner_tool_call"
+            for _event_type, details in resource_events
+        )
+        assert all(details["tool"] == "lean_inspect" for _event_type, details in resource_events)
+
+    def test_foreground_lease_spans_batch_and_target_check_precedes_inspect(
+        self, agent, monkeypatch
+    ):
+        """Keep background out while the authoritative check outranks diagnostics."""
+        from agent.execution.admission_handoff import replace_initial_foreground_lease
+
+        calls = []
+
+        class _Lease:
+            active = True
+            releases = 0
+
+            def release(self):
+                self.active = False
+                self.releases += 1
+                return True
+
+        lease = _Lease()
+        replace_initial_foreground_lease(agent, lease)
+        tool_calls = [
+            _mock_tool_call(
+                name="lean_inspect",
+                arguments=json.dumps({"target": "Demo/Main.lean", "symbol": "demo"}),
+                call_id="inspect",
+            ),
+            _mock_tool_call(
+                name="lean_incremental_check",
+                arguments=json.dumps(
+                    {
+                        "action": "check_target",
+                        "file_path": "Demo/Main.lean",
+                        "theorem_id": "demo",
+                    }
+                ),
+                call_id="check",
+            ),
+        ]
+        admission = SimpleNamespace(
+            to_dict=lambda: {},
+            retain_until_process_exit=lambda reason: None,
+            reserve_foreground_handoff=lambda seconds, reason="": seconds,
+        )
+
+        def handle(name, *_args, **_kwargs):
+            assert lease.active is True
+            calls.append(name)
+            return json.dumps({"success": True, "ok": True})
+
+        messages = []
+        with (
+            patch("run_agent.handle_function_call", side_effect=handle),
+            patch(
+                "agent.execution.tool_executor.project_lean_heavy_admission",
+                return_value=nullcontext(admission),
+            ),
+        ):
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=tool_calls),
+                messages,
+                "task-1",
+            )
+
+        assert calls == ["lean_incremental_check", "lean_inspect"]
+        assert lease.active is False
+        assert lease.releases == 1
+        assert [message["tool_call_id"] for message in messages] == ["inspect", "check"]
+
+    def test_remote_search_does_not_take_project_lean_admission(self, agent, monkeypatch):
+        """Remote/text search must not pay a local Lean subprocess gate."""
+        monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+        tool_call = _mock_tool_call(
+            name="lean_search",
+            arguments=json.dumps({"query": "Nat.add_comm", "mode": "semantic"}),
+            call_id="c1",
+        )
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("leanflow_cli.lean.lean_incremental.close_incremental_sessions") as close,
+        ):
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tool_call]), [], "task-1"
+            )
+
+        close.assert_not_called()
+
+    def test_failed_sequential_probe_close_reports_retained_slot(
+        self, agent, monkeypatch, tmp_path
+    ):
+        """Do not emit a reclaimed event when owned LeanProbe close fails."""
+        project = tmp_path / "Demo"
+        project.mkdir()
+        (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+        monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+        monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+        monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
+        tool_call = _mock_tool_call(
+            name="lean_verify",
+            arguments=json.dumps({"target": "Demo/Main.lean"}),
+            call_id="c1",
+        )
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch(
+                "leanflow_cli.lean.lean_incremental.close_incremental_sessions",
+                return_value=False,
+            ),
+            patch("run_agent._emit_workflow_event") as emit,
+        ):
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tool_call]), [], "task-1"
+            )
+
+        retained = [
+            call
+            for call in emit.call_args_list
+            if call.args and call.args[0] == "lean-resource-retained"
+        ]
+        assert len(retained) == 1
+        assert retained[0].kwargs["retained_until_process_exit"] is True
+
+    def test_concurrent_cheap_lean_tools_still_overlap(self, agent):
+        """The memory gate must not serialize text-only Lean inspection tools."""
+        tool_calls = [
+            _mock_tool_call(
+                name="lean_outline",
+                arguments=json.dumps({"file_path": f"File{index}.lean"}),
+                call_id=f"c{index}",
+            )
+            for index in range(2)
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=tool_calls)
+        messages = []
+        rendezvous = threading.Barrier(2, timeout=2)
+
+        def fake_handle(name, args, task_id, **kwargs):
+            rendezvous.wait()
+            return json.dumps({"result": args["file_path"]})
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert len(messages) == 2
 
     def test_concurrent_preserves_order_despite_timing(self, agent):
         """Even if tools finish in different order, messages should be in original order."""
@@ -1210,9 +2160,176 @@ class TestConcurrentToolExecution:
         with patch("run_agent.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
-        assert callbacks == [
+        assert sorted(callbacks, key=lambda item: item[1]["q"]) == [
             ("web_search", {"q": "alpha"}, "result_alpha"),
             ("web_search", {"q": "beta"}, "result_beta"),
+        ]
+
+    def test_concurrent_callback_runs_before_slowest_tool_and_keeps_messages_ordered(self, agent):
+        """A fast result must reach managed state without waiting for a slow sibling."""
+        slow_started = threading.Event()
+        release_slow = threading.Event()
+        fast_callback_seen = threading.Event()
+        worker_threads: set[int] = set()
+        callback_threads: set[int] = set()
+        callbacks: list[str] = []
+        messages: list[dict] = []
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"slow"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"fast"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+
+        def fake_handle(name, args, task_id, **kwargs):
+            worker_threads.add(threading.get_ident())
+            query = args["q"]
+            if query == "slow":
+                slow_started.set()
+                if not release_slow.wait(timeout=5):
+                    raise TimeoutError("test did not release slow tool")
+            return f"result_{query}"
+
+        def callback(name, args, result):
+            query = args["q"]
+            callback_threads.add(threading.get_ident())
+            callbacks.append(query)
+            agent.stage_tool_result_appendix(f"[managed finding for {query}]")
+            if query == "fast":
+                fast_callback_seen.set()
+
+        agent.post_tool_result_callback = callback
+
+        def run_batch():
+            with patch("run_agent.handle_function_call", side_effect=fake_handle):
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        batch_thread = threading.Thread(target=run_batch)
+        batch_thread.start()
+        try:
+            assert slow_started.wait(timeout=2)
+            assert fast_callback_seen.wait(timeout=2)
+            assert batch_thread.is_alive(), "slow sibling should still be blocking the batch"
+        finally:
+            release_slow.set()
+            batch_thread.join(timeout=5)
+
+        assert not batch_thread.is_alive()
+        assert callbacks == ["fast", "slow"]
+        assert callback_threads == {batch_thread.ident}
+        assert callback_threads.isdisjoint(worker_threads)
+        assert [message["tool_call_id"] for message in messages] == ["c1", "c2"]
+        assert "result_slow" in messages[0]["content"]
+        assert "[managed finding for slow]" in messages[0]["content"]
+        assert "[managed finding for fast]" not in messages[0]["content"]
+        assert "result_fast" in messages[1]["content"]
+        assert "[managed finding for fast]" in messages[1]["content"]
+        assert "[managed finding for slow]" not in messages[1]["content"]
+
+    def test_delegated_child_concurrent_results_reach_managed_parent_callback(self, agent):
+        """A delegated lane must forward concurrent results to the managed parent hook."""
+        from tools.implementations import delegate_tool
+
+        parent = MagicMock()
+        parent.base_url = "https://example.test/v1"
+        parent.api_key = "parent-key"
+        parent.provider = "test"
+        parent.api_mode = "chat_completions"
+        parent.model = "test-model"
+        parent.platform = "cli"
+        parent.enabled_toolsets = ["web"]
+        parent.max_tokens = None
+        parent.reasoning_config = None
+        parent.seed = 42
+        parent.temperature = 0.3
+        parent.top_p = None
+        parent.top_k = None
+        parent.min_p = None
+        parent.prefill_messages = None
+        parent._session_db = None
+        parent._delegate_depth = 0
+        parent._delegate_spinner = None
+        parent.tool_progress_callback = None
+        parent.iteration_budget = agent.iteration_budget
+        parent.providers_allowed = None
+        parent.providers_ignored = None
+        parent.providers_order = None
+        parent.provider_sort = None
+        parent.session_id = "parent-session"
+
+        callbacks = []
+        parent._managed_delegated_post_tool_result_callback = (
+            lambda executing_agent, name, args, result: callbacks.append(
+                (
+                    str(getattr(executing_agent, "session_id", "") or ""),
+                    str(getattr(executing_agent, "_parent_session_id", "") or ""),
+                    name,
+                    args,
+                    result,
+                )
+            )
+        )
+
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_fetch", arguments='{"url":"beta"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+
+        def build_child(**kwargs):
+            # Mirror the constructor fields involved in this integration while
+            # retaining the real ToolExecutor installed by the agent fixture.
+            agent.post_tool_result_callback = kwargs.get("post_tool_result_callback")
+            agent.tool_progress_callback = kwargs.get("tool_progress_callback")
+            return agent
+
+        def run_child_conversation(*, user_message):
+            messages = []
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "child-task")
+            return {
+                "final_response": user_message,
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": messages,
+            }
+
+        agent.run_conversation = run_child_conversation
+        credentials = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        with (
+            patch.object(delegate_tool, "_load_config", return_value={"max_iterations": 4}),
+            patch.object(
+                delegate_tool,
+                "_resolve_delegation_credentials",
+                return_value=credentials,
+            ),
+            patch("run_agent.AIAgent", side_effect=build_child),
+            patch(
+                "run_agent.handle_function_call",
+                side_effect=lambda name, args, task_id, **kwargs: f"result_{name}",
+            ),
+        ):
+            result = json.loads(
+                delegate_tool.delegate_task(goal="research lane", parent_agent=parent)
+            )
+
+        assert result["results"][0]["status"] == "completed"
+        assert sorted(callbacks, key=lambda item: item[2]) == [
+            (
+                str(agent.session_id),
+                "parent-session",
+                "web_fetch",
+                {"url": "beta"},
+                "result_web_fetch",
+            ),
+            (
+                str(agent.session_id),
+                "parent-session",
+                "web_search",
+                {"q": "alpha"},
+                "result_web_search",
+            ),
         ]
 
     def test_concurrent_post_tool_result_callback_can_append_tool_context(self, agent):
@@ -1566,6 +2683,43 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after remint"
 
+    def test_anthropic_401_diagnostic_never_renders_token_fragments(self, agent, capsys):
+        """Authentication diagnostics report status without token-derived text."""
+        self._setup_agent(agent)
+        secret = "sk-ant-oat01-credfragstart1234567890credfragend"
+        agent.provider = "anthropic"
+        agent.api_mode = "anthropic_messages"
+        agent._anthropic_api_key = secret
+        agent.quiet_mode = False
+
+        class _UnauthorizedError(RuntimeError):
+            def __init__(self):
+                super().__init__("unauthorized")
+                self.status_code = 401
+
+        capsys.readouterr()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_dump_api_request_debug"),
+            patch.object(agent, "_interruptible_api_call", side_effect=_UnauthorizedError()),
+            patch.object(
+                agent,
+                "_try_refresh_anthropic_client_credentials",
+                return_value=False,
+            ),
+        ):
+            result = agent.run_conversation("hello")
+
+        output = capsys.readouterr().out
+        assert result["completed"] is False
+        assert "Credential status: configured" in output
+        assert "Token prefix:" not in output
+        assert secret not in output
+        assert "credfragstart" not in output
+        assert "credfragend" not in output
+
     def test_context_compression_triggered(self, agent):
         """When compressor says should_compress, compression runs."""
         self._setup_agent(agent)
@@ -1643,6 +2797,40 @@ class TestRunConversation:
         assert mock_compress.call_args.kwargs["approx_tokens"] == expected_estimate
         assert result["final_response"] == "All done"
         assert result["completed"] is True
+
+    def test_post_tool_tail_emits_phase_timing_before_next_api_step(self, agent):
+        """Slow-tail telemetry separates compression and session persistence from callbacks."""
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc]),
+            _mock_response(content="All done", finish_reason="stop"),
+        ]
+        emitted: list[tuple[str, dict]] = []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="result"),
+            patch("run_agent._POST_TOOL_TAIL_SLOW_THRESHOLD_S", 0.0),
+            patch(
+                "run_agent._emit_workflow_event",
+                side_effect=lambda event, _message, **details: emitted.append((event, details)),
+            ),
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "All done"
+        tail = next(details for event, details in emitted if event == "post-tool-tail-slow")
+        assert tail["tools"] == ["web_search"]
+        assert tail["compression_triggered"] is False
+        assert set(tail["phase_seconds"]) == {
+            "next_prompt_estimate",
+            "compression",
+            "session_log",
+        }
 
     def test_pre_send_compression_counts_reasoning_replay_payload(self, agent):
         """Pre-send compression should use the final API payload, including reasoning replay."""
@@ -1778,14 +2966,16 @@ class TestRetryExhaustion:
         mock_time.monotonic.return_value = 12345.0
         return mock_time
 
-    def test_invalid_response_returns_error_not_crash(self, agent):
+    def test_invalid_response_returns_error_not_crash(self, agent, capsys):
         """Exhausted retries on invalid (empty choices) response must not IndexError."""
         self._setup_agent(agent)
+        secret = "sk-invalidresponsesecret1234567890"
         # Return response with empty choices every time
         bad_resp = SimpleNamespace(
             choices=[],
             model="test/model",
             usage=None,
+            error=RuntimeError(f"rate limited Authorization: Bearer {secret}"),
         )
         agent.client.chat.completions.create.return_value = bad_resp
         with (
@@ -1797,21 +2987,147 @@ class TestRetryExhaustion:
             result = agent.run_conversation("hello")
         assert result.get("completed") is False, f"Expected completed=False, got: {result}"
         assert result.get("failed") is True
+        assert result.get("provider_retries_exhausted") is True
+        assert agent.client.chat.completions.create.call_count == 4
         assert "error" in result
         assert "Invalid API response" in result["error"]
+        assert secret not in capsys.readouterr().out
 
-    def test_api_error_raises_after_retries(self, agent):
+    def test_api_error_raises_after_retries(self, agent, capsys, caplog):
         """Exhausted retries on API errors must raise, not fall through."""
         self._setup_agent(agent)
-        agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+        secret = "sk-transientprovidersecret1234567890"
+        agent.client.chat.completions.create.side_effect = RuntimeError(
+            f"rate limited Authorization: Bearer {secret}"
+        )
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
+            patch("run_agent._emit_workflow_event") as emit_event,
         ):
-            with pytest.raises(RuntimeError, match="rate limited"):
+            with pytest.raises(RuntimeError, match="rate limited") as raised:
                 agent.run_conversation("hello")
+        assert raised.value.provider_retries_exhausted is True
+        assert secret not in str(raised.value)
+        assert agent.client.chat.completions.create.call_count == 4
+        scheduled = [
+            call.kwargs["wait_seconds"]
+            for call in emit_event.call_args_list
+            if call.args and call.args[0] == "provider-retry-scheduled"
+        ]
+        exhausted = [
+            call
+            for call in emit_event.call_args_list
+            if call.args and call.args[0] == "provider-retry-exhausted"
+        ]
+        assert scheduled == [5.0, 15.0, 45.0]
+        assert len(exhausted) == 1
+        assert secret not in repr(emit_event.call_args_list)
+        assert secret not in capsys.readouterr().out
+        assert secret not in caplog.text
+
+    def test_live_codex_usage_limit_pauses_once_with_structured_reset(
+        self, agent, monkeypatch, tmp_path
+    ):
+        """The observed five-day Codex reset must bypass every fixed retry."""
+        self._setup_agent(agent)
+        monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("LEANFLOW_PROVIDER_RESET_MAX_WAIT_SECONDS", "0")
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+
+        class LiveRateLimitError(RuntimeError):
+            status_code = 429
+            body = {
+                "type": "usage_limit_reached",
+                "message": "The usage limit has been reached",
+                "plan_type": "pro",
+                "resets_at": 1784949879,
+                "eligible_promo": None,
+                "resets_in_seconds": 453096,
+            }
+
+        provider_call = MagicMock(
+            side_effect=LiveRateLimitError(
+                "Error code: 429 - {'error': {'type': 'usage_limit_reached', "
+                "'message': 'The usage limit has been reached', 'plan_type': 'pro', "
+                "'resets_at': 1784949879, 'eligible_promo': None, "
+                "'resets_in_seconds': 453096}}"
+            )
+        )
+        pause_order: list[tuple[str, dict]] = []
+        agent._managed_provider_usage_limit_callback = lambda metadata: pause_order.append(
+            ("pause", dict(metadata))
+        )
+        with (
+            patch.object(agent, "_interruptible_api_call", provider_call),
+            patch.object(
+                agent,
+                "_persist_session",
+                side_effect=lambda *_args, **_kwargs: pause_order.append(("persist", {})),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time.time", return_value=1784496783),
+            patch("run_agent._emit_workflow_event") as emit_event,
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["failed"] is True
+        assert result["completed"] is False
+        assert result["provider_retries_exhausted"] is True
+        assert result["provider_globally_unavailable"] is True
+        assert result["provider_retry_after"] == {
+            "kind": "usage_limit_reached",
+            "retry_after_seconds": 453097,
+            "unavailable_until_epoch": 1784949880,
+            "resets_at_epoch": 1784949879,
+            "reported_resets_in_seconds": 453096,
+            "timing_consistent": True,
+            "timing_clamped": False,
+            "source": "exception.body",
+        }
+        assert provider_call.call_count == 1
+        assert [phase for phase, _metadata in pause_order[:2]] == ["pause", "persist"]
+        assert pause_order[0][1] == result["provider_retry_after"]
+        assert not any(
+            call.args and call.args[0] == "provider-retry-scheduled"
+            for call in emit_event.call_args_list
+        )
+        usage_events = [
+            call
+            for call in emit_event.call_args_list
+            if call.args and call.args[0] == "provider-usage-limit"
+        ]
+        assert len(usage_events) == 1
+        assert usage_events[0].kwargs["retry_after_seconds"] == 453097
+
+    def test_transient_retry_wait_is_interruptible_before_second_provider_call(self, agent):
+        """A cancellation during backoff must not wait five seconds or issue a retry."""
+        self._setup_agent(agent)
+        agent.quiet_mode = False
+        provider_call = MagicMock(side_effect=RuntimeError("503 unavailable"))
+        sleep_calls: list[float] = []
+
+        def interrupt_on_poll(delay):
+            sleep_calls.append(delay)
+            agent._interrupt_requested = True
+
+        with (
+            patch.object(agent, "_interruptible_api_call", provider_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time.sleep", side_effect=interrupt_on_poll),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["interrupted"] is True
+        assert result["completed"] is False
+        assert provider_call.call_count == 1
+        assert sleep_calls == [0.2]
 
 
 # ---------------------------------------------------------------------------

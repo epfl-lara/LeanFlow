@@ -7,13 +7,22 @@ timeout resolution, ``build_api_kwargs`` mode branching, and the interrupt/
 timeout abort paths of the background-thread request runner.
 """
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import run_agent
-from agent.providers.api_caller import ApiCaller
+from agent.providers.api_caller import (
+    TRANSIENT_PROVIDER_MAX_ATTEMPTS,
+    TRANSIENT_PROVIDER_RETRY_DELAYS_S,
+    ApiCaller,
+    TransientProviderRetriesExhausted,
+    transient_provider_recovery_deadline_monotonic,
+    transient_provider_retry_delay_s,
+    transient_provider_retry_delay_within_deadline_s,
+)
 from run_agent import AIAgent, _resolve_api_caller
 
 
@@ -116,6 +125,116 @@ def test_timeout_falls_back_to_env(agent, monkeypatch):
     assert agent._provider_request_timeout_seconds({}) == 55.0
 
 
+def test_timeout_is_clipped_to_conversation_deadline(agent, monkeypatch):
+    agent._conversation_deadline_monotonic = 110.0
+    monkeypatch.setattr("run_agent.time.monotonic", lambda: 100.0)
+
+    assert agent._provider_request_timeout_seconds({"timeout": 1200.0}) == 10.0
+
+
+def test_timeout_is_clipped_to_transient_provider_recovery_deadline(agent, monkeypatch):
+    agent._transient_provider_recovery_deadline_monotonic = 108.0
+    monkeypatch.setattr("run_agent.time.monotonic", lambda: 100.0)
+
+    assert agent._provider_request_timeout_seconds({"timeout": 1200.0}) == 8.0
+
+
+def test_request_client_uses_effective_managed_timeout(agent):
+    """Keep the request transport timeout aligned with managed heartbeats."""
+    agent.client = object()
+    agent._client_kwargs = {
+        "api_key": "test-key-1234567890",
+        "base_url": "https://example.test/v1",
+    }
+    request_client = object()
+    with (
+        patch.object(agent, "_is_openai_client_closed", return_value=False),
+        patch.object(agent, "_provider_request_timeout_seconds", return_value=1200.0) as timeout,
+        patch.object(agent, "_create_openai_client", return_value=request_client) as create,
+    ):
+        result = agent._create_request_openai_client(reason="test_request")
+
+    assert result is request_client
+    timeout.assert_called_once_with({})
+    assert create.call_args.args[0]["timeout"] == 1200.0
+
+
+def test_transient_provider_retry_policy_is_exactly_three_managed_retries():
+    """Expose the 5/15/45 contract independently of real sleeping."""
+    assert TRANSIENT_PROVIDER_RETRY_DELAYS_S == (5.0, 15.0, 45.0)
+    assert TRANSIENT_PROVIDER_MAX_ATTEMPTS == 4
+    assert [transient_provider_retry_delay_s(attempt) for attempt in range(1, 5)] == [
+        5.0,
+        15.0,
+        45.0,
+        None,
+    ]
+
+
+def test_transient_provider_retry_respects_enclosing_deadline():
+    """Do not spend backoff time when no useful request window remains."""
+    assert (
+        transient_provider_retry_delay_within_deadline_s(
+            1,
+            deadline_monotonic=116.0,
+            now_monotonic=100.0,
+        )
+        == 5.0
+    )
+    assert (
+        transient_provider_retry_delay_within_deadline_s(
+            1,
+            deadline_monotonic=114.0,
+            now_monotonic=100.0,
+        )
+        is None
+    )
+    assert (
+        transient_provider_retry_delay_within_deadline_s(
+            2,
+            deadline_monotonic=None,
+            now_monotonic=100.0,
+        )
+        == 15.0
+    )
+
+
+def test_transient_provider_recovery_deadline_is_stable_and_clipped(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_PROVIDER_RECOVERY_BUDGET_S", "180")
+
+    first = transient_provider_recovery_deadline_monotonic(
+        current_deadline_monotonic=None,
+        conversation_deadline_monotonic=500.0,
+        now_monotonic=100.0,
+    )
+    repeated = transient_provider_recovery_deadline_monotonic(
+        current_deadline_monotonic=first,
+        conversation_deadline_monotonic=500.0,
+        now_monotonic=150.0,
+    )
+    clipped = transient_provider_recovery_deadline_monotonic(
+        current_deadline_monotonic=None,
+        conversation_deadline_monotonic=200.0,
+        now_monotonic=100.0,
+    )
+
+    assert first == 280.0
+    assert repeated == first
+    assert clipped == 200.0
+
+
+def test_transient_provider_exhaustion_marker_redacts_persisted_message():
+    secret = "sk-testprovidersecret1234567890"
+    error = RuntimeError(f"rate limited Authorization: Bearer {secret}")
+
+    exhausted = TransientProviderRetriesExhausted(error)
+
+    assert exhausted.provider_retries_exhausted is True
+    assert exhausted.original_error_type == "RuntimeError"
+    assert "rate limited" in str(exhausted)
+    assert secret not in str(exhausted)
+
+
 # ── build_api_kwargs mode branching ─────────────────────────────────────────
 
 
@@ -154,6 +273,39 @@ def test_interruptible_api_call_returns_response(agent):
     ):
         out = agent._interruptible_api_call({"model": "m", "messages": []})
     assert out == "the-response"
+
+
+@pytest.mark.parametrize(
+    ("delegate_depth", "dispatch_worker", "expected_enabled"),
+    [(0, "", False), (1, "", True), (0, "1", True)],
+)
+def test_only_background_agents_enter_capacity_gate(
+    agent, monkeypatch, delegate_depth, dispatch_worker, expected_enabled
+):
+    agent.api_mode = "chat_completions"
+    agent._delegate_depth = delegate_depth
+    if dispatch_worker:
+        monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", dispatch_worker)
+    else:
+        monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
+        monkeypatch.delenv("LEANFLOW_DISPATCH_JOB_ID", raising=False)
+    req_client = MagicMock()
+    req_client.chat.completions.create.return_value = "response"
+    gate_calls: list[bool] = []
+
+    @contextmanager
+    def fake_gate(*, enabled, cancelled):
+        gate_calls.append(enabled)
+        yield None
+
+    with (
+        patch("agent.providers.api_caller.background_provider_lease", fake_gate),
+        patch.object(agent, "_create_request_openai_client", return_value=req_client),
+        patch.object(agent, "_close_request_openai_client"),
+    ):
+        assert agent._interruptible_api_call({"model": "m", "messages": []}) == "response"
+
+    assert gate_calls == [expected_enabled]
 
 
 def test_interruptible_api_call_raises_on_interrupt(agent):

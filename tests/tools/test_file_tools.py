@@ -34,6 +34,35 @@ class TestFileToolsList:
             assert "properties" in schema["parameters"]
 
 
+def test_scratch_worker_file_writers_are_denied_before_backend_access(monkeypatch):
+    from tools.implementations import file_tools
+
+    get_ops = MagicMock()
+    monkeypatch.setattr(file_tools, "_get_file_ops", get_ops)
+    monkeypatch.setenv("LEANFLOW_DISPATCH_SCRATCH_ONLY", "1")
+
+    write = json.loads(file_tools.write_file_tool("Scratch.lean", "import Mathlib\n"))
+    replace = json.loads(
+        file_tools.patch_tool(
+            mode="replace",
+            path="Scratch.lean",
+            old_string="a",
+            new_string="b",
+        )
+    )
+    v4a = json.loads(
+        file_tools.patch_tool(
+            mode="patch",
+            patch="*** Begin Patch\n*** Add File: Scratch.lean\n+x\n*** End Patch",
+        )
+    )
+
+    assert write["status"] == "scratch_only_write_denied"
+    assert replace["status"] == "scratch_only_write_denied"
+    assert v4a["status"] == "scratch_only_write_denied"
+    get_ops.assert_not_called()
+
+
 class TestReadFileHandler:
     @patch("tools.implementations.file_tools._get_file_ops")
     def test_returns_file_content(self, mock_get):
@@ -147,6 +176,32 @@ class TestPatchHandler:
             mode="replace", path="/tmp/f.py", old_string="x", new_string="y", replace_all=True
         )
         mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "x", "y", True)
+
+    @patch("tools.implementations.file_tools._get_file_ops")
+    def test_strict_replace_requires_fresh_read_receipt(self, mock_get):
+        mock_ops = MagicMock()
+        mock_ops.read_raw.return_value = "foo"
+        mock_get.return_value = mock_ops
+
+        from tools.implementations import file_tools
+
+        with patch.object(
+            file_tools,
+            "_freshness_guard",
+            return_value=("foo", "File has not been read in this session."),
+        ):
+            payload = json.loads(
+                file_tools.patch_tool(
+                    mode="replace",
+                    path="/tmp/f.py",
+                    old_string="foo",
+                    new_string="bar",
+                    strict=True,
+                )
+            )
+
+        assert payload["status"] == "fresh_read_required"
+        mock_ops.patch_replace.assert_not_called()
 
     @patch("tools.implementations.file_tools._get_file_ops")
     def test_replace_mode_missing_path_errors(self, mock_get):

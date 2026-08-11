@@ -1,1 +1,1 @@
-"""leanflow_cli.lean subpackage (Phase II restructure)."""
+"""Provide typed Lean inspection, search, checking, and automation services."""

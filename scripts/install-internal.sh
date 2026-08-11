@@ -347,7 +347,11 @@ ok "wrapper: $LEANFLOW_BIN_DIR/leanflow"
 ok "wrapper: $LEANFLOW_BIN_DIR/leanflow-agent"
 
 step "Cleaning legacy wrapper names"
-rm -f "$LEANFLOW_BIN_DIR/leanflow-acp"
+rm -f \
+  "$LEANFLOW_BIN_DIR/leanflow-acp" \
+  "$LEANFLOW_BIN_DIR/epflemma" \
+  "$LEANFLOW_BIN_DIR/epflemma-prove" \
+  "$LEANFLOW_BIN_DIR/epflemma-formalize"
 ok "legacy wrappers removed if present"
 
 step "Recording install metadata"

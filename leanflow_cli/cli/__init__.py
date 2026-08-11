@@ -1,1 +1,1 @@
-"""leanflow_cli.cli subpackage (Phase II restructure)."""
+"""Implement shell commands, rendering, and setup diagnostics."""

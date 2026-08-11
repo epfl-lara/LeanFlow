@@ -13,10 +13,10 @@ Use this skill for hard theorem-local blockers after normal proof workflow steps
 2. Call `lean_reasoning_help` with the theorem id, file path, current diagnostics, current attempt, and recent failed attempts.
 3. Treat the result as advice only; do not accept it until a concrete edit passes `lean_incremental_check(check_target)` for the assigned declaration, or `lean_verify(mode=file_exact)` when doing a final Lake sweep or explicit canonical check.
 4. Do not use auxiliary advice to justify deleting, weakening, renaming, moving, or replacing the declaration with `sorry`.
-5. If the advice suggests a statement change, report that as a blocker instead of applying it.
+5. If the advice suggests a statement change, report that as a blocker instead of applying it. A blocker or accurate open-problem assessment is route-change evidence only: request a distinct route, job, portfolio refresh, or fresh epoch and continue; advisor prose cannot make it terminal.
 6. If the advice suggests `sorry`, `admit`, axioms, unsafe code, or another placeholder, ignore that part and continue with verified proof repair.
 7. Helper lemmas or private supporting declarations are acceptable advice when they preserve existing statements and directly support the assigned theorem.
-8. If the advisor is unavailable, returns no answer, or gives irrelevant advice, continue the main Lean workflow from the strongest verified local evidence; missing advice is not evidence that the theorem statement is wrong.
+8. If the advisor is unavailable, returns no answer, gives irrelevant advice, or recommends stopping, continue the main Lean workflow from the strongest verified local evidence; missing or surrendering advice is not evidence that the theorem statement is wrong or mathematically resolved.
 
 ## Configuration
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from leanflow_cli.cli.cli_handlers import (
     _print_mcp_status,
     _print_project_power_setup,
     _project_payload,
+    workflow_run_help_text,
 )
 from leanflow_cli.cli.commands import build_workflow_command_set
 from leanflow_cli.cli.doctor import run_doctor
@@ -85,7 +87,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """Build the argument parser with all CLI subcommands and options. Constructs a hierarchical parser for version, status, config, doctor, mcp, project, workflow, sandbox, provider, and models commands, each with their own nested subparsers and flags."""
     parser = argparse.ArgumentParser(
         prog="leanflow",
-        description="LeanFlow Lean AI for Math shell",
+        description="Lean-first AI automation for Lean 4",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -93,6 +95,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("status", help="Show workflow and sandbox status")
     status_parser.add_argument("--json", action="store_true", dest="json_output")
+    status_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Probe the container engine and include the full sandbox history",
+    )
 
     config_parser = subparsers.add_parser("config", help="Inspect or modify config")
     config_sub = config_parser.add_subparsers(dest="config_command")
@@ -182,7 +189,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sandbox_run.add_argument("args", nargs=argparse.REMAINDER)
 
     provider_parser = subparsers.add_parser("provider", help="Show the resolved runtime provider")
-    provider_parser.add_argument("--requested", default=None)
+    provider_parser.add_argument("--requested", "--provider", dest="requested", default=None)
 
     model_parser = subparsers.add_parser("models", help="Manage local model runtimes")
     model_sub = model_parser.add_subparsers(dest="models_command")
@@ -245,7 +252,11 @@ def _handle_project(args: argparse.Namespace) -> int:
 
 def _handle_status(args: argparse.Namespace) -> int:
     workflow = load_workflow_live_status()
-    sandbox = sandbox_status()
+    verbose = bool(getattr(args, "verbose", False))
+    sandbox = sandbox_status(
+        probe_engine=verbose,
+        recent_run_limit=8 if verbose else 3,
+    )
     payload = {
         "workflow": workflow or {"phase": "idle", "workflow_kind": "[none]"},
         "sandbox": sandbox,
@@ -328,6 +339,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sandbox":
         return _handle_sandbox(args)
     if args.command == "workflow":
+        if any(token in {"-h", "--help"} for token in args.args):
+            print(workflow_run_help_text(args.workflow))
+            return 0
         if args.workflow in {"status", "history", "activity", "log"}:
             payload = load_workflow_live_status()
             if args.workflow == "history":
@@ -367,7 +381,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if payload else 1
         text = f"/{args.workflow}" if not str(args.workflow).startswith("/") else str(args.workflow)
         if args.args:
-            text = f"{text} {' '.join(args.args)}"
+            # argparse receives already-decoded argv values. Re-quote them
+            # before handing the command to the workflow parser so a
+            # multiword label, prompt, or command template remains one value.
+            text = f"{text} {shlex.join(args.args)}"
         try:
             plan = resolve_workflow_request(
                 text, active_cwd=Path.cwd(), requested_provider=args.provider

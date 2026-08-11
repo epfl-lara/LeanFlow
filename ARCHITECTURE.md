@@ -1,315 +1,362 @@
-# LeanFlow Architecture & Refactoring Map
+# LeanFlow Architecture
 
-This document tracks the module structure of LeanFlow and the in-progress decomposition of its
-monoliths. It is the living companion to the refactoring program (see `TODO.md` "Refactoring
-Plan" and the per-phase plan). Update it as modules move.
+This document is the maintainer map for LeanFlow's current runtime. It records
+the package boundaries, principal execution paths, compatibility surfaces, and
+invariants that must survive implementation changes. User-facing behavior is
+documented in `README.md` and `docs/product-reference.md`.
 
-## Entry points (do not break)
+## Design Boundaries
 
-- `leanflow` → `leanflow_cli.main:main` — the interactive shell / CLI.
-- `leanflow-agent` → `leanflow_agent:main` — thin shim that seeds `LEANFLOW_HOME` and calls
-  `run_agent.main()`.
+LeanFlow is a Lean-first automation kernel. Its dependency direction is:
 
-`native_runner.py` builds `run_agent.AIAgent` **in-process** (not via subprocess); the `leanflow`
-shell spawns `leanflow workflow …` subprocesses for managed runs.
-
-## Top-level layout (post Phase II)
-
+```text
+core
+├── agent
+├── tools
+└── leanflow_cli
 ```
+
+- `core/` owns dependency-light runtime primitives and must not import from the
+  higher layers.
+- `agent/` owns provider conversations, prompt assembly, context management,
+  tool execution, and accounting.
+- `tools/` owns model-callable capabilities and deterministic safety guards.
+- `leanflow_cli/` composes the agent and tools into Lean workflows, persistent
+  project state, provider routing, and shell commands.
+
+New behavior belongs in the smallest cohesive leaf module. Do not add new
+responsibilities to `run_agent.py` or
+`leanflow_cli/native/native_runner.py` when a focused collaborator can own
+them.
+
+## Entry Points
+
+- `leanflow` → `leanflow_cli.main:main`
+- `leanflow-agent` → `leanflow_agent:main`
+- `run_agent.AIAgent` → the provider conversation loop used by managed
+  workflows
+- `leanflow_cli.native.native_runner` → the long-running native Lean workflow
+  runtime
+
+The native runtime delegates per-provider-turn diagnostic feedback budgeting to
+`leanflow_cli/native/diagnostic_loop_guard.py`. The guard ends only a repeated
+diagnostic-only turn; source edits and exact Lean verification remain governed
+by the queue manager and continue with fresh route budgets.
+
+After an exact proof shape times out, `leanflow_cli/native/timeout_refactor_guard.py`
+prevents a heartbeat-only source edit from bypassing structural-refactor
+backpressure. Substantive proof changes and independently checked helper
+extraction remain admissible.
+
+When a sorry-free assigned theorem fails its exact file check,
+`leanflow_cli/native/failed_verification_assignment.py` keeps that declaration
+as the active queue item. A transiently empty diagnostic scan therefore cannot
+retire the theorem or send the planner an unknown target. After repeated
+same-revision timeouts, the resulting one-shot decomposition request outranks
+spent route and semantic ledgers so structural recovery reaches the splitter
+before another campaign rollover.
+
+The shell launches managed workflows as child processes. Inside a managed
+process, `native_runner` constructs `AIAgent` directly and coordinates its
+turns with Lean verification and durable workflow state.
+
+## Repository Layout
+
+```text
 LeanFlow/
-├── run_agent.py            # AIAgent conversation loop (collaborators live under agent/)
-├── leanflow_agent.py       # leanflow-agent entry shim (seeds LEANFLOW_HOME + runs the legacy seed)
-├── core/                   # lowest layer (NO leanflow_cli deps): the home authority + shared kernel
-│   ├── home.py             #   leanflow_home() + migrate_legacy_home() — single source of truth
-│   ├── state.py time.py constants.py   # SQLite session store / clock / endpoint constants
-│   └── model_tools.py toolsets.py utils.py minisweagent_path.py
-├── agent/                  # AIAgent collaborators, grouped into cohesive subpackages:
-│                           #   providers/ prompting/ compression/ execution/ display/ accounting/ runtime/
-├── tools/                  # agent tools, grouped: implementations/ utilities/ mcp/ environments/
-│                           #   (registry.py + response.py kept at the top for self-registration)
-└── leanflow_cli/           # shell UX + workflow orchestration, grouped:
-                            #   lean/ native/ formalization/ workflows/ cli/ runtime/
-                            #   (main.py shell.py config.py workflow.py kept at the top — entrypoint + patch targets)
+├── core/                 # shared runtime kernel and compatibility authorities
+├── agent/                # model conversation collaborators
+├── tools/                # model-callable tools and deterministic guards
+├── leanflow_cli/         # CLI, Lean services, workflows, runtimes, persistence
+├── leanflow_skills/      # packaged prompt-time Lean guidance
+├── leanflow_specs/       # packaged workflow and worker contracts
+├── evals/                # frozen evaluation harness and adversarial fixtures
+├── testdata/             # deterministic Lean workflow fixtures
+├── tests/                # unit, integration, installer, and contract tests
+├── run_agent.py          # AIAgent compatibility surface and core loop
+├── leanflow_agent.py     # leanflow-agent entry shim
+└── README.md             # product overview and quick start
 ```
 
-> **Phase II reversed the earlier "keep everything flat" stance.** The conservative first wave
-> split the monoliths in place; Phase II then (a) grouped every extracted leaf into the subpackages
-> above, (b) renamed the historical flat module names (e.g. the state store → `core.state`) and
-> consolidated to the single `LEANFLOW_` env + `~/.leanflow` home contract, and (c) completed
-> the managed-run contract. The detailed extraction history further down lists modules by their
-> original *flat* names — they now live under the subpackages here (e.g. the `agent/` collaborators
-> are under `agent/{accounting,execution,prompting,…}/`; the `native_runner.py`-era leaves under
-> `leanflow_cli/native/`; the `lean_*` leaves under `leanflow_cli/lean/`).
+Local campaigns and their logs belong under ignored project state or an
+external results repository, never in this source tree. The repository-level
+`artifacts/` directory is ignored for this reason.
 
-### Phase II program (deep restructure → legacy drop → contract → quality → docs)
+## Core
 
-Behavior-preserving throughout; each step gated by `ruff`+`mypy`+full pytest and committed separately.
+`core/` contains primitives that are shared across the agent, tool, and CLI
+layers:
 
-1. **Risky-now fixes** — locked concurrent workflow-state appends (`_locked_append`), closed two
-   shell-injection vectors in `tools/file_operations.py`, narrowed a broad except.
-2. **Golden/characterization net** — `tests/test_golden_cores.py` pins the appendix-per-turn,
-   callback-ordering, result-schema, and interrupt invariants before the DI work.
-3. **Deep restructure** — `core/` package introduced; `agent/`, `tools/`, `leanflow_cli/` each grouped
-   into the subpackages above via collision-safe import rewrites (4 commits).
-4. **Env/home consolidation** — `core.home` single home authority (`~/.leanflow`); all runtime/session
-   vars consolidated to the single `LEANFLOW_` prefix; internal markers renamed. *Kept:* the
-   `scripts/install.sh`→external Morph-template var contract.
-5. **Managed-run contract** — `native_runner` now drives the post-tool-result appendix through
-   `AIAgent.{stage,set,clear}_tool_result_appendix` instead of reaching into the private attribute.
-   (The DI seams were already in place — 14+ injected collaborators; a `PostToolResultAppendixBroker`
-   was evaluated and rejected because the raw attr is load-bearing for incompatible test semantics.)
-6. **Quality** — safe ruff `B`/`SIM` autofixes + 67 `try/except: pass` → `contextlib.suppress`.
+- `home.py` is the only authority for `LEANFLOW_HOME` and `~/.leanflow`.
+- `state.py` owns the SQLite conversation/session store.
+- `model_tools.py` and `toolsets.py` expose tool discovery and toolset
+  selection.
+- `process_identity.py` provides token-backed process, process-group, and
+  session ownership checks.
+- `provider_availability.py` and `provider_capacity.py` coordinate provider
+  recovery and bounded background actors.
+- `project_resource_admission.py` coordinates resource-heavy Lean work.
+- `runtime_modes.py` centralizes process-scoped runtime flags.
+- `verified_edit_authority.py` carries single-use, hash-bound authorization
+  between managed orchestration and atomic patch tools when prior Lean evidence
+  proves one exact source transition.
+- `filesystem.py`, `time.py`, `constants.py`, and `utils.py` provide shared
+  dependency-light utilities.
 
-## Monoliths being decomposed
+The top-level `model_tools.py`, `toolsets.py`, and `utils.py` modules are
+compatibility shims over `core.*`.
 
-Line counts below are **current** (post-decomposition on `refactor/leanflow-cores`); the
-"Target" column records what was carved off. The remaining bulk in each file is the coupled
-core called out under "Deferred".
+## Agent Runtime
 
-| File | Lines | Target |
-|---|---|---|
-| `leanflow_cli/native/native_runner.py` | 11,671 → 8,962 | Phase 2: leaves → `native_state` boundary → cluster modules → `proof_state_builder` / `verification_review` / `lean_module_paths` / `native_lean_files` / `queue_item_predicates`; managed-conversation/follow-up core deferred |
-| `run_agent.py` (`AIAgent`) | 7,123 → 4,878 | Phase 4: 12 collaborators + `collaborator_resolvers`; Phase 4 module-level leaves `workflow_events` + `runtime_helpers`; `run_conversation` loop deferred |
-| `leanflow_cli/lean/lean_services.py` | 2,847 → 1,987 | Phase 5: lean_diagnostics / declarations / search_providers / automation / attempt_helpers / sorry_stats / proof_context_local + `lean_backend` wrapper + `lean_models` (result dataclasses) + `lean_worker_dispatch`; full backend abstraction deferred |
-| `tools/implementations/web_tools.py` | 1,670 → 1,309 | Phase 5: `web_research_providers` (arXiv/Semantic-Scholar/Crossref/Sourcegraph search + provider-ordering router + constants) split out |
-| `agent/providers/auxiliary_client.py` | 1,626 → 1,286 | Phase 5: `auxiliary_adapters` (routing) + `model_capabilities` (metadata+pricing) + `auxiliary_rcp` (RCP predicates) + `auxiliary_nous` (Nous auth/endpoint) split out |
-| `tools/mcp/mcp_tool.py` | 1,638 → 1,029 | Phase 5: `mcp_transport` (stdio/HTTP) + `mcp_sampling` (server-initiated LLM) + `mcp_schema` (schema/utility-schema/config-filter) + `mcp_config` (`_load_mcp_config`) split out |
-| `leanflow_cli/workflows/workflow_state.py` | 1,325 → 1,068 | Phase 3: `activity_preview` (event/status shaping) + `workflow_state_paths` (path-root discovery) + `workflow_json_io` (read/write JSON) split out |
-| `leanflow_cli/formalization/formalization_documents.py` | 1,512 → 536 | Phase 5: `document_extraction` + `formalization_markdown` + `formalization_models` + `formalization_tex_discovery` split out |
-| `leanflow_cli/main.py` | 1,331 → 426 | Phase 3: `cli_handlers` + `shell_ui` + `shell` (`InteractiveShell` REPL) split out; main.py is now a thin argparse dispatcher |
-| `tools/implementations/lean_tool.py` | 1,693 → 759 | Phase 5: `lean_experts` (advisor tools) + `lean_patch` (verified-patch apply) split out |
+`run_agent.AIAgent` retains the public conversation-loop surface. Its
+collaborators are grouped by responsibility:
 
-### Phase 6 hardening (code-cleaning / improvement; behavior-preserving)
+- `agent/providers/` — primary and auxiliary provider routing, Codex Responses,
+  Anthropic adaptation, isolated auxiliary calls, retries, and model metadata
+- `agent/prompting/` — system prompts, prompt caching, reasoning normalization,
+  and provider-response normalization
+- `agent/compression/` — conversation persistence, context compression, and
+  provider-aware summary handoff
+- `agent/execution/` — tool batches, interrupts, command safety, skill
+  commands, resource handoff, and model-facing projection of successful tool
+  payloads while the manager and audit log retain the complete raw result
+- `agent/accounting/` — token/cost accounting, redaction, and error logging
+- `agent/display/` — terminal rendering and structured log formatting
+- `agent/runtime/` — managed-run contracts, trajectory capture, and workflow
+  events
 
-- **mypy gate** grown to **71** modules (all extracted leaves that pass cleanly).
-- **Silent-swallow logging**: 10 highest-value `except: pass` sites now log (debug/warning) without
-  changing control flow — persistence loads, checkpoint-before-mutation, telemetry writes.
-- **ruff `UP` modernization** applied tree-wide (~875 fixes: PEP585 `list/dict`, PEP604 `X | None`,
-  `datetime.UTC`, OSError aliases) and **`UP` is now enforced** in the lint config (`select=[F,I,UP]`,
-  ignoring the unsafe/manual `UP035`/`UP022`/`UP042`). Requires Python ≥3.11 (already pinned).
-- **ruff `B904`** exception chaining (`raise … from exc`) at 7 sites for better tracebacks.
-- Verified: full pytest suite green, `ruff`+`mypy` clean, plus codex + a 4-reviewer adversarial pass
-  (0 HIGH/0 MED findings).
+`agent/execution/collaborator_resolvers.py` preserves lazy construction and
+test patch points for these collaborators. Changes to a collaborator must
+retain the corresponding `AIAgent` wrapper or compatibility property unless
+the public surface is intentionally migrated.
 
-## Load-bearing invariants
+## Tool Runtime
 
-- Public imports: `from run_agent import AIAgent`; `from model_tools import get_tool_definitions,
-  handle_function_call, check_toolset_requirements`; `toolsets.*`; `utils.atomic_json_write`.
-- `AIAgent.run_conversation()` result schema (pinned by `tests/test_run_conversation_schema.py`):
-  `final_response, last_reasoning, messages, api_calls, usage, completed, exit_reason, partial,
-  interrupted, response_previewed` (+ `interrupt_message` when interrupted, `error` on error).
-- Tool self-registration: `tools/*` register at import via `tools/registry.py`; `model_tools`
-  imports tool modules by **string name** — keep names or update the discovery list.
-- Module-level imports used as **patch targets / dynamic-access points** (e.g.
-  `tools.terminal_tool._interrupt_event`) are part of the public surface even when they look
-  "unused" — see the F401 note below.
+Tools self-register through `tools/registry.py`. Their schemas and normalized
+results flow through `core.model_tools` and `tools/response.py`.
 
-## The extraction recipe
+- `tools/implementations/` contains model-callable Lean, file, terminal,
+  document, web, repository, delegation, memory, skill, and empirical tools.
+  `lean_have_extraction.py` owns the transactional local-`have` promotion tool;
+  its source parser lives in `leanflow_cli/lean/lean_have_extraction.py`.
+- `tools/utilities/` contains deterministic guards and reusable implementation
+  support, including process ownership, transcript protection, repository
+  research policy, scratch-terminal policy, verified patch parsing, helper
+  admission, daemon-backed wall-clock boundaries for blocking backends, and
+  bounded authoritative source context for Lean advisors.
+- `tools/mcp/` contains MCP configuration, schema shaping, transport, sampling,
+  and managed-server lifecycle behavior.
+- `tools/environments/` contains the local, SSH, Singularity, Daytona, and
+  persistent-shell execution backends.
 
-1. Characterize first (tests pinning current behavior).
-2. Move, don't rewrite — cut cohesive functions to a sibling module, fix imports only.
-3. Re-export shim from the original module path; keep `__all__` accurate. Extracted modules must
-   be leaves (no back-import into the monolith) — `run_agent.py` has ~46 lazy imports that make
-   cycles easy to introduce.
-4. Gate: `ruff check` + add the new module to mypy's `files` list.
-5. Verify: targeted tests → full suite → `--help` smoke → ProveDemo workflow for runner changes.
-6. One behavior-preserving extraction per commit/PR.
+Tool discovery depends on import-time registration. Adding a tool requires
+updating every applicable discovery list and toolset, plus tests that prove the
+tool is reachable through the public registry.
 
-## Tooling gates (Phase 0)
+## CLI and Workflow Runtime
 
-- **ruff** (`[tool.ruff.lint]`): `select = ["F", "I", "UP"]` (UP added in Phase 6), `ignore`
-  retains `F401`/`F841` (re-export/patch-target safety) plus the unsafe `UP035`/`UP022`/`UP042`.
-  - F401 (unused-import) and F841 (unused-variable) are **deferred to Phase 6**. F401 auto-removal
-    is unsafe here because module-level imports are re-exported as patch/dynamic-access targets
-    without `__all__`; blanket removal silently breaks runtime and tests. Phase 6 handles them
-    per-file with `__all__` / `# noqa: F401`.
-- **mypy** (`[tool.mypy]`): incremental gate. Only the modules listed in `files = [...]` are
-  type-checked; the list grows as modules are extracted/cleaned. (Per-module overrides tune
-  settings but do not select targets — the explicit `files` list does.)
-- CI runs ruff → mypy → pytest (`.github/workflows/tests.yml`).
+`leanflow_cli/` is organized by responsibility:
 
-## Test-suite status
+- `main.py` and `cli/` own argument parsing, shell commands, status rendering,
+  doctor checks, MCP bootstrap, and expert-help configuration.
+- `workflow.py` resolves workflow requests, providers, toolsets, and the
+  `LEANFLOW_NATIVE_*` child-process environment contract.
+- `runtime/` owns provider credentials/routing, file locks, sandbox execution,
+  branding, environment loading, and built-in skill discovery.
+- `lean/` owns diagnostics, goals, declaration inspection, incremental checks,
+  automation, proof context, premise search, axiom checks, ephemeral
+  validation, target-owning verification-path resolution, and the typed
+  `LeanBackend` facade. Tactic-hole portfolios route
+  through `lean_attempt_screening.py`, which prepares the target environment
+  once and exact-checks bounded candidates with LeanProbe before any positional
+  LSP fallback.
+- `formalization/` owns source-document extraction, TeX discovery, generated
+  Lean shaping, and the statement-review handoff.
+- `workflows/` owns proof queues, verification transactions, persistent
+  plan/graph state, orchestration, research portfolios, decomposition,
+  the durable foreground-verified helper priority and bounded promotion queue
+  (`research_helper_candidate_priority.py`, `research_helper_candidate_backlog.py`),
+  monolithic partial-proof detection, recovery-source hygiene, negation,
+  project proving, campaign epochs, repeated-tool loop boundaries,
+  crash-durable residual-target advisor failure circuits, checked partial-target
+  candidate checkpoints across compression/restart, and activity retention.
+- `native/` owns the managed workflow process, startup/resume reconciliation,
+  assignment transitions, completion policy, durable bounded-search synthesis
+  admission, cycle-bounded construction-source inspection, and cross-route
+  no-construction debt that fences advisory oscillation
+  (`search_synthesis_admission.py`). Delayed transition notices and direct
+  control-plane heartbeats for startup, portfolio, and epoch reconciliation live
+  in `transition_visibility.py`. Foreground strategy-route obligations that keep
+  deferred `decompose`, `negate`, `plan`, and portfolio-refresh handoffs visible
+  to the model live in `route_prompt.py`. Native also owns same-revision verification-timeout backpressure
+  and structural-recovery handoff, verified companion-module
+  publication (`support_module_materialization.py`), checkpoints, and shutdown.
+  Direct bare references from an assigned declaration to itself are rejected
+  before mutation by `direct_self_reference.py` while legitimate recursive
+  applications remain available.
+  Rejected-edit identity, replay preview, hard-diagnostic classification, and
+  atomic exact-after-image restoration live in `managed_edit_rollback.py`.
+  One-read recovery after an unchanged verified-patch anchor miss lives in
+  `source_refresh_admission.py`; it admits the exact current-source refresh even
+  when the construction-source window is otherwise closed.
+  Scratch-style names on newly generated helpers are rejected before source
+  mutation by `generated_helper_name_policy.py`, keeping exploratory fragments
+  in LeanProbe or durable dead-branch artifacts until they have a mathematical role.
+  Revision-authenticated successful-gate reuse lives in
+  `verified_gate_handoff.py`; it carries a checked queue snapshot across the
+  provider boundary without replaying diagnostics, goals, or full-file builds.
+  Large local-proof partitioning is split between the comment-safe candidate
+  inventory in `leanflow_cli/lean/lean_have_extraction.py` and bounded,
+  transactional LeanProbe extraction in `tools/implementations/lean_have_extraction.py`.
 
-The full suite is green except **one pre-existing xdist flake**:
-`tests/tools/test_mcp_tool.py::TestMCPSelectiveToolLoading::test_existing_tool_names_reflect_registered_subset`
-fails only under full-parallel `-n auto` (parallel workers pollute the module-global tool
-registry with `mcp_lean_lsp_*` entries); it passes in isolation and reproduces identically at the
-branch base. Two earlier classes of local failure were FIXED on this branch: the
-`tests/agent/test_auxiliary_client.py` failures (test-ordering pollution — a conftest autouse
-fixture now snapshots/restores provider env between tests) and the `test_non_quiet_logging`
-assertion (stale `1/180` fixture vs the default `max_iterations=200`).
+The larger coordination modules remain intentionally coupled where tests patch
+their module attributes. Extracting behavior from them requires
+characterization tests and an explicit dependency seam first.
 
-## Decomposition progress (branches refactor/leanflow-deep → refactor/leanflow-cores)
+## Runtime Contracts
 
-> The first wave (`refactor/leanflow-deep`) was squashed and merged to `main`; the follow-on
-> `refactor/leanflow-cores` branch continues with further leaf extractions (the `shell`, `lean_models`,
-> `formalization_*`, `native_lean_files`, `queue_item_predicates` modules below).
+The packaged Markdown under `leanflow_skills/` and `leanflow_specs/` is runtime
+input, not supplementary prose:
 
-Behavior-preserving extractions completed so far (each: move verbatim → re-export shim from the
-original module → ruff/mypy gate → full suite green → one commit). All extracted modules are leaf
-modules (no back-import into their origin), keeping `origin._name` valid for callers and tests.
+- skills select concise prompt-time behavior for the active workflow
+- workflow specs define tool order, verification gates, route actions, and stop
+  conditions
+- worker and phase specs define specialist responsibilities
 
-### From `run_agent.py` (the `AIAgent` god class)
+These files ship in the wheel. A change to a workflow contract must update its
+spec, the routing skill when applicable, and the relevant deterministic tests.
 
-Phase 4 carved the `AIAgent` method clusters into single-responsibility **collaborators** under
-`agent/`. `AIAgent` retains its public surface and now delegates: each collaborator is reached
-through a lazy `_resolve_*(agent)` module-level accessor (which lazily constructs and caches the
-collaborator if absent, so a bare-constructed or test-built agent still works), with thin method
-wrappers and `@property` shims forwarding the old attribute/method names. This preserves the
-patch/monkeypatch surface tests rely on while moving the logic out.
+## Principal Execution Paths
 
-- `agent/token_accounting.py` — `TokenAccounter`: cumulative token/cost counters.
-- `agent/provider_client.py` — `ProviderClientFactory`: provider/OpenAI client construction + credential refresh.
-- `agent/tool_executor.py` — `ToolExecutor`: concurrent/sequential tool-call dispatch for a turn.
-- `agent/conversation_manager.py` — `ConversationManager`: session/message persistence + per-turn API-message shaping.
-- `agent/interrupt_controller.py` — `InterruptController`: `threading.Event`-backed interrupt state (requested flag, message, children).
-- `agent/response_normalizer.py` — `ResponseNormalizer`: raw provider response → normalized assistant response.
-- `agent/reasoning_processor.py` — `ReasoningProcessor`: thinking/reasoning-block (mostly pure) text helpers.
-- `agent/prompt_manager.py` — `PromptManager`: per-session system-prompt build/cache/invalidate lifecycle.
-- `agent/api_caller.py` — `ApiCaller`: mediation between the agent loop and the provider API call.
-- `agent/compression_policy.py` — `CompressionPolicy`: when/how context compression fires.
-- `agent/anthropic_messages.py` — `AnthropicMessagePreparer`: Anthropic message-preparation cluster.
-- `agent/output_manager.py` — `OutputManager`: conversation-start / token-usage / session-usage logging.
-- `agent/collaborator_resolvers.py` — the lazy `_resolve_X(agent)` accessors that materialize/cache each collaborator on first use (re-exported on `run_agent`).
-- `agent/command_safety.py` — destructive-command detection (Phase 4).
-- `agent/log_formatting.py` — pure tool arg/result log formatters (Phase 1).
-- `agent/managed_run.py` — typed managed-run contract (Phase 1.5).
+### Proving
 
-### From `native_runner.py`
+```text
+leanflow workflow prove
+  → workflow request and provider resolution
+  → native runner startup/resume reconciliation
+  → project/file declaration queue
+  → AIAgent turn
+  → Lean/file/search tools
+  → manager verification and transaction commit
+  → queue advance or verified completion
+  → project-wide Lake gate
+```
 
-- `native_config.py` — env/config readers (`_read_native_env`, `_managed_home`, `_project_root`, …).
-- `lean_parsing.py` — pure Lean source/declaration text parsers (comment/string stripping, decl extraction).
-- `native_state.py` — module-level mutable de-dup caches + `_cache_once`.
-- `queue_edit_guard.py` — declaration-edit protect/restore guards.
-- `formalization_document_runner.py` — `/formalize` workflow predicates + blueprint manifest parsers.
-- `manager_verification.py` — verification-record/outcome + timeout/retry helpers.
-- `native_utils.py` — shared leaf text/JSON/format helpers (`_single_line`, `_extract_json_payload`, …).
-- `project_prove_manager.py` — file-level work-queue sizing/prioritization helpers.
-- `proof_state_builder.py` — pure proof-state text/snapshot shaping helpers (safe subset).
-- `lean_diagnostic_feedback.py` — pure diagnostic / goal text parsers (safe subset).
-- `native_checkpoints.py` — workflow-state and checkpoint persistence helpers (safe subset).
-- `verification_review.py` — verification-decision / advisory text parsers (safe subset).
-- `lean_module_paths.py` — pure Lean module-name ↔ import-path ↔ on-disk-path translation helpers (safe subset).
-- `formalization_generated_lean.py` — generated-Lean inspection helpers (safe subset).
-- `native_lean_files.py` — active-file/target-symbol resolution + per-file/project `sorry` counting
-  (imports the native_config / native_utils / lean_parsing leaves; no cycle).
-- `queue_item_predicates.py` — pure queue-item classification predicates (sorry vs diagnostic
-  blocker, current-item/status selection, attempted-proof shape).
+The model proposes edits and research routes. LeanFlow's deterministic manager
+decides whether an edit is accepted, retried, restored, or advanced.
 
-### From `lean_services.py`
+### Formalization
 
-- `lean_diagnostics.py` — diagnostic/blocker/goal text parsers (incl. the backtracking-fixed `diagnostic_items`).
-- `lean_declarations.py` — pure path-based Lean declaration indexing / lookup helpers, plus the
-  token-cheap `declaration_outline` / `declaration_region` readers backing the `lean_outline` tool.
-- `lean_lemma_suggest.py` — goal->candidate-lemma retriever: reads the assigned declaration's
-  goal/hypotheses (via `lean_proof_context` / `lean_inspect`, resolved lazily off `lean_services`),
-  derives targeted queries, runs `lean_search` across modes, and dedupes/ranks candidates. Backs
-  the `lean_lemma_suggest` tool.
-- `lean_search_providers.py` — stateless Lean search-provider helpers.
-- `lean_automation.py` — pure Lean auto-prove normalization / parsing helpers.
-- `lean_attempt_helpers.py` — pure multi-attempt / path / comment text helpers.
-- `lean_sorry_stats.py` — pure `sorry`-counting helpers.
-- `lean_proof_context_local.py` — pure local proof-context assembly helpers (safe subset).
-- `lean_models.py` — the frozen Lean result/report dataclasses (`LeanCapabilityReport`,
-  `LeanSorryFinding`, `LeanInspection`, `LeanVerificationResult`, `LeanSearchResult`,
-  `LeanAxiomReport`, `WorkflowRouteDecision`, `LeanWorkerRequest`, `LeanWorkerResult`).
-- `lean_backend.py` — `LeanBackend`, a thin façade forwarding to the LSP/MCP JSON tool invoker
-  (`_invoke_json_tool`), the Lake/subprocess runner (`_run_command`), and a capability reader.
-  A first, partial realization of the deferred backend abstraction: it wraps the existing
-  primitives verbatim (resolving them lazily off `lean_services` for monkeypatch safety) without
-  owning backend state — the full LSP/REPL/Lake interface redesign remains deferred.
+```text
+leanflow workflow formalize
+  → source extraction and TeX/PDF preflight
+  → declaration blueprint
+  → buildable Lean statement draft
+  → source-fidelity review
+  → explicit handoff to prove
+```
 
-### From `main.py`
+Formalization intentionally leaves theorem bodies as `sorry` after statement
+approval. The subsequent `prove` workflow owns proof completion.
 
-- `cli_handlers.py` — argparse handler/formatter functions (`_handle_config/_sandbox/_models`, …).
-- `shell_ui.py` — pure presentation helpers (prompt / bottom-toolbar formatters) that turn
-  already-gathered shell state into display strings.
-- `shell.py` — the full `InteractiveShell` REPL (prompt-toolkit loop, slash-command dispatch,
-  workflow launch/monitor, status rendering), re-exported from `main` for the historical
-  `from leanflow_cli.main import InteractiveShell` surface. main.py is now a thin argparse
-  dispatcher (~425 lines). Tests driving shell methods patch collaborators on `leanflow_cli.shell`;
-  tests driving `main()` patch them on `leanflow_cli.main` (both import the names independently).
-- Shell slash-command routing is now unified in `commands.py` behind a single `COMMAND_REGISTRY`
-  (`tuple[WorkflowCommandSpec, …]`), replacing the scattered per-command branches.
+### Research Mode
 
-### From `mcp_bootstrap.py`
+Research mode keeps one foreground prover and a bounded portfolio of background
+research actors. Planner lanes and process-isolated jobs share the configured
+background capacity. The parent process alone may mutate the authoritative
+Lean source, proof graph, and workflow plan.
 
-- `loogle_local.py` — project-toolchain-matched local Loogle: per-toolchain cache resolution
-  (`loogle_cache_dir_for_project`), the idempotent build (`ensure_local_loogle_for_project` and its
-  detached `_async` launcher, both under an exclusive `<cache>/.loogle-build.lock`), the fast
-  no-build gate (`local_loogle_needs_build`), and the `patch_lean_lsp_loogle_build_lock` patch that
-  makes lean-lsp-mcp take the same lock. It builds on the low-level primitives kept in
-  `mcp_bootstrap` (`managed_loogle_cache_dir`, `local_loogle_supported`, `_read_lean_toolchain`,
-  `_lean_lsp_env_from_home`); `mcp_bootstrap` reaches back only via lazy imports
-  (`managed_mcp_power_status`, `bootstrap_lean_mcp`) to avoid a cycle. The lean-lsp server is pointed
-  at the same per-toolchain dir by `tools/mcp/mcp_transport._augment_lean_stdio_env` — build, server,
-  and status must agree (a test pins this). mypy-gated.
+Web, paper, code, and repository research are enabled for normal campaigns.
+Clean-room flags remove repository and task-solution research while retaining
+general mathematical search. All research findings remain advisory until they
+pass the ordinary source-fidelity and Lean verification gates.
 
-### From `formalization_documents.py`
+## Persistence and Resumability
 
-- `document_extraction.py` — the text/LaTeX/PDF extraction layer: turns a resolved source file
-  into a structured summary (theorem blocks, sections, references, extracted text). A closed
-  set under "calls" that reaches no origin-mutable state, re-exported on `formalization_documents`.
-- `formalization_markdown.py` — planner-context Markdown rendering (theorem blocks, sections,
-  TeX-project discovery, source excerpt); imports only the `document_extraction` leaf.
-- `formalization_models.py` — the `FormalizationDocumentError` exception + the
-  `FormalizationDocumentContext` / `_FormalizationDocumentSelection` frozen dataclasses (shared
-  data types, decoupled so the TeX-discovery leaf can use them without a cycle).
-- `formalization_tex_discovery.py` — path resolution + TeX-project entrypoint/include/asset
-  discovery (19 helpers + the `TEX_PROJECT_*` constants); imports only stdlib, `document_extraction`
-  and `formalization_models`. formalization_documents.py is now a focused selection/context-prep module.
+User-level state lives under `LEANFLOW_HOME` (normally `~/.leanflow`).
+Project-level state lives under `.leanflow/` in the registered Lean project.
 
-### From `queue_manager.py`
+The workflow state includes:
 
-- `queue_models.py` — the `TheoremQueueManager` queue dataclasses + legacy dict<->typed mapping (verbatim move).
+- activity and human-readable logs
+- checkpoints and terminal outcomes
+- declaration queues and failed-attempt history
+- plan and proof-graph snapshots backed by an append-only journal
+- research dispatch ledgers and delivery receipts
+- active and queued kernel-checked helper candidates awaiting parent integration
+- campaign epochs, route decisions, and learnings
+- file locks and live-run ownership metadata
 
-### From `workflow_state.py`
+Writes use the workflow JSON/append helpers and atomic replacement where
+appropriate. Resume first reconciles persisted state with current Lean source;
+historical state is never assumed current before that reconciliation.
 
-- `activity_preview.py` — pure activity/event-shaping helpers for managed-workflow status views.
+## Verification and Trust Boundaries
 
-### From `auxiliary_client.py`
+- A model response is never proof of completion.
+- `prove` succeeds only after the assigned declaration and requested project
+  scope pass deterministic placeholder, diagnostic, kernel, and final build
+  gates.
+- `formalize` succeeds when the statement draft builds and passes source
+  review; intentional theorem holes are then handed to `prove`.
+- Axiom checks use elaborated declarations, not source-text heuristics alone.
+- Promoted negations and helper proofs pass the same trust checks as main proof
+  edits.
+- Managed theorem workers route inner-loop Lean checks through
+  `lean_incremental_check`; `native/terminal_check_policy.py` reserves direct
+  terminal Lean and Lake processes for manager-owned canonical gates.
+- Repeated target timeouts can mechanically promote a large local `have` to a
+  private lemma: Mathlib supplies the exact context signature, LeanProbe checks
+  the helper and replacement site, and the verified patch transaction commits
+  only the authenticated source image.
+- `lean/lean_interact_compat.py` installs a version-guarded linear response
+  reader when the installed LeanInteract still uses quadratic REPL output
+  concatenation; unfamiliar future implementations remain untouched.
+  `lean/lean_probe_deadline.py` independently bounds every LeanProbe call and
+  terminates owned REPL sessions when IPC stalls.
+- Verified graph state is derived from Lean evidence and reconciled after
+  source changes.
+- File locks serialize supported writes during user-approved swarm runs.
+- Process termination requires exact token, PID, process-group, and session
+  identity; stale PID-only records fail closed.
+- Managed agents cannot read raw live workflow transcripts through ordinary
+  file tools. Bounded, generated summaries are the model-facing interface.
+- Clean-room policy is enforced across web, repository, terminal, and file
+  surfaces, including canonical-path and symlink checks.
+- Empirical computation runs in a restricted child process with bounded
+  resources and no filesystem, process, or network capability.
 
-- `agent/auxiliary_adapters.py` — OpenAI-client-compatible provider adapters for the auxiliary router.
-- Model metadata (`agent/model_metadata.py`) + pricing are unified behind the
-  `agent/model_capabilities.py` façade.
+## Compatibility Surfaces
 
-### From `tools/lean_tool.py`
+The following interfaces are load-bearing:
 
-- `tools/lean_experts.py` — auxiliary LLM-advisor Lean tools.
-- `tools/lean_patch.py` — verified-patch application tool.
+- `from run_agent import AIAgent`
+- top-level `model_tools`, `toolsets`, and `utils` imports
+- `AIAgent.run_conversation()` result keys:
+  `final_response`, `last_reasoning`, `messages`, `api_calls`, `usage`,
+  `completed`, `exit_reason`, `partial`, `interrupted`, and
+  `response_previewed`, `wall_timed_out`, with conditional interruption/error
+  fields
+- tool names and import-time self-registration
+- module attributes intentionally used as monkeypatch targets in tests,
+  especially in `native_runner.py`, `run_agent.py`, and terminal tooling
+- the `LEANFLOW_`-only native child-process environment contract
+- `core.home.leanflow_home()` as the single state-home authority
 
-### From `tools/mcp_tool.py`
+Compatibility imports that exist solely as public re-exports or patch targets
+must carry an explicit `# noqa: F401` and a test or real call site that proves
+the reference is intentional.
 
-- `tools/mcp_transport.py` — stdio/HTTP transport plumbing for MCP servers.
-- `tools/mcp_sampling.py` — `SamplingHandler`: the server-initiated `sampling/createMessage`
-  callback (server asks the agent's LLM to complete a message) plus its numeric-coercion /
-  audit-path helpers; re-exported on `mcp_tool`.
+## Change Discipline
 
-### Bug fixes landed alongside the moves
+Before changing a coupled boundary:
 
-- **Test-pollution fix:** importing `run_agent` ran `load_leanflow_dotenv()` at import time before
-  the autouse `_isolate_leanflow_home` fixture had set `LEANFLOW_HOME`, leaking the developer's real
-  `.env` provider-resolution vars (`LEANFLOW_*`) into the session and
-  breaking `tests/agent/test_auxiliary_client.py` whenever `test_run_agent` ran first. The fixture
-  now strips those vars (`monkeypatch.delenv`, auto-restored) so resolution starts clean regardless
-  of test order. No production behavior changed.
-- **Workflow-termination fixes:** the headless stdin-exit guard now writes the pre-exit workflow
-  checkpoint (`force_filesystem_checkpoint=True`) for autonomous workflows, restoring resumability
-  on headless non-verified exits; the hard cycle-ceiling stop now labels its phase by
-  `_live_state_is_verified` (verified vs stalled) instead of always "stalled"; and
-  `mcp_bootstrap._write_bootstrap_document` now calls `invalidate_config_cache()` after writing the
-  managed config directly (it bypasses `config.save_config`), fixing a stale `load_config()` cache
-  that returned the pre-bootstrap config later in the same process.
+1. Add characterization tests for current behavior.
+2. Extract one cohesive responsibility without changing semantics.
+3. Preserve public imports and monkeypatch seams or migrate them explicitly.
+4. Add the cleaned module to the mypy gate.
+5. Run Black, Ruff, mypy, and the full test suite.
+6. Update this map when ownership or a public surface changes.
 
-### Deferred (needs dependency-injection seams / method-surgery, not safe as one-shot moves)
-
-The still-coupled cores that resist behavior-preserving one-shot moves:
-
-- `native_runner.py`: the autonomous follow-up loop and `_run_managed_conversation` / `main`.
-- `AIAgent`: the `run_conversation` main loop and its retry/recovery orchestration.
-- `main.py`: `InteractiveShell` (its callees are test-monkeypatched on `main`).
-- `lean_services.py`: the full backend **abstraction** (the LSP/REPL/Lake interface), which is a
-  redesign rather than a move. The `LeanBackend` wrapper (`lean_backend.py`) is a first partial
-  step; routing all call sites through it is the remaining invasive work.
-
-These are the next, more invasive refactoring steps.
+The complete contribution and quality-gate requirements are in `AGENTS.md` and
+`CONTRIBUTING.md`.

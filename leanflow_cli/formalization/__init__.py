@@ -1,1 +1,1 @@
-"""leanflow_cli.formalization subpackage (Phase II restructure)."""
+"""Extract sources and build statement-reviewed Lean drafts."""

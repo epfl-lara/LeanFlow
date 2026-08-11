@@ -35,6 +35,19 @@ def test_diagnostic_items_parses_standard_lines():
     ]
 
 
+def test_diagnostic_items_parses_lean_error_codes():
+    out = ld.diagnostic_items(
+        "File.lean:12:7: error(lean.synthInstanceFailed): failed to synthesize Nonempty P"
+    )
+    assert out == [
+        {
+            "severity": "error",
+            "message": "failed to synthesize Nonempty P",
+            "line": 12,
+        }
+    ]
+
+
 def test_diagnostic_items_parses_json_payload():
     # A JSON list of LSP-style diagnostics is normalized to severity/message/line records, with the
     # line read from a nested range.start.line.
@@ -64,6 +77,68 @@ def test_classify_blocker_kind():
     assert ld.classify_blocker_kind("failed to synthesize instance HMul") == "synth_instance"
     assert ld.classify_blocker_kind("unsolved goals\n⊢ p = q") == "open_goals"
     assert ld.classify_blocker_kind("some opaque build text") == "diagnostics"
+
+
+def test_goal_envelopes_classify_only_current_nonempty_goals_as_open():
+    cleared_payloads = (
+        '{"goals": null, "goals_before": [], "goals_after": []}',
+        '{"goals": [], "goals_before": ["⊢ stale"], "goals_after": ["⊢ historical"]}',
+        "Lean goals unavailable.",
+    )
+    for payload in cleared_payloads:
+        assert ld._goals_still_open(payload) is False
+        assert ld.classify_blocker_kind("", goals=payload) == "none"
+
+    open_payload = '{"goals": ["⊢ True"], "goals_before": [], "goals_after": []}'
+    assert ld._goals_still_open(open_payload) is True
+    assert ld.classify_blocker_kind("", goals=open_payload) == "open_goals"
+    assert ld._goals_still_open("⊢ IsUnavailable x") is True
+    assert (
+        ld._goals_still_open(
+            '{"line_context":"theorem unavailable_case : True :=",' '"goals":["⊢ True"]}'
+        )
+        is True
+    )
+
+
+def test_source_backed_sorry_outranks_empty_goal_envelope():
+    assert (
+        ld.classify_blocker_kind(
+            "",
+            goals='{"goals": null, "goals_before": [], "goals_after": []}',
+            queue_reasons=("contains sorry",),
+        )
+        == "sorry"
+    )
+    assert (
+        ld.classify_blocker_kind(
+            "unsolved goals from a prior attempt",
+            goals='{"goals": null, "goals_before": [], "goals_after": []}',
+            queue_reasons=("contains sorry",),
+        )
+        == "sorry"
+    )
+
+
+def test_structured_error_outranks_sorry_and_warning_words_do_not_fabricate_errors():
+    assert (
+        ld.classify_blocker_kind(
+            "",
+            diagnostics='{"items":[{"severity":"error","message":"unknown tactic"}]}',
+            queue_reasons=("contains sorry",),
+        )
+        == "diagnostics"
+    )
+    assert (
+        ld.classify_blocker_kind(
+            "",
+            diagnostics=(
+                '{"items":[{"severity":"warning",'
+                '"message":"instance search is intentionally disabled"}]}'
+            ),
+        )
+        == "warnings"
+    )
 
 
 def test_diagnostic_items_does_not_catastrophically_backtrack():

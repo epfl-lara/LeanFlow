@@ -32,12 +32,23 @@ def _isolate_leanflow_home(tmp_path, monkeypatch):
     monkeypatch.delenv("LEANFLOW_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("LEANFLOW_SESSION_CHAT_NAME", raising=False)
     monkeypatch.delenv("LEANFLOW_GATEWAY_SESSION", raising=False)
+    # Behavior flags a real ~/.leanflow/.env can inject at import time.
+    # LEANFLOW_RCP_PREFIX_CACHE=1 ships in the default
+    # .env since PR #12 and changes prompt layout; tests that exercise it set it
+    # explicitly via monkeypatch.setenv.
+    monkeypatch.delenv("LEANFLOW_RCP_PREFIX_CACHE", raising=False)
+    # Native runner construction enables its contextual queue guard by setting
+    # this process-global escape hatch directly.  Pytest workers reuse the
+    # process, so register the key with monkeypatch for every test; teardown
+    # then removes a value written by _build_agent instead of leaking it into
+    # unrelated file-tool statement-guard tests.
+    monkeypatch.delenv("LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS", raising=False)
 
     # Importing run_agent (and a few CLI entrypoints) runs load_leanflow_dotenv() at
     # module-import time, which is *before* this fixture runs on the first test that
     # imports them. With LEANFLOW_HOME still unset at that point it resolves to the
-    # real ~/.leanflow and loads the developer's real .env into os.environ with
-    # override=True. Those provider-resolution vars then leak into every later test in
+    # real ~/.leanflow and loads missing values from the developer's real .env into
+    # os.environ. Those provider-resolution vars then leak into every later test in
     # the same process (notably tests/agent/test_auxiliary_client.py, whose own
     # _clean_env only strips the unprefixed OPENAI_* names). Strip the .env-injected
     # provider vars here so provider resolution starts from a clean slate regardless of

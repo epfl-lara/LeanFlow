@@ -5,8 +5,11 @@ import errno
 import json
 import logging
 import threading
+import time
+from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
+from core.runtime_modes import scratch_only_dispatch_worker_enabled
 from leanflow_cli.runtime.file_locks import ensure_file_lock
 from tools.implementations.file_operations import ShellFileOperations
 from tools.response import dumps, error
@@ -15,6 +18,16 @@ from tools.utilities.read_freshness import (
     clear_freshness,
     note_write,
     record_read,
+)
+from tools.utilities.repository_research_policy import clean_room_path_block_reason
+from tools.utilities.workflow_artifact_guard import (
+    diagnostic_workflow_file_access_enabled,
+    is_managed_plan_path,
+    managed_plan_read_view,
+    workflow_log_read_error,
+    workflow_machine_snapshot_read_error,
+    workflow_plan_pagination_error,
+    workflow_state_search_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +54,72 @@ _file_ops_cache: dict = {}
 #   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
+
+
+def _clean_room_path_denial(path: str) -> str | None:
+    """Return a serialized clean-room denial for one escaped file path."""
+    reason = clean_room_path_block_reason(path)
+    if not reason:
+        return None
+    return dumps(
+        {
+            "success": False,
+            "status": "clean_room_path_denied",
+            "path": path,
+            "error": reason,
+        }
+    )
+
+
+def _filter_clean_room_search_result(result: Any) -> int:
+    """Remove protected sibling-task paths from one search result in place."""
+    omitted = 0
+    if hasattr(result, "matches"):
+        kept_matches = []
+        for match in result.matches:
+            if clean_room_path_block_reason(str(getattr(match, "path", "") or "")):
+                omitted += 1
+            else:
+                kept_matches.append(match)
+        result.matches = kept_matches
+    if hasattr(result, "files"):
+        kept_files = []
+        for candidate in result.files:
+            if clean_room_path_block_reason(str(candidate or "")):
+                omitted += 1
+            else:
+                kept_files.append(candidate)
+        result.files = kept_files
+    if hasattr(result, "counts") and isinstance(result.counts, dict):
+        result.counts = {
+            candidate: count
+            for candidate, count in result.counts.items()
+            if not clean_room_path_block_reason(str(candidate or ""))
+        }
+    if omitted and hasattr(result, "total_count"):
+        result.total_count = max(0, int(result.total_count or 0) - omitted)
+    return omitted
+
+
+def _clean_room_patch_denial(mode: str, path: str | None, patch: str | None) -> str | None:
+    """Return a denial when any patch source or destination escapes the project."""
+    if mode == "replace":
+        return _clean_room_path_denial(path) if path else None
+    if mode != "patch" or not patch:
+        return None
+
+    from tools.utilities.patch_parser import OperationType, parse_v4a_patch
+
+    operations, _parse_error = parse_v4a_patch(patch)
+    for operation in operations or []:
+        candidates = [operation.file_path]
+        if operation.operation == OperationType.MOVE and operation.new_path:
+            candidates.append(operation.new_path)
+        for candidate in candidates:
+            denial = _clean_room_path_denial(candidate)
+            if denial:
+                return denial
+    return None
 
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
@@ -181,11 +260,52 @@ def clear_file_ops_cache(task_id: str = None):
 def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
+        clean_room_denial = _clean_room_path_denial(path)
+        if clean_room_denial:
+            return clean_room_denial
+        guard_error = workflow_log_read_error(path)
+        if guard_error:
+            return dumps({"error": guard_error, "path": path, "workflow_log_blocked": True})
+        snapshot_error = workflow_machine_snapshot_read_error(path)
+        if snapshot_error:
+            return dumps(
+                {
+                    "error": snapshot_error,
+                    "path": path,
+                    "workflow_snapshot_blocked": True,
+                }
+            )
+        plan_error = workflow_plan_pagination_error(path, offset)
+        if plan_error:
+            return dumps({"error": plan_error, "path": path, "workflow_plan_blocked": True})
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
+        if is_managed_plan_path(path) and getattr(result, "error", None):
+            # Plan regeneration is an atomic replace, but the first route can
+            # advertise the path just before its initial materialization.
+            # Bridge that bounded startup transition instead of telling the
+            # model the managed plan disappeared.
+            for _attempt in range(3):
+                time.sleep(0.05)
+                result = file_ops.read_file(path, offset, limit)
+                if not getattr(result, "error", None):
+                    break
         if result.content:
-            result.content = redact_sensitive_text(result.content)
+            result.content = managed_plan_read_view(path, redact_sensitive_text(result.content))
+        plan_view_applied = (
+            is_managed_plan_path(path) and not diagnostic_workflow_file_access_enabled()
+        )
+        if plan_view_applied and not getattr(result, "error", None):
+            result.truncated = False
+            result.hint = (
+                "Read-only managed plan view; historical user Notes are excluded and model "
+                "writes to plan.md are blocked. Do not paginate this file. Refresh the queue "
+                "assignment and Lean diagnostics for current inventory and declaration truth."
+            )
         result_dict = result.to_dict()
+        if plan_view_applied and not getattr(result, "error", None):
+            result_dict["managed_plan_view"] = True
+            result_dict["historical_notes_excluded"] = True
 
         # D2 read-before-edit freshness: record the hash of the raw on-disk file
         # so a later patch can detect it editing stale content. We hash the full
@@ -307,6 +427,32 @@ def _guard_file_lock(path: str, owner_id: str, purpose: str) -> dict | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default", owner_id: str = "") -> str:
     """Write content to a file."""
+    clean_room_denial = _clean_room_path_denial(path)
+    if clean_room_denial:
+        return clean_room_denial
+    if scratch_only_dispatch_worker_enabled():
+        return dumps(
+            {
+                "success": False,
+                "status": "scratch_only_write_denied",
+                "path": path,
+                "error": "Scratch-only research jobs cannot write project files.",
+            }
+        )
+    if is_managed_plan_path(path) and not diagnostic_workflow_file_access_enabled():
+        return dumps(
+            {
+                "success": False,
+                "status": "managed_plan_write_denied",
+                "path": path,
+                "error": (
+                    "Managed plan.md cannot be overwritten because that would erase hidden "
+                    "historical Notes and machine-owned generated sections. The managed plan is "
+                    "read-only to model file tools; use current queue/kernel state and structured "
+                    "planner findings instead."
+                ),
+            }
+        )
     try:
         if owner_id:
             conflict = _guard_file_lock(path, owner_id, "write_file")
@@ -374,6 +520,62 @@ def patch_tool(
     `strict` makes the edit exact-or-fail (no fuzzy/whitespace relocation) — for
     high-risk edits where applying to a merely-similar region would be wrong.
     """
+    clean_room_denial = _clean_room_patch_denial(mode, path, patch)
+    if clean_room_denial:
+        return clean_room_denial
+    if scratch_only_dispatch_worker_enabled():
+        return dumps(
+            {
+                "success": False,
+                "status": "scratch_only_write_denied",
+                "path": path or "",
+                "error": "Scratch-only research jobs cannot patch project files.",
+            }
+        )
+    if not diagnostic_workflow_file_access_enabled():
+        if mode == "replace" and path and is_managed_plan_path(path):
+            return dumps(
+                {
+                    "success": False,
+                    "status": "managed_plan_patch_denied",
+                    "path": path,
+                    "error": (
+                        "Managed plan.md is read-only to model file tools. Historical Notes "
+                        "are user-owned and generated Strategy/Grounding state is persisted "
+                        "by the workflow manager."
+                    ),
+                }
+            )
+        if mode == "patch" and patch:
+            from tools.utilities.patch_parser import OperationType, parse_v4a_patch
+
+            preflight_ops, _preflight_error = parse_v4a_patch(patch)
+            for operation in preflight_ops or []:
+                source_is_managed = is_managed_plan_path(operation.file_path)
+                destination_is_managed = bool(
+                    operation.operation == OperationType.MOVE
+                    and operation.new_path
+                    and is_managed_plan_path(operation.new_path)
+                )
+                if not source_is_managed and not destination_is_managed:
+                    continue
+                blocked_path = (
+                    operation.new_path
+                    if destination_is_managed and operation.new_path
+                    else operation.file_path
+                )
+                return dumps(
+                    {
+                        "success": False,
+                        "status": "managed_plan_operation_denied",
+                        "path": blocked_path,
+                        "error": (
+                            "Managed plan.md is read-only to model file tools and cannot be "
+                            "added, updated, deleted, or moved. Historical Notes are user-owned; "
+                            "the workflow manager persists generated planning state."
+                        ),
+                    }
+                )
     try:
         file_ops = _get_file_ops(task_id)
         freshness_warning: str | None = None
@@ -392,6 +594,18 @@ def patch_tool(
                 _raw, freshness_warning = _freshness_guard(file_ops, path, task_id)
             except _FreshnessError as fe:
                 return dumps({"success": False, "error": str(fe), "path": path, "stale": True})
+            if strict and freshness_warning:
+                return dumps(
+                    {
+                        "success": False,
+                        "status": "fresh_read_required",
+                        "error": (
+                            "Strict edits require a fresh read of the exact target file in this "
+                            "tool session before patching."
+                        ),
+                        "path": path,
+                    }
+                )
             # Only forward `strict` when set, so the default call shape (path, old, new,
             # replace_all) — which callers and tests assert on — is unchanged.
             if strict:
@@ -432,6 +646,17 @@ def patch_tool(
                 return dumps({"success": False, "error": str(fe), "stale": True})
             if warnings and not freshness_warning:
                 freshness_warning = " ".join(warnings)
+            if strict and freshness_warning:
+                return dumps(
+                    {
+                        "success": False,
+                        "status": "fresh_read_required",
+                        "error": (
+                            "Strict edits require fresh reads of every updated target file in "
+                            "this tool session before patching."
+                        ),
+                    }
+                )
             result = file_ops.patch_v4a(patch, strict=True) if strict else file_ops.patch_v4a(patch)
             # Refresh tracked hashes for the files this patch just wrote.
             if getattr(result, "success", False):
@@ -472,6 +697,18 @@ def search_tool(
 ) -> str:
     """Search for content or files."""
     try:
+        clean_room_denial = _clean_room_path_denial(path)
+        if clean_room_denial:
+            return clean_room_denial
+        guard_error = workflow_state_search_error(path)
+        if guard_error:
+            return dumps(
+                {
+                    "error": guard_error,
+                    "path": path,
+                    "workflow_state_blocked": True,
+                }
+            )
         # Track searches to detect *consecutive* repeated search loops.
         search_key = ("search", pattern, target, str(path), file_glob or "")
         with _read_tracker_lock:
@@ -514,11 +751,14 @@ def search_tool(
             output_mode=output_mode,
             context=context,
         )
+        clean_room_omitted = _filter_clean_room_search_result(result)
         if hasattr(result, "matches"):
             for m in result.matches:
                 if hasattr(m, "content") and m.content:
                     m.content = redact_sensitive_text(m.content)
         result_dict = result.to_dict()
+        if clean_room_omitted:
+            result_dict["clean_room_omitted_results"] = clean_room_omitted
 
         if count >= 3:
             result_dict["_warning"] = (
@@ -565,7 +805,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. NOTE: Cannot read images or binary files.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Managed workflow logs are blocked to prevent recursive self-ingestion; campaign findings arrive through structured workflow context. NOTE: Cannot read images or binary files.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -651,7 +891,7 @@ PATCH_SCHEMA = {
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. Repository-wide searches exclude .leanflow managed state and logs to prevent recursive self-ingestion.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
     "parameters": {
         "type": "object",
         "properties": {

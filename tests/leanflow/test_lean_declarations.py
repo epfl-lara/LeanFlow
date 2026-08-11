@@ -48,11 +48,79 @@ def test_declaration_index_recognizes_preamble_and_boundaries(tmp_path):
     # The decorated `noncomputable def` is recognized through its attribute/modifier preamble.
     assert entries[0]["kind"] == "def"
     assert entries[0]["line"] == 4
-    # The first declaration's region ends just before the next declaration's preamble line.
-    assert entries[0]["end_line"] == 7
+    # The first declaration's region excludes separator whitespace and the next declaration's docs.
+    assert entries[0]["end_line"] == 5
     assert "sorry" in entries[0]["text"]
     assert entries[1]["kind"] == "theorem"
     assert entries[1]["line"] == 8
+
+
+def test_declaration_index_target_range_ends_on_last_proof_line(tmp_path):
+    """Keep exact declaration ranges off the blank line after a tactic proof."""
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "\n".join(
+            [
+                "theorem target : True := by",
+                "  sorry",
+                "",
+                "/-- documentation for the next declaration -/",
+                "@[category research open, AMS 11,",
+                'formal_proof using lean4 at "https://example.test/proof"]',
+                "theorem next_target : True := by",
+                "  trivial",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entries = ld._declaration_index(target)
+
+    assert entries[0]["end_line"] == 2
+    assert entries[0]["text"] == "theorem target : True := by\n  sorry"
+
+
+def test_declaration_index_excludes_next_scoped_command_preamble(tmp_path):
+    """Keep a following scoped command and its docs out of the prior declaration."""
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "\n".join(
+            [
+                "def first : Nat := 1",
+                "",
+                "variable (P : Type) in",
+                "/-- A scoped declaration. -/",
+                "abbrev Scoped := P",
+                "",
+                "open scoped Classical in",
+                "/-- Another scoped declaration. -/",
+                "def second : Nat := 2",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entries = ld._declaration_index(target)
+
+    assert [entry["name"] for entry in entries] == ["first", "Scoped", "second"]
+    assert entries[0]["end_line"] == 1
+    assert entries[0]["text"] == "def first : Nat := 1"
+    assert entries[1]["end_line"] == 5
+    assert entries[1]["text"] == "abbrev Scoped := P"
+
+
+def test_declaration_index_recognizes_inline_open_scoped_wrapper(tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "open scoped Classical in def wrapped : Nat := 1\n",
+        encoding="utf-8",
+    )
+
+    entries = ld._declaration_index(target)
+
+    assert [(entry["kind"], entry["name"]) for entry in entries] == [("def", "wrapped")]
 
 
 def test_declaration_index_missing_file_returns_empty(tmp_path):
@@ -97,9 +165,22 @@ def test_surrounding_declarations_window(tmp_path):
         encoding="utf-8",
     )
 
-    # window=1 around the middle declaration yields its immediate neighbours, excluding itself.
-    assert ld._surrounding_declarations(target, "t3", window=1) == ["t2", "t4"]
+    # Proof context may expose only preceding declarations; later neighbours
+    # are not in scope while Lean elaborates the target.
+    assert ld._surrounding_declarations(target, "t3", window=1) == ["t2"]
     assert ld._surrounding_declarations(target, "absent") == []
+
+
+def test_surrounding_declarations_keeps_referenced_helper_outside_window(tmp_path):
+    target = tmp_path / "Demo.lean"
+    declarations = ["lemma banked : True := by trivial"]
+    declarations.extend(f"lemma filler{i} : True := by trivial" for i in range(20))
+    declarations.append("theorem result : True := by exact banked")
+    target.write_text("\n\n".join(declarations) + "\n", encoding="utf-8")
+
+    in_scope = ld._surrounding_declarations(target, "result", window=3)
+
+    assert in_scope == ["banked", "filler17", "filler18", "filler19"]
 
 
 def test_split_declaration_statement_and_proof():

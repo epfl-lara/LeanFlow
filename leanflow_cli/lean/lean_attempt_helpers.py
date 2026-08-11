@@ -1,17 +1,7 @@
-"""Pure multi-attempt / path / comment text helpers extracted from lean_services (Phase 5).
+"""Validate multi-attempt candidates and normalize Lean source text.
 
-This module collects the side-effect-free leaf helpers that lean_services uses to validate
-``lean_multi_attempt`` candidates, summarize attempt diagnostics, strip Lean comments/strings,
-and normalize diff-style path prefixes. Each function here is the fixpoint closure under "calls":
-its only non-stdlib callees are other functions in this module (``_multi_attempt_validation_reasons``
-calls ``_strip_comments_and_strings`` and reads the ``MULTI_ATTEMPT_*`` bounds, both defined here).
-Nothing here invokes a Lean backend (MCP / REPL / Lake), touches the filesystem, or reads
-module-mutable state — those callers stay in ``lean_services`` and reach these helpers through the
-re-export shim.
-
-Because this module imports ONLY stdlib (``re``, ``typing``) and does NOT import ``lean_services``
-or ``native_runner``, re-exporting these names back from ``lean_services`` introduces no import
-cycle. Existing callers keep resolving them as ``lean_services.<name>`` unchanged.
+These side-effect-free helpers summarize diagnostics, strip comments and
+strings, and normalize diff-style paths for ``lean_services``.
 """
 
 from __future__ import annotations
@@ -59,7 +49,15 @@ def _summarize_attempt_diagnostics(attempts: list[dict[str, Any]]) -> list[str]:
 
 
 def _normalize_multi_attempt_candidates(attempts: list[str]) -> list[str]:
-    return [str(item or "").strip() for item in list(attempts or []) if str(item or "").strip()]
+    """Return non-empty, trimmed, order-preserving distinct tactic candidates."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in list(attempts or []):
+        text = str(item or "").strip()
+        if text and text not in seen:
+            normalized.append(text)
+            seen.add(text)
+    return normalized
 
 
 def _multi_attempt_validation_reasons(attempts: list[str]) -> list[str]:
@@ -70,6 +68,7 @@ def _multi_attempt_validation_reasons(attempts: list[str]) -> list[str]:
             f"lean_multi_attempt expects {MULTI_ATTEMPT_MIN_CANDIDATES}-{MULTI_ATTEMPT_MAX_CANDIDATES} concrete tactic candidates at one proof location"
         )
     declaration_pattern = re.compile(r"^\s*(theorem|lemma|example|def|instance|class|structure)\b")
+    local_proof_block_pattern = re.compile(r"^\s*(?:have|suffices)\b[^\n]*?(?::=|:)\s*by\s*$")
     for snippet in attempts:
         sanitized = _strip_comments_and_strings(snippet)
         if re.search(r"\bsorry\b", sanitized):
@@ -81,6 +80,7 @@ def _multi_attempt_validation_reasons(attempts: list[str]) -> list[str]:
             len(str(snippet)) > MULTI_ATTEMPT_MAX_CHARS
             or len(lines) > MULTI_ATTEMPT_MAX_LINES
             or declaration_pattern.match(str(snippet))
+            or (len(lines) >= 3 and bool(lines) and local_proof_block_pattern.match(lines[0]))
         ):
             reasons.append(
                 "lean_multi_attempt expects short local tactic candidates, not full proof blocks"

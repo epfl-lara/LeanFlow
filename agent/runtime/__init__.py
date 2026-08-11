@@ -1,1 +1,1 @@
-"""agent.runtime subpackage (Phase II restructure)."""
+"""Define managed-run contracts, trajectories, and workflow events."""

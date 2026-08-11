@@ -46,6 +46,7 @@ from typing import Any
 
 from leanflow_cli.config import get_leanflow_home
 from tools.environments.local import _find_shell, _sanitize_subprocess_env
+from tools.utilities.process_tree import terminate_process_tree
 
 logger = logging.getLogger(__name__)
 
@@ -556,23 +557,34 @@ class ProcessRegistry:
         try:
             if session._pty:
                 # PTY process -- terminate via ptyprocess
+                if not _IS_WINDOWS and session.pid:
+                    terminate_process_tree(
+                        session.pid,
+                        expected_session_id=session.pid,
+                    )
                 try:
                     session._pty.terminate(force=True)
                 except Exception:
                     if session.pid:
                         os.kill(session.pid, signal.SIGTERM)
             elif session.process:
-                # Local process -- kill the process group
+                # Local process -- kill every group in the owned session. An
+                # interactive login shell may give its child a distinct PGID.
                 try:
                     if _IS_WINDOWS:
                         session.process.terminate()
                     else:
-                        os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
+                        terminate_process_tree(
+                            session.process.pid,
+                            expected_session_id=session.process.pid,
+                        )
                 except (ProcessLookupError, PermissionError):
                     session.process.kill()
             elif session.env_ref and session.pid:
                 # Non-local -- kill inside sandbox
                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+            elif session.detached and session.pid and not _IS_WINDOWS:
+                terminate_process_tree(session.pid, expected_session_id=session.pid)
             session.exited = True
             session.exit_code = -15  # SIGTERM
             self._move_to_finished(session)
@@ -580,6 +592,21 @@ class ProcessRegistry:
             return {"status": "killed", "session_id": session.id}
         except Exception as e:
             return {"status": "error", "error": str(e)}
+
+    def kill_task_processes(self, task_id: str) -> tuple[str, ...]:
+        """Terminate every tracked background process owned by one task."""
+        with self._lock:
+            session_ids = [
+                session.id
+                for session in self._running.values()
+                if session.task_id == task_id and not session.exited
+            ]
+        killed: list[str] = []
+        for session_id in session_ids:
+            result = self.kill_process(session_id)
+            if result.get("status") in {"killed", "already_exited"}:
+                killed.append(session_id)
+        return tuple(killed)
 
     def write_stdin(self, session_id: str, data: str) -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""

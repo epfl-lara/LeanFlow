@@ -45,7 +45,7 @@ def test_declaration_outline_lists_each_declaration(tmp_path):
     ]
     # Outline rows carry line ranges but not the heavy source text.
     assert outline[1]["line"] == 6
-    assert outline[1]["end_line"] == 8
+    assert outline[1]["end_line"] == 7
     assert "text" not in outline[0]
 
 
@@ -74,9 +74,10 @@ def test_lean_outline_tool_returns_outline_lines(tmp_path):
 
     assert payload["success"] is True
     assert payload["count"] == 3
-    assert payload["outline"][0] == "def qNum L4-5"
-    assert payload["outline"][1] == "theorem qThm L6-8"
-    assert payload["declarations"][2]["name"] == "qLem"
+    assert payload["outline"][0] == "def qNum L4-4"
+    assert payload["outline"][1] == "theorem qThm L6-7"
+    assert payload["outline"][2] == "lemma qLem L9-10"
+    assert "declarations" not in payload
 
 
 def test_lean_outline_tool_symbol_returns_region(tmp_path):

@@ -20,28 +20,31 @@ stop_conditions:
   - imports-resolved
 route_actions:
   - draft
+phases: [phase-draft]
 ---
 
 # Draft
 
-Use this workflow to create or stabilize declaration skeletons before the main proving loop takes over.
+Draft Lean declarations that are ready for the proving loop. The stub
+shape, placement, naming, and graph-emission rules are the `phase-draft`
+fragment's contract (`leanflow_specs/phases/draft.md`) — the same rules
+the planner, decomposer, and multi-direction paths enforce mechanically.
 
 ## Inputs
 
-- target file or module
-- informal statement or partial Lean declaration
-- local style constraints from nearby project code
+- the informal claim or source material to formalize
+- the target file and any surrounding declarations
 
 ## Tool Order
 
 1. `lean_capabilities`
-2. `lean_inspect`
-3. `lean_search`
-4. edit the declaration shape
-5. `lean_verify`
+2. `lean_inspect` on the target file
+3. `lean_search` for names, shapes, and prior art
+4. write the declaration per the `phase-draft` stub contract
+5. `lean_verify` (sorry warnings pass; errors do not)
 
 ## Exit Criteria
 
-- imports are coherent
-- signatures are stable
-- the drafted declaration is ready for proving work or for the next queue pass
+- imports coherent, signatures stable
+- every stub obeys the `phase-draft` shape (one sorry-bodied declaration)
+- the declaration is ready for proving or the next queue pass

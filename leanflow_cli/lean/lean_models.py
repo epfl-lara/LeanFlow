@@ -1,9 +1,4 @@
-"""Typed result/report dataclasses for the Lean services layer.
-
-Pure-data leaf module (frozen dataclasses + ``to_dict`` via ``asdict``). Extracted from
-``lean_services.py`` so the services module and ``lean_backend`` share one definition;
-imported back into ``lean_services`` for the historical ``from ... import Lean*`` surface.
-"""
+"""Define immutable result and capability records for Lean services."""
 
 from __future__ import annotations
 
@@ -30,7 +25,14 @@ class LeanCapabilityReport:
     remote_search_policy: str = "public-fallbacks-enabled"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["worker_specs"] = list(self.workers)
+        payload["workers_scope"] = "registered_lean_workflow_specs"
+        payload["workers_note"] = (
+            "This field reports registered Lean workflow specs, not live research or "
+            "planner-agent capacity."
+        )
+        return payload
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,7 @@ class LeanAxiomReport:
     classical: bool
     choice: bool
     note: str
+    inspection_succeeded: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

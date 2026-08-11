@@ -1,59 +1,49 @@
+# Python environments and build output
+/.venv/
+/.leanflow-venv/
 /venv/
-/_pycache/
-*.pyc*
+/build/
+/dist/
+*.egg-info/
 __pycache__/
-.venv/
-.vscode/
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env.development
-.env.test
-export*
-__pycache__/model_tools.cpython-310.pyc
-__pycache__/web_tools.cpython-310.pyc
-logs/
-data/
-.pytest_cache/
-tmp/
-gauss-*/*
-examples/
-tests/quick_test_dataset.jsonl
-tests/sample_dataset.jsonl
-run_datagen_kimik2-thinking.sh
-run_datagen_megascience_glm4-6.sh
-run_datagen_sonnet.sh
-source-data/*
-run_datagen_megascience_glm4-6.sh
-data/*
-node_modules/
-browser-use/
-agent-browser/
-# Private keys
-*.ppk
-*.pem
-privvy*
-images/
-__pycache__/
-gauss_agent.egg-info/
-leanflow_agent.egg-info/
-.opengauss-venv/
-.leanflow-venv/
+*.py[cod]
+
+# Test, type-check, lint, and coverage caches
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/.coverage
+/htmlcov/
+/testlogs/
+
+# LeanFlow runtime state and local campaigns
 .leanflow/
-wandb/
-testlogs
+.lake/
+.artifacts/
+/artifacts/
+logs/
+/tmp/
+/data/
+/wandb/
+/evals/results.jsonl
 
-# CLI config (may contain sensitive SSH paths)
-cli-config.yaml
+# Local configuration and credentials
+.env
+.env.*
+/cli-config.yaml
+*.pem
+*.ppk
+privvy*
 
-# Skills Hub state (lives in ~/.gauss/skills/.hub/ at runtime, but just in case)
-skills/.hub/
-ignored/
-.worktrees/
-environments/benchmarks/evals/
-
-# Release script temp files
-.release_notes.md
+# Editors, assistants, and operating-system metadata
+/.vscode/
+/.claude/settings.local.json
 .DS_Store
+
+# Local dependencies and worktrees
+/node_modules/
+/.worktrees/
+/ignored/
+
+# Release-script scratch files
+/.release_notes.md

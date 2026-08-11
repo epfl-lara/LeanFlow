@@ -60,6 +60,33 @@ def test_collect_and_message_text():
     assert nu._collect_message_text(messages) == "first\n\n\n\nthird"
 
 
+def test_collect_assistant_report_text_ignores_successful_tool_contracts_and_user_prompts():
+    messages = [
+        {
+            "role": "user",
+            "content": "A blocker is evidence for a new route, never permission to halt.",
+        },
+        {
+            "role": "tool",
+            "name": "skill_view",
+            "content": (
+                '{"success": true, "name": "lean-theorem-queue-worker", '
+                '"content": "## Blocker Taxonomy\\n- failed proof attempts are route evidence"}'
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": "The remaining branch is stuck on a missing divisibility lemma.",
+        },
+    ]
+
+    assert (
+        nu._collect_assistant_report_text(messages)
+        == "The remaining branch is stuck on a missing divisibility lemma."
+    )
+    assert nu._collect_assistant_report_text(messages[:2]) == ""
+
+
 def test_bounded_verifier_response_truncates_long_text():
     short = "all good"
     assert nu._bounded_verifier_response(short) == short
@@ -75,9 +102,10 @@ def test_diagnostic_counts_from_messages():
         {"severity": "error", "message": "boom"},
         {"severity": "warning", "message": "careful"},
         {"severity": "error", "message": "contains sorry here"},
+        {"severity": "error", "message": "axiom guard depends on sorryAx"},
     ]
     errors, warnings, sorry_count = nu._diagnostic_counts_from_messages(messages=messages)
-    assert (errors, warnings, sorry_count) == (2, 1, 1)
+    assert (errors, warnings, sorry_count) == (3, 1, 1)
     # No input -> all zero.
     assert nu._diagnostic_counts_from_messages() == (0, 0, 0)
 

@@ -45,6 +45,38 @@ def test_assigned_statement_signature_drops_proof_body():
     assert "trivial" not in sig
 
 
+def test_assigned_preamble_tracks_doc_comment_and_multiline_attributes():
+    source = (
+        "theorem earlier : True := by\n"
+        "  trivial\n\n"
+        "/-- Documentation owned by the assigned theorem. -/\n"
+        "@[category research open,\n"
+        "  simp]\n"
+        "theorem assigned_thm : True := by\n"
+        "  sorry\n"
+    )
+
+    assert queue_edit_guard._queue_edit_assigned_preamble(source, "assigned_thm") == (
+        "/-- Documentation owned by the assigned theorem. -/\n"
+        "@[category research open,\n"
+        "  simp]\n"
+    )
+    assert queue_edit_guard._queue_edit_assigned_preamble(source, "earlier") == ""
+    assert queue_edit_guard._queue_edit_assigned_preamble(source, "missing") is None
+
+
+def test_doc_comment_guard_allows_atomic_move_but_rejects_delete_or_edit():
+    doc = "/-- Documentation owned by demo. -/"
+    before = f"{doc}\ntheorem demo : True := by\n  trivial\n"
+    moved = f"private lemma helper : True := by trivial\n\n{doc}\ntheorem demo : True := by\n  trivial\n"
+    deleted = "theorem demo : True := by\n  trivial\n"
+    edited = before.replace("owned by demo", "silently changed")
+
+    assert queue_edit_guard._queue_edit_preserves_doc_comments(before, moved) is True
+    assert queue_edit_guard._queue_edit_preserves_doc_comments(before, deleted) is False
+    assert queue_edit_guard._queue_edit_preserves_doc_comments(before, edited) is False
+
+
 def test_protected_declarations_exclude_the_assigned_target():
     protected = queue_edit_guard._queue_edit_protected_declarations(FILE, "assigned_thm")
     names = {p["name"] for p in protected}
@@ -74,6 +106,64 @@ def test_in_scope_proof_edit_is_allowed_but_out_of_scope_edit_is_detected_and_re
     assert restored == FILE
 
 
+def test_declaration_local_scope_prefix_is_not_stripped_from_new_helper():
+    before = """\
+theorem protected_item : True := by
+  trivial
+
+theorem assigned_thm : True := by
+  sorry
+"""
+    after = before.replace(
+        "theorem assigned_thm",
+        """open scoped Classical in
+theorem checked_helper : True := by
+  trivial
+
+theorem assigned_thm""",
+    )
+    protected = queue_edit_guard._queue_edit_protected_declarations(before, "assigned_thm")
+
+    assert queue_edit_guard._queue_edit_changed_protected_declarations(protected, after) == []
+    delta = queue_edit_guard._queue_edit_declaration_delta(
+        before,
+        after,
+        "assigned_thm",
+        protected,
+    )
+    assert delta.assigned_changed is False
+    assert delta.helper_names == ("checked_helper",)
+
+
+def test_declaration_local_option_prefix_is_not_stripped_from_new_helper():
+    before = """\
+theorem protected_item : True := by
+  trivial
+
+theorem assigned_thm : True := by
+  sorry
+"""
+    after = before.replace(
+        "theorem assigned_thm",
+        """set_option maxRecDepth 100000 in
+private lemma checked_helper : True := by
+  trivial
+
+theorem assigned_thm""",
+    )
+    protected = queue_edit_guard._queue_edit_protected_declarations(before, "assigned_thm")
+
+    assert queue_edit_guard._queue_edit_changed_protected_declarations(protected, after) == []
+    delta = queue_edit_guard._queue_edit_declaration_delta(
+        before,
+        after,
+        "assigned_thm",
+        protected,
+    )
+    assert delta.assigned_changed is False
+    assert delta.helper_names == ("checked_helper",)
+
+
 def test_restore_returns_none_when_protected_declaration_is_missing():
     protected = queue_edit_guard._queue_edit_protected_declarations(FILE, "assigned_thm")
     # Drop the protected declaration entirely -> reported as "missing".
@@ -83,6 +173,44 @@ def test_restore_returns_none_when_protected_declaration_is_missing():
     # An in-place restore cannot recover a removed declaration, so it bails out (None) so the
     # caller falls back to a full pre-tool-state restore.
     assert queue_edit_guard._restore_changed_protected_declarations(removed, changed) is None
+
+
+def test_removed_generated_assignment_requires_no_remaining_source_reference():
+    referenced = "theorem result : True := by\n  exact generated_helper\n"
+    unused = "theorem result : True := by\n  trivial\n"
+
+    assert (
+        queue_edit_guard._queue_edit_removed_generated_assignment_is_safe(
+            referenced,
+            "generated_helper",
+            removal_authorized=True,
+            protected_declarations=[
+                {
+                    "kind": "theorem",
+                    "name": "result",
+                    "text": referenced.strip(),
+                    "line": 1,
+                }
+            ],
+        )
+        is False
+    )
+    assert (
+        queue_edit_guard._queue_edit_removed_generated_assignment_is_safe(
+            unused,
+            "generated_helper",
+            removal_authorized=True,
+            protected_declarations=[
+                {
+                    "kind": "theorem",
+                    "name": "result",
+                    "text": unused.strip(),
+                    "line": 1,
+                }
+            ],
+        )
+        is True
+    )
 
 
 def test_initial_declaration_keys_are_cached_on_the_agent():

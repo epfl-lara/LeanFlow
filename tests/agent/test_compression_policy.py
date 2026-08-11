@@ -196,6 +196,56 @@ def test_pre_advisor_noop_without_reserve(agent):
     assert out_system == "active sys"
 
 
+def test_pre_advisor_compresses_fresh_history_only_once(agent):
+    """Do not recompress a new handoff when the reserve still exceeds the cap."""
+    agent.compression_enabled = True
+    agent._advisor_result_context_reserve_tokens = 90_000
+    messages = [
+        {"role": "user", "content": "old theorem context"},
+        {"role": "assistant", "content": "old proof attempt"},
+    ]
+    with (
+        patch.object(agent.context_compressor, "should_compress", return_value=True),
+        patch.object(
+            agent,
+            "_compress_context",
+            return_value=([{"role": "user", "content": "fresh handoff"}], "compressed sys"),
+        ) as mock_compress,
+    ):
+        out_messages, out_system = agent._maybe_precompress_before_advisor_tool(
+            messages,
+            "sys",
+            "active sys",
+            effective_task_id="t",
+        )
+
+    mock_compress.assert_called_once()
+    assert out_messages == [{"role": "user", "content": "fresh handoff"}]
+    assert out_system == "compressed sys"
+
+
+def test_pre_advisor_admission_callback_avoids_rejected_call_compression(agent):
+    """Honor a side-effect-free managed circuit check before compression."""
+    observed = []
+    agent._advisor_precompression_admission_callback = lambda names: observed.append(names) or False
+
+    admitted = agent._advisor_precompression_admitted({"lean_reasoning_help"})
+
+    assert admitted is False
+    assert observed == [frozenset({"lean_reasoning_help"})]
+
+
+def test_pre_advisor_admission_callback_fails_open(agent):
+    """Do not disable reserve compression when an optional callback crashes."""
+
+    def fail(_names):
+        raise RuntimeError("stale managed state")
+
+    agent._advisor_precompression_admission_callback = fail
+
+    assert agent._advisor_precompression_admitted({"lean_reasoning_help"}) is True
+
+
 # ── suffix-preserving split ─────────────────────────────────────────────────
 
 

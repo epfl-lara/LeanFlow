@@ -14,6 +14,7 @@ Backend compatibility:
 - arXiv API: https://info.arxiv.org/help/api/
 - Semantic Scholar Graph API: https://api.semanticscholar.org/api-docs/graph
 - Sourcegraph public code search: https://sourcegraph.com/docs/code-search
+- Exa search API: https://exa.ai/docs/reference/search
 - Firecrawl: https://docs.firecrawl.dev/introduction
 
 LLM Processing:
@@ -45,14 +46,18 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
 
 from agent.providers.auxiliary_client import async_call_llm
 from tools.implementations.web_research_providers import (  # noqa: F401
     ARXIV_API_URL,
+    BING_SEARCH_URL,
     CODE_SEARCH_STOPWORDS,
     CROSSREF_SEARCH_URL,
     DUCKDUCKGO_HTML_URL,
+    EXA_SEARCH_URL,
+    GITHUB_REPOSITORY_SEARCH_URL,
     RESEARCH_SEARCH_TIMEOUT_SECONDS,
     RESEARCH_SEARCH_USER_AGENT,
     SEMANTIC_SCHOLAR_SEARCH_URL,
@@ -67,9 +72,12 @@ from tools.implementations.web_research_providers import (  # noqa: F401
     _normalize_whitespace,
     _research_headers,
     _search_arxiv,
+    _search_bing_html,
     _search_crossref,
     _search_duckduckgo_html,
+    _search_exa,
     _search_general_web,
+    _search_github_repositories,
     _search_semantic_scholar,
     _search_sourcegraph_code,
     _search_tavily,
@@ -78,8 +86,25 @@ from tools.implementations.web_research_providers import (  # noqa: F401
     _truncate_text,
     _web_search_provider_order,
 )
+from tools.implementations.web_search_orchestration import (
+    degraded_reasons,
+    filter_provider_batches,
+    merge_provider_batches,
+    normalize_search_queries,
+    provider_status,
+    run_provider_searches,
+    searched_provider_names,
+)
 from tools.response import dumps, error
 from tools.utilities.debug_helpers import DebugSession
+from tools.utilities.repository_research_policy import (
+    is_repository_url,
+    repository_research_disabled,
+    repository_url_block_reason,
+    solution_research_query_block_reason,
+    solution_research_text_block_reason,
+    solution_research_url_block_reason,
+)
 
 try:
     from firecrawl import Firecrawl
@@ -121,6 +146,7 @@ def _get_firecrawl_client():
 
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
+SUMMARIZER_TIMEOUT_SECONDS = 30.0
 
 # Allow per-task override via env var
 DEFAULT_SUMMARIZER_MODEL = os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
@@ -286,8 +312,11 @@ Your goal is to preserve ALL important information while reducing length. Never 
 
 Create a markdown summary that captures all key information in a well-organized, scannable format. Include important quotes and code snippets in their original formatting. Focus on actionable information, specific details, and unique insights."""
 
-    # Call the LLM with retry logic
-    max_retries = 6
+    # Page extraction is an optional context-reduction step. Give it one true
+    # bounded attempt, then return the original hard-capped content. Stacking
+    # six retries here on top of provider retries used to freeze a concurrent
+    # planner web batch for many minutes.
+    max_retries = 1
     retry_delay = 2
     last_error = None
 
@@ -301,6 +330,7 @@ Create a markdown summary that captures all key information in a well-organized,
                 ],
                 "temperature": 0.1,
                 "max_tokens": max_tokens,
+                "timeout": SUMMARIZER_TIMEOUT_SECONDS,
             }
             if model:
                 call_kwargs["model"] = model
@@ -499,7 +529,12 @@ def clean_base64_images(text: str) -> str:
     return cleaned_text
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def web_search_tool(
+    query: str,
+    limit: int = 5,
+    search_depth: str = "auto",
+    alternate_queries: list[str] | None = None,
+) -> str:
     """
     Search free public research sources without requiring paid keys.
 
@@ -511,6 +546,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Args:
         query (str): The search query to look up
         limit (int): Maximum number of results to return (default: 5)
+        search_depth (str): ``fast``, ``auto``, or ``deep`` provider breadth.
+        alternate_queries (list[str] | None): Up to three additional formulations searched
+            concurrently and merged with the primary query.
 
     Returns:
         str: JSON string containing search results with the following structure:
@@ -527,7 +565,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
              }
     """
     debug_call_data = {
-        "parameters": {"query": query, "limit": limit},
+        "parameters": {
+            "query": query,
+            "limit": limit,
+            "search_depth": search_depth,
+            "alternate_queries": list(alternate_queries or ()),
+        },
         "error": None,
         "results_count": 0,
         "original_response_size": 0,
@@ -535,58 +578,121 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     }
 
     try:
+        started = time.perf_counter()
         from tools.utilities.interrupt import is_interrupted
 
         if is_interrupted():
             return json.dumps({"error": "Interrupted", "success": False})
+        queries = normalize_search_queries(query, alternate_queries)
+        if not queries:
+            return dumps({"success": False, "error": "web_search requires a non-empty query"})
+        for candidate_query in queries:
+            solution_denial = solution_research_query_block_reason(candidate_query)
+            if solution_denial:
+                return dumps(
+                    {
+                        "success": False,
+                        "error": solution_denial,
+                        "status": "clean_room_solution_research_denied",
+                        "query": candidate_query,
+                        "queries": list(queries),
+                    }
+                )
 
         normalized_limit = _bounded_limit(limit)
+        normalized_depth = str(search_depth or "auto").strip().lower()
+        if normalized_depth not in {"auto", "fast", "deep"}:
+            normalized_depth = "auto"
         logger.info(
-            "Searching free research providers for: '%s' (limit: %d)", query, normalized_limit
+            "Searching free research providers for %d query formulation(s) "
+            "(depth: %s, limit: %d)",
+            len(queries),
+            normalized_depth,
+            normalized_limit,
         )
 
-        provider_results: list[dict[str, Any]] = []
-        provider_batches: list[list[dict[str, Any]]] = []
-        degraded_reasons: list[str] = []
-        seen_urls: set[str] = set()
         per_provider_limit = max(2, min(5, normalized_limit))
-        for search_fn in _web_search_provider_order(query):
-            results, error = search_fn(query, per_provider_limit)
-            provider_batches.append(results)
-            if error:
-                degraded_reasons.append(error)
+        provider_orders = []
+        for candidate_query in queries:
+            provider_order = _web_search_provider_order(candidate_query)
+            if repository_research_disabled():
+                provider_order = tuple(
+                    search_fn
+                    for search_fn in provider_order
+                    if search_fn is not _search_sourcegraph_code
+                )
+            if normalized_depth == "fast" and len(provider_order) > 2:
+                provider_order = (provider_order[0], provider_order[-1])
+            provider_orders.append(provider_order)
 
-        max_batch_len = max((len(batch) for batch in provider_batches), default=0)
-        for index in range(max_batch_len):
-            for batch in provider_batches:
-                if len(provider_results) >= normalized_limit:
-                    break
-                if index < len(batch):
-                    _append_unique_result(provider_results, seen_urls, batch[index])
-            if len(provider_results) >= normalized_limit:
-                break
+        raw_batches = run_provider_searches(
+            queries,
+            provider_orders,
+            per_provider_limit=per_provider_limit,
+        )
+
+        def result_allowed(result: dict[str, Any]) -> bool:
+            if repository_research_disabled() and (
+                is_repository_url(str(result.get("url", "") or ""))
+                or str(result.get("provider", "") or "").lower() == "sourcegraph"
+            ):
+                return False
+            result_text = " ".join(
+                str(result.get(key, "") or "") for key in ("title", "url", "snippet")
+            )
+            return not solution_research_text_block_reason(
+                result_text,
+                surface="search result",
+            )
+
+        batches = filter_provider_batches(raw_batches, result_allowed)
+        provider_results = merge_provider_batches(
+            batches,
+            queries=queries,
+            limit=normalized_limit,
+        )
+        failures = degraded_reasons(batches)
+        statuses = provider_status(batches)
 
         results_count = len(provider_results)
         logger.info("Found %d free research results", results_count)
 
         response_data = {
-            "success": True,
+            "success": bool(provider_results),
+            "status": "complete" if provider_results else "no_results",
+            "retryable": not provider_results,
             "query": query,
+            "queries": list(queries),
+            "search_depth": normalized_depth,
             "data": {"web": provider_results},
-            "degraded_reasons": degraded_reasons,
+            "providers_tried": searched_provider_names(batches),
+            "provider_status": statuses,
+            "degraded_reasons": failures,
+            "elapsed_ms": max(0, round((time.perf_counter() - started) * 1000)),
         }
 
         # Surface degraded backends to the model: results may be incomplete, and
         # web_fetch on a known URL is the reliable fallback for a thin result set.
-        if degraded_reasons:
+        if failures:
             response_data["degraded"] = (
                 "Some search backends were degraded ("
-                + "; ".join(degraded_reasons)
-                + "); results may be incomplete. Try rephrasing, or use web_fetch on a known URL."
+                + "; ".join(failures)
+                + "); results may be incomplete. Continue with surviving sources, rephrase with "
+                "alternate_queries, and use web_fetch on promising URLs before concluding that "
+                "research is exhausted."
+            )
+        elif not provider_results:
+            response_data["degraded"] = (
+                "No relevant sources were returned for this formulation. This is retryable: use "
+                "materially different alternate_queries or a known primary URL; do not treat one "
+                "empty search as exhausted research."
             )
 
         # Capture debug information
         debug_call_data["results_count"] = results_count
+        debug_call_data["provider_status"] = statuses
+        debug_call_data["queries"] = list(queries)
+        debug_call_data["search_depth"] = normalized_depth
 
         # Convert to JSON
         result_json = dumps(response_data, indent=2)
@@ -599,17 +705,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         return result_json
 
-    except Exception as e:
-        error_msg = f"Error searching web: {str(e)}"
+    except Exception as exc:
+        error_msg = f"Error searching web: {str(exc)}"
         logger.debug("%s", error_msg)
 
         debug_call_data["error"] = error_msg
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
 
-        # NOTE: `error` is rebound as a local in this function's provider loop,
-        # so the imported error() helper is shadowed here; use dumps() directly.
-        return dumps({"error": error_msg})
+        return dumps({"success": False, "error": error_msg})
 
 
 async def web_extract_tool(
@@ -658,6 +762,10 @@ async def web_extract_tool(
 
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
+        for url in urls:
+            blocked = repository_url_block_reason(url) or solution_research_url_block_reason(url)
+            if blocked:
+                return error(blocked)
 
         # Determine requested formats for Firecrawl v2
         formats: list[str] = []
@@ -1014,13 +1122,18 @@ from tools.registry import registry
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
     "description": (
-        "General external web search across the open web (DuckDuckGo / Tavily), code (Sourcegraph), and "
-        "papers/related work (arXiv, Semantic Scholar, Crossref). Use it for anything outside the local "
-        "project: background, documentation, installation, similar results, prior formalizations, lemma "
-        "references, and source examples. Pair it with web_fetch to READ a result and web_download to save a "
-        "file (e.g. a PDF). Still prefer lean_search FIRST for local project facts, mathlib declarations, "
-        "theorem names, type-pattern matching, and proof hints. Returns normalized results with provider, kind "
-        "(web/paper/code), title, URL, snippet, and optional paper/code metadata."
+        "Fast, source-attributed external research across the open web (Tavily / Exa / DuckDuckGo / Bing), code "
+        "and repositories (Sourcegraph / GitHub), and papers/related work (arXiv, Semantic Scholar, Crossref). Independent backends "
+        "run concurrently and fail independently. Use alternate_queries with search_depth=deep to search "
+        "several formulations in one call; results are relevance-ranked, source-diversified, and deduplicated "
+        "across providers with matched-query provenance. Use it for anything outside the local project: "
+        "background, current documentation, installation, similar results, prior formalizations, lemma "
+        "references, and source examples. Pair it with web_fetch to READ promising sources—search snippets "
+        "alone are not evidence—and web_download/repo_clone for concrete artifacts. If a backend degrades, "
+        "continue with surviving sources and alternate formulations before declaring research exhausted. "
+        "A no_results response is explicitly retryable and must not end a research branch by itself. "
+        "Still prefer lean_search FIRST for local project facts, mathlib declarations, theorem names, "
+        "type-pattern matching, and proof hints."
     ),
     "parameters": {
         "type": "object",
@@ -1031,6 +1144,23 @@ WEB_SEARCH_SCHEMA = {
                 "description": "Maximum number of results to return (default 5, max 10).",
                 "minimum": 1,
                 "maximum": 10,
+            },
+            "search_depth": {
+                "type": "string",
+                "enum": ["fast", "auto", "deep"],
+                "description": (
+                    "fast uses a narrow provider route; auto balances breadth and latency "
+                    "(default); deep is intended for a multi-formulation search portfolio."
+                ),
+            },
+            "alternate_queries": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 500},
+                "maxItems": 3,
+                "description": (
+                    "Up to three materially different formulations to search concurrently "
+                    "and merge with the primary query."
+                ),
             },
         },
         "required": ["query"],
@@ -1058,7 +1188,16 @@ registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=lambda args, **kw: web_search_tool(
+        args.get("query", ""),
+        limit=args.get("limit", 5),
+        search_depth=args.get("search_depth", "auto"),
+        alternate_queries=(
+            args.get("alternate_queries", [])[:3]
+            if isinstance(args.get("alternate_queries"), list)
+            else []
+        ),
+    ),
     check_fn=check_research_search_available,
     requires_env=[],
     emoji="🔍",

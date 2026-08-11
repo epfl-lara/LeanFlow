@@ -73,7 +73,9 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Any
+import time
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +120,7 @@ except ImportError:
 # re-exported so callers/tests that resolve tools.mcp.mcp_tool.<name> keep working.
 # mcp_transport does NOT import mcp_tool, so this introduces no import cycle.
 # ---------------------------------------------------------------------------
+from tools.mcp.mcp_reclaim import should_recycle_after_tool  # noqa: E402
 from tools.mcp.mcp_transport import (  # noqa: E402
     _DEFAULT_CONNECT_TIMEOUT,
     _augment_lean_stdio_env,
@@ -139,6 +142,67 @@ from tools.mcp.mcp_transport import (  # noqa: E402
 _DEFAULT_TOOL_TIMEOUT = 120  # seconds for tool calls
 _MAX_RECONNECT_RETRIES = 5
 _MAX_BACKOFF_SECONDS = 60
+_PROOF_AUTO_SERVER_NAME = "lean-proof-auto"
+_PROOF_AUTO_SEARCH_TOOL_NAME = "search_automated_proof"
+_LEAN_LSP_SERVER_NAME = "lean-lsp"
+_LEAN_LSP_INTERACTIVE_STATE_TOOLS = frozenset(
+    {"lean_diagnostic_messages", "lean_goal", "lean_term_goal"}
+)
+_LEAN_LSP_INTERACTIVE_STATE_TIMEOUT_S = 60.0
+
+_RequestResult = TypeVar("_RequestResult")
+
+
+def _is_proof_auto_search(server_name: str, tool_name: str) -> bool:
+    """Return whether one MCP call is the managed proof-auto search route."""
+    return (
+        str(server_name or "").strip() == _PROOF_AUTO_SERVER_NAME
+        and str(tool_name or "").strip() == _PROOF_AUTO_SEARCH_TOOL_NAME
+    )
+
+
+def _effective_tool_request_timeout(
+    server_name: str,
+    tool_name: str,
+    args: dict[str, Any],
+    configured_timeout: float,
+) -> float:
+    """Return a workload-specific bounded transport deadline."""
+    try:
+        configured = max(0.001, float(configured_timeout))
+    except (TypeError, ValueError):
+        configured = float(_DEFAULT_TOOL_TIMEOUT)
+    if (
+        str(server_name or "").strip() == _LEAN_LSP_SERVER_NAME
+        and str(tool_name or "").strip() in _LEAN_LSP_INTERACTIVE_STATE_TOOLS
+    ):
+        return min(configured, _LEAN_LSP_INTERACTIVE_STATE_TIMEOUT_S)
+    if not _is_proof_auto_search(server_name, tool_name):
+        return configured
+    try:
+        requested = float(args.get("search_budget_s", configured))
+    except (TypeError, ValueError):
+        return configured
+    if requested <= 0:
+        return configured
+    return min(configured, requested)
+
+
+class _MCPServerRecycling(RuntimeError):
+    """Signal that an operation was rejected before dispatch during retirement."""
+
+    def __init__(self, server: "MCPServerTask"):
+        super().__init__(f"MCP server '{server.name}' is recycling")
+        self.server = server
+
+
+class _MCPServerRecyclePending(RuntimeError):
+    """Signal a bounded wait for a replacement server without backend failure."""
+
+
+class _MCPServerRecycleFailed(_MCPServerRecyclePending):
+    """Signal that fail-closed retirement retained the old server ownership."""
+
 
 # ---------------------------------------------------------------------------
 # Sampling -- server-initiated LLM requests (MCP sampling/createMessage).
@@ -181,6 +245,14 @@ class MCPServerTask:
         "_config",
         "_sampling",
         "_registered_tool_names",
+        "_accepting_requests",
+        "_active_requests",
+        "_requests_idle",
+        "_recycle_requested",
+        "_recycle_complete",
+        "_recycle_finished",
+        "_recycle_error",
+        "_retire_task",
     )
 
     def __init__(self, name: str):
@@ -195,6 +267,15 @@ class MCPServerTask:
         self._config: dict = {}
         self._sampling: SamplingHandler | None = None
         self._registered_tool_names: list[str] = []
+        self._accepting_requests = True
+        self._active_requests = 0
+        self._requests_idle = asyncio.Event()
+        self._requests_idle.set()
+        self._recycle_requested = False
+        self._recycle_complete = threading.Event()
+        self._recycle_finished = threading.Event()
+        self._recycle_error: BaseException | None = None
+        self._retire_task: asyncio.Task | None = None
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -366,9 +447,56 @@ class MCPServerTask:
         if self._error:
             raise self._error
 
+    async def request(
+        self,
+        operation: Callable[[Any], Awaitable[_RequestResult]],
+    ) -> _RequestResult:
+        """Run one session request while exposing an idle barrier for retirement."""
+        session = self.session
+        if not self._accepting_requests or session is None:
+            if self._recycle_requested:
+                raise _MCPServerRecycling(self)
+            raise RuntimeError(f"MCP server '{self.name}' is shutting down")
+        self._active_requests += 1
+        self._requests_idle.clear()
+        try:
+            return await operation(session)
+        finally:
+            self._active_requests = max(0, self._active_requests - 1)
+            if self._active_requests == 0:
+                self._requests_idle.set()
+
+    async def retire(self) -> None:
+        """Drain admitted calls, stop new requests atomically, and shut down.
+
+        Every registered handler has its own timeout, and the MCP-loop bridge
+        cancels a timed-out coroutine. Waiting for the idle barrier therefore
+        remains bounded by those call contracts without killing useful
+        concurrent evidence at an arbitrary shorter grace period.
+        """
+        self._recycle_requested = True
+        self._accepting_requests = False
+        while self._active_requests:
+            await self._requests_idle.wait()
+        await self.shutdown()
+        # Registered tool handlers may retain this object after registry
+        # replacement. Drop completed transport state so those harmless stale
+        # closures cannot retain the retired connection's object graph.
+        self._task = None
+        self._sampling = None
+        self._tools.clear()
+        self._config.clear()
+
     async def shutdown(self):
         """Signal the Task to exit and wait for clean resource teardown."""
+        self._accepting_requests = False
         self._shutdown_event.set()
+        if not self._ready.is_set():
+            # Unblock ``start()`` when final shutdown races initial transport
+            # setup. Otherwise the discovery coroutine can survive after its
+            # owned server task has already been canceled.
+            self._error = RuntimeError(f"MCP server '{self.name}' was shut down during startup")
+            self._ready.set()
         if self._task and not self._task.done():
             try:
                 await asyncio.wait_for(self._task, timeout=10)
@@ -388,6 +516,10 @@ class MCPServerTask:
 # ---------------------------------------------------------------------------
 
 _servers: dict[str, MCPServerTask] = {}
+# Own servers from construction until registration or confirmed teardown. A
+# startup is intentionally visible here before it reaches ``_servers`` so final
+# runtime cleanup cannot overlook an unregistered stdio process.
+_starting_servers: dict[str, MCPServerTask] = {}
 
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: asyncio.AbstractEventLoop | None = None
@@ -395,6 +527,7 @@ _mcp_thread: threading.Thread | None = None
 
 # Protects _mcp_loop, _mcp_thread, and _servers from concurrent access.
 _lock = threading.Lock()
+_mcp_shutting_down = False
 
 
 def _ensure_mcp_loop():
@@ -412,14 +545,361 @@ def _ensure_mcp_loop():
         _mcp_thread.start()
 
 
-def _run_on_mcp_loop(coro, timeout: float = 30):
-    """Schedule a coroutine on the MCP event loop and block until done."""
+def _run_on_mcp_loop(
+    coro_or_factory,
+    timeout: float = 30,
+    *,
+    completion_event: threading.Event | None = None,
+):
+    """Schedule one coroutine on the MCP event loop and block until done.
+
+    A zero-argument coroutine factory delays construction until this bridge
+    actually owns the operation. Tests and failure shims that intercept the
+    bridge can therefore decline a call without leaking an un-awaited
+    coroutine, while submitted operations retain the bridge's cancellation
+    ownership on timeout.
+    """
     with _lock:
         loop = _mcp_loop
     if loop is None or not loop.is_running():
         raise RuntimeError("MCP event loop is not running")
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=timeout)
+    if completion_event is not None:
+
+        async def _tracked():
+            try:
+                operation = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+                return await operation
+            finally:
+                # Unlike ConcurrentFuture.done(), this runs only after async
+                # cancellation has unwound the transport's cleanup path.
+                completion_event.set()
+
+        coro = _tracked()
+    else:
+        coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+    try:
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+    except BaseException:
+        with contextlib.suppress(Exception):
+            coro.close()
+        if completion_event is not None:
+            completion_event.set()
+        raise
+    try:
+        return future.result(timeout=timeout)
+    except TimeoutError:
+        # A timed-out handler must release MCPServerTask.request's active-call
+        # barrier; otherwise a later research recycle can wait forever on a
+        # coroutine whose caller already gave up.
+        future.cancel()
+        raise
+
+
+_mcp_reconnect_lock = threading.Lock()
+_mcp_discovery_fences: dict[str, threading.Event] = {}
+
+
+def _remaining_timeout(deadline: float) -> float:
+    """Return positive remaining wall-clock time or raise a normal timeout."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("MCP request timed out while waiting for server recycle")
+    return remaining
+
+
+def _wait_for_discovery_cleanup(name: str, deadline: float) -> None:
+    """Wait for one canceled startup to finish teardown within this caller's budget."""
+    while True:
+        with _lock:
+            fence = _mcp_discovery_fences.get(name)
+        if fence is None:
+            return
+        if not fence.wait(timeout=_remaining_timeout(deadline)):
+            raise TimeoutError(f"MCP server '{name}' startup cleanup is still running")
+        with _lock:
+            if _mcp_discovery_fences.get(name) is fence:
+                _mcp_discovery_fences.pop(name, None)
+
+
+def _discover_replacement_server(
+    name: str,
+    *,
+    timeout: float,
+    completion_event: threading.Event,
+) -> None:
+    """Discover one exact replacement under an async-cleanup completion fence."""
+    try:
+        servers = _load_mcp_config()
+        config = servers.get(name)
+        if not isinstance(config, dict) or not _parse_boolish(
+            config.get("enabled", True), default=True
+        ):
+            raise RuntimeError(f"MCP server '{name}' is not configured and enabled")
+        _ensure_mcp_loop()
+    except BaseException:
+        # No async startup was submitted, so there is no deferred cleanup to
+        # fence. Release the caller immediately on configuration/loop errors.
+        completion_event.set()
+        raise
+
+    async def _connect_exact() -> None:
+        try:
+            await _discover_and_register_server(name, config)
+        except BaseException:
+            # Cancellation can arrive after registration inserted the server
+            # but before tool registration completed. Remove and reap only the
+            # exact in-flight identity before releasing the cleanup fence.
+            with _lock:
+                partial = _servers.get(name)
+            if partial is not None:
+                partial._accepting_requests = False
+                try:
+                    await partial.shutdown()
+                except BaseException as cleanup_exc:
+                    partial._recycle_error = cleanup_exc
+                    raise _MCPServerRecycleFailed(
+                        f"MCP server '{name}' replacement cleanup failed; "
+                        "retained replacement ownership"
+                    ) from cleanup_exc
+                with _lock:
+                    if _servers.get(name) is partial:
+                        _servers.pop(name, None)
+            raise
+
+    _run_on_mcp_loop(
+        _connect_exact,
+        timeout=max(0.001, float(timeout)),
+        completion_event=completion_event,
+    )
+
+
+def _replacement_mcp_server(
+    name: str,
+    *,
+    previous: MCPServerTask,
+    timeout: float,
+) -> MCPServerTask:
+    """Return a replacement within the caller's remaining tool deadline."""
+    deadline = time.monotonic() + max(0.001, float(timeout))
+
+    def current_replacement() -> MCPServerTask | None:
+        with _lock:
+            candidate = _servers.get(name)
+        if (
+            candidate is not None
+            and candidate is not previous
+            and candidate.session is not None
+            and candidate._accepting_requests
+        ):
+            return candidate
+        if candidate is not None and candidate is not previous:
+            raise _MCPServerRecycleFailed(
+                f"MCP server '{name}' has a retained replacement whose cleanup " "has not completed"
+            )
+        return None
+
+    current = current_replacement()
+    if current is not None:
+        return current
+    _wait_for_discovery_cleanup(name, deadline)
+    if not _mcp_reconnect_lock.acquire(timeout=_remaining_timeout(deadline)):
+        raise TimeoutError(f"MCP server '{name}' reconnect is already in progress")
+    try:
+        _wait_for_discovery_cleanup(name, deadline)
+        current = current_replacement()
+        if current is not None:
+            return current
+        fence = threading.Event()
+        with _lock:
+            _mcp_discovery_fences[name] = fence
+        try:
+            _discover_replacement_server(
+                name,
+                timeout=_remaining_timeout(deadline),
+                completion_event=fence,
+            )
+        finally:
+            # A timeout deliberately leaves an unset fence installed. The
+            # tracked async wrapper sets it only after canceled startup cleanup
+            # completes; a later caller removes it after waiting.
+            if fence.is_set():
+                with _lock:
+                    if _mcp_discovery_fences.get(name) is fence:
+                        _mcp_discovery_fences.pop(name, None)
+        current = current_replacement()
+        if current is None:
+            raise RuntimeError(f"MCP server '{name}' did not reconnect after recycle")
+        return current
+    finally:
+        _mcp_reconnect_lock.release()
+
+
+def _run_server_operation(
+    server_name: str,
+    server: MCPServerTask,
+    operation: Callable[[Any], Awaitable[_RequestResult]],
+    *,
+    timeout: float,
+    observe_server: Callable[[MCPServerTask], None] | None = None,
+) -> _RequestResult:
+    """Run an operation and transparently cross server-recycle boundaries.
+
+    A recycling rejection occurs before ``operation`` is invoked, so retrying
+    it on a replacement server cannot duplicate side effects.
+    """
+    deadline = time.monotonic() + max(0.001, float(timeout))
+    current = server
+    attempt = 0
+    while True:
+
+        async def _call() -> _RequestResult:
+            return await current.request(operation)
+
+        try:
+            if observe_server is not None:
+                observe_server(current)
+            call_timeout = float(timeout) if attempt == 0 else _remaining_timeout(deadline)
+            return _run_on_mcp_loop(_call, timeout=call_timeout)
+        except _MCPServerRecycling as exc:
+            try:
+                remaining = _remaining_timeout(deadline)
+            except TimeoutError as timeout_exc:
+                raise _MCPServerRecyclePending(
+                    f"MCP server '{server_name}' recycle is still draining an active request"
+                ) from timeout_exc
+            if not exc.server._recycle_finished.wait(timeout=remaining):
+                raise _MCPServerRecyclePending(
+                    f"MCP server '{server_name}' recycle is still draining an active request"
+                ) from exc
+            if exc.server._recycle_error is not None:
+                raise _MCPServerRecycleFailed(
+                    f"MCP server '{server_name}' recycle failed; retained old server ownership: "
+                    f"{type(exc.server._recycle_error).__name__}: {exc.server._recycle_error}"
+                ) from exc.server._recycle_error
+            try:
+                current = _replacement_mcp_server(
+                    server_name,
+                    previous=exc.server,
+                    timeout=_remaining_timeout(deadline),
+                )
+                _remaining_timeout(deadline)
+            except TimeoutError as timeout_exc:
+                raise _MCPServerRecyclePending(
+                    f"MCP server '{server_name}' replacement exceeded the tool deadline"
+                ) from timeout_exc
+            attempt += 1
+
+
+def _resolve_handler_server(
+    server_name: str,
+    registered_server: MCPServerTask | None,
+    *,
+    timeout: float,
+) -> MCPServerTask | None:
+    """Resolve a live server, crossing a recycle after schema discovery if needed."""
+    with _lock:
+        current = _servers.get(server_name)
+    if current is not None and (current.session is not None or current._recycle_requested):
+        return current
+    if registered_server is None or not registered_server._recycle_requested:
+        return None
+    deadline = time.monotonic() + max(0.001, float(timeout))
+    if not registered_server._recycle_finished.wait(timeout=max(0.001, float(timeout))):
+        raise _MCPServerRecyclePending(
+            f"MCP server '{server_name}' recycle is still draining an active request"
+        )
+    if registered_server._recycle_error is not None:
+        raise _MCPServerRecycleFailed(
+            f"MCP server '{server_name}' recycle failed; retained old server ownership: "
+            f"{type(registered_server._recycle_error).__name__}: "
+            f"{registered_server._recycle_error}"
+        ) from registered_server._recycle_error
+    try:
+        replacement = _replacement_mcp_server(
+            server_name,
+            previous=registered_server,
+            timeout=_remaining_timeout(deadline),
+        )
+        _remaining_timeout(deadline)
+        return replacement
+    except TimeoutError as timeout_exc:
+        raise _MCPServerRecyclePending(
+            f"MCP server '{server_name}' replacement exceeded the tool deadline"
+        ) from timeout_exc
+
+
+def _recycle_pending_result(exc: _MCPServerRecyclePending) -> str:
+    """Return a retryable transport result that wrappers must not circuit-break."""
+    payload: dict[str, object] = {
+        "error": _sanitize_error(str(exc)),
+        "mcp_recycling": True,
+        "retryable": True,
+    }
+    if isinstance(exc, _MCPServerRecycleFailed):
+        payload["cleanup_failed"] = True
+    return json.dumps(payload)
+
+
+def recycle_mcp_server(
+    name: str,
+    *,
+    expected_server: MCPServerTask | None = None,
+) -> bool:
+    """Schedule retirement and make a server eligible for lazy rediscovery.
+
+    The identity guard prevents delayed cleanup from closing a replacement
+    connection. Other MCP servers and the shared event loop remain live.
+    """
+    with _lock:
+        if _mcp_shutting_down:
+            return False
+        server = _servers.get(name)
+    if server is None or (expected_server is not None and server is not expected_server):
+        return False
+
+    async def _retire() -> None:
+        try:
+            await server.retire()
+        except BaseException as exc:
+            # Keep the exact server in the ownership map and do not advertise
+            # successful completion. Otherwise a replacement could overlap an
+            # orphaned heavy process after a teardown failure.
+            server._recycle_error = exc
+            logger.error(
+                "Failed to retire MCP server '%s'; retaining fail-closed ownership: %s",
+                name,
+                exc,
+            )
+        else:
+            with _lock:
+                if _servers.get(name) is server:
+                    _servers.pop(name, None)
+            server._recycle_complete.set()
+        finally:
+            server._retire_task = None
+            server._recycle_finished.set()
+
+    async def _schedule() -> bool:
+        with _lock:
+            if _mcp_shutting_down:
+                return False
+        if server._recycle_requested and not (
+            server._recycle_finished.is_set() and server._recycle_error is not None
+        ):
+            return False
+        server._recycle_requested = True
+        server._accepting_requests = False
+        server._recycle_error = None
+        server._recycle_complete.clear()
+        server._recycle_finished.clear()
+        server._retire_task = asyncio.create_task(_retire())
+        return True
+
+    try:
+        return bool(_run_on_mcp_loop(_schedule, timeout=2.0))
+    except Exception as exc:
+        logger.warning("Failed to recycle MCP server '%s': %s", name, exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -448,8 +928,33 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
         Exception: on connection or initialization failure.
     """
     server = MCPServerTask(name)
-    await server.start(config)
-    return server
+    with _lock:
+        if _mcp_shutting_down:
+            raise RuntimeError("MCP runtime shutdown is in progress")
+        existing = _starting_servers.get(name)
+        if existing is not None and existing is not server:
+            raise RuntimeError(f"MCP server '{name}' startup is already in progress")
+        _starting_servers[name] = server
+    try:
+        await server.start(config)
+        return server
+    except BaseException:
+        # A caller-bounded reconnect can cancel startup before ``start`` owns
+        # the long-lived transport task. Reap that task here so timeout
+        # enforcement never leaves a second unregistered server tree behind.
+        try:
+            await server.shutdown()
+        except BaseException as cleanup_exc:
+            # Keep ``_starting_servers[name]`` as fail-closed ownership. A
+            # later reconnect and finalizer can see and retry this exact task.
+            raise RuntimeError(
+                f"MCP server '{name}' startup cleanup failed: "
+                f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+            ) from cleanup_exc
+        with _lock:
+            if _starting_servers.get(name) is server:
+                _starting_servers.pop(name, None)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -464,14 +969,45 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     ``handler(args_dict, **kwargs) -> str``
     """
 
-    def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
+    with _lock:
+        registered_server = _servers.get(server_name)
 
-        async def _call():
-            result = await server.session.call_tool(tool_name, arguments=args)
+    def _handler(args: dict, **kwargs) -> str:
+        request_timeout = _effective_tool_request_timeout(
+            server_name,
+            tool_name,
+            args,
+            tool_timeout,
+        )
+        bounded_search = _is_proof_auto_search(server_name, tool_name)
+        deadline = time.monotonic() + request_timeout
+
+        def remaining_timeout() -> float:
+            if bounded_search:
+                return _remaining_timeout(deadline)
+            return request_timeout
+
+        try:
+            server = _resolve_handler_server(
+                server_name,
+                registered_server,
+                timeout=remaining_timeout(),
+            )
+        except _MCPServerRecyclePending as exc:
+            return _recycle_pending_result(exc)
+        except TimeoutError as exc:
+            return json.dumps({"error": _sanitize_error(f"MCP call failed: TimeoutError: {exc}")})
+        if server is None:
+            return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
+        used_server = server
+        timed_out = False
+
+        def remember_server(current: MCPServerTask) -> None:
+            nonlocal used_server
+            used_server = current
+
+        async def _operation(session: Any) -> str:
+            result = await session.call_tool(tool_name, arguments=args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""
@@ -490,7 +1026,24 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             return json.dumps({"result": "\n".join(parts) if parts else ""})
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_server_operation(
+                server_name,
+                server,
+                _operation,
+                timeout=remaining_timeout(),
+                observe_server=remember_server,
+            )
+        except _MCPServerRecyclePending as exc:
+            return _recycle_pending_result(exc)
+        except TimeoutError as exc:
+            timed_out = True
+            logger.error(
+                "MCP tool %s/%s call timed out: %s",
+                server_name,
+                tool_name,
+                exc,
+            )
+            return json.dumps({"error": _sanitize_error(f"MCP call failed: TimeoutError: {exc}")})
         except Exception as exc:
             logger.error(
                 "MCP tool %s/%s call failed: %s",
@@ -501,6 +1054,21 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             return json.dumps(
                 {"error": _sanitize_error(f"MCP call failed: {type(exc).__name__}: {exc}")}
             )
+        finally:
+            if (
+                timed_out and _is_proof_auto_search(server_name, tool_name)
+            ) or should_recycle_after_tool(server_name, tool_name):
+                recycled = recycle_mcp_server(
+                    server_name,
+                    expected_server=used_server,
+                )
+                if recycled:
+                    logger.info(
+                        "Recycled MCP server '%s' after %s to bound research-mode "
+                        "Lean worker retention",
+                        server_name,
+                        tool_name,
+                    )
 
     return _handler
 
@@ -508,14 +1076,23 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 def _make_list_resources_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists resources from an MCP server."""
 
+    with _lock:
+        registered_server = _servers.get(server_name)
+
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
+        try:
+            server = _resolve_handler_server(
+                server_name,
+                registered_server,
+                timeout=tool_timeout,
+            )
+        except _MCPServerRecyclePending as exc:
+            return _recycle_pending_result(exc)
+        if server is None:
             return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
 
-        async def _call():
-            result = await server.session.list_resources()
+        async def _operation(session: Any) -> str:
+            result = await session.list_resources()
             resources = []
             for r in result.resources if hasattr(result, "resources") else []:
                 entry = {}
@@ -531,7 +1108,14 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             return json.dumps({"resources": resources})
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_server_operation(
+                server_name,
+                server,
+                _operation,
+                timeout=tool_timeout,
+            )
+        except _MCPServerRecyclePending as exc:
+            return _recycle_pending_result(exc)
         except Exception as exc:
             logger.error(
                 "MCP %s/list_resources failed: %s",
@@ -548,18 +1132,27 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
 def _make_read_resource_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that reads a resource by URI from an MCP server."""
 
+    with _lock:
+        registered_server = _servers.get(server_name)
+
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
+        try:
+            server = _resolve_handler_server(
+                server_name,
+                registered_server,
+                timeout=tool_timeout,
+            )
+        except _MCPServerRecyclePending as exc:
+            return _recycle_pending_result(exc)
+        if server is None:
             return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
 
         uri = args.get("uri")
         if not uri:
             return json.dumps({"error": "Missing required parameter 'uri'"})
 
-        async def _call():
-            result = await server.session.read_resource(uri)
+        async def _operation(session: Any) -> str:
+            result = await session.read_resource(uri)
             # read_resource returns ReadResourceResult with .contents list
             parts: list[str] = []
             contents = result.contents if hasattr(result, "contents") else []
@@ -571,7 +1164,14 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return json.dumps({"result": "\n".join(parts) if parts else ""})
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_server_operation(
+                server_name,
+                server,
+                _operation,
+                timeout=tool_timeout,
+            )
+        except _MCPServerRecyclePending as exc:
+            return _recycle_pending_result(exc)
         except Exception as exc:
             logger.error(
                 "MCP %s/read_resource failed: %s",
@@ -588,14 +1188,23 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
 def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists prompts from an MCP server."""
 
+    with _lock:
+        registered_server = _servers.get(server_name)
+
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
+        try:
+            server = _resolve_handler_server(
+                server_name,
+                registered_server,
+                timeout=tool_timeout,
+            )
+        except _MCPServerRecyclePending as exc:
+            return _recycle_pending_result(exc)
+        if server is None:
             return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
 
-        async def _call():
-            result = await server.session.list_prompts()
+        async def _operation(session: Any) -> str:
+            result = await session.list_prompts()
             prompts = []
             for p in result.prompts if hasattr(result, "prompts") else []:
                 entry = {}
@@ -620,7 +1229,14 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             return json.dumps({"prompts": prompts})
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_server_operation(
+                server_name,
+                server,
+                _operation,
+                timeout=tool_timeout,
+            )
+        except _MCPServerRecyclePending as exc:
+            return _recycle_pending_result(exc)
         except Exception as exc:
             logger.error(
                 "MCP %s/list_prompts failed: %s",
@@ -637,10 +1253,19 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
 def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that gets a prompt by name from an MCP server."""
 
+    with _lock:
+        registered_server = _servers.get(server_name)
+
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
+        try:
+            server = _resolve_handler_server(
+                server_name,
+                registered_server,
+                timeout=tool_timeout,
+            )
+        except _MCPServerRecyclePending as exc:
+            return _recycle_pending_result(exc)
+        if server is None:
             return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
 
         name = args.get("name")
@@ -648,8 +1273,8 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             return json.dumps({"error": "Missing required parameter 'name'"})
         arguments = args.get("arguments", {})
 
-        async def _call():
-            result = await server.session.get_prompt(name, arguments=arguments)
+        async def _operation(session: Any) -> str:
+            result = await session.get_prompt(name, arguments=arguments)
             # GetPromptResult has .messages list
             messages = []
             for msg in result.messages if hasattr(result, "messages") else []:
@@ -671,7 +1296,14 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             return json.dumps(resp)
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_server_operation(
+                server_name,
+                server,
+                _operation,
+                timeout=tool_timeout,
+            )
+        except _MCPServerRecyclePending as exc:
+            return _recycle_pending_result(exc)
         except Exception as exc:
             logger.error(
                 "MCP %s/get_prompt failed: %s",
@@ -758,7 +1390,22 @@ async def _discover_and_register_server(name: str, config: dict) -> list[str]:
         timeout=connect_timeout,
     )
     with _lock:
-        _servers[name] = server
+        shutting_down = _mcp_shutting_down
+        if not shutting_down:
+            _servers[name] = server
+            if _starting_servers.get(name) is server:
+                _starting_servers.pop(name, None)
+    if shutting_down:
+        try:
+            await server.shutdown()
+        except BaseException:
+            # Preserve startup ownership when cleanup fails; the finalizer
+            # will report the exact server name and can retry teardown.
+            raise
+        with _lock:
+            if _starting_servers.get(name) is server:
+                _starting_servers.pop(name, None)
+        raise RuntimeError("MCP runtime shutdown began during server discovery")
 
     registered_names: list[str] = []
     toolset_name = f"mcp-{name}"
@@ -855,7 +1502,7 @@ async def _discover_and_register_server(name: str, config: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def discover_mcp_tools() -> list[str]:
+def discover_mcp_tools(*, timeout: float | None = None) -> list[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
     Called from ``model_tools._discover_tools()``. Safe to call even when
@@ -928,7 +1575,10 @@ def discover_mcp_tools() -> list[str]:
         120.0,
         *(float(_effective_connect_timeout(name, cfg)) for name, cfg in new_servers.items()),
     )
-    _run_on_mcp_loop(_discover_all(), timeout=outer_timeout + 5)
+    bridge_timeout = outer_timeout + 5
+    if timeout is not None:
+        bridge_timeout = min(bridge_timeout, max(0.001, float(timeout)))
+    _run_on_mcp_loop(_discover_all, timeout=bridge_timeout)
 
     # Print summary
     total_servers = len(new_servers)
@@ -1008,46 +1658,147 @@ def get_mcp_status() -> list[dict]:
     return result
 
 
-def shutdown_mcp_servers():
+def shutdown_mcp_servers() -> tuple[str, ...]:
     """Close all MCP server connections and stop the background loop.
 
     Each server Task is signalled to exit its ``async with`` block so that
     the anyio cancel-scope cleanup happens in the same Task that opened it.
-    All servers are shut down in parallel via ``asyncio.gather``.
+    All owned registered and starting servers are shut down in parallel. Return
+    server names whose teardown failed while retaining their exact identities
+    for a later retry. A bridge timeout raises because ownership is uncertain.
     """
+    global _mcp_shutting_down
+
+    deadline = time.monotonic() + 15.0
     with _lock:
-        servers_snapshot = list(_servers.values())
-
-    # Fast path: nothing to shut down.
-    if not servers_snapshot:
-        _stop_mcp_loop()
-        return
-
-    async def _shutdown():
-        results = await asyncio.gather(
-            *(server.shutdown() for server in servers_snapshot),
-            return_exceptions=True,
-        )
-        for server, result in zip(servers_snapshot, results):
-            if isinstance(result, Exception):
-                logger.debug(
-                    "Error closing MCP server '%s': %s",
-                    server.name,
-                    result,
-                )
-        with _lock:
-            _servers.clear()
-
-    with _lock:
+        _mcp_shutting_down = True
         loop = _mcp_loop
-    if loop is not None and loop.is_running():
-        try:
-            future = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
-            future.result(timeout=15)
-        except Exception as exc:
-            logger.debug("Error during MCP shutdown: %s", exc)
+        has_owned_servers = bool(_servers or _starting_servers)
+        has_discovery = bool(_mcp_discovery_fences)
 
-    _stop_mcp_loop()
+    # An unset discovery fence owns a possibly not-yet-registered startup, so
+    # it participates in the shutdown path even before either server map does.
+    if not has_owned_servers and not has_discovery:
+        _stop_mcp_loop()
+        with _lock:
+            _mcp_shutting_down = False
+        return ()
+
+    if loop is None or not loop.is_running():
+        with _lock:
+            retained_names = tuple(
+                sorted(
+                    {
+                        *_servers.keys(),
+                        *_starting_servers.keys(),
+                        *_mcp_discovery_fences.keys(),
+                    }
+                )
+            )
+        return retained_names
+
+    async def _shutdown() -> list[tuple[str, BaseException]]:
+        # Let already-submitted discovery wrappers observe the shutdown flag.
+        # They either register startup ownership or finish their fence before
+        # this snapshot is taken.
+        await asyncio.sleep(0)
+        with _lock:
+            owned: list[tuple[str, MCPServerTask, bool, bool]] = []
+            seen: set[int] = set()
+            for name, server in [*_servers.items(), *_starting_servers.items()]:
+                identity = id(server)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                owned.append(
+                    (
+                        name,
+                        server,
+                        _servers.get(name) is server,
+                        _starting_servers.get(name) is server,
+                    )
+                )
+
+        async def _close_owned(
+            name: str,
+            server: MCPServerTask,
+            was_registered: bool,
+            was_starting: bool,
+        ) -> BaseException | None:
+            retire_task = getattr(server, "_retire_task", None)
+            if isinstance(retire_task, asyncio.Task) and not retire_task.done():
+                # Final runtime shutdown supersedes the graceful request drain.
+                # Cancel and join the retire task before touching transport
+                # teardown so two cleanup paths never overlap.
+                retire_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await retire_task
+            try:
+                await server.shutdown()
+            except BaseException as exc:
+                with _lock:
+                    if was_registered:
+                        _servers.setdefault(name, server)
+                    if was_starting:
+                        _starting_servers.setdefault(name, server)
+                    if not was_registered and not was_starting:
+                        _servers.setdefault(name, server)
+                return exc
+            with _lock:
+                if _servers.get(name) is server:
+                    _servers.pop(name, None)
+                if _starting_servers.get(name) is server:
+                    _starting_servers.pop(name, None)
+            return None
+
+        results = await asyncio.gather(
+            *(_close_owned(*entry) for entry in owned),
+        )
+        return [
+            (name, result)
+            for (name, _server, _registered, _starting), result in zip(owned, results)
+            if isinstance(result, BaseException)
+        ]
+
+    future = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
+    try:
+        shutdown_failures = future.result(timeout=_remaining_timeout(deadline))
+    except TimeoutError as exc:
+        future.cancel()
+        raise RuntimeError(
+            "MCP shutdown timed out; retained server and discovery ownership"
+        ) from exc
+
+    failures = {name for name, _exc in shutdown_failures}
+    for name, cleanup_error in shutdown_failures:
+        logger.warning("Error closing MCP server '%s': %s", name, cleanup_error)
+
+    # The async wrapper sets each fence only after cancellation cleanup has
+    # fully unwound. Never close the shared loop merely because its concurrent
+    # Future entered the canceled state.
+    while True:
+        with _lock:
+            pending_fences = list(_mcp_discovery_fences.items())
+        if not pending_fences:
+            break
+        for name, fence in pending_fences:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not fence.wait(timeout=remaining):
+                raise RuntimeError(f"MCP shutdown timed out waiting for startup cleanup: {name}")
+            with _lock:
+                if _mcp_discovery_fences.get(name) is fence:
+                    _mcp_discovery_fences.pop(name, None)
+
+    with _lock:
+        failures.update(_servers)
+        failures.update(_starting_servers)
+        can_stop = not failures and not _mcp_discovery_fences
+
+    if can_stop:
+        _stop_mcp_loop()
+        with _lock:
+            _mcp_shutting_down = False
+    return tuple(sorted(failures))
 
 
 def _stop_mcp_loop():

@@ -322,6 +322,22 @@ class TestKillProcess:
         result = registry.kill_process(s.id)
         assert result["status"] == "already_exited"
 
+    def test_kill_task_processes_does_not_touch_other_tasks(self, registry, monkeypatch):
+        owned = _make_session(sid="proc_owned", task_id="native-task")
+        unrelated = _make_session(sid="proc_other", task_id="other-task")
+        registry._running = {owned.id: owned, unrelated.id: unrelated}
+        calls: list[str] = []
+
+        monkeypatch.setattr(
+            registry,
+            "kill_process",
+            lambda session_id: calls.append(session_id)
+            or {"status": "killed", "session_id": session_id},
+        )
+
+        assert registry.kill_task_processes("native-task") == ("proc_owned",)
+        assert calls == ["proc_owned"]
+
 
 # =========================================================================
 # Tool handler

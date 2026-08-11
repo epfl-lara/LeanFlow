@@ -356,16 +356,36 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             logger.debug("Could not parse terminal result as JSON for exit code check")
         return False, ""
 
-    # Memory-specific: distinguish "full" from real errors
-    if tool_name == "memory":
-        try:
-            data = json.loads(result)
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
-                return True, " [full]"
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            logger.debug("Could not parse memory result as JSON for capacity check")
+    data = None
+    try:
+        candidate = json.loads(result)
+        if isinstance(candidate, dict):
+            data = candidate
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        logger.debug("Could not parse tool result as JSON for structured failure check")
 
-    # Generic heuristic for non-terminal tools
+    # Memory-specific: distinguish "full" from real errors.
+    if tool_name == "memory" and data is not None:
+        if data.get("success") is False and "exceed the limit" in str(data.get("error", "") or ""):
+            return True, " [full]"
+
+    if data is not None:
+        # Structured tool contracts are authoritative. In particular, a
+        # successful result may deliberately include ``"error": null`` or an
+        # empty ``failed`` collection for a stable schema; neither is a failure.
+        if data.get("success") is False or data.get("ok") is False:
+            return True, " [error]"
+        if data.get("error") or data.get("failed"):
+            return True, " [error]"
+        status = str(data.get("status", "") or "").strip().lower()
+        if status in {"error", "failed", "failure", "timeout", "denied"} or status.endswith(
+            ("_error", "_failed", "_failure", "_timeout", "_denied")
+        ):
+            return True, " [error]"
+        if data.get("success") is True or data.get("ok") is True:
+            return False, ""
+
+    # Preserve the text fallback for legacy tools without a structured result.
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
         return True, " [error]"

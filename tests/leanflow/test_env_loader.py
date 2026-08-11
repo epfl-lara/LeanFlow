@@ -2,7 +2,18 @@ from __future__ import annotations
 
 import os
 
-from leanflow_cli.runtime.env_loader import load_leanflow_dotenv
+from agent.providers.auxiliary_client import _resolve_task_provider_model
+from leanflow_cli.runtime.env_loader import (
+    NATIVE_AUXILIARY_API_KEY_ENV,
+    NATIVE_AUXILIARY_BASE_URL_ENV,
+    NATIVE_AUXILIARY_MODEL_ENV,
+    NATIVE_AUXILIARY_PROVIDER_ENV,
+    NATIVE_AUXILIARY_PROVIDER_TARGETS,
+    NATIVE_AUXILIARY_REASONING_EFFORT_ENV,
+    _native_auxiliary_targets,
+    load_leanflow_dotenv,
+    reassert_native_auxiliary_provider,
+)
 
 
 def _clean_env(monkeypatch, *names: str) -> None:
@@ -47,7 +58,7 @@ def test_load_leanflow_dotenv_project_env_supplements_home(monkeypatch, tmp_path
     assert os.environ["FROM_PROJECT"] == "project-only"
 
 
-def test_load_leanflow_dotenv_home_overrides_existing_env(monkeypatch, tmp_path):
+def test_load_leanflow_dotenv_preserves_existing_process_env(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     (home / ".env").write_text("OVERRIDE_KEY=from-file\n", encoding="utf-8")
@@ -55,8 +66,7 @@ def test_load_leanflow_dotenv_home_overrides_existing_env(monkeypatch, tmp_path)
 
     load_leanflow_dotenv(leanflow_home=home)
 
-    # The home .env is loaded with override=True so it replaces the existing value.
-    assert os.environ["OVERRIDE_KEY"] == "from-file"
+    assert os.environ["OVERRIDE_KEY"] == "from-shell"
 
 
 def test_load_leanflow_dotenv_project_does_not_override_home(monkeypatch, tmp_path):
@@ -98,3 +108,53 @@ def test_load_leanflow_dotenv_accepts_explicit_home_kwarg(monkeypatch, tmp_path)
 
     assert loaded == [explicit_home / ".env"]
     assert os.environ["EXPLICIT_ONLY_KEY"] == "yes"
+
+
+def test_reassert_native_auxiliary_provider_wins_after_dotenv_reload(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text(
+        "AUXILIARY_ORCHESTRATION_PROVIDER=auto\n" "AUXILIARY_LEAN_REASONING_PROVIDER=\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(NATIVE_AUXILIARY_PROVIDER_ENV, "custom")
+    monkeypatch.setenv(NATIVE_AUXILIARY_BASE_URL_ENV, "https://rcp.example/v1")
+    monkeypatch.setenv(NATIVE_AUXILIARY_API_KEY_ENV, "rcp-key")
+    monkeypatch.setenv(NATIVE_AUXILIARY_MODEL_ENV, "zai-org/GLM-5.2")
+    monkeypatch.setenv(NATIVE_AUXILIARY_REASONING_EFFORT_ENV, "xhigh")
+    for suffix in ("BASE_URL", "API_KEY", "MODEL", "REASONING_EFFORT"):
+        for name in _native_auxiliary_targets(suffix):
+            monkeypatch.setenv(name, "stale")
+    for name in NATIVE_AUXILIARY_PROVIDER_TARGETS:
+        monkeypatch.setenv(name, "stale")
+
+    load_leanflow_dotenv(leanflow_home=home)
+    provider = reassert_native_auxiliary_provider()
+
+    assert provider == "custom"
+    for name in NATIVE_AUXILIARY_PROVIDER_TARGETS:
+        assert os.environ[name] == "custom"
+    for name in _native_auxiliary_targets("BASE_URL"):
+        assert os.environ[name] == "https://rcp.example/v1"
+    for name in _native_auxiliary_targets("API_KEY"):
+        assert os.environ[name] == "rcp-key"
+    for name in _native_auxiliary_targets("MODEL"):
+        assert os.environ[name] == "zai-org/GLM-5.2"
+    for name in _native_auxiliary_targets("REASONING_EFFORT"):
+        assert os.environ[name] == "xhigh"
+    assert _resolve_task_provider_model("planner_synthesis") == (
+        "custom",
+        "zai-org/GLM-5.2",
+        "https://rcp.example/v1",
+        "rcp-key",
+    )
+
+
+def test_reassert_native_auxiliary_provider_is_noop_without_override(monkeypatch):
+    monkeypatch.delenv(NATIVE_AUXILIARY_PROVIDER_ENV, raising=False)
+    monkeypatch.setenv("AUXILIARY_ORCHESTRATION_PROVIDER", "custom")
+
+    provider = reassert_native_auxiliary_provider()
+
+    assert provider == ""
+    assert os.environ["AUXILIARY_ORCHESTRATION_PROVIDER"] == "custom"

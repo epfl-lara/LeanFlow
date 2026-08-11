@@ -1,1 +1,1 @@
-"""tools.utilities subpackage (Phase II restructure)."""
+"""Provide deterministic guards and shared tool support."""

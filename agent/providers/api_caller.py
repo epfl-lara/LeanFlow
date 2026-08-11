@@ -38,12 +38,103 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from typing import TYPE_CHECKING, Any
+
+from agent.accounting.redact import redact_sensitive_text
+from core.provider_capacity import background_provider_lease
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from run_agent import AIAgent
 
 logger = logging.getLogger(__name__)
+
+# One initial request plus three transient retries.  Keep this deterministic:
+# managed Lean campaigns checkpoint only after the provider has been given the
+# full recovery window promised by the research-workflow contract.
+TRANSIENT_PROVIDER_RETRY_DELAYS_S: tuple[float, ...] = (5.0, 15.0, 45.0)
+TRANSIENT_PROVIDER_MAX_ATTEMPTS = 1 + len(TRANSIENT_PROVIDER_RETRY_DELAYS_S)
+MIN_TRANSIENT_PROVIDER_RETRY_REQUEST_WINDOW_S = 10.0
+DEFAULT_TRANSIENT_PROVIDER_RECOVERY_BUDGET_S = 180.0
+
+
+class TransientProviderRetriesExhausted(RuntimeError):
+    """Report that the complete transient-provider retry schedule failed.
+
+    Preserve a machine-readable marker so managed workflow wrappers do not
+    apply a second retry budget.  The public message is redacted because the
+    wrapper persists it in workflow activity and pause checkpoints.
+    """
+
+    provider_retries_exhausted = True
+
+    def __init__(self, error: BaseException) -> None:
+        self.original_error_type = type(error).__name__
+        message = redact_sensitive_text(str(error).strip()) or self.original_error_type
+        super().__init__(message)
+
+
+def transient_provider_retry_delay_s(failed_attempt: int) -> float | None:
+    """Return the delay before retrying one failed provider attempt.
+
+    ``failed_attempt`` is one-based.  ``None`` means the initial request and
+    all three retries have already failed, so the caller must surface an
+    infrastructure pause instead of issuing another request.
+    """
+    index = int(failed_attempt) - 1
+    if index < 0 or index >= len(TRANSIENT_PROVIDER_RETRY_DELAYS_S):
+        return None
+    return TRANSIENT_PROVIDER_RETRY_DELAYS_S[index]
+
+
+def transient_provider_retry_delay_within_deadline_s(
+    failed_attempt: int,
+    *,
+    deadline_monotonic: float | None,
+    now_monotonic: float | None = None,
+    minimum_request_window_s: float = MIN_TRANSIENT_PROVIDER_RETRY_REQUEST_WINDOW_S,
+) -> float | None:
+    """Return a retry delay only when the enclosing deadline leaves useful request time."""
+    delay_s = transient_provider_retry_delay_s(failed_attempt)
+    if delay_s is None or not isinstance(deadline_monotonic, (int, float)):
+        return delay_s
+    now = _ra().time.monotonic() if now_monotonic is None else float(now_monotonic)
+    remaining_s = float(deadline_monotonic) - now
+    useful_window_s = max(1.0, float(minimum_request_window_s))
+    if remaining_s < delay_s + useful_window_s:
+        return None
+    return delay_s
+
+
+def transient_provider_recovery_budget_s() -> float:
+    """Return the bounded wall-clock budget shared by retries after a first failure."""
+    raw = _ra().os.getenv(
+        "LEANFLOW_PROVIDER_RECOVERY_BUDGET_S",
+        str(DEFAULT_TRANSIENT_PROVIDER_RECOVERY_BUDGET_S),
+    )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_TRANSIENT_PROVIDER_RECOVERY_BUDGET_S
+    return max(30.0, value)
+
+
+def transient_provider_recovery_deadline_monotonic(
+    *,
+    current_deadline_monotonic: float | None,
+    conversation_deadline_monotonic: float | None,
+    now_monotonic: float | None = None,
+) -> float:
+    """Establish one retry deadline and clip it to the owning conversation."""
+    now = _ra().time.monotonic() if now_monotonic is None else float(now_monotonic)
+    deadline = (
+        float(current_deadline_monotonic)
+        if isinstance(current_deadline_monotonic, (int, float))
+        else now + transient_provider_recovery_budget_s()
+    )
+    if isinstance(conversation_deadline_monotonic, (int, float)):
+        deadline = min(deadline, float(conversation_deadline_monotonic))
+    return deadline
 
 
 def _ra() -> Any:
@@ -158,12 +249,44 @@ class ApiCaller:
         os = _ra().os
         timeout_value = api_kwargs.get("timeout", os.getenv("LEANFLOW_API_TIMEOUT", 1200.0))
         if isinstance(timeout_value, (int, float)) and not isinstance(timeout_value, bool):
-            return max(float(timeout_value), 1.0)
-        return max(float(os.getenv("LEANFLOW_API_TIMEOUT", 1200.0)), 1.0)
+            timeout_seconds = max(float(timeout_value), 1.0)
+        else:
+            timeout_seconds = max(float(os.getenv("LEANFLOW_API_TIMEOUT", 1200.0)), 1.0)
+        deadline = getattr(self._agent, "_conversation_deadline_monotonic", None)
+        if isinstance(deadline, (int, float)):
+            remaining = max(1.0, float(deadline) - _ra().time.monotonic())
+            timeout_seconds = min(timeout_seconds, remaining)
+        recovery_deadline = getattr(
+            self._agent, "_transient_provider_recovery_deadline_monotonic", None
+        )
+        if isinstance(recovery_deadline, (int, float)):
+            remaining = max(1.0, float(recovery_deadline) - _ra().time.monotonic())
+            timeout_seconds = min(timeout_seconds, remaining)
+        return timeout_seconds
 
     # ── Interruptible (non-streaming) call ──────────────────────────────────
 
     def interruptible_api_call(self, api_kwargs: dict):
+        """Run one request while respecting research background capacity.
+
+        The foreground prover remains outside this gate. Delegated planner
+        lanes and process-isolated dispatch agents have ``_delegate_depth``
+        greater than zero and therefore share the campaign's configured
+        background-provider slots.
+        """
+        agent = self._agent
+        dispatch_process = any(
+            str(os.getenv(name, "") or "").strip()
+            for name in ("LEANFLOW_DISPATCH_WORKER", "LEANFLOW_DISPATCH_JOB_ID")
+        )
+        is_background = int(getattr(agent, "_delegate_depth", 0) or 0) > 0 or dispatch_process
+        with background_provider_lease(
+            enabled=is_background,
+            cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+        ):
+            return self._interruptible_api_call_unleased(api_kwargs)
+
+    def _interruptible_api_call_unleased(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
         can detect interrupts without waiting for the full HTTP round-trip.

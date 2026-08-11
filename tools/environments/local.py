@@ -1,13 +1,16 @@
 """Local execution environment with interrupt support and non-blocking I/O."""
 
+import errno
 import glob
 import os
 import platform
+import secrets
 import shutil
-import signal
+import stat
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -16,6 +19,7 @@ import contextlib
 from tools.environments.base import BaseEnvironment
 from tools.environments.persistent_shell import PersistentShellMixin
 from tools.utilities.interrupt import is_interrupted
+from tools.utilities.process_tree import terminate_process_tree
 
 # Unique marker to isolate real command output from shell init/exit noise.
 # printf (no trailing newline) keeps the boundaries clean for splitting.
@@ -306,6 +310,36 @@ def _extract_fenced_output(raw: str) -> str:
     return raw[start:last]
 
 
+def _has_complete_output_fence(raw: str) -> bool:
+    """Return whether both protocol fences have reached the output reader."""
+    first = raw.find(_OUTPUT_FENCE)
+    return first >= 0 and raw.rfind(_OUTPUT_FENCE) > first
+
+
+def _extract_interrupted_output(raw: str) -> str:
+    """Extract partial command output without exposing shell protocol noise."""
+    output = _extract_fenced_output(raw).rstrip("\r\n")
+    lines = output.splitlines()
+    while lines and lines[-1].strip() == "logout":
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _open_atomic_stage(parent: Path, target_name: str) -> tuple[int, str]:
+    """Open a unique same-directory stage while honoring the process umask."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    for _ in range(8):
+        candidate = parent / f".{target_name}.{secrets.token_hex(12)}.leanflow-tmp"
+        try:
+            # Unlike mkstemp(), os.open applies the process umask to 0o666. New
+            # files therefore retain the mode produced by the former `cat >`
+            # implementation, while O_EXCL keeps stage creation race-safe.
+            return os.open(candidate, flags, 0o666), str(candidate)
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"could not allocate atomic stage in {parent}")
+
+
 class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     """Run commands directly on the host machine.
 
@@ -318,11 +352,15 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     - Optional persistent shell mode (cwd/env vars survive across calls)
     """
 
+    supports_atomic_text_writes = True
+
     def __init__(
         self, cwd: str = "", timeout: int = 60, env: dict = None, persistent: bool = False
     ):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.persistent = persistent
+        self._active_processes: dict[int, subprocess.Popen] = {}
+        self._active_processes_lock = threading.Lock()
         if self.persistent:
             self._init_persistent_shell()
 
@@ -354,19 +392,143 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         return results
 
     def _kill_shell_children(self):
-        if self._shell_pid is None:
+        shell_proc = self._shell_proc
+        if shell_proc is None or shell_proc.poll() is not None:
             return
-        with contextlib.suppress(subprocess.TimeoutExpired, FileNotFoundError):
-            subprocess.run(
-                ["pkill", "-P", str(self._shell_pid)],
-                capture_output=True,
-                timeout=5,
+        if _IS_WINDOWS:
+            return
+        terminate_process_tree(
+            shell_proc.pid,
+            expected_session_id=shell_proc.pid,
+            include_root=False,
+        )
+
+    def _track_process(self, proc: subprocess.Popen) -> None:
+        """Register an in-flight oneshot so runner shutdown can reap it."""
+        with self._active_processes_lock:
+            self._active_processes[proc.pid] = proc
+
+    def _untrack_process(self, proc: subprocess.Popen) -> None:
+        """Forget an in-flight oneshot after its execution boundary closes."""
+        with self._active_processes_lock:
+            self._active_processes.pop(proc.pid, None)
+
+    def _terminate_process(self, proc: subprocess.Popen) -> bool:
+        """Terminate one live command tree and report whether signaling was needed."""
+        if proc.poll() is not None:
+            return False
+        if _IS_WINDOWS:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                proc.terminate()
+        else:
+            terminate_process_tree(
+                proc.pid,
+                expected_session_id=proc.pid,
+                include_root=True,
             )
+        try:
+            proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                proc.kill()
+        return True
+
+    def cleanup(self):
+        """Terminate active local commands before releasing persistent-shell state."""
+        with self._active_processes_lock:
+            active = list(self._active_processes.values())
+        for proc in active:
+            self._terminate_process(proc)
+        if self.persistent:
+            self._kill_shell_children()
+        super().cleanup()
 
     def _cleanup_temp_files(self):
         for f in glob.glob(f"{self._temp_prefix}-*"):
             if os.path.exists(f):
                 os.remove(f)
+
+    def write_text_atomic(
+        self,
+        path: str,
+        content: str,
+        *,
+        cwd: str = "",
+        complete_on_interrupt: bool = False,
+    ) -> dict:
+        """Atomically replace one local text file with staged UTF-8 content.
+
+        Normal writes honor an interrupt before committing and therefore leave
+        the old file intact. Bounded recovery writes may opt into completing
+        after an interrupt so managed-artifact rollback cannot itself be torn.
+        """
+        if is_interrupted() and not complete_on_interrupt:
+            return {
+                "output": "[Command interrupted — user sent a new message]",
+                "returncode": 130,
+            }
+
+        base = Path(cwd or self.cwd or os.getcwd()).expanduser()
+        requested = Path(path).expanduser()
+        if not requested.is_absolute():
+            requested = base / requested
+        target = requested.resolve(strict=False)
+        parent = target.parent
+        dirs_created = not parent.exists()
+        fd: int | None = None
+        temp_path: str | None = None
+
+        try:
+            if target.exists() and not os.access(target, os.W_OK):
+                # Replacement only needs directory permission and would
+                # otherwise bypass a denial that the former `cat > target`
+                # path correctly surfaced from the target itself.
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(target))
+            parent.mkdir(parents=True, exist_ok=True)
+            existing_mode = None
+            with contextlib.suppress(FileNotFoundError):
+                existing_mode = stat.S_IMODE(target.stat().st_mode)
+
+            fd, temp_path = _open_atomic_stage(parent, target.name)
+            if existing_mode is not None:
+                os.fchmod(fd, existing_mode)
+            stream = os.fdopen(fd, "w", encoding="utf-8", newline="")
+            fd = None  # fd ownership transferred to the stream.
+            with stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+
+            if is_interrupted() and not complete_on_interrupt:
+                return {
+                    "output": "[Command interrupted — user sent a new message]",
+                    "returncode": 130,
+                }
+
+            os.replace(temp_path, target)
+            temp_path = None
+            if not _IS_WINDOWS:
+                with contextlib.suppress(OSError):
+                    directory_fd = os.open(parent, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+            return {
+                "output": "",
+                "returncode": 0,
+                "bytes_written": len(content.encode("utf-8")),
+                "dirs_created": dirs_created,
+            }
+        except (OSError, UnicodeError) as exc:
+            return {"output": str(exc), "returncode": 1}
+        finally:
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            if temp_path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(temp_path)
 
     def _execute_oneshot(
         self,
@@ -391,7 +553,10 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         user_shell = _find_bash()
         fenced_cmd = (
             f"printf '{_OUTPUT_FENCE}';"
-            f" {exec_command};"
+            # Keep the fence trailer on a fresh line. A heredoc terminator
+            # must be the only token on its line; appending ``;`` here turns
+            # a valid ``EOF`` into shell input for the child program.
+            f" {exec_command}\n"
             f" __leanflow_rc=$?;"
             f" printf '{_OUTPUT_FENCE}';"
             f" exit $__leanflow_rc"
@@ -410,6 +575,24 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             stdin=subprocess.PIPE if effective_stdin is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
         )
+        self._track_process(proc)
+        try:
+            return self._wait_for_oneshot_process(
+                proc,
+                effective_stdin=effective_stdin,
+                effective_timeout=effective_timeout,
+            )
+        finally:
+            self._untrack_process(proc)
+
+    def _wait_for_oneshot_process(
+        self,
+        proc: subprocess.Popen,
+        *,
+        effective_stdin: str | None,
+        effective_timeout: int,
+    ) -> dict:
+        """Wait for one tracked command and enforce interrupt and timeout cleanup."""
 
         if effective_stdin is not None:
 
@@ -440,33 +623,56 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
 
         while proc.poll() is None:
             if is_interrupted():
-                try:
-                    if _IS_WINDOWS:
-                        proc.terminate()
+                # The command can finish after the loop's poll but before the
+                # interrupt check. Preserve its truthful exit status in that
+                # race instead of overwriting it with synthetic status 130.
+                completed_returncode = proc.poll()
+                if completed_returncode is not None:
+                    reader.join(timeout=5)
+                    return {
+                        "output": _extract_fenced_output("".join(_output_chunks)),
+                        "returncode": completed_returncode,
+                    }
+
+                # A closing fence proves the wrapped command has completed;
+                # give the login shell a bounded chance to finish logout and
+                # expose the wrapped command's real return code.
+                raw_output = "".join(_output_chunks)
+                if _has_complete_output_fence(raw_output):
+                    try:
+                        completed_returncode = proc.wait(timeout=0.25)
+                    except subprocess.TimeoutExpired:
+                        pass
                     else:
-                        pgid = os.getpgid(proc.pid)
-                        os.killpg(pgid, signal.SIGTERM)
-                        try:
-                            proc.wait(timeout=1.0)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    proc.kill()
+                        reader.join(timeout=5)
+                        return {
+                            "output": _extract_fenced_output("".join(_output_chunks)),
+                            "returncode": completed_returncode,
+                        }
+
+                terminated = self._terminate_process(proc)
                 reader.join(timeout=2)
+                if not terminated:
+                    return {
+                        "output": _extract_fenced_output("".join(_output_chunks)),
+                        "returncode": proc.returncode,
+                    }
+                interrupted_output = _extract_interrupted_output("".join(_output_chunks))
+                if interrupted_output:
+                    interrupted_output += "\n"
                 return {
-                    "output": "".join(_output_chunks)
-                    + "\n[Command interrupted — user sent a new message]",
+                    "output": interrupted_output
+                    + "[Command interrupted — user sent a new message]",
                     "returncode": 130,
                 }
             if time.monotonic() > deadline:
-                try:
-                    if _IS_WINDOWS:
-                        proc.terminate()
-                    else:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    proc.kill()
+                terminated = self._terminate_process(proc)
                 reader.join(timeout=2)
+                if not terminated:
+                    return {
+                        "output": _extract_fenced_output("".join(_output_chunks)),
+                        "returncode": proc.returncode,
+                    }
                 return self._timeout_result(effective_timeout)
             time.sleep(0.2)
 

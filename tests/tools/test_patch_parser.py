@@ -6,6 +6,7 @@ from tools.utilities.patch_parser import (
     OperationType,
     apply_v4a_operations,
     parse_v4a_patch,
+    preview_v4a_update,
 )
 
 
@@ -234,6 +235,41 @@ class TestAnchorScopedApply:
         assert "def alpha():\n    x = compute()\n    return x\n" in fo.written
         assert "def beta():\n    x = compute()\n    return x + 1\n" in fo.written
 
+    def test_exact_anchor_outranks_earlier_comment_substring(self):
+        """Anchor a live declaration even when a preserved attempt names it first."""
+        content = (
+            "-- Failed attempt:\n"
+            "-- theorem result : True := by\n"
+            "--   sorry\n"
+            "\n"
+            "theorem result : True := by\n"
+            "  sorry\n"
+        )
+        patch = """\
+*** Begin Patch
+*** Update File: Main.lean
+@@
++private lemma checked : True := by
++  trivial
++
+ theorem result : True := by
+*** End Patch"""
+
+        preview, error = preview_v4a_update(patch, content)
+
+        assert error is None
+        assert preview == (
+            "-- Failed attempt:\n"
+            "-- theorem result : True := by\n"
+            "--   sorry\n"
+            "\n"
+            "private lemma checked : True := by\n"
+            "  trivial\n"
+            "\n"
+            "theorem result : True := by\n"
+            "  sorry\n"
+        )
+
     def test_anchored_hunk_does_not_edit_unrelated_exact_match_elsewhere(self):
         # target()'s body differs from the hunk by trailing whitespace (so only a fuzzy strategy
         # matches it), while unrelated() contains the EXACT old text. The @@ anchor must keep the
@@ -355,3 +391,63 @@ class TestNearMissOnFailure:
         # A concrete "did you mean" snippet, not a generic message.
         assert "Closest region" in result.error
         assert "return sum(items)" in result.error
+
+
+def test_implicit_trailing_declaration_anchor_allows_unique_exact_preceding_insertion():
+    """Insert before a declaration when the implicit anchor is trailing context."""
+    content = """\
+private lemma prior : True := by
+  trivial
+
+theorem result : True := by
+  trivial
+"""
+    blank_context = " "
+    patch = f"""\
+*** Begin Patch
+*** Update File: Main.lean
+@@
+   trivial
++
++private lemma inserted : True := by
++  trivial
+{blank_context}
+ theorem result : True := by
+*** End Patch"""
+    ops, err = parse_v4a_patch(patch)
+    assert err is None
+    fo = _FakeFileOps(content)
+
+    result = apply_v4a_operations(ops, fo, strict=True)
+
+    assert result.success is True
+    assert fo.written.count("private lemma inserted") == 1
+    assert fo.written.index("private lemma inserted") < fo.written.index("theorem result")
+
+
+def test_explicit_anchor_does_not_escape_for_preceding_context():
+    """Keep explicit anchor regions authoritative for ambiguous preceding edits."""
+    content = """\
+private lemma prior : True := by
+  trivial
+
+theorem result : True := by
+  trivial
+"""
+    blank_context = " "
+    patch = f"""\
+*** Begin Patch
+*** Update File: Main.lean
+@@ theorem result : True := by @@
+   trivial
+{blank_context}
+ theorem result : True := by
+*** End Patch"""
+    ops, err = parse_v4a_patch(patch)
+    assert err is None
+    fo = _FakeFileOps(content)
+
+    result = apply_v4a_operations(ops, fo, strict=True)
+
+    assert result.success is False
+    assert "anchor region" in (result.error or "")

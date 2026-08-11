@@ -1,19 +1,14 @@
-"""Module-level mutable runtime state for the native managed runner.
+"""Own bounded, process-wide de-duplication state for the native runner.
 
-Extracted from ``native_runner.py`` (refactor Phase 2, step 3 — the state boundary). This
-module owns the process-wide, bounded de-duplication caches the runner uses to avoid emitting
-the same manager/verifier log entry twice within a workflow, together with the small
-``_cache_once`` helper that maintains them. Making this hidden mutable state explicit here
-(rather than scattered at the top of ``native_runner``) is the prerequisite step before the
-stateful clusters that read/write it are themselves extracted.
+The caches prevent repeated manager and verifier log entries within a workflow.
 
 The caches are deliberately mutated *in place* (``.add`` / ``.discard`` / ``.append`` /
 ``.popleft`` / ``.clear`` / item assignment) and never rebound. That is what lets
 ``native_runner`` re-import these names and share the very same objects: the names below and the
 re-imported names in ``native_runner`` point at one set of cache objects. ``_cache_once`` takes
 the cache/order/limit as arguments and mutates them in place, so it carries no module state of
-its own. This module depends only on the standard library and must NOT import ``native_runner``
-(that would create a circular import).
+its own. This module depends only on the standard library and must not import
+``native_runner``.
 """
 
 from __future__ import annotations

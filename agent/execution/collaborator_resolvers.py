@@ -9,9 +9,8 @@ access auto-creates a Mock rather than raising, so the ``isinstance`` guard
 forces a real collaborator bound to the mock). Caching is best-effort; if
 assignment fails we still return a working collaborator.
 
-Extracted verbatim from ``run_agent`` and re-exported there for backwards
-compatibility, so ``run_agent._resolve_X`` (used by call sites and tests)
-continues to resolve. This module must NOT import ``run_agent`` (no cycle).
+The resolvers remain re-exported from ``run_agent`` for compatibility. This
+module must not import ``run_agent``.
 """
 
 import contextlib

@@ -1,20 +1,18 @@
-"""Queue-item classification predicates for the native runner.
-
-Leaf module: pure predicates over inspection/queue items (sorry vs diagnostic blockers,
-current-item/status selection, attempted-proof shape). Extracted verbatim from native_runner.py
-and re-exported there; imports only stdlib and the lean_services / lean_diagnostic_feedback /
-native_utils / queue_manager leaves, so it introduces no import cycle.
-"""
+"""Classify native-runner queue items and attempted proof shapes."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from leanflow_cli.lean.lean_diagnostic_feedback import _declaration_slice_text
 from leanflow_cli.lean.lean_services import diagnostic_items
 from leanflow_cli.native.native_utils import _single_line
-from leanflow_cli.proof_state_builder import _find_declaration_entry, _line_in_declaration
+from leanflow_cli.proof_state_builder import (
+    _declaration_line_index,
+    _find_declaration_entry,
+    _line_in_declaration,
+)
 from leanflow_cli.workflows.queue_manager import TheoremQueueManager
 
 
@@ -56,14 +54,35 @@ def _inspection_queue_item_is_queue_blocker(
     )
 
 
-def _current_queue_item(queue: list[dict[str, Any]], active_file: str) -> dict[str, Any] | None:
+def _current_queue_item(
+    queue: list[dict[str, Any]],
+    active_file: str,
+    precedence: Callable[[str], int] | None = None,
+    order_key: Callable[[str], Any] | None = None,
+) -> dict[str, Any] | None:
+    """Select one present queue item after indexing the active source once.
+
+    Queue selection evaluates the presence predicate for every candidate. A
+    predicate implemented with ``_find_declaration_entry`` reparses the whole
+    Lean file per candidate, which turns a long research file into quadratic
+    refresh work and large transient allocation. Build the exact declaration
+    name set once; the manager's ordering and filtering semantics are
+    otherwise unchanged.
+    """
     if not queue or not active_file:
         return None
+    present_labels = {
+        str(entry.get("name", "") or "").strip()
+        for entry in _declaration_line_index(active_file)
+        if str(entry.get("name", "") or "").strip()
+    }
     mgr = TheoremQueueManager()
     mgr.set_active_file(active_file)
     mgr.replace_queue(queue)
     selected = mgr.select_next(
-        is_present_in_file=lambda label: bool(_find_declaration_entry(active_file, label))
+        is_present_in_file=lambda label: str(label or "").strip() in present_labels,
+        precedence=precedence,
+        order_key=order_key,
     )
     if selected is None:
         return None

@@ -38,8 +38,10 @@ class only owns the *bookkeeping* and the invariant checks.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
 # ---------------------------------------------------------------------------
@@ -50,9 +52,12 @@ from typing import Any, ClassVar
 from leanflow_cli.workflows.queue_models import (  # noqa: E402
     DEFAULT_FAILED_ATTEMPT_HISTORY,
     DEFAULT_HARD_RETRY_LIMIT,
+    DEFAULT_POST_EDIT_HARD_RETRY_LIMIT,
     DEFAULT_REASONING_ESCALATION_THRESHOLD,
     DEFAULT_WARNING_RETRY_LIMIT,
     Classification,
+    DecisionContext,
+    DecisionSource,
     FailedAttempt,
     ManagerCheck,
     PrepareState,
@@ -63,6 +68,7 @@ from leanflow_cli.workflows.queue_models import (  # noqa: E402
     Transition,
     VerificationRecord,
     VerificationScope,  # noqa: F401
+    _fold_cleanup_reason,
     _normalize_path,
     classify_check,
     select_next_item,
@@ -83,6 +89,64 @@ class QueueInvariantError(AssertionError):
     """
 
 
+def _normalize_attempt_gate_verdict(verdict: str) -> str:
+    """Return a bounded canonical gate verdict without losing tail differences."""
+    normalized = " ".join((verdict or "").split()).casefold()
+    if len(normalized) <= 500:
+        return normalized
+    digest = hashlib.sha256(normalized.encode("utf-8", "replace")).hexdigest()
+    return f"{normalized[:420]}... [sha256:{digest}]"
+
+
+def _has_failed_attempt_evidence(reason: str) -> bool:
+    """Return whether a reason represents failure rather than a successful tool result.
+
+    Older checkpoints can contain the JSON payload of a successful non-verification
+    tool call because the runner once treated every incremental-check action as
+    theorem feedback.  Plain-text reasons remain valid failure evidence; only an
+    unambiguously successful structured result is rejected.
+    """
+    normalized = (reason or "").strip()
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    if lowered.startswith("target:") and " passed | tool:" in lowered:
+        return False
+    try:
+        payload = json.loads(normalized)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        if normalized.startswith("{"):
+            explicit_failure_markers = (
+                '"success": false',
+                '"ok": false',
+                '"status": "blocked"',
+                '"status": "error"',
+                '"status": "fail"',
+                '"status": "failed"',
+                '"status": "timeout"',
+                '"has_errors": true',
+                '"has_sorry": true',
+            )
+            return any(marker in lowered for marker in explicit_failure_markers)
+        return True
+    if not isinstance(payload, Mapping):
+        return True
+
+    status = str(payload.get("status", "") or "").strip().lower()
+    has_error = bool(str(payload.get("error", "") or "").strip())
+    has_degraded_reason = bool(payload.get("degraded_reasons"))
+    explicitly_failed = (
+        payload.get("success") is False
+        or payload.get("ok") is False
+        or status in {"blocked", "error", "fail", "failed", "timeout"}
+        or has_error
+        or has_degraded_reason
+    )
+    if explicitly_failed:
+        return True
+    return False
+
+
 class TheoremQueueManager:
     """Owns all per-theorem queue state for one autonomous workflow run.
 
@@ -100,6 +164,7 @@ class TheoremQueueManager:
             "failed_attempts",
             "manager_feedback_retries",
             "manager_feedback_retry_consumed_signatures",
+            "theorem_api_steps",
             "theorem_outcomes",
             "last_verification",
             "disabled_tools_this_run",
@@ -114,6 +179,7 @@ class TheoremQueueManager:
         *,
         warning_retry_limit: int = DEFAULT_WARNING_RETRY_LIMIT,
         hard_retry_limit: int = DEFAULT_HARD_RETRY_LIMIT,
+        post_edit_hard_retry_limit: int = DEFAULT_POST_EDIT_HARD_RETRY_LIMIT,
         failed_attempt_history: int = DEFAULT_FAILED_ATTEMPT_HISTORY,
         reasoning_escalation_threshold: int = DEFAULT_REASONING_ESCALATION_THRESHOLD,
     ) -> None:
@@ -124,6 +190,7 @@ class TheoremQueueManager:
         self._warning_retries: dict[TheoremKey, int] = {}
         self._hard_retries: dict[TheoremKey, int] = {}
         self._retry_signatures: dict[tuple[TheoremKey, str], list[str]] = {}
+        self._api_steps: dict[TheoremKey, int] = {}  # cumulative, never pruned
         self._outcomes: dict[TheoremKey, TheoremOutcome] = {}
         self._last_verification: VerificationRecord | None = None
         self._disabled_tool_reasons: dict[str, str] = {}
@@ -132,6 +199,7 @@ class TheoremQueueManager:
 
         self._warning_retry_limit = warning_retry_limit
         self._hard_retry_limit = hard_retry_limit
+        self._post_edit_hard_retry_limit = post_edit_hard_retry_limit
         self._failed_attempt_history = failed_attempt_history
         self._reasoning_escalation_threshold = reasoning_escalation_threshold
 
@@ -175,8 +243,19 @@ class TheoremQueueManager:
 
     # ----- assignment / transition --------------------------------------
 
-    def select_next(self, *, is_present_in_file: Callable[[str], bool]) -> QueueItem | None:
-        return select_next_item(self._queue, is_present_in_file=is_present_in_file)
+    def select_next(
+        self,
+        *,
+        is_present_in_file: Callable[[str], bool],
+        precedence: Callable[[str], int] | None = None,
+        order_key: Callable[[str], Any] | None = None,
+    ) -> QueueItem | None:
+        return select_next_item(
+            self._queue,
+            is_present_in_file=is_present_in_file,
+            precedence=precedence,
+            order_key=order_key,
+        )
 
     def assign(
         self,
@@ -281,7 +360,16 @@ class TheoremQueueManager:
 
     # ----- failed attempts ---------------------------------------------
 
-    def record_attempt(self, *, cycle: int, proof_shape: str, reason: str) -> FailedAttempt | None:
+    def record_attempt(
+        self,
+        *,
+        cycle: int,
+        proof_shape: str,
+        reason: str,
+        declaration_hash: str = "",
+        gate_verdict: str = "",
+        turn_key: str = "",
+    ) -> FailedAttempt | None:
         """Append a failed attempt scoped to the current assignment.
 
         Replaces ``_remember_failed_attempt`` and fixes the budget-exhaustion
@@ -299,6 +387,9 @@ class TheoremQueueManager:
             cycle=cycle,
             proof_shape=proof_shape,
             reason=reason,
+            declaration_hash=declaration_hash,
+            gate_verdict=gate_verdict,
+            turn_key=turn_key,
         )
 
     def record_attempt_for(
@@ -308,19 +399,50 @@ class TheoremQueueManager:
         cycle: int,
         proof_shape: str,
         reason: str,
+        declaration_hash: str = "",
+        gate_verdict: str = "",
+        turn_key: str = "",
     ) -> FailedAttempt | None:
-        """Append a failed attempt for an explicit theorem key."""
+        """Append one semantically distinct failure for an explicit theorem.
+
+        A single provider turn can expose the same unchanged rejection through
+        both a patch/diff result and a subsequent full-declaration check. The
+        presentation is useful history, but it is not a second proof attempt.
+        Suppress that duplicate when the theorem, exact declaration, normalized
+        gate verdict, and provider-turn identity all match. Legacy callers and
+        checkpoints omit the new identity fields and retain append-only behavior.
+        """
         if not key.is_valid():
             return None
         self._remember_display_file(key, self._display_file_for(key))
+        normalized_hash = (declaration_hash or "").strip().lower()
+        normalized_verdict = _normalize_attempt_gate_verdict(gate_verdict)
+        normalized_turn_key = (turn_key or "").strip()
+        if normalized_hash and normalized_verdict and normalized_turn_key:
+            duplicate = next(
+                (
+                    previous
+                    for previous in reversed(self._attempts)
+                    if previous.key == key
+                    and previous.turn_key == normalized_turn_key
+                    and previous.declaration_hash == normalized_hash
+                    and previous.gate_verdict == normalized_verdict
+                ),
+                None,
+            )
+            if duplicate is not None:
+                return None
         attempt = FailedAttempt(
             key=key,
             attempt=self.attempt_count_for(key) + 1,
             cycle=cycle,
             proof_shape=(proof_shape or "").strip(),
             reason=(reason or "").strip(),
+            declaration_hash=normalized_hash,
+            gate_verdict=normalized_verdict,
+            turn_key=normalized_turn_key,
         )
-        if not attempt.reason:
+        if not _has_failed_attempt_evidence(attempt.reason):
             return None
         self._attempts.append(attempt)
         self._prune_attempts()
@@ -388,6 +510,37 @@ class TheoremQueueManager:
         if normalized == "hard":
             return self.hard_retries_for(key)
         return 0
+
+    def add_api_steps_for(self, key: TheoremKey, steps: int) -> int:
+        """Accumulate spent API steps for a theorem across turns; return the total.
+
+        Cumulative and never ring-pruned — the failed-attempt history caps at
+        10 entries per key, which makes it unusable as a budget; this counter
+        is the Phase 1 budget-breakpoint accounting.
+        """
+        if not key.is_valid() or steps <= 0:
+            return self.api_steps_for(key)
+        total = self._api_steps.get(key, 0) + int(steps)
+        self._api_steps[key] = total
+        return total
+
+    def api_steps_for(self, key: TheoremKey) -> int:
+        return self._api_steps.get(key, 0) if key.is_valid() else 0
+
+    def reset_api_steps_for(self, key: TheoremKey) -> None:
+        """Grant a fresh budget tranche (orchestrator route resumed the theorem)."""
+        if key.is_valid():
+            self._api_steps.pop(key, None)
+
+    def retry_signatures_for(self, key: TheoremKey) -> dict[str, list[str]]:
+        """Return the consumed retry signatures per bucket (decision-packet input)."""
+        if not key.is_valid():
+            return {}
+        return {
+            bucket: list(signatures)
+            for (stored_key, bucket), signatures in self._retry_signatures.items()
+            if stored_key == key and signatures
+        }
 
     def consume_warning_retry(self) -> int:
         """Increment the warning-cleanup counter for the current assignment.
@@ -481,41 +634,131 @@ class TheoremQueueManager:
     def classify(self, check: ManagerCheck) -> Classification:
         return classify_check(check)
 
-    def decide(self, check: ManagerCheck) -> Decision:
-        """High-level branch policy for one manager gate.
+    def _hard_retry_limit_for(self, source: DecisionSource) -> int:
+        """Source-dependent hard-retry limits — legacy drift D2, kept as data.
+
+        Final-report retries are full turns (limit 2); post-edit retries are
+        cheap inner-loop checks (limit 8); verification-tool results consume
+        nothing (0 = no consumption, no exhaustion). Harmonizing these is an
+        owner-approved follow-up, not Phase 0.
+        """
+        if source is DecisionSource.FINAL_REPORT:
+            return self._hard_retry_limit
+        if source is DecisionSource.POST_EDIT:
+            return self._post_edit_hard_retry_limit
+        return 0
+
+    def _signature_already_consumed(self, key: TheoremKey, bucket: str, signature: str) -> bool:
+        return bool(signature) and signature in self._retry_signatures.get((key, bucket), [])
+
+    def decide(self, ctx: DecisionContext) -> Decision:
+        """Pure verdict policy for one manager gate — reads, never mutates.
 
         This is where the spec's step 7 ("Branch on the classification")
-        lives in one place. The runner just calls ``decide(...)`` and follows
-        the returned action; today this logic is open-coded across
-        ``_review_agent_final_report``, ``_manager_gate_for_queue_verification``,
-        and the budget-exhaustion path, which is why they can disagree.
+        lives in one place. The runner calls ``decide(...)``, renders the
+        returned plan (messages, prints, activity), and commits its retry
+        side effects via :meth:`apply_decision`; file restores and attempt
+        recording stay runner-owned I/O, driven by the Decision fields.
+        Purity makes shadow-compare safe: evaluating a legacy gate in shadow
+        must never corrupt production retry counters.
         """
+        check = _fold_cleanup_reason(ctx.check, ctx.cleanup_reason)
         cls = self.classify(check)
+        if ctx.axiom_blockers:
+            # Axiom-dependency veto (legacy Path A): a kernel-accepted proof
+            # leaning on forbidden axioms is a hard blocker, never an accept.
+            # (In production the veto only fires on otherwise-clean checks.)
+            cls = Classification.HARD_BLOCKER
+        key = self._current.key if self._current is not None else None
+
         if cls is Classification.HARD_BLOCKER:
-            count = self.consume_hard_retry()
-            if count >= self._hard_retry_limit:
+            feedback_kind = "sorry" if check.has_assigned_sorry else "error"
+            if ctx.source is DecisionSource.BUDGET_EXHAUSTION:
                 return Decision(
                     action="restore_baseline",
                     classification=cls,
-                    reason="hard retry limit reached; restore baseline sorry and continue",
+                    reason="api step budget exhausted while blocked; restore baseline sorry",
+                    feedback_kind=feedback_kind,
+                    record_failed_attempt=True,
+                    restore_baseline=True,
                 )
+            if ctx.source is DecisionSource.LIVE_STATE:
+                return Decision(
+                    action="continue_same_theorem",
+                    classification=cls,
+                    reason="assignment still blocked per live state",
+                    feedback_kind=feedback_kind,
+                )
+            limit = self._hard_retry_limit_for(ctx.source)
+            count = self.retry_count_for(key, "hard") if key is not None else 0
+            if limit and count >= limit:
+                # Exhaustion is judged on the PRE-consumption count (pinned by
+                # the boundary characterization tests).
+                return Decision(
+                    action="restore_baseline",
+                    classification=cls,
+                    reason=(
+                        "local feedback window complete; restore baseline sorry and "
+                        "continue on a new route"
+                    ),
+                    feedback_kind=feedback_kind,
+                    retry_count=count,
+                    retry_limit=limit,
+                    restore_baseline=True,
+                )
+            consume = "hard" if limit else ""
+            after = count
+            if consume and key is not None:
+                if not self._signature_already_consumed(key, "hard", ctx.signature):
+                    after = count + 1
             return Decision(
                 action="continue_same_theorem",
                 classification=cls,
                 reason="hard blocker; record failed attempt and feed manager note",
+                feedback_kind=feedback_kind,
+                consume_retry=consume,
+                retry_count=after,
+                retry_limit=limit,
+                record_failed_attempt=ctx.source
+                in (DecisionSource.POST_EDIT, DecisionSource.VERIFICATION_RESULT),
             )
         if cls is Classification.WARNING_ONCE:
-            if self.warning_retry_exhausted():
+            if ctx.source in (DecisionSource.LIVE_STATE, DecisionSource.BUDGET_EXHAUSTION):
+                # Predicate-only sources: warning evidence never blocked the
+                # legacy live-state probe and never triggers a budget restore;
+                # they neither own nor consume the warning-cleanup window.
+                return Decision(
+                    action="advance_queue",
+                    classification=cls,
+                    reason="warning-only evidence; assignment not blocked",
+                    feedback_kind="warning",
+                )
+            limit = self._warning_retry_limit
+            count = self.retry_count_for(key, "warning") if key is not None else 0
+            if count >= limit:
+                # Opportunity already spent: accept (exhaustion is judged
+                # BEFORE consuming — the inverse of the hard-blocker order).
                 return Decision(
                     action="advance_queue",
                     classification=Classification.ACCEPT,
                     reason="warning-cleanup opportunity already spent; accept",
+                    retry_count=count,
+                    retry_limit=limit,
+                    accepted_after_warning_limit=True,
                 )
-            self.consume_warning_retry()
+            after = count
+            if key is not None and not self._signature_already_consumed(
+                key, "warning", ctx.signature
+            ):
+                after = count + 1
             return Decision(
                 action="continue_same_theorem",
                 classification=cls,
                 reason="grant the one focused warning-cleanup opportunity",
+                feedback_kind="warning",
+                consume_retry="warning",
+                retry_count=after,
+                retry_limit=limit,
             )
         if cls is Classification.FUTURE_ONLY:
             return Decision(
@@ -529,6 +772,27 @@ class TheoremQueueManager:
             classification=cls,
             reason="assigned declaration clean and no warnings",
         )
+
+    def apply_decision(self, ctx: DecisionContext, decision: Decision) -> Decision:
+        """Commit a decision's retry side effects to this manager.
+
+        Consumes the planned retry idempotently by ``ctx.signature`` and
+        clears retry bookkeeping when the queue advances (accept). File
+        restores and failed-attempt recording stay runner-owned (I/O).
+        Returns the decision with ``retry_count`` reflecting the committed
+        counter value.
+        """
+        if self._current is None:
+            return decision
+        key = self._current.key
+        if decision.consume_retry:
+            count = self.consume_retry_once_for(
+                key, kind=decision.consume_retry, signature=ctx.signature
+            )
+            decision = replace(decision, retry_count=count)
+        if decision.action == "advance_queue":
+            self.clear_retries_for(key)
+        return decision
 
     # ----- verification record -----------------------------------------
 
@@ -576,6 +840,73 @@ class TheoremQueueManager:
     def outcome_for(self, key: TheoremKey) -> TheoremOutcome | None:
         return self._outcomes.get(key)
 
+    def discard_outcome_for(self, key: TheoremKey) -> TheoremOutcome | None:
+        """Remove one obsolete theorem verdict without changing other knowledge."""
+        return self._outcomes.pop(key, None) if key.is_valid() else None
+
+    def retire_theorem_state(self, key: TheoremKey) -> bool:
+        """Remove all scheduler state for a declaration deleted by the campaign.
+
+        Authoritative false-decomposition cleanup preserves its mathematical
+        negation in plan state, so queue-local proof attempts and verdicts for
+        the now-absent helper are stale rather than useful campaign knowledge.
+        """
+        if not key.is_valid():
+            return False
+        changed = False
+        filtered_queue = [item for item in self._queue if item.label != key.target_symbol]
+        if len(filtered_queue) != len(self._queue):
+            self._queue = filtered_queue
+            changed = True
+        if self._current is not None and self._current.key == key:
+            self._current = None
+            self._last_verification = None
+            changed = True
+        filtered_attempts = [attempt for attempt in self._attempts if attempt.key != key]
+        if len(filtered_attempts) != len(self._attempts):
+            self._attempts = filtered_attempts
+            changed = True
+        for storage in (
+            self._display_files,
+            self._warning_retries,
+            self._hard_retries,
+            self._api_steps,
+            self._outcomes,
+            self._reasoning_effort_by_key,
+        ):
+            if storage.pop(key, None) is not None:
+                changed = True
+        for retry_key in tuple(self._retry_signatures):
+            if retry_key[0] == key:
+                self._retry_signatures.pop(retry_key, None)
+                changed = True
+        return changed
+
+    def reopen_blocked_outcomes(self, *, trigger: str) -> tuple[TheoremOutcome, ...]:
+        """Return temporary route deferrals to unresolved queue work.
+
+        ``deferred`` is the current non-terminal scheduler vocabulary. Legacy
+        checkpoints may still carry ``blocked`` from before route exhaustion
+        was separated from mathematical verdicts, so both are reopened. A
+        campaign epoch or verified-knowledge refresh clears the temporary
+        cooldown; solved, disproved, and operational campaign states remain
+        untouched. Repeated calls are idempotent until a later proof turn
+        records another deferred outcome.
+        """
+        refresh = (trigger or "strategy refresh").strip()
+        reopened: list[TheoremOutcome] = []
+        for key, outcome in tuple(self._outcomes.items()):
+            if str(outcome.status or "").strip().lower() not in {"blocked", "deferred"}:
+                continue
+            prior_note = str(outcome.note or "").strip()
+            note = f"{refresh}: reopened for a distinct proof route"
+            if prior_note:
+                note = f"{note}; prior blocker: {prior_note}"
+            updated = replace(outcome, status="unresolved", note=note)
+            self._outcomes[key] = updated
+            reopened.append(updated)
+        return tuple(reopened)
+
     def record_outcome_for(
         self,
         key: TheoremKey,
@@ -601,7 +932,7 @@ class TheoremQueueManager:
     def outcomes(self) -> Mapping[TheoremKey, TheoremOutcome]:
         return dict(self._outcomes)
 
-    # ----- disabled-tool tracking (P0.4 in the plan) -------------------
+    # ----- disabled-tool tracking --------------------------------------
 
     def disable_tool(self, name: str, reason: str = "") -> None:
         """Record that a tool was disabled for the rest of the run.
@@ -696,6 +1027,7 @@ class TheoremQueueManager:
                     prepare=PrepareState.from_mapping(assignment.get("incremental_prepare")),
                 )
 
+        dropped_attempt_numbers: dict[TheoremKey, list[int]] = {}
         for raw in autonomy_state.get("failed_attempts", []) or []:
             if not isinstance(raw, Mapping):
                 continue
@@ -705,16 +1037,45 @@ class TheoremQueueManager:
             )
             if not key.is_valid():
                 continue
+            raw_attempt = int(raw.get("attempt", 0) or 0)
+            reason = str(raw.get("reason", "") or "")
+            if not _has_failed_attempt_evidence(reason):
+                if raw_attempt > 0:
+                    dropped_attempt_numbers.setdefault(key, []).append(raw_attempt)
+                continue
+            dropped_before = sum(
+                1 for dropped in dropped_attempt_numbers.get(key, ()) if dropped <= raw_attempt
+            )
+            attempt_number = (
+                max(1, raw_attempt - dropped_before) if raw_attempt > 0 else raw_attempt
+            )
             mgr._remember_display_file(key, str(raw.get("active_file", "") or ""))
             mgr._attempts.append(
                 FailedAttempt(
                     key=key,
-                    attempt=int(raw.get("attempt", 0) or 0),
+                    attempt=attempt_number,
                     cycle=int(raw.get("cycle", 0) or 0),
                     proof_shape=str(raw.get("proof_shape", "") or ""),
-                    reason=str(raw.get("reason", "") or ""),
+                    reason=reason,
+                    declaration_hash=str(raw.get("declaration_hash", "") or "").strip().lower(),
+                    gate_verdict=_normalize_attempt_gate_verdict(
+                        str(raw.get("gate_verdict", "") or "")
+                    ),
+                    turn_key=str(raw.get("turn_key", "") or "").strip(),
                 )
             )
+
+        # Cumulative per-theorem API-step totals (Phase 1 budget breakpoint):
+        # keyed f"{file}::{target}" -> int, never ring-pruned.
+        api_steps = autonomy_state.get("theorem_api_steps") or {}
+        if isinstance(api_steps, Mapping):
+            for storage_key, raw_total in api_steps.items():
+                file_part, _, target_part = str(storage_key).partition("::")
+                key = TheoremKey.make(target_part, file_part)
+                total = int(raw_total or 0)
+                if key.is_valid() and total > 0:
+                    mgr._remember_display_file(key, file_part)
+                    mgr._api_steps[key] = total
 
         # Legacy store keyed retries by f"{file}::{target}" string with kind
         # buckets {"warning": N, "hard": M}.
@@ -795,7 +1156,7 @@ class TheoremQueueManager:
         return mgr
 
     def _attempt_to_mapping(self, attempt: FailedAttempt) -> dict[str, Any]:
-        return {
+        payload = {
             "target_symbol": attempt.key.target_symbol,
             "active_file": self._display_file_for(attempt.key),
             "attempt": attempt.attempt,
@@ -803,6 +1164,13 @@ class TheoremQueueManager:
             "proof_shape": attempt.proof_shape,
             "reason": attempt.reason,
         }
+        if attempt.declaration_hash:
+            payload["declaration_hash"] = attempt.declaration_hash
+        if attempt.gate_verdict:
+            payload["gate_verdict"] = attempt.gate_verdict
+        if attempt.turn_key:
+            payload["turn_key"] = attempt.turn_key
+        return payload
 
     def _outcome_to_mapping(self, outcome: TheoremOutcome) -> dict[str, Any]:
         payload = {
@@ -853,6 +1221,12 @@ class TheoremQueueManager:
                 for (key, kind), signatures in self._retry_signatures.items()
                 if key.is_valid() and signatures
             }
+        if self._api_steps:
+            out["theorem_api_steps"] = {
+                key.storage_key(): total
+                for key, total in self._api_steps.items()
+                if key.is_valid() and total > 0
+            }
 
         if self._outcomes:
             out["theorem_outcomes"] = {
@@ -877,14 +1251,52 @@ class TheoremQueueManager:
 
         return out
 
+    def to_checkpoint_state(self) -> dict[str, Any]:
+        """Return durable queue knowledge safe to hydrate in a new process.
+
+        Process-local verifier state must not cross a runner restart: a new
+        LeanInteract server needs its own warmup, the last verification may
+        describe an older source revision, and disabled tools are scoped to
+        the process that observed their failure.  The assignment identity,
+        failed proof shapes, retry signatures, outcomes, and accounting are
+        durable campaign knowledge and are preserved.
+        """
+        state = self.to_autonomy_state()
+        state.pop("last_verification", None)
+        state.pop("disabled_tools_this_run", None)
+        assignment = state.get("current_queue_assignment")
+        if isinstance(assignment, dict):
+            assignment["incremental_prepare"] = {
+                "success": False,
+                "ok": False,
+                "elapsed_s": 0.0,
+                "cache": {},
+                "error": "runner restart requires fresh warmup",
+            }
+        return state
+
 
 @dataclass(frozen=True)
 class Decision:
-    """Result of :meth:`TheoremQueueManager.decide`."""
+    """Result of :meth:`TheoremQueueManager.decide` — the action plus the
+    side-effect plan (retry to consume, attempt to record, restore to run).
 
-    action: str  # "continue_same_theorem" | "advance_queue" | "restore_baseline"
+    ``decide()`` is pure; :meth:`TheoremQueueManager.apply_decision` commits
+    the retry plan, and the runner performs the I/O the flags call for.
+    """
+
+    # "continue_same_theorem" | "advance_queue" | "restore_baseline" |
+    # "budget_breakpoint" (Phase 1 flag-gated hook; unused while flags are off)
+    action: str
     classification: Classification
     reason: str
+    feedback_kind: str = ""  # legacy adapter string: "sorry" | "error" | "warning" | ""
+    consume_retry: str = ""  # "" | "warning" | "hard" — what apply_decision() consumes
+    retry_count: int = 0  # count AFTER the pending consumption (for prompt rendering)
+    retry_limit: int = 0  # source-dependent limit (drift D2 encoded as data)
+    record_failed_attempt: bool = False  # runner records via _remember_failed_attempt
+    accepted_after_warning_limit: bool = False  # legacy wording preserved
+    restore_baseline: bool = False  # runner restores the baseline `sorry` slice
 
     def advances_queue(self) -> bool:
         return self.action == "advance_queue"

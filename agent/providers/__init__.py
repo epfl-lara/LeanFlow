@@ -1,1 +1,1 @@
-"""agent.providers subpackage (Phase II restructure)."""
+"""Route primary and auxiliary model-provider requests."""

@@ -1,19 +1,34 @@
 """Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
+import asyncio
 import json
+import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from agent.providers.auxiliary_adapters import _CodexCompletionsAdapter
 from agent.providers.auxiliary_client import (
     _build_call_kwargs,
+    _compatible_explicit_model,
     _get_auxiliary_provider,
+    _get_cached_client,
     _read_codex_access_token,
     _resolve_forced_provider,
     _resolve_task_provider_model,
     _resolve_task_reasoning_effort,
+    async_call_llm,
     auxiliary_max_tokens_param,
+    call_llm,
     get_text_auxiliary_client,
+    resolve_auxiliary_call_identity,
+)
+from agent.providers.isolated_auxiliary import AuxiliaryTextResponse
+from core.provider_capacity import (
+    BACKGROUND_PROVIDER_CAPACITY_ENV,
+    BACKGROUND_PROVIDER_NAMESPACE_ENV,
+    background_actor_lease,
 )
 
 
@@ -53,8 +68,228 @@ def _clean_env(monkeypatch):
         "LEANFLOW_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE",
         "CONTEXT_COMPRESSION_PROVIDER",
         "CONTEXT_COMPRESSION_MODEL",
+        BACKGROUND_PROVIDER_CAPACITY_ENV,
+        BACKGROUND_PROVIDER_NAMESPACE_ENV,
+        "LEANFLOW_RESEARCH_MODE",
+        "LEANFLOW_RESEARCH_WORKERS",
+        "LEANFLOW_DISPATCH_WORKER",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+def test_codex_provider_drops_openrouter_model_slug():
+    assert _compatible_explicit_model("openai-codex", "google/gemini-3-flash-preview") is None
+    assert _compatible_explicit_model("openai-codex", "gpt-5.6-sol") == "gpt-5.6-sol"
+
+
+def test_explicit_codex_provider_allows_cli_auth_store(monkeypatch):
+    """An explicit Codex auxiliary route must match the main runtime's auth policy."""
+    token_calls: list[bool | None] = []
+    client = SimpleNamespace(
+        api_key="codex-token",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._read_codex_access_token",
+        lambda *, allow_legacy_store=None: (
+            token_calls.append(allow_legacy_store) or "codex-token"
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client.OpenAI",
+        lambda **_kwargs: client,
+    )
+
+    resolved_client, model = _get_cached_client("openai-codex", "gpt-5.6-sol")
+
+    assert resolved_client is not None
+    assert model == "gpt-5.6-sol"
+    assert token_calls == [True]
+
+
+def test_explicit_codex_provider_inherits_main_runtime_model(monkeypatch):
+    """A selected Codex lane must not fall back to an obsolete auxiliary model."""
+    client = SimpleNamespace(
+        api_key="codex-token",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._read_codex_access_token",
+        lambda *, allow_legacy_store=None: "codex-token",
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client.resolve_runtime_provider",
+        lambda **_kwargs: {"model": "gpt-5.6-sol"},
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client.OpenAI",
+        lambda **_kwargs: client,
+    )
+
+    _resolved_client, model = _get_cached_client("openai-codex")
+
+    assert model == "gpt-5.6-sol"
+
+
+def test_get_cached_client_preserves_provider_resolved_model(monkeypatch):
+    """The cache wrapper must not resurrect a rejected provider model."""
+    client = object()
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client.resolve_provider_client",
+        lambda *_args, **_kwargs: (client, "gpt-5.6-sol"),
+    )
+
+    resolved_client, model = _get_cached_client(
+        "openai-codex",
+        "google/gemini-3-flash-preview",
+    )
+
+    assert resolved_client is client
+    assert model == "gpt-5.6-sol"
+
+
+def test_auxiliary_call_reuses_delegated_actor_capacity(monkeypatch, tmp_path):
+    """A delegated tool's model helper must not acquire a second actor slot."""
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+    completions = SimpleNamespace(create=lambda **_kwargs: response)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv(BACKGROUND_PROVIDER_CAPACITY_ENV, "1")
+    monkeypatch.setenv(BACKGROUND_PROVIDER_NAMESPACE_ENV, "auxiliary-nested")
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._resolve_task_provider_model",
+        lambda *_args, **_kwargs: ("custom", "model", None, "token"),
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._get_cached_client",
+        lambda *_args, **_kwargs: (client, "model"),
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._resolve_task_reasoning_effort",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with background_actor_lease() as actor:
+        assert actor is not None
+        result = call_llm(task="lean_reasoning", messages=[{"role": "user", "content": "x"}])
+
+    assert result is response
+
+
+def test_call_llm_isolate_routes_through_hard_deadline_worker(monkeypatch):
+    """An isolated synchronous call must bypass the in-process provider client."""
+    captured: dict[str, object] = {}
+
+    def fake_isolated_call(**kwargs):
+        captured.update(kwargs)
+        return AuxiliaryTextResponse(content="bounded answer", model="open-model")
+
+    monkeypatch.setattr(
+        "agent.providers.isolated_auxiliary.run_isolated_auxiliary_text",
+        fake_isolated_call,
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._resolve_task_provider_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("the parent must not create a provider client")
+        ),
+    )
+
+    result = call_llm(
+        task="lean_decompose_helpers",
+        provider="main",
+        messages=[{"role": "user", "content": "split the proof"}],
+        temperature=0.1,
+        max_tokens=2048,
+        timeout=37,
+        isolate=True,
+    )
+
+    assert result.model == "open-model"
+    assert result.choices[0].message.content == "bounded answer"
+    assert captured == {
+        "task": "lean_decompose_helpers",
+        "provider": "main",
+        "model": None,
+        "base_url": None,
+        "api_key": None,
+        "messages": [{"role": "user", "content": "split the proof"}],
+        "timeout": 37,
+        "temperature": 0.1,
+        "max_tokens": 2048,
+    }
+
+
+def test_foreground_auxiliary_call_does_not_wait_for_background_actors(monkeypatch, tmp_path):
+    """Manager/orchestrator control calls remain outside background capacity."""
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_kwargs: response))
+    )
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv(BACKGROUND_PROVIDER_CAPACITY_ENV, "2")
+    monkeypatch.setenv(BACKGROUND_PROVIDER_NAMESPACE_ENV, "foreground-control")
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._resolve_task_provider_model",
+        lambda *_args, **_kwargs: ("custom", "model", None, "token"),
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._get_cached_client",
+        lambda *_args, **_kwargs: (client, "model"),
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._resolve_task_reasoning_effort",
+        lambda *_args, **_kwargs: None,
+    )
+    actors_ready = threading.Barrier(3, timeout=2.0)
+    release_actors = threading.Event()
+
+    def hold_actor() -> None:
+        with background_actor_lease():
+            actors_ready.wait()
+            release_actors.wait(2.0)
+
+    holders = [threading.Thread(target=hold_actor, daemon=True) for _index in range(2)]
+    for holder in holders:
+        holder.start()
+    actors_ready.wait()
+
+    completed = threading.Event()
+
+    def foreground_control() -> None:
+        call_llm(task="orchestration", messages=[{"role": "user", "content": "route"}])
+        completed.set()
+
+    control = threading.Thread(target=foreground_control, daemon=True)
+    control.start()
+    try:
+        assert completed.wait(0.5)
+    finally:
+        release_actors.set()
+        control.join(timeout=2.0)
+        for holder in holders:
+            holder.join(timeout=2.0)
+
+
+def test_resolved_call_identity_is_credential_free_and_normalizes_main(monkeypatch):
+    secret = "sk-route-secret-that-must-not-be-recorded"
+    client = SimpleNamespace(base_url="https://inference.example.test/v1")
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._resolve_task_provider_model",
+        lambda *_args, **_kwargs: ("main", "zai-org/GLM-5.2", None, secret),
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._get_cached_client",
+        lambda *_args, **_kwargs: (client, "zai-org/GLM-5.2"),
+    )
+
+    identity = resolve_auxiliary_call_identity("orchestration")
+
+    assert identity.provider == "custom"
+    assert identity.model == "zai-org/GLM-5.2"
+    assert secret not in repr(identity)
 
 
 @pytest.fixture
@@ -505,6 +740,141 @@ class TestAuxiliaryMaxTokensParam:
         assert result == {"max_tokens": 1024}
 
 
+class TestAsyncAuxiliaryLifecycle:
+    def test_codex_responses_adapter_repairs_empty_final_from_stream_delta(self):
+        class _Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def __iter__(self):
+                return iter(
+                    (
+                        SimpleNamespace(
+                            type="response.output_text.delta",
+                            delta="PASS",
+                        ),
+                    )
+                )
+
+            def get_final_response(self):
+                return SimpleNamespace(output=[], usage=None)
+
+        class _Responses:
+            def stream(self, **_kwargs):
+                return _Stream()
+
+        class _Client:
+            responses = _Responses()
+
+        adapter = _CodexCompletionsAdapter(_Client(), "codex-model")
+
+        result = adapter.create(messages=[{"role": "user", "content": "review"}])
+
+        assert result.choices[0].message.content == "PASS"
+
+    def test_codex_responses_adapter_forwards_timeout(self):
+        captured: dict = {}
+
+        class _Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(output=[], usage=None)
+
+        class _Responses:
+            def stream(self, **kwargs):
+                captured.update(kwargs)
+                return _Stream()
+
+        class _Client:
+            def __init__(self):
+                self.responses = _Responses()
+
+            def with_options(self, **kwargs):
+                captured["client_options"] = kwargs
+                return self
+
+        adapter = _CodexCompletionsAdapter(
+            _Client(),
+            "codex-model",
+        )
+
+        adapter.create(
+            messages=[{"role": "user", "content": "extract"}],
+            timeout=12.5,
+        )
+
+        assert captured["timeout"] == 12.5
+        assert captured["client_options"] == {"max_retries": 0}
+
+    def test_async_call_closes_client_in_same_loop(self, monkeypatch):
+        class _Completions:
+            async def create(self, **_kwargs):
+                return SimpleNamespace(choices=[])
+
+        class _Client:
+            def __init__(self):
+                self.chat = SimpleNamespace(completions=_Completions())
+                self.closed = 0
+
+            async def close(self):
+                self.closed += 1
+
+        client = _Client()
+        monkeypatch.setattr(
+            "agent.providers.auxiliary_client._resolve_task_provider_model",
+            lambda *_args, **_kwargs: ("codex", "codex-model", None, None),
+        )
+        monkeypatch.setattr(
+            "agent.providers.auxiliary_client._get_cached_client",
+            lambda *_args, **_kwargs: (client, "codex-model"),
+        )
+
+        response = asyncio.run(
+            async_call_llm(
+                task="web_extract",
+                messages=[{"role": "user", "content": "extract"}],
+            )
+        )
+
+        assert response.choices == []
+        assert client.closed == 1
+
+    def test_async_clients_are_not_cached_across_event_loops(self, monkeypatch):
+        clients = [object(), object()]
+        monkeypatch.setattr(
+            "agent.providers.auxiliary_client.resolve_provider_client",
+            lambda *_args, **_kwargs: (clients.pop(0), "model"),
+        )
+
+        first, _model = _get_cached_client(
+            "custom",
+            "model",
+            async_mode=True,
+            base_url="https://example.test/v1",
+            api_key="token",
+        )
+        second, _model = _get_cached_client(
+            "custom",
+            "model",
+            async_mode=True,
+            base_url="https://example.test/v1",
+            api_key="token",
+        )
+
+        assert first is not second
+
+
 class TestLeanReasoningBudget:
     def test_lean_reasoning_effort_reads_config(self, monkeypatch):
         monkeypatch.setattr(
@@ -592,6 +962,116 @@ class TestLeanReasoningBudget:
             None,
             None,
         )
+
+    def test_manager_nudge_uses_auto_provider_with_low_reasoning(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.providers.auxiliary_client._load_runtime_config",
+            lambda: {
+                "auxiliary": {
+                    "lean_reasoning": {
+                        "provider": "codex",
+                        "model": "reasoner/model",
+                        "reasoning_effort": "high",
+                    },
+                    "manager_nudge": {
+                        "provider": "auto",
+                        "reasoning_effort": "low",
+                    },
+                }
+            },
+        )
+
+        assert _resolve_task_provider_model("manager_nudge") == (
+            "auto",
+            None,
+            None,
+            None,
+        )
+        assert _resolve_task_reasoning_effort("manager_nudge") == "low"
+
+    def test_orchestration_defaults_to_non_thinking_json_turn(self, monkeypatch):
+        monkeypatch.delenv("AUXILIARY_ORCHESTRATION_REASONING_EFFORT", raising=False)
+        monkeypatch.setattr(
+            "agent.providers.auxiliary_client._load_runtime_config",
+            lambda: {"auxiliary": {"orchestration": {"reasoning_effort": ""}}},
+        )
+
+        assert _resolve_task_reasoning_effort("orchestration") == "off"
+        assert _resolve_task_reasoning_effort("statement_fidelity") == "off"
+
+    def test_planner_synthesis_defaults_to_non_thinking_json_turn(self, monkeypatch):
+        monkeypatch.delenv(
+            "AUXILIARY_PLANNER_SYNTHESIS_REASONING_EFFORT",
+            raising=False,
+        )
+        monkeypatch.delenv("AUXILIARY_ORCHESTRATION_REASONING_EFFORT", raising=False)
+        monkeypatch.setattr(
+            "agent.providers.auxiliary_client._load_runtime_config",
+            lambda: {
+                "auxiliary": {
+                    "planner_synthesis": {"reasoning_effort": ""},
+                    "orchestration": {"reasoning_effort": ""},
+                }
+            },
+        )
+
+        assert _resolve_task_reasoning_effort("planner_synthesis") == "off"
+
+    def test_planner_synthesis_reasoning_overrides_default(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "planner_synthesis": {"reasoning_effort": ""},
+                "orchestration": {"reasoning_effort": "high"},
+            }
+        }
+        monkeypatch.delenv(
+            "AUXILIARY_PLANNER_SYNTHESIS_REASONING_EFFORT",
+            raising=False,
+        )
+        monkeypatch.delenv("AUXILIARY_ORCHESTRATION_REASONING_EFFORT", raising=False)
+        monkeypatch.setattr(
+            "agent.providers.auxiliary_client._load_runtime_config",
+            lambda: config,
+        )
+
+        assert _resolve_task_reasoning_effort("planner_synthesis") == "high"
+        config["auxiliary"]["planner_synthesis"]["reasoning_effort"] = "medium"
+        assert _resolve_task_reasoning_effort("planner_synthesis") == "medium"
+        monkeypatch.setenv("AUXILIARY_PLANNER_SYNTHESIS_REASONING_EFFORT", "low")
+        assert _resolve_task_reasoning_effort("planner_synthesis") == "low"
+
+    def test_statement_fidelity_inherits_main_orchestration_endpoint(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.providers.auxiliary_client._load_runtime_config",
+            lambda: {
+                "auxiliary": {
+                    "orchestration": {
+                        "provider": "main",
+                        "model": "zai-org/GLM-5.2",
+                    }
+                }
+            },
+        )
+
+        assert _resolve_task_provider_model("statement_fidelity") == (
+            "main",
+            "zai-org/GLM-5.2",
+            None,
+            None,
+        )
+
+    def test_rcp_orchestration_can_disable_thinking(self):
+        kwargs = _build_call_kwargs(
+            "main",
+            "zai-org/GLM-5.2",
+            [{"role": "user", "content": "route"}],
+            max_tokens=2000,
+            base_url="https://inference.rcp.epfl.ch/v1",
+            reasoning_effort="off",
+        )
+
+        assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+        assert "reasoning_effort" not in kwargs["extra_body"]
 
     def test_rcp_main_route_gets_high_reasoning_budget(self):
         kwargs = _build_call_kwargs(

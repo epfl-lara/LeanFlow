@@ -1,9 +1,7 @@
-"""The managed-run contract between ``leanflow_cli.native.native_runner`` and ``run_agent.AIAgent``.
+"""Define the managed-run contract between the native runner and ``AIAgent``.
 
-native_runner drives an ``AIAgent`` instance through an autonomous Lean proving workflow. Today
-that coupling is expressed implicitly via private-attribute injection on the agent object. This
-module makes the contract **explicit and typed** so the upcoming decomposition of both monoliths
-(native_runner in Phase 2, AIAgent in Phase 4) has a stable, documented surface to preserve.
+The protocol makes the runner's callbacks and one-shot tool-result guidance
+explicit and typed while keeping runner-owned scratch state separate.
 
 native_runner now drives the appendix exclusively through the explicit
 ``stage_/set_/clear_tool_result_appendix`` methods below — it no longer reaches into the private
@@ -29,7 +27,7 @@ Two distinct kinds of coupling exist — keep them separate:
    ``_managed_autonomy_state``, ``_managed_pending_theorem_feedback``,
    ``_managed_step_boundary_recorded_attempt``, ``_managed_step_boundary_closed``,
    ``_managed_tool_task_id``, ``_managed_base_reasoning_config``. These are not part of the
-   AIAgent behavioral contract; Phase 2 may relocate them into a runner-owned context object.
+   AIAgent behavioral contract.
 """
 
 from __future__ import annotations
@@ -40,11 +38,12 @@ from typing import Any, Protocol, runtime_checkable
 # Callback signatures AIAgent invokes during the conversation loop.
 PreToolCallCallback = Callable[[str, Mapping[str, Any]], str | None]
 PostToolResultCallback = Callable[[str, Mapping[str, Any], str], None]
+ToolResultProjectionCallback = Callable[[str, Mapping[str, Any], str], str]
 ToolProgressCallback = Callable[..., None]
 StepCallback = Callable[[int, "list[str]"], None]
 
 # Names of the runner-private scratch attributes parked on the agent (see module docstring).
-# Documented here so a future refactor can find/relocate them deliberately rather than by grep.
+# Keep the complete list explicit so changes to the runner contract are reviewable.
 MANAGED_SCRATCH_ATTRS: tuple[str, ...] = (
     "_managed_autonomy_state",
     "_managed_pending_theorem_feedback",
@@ -65,6 +64,7 @@ class ManagedRunAgent(Protocol):
 
     pre_tool_call_callback: PreToolCallCallback | None
     post_tool_result_callback: PostToolResultCallback | None
+    tool_result_projection_callback: ToolResultProjectionCallback | None
     tool_progress_callback: ToolProgressCallback | None
     step_callback: StepCallback | None
 

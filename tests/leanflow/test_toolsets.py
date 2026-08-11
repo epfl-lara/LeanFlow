@@ -7,8 +7,10 @@ from core.toolsets import (
     _SESSION_TOOLS,
     _SKILL_TOOLS,
     _TERMINAL_TOOLS,
+    _WEB_RESEARCH_TOOLS,
     _WEB_TOOLS,
     get_toolset_info,
+    resolve_multiple_toolsets,
     resolve_toolset,
     validate_toolset,
 )
@@ -63,6 +65,51 @@ def test_resolve_toolset_returns_empty_for_unknown_name():
     assert result == []
 
 
+def test_lean_research_keeps_checks_without_shared_patch_authority():
+    tools = set(resolve_toolset("lean-research"))
+
+    assert "lean_incremental_check" in tools
+    assert "lean_axioms" in tools
+    assert "lean_proof_context" in tools
+    assert "apply_verified_patch" not in tools
+    assert "lean_reasoning_help" not in tools
+    assert "lean_decompose_helpers" not in tools
+    assert "write_file" not in tools
+    assert "patch" not in tools
+
+
+def test_web_research_has_no_project_state_writers():
+    tools = set(resolve_toolset("web-research"))
+
+    assert tools == set(_WEB_RESEARCH_TOOLS) == {"web_search", "web_fetch"}
+    assert tools.isdisjoint({"web_download", "repo_clone"})
+
+
+def test_scratch_research_union_resolves_to_read_check_only_tools():
+    tools = set(resolve_multiple_toolsets(["web-research", "lean-research"]))
+
+    assert {"web_search", "web_fetch", "lean_incremental_check"} <= tools
+    assert tools.isdisjoint(
+        {
+            "web_download",
+            "repo_clone",
+            "apply_verified_patch",
+            "lean_reasoning_help",
+            "lean_decompose_helpers",
+            "write_file",
+            "patch",
+        }
+    )
+
+
+def test_empirical_compute_is_not_part_of_general_or_research_toolsets():
+    compute = set(resolve_toolset("empirical-compute"))
+
+    assert compute == {"empirical_compute"}
+    assert "empirical_compute" not in resolve_toolset("leanflow-native")
+    assert "empirical_compute" not in resolve_toolset("lean-research")
+
+
 def test_autoformalize_is_composite_and_includes_core_groups():
     tools = set(resolve_toolset("autoformalize"))
 
@@ -84,6 +131,9 @@ def test_resolved_toolsets_contain_no_duplicates():
         "leanflow-native",
         "leanflow-native-swarm",
         "leanflow-prove-worker",
+        "lean-research",
+        "web-research",
+        "empirical-compute",
         "autoformalize",
         "leanflow-cli",
     ):
@@ -126,6 +176,8 @@ def test_validate_toolset_accepts_known_names_and_wildcards():
         "document",
         "file",
         "terminal",
+        "empirical-compute",
+        "web-research",
     ):
         assert validate_toolset(name) is True, f"validate_toolset should accept {name!r}"
 

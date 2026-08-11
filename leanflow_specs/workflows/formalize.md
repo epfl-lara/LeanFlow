@@ -7,7 +7,7 @@ aliases: [autoformalize]
 skills: [lean-formalization, lean-proof-loop, lean-theorem-queue-worker]
 tools: [formalization_document_inspect, lean_capabilities, lean_inspect, lean_search, lean_verify, lean_sorries, lean_axioms]
 workers: []
-review_actions: [continue, replan, redraft, falsify, stop]
+review_actions: [continue, decompose, plan, negate, re-state, park]
 stop_conditions: [verified, blocked, interrupted, stalled]
 route_actions: [queue-worker, final-sweep]
 ---
@@ -34,10 +34,10 @@ Do not use this workflow for:
 - one-off informal theorem strings with no source document
 - proof-only repair where the statement shape is already stable
 - read-only review
-- save-point/checkpoint work
+- save-point work (persisted checkpoints are automatic in managed runs)
 - pure tactic shortening after the declarations already compile
 
-Use `prove`, `review`, `checkpoint`, or `golf` for those cases. Use `draft` when the task is limited to declaration skeletons or signatures with no expectation of completing the proving loop.
+Use `prove`, `review`, or `golf` for those cases. Use `draft` when the task is limited to declaration skeletons or signatures with no expectation of completing the proving loop.
 
 ## Document Input Contract
 
@@ -147,7 +147,7 @@ Redraft is justified when:
 - the statement is ill-typed
 - the dependencies are wrong
 - the generated shape clearly blocks the proof
-- the workflow or route decision explicitly calls for a redraft
+- the workflow or a `re-state` route decision explicitly calls for a redraft
 
 Redraft is not the default answer to an ordinary proof blocker. If the statement already expresses the intended theorem, prefer proof repair over header churn.
 
@@ -173,7 +173,7 @@ Proving completion is handled by `/prove` after the review-approved handoff.
 
 - statement-design blocker
   - wrong dependencies, malformed signature, or missing imports
-  - route: redraft in small steps, then re-inspect
+  - route: `re-state` — redraft in small steps, then re-inspect
 - compiler-style blocker
   - route: direct local fix, then richer local feedback if repeated
 - search blocker

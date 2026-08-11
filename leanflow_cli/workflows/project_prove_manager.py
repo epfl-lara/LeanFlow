@@ -1,23 +1,4 @@
-"""Project-prove file scoring / prioritization helpers extracted from native_runner (Phase 2).
-
-This module collects the pure, side-effect-free portion of the ``/prove`` project-wide manager:
-the per-file excerpt builders, the theorem/file difficulty heuristics, the import dependency graph
-and transitive-reachability helpers, and the deterministic fallback / guard candidate ranking.
-Each function here is the fixpoint closure under "calls": its only non-stdlib callees are other
-functions in this module or already-extracted modules (``native_config._read_native_env`` and
-``native_utils._relative_project_file_label`` / ``_single_line``).
-
-None of these read native_runner module-mutable globals or mutate shared state. Intentionally
-LEFT in native_runner: ``_llm_prioritize_project_prove_files`` (the existing test suite monkeypatches
-``native_runner.call_llm`` to drive the ranking, so the ``call_llm`` lookup must stay in the
-native_runner namespace — it still calls the moved ``_project_prove_fallback_order`` /
-``_ordered_labels_from_llm_payload`` / ``_guard_project_prove_llm_order`` through the re-export
-shim), and the work-queue orchestration that touches native_runner-only state (``_record_activity``,
-``_set_native_active_file``, ``_set_project_prove_manager_active``, ``_live_state_is_verified``,
-``_display_file_label``, ``_count_sorries``, ``_project_lean_files``, ``_declaration_line_index``).
-This module does NOT import ``native_runner``, so re-exporting these names back from there introduces
-no import cycle.
-"""
+"""Score and prioritize files for project-wide ``/prove`` workflows."""
 
 from __future__ import annotations
 

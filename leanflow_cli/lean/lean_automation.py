@@ -1,23 +1,8 @@
-"""Pure Lean auto-prove normalization / parsing helpers for lean_services.
+"""Normalize native Lean automation results for ``lean_services``.
 
-Extracted verbatim from ``lean_services.py`` (refactor Phase 5 — the auto-prove cluster). These
-helpers turn raw native auto-prove / proof-auto backend payloads into structured signals: they
-classify backend failure status, extract human-readable failure / harness-failure messages, detect a
-project file's unsupported ``set_option`` before a backend call, decide whether a probe attempt
-succeeded, build the source replacement for a probed tactic, normalise incremental-probe diagnostics,
-and map an objective string to a search depth.
-
-They depend only on stdlib (``os``/``re``/``pathlib``/``typing``) plus the module-level
-``UNSUPPORTED_PROOF_AUTO_OPTIONS`` constant that lives here, and they do NOT read or mutate any
-cross-module mutable state, invoke a Lean backend (``_invoke_json_tool``), disable an MCP tool for the
-run (``_disable_mcp_tool_for_run``), append workflow outcomes, or reference the ``LeanCapabilityReport``
-dataclass. Those stateful / backend-bound pieces (``_invoke_native_mcp_wrapper``,
-``_normalize_native_backend_status``, ``_local_auto_try_preflight_failure``,
-``_wrapper_unavailable_result``, ``_local_incremental_auto_probe`` and the ``lean_auto_*`` entry points)
-stay in lean_services and keep calling these helpers by bare name via the re-export shim.
-
-This module does NOT import lean_services or native_runner, so the re-export shim in lean_services
-introduces no import cycle.
+The helpers classify backend failures, extract diagnostics, validate probe
+attempts, build source replacements, and choose search depth. Backend invocation
+and mutable service state remain in ``lean_services``.
 """
 
 from __future__ import annotations
@@ -30,8 +15,8 @@ from typing import Any
 
 
 def _native_backend_status_indicates_failure(payload: Mapping[str, Any]) -> bool:
-    failure_statuses = {"rejected", "failed", "failure", "error", "invalid"}
-    for key in ("status", "validation_status", "result_status"):
+    failure_statuses = {"fail", "rejected", "failed", "failure", "error", "invalid"}
+    for key in ("status", "outcome", "validation_status", "result_status"):
         status = str(payload.get(key, "") or "").strip().lower()
         if status in failure_statuses:
             return True

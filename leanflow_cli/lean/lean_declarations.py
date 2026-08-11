@@ -1,19 +1,8 @@
-"""Pure path-based Lean declaration indexing / lookup helpers for lean_services.
+"""Index and locate top-level declarations in Lean source files.
 
-Extracted verbatim from ``lean_services.py`` (refactor Phase 5 — the path-based declaration
-cluster). These helpers read a ``.lean`` file from disk and turn it into a line-indexed list of
-top-level declarations (``theorem``/``lemma``/``example``/``def``/``instance``/``class``/
-``structure``) with their source-text regions, then locate a declaration / its line / its
-neighbours by name, and slice a declaration's statement vs. proof. They depend only on the
-standard library (``re``, ``pathlib``, ``typing``) and on each other — no ``lean_services`` module
-state, env readers, Lean MCP / subprocess backends, or REPL invocation. They live here and are
-re-exported from ``lean_services`` for backwards compatibility, so every caller still resolves them
-as ``lean_services.<name>``.
-
-This is distinct from ``lean_parsing.py``, whose declaration parsers operate on already-loaded
-*text* strings (extracted from native_runner); these operate on a filesystem ``Path``. The module
-imports ONLY stdlib and does NOT import ``lean_services`` or ``native_runner``, so the re-export
-introduces no import cycle.
+Unlike the string-oriented helpers in ``lean_parsing``, these functions read a
+filesystem path and return line-indexed declaration regions. They remain
+re-exported from ``lean_services`` for compatibility.
 """
 
 from __future__ import annotations
@@ -38,7 +27,10 @@ __all__ = [
 
 # Single source of truth for the declaration-preamble pattern lives in lean_parsing; import (and
 # re-export, via __all__) it here rather than duplicating the literal, to avoid future drift.
-from leanflow_cli.lean.lean_parsing import LEAN_DECLARATION_PREAMBLE_RE
+from leanflow_cli.lean.lean_parsing import (
+    LEAN_DECLARATION_PREAMBLE_RE,
+    _trim_declaration_region_end,
+)
 
 
 def _declaration_index(path: Path) -> list[dict[str, Any]]:
@@ -58,7 +50,8 @@ def _declaration_index(path: Path) -> list[dict[str, Any]]:
         entries.append({"kind": match.group(1), "name": name, "line": line_number})
     for idx, entry in enumerate(entries):
         start = entry["line"]
-        end = entries[idx + 1]["line"] - 1 if idx + 1 < len(entries) else len(lines)
+        next_start = entries[idx + 1]["line"] if idx + 1 < len(entries) else None
+        end = _trim_declaration_region_end(lines, start=start, next_start=next_start)
         entry["end_line"] = end
         entry["text"] = "\n".join(lines[start - 1 : end]).strip()
     return entries
@@ -86,7 +79,14 @@ def _find_declaration_entry(path: Path, theorem_id: str) -> dict[str, Any] | Non
     return None
 
 
-def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 3) -> list[str]:
+def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 12) -> list[str]:
+    """Return relevant declarations that precede the requested declaration.
+
+    Later declarations in the same file are not in scope while Lean elaborates
+    the requested declaration. Include every source-local declaration named by
+    the target plus a bounded recent window, so inserted helper banks remain
+    visible without dumping the entire file.
+    """
     entries = _declaration_index(path)
     if not entries:
         return []
@@ -96,13 +96,22 @@ def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 3) -
         name = str(entry.get("name", "") or "").strip()
         if name not in {wanted, short_name}:
             continue
-        start = max(0, idx - window)
-        end = min(len(entries), idx + window + 1)
+        start = max(0, idx - max(0, int(window)))
+        target_text = str(entry.get("text", "") or "")
+        referenced = {
+            str(item.get("name", "") or "").strip()
+            for item in entries[:idx]
+            if str(item.get("name", "") or "").strip()
+            and re.search(
+                rf"(?<![\w.]){re.escape(str(item.get('name', '') or '').strip())}(?![\w'])",
+                target_text,
+            )
+        }
         return [
             str(item.get("name", "") or "").strip()
-            for item in entries[start:end]
+            for item_index, item in enumerate(entries[:idx])
             if str(item.get("name", "") or "").strip()
-            and str(item.get("name", "") or "").strip() != name
+            and (item_index >= start or str(item.get("name", "") or "").strip() in referenced)
         ]
     return []
 

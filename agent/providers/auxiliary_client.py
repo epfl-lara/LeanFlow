@@ -27,13 +27,22 @@ AUXILIARY_WEB_EXTRACT_API_KEY) let callers route a specific auxiliary task to a
 custom OpenAI-compatible endpoint without touching the main model settings.
 """
 
+import asyncio
+import inspect
 import logging
 import os
+from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from openai import OpenAI
 
 from core.constants import OPENROUTER_BASE_URL
+from core.provider_capacity import (
+    acquire_background_provider_lease,
+    background_actor_context_active,
+    background_provider_lease,
+)
 from leanflow_cli.runtime.auth import (
     CODEX_AUX_DEFAULT_MODEL,
     CODEX_BASE_URL,
@@ -69,8 +78,30 @@ NOUS_EXTRA_BODY = {"tags": ["product=leanflow-agent"]}
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
 
+# NOTE: no fallback for "orchestration" — its D1 default is the STRONG
+# main-agent model (provider "main", model ""), and a lean_reasoning
+# fallback would silently inherit the advisor model into that slot.
+# planner_synthesis -> orchestration is consistent with that rule: the
+# synthesizer inherits the strong-model default, never the advisor.
+# Keep in sync with TASK_FALLBACKS in leanflow_cli/cli/expert_help.py.
 _AUXILIARY_TASK_FALLBACKS: dict[str, str] = {
     "lean_decompose_helpers": "lean_reasoning",
+    "planner_synthesis": "orchestration",
+    # Fidelity is another short, strict verdict turn. Inherit the strong main
+    # endpoint so RCP can apply the same non-thinking JSON/text-turn controls;
+    # raw `auto` routing does not retain enough provider identity to attach
+    # RCP chat-template kwargs after client auto-detection.
+    "statement_fidelity": "orchestration",
+}
+
+# Orchestration, planner synthesis, and fidelity replies are strict structured
+# turns. On RCP thinking models, the default hidden reasoning can consume the
+# output allowance before any final JSON/text is emitted. Users can opt back
+# into reasoning through each task's AUXILIARY_*_REASONING_EFFORT or config.
+_AUXILIARY_TASK_REASONING_DEFAULTS: dict[str, str] = {
+    "orchestration": "off",
+    "planner_synthesis": "off",
+    "statement_fidelity": "off",
 }
 
 # Default auxiliary models per provider
@@ -78,11 +109,30 @@ _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 # Codex fallback: uses the Responses API (the only endpoint the Codex
-# OAuth token can access) with a fast model for auxiliary tasks.
-# ChatGPT-backed Codex accounts currently reject some newer Codex model slugs
-# for these auxiliary flows, while this default remains broadly available.
+# OAuth token can access). Explicit Codex routes inherit the main runtime's
+# configured model; auto-routing retains this conservative standalone fallback.
 _CODEX_AUX_MODEL = CODEX_AUX_DEFAULT_MODEL
 _CODEX_AUX_BASE_URL = CODEX_BASE_URL
+
+
+def _compatible_explicit_model(provider: str, model: str | None) -> str | None:
+    """Return a provider-compatible explicit model override.
+
+    OpenRouter-style vendor/model slugs are invalid on the ChatGPT Codex
+    Responses endpoint. An all-lanes provider override must fall back to the
+    Codex auxiliary default instead of retaining the old provider's model.
+    """
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_model = str(model or "").strip()
+    if normalized_provider in {"codex", "openai-codex"} and "/" in normalized_model:
+        logger.info(
+            "Dropping incompatible auxiliary model %r for provider %s",
+            normalized_model,
+            normalized_provider,
+        )
+        return None
+    return normalized_model or None
+
 
 # ── Provider client adapters ───────────────────────────────────────────────
 # The OpenAI-client-compatible adapters for Codex (Responses API) and native
@@ -120,16 +170,25 @@ from agent.providers.auxiliary_nous import (  # noqa: E402,F401
 )
 
 
-def _read_codex_access_token() -> str | None:
+def _read_codex_access_token(*, allow_legacy_store: bool | None = None) -> str | None:
     """Read a valid Codex OAuth access token from LeanFlow auth state.
 
     LeanFlow's auth.json is authoritative when present. Legacy ``~/.codex``
     fallback is opt-in to avoid unrelated desktop auth state silently changing
     auxiliary routing and tests.
     """
-    tokens = _read_codex_tokens()
+    tokens = _read_codex_tokens(allow_legacy_store=allow_legacy_store)
     access_token = tokens.get("access_token", "")
     return access_token or None
+
+
+def _explicit_codex_model() -> str:
+    """Return the main Codex runtime model for an explicitly selected Codex lane."""
+    try:
+        runtime = resolve_runtime_provider(requested="codex")
+    except Exception:
+        return _CODEX_AUX_MODEL
+    return str(runtime.get("model", "") or "").strip() or _CODEX_AUX_MODEL
 
 
 def _load_runtime_config() -> dict[str, Any]:
@@ -323,13 +382,20 @@ def _try_custom_endpoint() -> tuple[OpenAI | None, str | None]:
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 
-def _try_codex() -> tuple[Any | None, str | None]:
-    codex_token = _read_codex_access_token()
+def _try_codex(*, allow_legacy_store: bool | None = None) -> tuple[Any | None, str | None]:
+    # Keep the no-argument call shape for the auto-routing patch surface.
+    # Explicit Codex routes pass True and intentionally opt into CLI auth.
+    codex_token = (
+        _read_codex_access_token()
+        if allow_legacy_store is None
+        else _read_codex_access_token(allow_legacy_store=allow_legacy_store)
+    )
     if not codex_token:
         return None, None
-    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
+    codex_model = _explicit_codex_model() if allow_legacy_store else _CODEX_AUX_MODEL
+    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", codex_model)
     real_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
-    return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
+    return CodexAuxiliaryClient(real_client, codex_model), codex_model
 
 
 def _try_anthropic() -> tuple[Any | None, str | None]:
@@ -428,6 +494,10 @@ def _to_async_client(sync_client, model: str):
     async_kwargs = {
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
+        # async_call_llm callers own their retry policy and timeout. Hidden SDK
+        # retries otherwise multiply a bounded web/coach call before control
+        # returns to that caller.
+        "max_retries": 0,
     }
     base_lower = str(sync_client.base_url).lower()
     if "openrouter" in base_lower:
@@ -477,6 +547,7 @@ def resolve_provider_client(
         provider = "openai-codex"
     if provider == "main":
         provider = "custom"
+    model = _compatible_explicit_model(provider, model)
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
@@ -526,18 +597,18 @@ def resolve_provider_client(
         if raw_codex:
             # Return the raw OpenAI client for callers that need direct
             # access to responses.stream() (e.g., the main agent loop).
-            codex_token = _read_codex_access_token()
+            codex_token = _read_codex_access_token(allow_legacy_store=True)
             if not codex_token:
                 logger.warning(
                     "resolve_provider_client: openai-codex requested "
                     "but no Codex OAuth token found (run: codex login)"
                 )
                 return None, None
-            final_model = model or _CODEX_AUX_MODEL
+            final_model = model or _explicit_codex_model()
             raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
-        client, default = _try_codex()
+        client, default = _try_codex(allow_legacy_store=True)
         if client is None:
             logger.warning(
                 "resolve_provider_client: openai-codex requested "
@@ -731,6 +802,14 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 _client_cache: dict[tuple, tuple] = {}
 
 
+@dataclass(frozen=True)
+class AuxiliaryCallIdentity:
+    """Carry the credential-free provider/model identity for one auxiliary call."""
+
+    provider: str
+    model: str
+
+
 def _get_cached_client(
     provider: str,
     model: str = None,
@@ -744,11 +823,16 @@ def _get_cached_client(
     resolution is intentionally resolved fresh each call so auxiliary routing
     cannot be polluted by stale process-global state from earlier tasks/tests.
     """
-    use_cache = bool((base_url or "").strip() or (api_key or "").strip())
+    # Async clients are bound to the event loop that owns their connection
+    # pool. Auxiliary callers commonly use short-lived ``asyncio.run`` loops,
+    # so reusing one across calls both crosses loop boundaries and defers its
+    # destructor until after the owning loop has closed.
+    use_cache = not async_mode and bool((base_url or "").strip() or (api_key or "").strip())
     cache_key = (provider, async_mode, base_url or "", api_key or "")
     if use_cache and cache_key in _client_cache:
         cached_client, cached_default = _client_cache[cache_key]
-        return cached_client, model or cached_default
+        compatible_model = _compatible_explicit_model(provider, model)
+        return cached_client, compatible_model or cached_default
     client, default_model = resolve_provider_client(
         provider,
         model,
@@ -758,7 +842,75 @@ def _get_cached_client(
     )
     if use_cache and client is not None:
         _client_cache[cache_key] = (client, default_model)
-    return client, model or default_model
+    # ``resolve_provider_client`` already applied the explicit override or
+    # rejected it as incompatible. Returning the raw input here would
+    # resurrect a model slug that the provider deliberately replaced.
+    return client, default_model
+
+
+def _canonical_auxiliary_provider(provider: str, client: Any | None) -> str:
+    """Return a stable credential-free provider label for telemetry."""
+    normalized = str(provider or "auto").strip().lower() or "auto"
+    if normalized == "main":
+        return "custom"
+    if normalized == "codex":
+        return "openai-codex"
+    if normalized != "auto":
+        return normalized
+    if isinstance(client, CodexAuxiliaryClient):
+        return "openai-codex"
+    if isinstance(client, AnthropicAuxiliaryClient):
+        return "anthropic"
+
+    base_url = str(getattr(client, "base_url", "") or "").lower()
+    if "openrouter.ai" in base_url:
+        return "openrouter"
+    if "chatgpt.com/backend-api/codex" in base_url:
+        return "openai-codex"
+    if "api.anthropic.com" in base_url:
+        return "anthropic"
+    custom_base = _current_custom_base_url().lower()
+    if custom_base and base_url.rstrip("/") == custom_base.rstrip("/"):
+        return "custom"
+    return "auto"
+
+
+def resolve_auxiliary_call_identity(
+    task: str = None,
+    *,
+    provider: str = None,
+    model: str = None,
+    base_url: str = None,
+    api_key: str = None,
+) -> AuxiliaryCallIdentity:
+    """Resolve only the non-secret provider/model identity for an auxiliary call.
+
+    This performs the same local configuration and client selection as
+    ``call_llm`` without issuing a provider request. It is used after a failed
+    isolated request so telemetry can identify the failing route without
+    serializing endpoints or credentials.
+    """
+    resolved_provider, resolved_model, resolved_base_url, resolved_api_key = (
+        _resolve_task_provider_model(task, provider, model, base_url, api_key)
+    )
+    client, final_model = _get_cached_client(
+        resolved_provider,
+        resolved_model,
+        base_url=resolved_base_url,
+        api_key=resolved_api_key,
+    )
+    effective_provider = resolved_provider
+    if client is None and resolved_provider != "openrouter" and not resolved_base_url:
+        client, final_model = _get_cached_client(
+            "openrouter",
+            resolved_model or _OPENROUTER_MODEL,
+        )
+        if client is not None:
+            effective_provider = "openrouter"
+    return AuxiliaryCallIdentity(
+        provider=_canonical_auxiliary_provider(effective_provider, client),
+        model=str(final_model or resolved_model or "").strip(),
+    )
 
 
 def _resolve_task_provider_model(
@@ -933,9 +1085,19 @@ def _build_call_kwargs(
         custom_base = base_url or _current_custom_base_url()
         if provider in {"custom", "main"} and _is_rcp_base_url(custom_base):
             template_kwargs = dict(merged_extra.get("chat_template_kwargs") or {})
-            template_kwargs["enable_thinking"] = True
+            normalized_effort = str(reasoning_effort).strip().lower()
+            thinking_disabled = normalized_effort in {
+                "off",
+                "none",
+                "disabled",
+                "false",
+            }
+            template_kwargs["enable_thinking"] = not thinking_disabled
             merged_extra["chat_template_kwargs"] = template_kwargs
-            merged_extra["reasoning_effort"] = _map_rcp_reasoning_effort(reasoning_effort)
+            if thinking_disabled:
+                merged_extra.pop("reasoning_effort", None)
+            else:
+                merged_extra["reasoning_effort"] = _map_rcp_reasoning_effort(reasoning_effort)
     if provider == "nous" or auxiliary_is_nous:
         merged_extra.setdefault("tags", []).extend(["product=leanflow-agent"])
     if merged_extra:
@@ -978,7 +1140,7 @@ def _resolve_task_reasoning_effort(task: str = None) -> str | None:
         fallback_value = _task_config_text(fallback_config, "reasoning_effort")
         if fallback_value:
             return fallback_value
-    return None
+    return _AUXILIARY_TASK_REASONING_DEFAULTS.get(str(task or "").strip())
 
 
 def call_llm(
@@ -994,6 +1156,7 @@ def call_llm(
     tools: list = None,
     timeout: float = 30.0,
     extra_body: dict = None,
+    isolate: bool = False,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -1012,6 +1175,9 @@ def call_llm(
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds.
         extra_body: Additional request body fields.
+        isolate: Enforce the timeout in a disposable child process. Use this
+            for synchronous control-plane calls whose provider SDK may outlive
+            its transport timeout.
 
     Returns:
         Response object with .choices[0].message.content
@@ -1019,6 +1185,35 @@ def call_llm(
     Raises:
         RuntimeError: If no provider is configured.
     """
+    if isolate:
+        if tools or extra_body:
+            raise ValueError("isolated auxiliary text calls do not support tools or extra_body")
+        # Import lazily because the isolated worker uses call_llm() for the
+        # actual provider request. The worker does not set isolate=True, so the
+        # child performs exactly one direct SDK call while the parent owns the
+        # hard wall-clock deadline and process-tree cleanup.
+        from agent.providers.isolated_auxiliary import run_isolated_auxiliary_text
+
+        isolated = run_isolated_auxiliary_text(
+            task=task,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            messages=messages,
+            timeout=timeout,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return SimpleNamespace(
+            model=isolated.model,
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=isolated.content),
+                )
+            ],
+        )
+
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key = (
         _resolve_task_provider_model(task, provider, model, base_url, api_key)
     )
@@ -1056,16 +1251,20 @@ def call_llm(
         reasoning_effort=reasoning_effort,
     )
 
-    # Handle max_tokens vs max_completion_tokens retry
-    try:
-        return client.chat.completions.create(**kwargs)
-    except Exception as first_err:
-        err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
-            kwargs.pop("max_tokens", None)
-            kwargs["max_completion_tokens"] = max_tokens
+    # A tool-side helper invoked inside a background actor retains that actor's
+    # lease. Main-thread manager/orchestrator/synthesis calls remain part of
+    # the foreground control plane and must never wait for a long research job.
+    with background_provider_lease(enabled=background_actor_context_active()):
+        # Handle max_tokens vs max_completion_tokens retry under one lease.
+        try:
             return client.chat.completions.create(**kwargs)
-        raise
+        except Exception as first_err:
+            err_str = str(first_err)
+            if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+                kwargs.pop("max_tokens", None)
+                kwargs["max_completion_tokens"] = max_tokens
+                return client.chat.completions.create(**kwargs)
+            raise
 
 
 async def async_call_llm(
@@ -1123,12 +1322,38 @@ async def async_call_llm(
         reasoning_effort=reasoning_effort,
     )
 
+    lease = await asyncio.to_thread(
+        acquire_background_provider_lease,
+        enabled=background_actor_context_active(),
+    )
     try:
-        return await client.chat.completions.create(**kwargs)
-    except Exception as first_err:
-        err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
-            kwargs.pop("max_tokens", None)
-            kwargs["max_completion_tokens"] = max_tokens
+        try:
             return await client.chat.completions.create(**kwargs)
-        raise
+        except Exception as first_err:
+            err_str = str(first_err)
+            if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+                kwargs.pop("max_tokens", None)
+                kwargs["max_completion_tokens"] = max_tokens
+                return await client.chat.completions.create(**kwargs)
+            raise
+    finally:
+        if lease is not None:
+            lease.release()
+        await _close_async_client(client)
+
+
+async def _close_async_client(client: Any) -> None:
+    """Close one uncached async auxiliary client in its owning event loop."""
+    close = getattr(client, "close", None)
+    if not callable(close):
+        close = getattr(client, "aclose", None)
+    if not callable(close):
+        return
+    try:
+        outcome = close()
+        if inspect.isawaitable(outcome):
+            await outcome
+    except Exception:
+        # Cleanup must never replace the response or provider exception that
+        # the caller is already handling.
+        logger.debug("Failed to close async auxiliary client", exc_info=True)

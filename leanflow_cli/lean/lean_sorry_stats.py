@@ -1,21 +1,4 @@
-"""Pure ``sorry``-counting helpers extracted from lean_services (Phase 5).
-
-This module collects the side-effect-free helpers that lean_services uses to count Lean
-``sorry`` placeholders: ``_count_sorries`` reads a single ``.lean`` file and counts ``sorry``
-tokens outside comments/strings, and ``_project_sorry_stats`` walks a project tree and
-aggregates the per-file counts. Each function here is the fixpoint closure under "calls": the
-only non-stdlib callee is ``_strip_comments_and_strings`` (already extracted to
-``lean_attempt_helpers``) and ``_project_sorry_stats``'s only non-stdlib callee is the sibling
-``_count_sorries``. Neither invokes a Lean backend (MCP / REPL / Lake) nor reads
-module-mutable state.
-
-Because this module imports ONLY stdlib (``re``, ``pathlib``) plus ``lean_attempt_helpers``
-(itself stdlib-only) and does NOT import ``lean_services`` or ``native_runner``, re-exporting
-these names back from ``lean_services`` introduces no import cycle. Existing callers keep
-resolving them as ``lean_services.<name>`` unchanged, and tests that monkeypatch
-``lean_services._project_sorry_stats`` still take effect because the in-module caller
-(``lean_inspect``) looks the name up in the ``lean_services`` namespace populated by the shim.
-"""
+"""Count ``sorry`` placeholders in Lean files and project trees."""
 
 from __future__ import annotations
 

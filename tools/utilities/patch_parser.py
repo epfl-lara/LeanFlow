@@ -224,6 +224,38 @@ def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], str | Non
     return operations, None
 
 
+def preview_v4a_update(
+    patch_content: str,
+    current_content: str,
+) -> tuple[str | None, str | None]:
+    """Return the exact in-memory result of one V4A update operation.
+
+    Use the strict hunk matcher so policy preflights can compare semantic source
+    regions without writing the file or accepting a fuzzy relocation. Unknown,
+    multi-file, and non-update patches return an error for the caller to handle
+    conservatively.
+    """
+    from tools.utilities.fuzzy_match import STRICT_CONFIG
+
+    operations, error = parse_v4a_patch(patch_content)
+    if error:
+        return None, error
+    if len(operations) != 1 or operations[0].operation != OperationType.UPDATE:
+        return None, "preview requires exactly one V4A update operation"
+
+    new_content = current_content
+    for hunk in operations[0].hunks:
+        patched, hunk_error, _strategy, _similarity = _apply_hunk(
+            new_content,
+            hunk,
+            STRICT_CONFIG,
+        )
+        if patched is None:
+            return None, hunk_error or "could not apply update hunk"
+        new_content = patched
+    return new_content, None
+
+
 def apply_v4a_operations(
     operations: list[PatchOperation], file_ops: Any, *, strict: bool = False
 ) -> "PatchResult":
@@ -482,15 +514,24 @@ def _anchor_region(content: str, anchor: str) -> tuple[int, int] | None:
 
     The window runs from the anchor to just before the next declaration (or a bounded
     span), so a search/replace within it cannot escape into an unrelated region that
-    happens to hold the same text.
+    happens to hold the same text. Prefer a whole-line match before the legacy
+    substring fallback so an earlier comment or string mentioning the declaration
+    cannot capture a hunk intended for the live declaration.
     """
     lines = content.split("\n")
     anchor_norm = anchor.strip()
-    anchor_line = None
-    for i, line in enumerate(lines):
-        if line.strip() == anchor_norm or (anchor_norm and anchor_norm in line):
-            anchor_line = i
-            break
+    anchor_line = next(
+        (i for i, line in enumerate(lines) if line.strip() == anchor_norm),
+        None,
+    )
+    # Context hints are often intentionally abbreviated (for example
+    # ``@@ def greet @@``), so preserve substring matching only when no exact
+    # source line exists.
+    if anchor_line is None:
+        anchor_line = next(
+            (i for i, line in enumerate(lines) if anchor_norm and anchor_norm in line),
+            None,
+        )
     if anchor_line is None:
         return None
 
@@ -539,6 +580,43 @@ def _apply_hunk(
     if region is not None:
         r_start, r_end = region
         window = content[r_start:r_end]
+        window_exact_hits = _strategy_exact(window, search_pattern)
+        if len(window_exact_hits) == 1:
+            start, end = window_exact_hits[0]
+            new_window = window[:start] + replacement + window[end:]
+            return (
+                content[:r_start] + new_window + content[r_end:],
+                None,
+                "exact",
+                1.0,
+            )
+
+        # An implicit declaration anchor can be a trailing context line when the
+        # edit inserts immediately before that declaration. Its region begins too
+        # late to contain the preceding context, so accept only a unique exact
+        # whole-file match before attempting anchored fuzzy recovery. Explicit
+        # ``@@ hint @@`` anchors remain authoritative and never escape their region.
+        if not hunk.context_hint and not window_exact_hits:
+            whole_file_exact_hits = _strategy_exact(content, search_pattern)
+            if len(whole_file_exact_hits) == 1:
+                start, end = whole_file_exact_hits[0]
+                return (
+                    content[:start] + replacement + content[end:],
+                    None,
+                    "exact",
+                    1.0,
+                )
+            if len(whole_file_exact_hits) > 1:
+                return (
+                    None,
+                    (
+                        f"Found {len(whole_file_exact_hits)} exact matches for the hunk; "
+                        "add an explicit @@ anchor @@ or more context lines to make it unique."
+                    ),
+                    None,
+                    None,
+                )
+
         wm = fuzzy_find_and_replace_ex(window, search_pattern, replacement, config=config)
         if wm.count > 0 and wm.error is None:
             new_content = content[:r_start] + wm.content + content[r_end:]
