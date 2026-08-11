@@ -141,6 +141,31 @@ def test_runtime_provider_codex_env_model_override_wins(monkeypatch, tmp_path):
     assert resolved["reasoning_effort"] == "medium"
 
 
+def test_runtime_provider_codex_reports_explicit_managed_reasoning_effort(monkeypatch, tmp_path):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True)
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "codex-access-token"}}),
+        encoding="utf-8",
+    )
+    (codex_home / "config.toml").write_text(
+        'model = "gpt-5.5"\nmodel_reasoning_effort = "high"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(
+        "leanflow_cli.runtime.runtime_provider.load_config",
+        lambda: {
+            "agent": {"reasoning_effort": "xhigh"},
+            "model": {"default": "gpt-5.5"},
+        },
+    )
+
+    resolved = resolve_runtime_provider(requested="codex")
+
+    assert resolved["reasoning_effort"] == "xhigh"
+
+
 def test_runtime_provider_codex_reports_missing_login():
     with pytest.raises(RuntimeProviderError, match="codex login"):
         resolve_runtime_provider(requested="codex")

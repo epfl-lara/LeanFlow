@@ -62,7 +62,12 @@ class ProviderClientFactory:
         """
         import run_agent  # lazy: avoid import cycle; honor run_agent.OpenAI patch
 
-        client = run_agent.OpenAI(**client_kwargs)
+        # The managed outer loop records and owns every retry. Disable the
+        # SDK's implicit transport retries so one durable api-request maps to
+        # one actual provider attempt.
+        effective_kwargs = dict(client_kwargs)
+        effective_kwargs["max_retries"] = 0
+        client = run_agent.OpenAI(**effective_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
             reason,
@@ -127,7 +132,11 @@ class ProviderClientFactory:
 
         Adds provider-specific ``default_headers`` for OpenRouter / Kimi.
         """
-        client_kwargs: dict = {"api_key": api_key, "base_url": base_url}
+        client_kwargs: dict = {
+            "api_key": api_key,
+            "base_url": base_url,
+            "max_retries": 0,
+        }
         effective_base = base_url.lower()
         if "openrouter" in effective_base:
             client_kwargs["default_headers"] = cls.openrouter_default_headers()
@@ -145,22 +154,28 @@ class ProviderClientFactory:
 
         routed_client, _ = resolve_provider_client(provider or "auto", model=model, raw_codex=True)
         if routed_client is not None:
-            client_kwargs: dict = {
-                "api_key": routed_client.api_key,
-                "base_url": str(routed_client.base_url),
-            }
-            # Preserve any default_headers the router set.
-            default_headers = getattr(routed_client, "_default_headers", None)
-            if default_headers:
-                client_kwargs["default_headers"] = dict(default_headers)
-            return client_kwargs
+            return cls.client_kwargs_from_routed_client(routed_client)
 
         # Final fallback: raw OpenRouter key.
         return {
             "api_key": os.getenv("OPENROUTER_API_KEY", ""),
             "base_url": OPENROUTER_BASE_URL,
             "default_headers": cls.openrouter_default_headers(),
+            "max_retries": 0,
         }
+
+    @staticmethod
+    def client_kwargs_from_routed_client(routed_client: Any) -> dict:
+        """Return retry-safe constructor kwargs from a routed OpenAI client."""
+        client_kwargs: dict = {
+            "api_key": routed_client.api_key,
+            "base_url": str(routed_client.base_url),
+            "max_retries": 0,
+        }
+        default_headers = getattr(routed_client, "_default_headers", None)
+        if default_headers:
+            client_kwargs["default_headers"] = dict(default_headers)
+        return client_kwargs
 
     # ── Anthropic native client ──────────────────────────────────────────────
 

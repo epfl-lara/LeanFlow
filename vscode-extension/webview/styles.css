@@ -1,0 +1,889 @@
+/*
+ * LeanFlow webview styling.
+ *
+ * Everything is expressed in VS Code theme variables so the UI inherits the
+ * user's theme instead of fighting it. No fixed colors, no web fonts.
+ */
+
+:root {
+  --lf-gap: 12px;
+  --lf-radius: 6px;
+  --lf-muted: var(--vscode-descriptionForeground);
+  --lf-accent: var(--vscode-textLink-foreground);
+  --lf-mono: var(--vscode-editor-font-family, ui-monospace, monospace);
+
+  /* Elevation is expressed as a neutral overlay rather than a fixed color, so a
+     surface lifts on a dark theme and recedes on a light one without either
+     needing its own palette. Theme background tokens alone are not enough:
+     several dark themes give the editor and its widgets the same near-black
+     value, which flattens page, nav, and card into one slab. */
+  --lf-lift-1: rgba(127, 127, 127, 0.07);
+  --lf-lift-2: rgba(127, 127, 127, 0.12);
+  --lf-border: rgba(127, 127, 127, 0.24);
+  --lf-border-strong: rgba(127, 127, 127, 0.34);
+  --lf-base: var(--vscode-editor-background, #1f1f1f);
+  --lf-surface: var(--lf-lift-1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  color: var(--vscode-foreground);
+  /* Explicit, not transparent: a transparent body inherits the host's default
+     webview backdrop, which is darker than the editor on several themes. */
+  background: var(--lf-base);
+}
+
+body[data-mode="sidebar"] {
+  background: var(--vscode-sideBar-background, var(--lf-base));
+}
+
+#root {
+  height: 100vh;
+}
+
+/* ------------------------------------------------------------------ layout */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--lf-lift-1);
+  border-bottom: 1px solid var(--lf-border-strong);
+  flex: 0 0 auto;
+}
+
+.app-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.app-title .mark {
+  opacity: 0.85;
+  flex: 0 0 auto;
+}
+
+.app-title .project {
+  color: var(--lf-muted);
+  font-weight: 400;
+}
+
+.app-header .spacer {
+  flex: 1;
+}
+
+.app-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px;
+  background: var(--lf-lift-1);
+  border-right: 1px solid var(--lf-border-strong);
+  flex: 0 0 152px;
+  overflow-y: auto;
+}
+
+.nav button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--lf-radius);
+  background: transparent;
+  color: var(--vscode-foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  opacity: 0.82;
+  transition: background 0.1s ease, opacity 0.1s ease;
+}
+
+.nav button .icon {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+
+.nav button .label {
+  flex: 1;
+}
+
+.nav button:hover {
+  background: var(--vscode-list-hoverBackground);
+  opacity: 1;
+}
+
+.nav button.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+  opacity: 1;
+  font-weight: 600;
+}
+
+.nav button.active .icon {
+  opacity: 1;
+}
+
+/* A hairline rail marks the active view without shouting. */
+.nav button.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--vscode-focusBorder);
+}
+
+.nav .count {
+  font-size: 10.5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px 18px 28px;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lf-gap);
+  padding: 12px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+/* ------------------------------------------------------------------ pieces */
+
+.card {
+  border: 1px solid var(--lf-border);
+  border-radius: var(--lf-radius);
+  background: var(--lf-surface);
+  padding: 13px 15px;
+  margin-bottom: var(--lf-gap);
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.card-title .icon {
+  opacity: 0.6;
+}
+
+.card-subtitle {
+  color: var(--lf-muted);
+  font-size: 12px;
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+.section-heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--lf-muted);
+  margin: 18px 0 8px;
+  font-weight: 600;
+}
+
+.kv-list {
+  border: 1px solid var(--lf-border);
+  border-radius: var(--lf-radius);
+  overflow: hidden;
+}
+
+.kv-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.25fr) minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--lf-border);
+}
+
+.kv-row:last-child {
+  border-bottom: 0;
+}
+
+.kv-row > span {
+  color: var(--lf-muted);
+}
+
+.kv-row code {
+  overflow-wrap: anywhere;
+}
+
+.section-heading:first-child {
+  margin-top: 0;
+}
+
+.grid {
+  display: grid;
+  gap: 10px;
+}
+
+.grid.two {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.grid.three {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.row.tight {
+  gap: 6px;
+}
+
+.spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------------ inputs */
+
+label.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+label.field > span.label {
+  color: var(--lf-muted);
+}
+
+label.field > span.hint {
+  color: var(--lf-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+input[type="text"],
+input[type="number"],
+select,
+textarea {
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-input-border, var(--lf-border));
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  font-size: 12px;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 58px;
+  font-family: var(--lf-mono);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 0;
+}
+
+.check input {
+  margin: 2px 0 0;
+  accent-color: var(--vscode-button-background);
+}
+
+.check .body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.check .body .hint {
+  color: var(--lf-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+button.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+button.btn:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.btn.secondary {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+button.btn.secondary:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+button.btn.ghost {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border-color: var(--lf-border);
+}
+
+button.btn.ghost:hover:not(:disabled) {
+  background: var(--vscode-list-hoverBackground);
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--lf-accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+button.link:hover {
+  text-decoration: underline;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------- chips */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--lf-border);
+  color: var(--lf-muted);
+  white-space: nowrap;
+}
+
+.pill.running {
+  border-color: var(--vscode-charts-blue);
+  color: var(--vscode-charts-blue);
+}
+
+.pill.ok {
+  border-color: var(--vscode-charts-green);
+  color: var(--vscode-charts-green);
+}
+
+.pill.bad {
+  border-color: var(--vscode-charts-red);
+  color: var(--vscode-charts-red);
+}
+
+.pill.warn {
+  border-color: var(--vscode-charts-yellow);
+  color: var(--vscode-charts-yellow);
+}
+
+.pill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.pill.running .dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.tag {
+  font-family: var(--lf-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.12));
+  color: var(--lf-muted);
+}
+
+/* -------------------------------------------------------------- statistics */
+
+/* Cell separation comes from borders rather than a 1px background gap: the
+   surfaces are translucent overlays now, and a gap would let the divider color
+   bleed through every tile. */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  background: var(--lf-lift-1);
+  border: 1px solid var(--lf-border);
+  border-radius: var(--lf-radius);
+  overflow: hidden;
+  margin-bottom: var(--lf-gap);
+}
+
+.stat {
+  padding: 9px 11px;
+  border-right: 1px solid var(--lf-border);
+  border-bottom: 1px solid var(--lf-border);
+}
+
+.stat .k {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--lf-muted);
+}
+
+.stat .v {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.stat .v.small {
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+/* --------------------------------------------------------------- log lines */
+
+.logs {
+  border: 1px solid var(--lf-border);
+  border-radius: var(--lf-radius);
+  overflow: hidden;
+}
+
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--lf-border);
+  background: var(--lf-surface);
+  flex-wrap: wrap;
+}
+
+.log-list {
+  max-height: 62vh;
+  overflow-y: auto;
+  font-family: var(--lf-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: 74px 190px 1fr;
+  gap: 10px;
+  padding: 2px 10px;
+  border-bottom: 1px solid transparent;
+}
+
+.log-line:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.log-line .ts {
+  color: var(--lf-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-line .type {
+  color: var(--lf-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-line .msg {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-line.err .type {
+  color: var(--vscode-charts-red);
+}
+
+.log-line.tool .type {
+  color: var(--vscode-charts-purple, var(--lf-accent));
+}
+
+.log-line.lean .type {
+  color: var(--vscode-charts-green);
+}
+
+pre.raw {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 62vh;
+  overflow: auto;
+  font-family: var(--lf-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--lf-surface);
+  border: 1px solid var(--lf-border);
+  border-radius: var(--lf-radius);
+}
+
+/* ------------------------------------------------------------------ tables */
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+table.data th,
+table.data td {
+  text-align: left;
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--lf-border);
+  vertical-align: top;
+}
+
+table.data th {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--lf-muted);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  /* A sticky header must be opaque, or scrolled rows show through it. This is
+     the one place a translucent lift cannot be used. */
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border-bottom: 1px solid var(--lf-border-strong);
+}
+
+table.data td.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+table.data tr.done td:first-child {
+  border-left: 2px solid var(--vscode-charts-green);
+}
+
+table.data tr.failed td:first-child {
+  border-left: 2px solid var(--vscode-charts-red);
+}
+
+table.data tr.running td:first-child {
+  border-left: 2px solid var(--vscode-charts-blue);
+}
+
+.table-wrap {
+  border: 1px solid var(--lf-border);
+  border-radius: var(--lf-radius);
+  overflow: auto;
+  max-height: 60vh;
+}
+
+/* ------------------------------------------------------------------- knobs */
+
+.knob {
+  display: grid;
+  grid-template-columns: 1fr 158px;
+  gap: 10px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--lf-border);
+  align-items: start;
+}
+
+.knob:last-child {
+  border-bottom: none;
+}
+
+.knob.changed {
+  background: var(--vscode-diffEditor-insertedTextBackground, rgba(80, 200, 120, 0.07));
+}
+
+.knob .name {
+  font-family: var(--lf-mono);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+.knob .summary {
+  color: var(--lf-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  margin-top: 3px;
+}
+
+.knob .control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+}
+
+.knob .default-note {
+  font-size: 10.5px;
+  color: var(--lf-muted);
+  text-align: right;
+}
+
+.knob-group {
+  border: 1px solid var(--lf-border);
+  border-radius: var(--lf-radius);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.knob-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 11px;
+  border: 0;
+  background: var(--lf-surface);
+  color: var(--vscode-foreground);
+  border-bottom: 1px solid var(--lf-border);
+  cursor: pointer;
+  user-select: none;
+  font: inherit;
+  font-weight: 600;
+  font-size: 12px;
+  text-align: left;
+}
+
+.knob-group-header:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+/* ------------------------------------------------------------------ misc */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--lf-muted);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.empty .mark {
+  opacity: 0.28;
+}
+
+/* ---------------------------------------------------------------- progress */
+
+.progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--vscode-progressBar-background, rgba(128, 128, 128, 0.22));
+  opacity: 0.35;
+  overflow: hidden;
+  display: flex;
+}
+
+.progress .seg {
+  height: 100%;
+}
+
+.progress .seg.done {
+  background: var(--vscode-charts-green);
+}
+
+.progress .seg.failed {
+  background: var(--vscode-charts-red);
+}
+
+.progress .seg.unscored {
+  background: var(--vscode-charts-yellow);
+}
+
+.progress .seg.blocked {
+  background: var(--vscode-charts-purple, var(--vscode-charts-yellow));
+}
+
+.progress .seg.running {
+  background: var(--vscode-charts-blue);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 4px 0 10px;
+}
+
+.progress-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--lf-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-legend .swatch {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: baseline;
+}
+
+.notice {
+  padding: 9px 12px;
+  border-radius: var(--lf-radius);
+  border: 1px solid var(--lf-border);
+  border-left-width: 3px;
+  font-size: 12px;
+  line-height: 1.55;
+  margin-bottom: var(--lf-gap);
+}
+
+.notice.info {
+  border-left-color: var(--vscode-charts-blue);
+}
+
+.notice.warn {
+  border-left-color: var(--vscode-charts-yellow);
+}
+
+.notice.error {
+  border-left-color: var(--vscode-charts-red);
+}
+
+.toast-stack .notice {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mono {
+  font-family: var(--lf-mono);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+.muted {
+  color: var(--lf-muted);
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scroll-x {
+  overflow-x: auto;
+}
+
+hr.sep {
+  border: none;
+  border-top: 1px solid var(--lf-border);
+  margin: 14px 0;
+}
+
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --lf-border: var(--vscode-contrastBorder);
+  --lf-border-strong: var(--vscode-contrastBorder);
+  --lf-lift-1: transparent;
+  --lf-lift-2: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

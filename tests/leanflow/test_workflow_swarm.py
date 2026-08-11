@@ -225,11 +225,35 @@ def test_resolve_workflow_request_uses_inline_provider_override(monkeypatch, tmp
 
     assert captured["requested"] == "codex"
     assert plan.workflow.workflow_args == "Main.lean"
+    assert plan.child_env["LEANFLOW_NATIVE_REQUESTED_TARGET"] == "Main.lean"
     assert plan.runtime["provider"] == "openai-codex"
     assert plan.child_env["LEANFLOW_NATIVE_REASONING_EFFORT"] == "xhigh"
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_PROVIDER"] == "codex"
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_MODEL"] == "gpt-5.5"
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_REASONING_EFFORT"] == "xhigh"
+
+
+def test_whole_project_launch_seals_an_empty_requested_target(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_leanflow_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "local",
+            "api_mode": "chat_completions",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "test-key",
+            "model": "model-a",
+        },
+    )
+
+    plan = resolve_workflow_request("/prove", active_cwd=tmp_path, preview=True)
+
+    assert plan.child_env["LEANFLOW_NATIVE_REQUESTED_TARGET"] == ""
 
 
 def test_resolve_clean_room_model_is_scoped_to_one_launch(monkeypatch, tmp_path):
@@ -276,7 +300,7 @@ def test_resolve_clean_room_model_is_scoped_to_one_launch(monkeypatch, tmp_path)
     }
     assert plan.runtime["api_key"] == "glm-key"
     assert plan.child_env["LEANFLOW_NATIVE_MODEL"] == "zai-org/GLM-5.2"
-    assert plan.child_env["CONTEXT_COMPRESSION_MODEL"] == "zai-org/GLM-5.2"
+    assert plan.child_env["LEANFLOW_NATIVE_CONTEXT_COMPRESSION_MODEL"] == "zai-org/GLM-5.2"
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_PROVIDER"] == "custom"
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_BASE_URL"] == "https://rcp.example/v1"
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_API_KEY"] == "glm-key"
@@ -570,7 +594,7 @@ def test_environment_research_keeps_feature_override(monkeypatch, tmp_path):
 
 def test_resolve_workflow_request_passes_configured_api_step_budget(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("AGENT_MAX_TURNS", raising=False)
+    monkeypatch.delenv("LEANFLOW_NATIVE_AGENT_MAX_TURNS", raising=False)
     save_config({"agent": {"max_turns": 145}})
     monkeypatch.setattr(
         workflow_mod,
@@ -591,7 +615,7 @@ def test_resolve_workflow_request_passes_configured_api_step_budget(monkeypatch,
 
     plan = resolve_workflow_request("/autoprove Main.lean", active_cwd=tmp_path)
 
-    assert plan.child_env["AGENT_MAX_TURNS"] == "145"
+    assert plan.child_env["LEANFLOW_NATIVE_AGENT_MAX_TURNS"] == "145"
 
 
 def test_run_workflow_handles_parent_keyboard_interrupt_after_child_exit(monkeypatch, tmp_path):
@@ -690,8 +714,10 @@ def test_resolve_workflow_request_exports_expert_provider_env(monkeypatch, tmp_p
         active_cwd=tmp_path,
     )
 
-    assert plan.child_env["AUXILIARY_LEAN_REASONING_PROVIDER"] == "claude-code"
-    assert plan.child_env["AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] == "claude -p"
+    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_PROVIDER"] == "claude-code"
+    assert (
+        plan.child_env["LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] == "claude -p"
+    )
     assert describe_launch_plan(plan)["expert_provider"] == "claude-code"
 
 
@@ -723,11 +749,19 @@ def test_resolve_workflow_request_exports_verifier_provider_env(monkeypatch, tmp
         active_cwd=tmp_path,
     )
 
-    assert plan.child_env["AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] == "claude-code"
-    assert plan.child_env["AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] == "claude --print"
-    assert plan.child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] == "codex"
     assert (
-        plan.child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] == "codex exec -"
+        plan.child_env["LEANFLOW_NATIVE_AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] == "claude-code"
+    )
+    assert (
+        plan.child_env["LEANFLOW_NATIVE_AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"]
+        == "claude --print"
+    )
+    assert (
+        plan.child_env["LEANFLOW_NATIVE_AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] == "codex"
+    )
+    assert (
+        plan.child_env["LEANFLOW_NATIVE_AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"]
+        == "codex exec -"
     )
     summary = describe_launch_plan(plan)
     assert summary["blueprint_verifier_provider"] == "claude-code"
@@ -952,6 +986,7 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(
     assert plan.toolset_name == "leanflow-native"
     assert plan.formalization_document is not None
     assert plan.child_env["LEANFLOW_FORMALIZATION_DOCUMENT_RELATIVE"] == "docs/paper.tex"
+    assert plan.child_env["LEANFLOW_NATIVE_REQUESTED_TARGET"] == "docs/paper.tex"
     assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == "Demo/Paper/Main.lean"
     assert plan.formalization_document.blueprint_skill_path.is_file()
     assert str(plan.formalization_document.blueprint_skill_path) in plan.additional_skills

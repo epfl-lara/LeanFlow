@@ -576,6 +576,11 @@ def append_journal_event(event: Mapping[str, Any]) -> None:
     if not plan_state_enabled():
         return
     record = {"ts": _now_iso(), **dict(event)}
+    run_id = str(os.getenv("LEANFLOW_WORKFLOW_RUN_ID", "") or "").strip()
+    if run_id:
+        # The journal spans campaigns, so every managed-run record needs an
+        # explicit scope before it can contribute to paper-grade run metrics.
+        record["run_id"] = run_id
     _locked_append(
         plan_state_paths().journal_jsonl,
         json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",

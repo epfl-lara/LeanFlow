@@ -64,6 +64,12 @@ def _clean_env(monkeypatch):
         "AUXILIARY_LEAN_DECOMPOSE_HELPERS_API_KEY",
         "AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT",
         "AUXILIARY_LEAN_DECOMPOSE_HELPERS_COMMAND_TEMPLATE",
+        "LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_PROVIDER",
+        "LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_MODEL",
+        "LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_BASE_URL",
+        "LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_API_KEY",
+        "LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_REASONING_EFFORT",
+        "LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE",
         "LEANFLOW_EXPERT_CODEX_COMMAND_TEMPLATE",
         "LEANFLOW_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE",
         "CONTEXT_COMPRESSION_PROVIDER",
@@ -80,6 +86,13 @@ def _clean_env(monkeypatch):
 def test_codex_provider_drops_openrouter_model_slug():
     assert _compatible_explicit_model("openai-codex", "google/gemini-3-flash-preview") is None
     assert _compatible_explicit_model("openai-codex", "gpt-5.6-sol") == "gpt-5.6-sol"
+
+
+def test_native_auxiliary_task_override_precedes_legacy_env(monkeypatch):
+    monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "openrouter")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
+
+    assert _get_auxiliary_provider("lean_reasoning") == "codex"
 
 
 def test_explicit_codex_provider_allows_cli_auth_store(monkeypatch):
@@ -175,6 +188,51 @@ def test_auxiliary_call_reuses_delegated_actor_capacity(monkeypatch, tmp_path):
         result = call_llm(task="lean_reasoning", messages=[{"role": "user", "content": "x"}])
 
     assert result is response
+
+
+def test_auxiliary_sdk_attempts_are_explicitly_marked_unmetered(monkeypatch):
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+    calls = 0
+
+    def create(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("unsupported_parameter: max_tokens")
+        return response
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    events = []
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._resolve_task_provider_model",
+        lambda *_args, **_kwargs: ("custom", "model", None, "token"),
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._get_cached_client",
+        lambda *_args, **_kwargs: (client, "model"),
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._resolve_task_reasoning_effort",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "agent.providers.auxiliary_client._emit_workflow_event",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+
+    result = call_llm(
+        task="lean_reasoning",
+        messages=[{"role": "user", "content": "x"}],
+        max_tokens=32,
+    )
+
+    assert result is response
+    assert calls == 2
+    assert [event[0][0] for event in events] == [
+        "api-usage-unmetered",
+        "api-usage-unmetered",
+    ]
+    assert [event[1]["provider_attempt"] for event in events] == [1, 2]
 
 
 def test_call_llm_isolate_routes_through_hard_deadline_worker(monkeypatch):
@@ -398,6 +456,7 @@ class TestGetTextAuxiliaryClient:
         mock_openai.assert_called_once()
         call_kwargs = mock_openai.call_args
         assert call_kwargs.kwargs["api_key"] == "or-key"
+        assert call_kwargs.kwargs["max_retries"] == 0
 
     def test_nous_takes_priority_over_codex(self, monkeypatch, codex_auth_dir):
         with (
@@ -436,6 +495,7 @@ class TestGetTextAuxiliaryClient:
         assert model == "task-model"
         assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
         assert mock_openai.call_args.kwargs["api_key"] == "task-key"
+        assert mock_openai.call_args.kwargs["max_retries"] == 0
 
     def test_task_direct_endpoint_without_openai_key_does_not_fall_back(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

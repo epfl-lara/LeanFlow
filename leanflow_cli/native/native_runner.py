@@ -264,6 +264,7 @@ from leanflow_cli.workflows.verification_providers import (
 )
 from leanflow_cli.workflows.workflow_state import (
     _refresh_workflow_live_queue_source,
+    _workflow_run_id,
     append_workflow_activity,
     append_workflow_run_log,
     compact_closed_workflow_activity,
@@ -2064,6 +2065,32 @@ def _finalize_native_run(
     # the derivative or rewriting terminal truth.
     if already_finalized:
         return final_code
+    # Seal research/evaluation evidence only after the authoritative outcome,
+    # runner-exit event, owned writers, and locks have all committed. This is a
+    # derivative: failure must never rewrite the mathematical exit code.
+    try:
+        from leanflow_cli.cli.run_metrics import finalize_run_snapshot
+
+        final_snapshot_outcome = exit_live_state()
+        final_snapshot_outcome.update(
+            {
+                "phase": "exited",
+                "workflow_kind": _workflow_kind(),
+                "workflow_command": _read_native_env("WORKFLOW_COMMAND", "[unset]"),
+                "model": _read_native_env("MODEL"),
+                "provider": _read_native_env("PROVIDER"),
+                "exit_code": final_code,
+                "reason": str(outcome["reason"]),
+            }
+        )
+        finalize_run_snapshot(
+            _workflow_state_root(),
+            run_id=_workflow_run_id(),
+            project_root=Path(_project_root()).expanduser().resolve(),
+            outcome=final_snapshot_outcome,
+        )
+    except Exception as exc:
+        logger.warning("Failed to seal immutable run metrics snapshot: %s", exc)
     try:
         if final_code == EXIT_DISPROVED:
             _maybe_generate_final_report(
@@ -2469,6 +2496,7 @@ def _persist_live_status(
         "updated_at": updated_at,
         "runtime_heartbeat_at": updated_at,
         "phase": resolved_phase,
+        "run_id": _read_text_env("LEANFLOW_WORKFLOW_RUN_ID", ""),
         "workflow_kind": _workflow_kind(),
         "workflow_command": _read_native_env("WORKFLOW_COMMAND", "[unset]"),
         "effective_prompt": _read_native_env(
@@ -6254,7 +6282,7 @@ def _maybe_manager_nudge(
         "feedback_kind": str(manager_check.get("feedback_kind", "") or ""),
         "gate_output": str(manager_check.get("output", "") or manager_check.get("error", "") or ""),
         "api_calls": api_calls,
-        "max_iterations": _read_int_env("AGENT_MAX_TURNS", 0, minimum=0),
+        "max_iterations": _read_int_env("LEANFLOW_NATIVE_AGENT_MAX_TURNS", 0, minimum=0),
         "proved_helpers": _kernel_verified_helpers(target_symbol, active_file),
         "verified_evidence": _kernel_verified_evidence(target_symbol, active_file),
         "assigned_route": str(
@@ -6297,7 +6325,7 @@ def _maybe_manager_nudge(
             stable_cycles=int(autonomy_state.get("continuation_stable_cycles", 0) or 0),
             blocked_runs=int(autonomy_state.get("continuation_blocked_runs", 0) or 0),
             api_calls=int((result or {}).get("api_calls", 0) or 0),
-            max_iterations=_read_int_env("AGENT_MAX_TURNS", 0, minimum=0),
+            max_iterations=_read_int_env("LEANFLOW_NATIVE_AGENT_MAX_TURNS", 0, minimum=0),
             blocker_summary=_extract_blocker_summary(final_text) if final_text else "",
         )
         report = struggle_signals.evaluate(ctx)
@@ -18570,12 +18598,12 @@ def _failed_attempt_turn_key(
     # provider request.
     if reserved_epoch != current_epoch:
         reserved = {}
-    run_id = _read_text_env("LEANFLOW_WORKFLOW_RUN_ID", "").strip()
+    # Initialize the workflow-state run authority before deriving a rate key.
+    # An activity append may otherwise mint the id between two presentations
+    # of the same rejected turn, defeating deduplication under test ordering.
+    run_id = _read_text_env("LEANFLOW_WORKFLOW_RUN_ID", "").strip() or _workflow_run_id()
     campaign_id = str(
-        reserved.get("campaign_id", "")
-        or autonomy_state.get("campaign_id", "")
-        or run_id
-        or f"pid-{os.getpid()}"
+        reserved.get("campaign_id", "") or autonomy_state.get("campaign_id", "") or run_id
     ).strip()
     nonce = int(reserved.get("nonce", 0) or 0)
     nonce_label = str(nonce) if nonce > 0 else "unreserved"
@@ -23610,7 +23638,7 @@ def _build_agent() -> AIAgent:
     api_key = _read_native_env("API_KEY")
     provider = _read_native_env("PROVIDER")
     api_mode = _read_native_env("API_MODE")
-    max_turns_raw = _read_text_env("AGENT_MAX_TURNS", "200")
+    max_turns_raw = _read_native_env("AGENT_MAX_TURNS", "200")
     try:
         max_turns = max(1, int(max_turns_raw))
     except ValueError:
@@ -34789,6 +34817,32 @@ def main() -> int:
         # atomic claim must stop startup loudly instead of leaving an old PID
         # visible while expensive reconciliation continues in the new runner.
         _persist_startup_live_status("starting")
+        try:
+            from leanflow_cli.cli.run_metrics import capture_run_launch_snapshot
+
+            launch_snapshot_created = capture_run_launch_snapshot(
+                _workflow_state_root(),
+                run_id=_workflow_run_id(),
+                project_root=Path(_project_root()).expanduser().resolve(),
+                context={
+                    "workflow_kind": _workflow_kind(),
+                    "workflow_command": _read_native_env("WORKFLOW_COMMAND", "[unset]"),
+                    "model": _read_native_env("MODEL"),
+                    "provider": _read_native_env("PROVIDER"),
+                },
+            )
+            if not launch_snapshot_created:
+                # Reusing a run id can otherwise bind this process to an old
+                # launch envelope. The capture helper persists a collision
+                # marker so research evidence remains permanently non-exact.
+                logger.warning(
+                    "Run id %s already has a launch provenance snapshot; metrics will fail closed",
+                    _workflow_run_id(),
+                )
+        except Exception as exc:
+            # Reproducibility capture is valuable but never a mathematical
+            # authority. Keep the run live and make the missing snapshot loud.
+            logger.warning("Failed to seal launch provenance snapshot: %s", exc)
         with contextlib.suppress(Exception):
             _reconcile_stale_workflow_file_locks()
         _persist_startup_live_status("reconciling")

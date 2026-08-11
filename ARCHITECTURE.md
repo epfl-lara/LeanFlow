@@ -71,6 +71,7 @@ LeanFlow/
 ├── leanflow_skills/      # packaged prompt-time Lean guidance
 ├── leanflow_specs/       # packaged workflow and worker contracts
 ├── evals/                # frozen evaluation harness and adversarial fixtures
+├── vscode-extension/     # editor front end over the CLI's JSON surfaces
 ├── testdata/             # deterministic Lean workflow fixtures
 ├── tests/                # unit, integration, installer, and contract tests
 ├── run_agent.py          # AIAgent compatibility surface and core loop
@@ -159,8 +160,46 @@ tool is reachable through the public registry.
 
 - `main.py` and `cli/` own argument parsing, shell commands, status rendering,
   doctor checks, MCP bootstrap, and expert-help configuration.
+  `cli/flags_command.py` and `cli/runs_command.py` are stable JSON surfaces for
+  external observers; the only mutating run operation is `runs stop`, which
+  delegates to verified process-identity interruption. `cli/run_metrics.py` is
+  the stable metrics facade. `cli/run_stream.py` verifies hot/retained streams
+  and aggregates usage; `cli/run_snapshot.py` seals launch and post-quiescence
+  result artifacts plus a separate corruption-detection digest; and
+  `cli/run_history.py` reconstructs list summaries across hot, final, and
+  retained evidence. They never combine a selected stream with project-global
+  latest state. `cli/run_provenance.py` assembles identities from focused
+  project/source (`run_source_identity.py`), Lean/Lake build configuration
+  (`run_build_identity.py`), runtime/config/skill
+  (`run_runtime_identity.py`), interpreter/import/provider-package identity
+  (`run_python_identity.py`), terminal and ambient-process controls
+  (`run_terminal_identity.py`), digest-only persistent prompt inputs
+  (`run_prompt_identity.py`), and canonical validation
+  (`run_evidence_validation.py`) leaves. Exact metrics
+  require a terminal run stream, matching immutable stream hash/count and exit
+  evidence, a canonical redacted launch-environment digest, and complete
+  content-addressed source, ignored project configuration/guidance, selected
+  skill, LeanFlow/Python runtime, behavior-config, toolchain, and dependency
+  provenance. The digest detects accidental edits but is not a hostile-owner
+  signature. Retained streams go through the strict archive audit; `runs list`
+  also binds hot/final integrity and result-limit truncation, and any missing
+  coverage fails closed. A catalog-free state is complete-empty only when no
+  retained archive, shard, or temporary evidence exists.
+  `runs_command.py` remains the argparse/JSON/terminal facade and scopes and
+  restores any `LEANFLOW_PROJECT_ROOT` it sets for an explicit
+  `--project`, because the module outlives one command inside a test session or
+  a shell.
+- `flags/` declares the `LEANFLOW_*` knob catalog: name, type, default, group,
+  provenance, and whether a knob is worth an ablation. It is descriptive only —
+  no runtime reads it to decide behavior. The `research` profile is derived from
+  `workflows/research_mode.py` rather than restated, and
+  `tests/leanflow/test_flag_catalog.py` fails on a catalogued name no runtime
+  module reads.
 - `workflow.py` resolves workflow requests, providers, toolsets, and the
-  `LEANFLOW_NATIVE_*` child-process environment contract.
+  `LEANFLOW_NATIVE_*` child-process environment contract. `preview=True`
+  resolves the same plan without provisioning side effects (local Loogle warmup,
+  formalization document intake) so `--dry-run` and editor forms can resolve a
+  plan repeatedly; `launch_plan_payload` serializes it with credentials redacted.
 - `runtime/` owns provider credentials/routing, file locks, sandbox execution,
   branding, environment loading, and built-in skill discovery.
 - `lean/` owns diagnostics, goals, declaration inspection, incremental checks,
@@ -212,6 +251,50 @@ tool is reachable through the public registry.
 The larger coordination modules remain intentionally coupled where tests patch
 their module attributes. Extracting behavior from them requires
 characterization tests and an explicit dependency seam first.
+
+## VS Code Extension
+
+`vscode-extension/` is a workspace extension over the public CLI contracts; it
+does not read or reinterpret LeanFlow's persistence files directly:
+
+- `src/core/cli.ts` owns JSON command execution, strict output parsing, and the
+  detached workflow spawn boundary. The host passes only catalogued
+  `LEANFLOW_*` overrides and a minted run id.
+- `src/core/runManager.ts` persists a run record before spawn, binds it to its
+  project root and process identity, and reconciles restored runs only from an
+  exact run-id status or immutable terminal result. A restored run is stopped
+  through `leanflow runs stop`, which revalidates the recorded process.
+- `src/core/runOwnership.ts` is the pure owner-adoption and terminal-state
+  policy. `src/core/runSelection.ts` prevents stopped tracked rows from masking
+  an active project's live status in both the host and browser webview, and
+  identifies verified external owners for bounded live polling.
+  `src/core/projectDiscovery.ts` makes nested-manifest selection explicit and
+  refuses ambiguous parent workspaces; `project.ts` performs the filesystem and
+  symbolic-link checks before adopting that root.
+  `src/core/launchPaths.ts` contains manual target and path-like skill containment
+  checks, including realpath checks for symbolic-link escapes.
+- `src/core/eventBuffer.ts` deduplicates and bounds host-side event tails. When
+  eviction occurs the host sends an explicit reset rather than an append, so a
+  long-running workflow cannot grow the webview's retained stream without
+  bound.
+- `src/core/storageSecurity.ts` contains the realpath and no-symlink checks used
+  for profile reads, writes, replacement, deletion, and path opening.
+- `src/core/experiments.ts`, `experimentIsolation.ts`, and
+  `experimentMatrix.ts` own research sweeps. A sweep freezes its launch request
+  and profile catalog, records a clean Git baseline, randomizes execution order,
+  and runs each condition in a private detached local clone with a private
+  dependency/build tree. The source checkout is never reset or cleaned.
+- `src/core/experimentScoring.ts` accepts only versioned, exact CLI metrics with
+  immutable final evidence. Missing, partial, or mismatched evidence produces
+  an explicit unscored cell; terminal cells are not silently rerun.
+- `src/webview/stats.ts` owns descriptive sample statistics, Student-t intervals,
+  and Welch comparisons. The UI reports absent variance as absent, not zero.
+
+The extension host is the trust boundary. Every webview message is validated at
+runtime before it reaches filesystem or process APIs; modules included in the
+webview bundle may import host types but not host runtime code. Workspace Trust
+and virtual-workspace declarations fail closed because LeanFlow executes the
+workspace's local toolchain and requires a real filesystem checkout.
 
 ## Runtime Contracts
 
@@ -314,6 +397,10 @@ historical state is never assumed current before that reconciliation.
   concatenation; unfamiliar future implementations remain untouched.
   `lean/lean_probe_deadline.py` independently bounds every LeanProbe call and
   terminates owned REPL sessions when IPC stalls.
+- Incremental results label the probe session as `warm`, `cold_initial`, or
+  `cold_rebuild`. Their `leanflow_timing` separates LeanProbe's reported
+  command time from unattributed probe wall time so dependency-side startup
+  omissions remain visible without being mislabeled as theorem checking.
 - Verified graph state is derived from Lean evidence and reconciled after
   source changes.
 - File locks serialize supported writes during user-approved swarm runs.
@@ -323,6 +410,9 @@ historical state is never assumed current before that reconciliation.
   file tools. Bounded, generated summaries are the model-facing interface.
 - Clean-room policy is enforced across web, repository, terminal, and file
   surfaces, including canonical-path and symlink checks.
+- The optional clean-room numeric terminal routes audited inline Python only
+  through the active LeanFlow interpreter; ordinary terminal commands retain
+  their normal executable resolution.
 - Empirical computation runs in a restricted child process with bounded
   resources and no filesystem, process, or network capability.
 

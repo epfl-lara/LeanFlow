@@ -225,6 +225,69 @@ failed-attempt history, research findings, project plans, and outcomes. Safe
 provider or infrastructure pauses checkpoint current source and return a
 resumable status instead of discarding progress.
 
+## Runtime knobs
+
+The runtime reads feature switches and budgets from `LEANFLOW_*` environment
+variables. `leanflow flags` is the catalog of them:
+
+```bash
+leanflow flags list --ablatable        # knobs worth flipping in an experiment
+leanflow flags show LEANFLOW_NEGATION_PROBE
+leanflow flags effective --changed     # what this environment actually sets
+leanflow flags diff default research   # what --research really turns on
+```
+
+Named knob profiles are JSON files under `.leanflow/flag-profiles/` (project) or
+`~/.leanflow/flag-profiles/` (user), listed by `leanflow flags profiles`. Pair
+them with `leanflow workflow --dry-run --json` to see the exact argv and
+environment a run would receive before starting it — which is what makes two
+runs comparable. The catalog also marks which settings are safe for editor
+profiles: path redirection, raw-request capture, secret-redaction controls, and
+approval bypasses remain terminal-only and cannot be injected by the extension.
+
+`leanflow runs` exposes recorded state without requiring consumers to know the
+on-disk layout. `metrics RUN_ID --json` reports only evidence bound to that run:
+the verified activity stream plus a write-once final declaration/outcome and
+launch/final provenance snapshot. A separately sealed digest detects accidental
+edits and storage corruption (it is not a signature against a hostile filesystem
+owner). Exact evidence includes a canonical,
+credential-redacted digest of the effective `LEANFLOW_*` launch environment,
+content-addressed proof source, ignored project manifest/guidance, selected
+skills, LeanFlow runtime, Python/package inventory, behavior configuration, and
+dependency identities, complete Git command evidence, and matching
+`runner-exit`/final-outcome exit codes. Usage reports independent
+API-call, token, and cost completeness; an earlier provider total followed by
+unaccounted usage remains `null`, not a lower bound presented as exact. Provider
+retries, auxiliary calls, command experts, iteration-limit summaries, and
+dispatched child runs are explicitly unmetered until their full usage can be
+bound, so their API/token/cost totals cannot be presented as complete. Missing
+evidence remains explicitly unscored instead of falling back to mutable
+project-wide state. `list --json` strictly audits hot, final, and retained
+history, reports completeness (including limit truncation), and preserves
+`exit_code`, `terminal_phase`, and a stable terminal status for both hot and
+archived runs. A retained stream without terminal evidence is `unknown`, never
+assumed still running. `log RUN_ID` reads that
+run's timestamped console log, while `stop RUN_ID` interrupts only a revalidated
+live process identity. The other observers are `status`, `events`, `journal`,
+`outcomes`, and `types`; `provenance --json` describes the current checkout
+separately from any historical run.
+
+## VS Code extension
+
+[`vscode-extension/`](vscode-extension/README.md) is an editor front end over the
+same CLI: a launcher with a resolved-plan preview, live run state, a filtered
+view of the structured activity stream, a browsable knob catalog with profile
+save/diff, and knob-ablation sweeps. Research cells use private detached clones
+of one clean Git baseline, freeze their profile definitions and randomized
+order, resolve an explicit provider/model before the first paid launch, and
+score only from run-bound final evidence plus a complete source-history audit;
+unverifiable rows remain explicitly unscored. Exports use the
+`evals/harness.append_result` shape.
+
+```bash
+cd vscode-extension && npm install && npm run package
+```
+
 ## Skills and specs
 
 LeanFlow steers the agent with a small curated Lean skill core in `leanflow_skills/` (e.g.

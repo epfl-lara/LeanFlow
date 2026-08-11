@@ -1172,6 +1172,21 @@ def test_hook_model_exception_emits_and_records_one_fallback(monkeypatch):
     assert recorded[0] is not None and recorded[0].raw_status == "fallback"
 
 
+def test_failed_attempt_turn_key_initializes_one_run_identity(monkeypatch):
+    """Activity initialization cannot change a rejected-turn dedup key."""
+    monkeypatch.delenv("LEANFLOW_WORKFLOW_RUN_ID", raising=False)
+    state: dict[str, Any] = {}
+
+    first = runner._failed_attempt_turn_key(state, 1)
+    initialized_run_id = runner.os.environ["LEANFLOW_WORKFLOW_RUN_ID"]
+    second = runner._failed_attempt_turn_key(state, 1)
+
+    assert initialized_run_id
+    assert first == second
+    assert first.startswith(f"{initialized_run_id}:")
+    assert "campaign_id" not in state
+
+
 def test_hook_model_timeout_emits_and_records_one_fallback(monkeypatch):
     monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "live")
     calls: list[dict[str, Any]] = []
@@ -1253,7 +1268,7 @@ def test_hook_recording_exception_does_not_poison_or_duplicate_coach(monkeypatch
 def test_hook_counts_repeated_failure_reasons_and_budget_pressure(monkeypatch):
     """Identical failure reasons and turn-budget pressure both reach the context."""
     monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "dark")
-    monkeypatch.setenv("AGENT_MAX_TURNS", "10")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AGENT_MAX_TURNS", "10")
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
     seen_reports: list = []
     monkeypatch.setattr(

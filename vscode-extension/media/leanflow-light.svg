@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#424242" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Editor-tab variant of leanflow.svg for LIGHT themes. Tab icons render as
+       plain images (no mask, no CSS), so currentColor would resolve to black;
+       the color is fixed to VS Code's light-theme icon foreground instead.
+       Keep the geometry identical to leanflow.svg. -->
+  <path d="M4.6 3.4v17.2" />
+  <path d="M4.6 12h8.2" />
+  <rect x="15" y="8.2" width="7.6" height="7.6" rx="1.2" fill="#424242" stroke="none" />
+</svg>

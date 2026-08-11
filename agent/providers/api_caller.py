@@ -181,6 +181,15 @@ class ApiCaller:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
                 if missing_completed and attempt < max_stream_retries:
+                    _ra()._emit_workflow_event(
+                        "api-usage-unmetered",
+                        "Codex Responses internal stream retry is outside turn accounting",
+                        **_ra()._workflow_agent_event_details(
+                            agent,
+                            reason="codex-responses-stream-retry",
+                            provider_attempt=attempt + 2,
+                        ),
+                    )
                     logger.debug(
                         "Responses stream closed before completion (attempt %s/%s); retrying. %s",
                         attempt + 1,
@@ -205,6 +214,14 @@ class ApiCaller:
         fallback_kwargs = dict(api_kwargs)
         fallback_kwargs["stream"] = True
         fallback_kwargs = agent._preflight_codex_api_kwargs(fallback_kwargs, allow_stream=True)
+        _ra()._emit_workflow_event(
+            "api-usage-unmetered",
+            "Codex Responses create fallback is outside turn accounting",
+            **_ra()._workflow_agent_event_details(
+                agent,
+                reason="codex-responses-create-fallback",
+            ),
+        )
         stream_or_response = active_client.responses.create(**fallback_kwargs)
 
         # Compatibility shim for mocks or providers that still return a concrete response.

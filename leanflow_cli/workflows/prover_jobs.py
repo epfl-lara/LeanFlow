@@ -91,7 +91,7 @@ def build_job_env(spec: JobSpec) -> dict[str, str]:
         "LEANFLOW_WORKFLOW_PARENT_RUN_ID": os.getenv("LEANFLOW_WORKFLOW_RUN_ID", ""),
         "LEANFLOW_DISPATCH_JOB_ID": spec.job_id,
         "LEANFLOW_JOB_LINEAGE": spec.job_id,
-        "AGENT_MAX_TURNS": str(
+        "LEANFLOW_NATIVE_AGENT_MAX_TURNS": str(
             research_mode.scaled_prover_job_turns(max(1, spec.budget.api_steps))
         ),
         # The child's exit path releases locks by owner id — the parent's

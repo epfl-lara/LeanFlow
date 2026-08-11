@@ -119,11 +119,30 @@ ignore = ["F841", "UP035", "UP022", "UP042"]
 python_version = "3.11"
 follow_imports = "silent"
 ignore_missing_imports = true
+no_site_packages = true
 # Incremental gate: ONLY these files are type-checked. The list grows each phase as
 # modules are extracted/cleaned. mypy needs explicit targets — overrides alone do not select.
 files = [
   "core/constants.py",
   "core/filesystem.py",
+  "leanflow_cli/flags/__init__.py",
+  "leanflow_cli/flags/spec.py",
+  "leanflow_cli/flags/catalog.py",
+  "leanflow_cli/flags/resolve.py",
+  "leanflow_cli/cli/flags_command.py",
+  "leanflow_cli/cli/run_build_identity.py",
+  "leanflow_cli/cli/run_evidence_validation.py",
+  "leanflow_cli/cli/run_history.py",
+  "leanflow_cli/cli/run_metrics.py",
+  "leanflow_cli/cli/run_prompt_identity.py",
+  "leanflow_cli/cli/run_provenance.py",
+  "leanflow_cli/cli/run_python_identity.py",
+  "leanflow_cli/cli/run_runtime_identity.py",
+  "leanflow_cli/cli/run_snapshot.py",
+  "leanflow_cli/cli/run_source_identity.py",
+  "leanflow_cli/cli/run_stream.py",
+  "leanflow_cli/cli/run_terminal_identity.py",
+  "leanflow_cli/cli/runs_command.py",
   "core/process_identity.py",
   "core/project_resource_admission.py",
   "core/provider_availability.py",

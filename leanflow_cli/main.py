@@ -30,7 +30,9 @@ from leanflow_cli.cli.cli_handlers import (
 )
 from leanflow_cli.cli.commands import build_workflow_command_set
 from leanflow_cli.cli.doctor import run_doctor
+from leanflow_cli.cli.flags_command import handle_flags, register_flags_parser
 from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp
+from leanflow_cli.cli.runs_command import handle_runs, register_runs_parser
 from leanflow_cli.config import (
     ensure_leanflow_home,
     get_leanflow_home,
@@ -48,6 +50,7 @@ from leanflow_cli.runtime.sandbox_runtime import (
 )
 from leanflow_cli.workflow import (
     describe_launch_plan,
+    launch_plan_payload,
     resolve_workflow_request,
     run_workflow,
 )
@@ -148,8 +151,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override the configured provider for this workflow run",
     )
+    workflow_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Resolve the launch plan and print it without starting the run",
+    )
+    workflow_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="With --dry-run, print the resolved launch plan as JSON",
+    )
     workflow_parser.add_argument("workflow")
     workflow_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    register_flags_parser(subparsers)
+    register_runs_parser(subparsers)
 
     sandbox_parser = subparsers.add_parser(
         "sandbox", help="Run LeanFlow inside an isolated container worktree"
@@ -387,7 +405,10 @@ def main(argv: list[str] | None = None) -> int:
             text = f"{text} {shlex.join(args.args)}"
         try:
             plan = resolve_workflow_request(
-                text, active_cwd=Path.cwd(), requested_provider=args.provider
+                text,
+                active_cwd=Path.cwd(),
+                requested_provider=args.provider,
+                preview=bool(getattr(args, "dry_run", False)),
             )
         except ProjectNotFoundError as exc:
             print(str(exc), file=sys.stderr)
@@ -399,8 +420,20 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(format_runtime_provider_error(exc), file=sys.stderr)
             return 1
+        if getattr(args, "dry_run", False):
+            # A preview must show what the child process would actually receive,
+            # so callers can diff two launches without starting either one.
+            if getattr(args, "json_output", False):
+                _print_json(launch_plan_payload(plan))
+            else:
+                render_workflow_launch(Console(), launch_summary=describe_launch_plan(plan))
+            return 0
         render_workflow_launch(Console(), launch_summary=describe_launch_plan(plan))
         return run_workflow(text, active_cwd=Path.cwd(), requested_provider=args.provider)
+    if args.command == "flags":
+        return handle_flags(args)
+    if args.command == "runs":
+        return handle_runs(args)
     if args.command == "models":
         return _handle_models(args)
     if args.command == "provider":

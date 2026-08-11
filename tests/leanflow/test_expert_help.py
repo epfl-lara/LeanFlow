@@ -70,9 +70,14 @@ def test_regular_codex_expert_remains_command_backed(monkeypatch):
 def test_codex_expert_inherits_workflow_model_and_reasoning(monkeypatch, tmp_path):
     """Bind regular command advisors to the explicit all-lanes runtime."""
     captured = {}
+    activities = []
     monkeypatch.setenv("AUXILIARY_LEAN_DECOMPOSE_HELPERS_MODEL", "gpt-5.6-luna")
     monkeypatch.setenv("AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT", "xhigh")
-    monkeypatch.setattr(expert_help, "record_expert_help_activity", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        expert_help,
+        "record_expert_help_activity",
+        lambda *args, **kwargs: activities.append((args, kwargs)),
+    )
 
     def run(command, **kwargs):
         captured["command"] = command
@@ -98,6 +103,10 @@ def test_codex_expert_inherits_workflow_model_and_reasoning(monkeypatch, tmp_pat
         'model_reasoning_effort="xhigh"',
     ]
     assert result.response == "advisor result"
+    unmetered = [item for item in activities if item[0][0] == "api-usage-unmetered"]
+    assert len(unmetered) == 1
+    assert unmetered[0][1]["reason"] == "command-expert-provider-attempt"
+    assert unmetered[0][1]["mode"] == "command"
 
 
 def test_codex_expert_preserves_explicit_template_runtime(monkeypatch):
