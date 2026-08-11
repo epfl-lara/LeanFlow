@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Turnstile ⊢ closing on a QED square. Three elements, so it survives the
+       24px flat mask VS Code paints activity-bar icons with.
+       Geometry is duplicated in leanflow-light.svg / leanflow-dark.svg (the
+       fixed-color editor-tab variants) and webview/icons.tsx Mark — keep all
+       four in sync. -->
+  <path d="M4.6 3.4v17.2" />
+  <path d="M4.6 12h8.2" />
+  <rect x="15" y="8.2" width="7.6" height="7.6" rx="1.2" fill="currentColor" stroke="none" />
+</svg>

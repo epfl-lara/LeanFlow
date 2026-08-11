@@ -1,0 +1,16 @@
+# Ship only the built bundles and the manifest; sources are on GitHub.
+.vscode/**
+node_modules/**
+src/**
+webview/**
+test/**
+dist/test/**
+esbuild.mjs
+tsconfig.json
+**/*.map
+**/tsconfig.json
+.gitignore
+*.vsix
+# Internal review/verification prompts. They carry local absolute paths and QA
+# process notes, and a new one must not ship just because it has a new name.
+**/*_PROMPT.md
