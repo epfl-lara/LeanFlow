@@ -156,6 +156,24 @@ class TestTakeCheckpoint:
         assert r1 is True
         assert r2 is False  # dedup'd
 
+    def test_force_bypasses_same_turn_dedup_after_source_change(self, mgr, work_dir):
+        assert mgr.ensure_checkpoint(str(work_dir), "before edit") is True
+        first_hash = mgr.list_checkpoints(str(work_dir))[0]["hash"]
+
+        (work_dir / "main.py").write_text("print('verified edit')\n")
+
+        assert mgr.ensure_checkpoint(str(work_dir), "pre-exit", force=True) is True
+        checkpoints = mgr.list_checkpoints(str(work_dir))
+        assert checkpoints[0]["hash"] != first_hash
+        assert checkpoints[0]["reason"] == "pre-exit"
+
+        shadow = _shadow_repo_path(str(work_dir))
+        ok, content, _ = _run_git(
+            ["show", f"{checkpoints[0]['hash']}:main.py"], shadow, str(work_dir)
+        )
+        assert ok is True
+        assert content == "print('verified edit')"
+
     def test_new_turn_resets_dedup(self, mgr, work_dir):
         r1 = mgr.ensure_checkpoint(str(work_dir), "turn 1")
         assert r1 is True
@@ -183,6 +201,89 @@ class TestTakeCheckpoint:
     def test_skip_home_dir(self, mgr):
         r = mgr.ensure_checkpoint(str(Path.home()), "home")
         assert r is False
+
+    def test_excludes_runtime_volume_but_keeps_source_and_resume_state(
+        self, mgr, work_dir, checkpoint_base
+    ):
+        source = work_dir / "Main.lean"
+        source.write_text("theorem demo : True := by trivial\n")
+        state = work_dir / ".leanflow" / "workflow-state"
+        (state / "activity" / "runs").mkdir(parents=True)
+        (state / "dispatch-jobs").mkdir(parents=True)
+        (state / "dispatch-archives").mkdir(parents=True)
+        (work_dir / ".leanflow" / "downloads").mkdir(parents=True)
+        (work_dir / ".leanflow" / "workspace" / "repos").mkdir(parents=True)
+        (state / "activity" / "runs" / "run.jsonl").write_text("x" * 100_000)
+        (state / "outcomes.jsonl").write_text("x" * 100_000)
+        (state / "dispatch-jobs" / "job.result.json").write_text("x" * 100_000)
+        (state / "dispatch-jobs" / "job.log").write_text("x" * 100_000)
+        (state / "dispatch-archives" / "job.json.gz").write_bytes(b"durable archive")
+        (work_dir / ".leanflow" / "downloads" / "paper.pdf").write_bytes(b"x" * 100_000)
+        (work_dir / ".leanflow" / "workspace" / "repos" / "data.bin").write_bytes(b"x" * 100_000)
+        (work_dir / ".leanflow" / "project.yaml").write_text("name: demo\n")
+        (state / "summary.json").write_text('{"campaign": {"status": "running"}}\n')
+        (state / "plan.md").write_text("# Plan\n")
+
+        assert mgr.ensure_checkpoint(str(work_dir), "runtime exclusion") is True
+
+        shadow = _shadow_repo_path(str(work_dir))
+        ok, tracked, _ = _run_git(["ls-tree", "-r", "--name-only", "HEAD"], shadow, str(work_dir))
+        assert ok is True
+        tracked_paths = set(tracked.splitlines())
+        assert "Main.lean" in tracked_paths
+        assert ".leanflow/project.yaml" in tracked_paths
+        assert ".leanflow/workflow-state/summary.json" in tracked_paths
+        assert ".leanflow/workflow-state/plan.md" in tracked_paths
+        assert not any(
+            path.startswith(".leanflow/workflow-state/activity/") for path in tracked_paths
+        )
+        assert ".leanflow/workflow-state/outcomes.jsonl" not in tracked_paths
+        assert not any(
+            path.startswith(".leanflow/workflow-state/dispatch-jobs/") for path in tracked_paths
+        )
+        assert ".leanflow/workflow-state/dispatch-archives/job.json.gz" in tracked_paths
+        assert not any(path.startswith(".leanflow/downloads/") for path in tracked_paths)
+        assert not any(path.startswith(".leanflow/workspace/") for path in tracked_paths)
+
+        archive = state / "dispatch-archives" / "job.json.gz"
+        archive.unlink()
+        checkpoint = mgr.list_checkpoints(str(work_dir))[0]
+        restored = mgr.restore(str(work_dir), checkpoint["hash"])
+        assert restored["success"] is True
+        assert archive.read_bytes() == b"durable archive"
+
+    def test_existing_shadow_repo_untracks_new_runtime_exclusions(
+        self, mgr, work_dir, checkpoint_base
+    ):
+        assert mgr.ensure_checkpoint(str(work_dir), "initial") is True
+        shadow = _shadow_repo_path(str(work_dir))
+        runtime_file = work_dir / ".leanflow" / "workflow-state" / "activity" / "runs" / "old.jsonl"
+        runtime_file.parent.mkdir(parents=True)
+        runtime_file.write_text("legacy activity\n")
+        ok, _, _ = _run_git(
+            ["add", "-f", str(runtime_file.relative_to(work_dir))], shadow, str(work_dir)
+        )
+        assert ok is True
+        ok, _, _ = _run_git(["commit", "-m", "legacy runtime"], shadow, str(work_dir))
+        assert ok is True
+        (shadow / "LEANFLOW_EXCLUDES_VERSION").unlink(missing_ok=True)
+
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("print('source changed')\n")
+        assert mgr.ensure_checkpoint(str(work_dir), "migrate exclusions") is True
+
+        ok, tracked, _ = _run_git(["ls-tree", "-r", "--name-only", "HEAD"], shadow, str(work_dir))
+        assert ok is True
+        assert str(runtime_file.relative_to(work_dir)) not in tracked.splitlines()
+
+    def test_excluded_runtime_tree_does_not_trip_file_count_guard(self, mgr, work_dir, monkeypatch):
+        monkeypatch.setattr("tools.utilities.checkpoint_manager._MAX_FILES", 2)
+        activity = work_dir / ".leanflow" / "workflow-state" / "activity" / "runs"
+        activity.mkdir(parents=True)
+        for index in range(20):
+            (activity / f"run-{index}.jsonl").write_text("runtime\n")
+
+        assert mgr.ensure_checkpoint(str(work_dir), "ignore runtime count") is True
 
 
 # =========================================================================
@@ -220,6 +321,41 @@ class TestListCheckpoints:
         # Most recent first
         assert result[0]["reason"] == "third"
         assert result[2]["reason"] == "first"
+
+    def test_history_is_bounded_packed_and_oldest_retained_snapshot_restores(
+        self, work_dir, checkpoint_base, monkeypatch
+    ):
+        monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        manager = CheckpointManager(enabled=True, max_snapshots=3)
+        for version in range(8):
+            (work_dir / "main.py").write_text(f"version {version}\n")
+            assert manager.ensure_checkpoint(str(work_dir), f"version {version}") is True
+            manager.new_turn()
+
+        checkpoints = manager.list_checkpoints(str(work_dir))
+        assert [entry["reason"] for entry in checkpoints] == [
+            "version 7",
+            "version 6",
+            "version 5",
+        ]
+        shadow = _shadow_repo_path(str(work_dir))
+        ok, count, _ = _run_git(["rev-list", "--count", "HEAD"], shadow, str(work_dir))
+        assert ok is True
+        assert int(count) == 3
+        ok, object_stats, _ = _run_git(["count-objects", "-v"], shadow, str(work_dir))
+        assert ok is True
+        packs = next(
+            int(line.split(":", 1)[1])
+            for line in object_stats.splitlines()
+            if line.startswith("packs:")
+        )
+        assert packs >= 1
+
+        (work_dir / "main.py").write_text("uncheckpointed work\n")
+        result = manager.restore(str(work_dir), checkpoints[-1]["hash"])
+
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "version 5\n"
 
 
 # =========================================================================

@@ -114,6 +114,18 @@ def test_discover_leanflow_project_raises_when_no_lean_root(monkeypatch, tmp_pat
         discover_leanflow_project(not_lean)
 
 
+def test_discovery_skips_ancestor_state_directory_without_manifest(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    ancestor = _make_lean_root(tmp_path / "ancestor")
+    (ancestor / ".leanflow").mkdir()
+    nested = _make_lean_root(ancestor / "nested")
+    initialized = initialize_leanflow_project(nested)
+
+    discovered = discover_leanflow_project(nested / "Demo")
+
+    assert discovered.root == initialized.root
+
+
 def test_initialize_then_discover_produces_equal_project(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     root = _make_lean_root(tmp_path / "proj")

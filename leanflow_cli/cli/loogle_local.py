@@ -1,11 +1,12 @@
-"""Project-toolchain-matched local Loogle: cache resolution, build, and lock.
+"""Project-toolchain-matched local Loogle: build, locking, and lifecycle patches.
 
 lean-lsp-mcp ships Loogle pinned to Loogle's OWN Lean toolchain, but LeanFlow only enables
 local Loogle when that toolchain matches the active project's — which it almost never does,
 so local Loogle stays ``incompatible`` and search silently falls back to remote. This module
 owns the fix: resolve a per-toolchain cache dir, (re)pin Loogle to the project's toolchain and
 build it (under an exclusive lock so concurrent builders never collide), and gate that work
-behind a fast no-build check. The low-level primitives it builds on (``managed_loogle_cache_dir``,
+behind a fast no-build check. It also patches the managed lean-lsp-mcp environment so timed-out
+and completed sessions reap their Loogle subprocess. The low-level primitives it builds on (``managed_loogle_cache_dir``,
 ``local_loogle_supported``, ``_read_lean_toolchain``, …) live in :mod:`leanflow_cli.cli.mcp_bootstrap`;
 the lean-lsp server is pointed at the SAME per-toolchain dir by
 ``tools.mcp.mcp_transport._augment_lean_stdio_env``.
@@ -275,4 +276,71 @@ def patch_lean_lsp_loogle_build_lock(venv_dir: Path) -> bool:
         "            return True\n"
     )
     target.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
+    return True
+
+
+def patch_lean_lsp_loogle_lifecycle(venv_dir: Path) -> bool:
+    """Patch lean-lsp-mcp to reap local Loogle on startup failure and session exit.
+
+    Upstream keeps the local Loogle process in a shared singleton, but its
+    startup-timeout path leaves the subprocess running and the stdio lifespan
+    does not stop a successfully started singleton.  Both paths orphan a large
+    search process after a LeanFlow run exits.  Patch the managed, isolated MCP
+    environment so timeout and lifespan teardown both await ``stop()``.
+    """
+    package_dirs = [
+        *venv_dir.glob("lib/python*/site-packages/lean_lsp_mcp"),
+        venv_dir / "Lib" / "site-packages" / "lean_lsp_mcp",
+    ]
+    package_dir = next((candidate for candidate in package_dirs if candidate.is_dir()), None)
+    if package_dir is None:
+        return False
+
+    loogle_path = package_dir / "loogle.py"
+    server_path = package_dir / "server.py"
+    if not loogle_path.is_file() or not server_path.is_file():
+        return False
+
+    loogle_text = loogle_path.read_text(encoding="utf-8")
+    timeout_marker = "# LeanFlow: reap Loogle after startup timeout"
+    if timeout_marker not in loogle_text:
+        timeout_needle = (
+            "        except asyncio.TimeoutError:\n"
+            '            logger.error("Loogle startup timeout")\n'
+            "            return False\n"
+        )
+        timeout_replacement = (
+            "        except asyncio.TimeoutError:\n"
+            f"            {timeout_marker}\n"
+            '            logger.error("Loogle startup timeout")\n'
+            "            await self.stop()\n"
+            "            return False\n"
+        )
+        if timeout_needle not in loogle_text:
+            return False
+        loogle_text = loogle_text.replace(timeout_needle, timeout_replacement, 1)
+
+    server_text = server_path.read_text(encoding="utf-8")
+    teardown_marker = "# LeanFlow: stop the shared local Loogle with the stdio session"
+    if teardown_marker not in server_text:
+        teardown_needle = (
+            '        logger.info("Session ending — cleaning up per-session resources")\n' "\n"
+        )
+        teardown_replacement = (
+            '        logger.info("Session ending — cleaning up per-session resources")\n'
+            "\n"
+            f"        {teardown_marker}\n"
+            "        if context and context.loogle_manager:\n"
+            "            try:\n"
+            "                await context.loogle_manager.stop()\n"
+            "            except Exception:\n"
+            '                logger.exception("Local Loogle close failed during app_lifespan teardown")\n'
+            "\n"
+        )
+        if teardown_needle not in server_text:
+            return False
+        server_text = server_text.replace(teardown_needle, teardown_replacement, 1)
+
+    loogle_path.write_text(loogle_text, encoding="utf-8")
+    server_path.write_text(server_text, encoding="utf-8")
     return True

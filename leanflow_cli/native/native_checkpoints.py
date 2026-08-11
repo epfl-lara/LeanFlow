@@ -1,33 +1,18 @@
-"""Workflow-state and checkpoint persistence helpers for the native managed runner.
+"""Persist, replay, and roll back native workflow checkpoints.
 
-Extracted verbatim from ``native_runner.py`` (refactor Phase 2). This module owns the
-closed-under-"calls" cluster that reads and writes the on-disk ``.leanflow/workflow-state``
-journal (the ``index.json`` checkpoint list and ``current.json`` pointer) plus the small
-JSON file helpers and the in-memory checkpoint replay/rollback builders.
-
-The cluster is a fixpoint closure under "calls": every moved function's only non-stdlib
-callees are other moved functions or already-extracted modules
-(``native_config._project_root`` / ``_managed_home`` / ``_workflow_kind`` / ``_read_native_env``
-and ``native_utils._message_text``), or ``run_agent.AIAgent`` (used only for the
-``agent._checkpoint_mgr`` attribute, never native_runner state). None of these functions read
-or mutate native_runner module-level state, declare ``global``, or touch the Lean-services /
-queue backends. ``WORKFLOW_CHECKPOINT_PREFIX`` is the only constant in the closure (used by
-``_workflow_replay_message``) and moves with them.
-
-``run_agent`` does not import ``native_runner``, so importing ``AIAgent`` here introduces no
-import cycle, and this module deliberately does NOT import ``native_runner``. The names are
-re-exported from ``native_runner`` for backwards compatibility so every caller and test keeps
-resolving them as ``native_runner.<name>``.
+The helpers maintain the workflow-state journal, checkpoint index, and current
+pointer. ``AIAgent`` is imported only while type checking so persistence remains
+provider- and MCP-independent.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from core.utils import atomic_json_write
 from leanflow_cli.native.native_config import (
     _managed_home,
     _project_root,
@@ -35,7 +20,10 @@ from leanflow_cli.native.native_config import (
     _workflow_kind,
 )
 from leanflow_cli.native.native_utils import _message_text
-from run_agent import AIAgent
+from leanflow_cli.workflows.workflow_json_io import read_json_file
+
+if TYPE_CHECKING:
+    from run_agent import AIAgent
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +43,6 @@ __all__ = [
     "_load_current_checkpoint",
     "_workflow_replay_message",
     "_checkpoint_replay_history",
-    "_resume_plan_from_checkpoint",
-    "_rollback_to_checkpoint",
     "_latest_filesystem_checkpoint_hash",
 ]
 
@@ -90,23 +76,15 @@ def _ensure_workflow_state_root() -> Path:
 
 
 def _read_json_file(path: Path) -> dict[str, Any]:
-    try:
-        if path.is_file():
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                return payload
-    except KeyboardInterrupt:
-        raise
-    except Exception:
-        # Best-effort journal read: keep swallowing any failure (incl. UnicodeDecodeError on a
-        # corrupt file) and return {}, but log at DEBUG so corruption is visible.
-        logger.debug("Failed to read JSON journal file %s", path, exc_info=True)
-    return {}
+    # Shared loud-on-corruption reader: missing/empty files are tolerated ({}),
+    # but a corrupt non-empty checkpoint file raises WorkflowStateCorruptionError
+    # instead of silently dropping resume state.
+    return read_json_file(path)
 
 
 def _write_json_file(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    # Crash-atomic: checkpoint/journal state must never be truncated mid-write.
+    atomic_json_write(path, payload, sort_keys=True)
 
 
 def _load_workflow_index() -> list[dict[str, Any]]:
@@ -197,47 +175,21 @@ def _checkpoint_replay_history(entry: Mapping[str, Any]) -> list[dict[str, Any]]
     return [_workflow_replay_message(summary_text)]
 
 
-def _resume_plan_from_checkpoint(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
-    _write_current_checkpoint(entry)
-    return _checkpoint_replay_history(entry)
-
-
-def _rollback_to_checkpoint(
-    agent: AIAgent, entry: Mapping[str, Any]
-) -> tuple[list[dict[str, Any]], str]:
-    checkpoint_hash = str(entry.get("linked_filesystem_checkpoint", "") or "").strip()
-    if not checkpoint_hash:
-        return (
-            _checkpoint_replay_history(entry),
-            "Checkpoint has no linked filesystem snapshot; only plan state was resumed.",
-        )
-    checkpoint_mgr = getattr(agent, "_checkpoint_mgr", None)
-    if checkpoint_mgr is None or not getattr(checkpoint_mgr, "enabled", False):
-        return (
-            _checkpoint_replay_history(entry),
-            "Filesystem checkpoints are unavailable; only plan state was resumed.",
-        )
-    result = checkpoint_mgr.restore(_project_root(), checkpoint_hash)
-    if not result.get("success"):
-        error = str(result.get("error", "restore failed") or "restore failed")
-        return _checkpoint_replay_history(entry), f"Filesystem rollback failed: {error}"
-    message = (
-        f"Restored filesystem to {result.get('restored_to', checkpoint_hash[:8])} "
-        f"({result.get('reason', 'unknown')})."
-    )
-    return _checkpoint_replay_history(entry), message
-
-
 def _latest_filesystem_checkpoint_hash(
     agent: AIAgent, *, reason: str = "", force: bool = False
 ) -> str:
+    """Return the latest source snapshot hash, forcing current state when requested."""
     checkpoint_mgr = getattr(agent, "_checkpoint_mgr", None)
     if checkpoint_mgr is None or not getattr(checkpoint_mgr, "enabled", False):
         return ""
     working_dir = _project_root()
     if force:
         try:
-            checkpoint_mgr.ensure_checkpoint(working_dir, reason or "workflow checkpoint")
+            checkpoint_mgr.ensure_checkpoint(
+                working_dir,
+                reason or "workflow checkpoint",
+                force=True,
+            )
         except Exception:
             return ""
     try:

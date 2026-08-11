@@ -97,3 +97,22 @@ def test_declaration_diagnostic_feedback_reason_prefers_structured_items(monkeyp
         )
         == ""
     )
+
+
+def test_declaration_diagnostic_feedback_reason_prioritizes_error_over_warning(monkeypatch):
+    monkeypatch.setattr(
+        ldf,
+        "_find_declaration_entry",
+        lambda active_file, label: {"line": 10, "end_line": 14},
+    )
+
+    reason = ldf._declaration_diagnostic_feedback_reason(
+        "Demo/Main.lean",
+        "foo",
+        structured_items=[
+            {"line": 11, "severity": "warning", "message": "deprecated tactic"},
+            {"line": 13, "severity": "error", "message": "type mismatch"},
+        ],
+    )
+
+    assert reason == "error near line 13: type mismatch"

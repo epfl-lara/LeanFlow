@@ -3,7 +3,7 @@ id: sorry-filler-deep
 kind: worker
 title: Sorry Filler Deep
 summary: Strategic deep worker for stubborn theorem queue items that need multi-step restructuring, bounded helper extraction, or repeated search-backed attempts.
-tools: [lean_inspect, lean_search, lean_proof_context, lean_auto_search, lean_verify, lean_axioms]
+tools: [lean_inspect, lean_incremental_check, lean_search, lean_proof_context, lean_auto_search, lean_verify, lean_axioms]
 route_actions: [delegate-sorry-filler-deep]
 ---
 
@@ -24,12 +24,14 @@ Do not use as the default first worker.
 ## Tool Order
 
 1. `lean_inspect`
-2. `lean_search`
-3. `lean_proof_context` for theorem-local statement/proof/context retrieval once ordinary search is exhausted
-4. `lean_auto_search` when deeper automation is justified by proof context or concrete local evidence
-5. bounded restructuring inside the active file
-6. `lean_verify`
-7. `lean_axioms` if the deeper rewrite raises an axiom-risk question
+2. `lean_incremental_check(action=feedback, include_tactics=true)` for exact local proof state
+3. `lean_search`
+4. `lean_proof_context` for theorem-local statement/proof/context retrieval once ordinary search is exhausted
+5. `lean_auto_search` when deeper automation is justified by proof context or concrete local evidence
+6. bounded restructuring inside the active file, checking each meaningful edit with
+   `lean_incremental_check(action=check_target)`
+7. `lean_verify` only for the final or explicit broader gate
+8. `lean_axioms` if the deeper rewrite raises an axiom-risk question
 
 ## Operating Rules
 

@@ -105,7 +105,7 @@ def _web_search_payload() -> tuple[dict[str, Any], list[str]]:
             if function.get("name") == "web_search":
                 description = str(function.get("description", "") or "")
                 break
-        payload["lean_search_guidance"] = "prefer lean_search first" in description
+        payload["lean_search_guidance"] = "prefer lean_search first" in description.lower()
         if not payload["tool_exposed"]:
             issues.append("web_search is not exposed to the model tool registry.")
         if not payload["lean_search_guidance"]:

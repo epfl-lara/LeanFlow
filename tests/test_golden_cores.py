@@ -139,6 +139,7 @@ def test_run_conversation_result_schema(agent):
         "interrupted",
         "partial",
         "exit_reason",
+        "wall_timed_out",
     ):
         assert key in result, f"missing result key: {key}"
     assert result["final_response"] == "answer"

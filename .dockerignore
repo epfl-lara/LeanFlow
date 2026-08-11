@@ -9,6 +9,11 @@
 .tox
 .venv
 .leanflow-venv
+artifacts
+evals
+paper
+testdata
+tests
 **/__pycache__
 **/*.pyc
 **/.lake
@@ -16,5 +21,3 @@
 **/.leanflow/runtime
 **/.leanflow/workflow-state
 node_modules
-testdata/workflow_projects/**/.lake
-testdata/workflow_projects/**/.leanflow/workflow-state

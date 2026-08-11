@@ -1,34 +1,9 @@
-"""Document-formalization workflow helpers for the native managed runner.
+"""Parse formalization blueprints and classify document-workflow phases.
 
-Extracted from ``native_runner.py`` (refactor Phase 2, step 6 — the ``/formalize``
-document-formalization cluster). The ``formalize`` workflow drives an informal source document
-through planning, blueprint drafting, an independent statement/source review, and the handoff to
-the prover. The cleanly-pure, self-contained part of that machinery lives here: the predicates
-that read the live-state snapshot and the workflow env to decide which formalize phase the run is
-in (planner draft, blueprint plan, independent review, organization, prover handoff), plus the
-small text-parsers over the blueprint manifest (manifest labels/blocks, source-inventory entries,
-bullet/field extraction, fidelity-field resolution, checklist parsing).
-
-These helpers depend only on the standard library and on the already-extracted env/config readers
-in ``native_config`` (``_read_text_env``, ``_workflow_kind``) — no ``native_runner`` module-level
-mutable state, Lean services, queue objects, or generated-artifact path helpers. They live here and
-are re-exported from ``native_runner`` for backwards compatibility; the names are referenced within
-that module and by tests, so this module must NOT import ``native_runner`` (that would create a
-circular import). The module-level ``_BLUEPRINT_UNRESOLVED_FIDELITY_RE`` regex (used only by
-``_blueprint_fidelity_field_unresolved``) is moved here with it.
-
-Conservatively left in ``native_runner`` (this wave): the formalize helpers that reach into
-native_runner-only machinery — generated-artifact path/text helpers
-(``_document_formalization_needs_planner_draft``, ``_document_formalization_construction_sorry_issues``,
-``_document_formalization_generated_proof_sorry_count``, ``_document_formalization_review_signature``,
-``_document_formalization_review_due``, ``_document_formalization_organization_prompt``), project-path
-and tool-edit helpers (``_document_formalization_target_path``, ``_document_formalization_pre_tool_guard``),
-the planned-value declaration parser (``_document_formalization_source_declaration_names``,
-``_document_formalization_blueprint_inventory_issues``), the lean-module-name validator
-(``_blueprint_import_plan_imports``), the verifier-decision/advisory helpers
-(``_autoformalizer_advisory_block_issues``, ``_autoformalizer_verification_prompt``), and the big
-``_document_formalization_handoff_verification`` orchestrator (which calls all of the above). Those
-still resolve the names moved here via the re-export.
+The helpers inspect workflow state and blueprint manifests for planning,
+independent review, organization, and prover handoff. They are deliberately
+independent of runner state and remain re-exported from ``native_runner`` for
+compatibility.
 """
 
 from __future__ import annotations

@@ -56,13 +56,62 @@ DEFAULT_EXCLUDES = [
     ".venv/",
     "venv/",
     ".git/",
+    # LeanFlow's source checkpoints protect user edits. Runtime telemetry,
+    # worker artifacts, downloads, and cloned research corpora have their own
+    # persistence lifecycles and can grow by gigabytes during one campaign.
+    ".leanflow/workflow-state/activity/",
+    ".leanflow/workflow-state/activity.jsonl",
+    ".leanflow/workflow-state/outcomes.jsonl",
+    ".leanflow/workflow-state/dispatch-jobs/",
+    ".leanflow/downloads/",
+    ".leanflow/workspace/",
+    ".leanflow/cache/",
 ]
+
+_RUNTIME_EXCLUDE_PATHS = [
+    ".leanflow/workflow-state/activity",
+    ".leanflow/workflow-state/activity.jsonl",
+    ".leanflow/workflow-state/outcomes.jsonl",
+    ".leanflow/workflow-state/dispatch-jobs",
+    ".leanflow/downloads",
+    ".leanflow/workspace",
+    ".leanflow/cache",
+]
+_EXCLUDES_VERSION = "2"
+_EXCLUDES_VERSION_FILE = "LEANFLOW_EXCLUDES_VERSION"
+_PRUNES_SINCE_GC_FILE = "LEANFLOW_PRUNES_SINCE_GC"
 
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, int(os.getenv("LEANFLOW_CHECKPOINT_TIMEOUT", "30"))))
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
+
+_EXCLUDED_DIRECTORY_NAMES = {
+    ".cache",
+    ".git",
+    ".next",
+    ".nuxt",
+    ".pytest_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "venv",
+}
+_EXCLUDED_RUNTIME_DIRECTORIES = {
+    ".leanflow/cache",
+    ".leanflow/downloads",
+    ".leanflow/workflow-state/activity",
+    ".leanflow/workflow-state/dispatch-jobs",
+    ".leanflow/workspace",
+}
+_EXCLUDED_RUNTIME_FILES = {
+    ".leanflow/workflow-state/activity.jsonl",
+    ".leanflow/workflow-state/outcomes.jsonl",
+}
 
 # ---------------------------------------------------------------------------
 # Shadow repo helpers
@@ -135,40 +184,98 @@ def _run_git(
         return False, "", str(exc)
 
 
-def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> str | None:
-    """Initialise shadow repo if needed.  Returns error string or None."""
-    if (shadow_repo / "HEAD").exists():
-        return None
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Replace one shadow-repository control file atomically."""
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
-    shadow_repo.mkdir(parents=True, exist_ok=True)
 
-    ok, _, err = _run_git(["init"], shadow_repo, working_dir)
-    if not ok:
-        return f"Shadow repo init failed: {err}"
-
-    _run_git(["config", "user.email", "leanflow@local"], shadow_repo, working_dir)
-    _run_git(["config", "user.name", "LeanFlow Checkpoint"], shadow_repo, working_dir)
-
+def _refresh_shadow_excludes(shadow_repo: Path, working_dir: str) -> str | None:
+    """Install current exclusions and untrack newly excluded runtime paths."""
     info_dir = shadow_repo / "info"
     info_dir.mkdir(exist_ok=True)
-    (info_dir / "exclude").write_text("\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8")
+    _atomic_write_text(info_dir / "exclude", "\n".join(DEFAULT_EXCLUDES) + "\n")
 
-    (shadow_repo / "LEANFLOW_WORKDIR").write_text(
-        str(Path(working_dir).resolve()) + "\n", encoding="utf-8"
+    version_path = shadow_repo / _EXCLUDES_VERSION_FILE
+    try:
+        current_version = version_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        current_version = ""
+    if current_version == _EXCLUDES_VERSION:
+        return None
+
+    head_ok, _, _ = _run_git(
+        ["rev-parse", "--verify", "HEAD"],
+        shadow_repo,
+        working_dir,
+        allowed_returncodes={128},
     )
+    if head_ok:
+        ok, _, error = _run_git(
+            ["rm", "-r", "--cached", "--ignore-unmatch", "--", *_RUNTIME_EXCLUDE_PATHS],
+            shadow_repo,
+            working_dir,
+            timeout=_GIT_TIMEOUT * 2,
+        )
+        if not ok:
+            return f"Could not migrate checkpoint exclusions: {error}"
 
-    logger.debug("Initialised checkpoint repo at %s for %s", shadow_repo, working_dir)
+    _atomic_write_text(version_path, _EXCLUDES_VERSION + "\n")
     return None
 
 
+def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> str | None:
+    """Initialise shadow repo if needed.  Returns error string or None."""
+    if not (shadow_repo / "HEAD").exists():
+        shadow_repo.mkdir(parents=True, exist_ok=True)
+
+        ok, _, err = _run_git(["init"], shadow_repo, working_dir)
+        if not ok:
+            return f"Shadow repo init failed: {err}"
+
+        _run_git(["config", "user.email", "leanflow@local"], shadow_repo, working_dir)
+        _run_git(["config", "user.name", "LeanFlow Checkpoint"], shadow_repo, working_dir)
+        (shadow_repo / "LEANFLOW_WORKDIR").write_text(
+            str(Path(working_dir).resolve()) + "\n", encoding="utf-8"
+        )
+        logger.debug("Initialised checkpoint repo at %s for %s", shadow_repo, working_dir)
+
+    return _refresh_shadow_excludes(shadow_repo, working_dir)
+
+
 def _dir_file_count(path: str) -> int:
-    """Quick file count estimate (stops early if over _MAX_FILES)."""
+    """Count checkpoint-eligible files, stopping once the safety limit is crossed."""
     count = 0
+    base = Path(path)
     try:
-        for _ in Path(path).rglob("*"):
-            count += 1
-            if count > _MAX_FILES:
-                return count
+        for root, directories, filenames in os.walk(base):
+            relative_root = Path(root).relative_to(base)
+            retained_directories: list[str] = []
+            for directory in directories:
+                relative = relative_root / directory
+                normalized = relative.as_posix()
+                if directory in _EXCLUDED_DIRECTORY_NAMES:
+                    continue
+                if normalized in _EXCLUDED_RUNTIME_DIRECTORIES:
+                    continue
+                retained_directories.append(directory)
+            directories[:] = retained_directories
+
+            for filename in filenames:
+                relative = (relative_root / filename).as_posix()
+                if relative in _EXCLUDED_RUNTIME_FILES:
+                    continue
+                if filename == ".DS_Store" or filename.endswith((".log", ".pyc", ".pyo")):
+                    continue
+                if filename == ".env" or filename.startswith(".env."):
+                    continue
+                count += 1
+                if count > _MAX_FILES:
+                    return count
     except (PermissionError, OSError):
         pass
     return count
@@ -184,8 +291,9 @@ class CheckpointManager:
 
     Designed to be owned by AIAgent.  Call ``new_turn()`` at the start of
     each conversation turn and ``ensure_checkpoint(dir, reason)`` before
-    any file-mutating tool call.  The manager deduplicates so at most one
-    snapshot is taken per directory per turn.
+    any file-mutating tool call.  The manager normally deduplicates to one
+    snapshot per directory per turn; lifecycle boundaries may pass
+    ``force=True`` to capture newer same-turn edits.
 
     Parameters
     ----------
@@ -197,7 +305,7 @@ class CheckpointManager:
 
     def __init__(self, enabled: bool = False, max_snapshots: int = 50):
         self.enabled = enabled
-        self.max_snapshots = max_snapshots
+        self.max_snapshots = max(1, int(max_snapshots))
         self._checkpointed_dirs: set[str] = set()
         self._git_available: bool | None = None  # lazy probe
 
@@ -213,11 +321,15 @@ class CheckpointManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def ensure_checkpoint(self, working_dir: str, reason: str = "auto") -> bool:
-        """Take a checkpoint if enabled and not already done this turn.
+    def ensure_checkpoint(
+        self, working_dir: str, reason: str = "auto", *, force: bool = False
+    ) -> bool:
+        """Take a checkpoint when enabled and eligible.
 
-        Returns True if a checkpoint was taken, False otherwise.
-        Never raises — all errors are silently logged.
+        ``force`` bypasses per-turn deduplication for lifecycle snapshots such
+        as pre-exit checkpoints, while retaining the normal safety, size, and
+        no-filesystem-change checks. Returns whether a new snapshot was taken.
+        Never raises; failures are logged at debug level.
         """
         if not self.enabled:
             return False
@@ -237,8 +349,9 @@ class CheckpointManager:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 
-        # Already checkpointed this turn?
-        if abs_dir in self._checkpointed_dirs:
+        # Ordinary mutation guards snapshot once per turn. Lifecycle boundaries
+        # must still capture a verified edit made after that guard snapshot.
+        if not force and abs_dir in self._checkpointed_dirs:
             return False
 
         self._checkpointed_dirs.add(abs_dir)
@@ -392,7 +505,11 @@ class CheckpointManager:
             }
 
         # Take a checkpoint of current state before restoring (so you can undo the undo)
-        self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
+        self._take(
+            abs_dir,
+            f"pre-rollback snapshot (restoring to {commit_hash[:8]})",
+            prune=False,
+        )
 
         # Restore — full directory or single file
         restore_target = file_path if file_path else "."
@@ -405,6 +522,10 @@ class CheckpointManager:
 
         if not ok:
             return {"success": False, "error": f"Restore failed: {err}", "debug": err or None}
+
+        # Prune only after checkout so the oldest retained hash remains usable
+        # even when the protective pre-rollback snapshot crosses the limit.
+        self._prune(shadow, abs_dir)
 
         # Get info about what was restored
         ok2, reason_out, _ = _run_git(
@@ -465,7 +586,7 @@ class CheckpointManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _take(self, working_dir: str, reason: str) -> bool:
+    def _take(self, working_dir: str, reason: str, *, prune: bool = True) -> bool:
         """Take a snapshot.  Returns True on success."""
         shadow = _shadow_repo_path(working_dir)
 
@@ -517,14 +638,15 @@ class CheckpointManager:
         logger.debug("Checkpoint taken in %s: %s", working_dir, reason)
 
         # Prune old snapshots
-        self._prune(shadow, working_dir)
+        if prune:
+            self._prune(shadow, working_dir)
 
         return True
 
     def _prune(self, shadow_repo: Path, working_dir: str) -> None:
-        """Keep only the last max_snapshots commits via orphan reset."""
+        """Keep recent hashes via a shallow boundary and periodically pack objects."""
         ok, stdout, _ = _run_git(
-            ["rev-list", "--count", "HEAD"],
+            ["rev-list", "--first-parent", "--count", "HEAD"],
             shadow_repo,
             working_dir,
         )
@@ -539,16 +661,90 @@ class CheckpointManager:
         if count <= self.max_snapshots:
             return
 
-        # Get the hash of the commit at the cutoff point
-        ok, cutoff_hash, _ = _run_git(
-            ["rev-list", "--reverse", "HEAD", "--skip=0", "--max-count=1"],
+        ok, retained, _ = _run_git(
+            [
+                "rev-list",
+                "--first-parent",
+                f"--max-count={self.max_snapshots}",
+                "HEAD",
+            ],
             shadow_repo,
             working_dir,
         )
+        retained_hashes = retained.splitlines() if ok else []
+        if len(retained_hashes) != self.max_snapshots:
+            logger.debug(
+                "Checkpoint prune skipped: expected %d retained hashes, got %d",
+                self.max_snapshots,
+                len(retained_hashes),
+            )
+            return
 
-        # For simplicity, we don't actually prune — git's pack mechanism
-        # handles this efficiently, and the objects are small.  The log
-        # listing is already limited by max_snapshots.
-        # Full pruning would require rebase --onto or filter-branch which
-        # is fragile for a background feature.  We just limit the log view.
-        logger.debug("Checkpoint repo has %d commits (limit %d)", count, self.max_snapshots)
+        # The shallow boundary preserves every retained commit hash while
+        # making its older parents unreachable. Unlike rebasing, this keeps
+        # hashes already exposed by list_checkpoints valid.
+        shallow_path = shadow_repo / "shallow"
+        previous_shallow: str | None
+        try:
+            previous_shallow = shallow_path.read_text(encoding="utf-8")
+        except OSError:
+            previous_shallow = None
+        _atomic_write_text(shallow_path, retained_hashes[-1] + "\n")
+
+        verified, bounded_count, _ = _run_git(
+            ["rev-list", "--first-parent", "--count", "HEAD"],
+            shadow_repo,
+            working_dir,
+        )
+        if not verified or bounded_count != str(self.max_snapshots):
+            if previous_shallow is None:
+                shallow_path.unlink(missing_ok=True)
+            else:
+                _atomic_write_text(shallow_path, previous_shallow)
+            logger.error("Checkpoint retention boundary validation failed; restored prior boundary")
+            return
+
+        removed = count - self.max_snapshots
+        gc_counter_path = shadow_repo / _PRUNES_SINCE_GC_FILE
+        try:
+            pending_gc = int(gc_counter_path.read_text(encoding="utf-8").strip() or "0")
+        except (OSError, ValueError):
+            pending_gc = 0
+        pending_gc += removed
+        _atomic_write_text(gc_counter_path, f"{pending_gc}\n")
+        gc_interval = max(5, min(25, self.max_snapshots // 4 or 5))
+        if pending_gc < gc_interval:
+            return
+
+        _run_git(
+            ["reflog", "expire", "--expire=now", "--all"],
+            shadow_repo,
+            working_dir,
+        )
+        # One packing thread and bounded delta windows prevent checkpoint
+        # maintenance from competing with Lean/research workers for RAM.
+        packed, _, _ = _run_git(
+            [
+                "-c",
+                "pack.threads=1",
+                "-c",
+                "pack.windowMemory=16m",
+                "-c",
+                "pack.deltaCacheSize=16m",
+                "-c",
+                "core.bigFileThreshold=1m",
+                "gc",
+                "--prune=now",
+                "--quiet",
+            ],
+            shadow_repo,
+            working_dir,
+            timeout=max(30, min(120, _GIT_TIMEOUT * 2)),
+        )
+        if packed:
+            _atomic_write_text(gc_counter_path, "0\n")
+        logger.debug(
+            "Checkpoint history retained %d commits and packing %s",
+            self.max_snapshots,
+            "completed" if packed else "will retry",
+        )

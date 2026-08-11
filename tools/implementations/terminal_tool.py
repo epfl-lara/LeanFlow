@@ -38,6 +38,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.runtime_modes import scratch_only_dispatch_worker_enabled
+from tools.utilities.repository_research_policy import (
+    repository_command_block_reason,
+    repository_research_disabled,
+    solution_research_command_block_reason,
+    solution_research_disabled,
+)
+from tools.utilities.scratch_terminal_guard import validate_scratch_terminal_command
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -880,6 +889,92 @@ def terminal_tool(
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
+
+        repository_denial = repository_command_block_reason(command)
+        if repository_denial:
+            return json.dumps(
+                {
+                    "output": "",
+                    "exit_code": -1,
+                    "error": repository_denial,
+                    "status": "repository_research_denied",
+                },
+                ensure_ascii=False,
+            )
+        solution_denial = solution_research_command_block_reason(command)
+        if solution_denial:
+            return json.dumps(
+                {
+                    "output": "",
+                    "exit_code": -1,
+                    "error": solution_denial,
+                    "status": "clean_room_solution_research_denied",
+                },
+                ensure_ascii=False,
+            )
+
+        scratch_only = scratch_only_dispatch_worker_enabled()
+        clean_room_active = repository_research_disabled() or solution_research_disabled()
+        # Scratch workers and regular clean-room foreground turns share the
+        # host checkout. Keep both on the same audited, project-confined
+        # diagnostic surface before environment creation. Nonlocal backends
+        # cannot yet enforce sibling-task isolation inside their project mount,
+        # so direct terminal access fails closed there.
+        if scratch_only or clean_room_active:
+            boundary_name = "Scratch-only research" if scratch_only else "Clean-room"
+            status = (
+                "scratch_only_terminal_denied" if scratch_only else "clean_room_terminal_denied"
+            )
+            if env_type != "local":
+                return json.dumps(
+                    {
+                        "output": "",
+                        "exit_code": -1,
+                        "error": (
+                            f"{boundary_name} terminal denied: the audited read-only "
+                            "terminal surface is available only on the local backend. Use "
+                            "read_file/search_files or Lean check tools for this worker."
+                        ),
+                        "status": status,
+                    },
+                    ensure_ascii=False,
+                )
+            if background or pty:
+                return json.dumps(
+                    {
+                        "output": "",
+                        "exit_code": -1,
+                        "error": (
+                            f"{boundary_name} terminal denied: background and PTY "
+                            "commands are outside the bounded read-only diagnostic surface."
+                        ),
+                        "status": status,
+                    },
+                    ensure_ascii=False,
+                )
+            decision = validate_scratch_terminal_command(
+                command,
+                workdir=workdir or str(config.get("cwd", "") or ""),
+                project_root=str(
+                    os.getenv("LEANFLOW_PROJECT_ROOT", "") or config.get("cwd", "") or ""
+                ),
+            )
+            if not decision.allowed:
+                return json.dumps(
+                    {
+                        "output": "",
+                        "exit_code": -1,
+                        "error": (
+                            f"{boundary_name} terminal denied: "
+                            f"{decision.reason}. Use read_file/search_files, Lean check tools, "
+                            "or a read-only diagnostic command."
+                        ),
+                        "status": status,
+                    },
+                    ensure_ascii=False,
+                )
+            command = decision.command or command
+            workdir = decision.workdir or workdir
 
         # Use task_id for environment isolation
         effective_task_id = task_id or "default"

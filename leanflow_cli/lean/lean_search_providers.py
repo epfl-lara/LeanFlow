@@ -1,37 +1,21 @@
-"""Stateless Lean search-provider helpers for lean_services.
+"""Normalize and route stateless Lean search-provider requests.
 
-Extracted verbatim from ``lean_services.py`` (refactor Phase 5 — the search-provider cluster). These
-helpers back the Lean ``lean_search`` fallback chain: they read the LeanExplore backend preference /
-API key / local cache from the environment and filesystem, probe local-backend availability, query the
-remote LeanExplore API, and normalise / shape raw search payloads (nested-result decoding, per-item
-formatting, fragment extraction, model-to-dict coercion) into the ``provider`` / ``match`` records the
-search result surface expects.
-
-They depend only on stdlib (``contextlib``/``importlib``/``io``/``json``/``os``/``re``/``pathlib``/
-``typing``) plus the module-level ``SEARCH_PROVIDER_LABELS`` / ``_LEANEXPLORE_LOCAL_REQUIRED_ENTRIES``
-constants that live here, and they do NOT read or mutate any cross-module state, invoke a Lean backend
-(``_invoke_json_tool`` / ``_run_command``), or touch the warm LeanExplore local service singleton. That
-stateful local-service trio (the ``_LEANEXPLORE_LOCAL_SERVICE`` / ``_LEANEXPLORE_LOCAL_RERANK_DISABLED``
-globals plus ``_leanexplore_local_service`` / ``_leanexplore_local_search``) stays in lean_services so
-its ``global`` rebinds and the tests' ``monkeypatch.setattr(lean_services, ...)`` keep resolving in one
-namespace. ``_rg_search`` also stays because it calls the lean_services-only ``_run_command``.
-
-This module does NOT import lean_services or native_runner, so the re-export shim in lean_services
-introduces no import cycle. ``SEARCH_PROVIDER_LABELS`` is re-exported there because the lean_services
-orchestrators (``lean_search`` / ``probe_capabilities``) still reference it by bare name.
+The helpers configure LeanExplore backends, probe local availability, query
+the remote service, and shape raw results for ``lean_search``. Stateful local
+service management remains in ``lean_services``.
 """
 
 from __future__ import annotations
 
-import contextlib
 import importlib.util
-import io
 import json
 import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from core.runtime_modes import dispatch_worker_enabled, low_memory_mode_enabled
 
 SEARCH_PROVIDER_LABELS = {
     "local_search": "mcp-local-search",
@@ -60,6 +44,15 @@ def _leanexplore_api_key() -> str:
 
 
 def _leanexplore_backend_preference() -> str:
+    if low_memory_mode_enabled():
+        return "off"
+    if dispatch_worker_enabled():
+        # Each worker is already a process-isolated research lane. Loading a
+        # second local FAISS/BM25 service in every lane defeats that isolation's
+        # memory bound; the foreground keeps its full configured backend.
+        value = str(os.getenv("LEANFLOW_DISPATCH_LEANEXPLORE_BACKEND", "off") or "off")
+        value = value.strip().lower()
+        return value if value in {"auto", "local", "api", "off", "disabled"} else "off"
     value = (
         str(
             os.getenv("LEANFLOW_LEANEXPLORE_BACKEND", "")
@@ -70,6 +63,26 @@ def _leanexplore_backend_preference() -> str:
         .lower()
     )
     return value if value in {"auto", "local", "api", "off", "disabled"} else "auto"
+
+
+def _leanexplore_local_rerank_top() -> int:
+    """Return the opt-in local cross-encoder rerank candidate count.
+
+    LeanExplore's Qwen reranker materializes full-vocabulary logits for every
+    token in a candidate batch.  Its historical default of 50 can therefore
+    create multi-gigabyte transient allocations even though LeanFlow only
+    consumes the final-token score.  Hybrid BM25 plus FAISS retrieval remains
+    enabled by default; deployments with sufficient memory can explicitly
+    restore cross-encoder reranking through the environment.
+    """
+    raw = str(os.getenv("LEANFLOW_LEANEXPLORE_RERANK_TOP", "") or "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return max(0, min(value, 50))
 
 
 def _leanexplore_cache_root() -> Path:
@@ -176,23 +189,6 @@ def _model_to_plain_dict(value: Any) -> dict[str, Any]:
 def _is_leanexplore_reranker_load_error(exc: Exception) -> bool:
     message = str(exc)
     return "Cannot copy out of meta tensor" in message and "to_empty()" in message
-
-
-def _leanexplore_local_verbose() -> bool:
-    value = str(
-        os.getenv("LEANFLOW_LEANEXPLORE_VERBOSE", "") or os.getenv("LEANEXPLORE_VERBOSE", "") or ""
-    )
-    return value.strip().lower() in {"1", "true", "yes", "on", "debug"}
-
-
-@contextlib.contextmanager
-def _quiet_leanexplore_local_output():
-    if _leanexplore_local_verbose():
-        yield
-        return
-    sink = io.StringIO()
-    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-        yield
 
 
 def _leanexplore_api_search(query: str, *, limit: int = 10) -> tuple[list[dict[str, Any]], str]:

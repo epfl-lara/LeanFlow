@@ -4,8 +4,10 @@
 from typing import Any
 
 _FILE_TOOLS = ["read_file", "write_file", "patch", "search_files"]
-_WEB_TOOLS = ["web_search", "web_fetch", "web_download"]
+_WEB_TOOLS = ["web_search", "web_fetch", "web_download", "repo_clone"]
+_WEB_RESEARCH_TOOLS = ["web_search", "web_fetch"]
 _TERMINAL_TOOLS = ["terminal"]
+_EMPIRICAL_COMPUTE_TOOLS = ["empirical_compute"]
 _SKILL_TOOLS = ["skills_list", "skill_view"]
 _SESSION_TOOLS = ["session_search"]
 _COORDINATION_TOOLS = ["acquire_file_lock", "release_file_lock", "list_file_locks"]
@@ -25,8 +27,20 @@ _LEAN_TOOLS = [
     "lean_lemma_suggest",
     "lean_outline",
     "apply_verified_patch",
+    "lean_extract_have",
     "lean_reasoning_help",
     "lean_decompose_helpers",
+]
+_LEAN_RESEARCH_TOOLS = [
+    tool
+    for tool in _LEAN_TOOLS
+    if tool
+    not in {
+        "apply_verified_patch",
+        "lean_extract_have",
+        "lean_reasoning_help",
+        "lean_decompose_helpers",
+    }
 ]
 
 _LEANFLOW_CORE_TOOLS = [
@@ -47,6 +61,11 @@ TOOLSETS: dict[str, dict[str, Any]] = {
         "tools": _WEB_TOOLS,
         "includes": [],
     },
+    "web-research": {
+        "description": "Read-only web research without project-state download or clone tools",
+        "tools": _WEB_RESEARCH_TOOLS,
+        "includes": [],
+    },
     "search": {
         "description": "Web search only",
         "tools": _WEB_TOOLS,
@@ -60,6 +79,11 @@ TOOLSETS: dict[str, dict[str, Any]] = {
     "terminal": {
         "description": "Local shell execution",
         "tools": _TERMINAL_TOOLS,
+        "includes": [],
+    },
+    "empirical-compute": {
+        "description": "Process-isolated bounded exact arithmetic for empirical dispatch workers",
+        "tools": _EMPIRICAL_COMPUTE_TOOLS,
         "includes": [],
     },
     "skills": {
@@ -85,6 +109,14 @@ TOOLSETS: dict[str, dict[str, Any]] = {
     "lean": {
         "description": "Native Lean workflow tools",
         "tools": _LEAN_TOOLS,
+        "includes": [],
+    },
+    "lean-research": {
+        "description": (
+            "Read/check-only Lean research tools without shared-file patch authority or "
+            "nested LLM advisors"
+        ),
+        "tools": _LEAN_RESEARCH_TOOLS,
         "includes": [],
     },
     "delegation": {

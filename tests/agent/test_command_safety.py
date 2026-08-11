@@ -15,6 +15,8 @@ def test_is_destructive_command_flags_file_mutators():
     assert command_safety._is_destructive_command("mv a b") is True
     assert command_safety._is_destructive_command("sed -i 's/a/b/' f") is True
     assert command_safety._is_destructive_command("git reset --hard") is True
+    assert command_safety._is_destructive_command("git restore -- Main.lean") is True
+    assert command_safety._is_destructive_command("git switch other-branch") is True
     # Chained after && / ; / || is still detected.
     assert command_safety._is_destructive_command("echo hi && rm file") is True
 

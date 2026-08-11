@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "suites": {
+    "t2": {
+      "description": "Frozen 40-problem Lean 4 capability slice: 20 miniF2F test declarations and 20 PutnamBench A5/A6/B5/B6 declarations.",
+      "cases": [
+        {"id": "minif2f-imo-1969-p2", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1969_p2"},
+        {"id": "minif2f-imo-1983-p6", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1983_p6"},
+        {"id": "minif2f-imo-1977-p6", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1977_p6"},
+        {"id": "minif2f-imo-1960-p2", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1960_p2"},
+        {"id": "minif2f-imosl-2007-a6", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imoshortlist_2007_algebra_p6"},
+        {"id": "minif2f-imo-1963-p5", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1963_p5"},
+        {"id": "minif2f-imo-1997-p5", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1997_p5"},
+        {"id": "minif2f-induction-factorial", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "induction_nfactltnexpnm1ngt3"},
+        {"id": "minif2f-numbertheory-mod8", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "numbertheory_notequiv2i2jasqbsqdiv8"},
+        {"id": "minif2f-imo-1959-p1", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1959_p1"},
+        {"id": "minif2f-induction-cubes", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "induction_sumkexp3eqsumksq"},
+        {"id": "minif2f-numbertheory-exponential", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "numbertheory_fxeq4powxp6powxp9powx_f2powmdvdf2pown"},
+        {"id": "minif2f-imo-1992-p1", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1992_p1"},
+        {"id": "minif2f-imo-1982-p1", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1982_p1"},
+        {"id": "minif2f-induction-power-bound", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "induction_pord1p1on2powklt5on2"},
+        {"id": "minif2f-numbertheory-mersenne", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "numbertheory_2pownm1prime_nprime"},
+        {"id": "minif2f-induction-product", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "induction_prod1p1onk3le3m1onn"},
+        {"id": "minif2f-imo-1981-p6", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1981_p6"},
+        {"id": "minif2f-imo-1962-p2", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "imo_1962_p2"},
+        {"id": "minif2f-irrational-power", "source": "miniF2F", "file": "MiniF2F/Test.lean", "declaration": "algebra_others_exirrpowirrrat"},
+        {"id": "putnam-2019-a5", "source": "PutnamBench", "file": "lean4/src/putnam_2019_a5.lean", "declaration": "putnam_2019_a5"},
+        {"id": "putnam-2019-a6", "source": "PutnamBench", "file": "lean4/src/putnam_2019_a6.lean", "declaration": "putnam_2019_a6"},
+        {"id": "putnam-2019-b5", "source": "PutnamBench", "file": "lean4/src/putnam_2019_b5.lean", "declaration": "putnam_2019_b5"},
+        {"id": "putnam-2019-b6", "source": "PutnamBench", "file": "lean4/src/putnam_2019_b6.lean", "declaration": "putnam_2019_b6"},
+        {"id": "putnam-2020-a5", "source": "PutnamBench", "file": "lean4/src/putnam_2020_a5.lean", "declaration": "putnam_2020_a5"},
+        {"id": "putnam-2020-a6", "source": "PutnamBench", "file": "lean4/src/putnam_2020_a6.lean", "declaration": "putnam_2020_a6"},
+        {"id": "putnam-2020-b5", "source": "PutnamBench", "file": "lean4/src/putnam_2020_b5.lean", "declaration": "putnam_2020_b5"},
+        {"id": "putnam-2020-b6", "source": "PutnamBench", "file": "lean4/src/putnam_2020_b6.lean", "declaration": "putnam_2020_b6"},
+        {"id": "putnam-2021-a5", "source": "PutnamBench", "file": "lean4/src/putnam_2021_a5.lean", "declaration": "putnam_2021_a5"},
+        {"id": "putnam-2021-a6", "source": "PutnamBench", "file": "lean4/src/putnam_2021_a6.lean", "declaration": "putnam_2021_a6"},
+        {"id": "putnam-2021-b4", "source": "PutnamBench", "file": "lean4/src/putnam_2021_b4.lean", "declaration": "putnam_2021_b4"},
+        {"id": "putnam-2021-b5", "source": "PutnamBench", "file": "lean4/src/putnam_2021_b5.lean", "declaration": "putnam_2021_b5"},
+        {"id": "putnam-2022-a5", "source": "PutnamBench", "file": "lean4/src/putnam_2022_a5.lean", "declaration": "putnam_2022_a5"},
+        {"id": "putnam-2022-a6", "source": "PutnamBench", "file": "lean4/src/putnam_2022_a6.lean", "declaration": "putnam_2022_a6"},
+        {"id": "putnam-2022-b5", "source": "PutnamBench", "file": "lean4/src/putnam_2022_b5.lean", "declaration": "putnam_2022_b5"},
+        {"id": "putnam-2022-b6", "source": "PutnamBench", "file": "lean4/src/putnam_2022_b6.lean", "declaration": "putnam_2022_b6"},
+        {"id": "putnam-2023-a5", "source": "PutnamBench", "file": "lean4/src/putnam_2023_a5.lean", "declaration": "putnam_2023_a5"},
+        {"id": "putnam-2023-a6", "source": "PutnamBench", "file": "lean4/src/putnam_2023_a6.lean", "declaration": "putnam_2023_a6"},
+        {"id": "putnam-2023-b5", "source": "PutnamBench", "file": "lean4/src/putnam_2023_b5.lean", "declaration": "putnam_2023_b5"},
+        {"id": "putnam-2023-b6", "source": "PutnamBench", "file": "lean4/src/putnam_2023_b6.lean", "declaration": "putnam_2023_b6"}
+      ]
+    },
+    "t3": {
+      "description": "Ten multi-hour research campaigns, including the local IMOMath3 scope and nine pinned solved Formal Conjectures declarations.",
+      "cases": [
+        {"id": "leanflow-imomath3", "source": "LeanFlow", "file": "testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath3.lean", "declaration": "*"},
+        {"id": "formal-conjectures-erdos-865-k2", "source": "FormalConjectures", "file": "FormalConjectures/ErdosProblems/865.lean", "declaration": "erdos_865.variants.k2"},
+        {"id": "formal-conjectures-erdos-535-upper", "source": "FormalConjectures", "file": "FormalConjectures/ErdosProblems/535.lean", "declaration": "erdos_535.variants.erdos_upper_bound"},
+        {"id": "formal-conjectures-erdos-470-density", "source": "FormalConjectures", "file": "FormalConjectures/ErdosProblems/470.lean", "declaration": "erdos_470.variants.weird_pos_density"},
+        {"id": "formal-conjectures-erdos-889-v0", "source": "FormalConjectures", "file": "FormalConjectures/ErdosProblems/889.lean", "declaration": "erdos_889.variants.v0_gt_1"},
+        {"id": "formal-conjectures-erdos-1107-two", "source": "FormalConjectures", "file": "FormalConjectures/ErdosProblems/1107.lean", "declaration": "erdos_1107.variants.two"},
+        {"id": "formal-conjectures-erdos-1-lb", "source": "FormalConjectures", "file": "FormalConjectures/ErdosProblems/1.lean", "declaration": "erdos_1.variants.lb"},
+        {"id": "formal-conjectures-erdos-427", "source": "FormalConjectures", "file": "FormalConjectures/ErdosProblems/427.lean", "declaration": "erdos_427"},
+        {"id": "formal-conjectures-erdos-124-zero", "source": "FormalConjectures", "file": "FormalConjectures/ErdosProblems/124.lean", "declaration": "erdos124.zero"},
+        {"id": "formal-conjectures-erdos-962-lower", "source": "FormalConjectures", "file": "FormalConjectures/ErdosProblems/962.lean", "declaration": "erdos_962.variants.tang_lower_bound"}
+      ]
+    },
+    "adversarial": {
+      "description": "Local fixtures for false leaves, false decompositions, vacuity, and nonstandard-axiom temptation.",
+      "cases": [
+        {"id": "false-lemma", "source": "LeanFlow", "file": "evals/fixtures/adversarial/false_lemma.lean", "declaration": "adversarial_false_lemma"},
+        {"id": "false-decomposition", "source": "LeanFlow", "file": "evals/fixtures/adversarial/false_decomposition.lean", "declaration": "adversarial_true_goal"},
+        {"id": "vacuous-statement", "source": "LeanFlow", "file": "evals/fixtures/adversarial/vacuous_statement.lean", "declaration": "adversarial_vacuous_statement"},
+        {"id": "axiom-temptation", "source": "LeanFlow", "file": "evals/fixtures/adversarial/axiom_temptation.lean", "declaration": "adversarial_axiom_temptation"}
+      ]
+    }
+  },
+  "sources": {
+    "miniF2F": {"repo": "https://github.com/google-deepmind/miniF2F.git", "revision": "f0a20e14c1eeccd859d51bb4c2b3ee487889c303"},
+    "PutnamBench": {"repo": "https://github.com/trishullab/PutnamBench.git", "revision": "a23d8e6d4e9e3418fd78f76de7bfcb9414cbfd39"},
+    "FormalConjectures": {"repo": "https://github.com/google-deepmind/formal-conjectures.git", "revision": "7a41db3d761324599812d6ca6cb6a9f311046dc7", "tag": "bench-v1-lean4.27.0"},
+    "LeanFlow": {"repo": ".", "revision": "workspace"}
+  }
+}

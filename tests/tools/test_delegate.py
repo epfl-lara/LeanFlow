@@ -11,15 +11,19 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import sys
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+from core.constants import WORKFLOW_STEP_BOUNDARY_INTERRUPT
 from tools.implementations.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
     MAX_CONCURRENT_CHILDREN,
     MAX_DEPTH,
     _build_child_system_prompt,
+    _format_task_completion_line,
     _resolve_delegation_credentials,
     _strip_blocked_tools,
     check_delegate_requirements,
@@ -173,6 +177,113 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][1]["summary"], "Result B")
         self.assertIn("total_duration_seconds", result)
 
+    def test_completion_line_distinguishes_deferred_interrupted_and_failed(self):
+        common = {
+            "task_index": 0,
+            "task_count": 2,
+            "label": "Research exact target",
+            "duration_seconds": 0,
+        }
+
+        completed = _format_task_completion_line(status="completed", **common)
+        deferred = _format_task_completion_line(status="capacity-deferred", **common)
+        interrupted = _format_task_completion_line(status="interrupted", **common)
+        failed = _format_task_completion_line(status="error", **common)
+
+        self.assertTrue(completed.startswith("✓ [1/2]"))
+        self.assertTrue(deferred.startswith("↻ [1/2]"))
+        self.assertIn("capacity deferred; retry later", deferred)
+        self.assertNotIn("✗", deferred)
+        self.assertTrue(interrupted.startswith("⏸ [1/2]"))
+        self.assertIn("interrupted", interrupted)
+        self.assertTrue(failed.startswith("✗ [1/2]"))
+        self.assertIn("error", failed)
+
+    @patch("tools.implementations.delegate_tool._run_single_child")
+    def test_batch_spinner_does_not_render_capacity_deferral_as_failure(self, mock_run):
+        def result_for_task(**kwargs):
+            task_index = kwargs["task_index"]
+            status = "capacity-deferred" if task_index == 0 else "error"
+            return {
+                "task_index": task_index,
+                "status": status,
+                "summary": None,
+                "api_calls": 0,
+                "duration_seconds": 0,
+            }
+
+        mock_run.side_effect = result_for_task
+        parent = _make_mock_parent()
+        spinner = MagicMock()
+        parent._delegate_spinner = spinner
+
+        delegate_task(
+            tasks=[
+                {"goal": "Research exact target"},
+                {"goal": "Trigger a real failure"},
+            ],
+            parent_agent=parent,
+        )
+
+        lines = [call.args[0] for call in spinner.print_above.call_args_list]
+        deferred = next(line for line in lines if "Research exact target" in line)
+        failed = next(line for line in lines if "Trigger a real failure" in line)
+        self.assertIn("capacity deferred; retry later", deferred)
+        self.assertNotIn("✗", deferred)
+        self.assertTrue(failed.startswith("✗"))
+
+    @patch("tools.implementations.delegate_tool._run_single_child")
+    def test_internal_task_preflight_is_forwarded_only_to_its_child(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+        callback = MagicMock()
+
+        delegate_task(
+            tasks=[
+                {"goal": "ordinary"},
+                {"goal": "empirical", "_pre_tool_call_callback": callback},
+            ],
+            parent_agent=parent,
+        )
+
+        calls_by_goal = {call.kwargs["goal"]: call for call in mock_run.call_args_list}
+        self.assertIsNone(calls_by_goal["ordinary"].kwargs["pre_tool_call_callback"])
+        self.assertIs(calls_by_goal["empirical"].kwargs["pre_tool_call_callback"], callback)
+
+    @patch("tools.implementations.delegate_tool._run_single_child")
+    def test_internal_empirical_mode_and_iteration_limit_are_index_scoped(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+
+        delegate_task(
+            tasks=[
+                {"goal": "ordinary", "_empirical_compute_enabled": True},
+                {"goal": "empirical"},
+            ],
+            max_iterations=48,
+            empirical_task_indexes=frozenset({1}),
+            task_iteration_limits={1: 8},
+            parent_agent=parent,
+        )
+
+        calls_by_goal = {call.kwargs["goal"]: call for call in mock_run.call_args_list}
+        self.assertFalse(calls_by_goal["ordinary"].kwargs["empirical_compute"])
+        self.assertEqual(calls_by_goal["ordinary"].kwargs["max_iterations"], 48)
+        self.assertTrue(calls_by_goal["empirical"].kwargs["empirical_compute"])
+        self.assertEqual(calls_by_goal["empirical"].kwargs["max_iterations"], 8)
+
     @patch("tools.implementations.delegate_tool._run_single_child")
     def test_batch_capped_at_3(self, mock_run):
         mock_run.return_value = {
@@ -288,6 +399,206 @@ class TestDelegateTask(unittest.TestCase):
 
 class TestDelegateObservability(unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""
+
+    def test_quiet_child_does_not_replace_process_output_streams(self):
+        parent = _make_mock_parent(depth=0)
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-test"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+
+            def run_conversation(**_kwargs):
+                self.assertIs(sys.stdout, original_stdout)
+                self.assertIs(sys.stderr, original_stderr)
+                self.assertIs(mock_child._suppress_spinners, True)
+                return {
+                    "final_response": "done",
+                    "completed": True,
+                    "api_calls": 1,
+                }
+
+            mock_child.run_conversation.side_effect = run_conversation
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="quiet child", parent_agent=parent))
+
+        self.assertEqual(result["results"][0]["status"], "completed")
+        self.assertIs(sys.stdout, original_stdout)
+        self.assertIs(sys.stderr, original_stderr)
+
+    def test_child_summary_is_bounded_with_audit_identity(self):
+        from tools.implementations import delegate_tool
+
+        parent = _make_mock_parent(depth=0)
+        full_summary = "x" * (delegate_tool.DELEGATE_SUMMARY_MAX_CHARS + 500)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-test"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": full_summary,
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="large summary", parent_agent=parent))
+
+        entry = result["results"][0]
+        self.assertEqual(entry["status"], "completed")
+        self.assertTrue(entry["summary_truncated"])
+        self.assertEqual(entry["summary_original_chars"], len(full_summary))
+        self.assertEqual(len(entry["summary_sha256"]), 64)
+        self.assertLess(len(entry["summary"]), len(full_summary))
+
+    def test_internal_task_wall_timeout_is_forwarded(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.implementations.delegate_tool._run_single_child") as run_child:
+            run_child.return_value = {
+                "task_index": 0,
+                "status": "wall-timeout",
+                "summary": None,
+                "api_calls": 1,
+                "duration_seconds": 10,
+            }
+            delegate_task(
+                tasks=[{"goal": "bounded lane", "_wall_timeout_s": 600}],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(run_child.call_args.kwargs["wall_timeout_s"], 600)
+
+    def test_dispatch_observer_receives_exact_tool_result_despite_hook_failures(self):
+        parent = _make_mock_parent(depth=0)
+        managed = MagicMock(side_effect=RuntimeError("telemetry failed"))
+        parent._managed_delegated_post_tool_result_callback = managed
+        arguments = {
+            "action": "check_helper",
+            "theorem_id": "demo",
+            "file_path": "/tmp/Main.lean",
+            "replacement": "private lemma demo_helper : True := by\n  trivial",
+        }
+        raw_result = json.dumps(
+            {
+                "success": True,
+                "ok": True,
+                "action": "check_helper",
+                "valid_without_sorry": True,
+            }
+        )
+        observed = []
+
+        def observe(name, args, result):
+            observed.append((name, args, result))
+            raise RuntimeError("collector telemetry failed")
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-test"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+
+            def run_conversation(**_kwargs):
+                callback = MockAgent.call_args.kwargs["post_tool_result_callback"]
+                callback("lean_incremental_check", arguments, raw_result)
+                return {
+                    "final_response": "done",
+                    "completed": True,
+                    "api_calls": 1,
+                }
+
+            mock_child.run_conversation.side_effect = run_conversation
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    goal="Check one helper",
+                    parent_agent=parent,
+                    post_tool_result_callback=observe,
+                )
+            )
+
+        self.assertEqual(result["results"][0]["status"], "completed")
+        self.assertEqual(
+            observed,
+            [("lean_incremental_check", arguments, raw_result)],
+        )
+        managed.assert_called_once_with(
+            mock_child,
+            "lean_incremental_check",
+            arguments,
+            raw_result,
+        )
+
+    def test_reports_effective_child_tools_after_runtime_filtering(self):
+        parent = _make_mock_parent(depth=0)
+        reporter = MagicMock()
+        parent._delegated_tool_availability_reporter = reporter
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.valid_tool_names = {
+                "lean_incremental_check",
+                "lean_search",
+                "web_search",
+            }
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Audit one route",
+                toolsets=["lean-research", "web"],
+                parent_agent=parent,
+            )
+
+        reporter.assert_called_once_with(
+            requested_toolsets=["lean-research", "web"],
+            effective_tool_names=[
+                "lean_incremental_check",
+                "lean_search",
+                "web_search",
+            ],
+        )
+
+    def test_provider_reset_metadata_crosses_child_boundary(self):
+        """A failed child returns bounded reset authority to its parent."""
+        parent = _make_mock_parent(depth=0)
+        deadline = int(time.time()) + 600
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-test"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "",
+                "completed": False,
+                "api_calls": 1,
+                "error": "Codex usage limit reached",
+                "provider_retry_after": {
+                    "kind": "usage_limit_reached",
+                    "retry_after_seconds": 600,
+                    "unavailable_until_epoch": deadline,
+                },
+            }
+            MockAgent.return_value = mock_child
+
+            payload = json.loads(delegate_task(goal="Research one route", parent_agent=parent))
+
+        entry = payload["results"][0]
+        self.assertEqual(entry["provider_retry_after"]["unavailable_until_epoch"], deadline)
+        self.assertTrue(entry["provider_globally_unavailable"])
+        self.assertTrue(entry["provider_retries_exhausted"])
 
     def test_observability_fields_present(self):
         """Completed child should return tool_trace, tokens, model, exit_reason."""
@@ -453,6 +764,133 @@ class TestDelegateObservability(unittest.TestCase):
 
             result = json.loads(delegate_task(goal="Test interrupt", parent_agent=parent))
             self.assertEqual(result["results"][0]["exit_reason"], "interrupted")
+            self.assertNotIn("interrupted_handoff", result["results"][0])
+
+    def test_step_boundary_interrupt_preserves_substantive_tool_evidence(self):
+        """A managed route boundary must not discard completed research evidence."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-test"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "",
+                "completed": False,
+                "interrupted": True,
+                "interrupt_message": WORKFLOW_STEP_BOUNDARY_INTERRUPT,
+                "api_calls": 12,
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "codex_reasoning_items": [
+                            {
+                                "encrypted_content": "must-not-cross-the-handoff",
+                                "summary": [
+                                    {
+                                        "type": "summary_text",
+                                        "text": (
+                                            "The residue class suggests a factor-pair "
+                                            "construction."
+                                        ),
+                                    }
+                                ],
+                            }
+                        ],
+                        "tool_calls": [
+                            {
+                                "id": "lean-1",
+                                "function": {
+                                    "name": "lean_proof_context",
+                                    "arguments": json.dumps(
+                                        {"theorem_id": ("erdos_242_residual_mod_seven_eq_five")}
+                                    ),
+                                },
+                            },
+                            {
+                                "id": "terminal-1",
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": '{"cmd":"env"}',
+                                },
+                            },
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "lean-1",
+                        "content": json.dumps(
+                            {
+                                "statement": "n % 7 = 5 -> exists x y z, ...",
+                                "nearby_helpers": ["erdos_242_factor_pair_certificate"],
+                            }
+                        ),
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "terminal-1",
+                        "content": "API_TOKEN=must-not-cross-the-handoff",
+                    },
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Research the route", parent_agent=parent))
+            entry = result["results"][0]
+
+            self.assertEqual(entry["status"], "interrupted")
+            handoff = entry["interrupted_handoff"]
+            self.assertEqual(handoff["kind"], "managed_search_route_boundary")
+            self.assertEqual(handoff["completed_tool_calls"], 1)
+            self.assertEqual(handoff["evidence"][0]["tool"], "lean_proof_context")
+            self.assertIn("factor_pair_certificate", handoff["evidence"][0]["result_excerpt"])
+            self.assertNotIn("API_TOKEN", json.dumps(handoff))
+            self.assertNotIn("encrypted_content", json.dumps(handoff))
+            self.assertIn("factor-pair construction", handoff["reasoning"][0])
+
+    def test_step_boundary_with_empty_search_results_is_not_promoted(self):
+        """A boundary with request metadata only remains an ordinary interruption."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-test"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "",
+                "completed": False,
+                "interrupted": True,
+                "interrupt_message": WORKFLOW_STEP_BOUNDARY_INTERRUPT,
+                "api_calls": 12,
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "search-1",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"missing route"}',
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "search-1",
+                        "content": (
+                            '{"success":true,"query":"missing route",' '"data":{"web":[]}}'
+                        ),
+                    },
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Research the route", parent_agent=parent))
+
+            self.assertNotIn("interrupted_handoff", result["results"][0])
 
     def test_exit_reason_max_iterations(self):
         """Child that didn't complete and wasn't interrupted hit max_iterations."""

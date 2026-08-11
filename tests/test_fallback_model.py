@@ -93,6 +93,11 @@ class TestTryActivateFallback:
             assert agent.provider == "openrouter"
             assert agent.api_mode == "chat_completions"
             assert agent.client is mock_client
+            assert agent.context_compressor.main_model == "anthropic/claude-sonnet-4"
+            assert agent.context_compressor.main_provider == "openrouter"
+            assert agent.context_compressor.main_api_mode == "chat_completions"
+            assert agent.context_compressor.base_url == "https://openrouter.ai/api/v1"
+            assert agent.context_compressor.api_key == "sk-or-fallback-key"
 
     def test_activates_zai_fallback(self):
         agent = _make_agent(

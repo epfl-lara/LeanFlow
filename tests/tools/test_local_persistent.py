@@ -59,6 +59,14 @@ class TestLocalOneShotRegression:
         assert r["returncode"] == 42
         env.cleanup()
 
+    def test_heredoc_terminator_stays_on_its_own_line(self):
+        env = LocalEnvironment(persistent=False)
+        command = "python3 - <<'PY'\nprint('heredoc-ok')\nPY"
+        r = env.execute(command)
+        assert r["returncode"] == 0
+        assert r["output"].strip() == "heredoc-ok"
+        env.cleanup()
+
     def test_state_does_not_persist(self):
         env = LocalEnvironment(persistent=False)
         env.execute("export LEANFLOW_ONESHOT_LOCAL=yes")

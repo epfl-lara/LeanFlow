@@ -8,7 +8,6 @@ description: Native diagnostics/review/doctor entry. Use structured capability, 
 Primary specs:
 
 - `leanflow_specs/workflows/review.md`
-- `leanflow_specs/workflows/checkpoint.md`
 - `leanflow_specs/workflows/doctor.md`
 - `leanflow_specs/workflows/search.md`
 

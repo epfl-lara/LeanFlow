@@ -17,7 +17,10 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # leanflow_cli/lean/X.py -> repo root
 SPEC_ROOT = REPO_ROOT / "leanflow_specs"
-VALID_SPEC_KINDS = {"workflow", "worker", "helper"}
+VALID_SPEC_KINDS = {"workflow", "worker", "helper", "phase"}
+
+#: Actors that may consume a workflow-phase fragment.
+KNOWN_PHASE_CONSUMERS = ("orchestrator", "planner", "decomposer", "prover")
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,9 @@ class LeanSpecRecord:
     review_actions: tuple[str, ...] = ()
     stop_conditions: tuple[str, ...] = ()
     route_actions: tuple[str, ...] = ()
+    consumed_by: tuple[str, ...] = ()
+    deliverable_schema: str = ""
+    phases: tuple[str, ...] = ()
     path: Path = field(default_factory=Path)
     content: str = ""
 
@@ -49,6 +55,9 @@ class LeanSpecRecord:
             "review_actions": list(self.review_actions),
             "stop_conditions": list(self.stop_conditions),
             "route_actions": list(self.route_actions),
+            "consumed_by": list(self.consumed_by),
+            "deliverable_schema": self.deliverable_schema,
+            "phases": list(self.phases),
             "path": str(self.path),
         }
 
@@ -84,6 +93,22 @@ def _normalize_many(value: Any) -> tuple[str, ...]:
     return ()
 
 
+def _normalize_schema(value: Any) -> str:
+    """Canonical text for a ``deliverable_schema`` frontmatter value.
+
+    Accepts either a YAML mapping (dumped back canonically) or a literal
+    block string; anything else is empty (the validator flags it).
+    """
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    try:
+        return yaml.safe_dump(value, sort_keys=True).strip()
+    except Exception:
+        return ""
+
+
 def _load_spec(path: Path) -> LeanSpecRecord:
     raw = path.read_text(encoding="utf-8")
     meta, body = _split_frontmatter(raw)
@@ -111,6 +136,9 @@ def _load_spec(path: Path) -> LeanSpecRecord:
         review_actions=_normalize_many(meta.get("review_actions")),
         stop_conditions=_normalize_many(meta.get("stop_conditions")),
         route_actions=_normalize_many(meta.get("route_actions")),
+        consumed_by=_normalize_many(meta.get("consumed_by")),
+        deliverable_schema=_normalize_schema(meta.get("deliverable_schema")),
+        phases=_normalize_many(meta.get("phases")),
         path=path,
         content=body,
     )
@@ -123,8 +151,32 @@ def load_lean_specs() -> dict[str, LeanSpecRecord]:
         if any(part.startswith(".") for part in path.relative_to(SPEC_ROOT).parts):
             continue
         record = _load_spec(path)
+        previous = specs.get(record.spec_id)
+        if previous is not None:
+            # A silently-shadowing later file would make one spec vanish
+            # (e.g. phases/search.md eclipsing workflows/search.md) —
+            # loudly refuse instead.
+            raise ValueError(
+                f"Duplicate Lean spec id {record.spec_id!r}: {previous.path} and {path}"
+            )
         specs[record.spec_id] = record
     return specs
+
+
+def phase_fragment_text(spec_id: str, *, include_schema: bool = True) -> str:
+    """Return phase-fragment prompt text, or ``""`` when unavailable.
+
+    ``include_schema=False`` embeds the BODY only — for prompts whose own
+    reply contract must not compete with the fragment's deliverable schema
+    (the fragment is POLICY there, not the reply shape).
+    """
+    record = get_lean_spec(spec_id)
+    if record is None or record.kind != "phase" or not record.content.strip():
+        return ""
+    parts = [f"[PHASE SPEC: {record.spec_id}]", record.content.strip()]
+    if include_schema and record.deliverable_schema:
+        parts += ["", "Deliverable schema (YAML):", record.deliverable_schema]
+    return "\n".join(parts)
 
 
 def get_lean_spec(spec_id: str) -> LeanSpecRecord | None:
@@ -171,4 +223,23 @@ def validate_lean_specs() -> list[str]:
             for worker in record.workers:
                 if worker not in worker_ids:
                     errors.append(f"{record.spec_id}: unknown worker {worker!r}")
+        for phase_id in record.phases:
+            linked = specs.get(phase_id)
+            if linked is None or linked.kind != "phase":
+                errors.append(f"{record.spec_id}: unknown phase fragment {phase_id!r}")
+        if record.kind == "phase":
+            if not record.consumed_by:
+                errors.append(f"{record.spec_id}: phase fragment declares no consumed_by")
+            for consumer in record.consumed_by:
+                if consumer not in KNOWN_PHASE_CONSUMERS:
+                    errors.append(f"{record.spec_id}: unknown phase consumer {consumer!r}")
+            if not record.deliverable_schema:
+                errors.append(f"{record.spec_id}: phase fragment declares no deliverable_schema")
+            else:
+                try:
+                    parsed = yaml.safe_load(record.deliverable_schema)
+                    if not isinstance(parsed, dict):
+                        errors.append(f"{record.spec_id}: deliverable_schema is not a mapping")
+                except Exception:
+                    errors.append(f"{record.spec_id}: deliverable_schema is not valid YAML")
     return errors

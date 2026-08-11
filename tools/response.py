@@ -4,8 +4,7 @@ Tool handlers return a JSON string to the agent. The dominant convention across 
 ``json.dumps(payload, ensure_ascii=False)`` for success and
 ``json.dumps({"error": str(e)}, ensure_ascii=False)`` for failure (36+ call sites). These
 helpers centralize that convention so the ``ensure_ascii`` setting and error shape live in one
-place. Additive in Phase 1; call sites are migrated incrementally as each tool file is touched
-(Phase 5). Behavior matches the existing inline pattern exactly.
+place.
 """
 
 from __future__ import annotations

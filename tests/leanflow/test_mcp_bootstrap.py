@@ -181,6 +181,48 @@ def test_patch_lean_lsp_loogle_build_lock_is_valid_and_idempotent(tmp_path):
     assert (pkg / "loogle.py").read_text(encoding="utf-8") == patched
 
 
+def test_patch_lean_lsp_loogle_lifecycle_is_valid_and_idempotent(tmp_path):
+    import ast
+
+    pkg = tmp_path / "lib" / "python3.12" / "site-packages" / "lean_lsp_mcp"
+    pkg.mkdir(parents=True)
+    loogle_path = pkg / "loogle.py"
+    loogle_path.write_text(
+        "import asyncio\n"
+        "class LocalLoogle:\n"
+        "    async def start(self):\n"
+        "        try:\n"
+        "            await self.ready()\n"
+        "        except asyncio.TimeoutError:\n"
+        '            logger.error("Loogle startup timeout")\n'
+        "            return False\n",
+        encoding="utf-8",
+    )
+    server_path = pkg / "server.py"
+    server_path.write_text(
+        "async def app_lifespan():\n"
+        "    try:\n"
+        "        yield\n"
+        "    finally:\n"
+        '        logger.info("Session ending — cleaning up per-session resources")\n'
+        "\n"
+        "        cleanup()\n",
+        encoding="utf-8",
+    )
+
+    assert loogle_local.patch_lean_lsp_loogle_lifecycle(tmp_path) is True
+    patched_loogle = loogle_path.read_text(encoding="utf-8")
+    patched_server = server_path.read_text(encoding="utf-8")
+    ast.parse(patched_loogle)
+    ast.parse(patched_server)
+    assert "await self.stop()" in patched_loogle
+    assert "await context.loogle_manager.stop()" in patched_server
+
+    assert loogle_local.patch_lean_lsp_loogle_lifecycle(tmp_path) is True
+    assert loogle_path.read_text(encoding="utf-8") == patched_loogle
+    assert server_path.read_text(encoding="utf-8") == patched_server
+
+
 def test_bootstrap_patches_lean_lsp_loogle_project_paths(tmp_path):
     venv = tmp_path / "venv"
     package_dir = venv / "lib" / "python3.11" / "site-packages" / "lean_lsp_mcp"
@@ -200,6 +242,24 @@ def test_bootstrap_patches_lean_lsp_loogle_project_paths(tmp_path):
     assert "loogle_lib = self.repo_dir" in rendered
     assert mcp_bootstrap._patch_lean_lsp_loogle_project_paths(venv) is True
     assert loogle_py.read_text(encoding="utf-8") == rendered
+
+
+def test_bootstrap_patches_proof_auto_rich_logging_to_stderr(tmp_path):
+    package_dir = tmp_path / "lib" / "python3.12" / "site-packages" / "lean_interact"
+    package_dir.mkdir(parents=True)
+    utils_py = package_dir / "utils.py"
+    utils_py.write_text(
+        "from rich.logging import RichHandler\n" "handler = RichHandler(rich_tracebacks=True)\n",
+        encoding="utf-8",
+    )
+
+    assert mcp_bootstrap._patch_lean_proof_auto_stdio_logging(tmp_path) is True
+
+    rendered = utils_py.read_text(encoding="utf-8")
+    assert "from rich.console import Console" in rendered
+    assert "console=Console(stderr=True)" in rendered
+    assert mcp_bootstrap._patch_lean_proof_auto_stdio_logging(tmp_path) is True
+    assert utils_py.read_text(encoding="utf-8") == rendered
 
 
 def test_managed_mcp_bootstrap_pins_setuptools_below_torch_conflict(monkeypatch, tmp_path):

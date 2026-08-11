@@ -1,1 +1,1 @@
-"""tools.mcp subpackage (Phase II restructure)."""
+"""Integrate MCP transport, configuration, sampling, and lifecycle control."""

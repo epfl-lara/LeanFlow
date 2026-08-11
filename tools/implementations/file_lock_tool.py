@@ -61,11 +61,6 @@ FILE_LOCK_ACQUIRE_SCHEMA = {
                 "description": "How long the reservation should last",
                 "default": 1800,
             },
-            "force": {
-                "type": "boolean",
-                "description": "Override an existing reservation",
-                "default": False,
-            },
         },
         "required": ["path"],
     },
@@ -79,11 +74,6 @@ FILE_LOCK_RELEASE_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Reserved file to release"},
-            "force": {
-                "type": "boolean",
-                "description": "Release even if another owner is recorded",
-                "default": False,
-            },
         },
         "required": ["path"],
     },
@@ -106,7 +96,6 @@ registry.register(
         owner_id=str(kw.get("owner_id", "") or ""),
         purpose=args.get("purpose", ""),
         ttl_seconds=args.get("ttl_seconds", 1800),
-        force=bool(args.get("force", False)),
     ),
     check_fn=check_file_lock_requirements,
     emoji="🔒",
@@ -119,7 +108,6 @@ registry.register(
     handler=lambda args, **kw: release_file_lock(
         path=args.get("path", ""),
         owner_id=str(kw.get("owner_id", "") or ""),
-        force=bool(args.get("force", False)),
     ),
     check_fn=check_file_lock_requirements,
     emoji="🔓",

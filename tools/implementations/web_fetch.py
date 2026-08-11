@@ -20,6 +20,8 @@ file tools / Lean can consume it.
 import logging
 import os
 import re
+import threading
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -33,6 +35,10 @@ from tools.implementations.web_tools import (
     process_content_with_llm,
 )
 from tools.response import dumps, error
+from tools.utilities.repository_research_policy import (
+    repository_url_block_reason,
+    solution_research_url_block_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +48,56 @@ WEB_FETCH_TIMEOUT_SECONDS = 30
 DEFAULT_MAX_CHARS = 5000
 # Upper bound the model may request, to keep a single fetch from dominating context.
 MAX_ALLOWED_CHARS = 20000
+FETCH_FAILURE_COOLDOWN_SECONDS = 60.0
+FETCH_FAILURE_CACHE_CAP = 128
 
 _FETCH_USER_AGENT = "LeanFlow/0.3 web-fetch (+https://github.com/leanflow)"
+_DIRECT_TEXT_HOSTS = frozenset(
+    {
+        "gist.githubusercontent.com",
+        "raw.githubusercontent.com",
+        "raw.github.com",
+    }
+)
+_FETCH_FAILURE_CACHE_LOCK = threading.Lock()
+_FETCH_FAILURE_CACHE: dict[str, tuple[float, str, str]] = {}
+
+
+def _cached_fetch_failure(url: str) -> str | None:
+    """Return a recent terminal fetch failure without repeating both network calls."""
+    now = time.monotonic()
+    with _FETCH_FAILURE_CACHE_LOCK:
+        cached = _FETCH_FAILURE_CACHE.get(url)
+        if cached is None:
+            return None
+        expires_at, message, backend = cached
+        if expires_at <= now:
+            _FETCH_FAILURE_CACHE.pop(url, None)
+            return None
+    return error(
+        message,
+        backend=backend,
+        cached=True,
+        provider_called=False,
+        retry_after_seconds=max(1, int(expires_at - now)),
+    )
+
+
+def _remember_fetch_failure(url: str, message: str, *, backend: str) -> str:
+    """Cache one dual-backend fetch failure briefly and return its tool payload."""
+    expires_at = time.monotonic() + FETCH_FAILURE_COOLDOWN_SECONDS
+    with _FETCH_FAILURE_CACHE_LOCK:
+        if len(_FETCH_FAILURE_CACHE) >= FETCH_FAILURE_CACHE_CAP:
+            oldest = min(_FETCH_FAILURE_CACHE, key=lambda key: _FETCH_FAILURE_CACHE[key][0])
+            _FETCH_FAILURE_CACHE.pop(oldest, None)
+        _FETCH_FAILURE_CACHE[url] = (expires_at, message, backend)
+    return error(message, backend=backend, cached=False, provider_called=True)
+
+
+def _clear_fetch_failure(url: str) -> None:
+    """Forget a prior terminal failure after a successful retrieval."""
+    with _FETCH_FAILURE_CACHE_LOCK:
+        _FETCH_FAILURE_CACHE.pop(url, None)
 
 
 class _TextExtractor(HTMLParser):
@@ -150,7 +204,16 @@ def _fallback_fetch(url: str) -> str:
             "PDF fetch requires the Jina Reader backend, which was unavailable; "
             "retry later or supply an HTML source URL."
         )
+    if content_type.startswith(("text/plain", "application/json")) or (
+        (urlparse(url).hostname or "").lower() in _DIRECT_TEXT_HOSTS
+    ):
+        return response.text or ""
     return _html_to_text(response.text or "")
+
+
+def _prefer_direct_text_fetch(url: str) -> bool:
+    """Return whether a known raw-text host should bypass Jina conversion."""
+    return (urlparse(url).hostname or "").lower() in _DIRECT_TEXT_HOSTS
 
 
 async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
@@ -166,6 +229,12 @@ async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
         return error("web_fetch requires a non-empty 'url'")
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
+    blocked = repository_url_block_reason(url) or solution_research_url_block_reason(url)
+    if blocked:
+        return error(blocked)
+    cached_failure = _cached_fetch_failure(url)
+    if cached_failure is not None:
+        return cached_failure
 
     try:
         bound = int(max_chars)
@@ -178,25 +247,48 @@ async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
     if is_interrupted():
         return error("Interrupted")
 
-    backend = "jina"
+    backend = "direct" if _prefer_direct_text_fetch(url) else "jina"
     jina_error: str | None = None
-    try:
-        text = _jina_fetch(url)
-    except Exception as jina_exc:
-        jina_error = str(jina_exc)
-        logger.info("Jina Reader failed for %s (%s); falling back to direct fetch", url, jina_error)
-        backend = "fallback"
+    if backend == "direct":
         try:
             text = _fallback_fetch(url)
-        except Exception as fallback_exc:
-            return error(
-                f"Failed to fetch {url}: jina error: {jina_error}; "
-                f"fallback error: {fallback_exc}"
+        except Exception as direct_exc:
+            return _remember_fetch_failure(
+                url,
+                f"Failed to fetch {url} directly: {direct_exc}",
+                backend="direct",
             )
+    else:
+        try:
+            text = _jina_fetch(url)
+        except Exception as jina_exc:
+            jina_error = str(jina_exc)
+            logger.info(
+                "Jina Reader failed for %s (%s); falling back to direct fetch",
+                url,
+                jina_error,
+            )
+            backend = "fallback"
+            try:
+                text = _fallback_fetch(url)
+            except Exception as fallback_exc:
+                return _remember_fetch_failure(
+                    url,
+                    (
+                        f"Failed to fetch {url}: jina error: {jina_error}; "
+                        f"fallback error: {fallback_exc}"
+                    ),
+                    backend="fallback",
+                )
 
     text = clean_base64_images(text or "").strip()
     if not text:
-        return error(f"No readable content found at {url}", backend=backend)
+        return _remember_fetch_failure(
+            url,
+            f"No readable content found at {url}",
+            backend=backend,
+        )
+    _clear_fetch_failure(url)
 
     truncated = False
     # Reuse the (otherwise-dead) summarizer for long pages so output stays bounded.
@@ -261,6 +353,9 @@ def web_download_tool(url: str, filename: str = "", max_bytes: int = WEB_DOWNLOA
         return error("web_download requires a non-empty 'url'")
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
+    blocked = repository_url_block_reason(url) or solution_research_url_block_reason(url)
+    if blocked:
+        return error(blocked)
     try:
         cap = int(max_bytes)
     except (TypeError, ValueError):

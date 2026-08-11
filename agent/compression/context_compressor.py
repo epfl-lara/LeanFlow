@@ -1,13 +1,20 @@
-"""Automatic context window compression for long conversations.
+"""Compress long conversations without losing the continuation handoff.
 
-Self-contained class with its own OpenAI client for summarization.
-Uses Gemini Flash (cheap/fast) to summarize middle turns while
-protecting head and tail context.
+Middle turns are summarized through the configured auxiliary route, with one
+provider-aware retry through the agent's main model.  If both provider calls
+fail, a bounded deterministic extract preserves evidence locally instead of
+silently dropping the compacted turns.
 """
 
+import hashlib
 import logging
 from typing import Any
 
+from agent.compression.summary_handoff import (
+    LEGACY_SUMMARY_PREFIX,  # noqa: F401 - backwards-compatible re-export
+    SUMMARY_PREFIX,  # noqa: F401 - backwards-compatible re-export
+    CompressionSummaryHandoff,
+)
 from agent.providers.auxiliary_client import call_llm
 from agent.providers.model_metadata import (
     estimate_messages_tokens_rough,
@@ -16,23 +23,17 @@ from agent.providers.model_metadata import (
 
 logger = logging.getLogger(__name__)
 
-SUMMARY_PREFIX = (
-    "[CONTEXT COMPACTION] Earlier turns in this conversation were compacted "
-    "to save context space. The summary below describes work that was "
-    "already completed, and the current session state may still reflect "
-    "that work (for example, files may already be changed). Use the summary "
-    "and the current state to continue from where things left off, and "
-    "avoid repeating work:"
-)
-LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+_PRODUCTION_SUMMARY_CALL = call_llm
+
 STALE_TOOL_OUTPUT_MARKER = "[Old tool result content cleared during context compaction]"
 
 
 class ContextCompressor:
-    """Compresses conversation context when approaching the model's context limit.
+    """Compress conversation context when approaching the model's limit.
 
-    Algorithm: protect first N + last N turns, summarize everything in between.
-    Token tracking uses actual counts from API responses for accuracy.
+    Protect the first and last turns, then replace the middle with an LLM
+    handoff or a deterministic local extract. Token tracking uses actual API
+    usage when available.
     """
 
     def __init__(
@@ -43,15 +44,22 @@ class ContextCompressor:
         protect_last_n: int = 4,
         summary_target_tokens: int = 2500,
         quiet_mode: bool = False,
-        summary_model_override: str = None,
+        summary_model_override: str | None = None,
         base_url: str = "",
         api_key: str = "",
+        main_provider: str = "",
+        main_api_mode: str = "",
         reserved_output_tokens: int = 0,
+        absolute_threshold_tokens: int | None = None,
         prune_tool_output: bool = False,
         prune_keep_recent_user_turns: int = 2,
-    ):
+    ) -> None:
         self.model = model
+        self.main_model = model
         self.base_url = base_url
+        self.api_key = api_key
+        self.main_provider = (main_provider or "").strip().lower()
+        self.main_api_mode = (main_api_mode or "").strip().lower()
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
@@ -63,13 +71,20 @@ class ContextCompressor:
 
         self.context_length = get_model_context_length(model, base_url=base_url, api_key=api_key)
         percent_threshold = int(self.context_length * threshold_percent)
+        self.percent_threshold_tokens = percent_threshold
         reserved_threshold = (
             max(0, self.context_length - self.reserved_output_tokens)
             if self.reserved_output_tokens
             else percent_threshold
         )
-        self.threshold_tokens = (
+        self.base_threshold_tokens = (
             min(percent_threshold, reserved_threshold) if reserved_threshold else percent_threshold
+        )
+        self.absolute_threshold_tokens = max(0, int(absolute_threshold_tokens or 0))
+        self.threshold_tokens = (
+            min(self.base_threshold_tokens, self.absolute_threshold_tokens)
+            if self.absolute_threshold_tokens
+            else self.base_threshold_tokens
         )
         self.compression_count = 0
         self._context_probed = False  # True after a step-down from context error
@@ -79,14 +94,63 @@ class ContextCompressor:
         self.last_total_tokens = 0
 
         self.summary_model = summary_model_override or ""
+        # A dead auxiliary summary route otherwise pays its full timeout
+        # timeout before every main-model fallback in one long conversation.
+        # Keep the first failure observable, then use the already-supported
+        # main/local recovery chain for subsequent compactions.
+        self._summary_auxiliary_failure = ""
+        self._summary_main_failure = ""
+        self._summary_main_route = self._main_summary_route_identity()
 
-    def update_from_response(self, usage: dict[str, Any]):
+    def bind_main_summary_route(
+        self,
+        *,
+        model: str,
+        provider: str,
+        api_mode: str,
+        base_url: str,
+        api_key: str,
+    ) -> None:
+        """Synchronize main-summary fallback after an agent provider switch."""
+        previous_route = self._summary_main_route
+        self.main_model = model
+        self.main_provider = (provider or "").strip().lower()
+        self.main_api_mode = (api_mode or "").strip().lower()
+        self.base_url = base_url
+        self.api_key = api_key
+        current_route = self._main_summary_route_identity()
+        self._summary_main_route = current_route
+        if current_route != previous_route:
+            self._summary_main_failure = ""
+
+    def _main_summary_route_identity(self) -> tuple[str, str, str, str]:
+        """Return a credential-safe identity for the effective main route."""
+        route = CompressionSummaryHandoff(
+            model=self.main_model,
+            main_provider=self.main_provider,
+            main_api_mode=self.main_api_mode,
+            base_url=self.base_url,
+            api_key=self.api_key,
+        )
+        effective_provider = route._effective_main_provider()
+        custom_base_url = str(self.base_url or "").strip() if effective_provider == "custom" else ""
+        key_digest = ""
+        if effective_provider == "custom" and self.api_key:
+            key_digest = hashlib.sha256(self.api_key.encode("utf-8", "replace")).hexdigest()
+        return (
+            str(self.main_model or "").strip(),
+            effective_provider,
+            custom_base_url,
+            key_digest,
+        )
+
+    def update_from_response(self, usage: dict[str, Any]) -> None:
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", 0)
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int | None = None) -> bool:
         """Check if context exceeds the compression threshold."""
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         return tokens >= self.threshold_tokens
@@ -101,6 +165,9 @@ class ContextCompressor:
         return {
             "last_prompt_tokens": self.last_prompt_tokens,
             "threshold_tokens": self.threshold_tokens,
+            "percent_threshold_tokens": self.percent_threshold_tokens,
+            "base_threshold_tokens": self.base_threshold_tokens,
+            "absolute_threshold_tokens": self.absolute_threshold_tokens,
             "context_length": self.context_length,
             "usage_percent": (
                 (self.last_prompt_tokens / self.context_length * 100) if self.context_length else 0
@@ -110,96 +177,68 @@ class ContextCompressor:
             "prune_tool_output": self.prune_tool_output,
         }
 
-    def _generate_summary(self, turns_to_summarize: list[dict[str, Any]]) -> str | None:
-        """Generate a concise summary of conversation turns.
+    def _summary_handoff(self) -> CompressionSummaryHandoff:
+        """Bind a handoff builder to the current effective main route."""
+        return CompressionSummaryHandoff(
+            model=self.main_model,
+            main_provider=self.main_provider,
+            main_api_mode=self.main_api_mode,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            summary_model=self.summary_model,
+            summary_target_tokens=self.summary_target_tokens,
+            call=call_llm,
+            # Production provider calls must be killable at the configured
+            # wall deadline. Dependency-injected test calls remain in-process
+            # so their deterministic response/call assertions stay useful.
+            process_isolated=call_llm is _PRODUCTION_SUMMARY_CALL,
+            auxiliary_enabled=not bool(self._summary_auxiliary_failure),
+            on_auxiliary_failure=self._disable_summary_auxiliary,
+            main_enabled=not bool(self._summary_main_failure),
+            main_circuit_failure=self._summary_main_failure,
+            on_main_failure=self._disable_summary_main,
+        )
 
-        Tries the auxiliary model first, then falls back to the user's main
-        model.  Returns None if all attempts fail — the caller should drop
-        the middle turns without a summary rather than inject a useless
-        placeholder.
-        """
-        parts = []
-        for msg in turns_to_summarize:
-            role = msg.get("role", "unknown")
-            content = msg.get("content") or ""
-            if len(content) > 2000:
-                content = content[:1000] + "\n...[truncated]...\n" + content[-500:]
-            tool_calls = msg.get("tool_calls", [])
-            if tool_calls:
-                tool_names = [
-                    tc.get("function", {}).get("name", "?")
-                    for tc in tool_calls
-                    if isinstance(tc, dict)
-                ]
-                content += f"\n[Tool calls: {', '.join(tool_names)}]"
-            parts.append(f"[{role.upper()}]: {content}")
-
-        content_to_summarize = "\n\n".join(parts)
-        prompt = f"""Create a concise but high-signal handoff for a later assistant that will continue this conversation after earlier turns are compacted.
-
-Use this structure:
-## Goal
-[What the user is trying to accomplish]
-
-## Instructions
-- [Important user instructions, constraints, and preferences]
-
-## Discoveries
-[Important findings, tool results, file names, and technical facts]
-
-## Accomplished
-[What is already done, what changed, and what remains]
-
-## Next Steps
-- [Concrete next action]
-
-Keep it factual and resume-oriented. Mention relevant files and avoid repeating stale tool output unless it matters. Target ~{self.summary_target_tokens} tokens.
-
----
-TURNS TO SUMMARIZE:
-{content_to_summarize}
----
-
-Write only the summary body. Do not include any preamble or prefix; the system will add the handoff wrapper."""
-
-        # Use the centralized LLM router — handles provider resolution,
-        # auth, and fallback internally.
-        try:
-            call_kwargs = {
-                "task": "compression",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "max_tokens": self.summary_target_tokens * 2,
-                "timeout": 30.0,
-            }
-            if self.summary_model:
-                call_kwargs["model"] = self.summary_model
-            response = call_llm(**call_kwargs)
-            content = response.choices[0].message.content
-            # Handle cases where content is not a string (e.g., dict from llama.cpp)
-            if not isinstance(content, str):
-                content = str(content) if content else ""
-            summary = content.strip()
-            return self._with_summary_prefix(summary)
-        except RuntimeError:
-            logging.warning(
-                "Context compression: no provider available for "
-                "summary. Middle turns will be dropped without summary."
+    def threshold_description(self) -> str:
+        """Describe the effective threshold without mislabeling an absolute cap."""
+        percent = self.threshold_tokens / self.context_length * 100 if self.context_length else 0.0
+        if self.base_threshold_tokens == self.percent_threshold_tokens:
+            base = (
+                f"base policy {self.threshold_percent * 100:.0f}% = "
+                f"{self.base_threshold_tokens:,}"
             )
-            return None
-        except Exception as e:
-            logging.warning("Failed to generate context summary: %s", e)
-            return None
+        else:
+            base = (
+                f"base threshold {self.base_threshold_tokens:,} after output reserve; "
+                f"percentage policy {self.threshold_percent * 100:.0f}% = "
+                f"{self.percent_threshold_tokens:,}"
+            )
+        if self.absolute_threshold_tokens and self.threshold_tokens < self.base_threshold_tokens:
+            return f"managed cap {self.threshold_tokens:,} = {percent:.0f}%; {base}"
+        return base
+
+    def _disable_summary_auxiliary(self, failure_type: str) -> None:
+        """Open this compressor's circuit after one auxiliary exception."""
+        if not self._summary_auxiliary_failure:
+            self._summary_auxiliary_failure = str(failure_type or "UnknownFailure")[:100]
+
+    def _disable_summary_main(self, failure_type: str) -> None:
+        """Open this compressor's main-summary circuit after one failure."""
+        if not self._summary_main_failure:
+            self._summary_main_failure = str(failure_type or "UnknownFailure")[:100]
+
+    def _deterministic_extractive_summary(self, turns_to_summarize: list[dict[str, Any]]) -> str:
+        """Build a bounded local handoff without a provider call."""
+        return self._summary_handoff().deterministic_extract(turns_to_summarize)
+
+    def _generate_summary(self, turns_to_summarize: list[dict[str, Any]]) -> str:
+        """Generate a handoff through auxiliary, main, then local extraction."""
+        return self._summary_handoff().generate(turns_to_summarize)
 
     @staticmethod
     def _with_summary_prefix(summary: str) -> str:
         """Normalize summary text to the current compaction handoff format."""
-        text = (summary or "").strip()
-        for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX):
-            if text.startswith(prefix):
-                text = text[len(prefix) :].lstrip()
-                break
-        return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
+        return CompressionSummaryHandoff.with_summary_prefix(summary)
 
     # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers
@@ -209,8 +248,8 @@ Write only the summary body. Do not include any preamble or prefix; the system w
     def _get_tool_call_id(tc) -> str:
         """Extract the call ID from a tool_call entry (dict or SimpleNamespace)."""
         if isinstance(tc, dict):
-            return tc.get("id", "")
-        return getattr(tc, "id", "") or ""
+            return str(tc.get("id", "") or "")
+        return str(getattr(tc, "id", "") or "")
 
     def _sanitize_tool_pairs(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs after compression.
@@ -226,7 +265,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         This method removes orphaned results and inserts stub results for
         orphaned calls so the message list is always well-formed.
         """
-        surviving_call_ids: set = set()
+        surviving_call_ids: set[str] = set()
         for msg in messages:
             if msg.get("role") == "assistant":
                 for tc in msg.get("tool_calls") or []:
@@ -234,12 +273,12 @@ Write only the summary body. Do not include any preamble or prefix; the system w
                     if cid:
                         surviving_call_ids.add(cid)
 
-        result_call_ids: set = set()
+        result_call_ids: set[str] = set()
         for msg in messages:
             if msg.get("role") == "tool":
-                cid = msg.get("tool_call_id")
-                if cid:
-                    result_call_ids.add(cid)
+                result_cid = str(msg.get("tool_call_id") or "")
+                if result_cid:
+                    result_call_ids.add(result_cid)
 
         # 1. Remove tool results whose call_id has no matching assistant tool_call
         orphaned_results = result_call_ids - surviving_call_ids
@@ -247,7 +286,9 @@ Write only the summary body. Do not include any preamble or prefix; the system w
             messages = [
                 m
                 for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+                if not (
+                    m.get("role") == "tool" and str(m.get("tool_call_id") or "") in orphaned_results
+                )
             ]
             if not self.quiet_mode:
                 logger.info(
@@ -345,13 +386,12 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         return idx
 
     def compress(
-        self, messages: list[dict[str, Any]], current_tokens: int = None
+        self, messages: list[dict[str, Any]], current_tokens: int | None = None
     ) -> list[dict[str, Any]]:
-        """Compress conversation messages by summarizing middle turns.
+        """Compress middle turns while preserving a continuation handoff.
 
-        Keeps first N + last N turns, summarizes everything in between.
-        After compression, orphaned tool_call / tool_result pairs are cleaned
-        up so the API never receives mismatched IDs.
+        Keep the protected head and tail, insert a generated or deterministic
+        handoff, and repair orphaned tool-call/result pairs before returning.
         """
         working_messages, pruned_count = self._prune_stale_tool_outputs(messages)
         n_messages = len(working_messages)
@@ -385,7 +425,8 @@ Write only the summary body. Do not include any preamble or prefix; the system w
                 f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)"
             )
             print(
-                f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent * 100:.0f}% = {self.threshold_tokens:,})"
+                f"   📊 Model context limit: {self.context_length:,} tokens "
+                f"({self.threshold_description()})"
             )
 
         if not self.quiet_mode:
@@ -394,6 +435,11 @@ Write only the summary body. Do not include any preamble or prefix; the system w
             )
 
         summary = self._generate_summary(turns_to_summarize)
+        if not summary:
+            # Keep this invariant even when tests or extensions replace the
+            # generator: compression may shrink context, but never erase its
+            # continuation handoff.
+            summary = self._deterministic_extractive_summary(turns_to_summarize)
 
         compressed = []
         for i in range(compress_start):
@@ -405,17 +451,13 @@ Write only the summary body. Do not include any preamble or prefix; the system w
                 )
             compressed.append(msg)
 
-        if summary:
-            last_head_role = (
-                working_messages[compress_start - 1].get("role", "user")
-                if compress_start > 0
-                else "user"
-            )
-            summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
-            compressed.append({"role": summary_role, "content": summary})
-        else:
-            if not self.quiet_mode:
-                print("   ⚠️  No summary model available — middle turns dropped without summary")
+        last_head_role = (
+            working_messages[compress_start - 1].get("role", "user")
+            if compress_start > 0
+            else "user"
+        )
+        summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
+        compressed.append({"role": summary_role, "content": summary})
 
         for i in range(compress_end, n_messages):
             compressed.append(working_messages[i].copy())

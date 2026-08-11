@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from rich.console import Console
 
 from leanflow_cli import main as main_module
@@ -11,6 +12,7 @@ from leanflow_cli.workflow import (
     NativeLaunchPlan,
     NativeWorkflowSpec,
     describe_launch_plan,
+    parse_workflow_command,
     resolve_workflow_request,
 )
 from leanflow_cli.workflows.workflow_state import (
@@ -78,6 +80,70 @@ def test_render_workflow_status_panel_marks_stale_dead_snapshot():
     assert "dead (stale snapshot)" in output
     assert "Stale PID" in output
     assert "8111" in output
+
+
+def test_render_workflow_status_panel_marks_prior_snapshot_pending_reconciliation():
+    console = Console(record=True, width=120)
+
+    render_workflow_status_panel(
+        console,
+        status={
+            "phase": "reconciling",
+            "workflow_kind": "prove",
+            "workflow_command": "/prove Main.lean",
+            "project_root": "/tmp/project",
+            "provider": "codex",
+            "model": "gpt-5",
+            "active_skill": "lean-theorem-queue-worker",
+            "parallel_agents": 1,
+            "active_file_label": "Main.lean",
+            "target_symbol": "prior_goal",
+            "build_status": "prior build result",
+            "project_sorry_count": 1,
+            "latest_checkpoint_label": "prior checkpoint",
+            "held_locks": 0,
+            "updated_at": "2026-07-16T01:00:00+00:00",
+            "startup_reconciliation_pending": True,
+        },
+        activities=[],
+    )
+
+    output = console.export_text()
+    assert "Proof state" in output
+    assert "prior durable snapshot; reconciliation pending" in output
+    assert "prior_goal" in output
+
+
+def test_render_workflow_status_panel_shows_terminal_exit_outcome():
+    console = Console(record=True, width=120)
+
+    render_workflow_status_panel(
+        console,
+        status={
+            "phase": "exited",
+            "workflow_kind": "prove",
+            "workflow_command": "/prove Main.lean",
+            "project_root": "/tmp/project",
+            "provider": "codex",
+            "model": "gpt-5",
+            "active_skill": "lean-theorem-queue-worker",
+            "parallel_agents": 1,
+            "active_file_label": "Main.lean",
+            "target_symbol": "demo",
+            "build_status": "warning: declaration uses sorry",
+            "project_sorry_count": 1,
+            "latest_checkpoint_label": "pre-exit checkpoint",
+            "held_locks": 0,
+            "updated_at": "2026-07-16T03:00:00+00:00",
+            "exit_code": 2,
+            "reason": "explicit interactive exit",
+        },
+        activities=[],
+    )
+
+    output = console.export_text()
+    assert "Exit" in output
+    assert "2: explicit interactive exit" in output
 
 
 def test_render_workflow_status_panel_shows_project_prove_manager_queue():
@@ -368,7 +434,7 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
             "model": "zai-org/GLM-5.1",
             "base_url": "https://inference.rcp.epfl.ch/v1",
         },
-        child_env={},
+        child_env={"LEANFLOW_NATIVE_PROCESS_TOKEN": "shell-launch-token"},
         argv=["python", "-m", "leanflow_cli.native.native_runner"],
         active_skill="lean-proof-loop",
         toolset_name="leanflow-native",
@@ -394,6 +460,10 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
     monkeypatch.setattr(
         "leanflow_cli.workflows.workflow_state._process_seems_alive", lambda pid: True
     )
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.workflow_state.process_identity_matches",
+        lambda identity: True,
+    )
 
     class _FakeProcess:
         pid = 43210
@@ -411,6 +481,9 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
     assert payload["phase"] == "busy"
     assert payload["build_status"] == "workflow launching"
     assert payload["process_id"] == 43210
+    assert payload["process_group_id"] == 43210
+    assert payload["process_session_id"] == 43210
+    assert len(payload["process_token_sha256"]) == 64
 
 
 def test_interactive_workflow_launch_reuses_existing_matching_runner(monkeypatch, tmp_path, capsys):
@@ -511,6 +584,105 @@ def test_workflow_cli_provider_override_passes_through(monkeypatch, tmp_path):
     assert captured["run_command"] == "/prove Main.lean"
     assert captured["resolve_provider"] == "codex"
     assert captured["run_provider"] == "codex"
+
+
+def test_workflow_cli_preserves_multiword_option_values(monkeypatch, tmp_path):
+    """Decoded argv values must remain atomic through the string parser boundary."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    captured: dict[str, str] = {}
+    fake_plan = NativeLaunchPlan(
+        project=type("Project", (), {"label": "Demo", "root": tmp_path})(),
+        workflow=NativeWorkflowSpec(
+            workflow_kind="prove",
+            frontend_command="/prove",
+            canonical_command="/prove",
+            backend_command="/prove Main.lean",
+            workflow_args="Main.lean",
+        ),
+        runtime={"provider": "custom", "model": "zai-org/GLM-5.2", "base_url": "https://example"},
+        child_env={},
+        argv=["python", "-m", "leanflow_cli.native.native_runner"],
+        active_skill="lean-proof-loop",
+        toolset_name="leanflow-prove-worker",
+    )
+
+    def fake_resolve(command, **_kwargs):
+        captured["resolve"] = command
+        return fake_plan
+
+    def fake_run(command, **_kwargs):
+        captured["run"] = command
+        return 0
+
+    monkeypatch.setattr("leanflow_cli.main.resolve_workflow_request", fake_resolve)
+    monkeypatch.setattr("leanflow_cli.main.run_workflow", fake_run)
+
+    argv = [
+        "workflow",
+        "prove",
+        "Main.lean",
+        "--clean-room-label",
+        "IMO 2026 Problem 2",
+        "--goal",
+        "finish theorem result",
+    ]
+    assert main(argv) == 0
+
+    for command in (captured["resolve"], captured["run"]):
+        parsed = parse_workflow_command(command)
+        assert parsed.workflow_args == "Main.lean"
+        assert parsed.clean_room_labels == ("IMO 2026 Problem 2",)
+        assert parsed.explicit_goal == "finish theorem result"
+
+
+def test_workflow_leaf_help_never_launches_runtime(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "leanflow_cli.main.resolve_workflow_request",
+        lambda *args, **kwargs: pytest.fail("help resolved a workflow"),
+    )
+    monkeypatch.setattr(
+        "leanflow_cli.main.run_workflow",
+        lambda *args, **kwargs: pytest.fail("help launched a workflow"),
+    )
+
+    assert main(["workflow", "prove", "--help"]) == 0
+
+    output = capsys.readouterr().out
+    assert "usage: leanflow workflow prove FILE" in output
+    assert "--research-workers N" in output
+    assert "--model MODEL" in output
+    assert "--clean-room" in output
+    assert "--clean-room-label VALUE" in output
+    assert "--no-parallel" in output
+
+
+def test_combined_status_skips_expensive_sandbox_probe_unless_verbose(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(main_module, "load_workflow_live_status", lambda: {})
+    monkeypatch.setattr(
+        main_module,
+        "sandbox_status",
+        lambda **kwargs: calls.append(kwargs)
+        or {
+            "engine": "auto",
+            "engine_ready": None,
+            "image": "leanflow",
+            "image_ready": None,
+            "recent_runs": [],
+        },
+    )
+
+    assert main(["status", "--json"]) == 0
+    assert calls[-1] == {"probe_engine": False, "recent_run_limit": 3}
+    capsys.readouterr()
+    assert main(["status", "--json", "--verbose"]) == 0
+    assert calls[-1] == {"probe_engine": True, "recent_run_limit": 8}
 
 
 def test_interactive_project_init_reports_already_initialized(monkeypatch, tmp_path, capsys):
@@ -694,14 +866,16 @@ def test_shell_exit_interrupts_live_runner_when_no_registered_agents(monkeypatch
         "_workflow_status_payload",
         lambda: {"project_root": str(root), "phase": "paused", "process_id": 24680},
     )
-    monkeypatch.setattr(
-        "leanflow_cli.shell.os.killpg",
-        lambda process_id, sig: signalled.append(("killpg", process_id, int(sig))),
-    )
+
+    def interrupt(status):
+        signalled.append(("verified", int(status["process_id"]), 2))
+        return {"success": True, "process_id": int(status["process_id"])}
+
+    monkeypatch.setattr("leanflow_cli.shell.interrupt_workflow_process", interrupt)
 
     assert shell._handle_command("/exit") is False
     output = capsys.readouterr().out
-    assert signalled == [("killpg", 24680, 2)]
+    assert signalled == [("verified", 24680, 2)]
     assert "Interrupted background workflow runner (pid 24680)" in output
 
 
@@ -947,6 +1121,22 @@ def test_main_loads_leanflow_dotenv_before_provider_resolution(monkeypatch, tmp_
     assert main(["provider", "--requested", "openrouter"]) == 0
     assert captured["provider"] == "openrouter"
     assert captured["api_key"] == "or-from-dotenv"
+
+
+def test_provider_command_accepts_provider_alias(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def _fake_render_provider_panel(console, *, resolved, requested, targets):
+        captured["requested"] = str(requested or "")
+
+    monkeypatch.setattr("leanflow_cli.main.render_provider_panel", _fake_render_provider_panel)
+    monkeypatch.setattr(
+        "leanflow_cli.main.resolve_runtime_provider",
+        lambda requested=None: {"provider": requested or "auto"},
+    )
+
+    assert main(["provider", "--provider", "codex"]) == 0
+    assert captured["requested"] == "codex"
 
 
 def test_main_prefers_leanflow_scoped_env_names(monkeypatch, tmp_path):

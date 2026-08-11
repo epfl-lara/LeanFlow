@@ -47,7 +47,7 @@ def _make_agent(
     monkeypatch.setattr(
         "run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal")
     )
-    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda *_args, **_kwargs: {})
     monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
     return AIAgent(
         api_key="test-key",

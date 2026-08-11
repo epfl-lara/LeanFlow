@@ -1,10 +1,7 @@
-"""Heuristics for detecting potentially destructive terminal commands.
+"""Detect terminal commands that may perform destructive filesystem changes.
 
-Extracted verbatim from ``run_agent.py`` (refactor Phase 4). The destructive-command
-detector and its compiled patterns are pure: they depend only on stdlib ``re`` and carry
-no dependency on ``AIAgent`` or any ``run_agent`` module state. They live here and are
-re-exported from ``run_agent`` for backwards compatibility (``run_agent._is_destructive_command``
-remains valid). This module does NOT import ``run_agent``, so the re-export adds no cycle.
+The detector is independent of ``AIAgent`` state and remains re-exported from
+``run_agent`` for compatibility with existing integrations.
 """
 
 from __future__ import annotations
@@ -27,7 +24,7 @@ _DESTRUCTIVE_PATTERNS = re.compile(
         truncate\s|
         dd\s|
         shred\s|
-        git\s+(?:reset|clean|checkout)\s
+        git\s+(?:reset|clean|checkout|restore|switch|revert|merge|rebase|cherry-pick|apply|am)\s
     )""",
     re.VERBOSE,
 )

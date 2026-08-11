@@ -84,6 +84,65 @@ class TestLoadMCPConfig:
             result = _load_mcp_config()
             assert result == {}
 
+    def test_disable_env_skips_configured_servers(self, monkeypatch):
+        """Explicit low-memory mode bypasses all configured MCP processes."""
+        monkeypatch.setenv("LEANFLOW_DISABLE_MCP", "1")
+        with patch("leanflow_cli.config.load_config") as load_config:
+            from tools.mcp.mcp_tool import _load_mcp_config
+
+            assert _load_mcp_config() == {}
+            load_config.assert_not_called()
+
+    def test_low_memory_mode_skips_configured_servers(self, monkeypatch):
+        """The umbrella resource mode bypasses all configured MCP processes."""
+        monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "true")
+        with patch("leanflow_cli.config.load_config") as load_config:
+            from tools.mcp.mcp_tool import _load_mcp_config
+
+            assert _load_mcp_config() == {}
+            load_config.assert_not_called()
+
+    def test_dispatch_worker_starts_no_mcp_server_by_default(self, monkeypatch):
+        """Background research workers cannot retain a private lean-lsp tree."""
+        servers = {
+            "lean-lsp": {"command": "lean-lsp-mcp"},
+            "lean-proof-auto": {"command": "lean-proof-auto-mcp"},
+            "lean-explore": {"command": "lean-explore"},
+        }
+        monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
+        with patch("leanflow_cli.config.load_config", return_value={"mcp_servers": servers}):
+            from tools.mcp.mcp_tool import _load_mcp_config
+
+            assert _load_mcp_config() == {}
+
+    def test_dispatch_worker_can_restore_full_mcp_portfolio(self, monkeypatch):
+        """Explicitly provisioned workers may opt back into every configured server."""
+        servers = {
+            "lean-lsp": {"command": "lean-lsp-mcp"},
+            "lean-proof-auto": {"command": "lean-proof-auto-mcp"},
+            "lean-explore": {"command": "lean-explore"},
+        }
+        monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1")
+        monkeypatch.setenv("LEANFLOW_DISPATCH_MCP_SERVERS", "*")
+        with patch("leanflow_cli.config.load_config", return_value={"mcp_servers": servers}):
+            from tools.mcp.mcp_tool import _load_mcp_config
+
+            assert _load_mcp_config() == servers
+
+    def test_dispatch_allowlist_does_not_change_foreground_config(self, monkeypatch):
+        """Worker-only tuning cannot narrow the foreground prover's MCP portfolio."""
+        servers = {
+            "lean-lsp": {"command": "lean-lsp-mcp"},
+            "lean-proof-auto": {"command": "lean-proof-auto-mcp"},
+            "lean-explore": {"command": "lean-explore"},
+        }
+        monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
+        monkeypatch.setenv("LEANFLOW_DISPATCH_MCP_SERVERS", "lean-lsp")
+        with patch("leanflow_cli.config.load_config", return_value={"mcp_servers": servers}):
+            from tools.mcp.mcp_tool import _load_mcp_config
+
+            assert _load_mcp_config() == servers
+
 
 # ---------------------------------------------------------------------------
 # Schema conversion
@@ -178,6 +237,7 @@ class TestToolHandler:
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
 
         def fake_run(coro, timeout=30):
+            coro = coro() if callable(coro) else coro
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(coro)
@@ -842,10 +902,17 @@ class TestGracefulFallback:
 class TestShutdown:
     def test_no_servers_safe(self):
         """shutdown_mcp_servers with no servers does nothing."""
-        from tools.mcp.mcp_tool import _servers, shutdown_mcp_servers
+        from tools.mcp.mcp_tool import (
+            _mcp_discovery_fences,
+            _servers,
+            _starting_servers,
+            shutdown_mcp_servers,
+        )
 
         _servers.clear()
-        shutdown_mcp_servers()  # Should not raise
+        _starting_servers.clear()
+        _mcp_discovery_fences.clear()
+        assert shutdown_mcp_servers() == ()
 
     def test_shutdown_clears_servers(self):
         """shutdown_mcp_servers calls shutdown() on each server and clears dict."""
@@ -853,6 +920,8 @@ class TestShutdown:
         from tools.mcp.mcp_tool import _servers, shutdown_mcp_servers
 
         _servers.clear()
+        mcp_mod._starting_servers.clear()
+        mcp_mod._mcp_discovery_fences.clear()
         mock_server = MagicMock()
         mock_server.name = "test"
         mock_server.shutdown = AsyncMock()
@@ -860,7 +929,7 @@ class TestShutdown:
 
         mcp_mod._ensure_mcp_loop()
         try:
-            shutdown_mcp_servers()
+            assert shutdown_mcp_servers() == ()
         finally:
             mcp_mod._mcp_loop = None
             mcp_mod._mcp_thread = None
@@ -868,12 +937,32 @@ class TestShutdown:
         assert len(_servers) == 0
         mock_server.shutdown.assert_called_once()
 
-    def test_shutdown_handles_errors(self):
-        """shutdown_mcp_servers handles errors during close gracefully."""
+    def test_shutdown_closes_unregistered_starting_server(self):
+        """Include a discovery-owned process before registry insertion."""
+        import tools.mcp.mcp_tool as mcp_mod
+
+        mcp_mod._servers.clear()
+        mcp_mod._starting_servers.clear()
+        mcp_mod._mcp_discovery_fences.clear()
+        mock_server = MagicMock()
+        mock_server.name = "starting"
+        mock_server.shutdown = AsyncMock()
+        mcp_mod._starting_servers["starting"] = mock_server
+
+        mcp_mod._ensure_mcp_loop()
+        assert mcp_mod.shutdown_mcp_servers() == ()
+
+        assert mcp_mod._starting_servers == {}
+        mock_server.shutdown.assert_awaited_once()
+
+    def test_shutdown_retains_and_reports_errors(self):
+        """A failed close remains owned and is reported to the finalizer."""
         import tools.mcp.mcp_tool as mcp_mod
         from tools.mcp.mcp_tool import _servers, shutdown_mcp_servers
 
         _servers.clear()
+        mcp_mod._starting_servers.clear()
+        mcp_mod._mcp_discovery_fences.clear()
         mock_server = MagicMock()
         mock_server.name = "broken"
         mock_server.shutdown = AsyncMock(side_effect=RuntimeError("close failed"))
@@ -881,7 +970,12 @@ class TestShutdown:
 
         mcp_mod._ensure_mcp_loop()
         try:
-            shutdown_mcp_servers()  # Should not raise
+            assert shutdown_mcp_servers() == ("broken",)
+            assert _servers["broken"] is mock_server
+            assert mcp_mod._mcp_loop is not None
+
+            mock_server.shutdown = AsyncMock()
+            assert shutdown_mcp_servers() == ()
         finally:
             mcp_mod._mcp_loop = None
             mcp_mod._mcp_thread = None
@@ -896,6 +990,8 @@ class TestShutdown:
         from tools.mcp.mcp_tool import _servers, shutdown_mcp_servers
 
         _servers.clear()
+        mcp_mod._starting_servers.clear()
+        mcp_mod._mcp_discovery_fences.clear()
 
         # 3 servers each taking 1s to shut down
         for i in range(3):
@@ -911,7 +1007,7 @@ class TestShutdown:
         mcp_mod._ensure_mcp_loop()
         try:
             start = time.monotonic()
-            shutdown_mcp_servers()
+            assert shutdown_mcp_servers() == ()
             elapsed = time.monotonic() - start
         finally:
             mcp_mod._mcp_loop = None
@@ -1298,6 +1394,66 @@ class TestConfigurableTimeouts:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_proof_auto_search_budget_bounds_handler_deadline(self):
+        """Use the requested search budget instead of the 600s server ceiling."""
+        from tools.mcp.mcp_tool import MCPServerTask, _make_tool_handler, _servers
+
+        server = MCPServerTask("lean-proof-auto")
+        server.session = MagicMock()
+        _servers["lean-proof-auto"] = server
+
+        try:
+            handler = _make_tool_handler("lean-proof-auto", "search_automated_proof", 600)
+            with (
+                patch("tools.mcp.mcp_tool._resolve_handler_server", return_value=server) as resolve,
+                patch(
+                    "tools.mcp.mcp_tool._run_server_operation",
+                    return_value=json.dumps({"result": "ok"}),
+                ) as operation,
+            ):
+                assert json.loads(handler({"search_budget_s": 20})) == {"result": "ok"}
+
+            assert 0 < resolve.call_args.kwargs["timeout"] <= 20
+            assert 0 < operation.call_args.kwargs["timeout"] <= 20
+        finally:
+            _servers.pop("lean-proof-auto", None)
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["lean_diagnostic_messages", "lean_goal", "lean_term_goal"],
+    )
+    def test_lean_lsp_interactive_state_reads_have_short_deadline(self, tool_name):
+        """Do not spend a compiler-sized timeout on interactive state reads."""
+        from tools.mcp.mcp_tool import _effective_tool_request_timeout
+
+        assert _effective_tool_request_timeout("lean-lsp", tool_name, {}, 600) == 60
+        assert _effective_tool_request_timeout("lean-lsp", tool_name, {}, 30) == 30
+        assert _effective_tool_request_timeout("lean-lsp", "lean_state_search", {}, 600) == 600
+
+    def test_timed_out_proof_auto_search_recycles_exact_server(self):
+        """Retire the search server whose request exceeded its bounded deadline."""
+        from tools.mcp.mcp_tool import MCPServerTask, _make_tool_handler, _servers
+
+        server = MCPServerTask("lean-proof-auto")
+        server.session = MagicMock()
+        _servers["lean-proof-auto"] = server
+
+        try:
+            handler = _make_tool_handler("lean-proof-auto", "search_automated_proof", 600)
+            with (
+                patch(
+                    "tools.mcp.mcp_tool._run_server_operation",
+                    side_effect=TimeoutError("search deadline"),
+                ),
+                patch("tools.mcp.mcp_tool.recycle_mcp_server", return_value=True) as recycle,
+            ):
+                payload = json.loads(handler({"search_budget_s": 20}))
+
+            assert "TimeoutError" in payload["error"]
+            recycle.assert_called_once_with("lean-proof-auto", expected_server=server)
+        finally:
+            _servers.pop("lean-proof-auto", None)
+
 
 # ---------------------------------------------------------------------------
 # Utility tool schemas (Resources & Prompts)
@@ -1391,6 +1547,7 @@ class TestUtilityHandlers:
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
 
         def fake_run(coro, timeout=30):
+            coro = coro() if callable(coro) else coro
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(coro)
@@ -2852,7 +3009,7 @@ class TestMCPSelectiveToolLoading:
         assert "mcp_ink_resources_only_get_prompt" not in registered
 
     def test_existing_tool_names_reflect_registered_subset(self):
-        from tools.mcp.mcp_tool import _discover_and_register_server, _existing_tool_names, _servers
+        from tools.mcp.mcp_tool import _discover_and_register_server, _existing_tool_names
         from tools.registry import ToolRegistry
 
         mock_registry = ToolRegistry()
@@ -2876,12 +3033,10 @@ class TestMCPSelectiveToolLoading:
                     {"url": "https://mcp.example.com", "tools": {"include": ["create_service"]}},
                 )
 
-        try:
+        with patch("tools.mcp.mcp_tool._servers", {}):
             registered = asyncio.run(run())
             assert registered == ["mcp_ink_existing_create_service"]
             assert _existing_tool_names() == ["mcp_ink_existing_create_service"]
-        finally:
-            _servers.pop("ink_existing", None)
 
     def test_no_toolset_created_when_everything_is_filtered_out(self):
         from tools.mcp.mcp_tool import _discover_and_register_server, _servers

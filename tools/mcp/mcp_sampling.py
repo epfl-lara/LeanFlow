@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""MCP sampling -- server-initiated LLM requests (sampling/createMessage).
-
-Extracted verbatim from ``tools/mcp_tool.py`` and re-exported there so callers
-and tests that resolve ``tools.mcp.mcp_tool.SamplingHandler`` /
-``tools.mcp.mcp_tool._safe_numeric`` keep working unchanged.
+"""Handle MCP server-initiated LLM requests (``sampling/createMessage``).
 
 This module owns the ``SamplingHandler`` callback that an MCP server uses to ask
 the agent's LLM to complete a message (text or tool-use responses), plus the
 small numeric-coercion and audit-path helpers it depends on.
 
-The module does NOT import ``tools.mcp.mcp_tool`` (no import cycle): it imports only
+The module does not import ``tools.mcp.mcp_tool``: it imports only
 stdlib, the optional MCP sampling types (graceful import, mirroring the origin),
 and ``_sanitize_error`` from ``tools.mcp.mcp_transport``. The auxiliary LLM client is
 imported lazily inside the callback so it stays monkeypatch-friendly and avoids a

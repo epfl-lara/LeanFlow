@@ -1,18 +1,4 @@
-"""Pure shared leaf helpers extracted from native_runner (Phase 2).
-
-This module collects the small, side-effect-free text / JSON / format / normalize "glue" helpers
-that many native_runner clusters depend on. Each function here is the fixpoint closure under
-"calls": its only non-stdlib callees are other functions in this module or already-extracted
-modules (``config.load_config``, ``native_config._project_root``,
-``lean_services.diagnostic_items`` / ``actionable_diagnostic_line_numbers``). None of them read
-module-mutable globals or mutate shared state, and this module does NOT import ``native_runner`` —
-so re-exporting these names back from there introduces no import cycle.
-
-Extracting these leaves first unblocks future native_runner decomposition, since the larger
-verification / queue / workflow clusters bottleneck on exactly these shared helpers (``_single_line``,
-``_relative_file_label``, ``_extract_json_payload``, ``_bounded_verifier_response``,
-``_diagnostic_counts_from_messages``, ``_collect_message_text``).
-"""
+"""Provide shared text, JSON, path, and diagnostic helpers for native workflows."""
 
 from __future__ import annotations
 
@@ -36,6 +22,7 @@ __all__ = [
     "_single_line",
     "_message_text",
     "_collect_message_text",
+    "_collect_assistant_report_text",
     "_diagnostic_counts_from_messages",
     "_extract_json_payload",
     "_bounded_verifier_response",
@@ -94,6 +81,23 @@ def _collect_message_text(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(_message_text(message.get("content")) for message in messages if message)
 
 
+def _collect_assistant_report_text(messages: list[dict[str, Any]]) -> str:
+    """Return assistant-authored prose suitable for semantic report parsing.
+
+    Tool results and runner-authored user prompts often embed workflow contracts
+    containing words such as ``blocker`` or ``failed``. They are evidence inputs,
+    not model blocker reports, so including them can turn a successful JSON tool
+    response into the shell-visible mathematical blocker.
+    """
+    return _collect_message_text(
+        [
+            message
+            for message in messages
+            if str(message.get("role", "") or "").strip().lower() == "assistant"
+        ]
+    )
+
+
 def _diagnostic_counts_from_messages(
     *,
     output: str = "",
@@ -113,7 +117,10 @@ def _diagnostic_counts_from_messages(
             errors += 1
         elif severity == "warning":
             warnings += 1
-        if "sorry" in message:
+        # ``sorryAx`` is an axiom-profile name, not a source placeholder.
+        # Count only Lean's standalone ``sorry`` token so policy diagnostics
+        # cannot fabricate unresolved-source evidence.
+        if re.search(r"\bsorry\b", message):
             sorry_count += 1
     return errors, warnings, sorry_count
 

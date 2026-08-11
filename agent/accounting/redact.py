@@ -3,13 +3,14 @@
 Applies pattern matching to mask API keys, tokens, and credentials
 before they reach log files, verbose output, or gateway logs.
 
-Short tokens (< 18 chars) are fully masked. Longer tokens preserve
-the first 6 and last 4 characters for debuggability.
+All matched credential values are fully masked. Prefixes and suffixes remain
+credential material and therefore never survive redaction.
 """
 
 import logging
 import os
 import re
+from typing import Any, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +84,17 @@ _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
 # Compile known prefix patterns into one alternation
 _PREFIX_RE = re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])")
+_JWT_CREDENTIAL_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?<![A-Za-z0-9_-]\.)"
+    r"eyJ[A-Za-z0-9_-]{13,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"
+    r"(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_-])"
+)
 
 
 def _mask_token(token: str) -> str:
-    """Mask a token, preserving prefix for long tokens."""
-    if len(token) < 18:
-        return "***"
-    return f"{token[:6]}...{token[-4:]}"
+    """Mask a token without retaining any credential-derived text."""
+    del token
+    return "***"
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -102,6 +107,9 @@ def redact_sensitive_text(text: str) -> str:
         return text
     if os.getenv("LEANFLOW_REDACT_SECRETS", "").lower() in ("0", "false", "no", "off"):
         return text
+
+    # Raw JWTs may arrive without an Authorization or named-field label.
+    text = _JWT_CREDENTIAL_RE.sub("***", text)
 
     # Known prefixes (sk-, ghp_, etc.)
     text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
@@ -126,13 +134,8 @@ def redact_sensitive_text(text: str) -> str:
         text,
     )
 
-    # Telegram bot tokens
-    def _redact_telegram(m):
-        prefix = m.group(1) or ""
-        digits = m.group(2)
-        return f"{prefix}{digits}:***"
-
-    text = _TELEGRAM_RE.sub(_redact_telegram, text)
+    # Telegram bot tokens are single credentials; retain no bot-id prefix.
+    text = _TELEGRAM_RE.sub("[REDACTED]", text)
 
     # Private key blocks
     text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
@@ -150,6 +153,34 @@ def redact_sensitive_text(text: str) -> str:
     text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
+
+
+def redact_sensitive_value(
+    value: Any,
+    *,
+    exact_secrets: Sequence[str] = (),
+) -> Any:
+    """Recursively redact structured log data and exact caller-owned secrets.
+
+    Exact-secret replacement is unconditional so a credential explicitly owned
+    by the caller cannot leak even when optional pattern redaction is disabled.
+    """
+    secrets = tuple(secret for secret in exact_secrets if isinstance(secret, str) and secret)
+    if isinstance(value, str):
+        for secret in secrets:
+            value = value.replace(secret, "[REDACTED]")
+        return redact_sensitive_text(value)
+    if isinstance(value, dict):
+        return {
+            key: redact_sensitive_value(item, exact_secrets=secrets) for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive_value(item, exact_secrets=secrets) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_sensitive_value(item, exact_secrets=secrets) for item in value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return redact_sensitive_value(str(value), exact_secrets=secrets)
 
 
 class RedactingFormatter(logging.Formatter):

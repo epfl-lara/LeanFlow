@@ -1,28 +1,13 @@
-"""Pure diagnostic / goal text parsers extracted from native_runner (Phase 2).
-
-This module collects the side-effect-free helpers that read declaration slices and turn
-Lean diagnostic / goal text (or structured ``diagnostic_items`` payloads) into the per-theorem
-feedback signals the runner consumes: whether diagnostics indicate a queue blocker / hard
-failure, whether goals are still open, and the per-declaration diagnostic feedback reason.
-
-Each function here is the fixpoint closure under "calls": its only non-stdlib callees are other
-functions in this module or already-extracted modules
-(``lean_services.diagnostic_items`` / ``diagnostics_indicate_actionable_failure``,
-``native_utils._single_line`` / ``_extract_diagnostic_line_numbers``,
-``proof_state_builder._declaration_line_index`` / ``_find_declaration_entry``). None of them read
-native_runner module-mutable globals, declare ``global``, or mutate shared state, and none are
-monkeypatched on native_runner by the test suite. This module does NOT import ``native_runner`` —
-so re-exporting these names back from there introduces no import cycle.
-"""
+"""Convert Lean diagnostics and goals into per-declaration feedback signals."""
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.lean.lean_diagnostics import _goals_still_open  # noqa: F401
 from leanflow_cli.lean.lean_services import (
     diagnostic_items,
     diagnostics_indicate_actionable_failure,
@@ -193,7 +178,8 @@ def _declaration_diagnostic_feedback_reason(
     # warnings as plain `warning: ...` lines that the regex cannot locate, so
     # the structured path is the only way to honour the spec's per-theorem
     # warning-cleanup opportunity for warnings the targeted check surfaced.
-    for diagnostic in structured_items or ():
+    structured_in_range: list[tuple[int, Mapping[str, Any]]] = []
+    for position, diagnostic in enumerate(structured_items or ()):
         if not isinstance(diagnostic, Mapping):
             continue
         line = _structured_diagnostic_line(diagnostic)
@@ -202,6 +188,17 @@ def _declaration_diagnostic_feedback_reason(
         severity = str(diagnostic.get("severity", "") or "diagnostic").strip().lower()
         if severity not in {"warning", "error"}:
             continue
+        structured_in_range.append((position, diagnostic))
+    structured_in_range.sort(
+        key=lambda item: (
+            0 if str(item[1].get("severity", "") or "").strip().lower() == "error" else 1,
+            item[0],
+        )
+    )
+    for _, diagnostic in structured_in_range:
+        line = _structured_diagnostic_line(diagnostic)
+        assert isinstance(line, int)
+        severity = str(diagnostic.get("severity", "") or "diagnostic").strip().lower()
         message = _single_line(str(diagnostic.get("message", "") or ""), 180)
         return (
             f"{severity} near line {line}: {message}" if message else f"{severity} near line {line}"
@@ -210,6 +207,11 @@ def _declaration_diagnostic_feedback_reason(
         if not text:
             continue
         parsed_items = diagnostic_items(text)
+        parsed_items.sort(
+            key=lambda diagnostic: (
+                0 if str(diagnostic.get("severity", "") or "").strip().lower() == "error" else 1
+            )
+        )
         for diagnostic in parsed_items:
             line = diagnostic.get("line")
             if isinstance(line, int) and start <= line <= max(start, end):
@@ -258,52 +260,3 @@ def _diagnostics_indicate_hard_failure(diagnostics: str) -> bool:
         r"\btactic execution\b",
     )
     return any(re.search(pattern, lowered) for pattern in hard_patterns)
-
-
-def _goals_still_open(goals: str) -> bool:
-    def _structured_goals_still_open(value: Any) -> bool:
-        if value is None:
-            return False
-        if isinstance(value, str):
-            lowered_value = value.lower()
-            if not lowered_value or "unavailable" in lowered_value:
-                return False
-            cleared_tokens = (
-                "no goals",
-                "goals accomplished",
-                "proof complete",
-                "no remaining goals",
-            )
-            if any(token in lowered_value for token in cleared_tokens):
-                return False
-            return "⊢" in value or bool(re.search(r"\bgoal\b", lowered_value))
-        if isinstance(value, list):
-            return any(_structured_goals_still_open(item) for item in value)
-        if isinstance(value, Mapping):
-            if "goals" in value:
-                return _structured_goals_still_open(value.get("goals"))
-            if "goal" in value:
-                return _structured_goals_still_open(value.get("goal"))
-            if "term_goal" in value:
-                return _structured_goals_still_open(value.get("term_goal"))
-            return False
-        return False
-
-    lowered = (goals or "").lower()
-    if not lowered or "unavailable" in lowered:
-        return False
-    try:
-        parsed = json.loads(goals)
-    except Exception:
-        parsed = None
-    if parsed is not None:
-        return _structured_goals_still_open(parsed)
-    cleared_tokens = (
-        "no goals",
-        "goals accomplished",
-        "proof complete",
-        "no remaining goals",
-    )
-    if any(token in lowered for token in cleared_tokens):
-        return False
-    return "⊢" in goals or "goal" in lowered

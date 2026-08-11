@@ -1,1 +1,1 @@
-"""tools.implementations subpackage (Phase II restructure)."""
+"""Implement model-callable LeanFlow tools."""

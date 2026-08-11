@@ -6,8 +6,8 @@ import os
 
 PRODUCT_NAME = "LeanFlow"
 CLI_NAME = "leanflow"
-PRODUCT_TAGLINE = "AI for Math"
-PRODUCT_SUBTITLE = "EPFL-inspired terminal kernel for Lean proving and formalization"
+PRODUCT_TAGLINE = "Lean-first AI automation"
+PRODUCT_SUBTITLE = "Verified proving and mathematical formalization for Lean 4"
 BRAND_NOTE = "EPFL-inspired visual direction only; not an official EPFL product"
 
 # Swiss-red-first terminal palette inspired by EPFL's public brand guidance.

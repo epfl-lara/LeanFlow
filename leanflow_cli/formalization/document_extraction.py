@@ -129,7 +129,7 @@ def _extract_latex_option_name(options: str) -> str:
 
 
 def _latex_theorem_environment_kinds(raw: str) -> dict[str, str]:
-    """Build a map of LaTeX theorem environment names to normalized kinds by scanning for declarations. Starts with built-in LaTeX theorem environments and augments with custom environments defined via \newtheorem, \declaretheorem, \newmdtheoremenv, \spnewtheorem, \newtcbtheorem, and \newenvironment directives in the source."""
+    r"""Build a map of LaTeX theorem environment names to normalized kinds by scanning for declarations. Starts with built-in LaTeX theorem environments and augments with custom environments defined via \newtheorem, \declaretheorem, \newmdtheoremenv, \spnewtheorem, \newtcbtheorem, and \newenvironment directives in the source."""
     envs = dict(_DEFAULT_LATEX_THEOREM_ENV_KINDS)
     newtheorem_pattern = re.compile(
         r"\\newtheorem\*?\s*"
@@ -233,7 +233,7 @@ def _following_latex_proof(raw: str, end_offset: int, theorem_env_pattern: str) 
 
 
 def _extract_latex_summary(path: Path) -> dict[str, Any]:
-    """Extract a structured summary from a LaTeX file for formalization preflight: theorem blocks, \profess statements, sections, citations, labels, and raw text, all bounded by size limits. Returns document title, parsed blocks with extracted Lean hints and proofs, bibliography references, and full text for context."""
+    r"""Extract a structured summary from a LaTeX file for formalization preflight: theorem blocks, \profess statements, sections, citations, labels, and raw text, all bounded by size limits. Returns document title, parsed blocks with extracted Lean hints and proofs, bibliography references, and full text for context."""
     raw = path.read_text(encoding="utf-8", errors="replace")
     theorem_env_kinds = _latex_theorem_environment_kinds(raw)
     env_pattern = "|".join(

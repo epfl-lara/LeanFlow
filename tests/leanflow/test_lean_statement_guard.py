@@ -61,6 +61,18 @@ def test_lean_statement_guard_allows_adding_new_theorem():
     assert result.ok is True
 
 
+def test_lean_statement_guard_blocks_duplicate_existing_declaration():
+    """Reject reinserting an exact helper before touching the Lean file."""
+    helper = "private lemma checked_map : True := by\n  trivial"
+    before = helper + "\n\ntheorem target : True := by\n  trivial\n"
+    after = helper + "\n\n" + before
+
+    result = validate_lean_statement_edit(before, after)
+
+    assert result.ok is False
+    assert result.violations == ("duplicated existing lemma checked_map",)
+
+
 def test_lean_statement_guard_can_be_disabled_by_env(monkeypatch):
     monkeypatch.setenv(ALLOW_STATEMENT_EDITS_ENV, "1")
 

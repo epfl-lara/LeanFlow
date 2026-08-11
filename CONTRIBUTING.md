@@ -17,13 +17,13 @@ source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
 
-Useful checks:
+Run the complete quality gate before submitting a change:
 
 ```bash
-python -m pytest tests/leanflow -q -n 0
-python -m pytest tests/leanflow tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
-python -m leanflow_cli.main --help
-./scripts/install-internal.sh
+black .
+ruff check .
+mypy
+python -m pytest -q
 ```
 
 ## Main Codepaths
@@ -35,7 +35,6 @@ python -m leanflow_cli.main --help
 - `run_agent.py` for the core conversation loop
 - `core/` for the shared kernel — session store, clock, constants, tool discovery (`model_tools`)
   and toolsets. Top-level `model_tools` / `toolsets` / `utils` are re-export shims for `core.*`.
-
 
 ## Skill vs Tool
 

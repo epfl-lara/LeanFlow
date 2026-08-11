@@ -87,6 +87,9 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
     """Convert a workflow activity event into a human-facing preview string. Routes on event type (assistant-response, tool-call, tool-result, api-request, etc.) and extracts a concise snippet—content, reasoning, queued tools, error status—respecting the configured character budget; returns a formatted preview or generic fallback message."""
     details = event.get("details")
     details = details if isinstance(details, dict) else {}
+    archived_preview = str(details.get("archived_preview", "") or "").strip()
+    if archived_preview:
+        return archived_preview
     event_type = str(event.get("type", "") or "")
     activity_limit = _activity_preview_limit()
     if event_type == "assistant-response":
@@ -199,7 +202,7 @@ def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
             hunk_count = diff.count("\n@@ ")
             if diff.startswith("@@ "):
                 hunk_count += 1
-            if success or status == "verified":
+            if success or status in {"patch_elaborated", "verified"}:
                 summary_parts: list[str] = []
                 if first_file:
                     summary_parts.append(_shorten_text(first_file, limit=100))
@@ -208,12 +211,16 @@ def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
                 if hunk_count:
                     summary_parts.append(f"{hunk_count} hunk(s)")
                 if tool_name == "apply_verified_patch":
-                    summary_parts.append("verified")
+                    summary_parts.append(
+                        "target verified"
+                        if payload.get("target_verified") is True
+                        else "broad check passed"
+                    )
                 if summary_parts:
                     return "updated " + " · ".join(summary_parts)
                 return "patch applied"
             if tool_name == "apply_verified_patch" and status:
-                return f"verified patch {status}: {message or error or '[no details]'}"
+                return f"checked patch {status}: {message or error or '[no details]'}"
             if error:
                 return f"patch failed: {error}"
             return "patch failed"
@@ -227,7 +234,14 @@ def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
 
 def _agent_status_from_live_phase(phase: str) -> str:
     normalized = str(phase or "").strip().lower()
-    if normalized in {"busy", "verifying", "in-progress", "compacted"}:
+    if normalized in {
+        "starting",
+        "reconciling",
+        "busy",
+        "verifying",
+        "in-progress",
+        "compacted",
+    }:
         return "active"
     if normalized in {"blocked", "failed", "stalled"}:
         return "blocked"

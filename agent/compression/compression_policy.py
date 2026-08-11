@@ -56,6 +56,27 @@ class CompressionPolicy:
     def __init__(self, agent: AIAgent) -> None:
         self._agent = agent
 
+    def advisor_precompression_admitted(self, tool_names: set[str]) -> bool:
+        """Return whether a managed advisor call may justify context compression.
+
+        Native workflows can install a side-effect-free admission callback so
+        an advisor request already rejected by a durable circuit does not erase
+        useful context before ordinary tool preflight returns that rejection.
+        Callback failures fail open and preserve the existing behavior.
+        """
+        callback = getattr(
+            self._agent,
+            "_advisor_precompression_admission_callback",
+            None,
+        )
+        if not callable(callback):
+            return True
+        try:
+            return bool(callback(frozenset(tool_names)))
+        except Exception:
+            logger.debug("Advisor precompression admission callback failed", exc_info=True)
+            return True
+
     # ── Core compression ────────────────────────────────────────────────────
     def compress_context(
         self,
@@ -175,25 +196,16 @@ class CompressionPolicy:
                 f"{agent.log_prefix}📦 Pre-advisor compression: reserving ~{reserve:,} tokens "
                 "so Lean advisor output stays unsummarized."
             )
-        for _ in range(3):
-            original_len = len(messages)
-            # Route through the agent wrapper so test patches of
-            # ``agent._compress_context`` still intercept.
-            messages, active_system_prompt = agent._compress_context(
-                messages,
-                system_message,
-                approx_tokens=estimated_with_advisor,
-                task_id=effective_task_id,
-            )
-            estimated_with_advisor = (
-                estimate_tokens_rough(active_system_prompt or "")
-                + estimate_messages_tokens_rough(messages)
-                + reserve
-            )
-            if not compressor.should_compress(estimated_with_advisor):
-                break
-            if len(messages) >= original_len:
-                break
+        # One pass is the useful limit here. If the advisor reserve alone keeps
+        # the estimate above the threshold, another pass can only summarize the
+        # fresh handoff produced below; it cannot create more reserve safely.
+        # Post-tool suffix-preserving compression handles a large advisor result.
+        messages, active_system_prompt = agent._compress_context(
+            messages,
+            system_message,
+            approx_tokens=estimated_with_advisor,
+            task_id=effective_task_id,
+        )
         return messages, active_system_prompt
 
     # ── Suffix-preserving compression ───────────────────────────────────────

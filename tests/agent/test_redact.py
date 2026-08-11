@@ -2,16 +2,20 @@
 
 import logging
 
-from agent.accounting.redact import RedactingFormatter, redact_sensitive_text
+from agent.accounting.redact import (
+    RedactingFormatter,
+    redact_sensitive_text,
+    redact_sensitive_value,
+)
 
 
 class TestKnownPrefixes:
     def test_openai_sk_key(self):
         text = "Using key sk-proj-abc123def456ghi789jkl012"
         result = redact_sensitive_text(text)
-        assert "sk-pro" in result
-        assert "abc123def456" not in result
-        assert "..." in result
+        assert result == "Using key ***"
+        assert "sk-pro" not in result
+        assert "jkl012" not in result
 
     def test_openrouter_sk_key(self):
         text = "OPENROUTER_API_KEY=sk-or-v1-abcdefghijklmnopqrstuvwxyz1234567890"
@@ -102,17 +106,50 @@ class TestAuthHeaders:
         assert "mytoken12345" not in result
 
 
+class TestJwtTokens:
+    def test_unlabelled_jwt_is_fully_redacted(self):
+        token = (
+            "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxMjM0NTY3ODkwIiwic2NvcGUiOiJjb2RleCJ9."
+            "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-"
+        )
+
+        result = redact_sensitive_text(f"provider failure returned {token}.")
+
+        assert result == "provider failure returned ***."
+        assert token not in result
+        assert token[:16] not in result
+        assert token[-16:] not in result
+
+    def test_ordinary_dotted_text_is_unchanged(self):
+        ordinary_values = (
+            "release 4.27.0 is installed",
+            "connect to api.example.com",
+            "resolve namespace.module.identifier",
+            "read alpha-beta.gamma_delta.component-name",
+            "verylongsubdomainname.verylongdomainlabel.verylongtoplevelname",
+            "ordinary_identifier_component.another_identifier_component.final_identifier_component",
+            "aaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccc.dddddddddddddddddddd",
+        )
+
+        for value in ordinary_values:
+            assert redact_sensitive_text(value) == value
+
+
 class TestTelegramTokens:
     def test_bot_token(self):
         text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"
         result = redact_sensitive_text(text)
         assert "ABCDEfghij" not in result
-        assert "123456789:***" in result
+        assert "123456789" not in result
+        assert result == "[REDACTED]"
 
     def test_raw_token(self):
         text = "12345678901:ABCDEfghijKLMNopqrstUVWXyz1234567890"
         result = redact_sensitive_text(text)
         assert "ABCDEfghij" not in result
+        assert "12345678901" not in result
+        assert result == "[REDACTED]"
 
 
 class TestPassthrough:
@@ -149,7 +186,9 @@ class TestRedactingFormatter:
         )
         result = formatter.format(record)
         assert "abc123def456" not in result
-        assert "sk-pro" in result
+        assert "sk-pro" not in result
+        assert "jkl012" not in result
+        assert result == "Key is ***"
 
 
 class TestPrintenvSimulation:
@@ -185,3 +224,18 @@ class TestSecretCapturePayloadRedaction:
         text = '{"raw_secret": "ghp_abc123def456ghi789jkl"}'
         result = redact_sensitive_text(text)
         assert "abc123def456" not in result
+
+    def test_nested_value_removes_exact_credentials_even_when_pattern_redaction_disabled(
+        self, monkeypatch
+    ):
+        secret = "opaque-provider-credential-without-a-known-prefix"
+        monkeypatch.setenv("LEANFLOW_REDACT_SECRETS", "0")
+
+        result = redact_sensitive_value(
+            {"headers": {"Authorization": f"Bearer {secret}"}, "values": [secret]},
+            exact_secrets=(secret,),
+        )
+
+        rendered = str(result)
+        assert secret not in rendered
+        assert rendered.count("[REDACTED]") == 2

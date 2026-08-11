@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from core.filesystem import ensure_directory
 from core.home import DEFAULT_HOME, HOME_ENV, leanflow_home
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "provider": "auto",
         "base_url": "",
         "api_key": "",
+        # Optional light tier for dispatched prover jobs; empty uses the
+        # run's main model.
+        "prover_light": "",
     },
     "auxiliary": {
         "lean_reasoning": {
@@ -66,6 +70,36 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "claude_code_command_template": "",
         },
         "lean_decompose_helpers": {
+            "provider": "",
+            "model": "",
+            "reasoning_effort": "",
+            "base_url": "",
+            "api_key": "",
+            "command_template": "",
+            "codex_command_template": "",
+            "claude_code_command_template": "",
+        },
+        "manager_nudge": {
+            "provider": "auto",
+            "model": "",
+            "reasoning_effort": "low",
+            "base_url": "",
+            "api_key": "",
+            "command_template": "",
+            "codex_command_template": "",
+            "claude_code_command_template": "",
+        },
+        "orchestration": {
+            "provider": "main",
+            "model": "",
+            "reasoning_effort": "off",
+            "base_url": "",
+            "api_key": "",
+            "command_template": "",
+            "codex_command_template": "",
+            "claude_code_command_template": "",
+        },
+        "planner_synthesis": {
             "provider": "",
             "model": "",
             "reasoning_effort": "",
@@ -165,6 +199,24 @@ DEFAULT_CONFIG_HEADER = """# LeanFlow configuration
 #   Empty values inherit auxiliary.lean_reasoning, so you can leave this blank
 #   until you want a separate decomposition-planner model/provider.
 #
+# Persistence coach:
+#   auxiliary.manager_nudge supplies the short encouragement message after a
+#   rejected prover turn. The default auto route selects an available auxiliary
+#   provider, while low reasoning effort keeps this message-only call fast.
+#
+# Orchestrator routing turn:
+#   auxiliary.orchestration is used by the LLM routing layer over the
+#   deterministic orchestrator floor. The default (`provider: main`, empty
+#   model) means the strong main-agent model decides routing; set
+#   auxiliary.orchestration.model to pin a different one. Its strict JSON turn
+#   disables hidden RCP reasoning by default so a thinking model cannot spend
+#   its output budget before replying; set reasoning_effort to low/medium/high
+#   to opt back in.
+#   auxiliary.planner_synthesis is the planner synthesizer turn. Empty values
+#   inherit auxiliary.orchestration — i.e. the strong main-agent model by default.
+#   Its strict JSON turn also defaults to non-thinking mode; set a planner-
+#   specific or orchestration reasoning_effort to opt back in.
+#
 # Formalization verifiers:
 #   auxiliary.blueprint_verification controls the independent statement/source
 #   review pass for document formalization blueprints. `main` keeps the existing
@@ -190,6 +242,8 @@ DEFAULT_CONFIG_HEADER = """# LeanFlow configuration
 #   - Use a separate helper-decomposition planner:
 #     auxiliary.lean_decompose_helpers.model and
 #     auxiliary.lean_decompose_helpers.reasoning_effort
+#   - Use a separate persistence coach model:
+#     auxiliary.manager_nudge.model and auxiliary.manager_nudge.reasoning_effort
 #   - Use separate formalization verifiers:
 #     auxiliary.blueprint_verification.provider and
 #     auxiliary.autoformalizer_verification.provider
@@ -253,6 +307,28 @@ AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT=
 AUXILIARY_LEAN_DECOMPOSE_HELPERS_BASE_URL=
 AUXILIARY_LEAN_DECOMPOSE_HELPERS_API_KEY=
 AUXILIARY_LEAN_DECOMPOSE_HELPERS_COMMAND_TEMPLATE=
+
+# Optional persistence-coach overrides. The default provider is auto and the
+# default reasoning effort is low.
+AUXILIARY_MANAGER_NUDGE_PROVIDER=
+AUXILIARY_MANAGER_NUDGE_MODEL=
+AUXILIARY_MANAGER_NUDGE_REASONING_EFFORT=
+AUXILIARY_MANAGER_NUDGE_BASE_URL=
+AUXILIARY_MANAGER_NUDGE_API_KEY=
+AUXILIARY_MANAGER_NUDGE_COMMAND_TEMPLATE=
+
+# Optional orchestrator routing overrides. Reasoning defaults to off because
+# this turn returns a small strict JSON decision. The advisory turn defaults
+# to 75 seconds outside research mode. Research mode uses a target-scoped
+# 12,000-character digest and caps the isolated foreground consult at 20
+# seconds; LEANFLOW_ORCHESTRATOR_LLM_TIMEOUT_S may lower that ceiling.
+AUXILIARY_ORCHESTRATION_PROVIDER=
+AUXILIARY_ORCHESTRATION_MODEL=
+AUXILIARY_ORCHESTRATION_REASONING_EFFORT=
+AUXILIARY_ORCHESTRATION_BASE_URL=
+AUXILIARY_ORCHESTRATION_API_KEY=
+AUXILIARY_ORCHESTRATION_COMMAND_TEMPLATE=
+LEANFLOW_ORCHESTRATOR_LLM_TIMEOUT_S=
 
 # Optional formalization verifier overrides. Providers use the same names as
 # expert help: main/auto/openrouter/custom for model-backed review, codex or
@@ -404,12 +480,11 @@ def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, 
 
 def ensure_leanflow_home() -> Path:
     home = get_leanflow_home()
-    home.mkdir(parents=True, exist_ok=True)
+    ensure_directory(home)
     _secure_dir(home)
     _ensure_default_soul_md(home)
     for subdir in ("sessions", "logs", "memories", "workflow-state", "local-models"):
-        target = home / subdir
-        target.mkdir(parents=True, exist_ok=True)
+        target = ensure_directory(home / subdir)
         _secure_dir(target)
     _ensure_default_config_file(home)
     _ensure_default_env_file(home)
