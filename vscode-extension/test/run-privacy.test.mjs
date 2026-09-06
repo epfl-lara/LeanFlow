@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  eventDetailForDisplay,
   launchPlanForDisplay,
   profileCatalogForDisplay,
   proverStateForDisplay,
@@ -265,4 +266,32 @@ test("profile snapshots redact credential overrides before reaching the webview"
     "<redacted:credential>",
   );
   assert.ok(!JSON.stringify(safe).includes(key));
+});
+
+test("expanded event records keep a whole model turn while redacting credentials", () => {
+  const content = "Proof step.\n".repeat(5000) + " token=sk-abcdefghijklmnopqrstuvwxyz0123456789";
+  const safe = eventDetailForDisplay({
+    version: 1,
+    run_id: "r",
+    event_id: "e",
+    found: true,
+    event: { event_id: "e", type: "api-response", details: { effective_prompt: "x".repeat(10000) } },
+    evidence: {
+      source: "job-log",
+      path: "/p",
+      match: "evidence_id",
+      record: { kind: "api-response", timestamp: "t", evidence_id: "abc", details: { assistant: { content } } },
+    },
+  });
+  const shown = safe.evidence.record.details.assistant.content;
+  assert.ok(shown.startsWith("Proof step.\n".repeat(5000)));
+  assert.ok(shown.endsWith("token=<redacted:credential>"));
+  // The row travels with its record under the same evidence bound; it is not a
+  // prompt-marker field, so its text is retained rather than hashed.
+  assert.equal(safe.event.details.effective_prompt, "x".repeat(10000));
+  const huge = eventDetailForDisplay({
+    evidence: { record: { details: { assistant: { content: "y".repeat(300 * 1024) } } } },
+  });
+  assert.ok(huge.evidence.record.details.assistant.content.length <= 256 * 1024);
+  assert.match(huge.evidence.record.details.assistant.content, /<truncated sha256=/);
 });

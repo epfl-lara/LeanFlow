@@ -8,6 +8,7 @@ import {
 import type { LaunchEnv } from "./launch";
 import type {
   ActivityEvent,
+  ActivityEventDetail,
   FlagCatalog,
   LaunchPlanPreview,
   LaunchRequest,
@@ -21,6 +22,8 @@ import type {
 const MAX_COMMAND_LENGTH = 4096;
 const MAX_DIAGNOSTIC_LENGTH = 8192;
 const MAX_RUN_LOG_LENGTH = 2 * 1024 * 1024;
+/** One expanded event may carry a whole model turn or tool payload. */
+const MAX_EVIDENCE_LENGTH = 256 * 1024;
 const MAX_NESTING_DEPTH = 12;
 const REDACTED_CREDENTIAL = "<redacted:credential>";
 
@@ -240,6 +243,7 @@ function sanitizeUnknown(
   fieldName: string,
   exactPrompts: readonly string[],
   depth = 0,
+  maximumLength = MAX_DIAGNOSTIC_LENGTH,
 ): unknown {
   if (depth > MAX_NESTING_DEPTH) {
     return "<redacted:excessive-nesting>";
@@ -254,15 +258,17 @@ function sanitizeUnknown(
     if (PROMPT_FIELD_NAMES.has(normalized)) {
       return promptEvidenceMarker(value);
     }
-    return redactSensitiveText(value, exactPrompts);
+    return redactSensitiveText(value, exactPrompts, maximumLength);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeUnknown(item, fieldName, exactPrompts, depth + 1));
+    return value.map((item) =>
+      sanitizeUnknown(item, fieldName, exactPrompts, depth + 1, maximumLength),
+    );
   }
   if (value !== null && typeof value === "object") {
     const safe: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      safe[key] = sanitizeUnknown(item, key, exactPrompts, depth + 1);
+      safe[key] = sanitizeUnknown(item, key, exactPrompts, depth + 1, maximumLength);
     }
     return safe;
   }
@@ -379,6 +385,11 @@ export function launchPlanForDisplay(
 /** Return an activity row safe to cross the webview boundary. */
 export function activityEventForDisplay(event: ActivityEvent): ActivityEvent {
   return sanitizeUnknown(event, "", []) as ActivityEvent;
+}
+
+/** Keep a whole recorded model turn readable while redacting credentials in it. */
+export function eventDetailForDisplay(detail: ActivityEventDetail): ActivityEventDetail {
+  return sanitizeUnknown(detail, "", [], 0, MAX_EVIDENCE_LENGTH) as ActivityEventDetail;
 }
 
 /** Return profile metadata without credential-shaped override values. */

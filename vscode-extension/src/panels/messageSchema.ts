@@ -252,6 +252,15 @@ export function parseWebviewMessage(
       return runId === null ? reject("runId") : { ok: true, message: { type, runId } };
     }
 
+    case "loadEventDetail": {
+      // Both ids become CLI arguments that name files under the state root.
+      const runId = identifier(raw.runId);
+      const eventId = identifier(raw.eventId);
+      return runId !== null && eventId !== null
+        ? { ok: true, message: { type, runId, eventId } }
+        : reject("event fields");
+    }
+
     case "proverMessage": {
       const runId = identifier(raw.runId);
       const agentId = identifier(raw.agentId);

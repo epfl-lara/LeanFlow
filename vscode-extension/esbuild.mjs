@@ -56,6 +56,7 @@ if (tests) {
       launchPaths: "src/core/launchPaths.ts",
       projectDiscovery: "src/core/projectDiscovery.ts",
       eventBuffer: "src/core/eventBuffer.ts",
+      eventDetail: "src/core/eventDetail.ts",
       experimentIsolation: "src/core/experimentIsolation.ts",
       experimentLaunchContract: "src/core/experimentLaunchContract.ts",
       experimentMatrix: "src/core/experimentMatrix.ts",

@@ -3,6 +3,26 @@
 All notable changes to the LeanFlow VS Code extension are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.12] — 2026-09-06
+
+- Expand any event in the Logs view to read the model output behind it: the
+  assistant's text and reasoning summary, each requested tool call with its
+  arguments, tool results, verification verdicts, and the final job report.
+  Everything renders as readable text rather than JSON: model prose keeps its
+  headings, lists, and fenced code; tool arguments and results become labelled
+  fields; Lean, Python, and shell payloads become code blocks. Call budget,
+  model, tokens, and node facts sit above; every section can be copied, and the
+  raw JSON stays one click away.
+- Read that output on demand from the job's own transcript through the new
+  `leanflow runs event RUN_ID EVENT_ID` command, so the polled stream stays
+  compact. Rows recorded before shared event ids existed are matched by kind
+  and time and labelled as such; the agent's full log opens in one click.
+- Make bounded-prover rows readable at a glance. A row now says what the model
+  answered or which tool ran with what arguments and outcome, instead of only
+  the event kind; the filter box searches those previews and tool names.
+- Include prover sessions, verdicts, and plan decisions in the Narrative preset,
+  and collapse all expanded rows in one click.
+
 ## [0.1.11] — 2026-09-06
 
 - Make an interactive theorem graph the default dependency view, with directed

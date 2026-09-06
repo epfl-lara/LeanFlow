@@ -79,6 +79,31 @@ export interface ActivityEvent {
   details: Record<string, unknown>;
 }
 
+/** Where an expanded event's full record came from, if it could be joined. */
+export interface ActivityEventEvidence {
+  /** "job-log" (the agent's private transcript), "run-events" (controller log), or "none". */
+  source: string;
+  path: string;
+  /** "evidence_id" for an exact join, "heuristic" for a kind/time match, "" when absent. */
+  match: string;
+  record: {
+    kind: string;
+    timestamp: string;
+    evidence_id: string;
+    details: Record<string, unknown>;
+  } | null;
+}
+
+/** `leanflow runs event` — one activity row plus the model output recorded behind it. */
+export interface ActivityEventDetail {
+  version: number;
+  run_id: string;
+  event_id: string;
+  found: boolean;
+  event: ActivityEvent | null;
+  evidence: ActivityEventEvidence;
+}
+
 export interface RunSummary {
   run_id: string;
   label: string;
@@ -750,6 +775,13 @@ export type HostMessage =
   | { type: "preview"; requestId: string; plan: LaunchPlanPreview | null; error: string }
   | { type: "diff"; requestId: string; rows: ProfileDiffRow[]; error: string }
   | { type: "runLog"; runId: string; text: string }
+  | {
+      type: "eventDetail";
+      runId: string;
+      eventId: string;
+      detail: ActivityEventDetail | null;
+      error: string;
+    }
   | { type: "proverState"; runId: string; snapshot: ProverSnapshot | null; error: string }
   | { type: "proverMessageResult"; runId: string; requestId: string; success: boolean; error: string }
   | { type: "targetPicked"; path: string }
@@ -764,6 +796,7 @@ export type WebviewMessage =
   | { type: "selectRun"; id: string | null }
   | { type: "loadEvents"; runId: string }
   | { type: "loadRunLog"; runId: string }
+  | { type: "loadEventDetail"; runId: string; eventId: string }
   | { type: "loadProver"; runId: string }
   | { type: "proverMessage"; runId: string; agentId: string; message: string; requestId?: string }
   | { type: "openProverFile"; runId: string; path: string; baselinePath?: string; line?: number }

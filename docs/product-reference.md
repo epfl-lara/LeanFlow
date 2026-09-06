@@ -511,8 +511,17 @@ state belongs to the exact run under
 ```bash
 leanflow runs prover <run-id> --json
 leanflow runs prover-message <run-id> --message "Use the compactness argument."
+leanflow runs event <run-id> <event-id> --json
 LEANFLOW_PROVER_RESUME_RUN_ID=<run-id> leanflow workflow prove Main.lean
 ```
+
+Compact activity rows carry a one-line description, bounded previews, and an
+`evidence_id`. `leanflow runs event` joins one row to the complete record in the
+job's transcript (`jobs/<job-id>/events.jsonl`) or the controller event log, so
+an editor can show the full assistant message, tool arguments, and tool result
+on demand without copying transcripts into the shared stream. Rows recorded
+before evidence ids existed are matched by kind, call count, tool, and time,
+and the payload reports `match: "heuristic"` for them.
 
 Resume creates a new execution with prior-run lineage, saved configuration, and
 retained request spending. It does not grant an interrupted job a fresh pass.

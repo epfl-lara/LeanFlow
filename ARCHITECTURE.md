@@ -277,7 +277,7 @@ does not read or reinterpret LeanFlow's persistence files directly:
   zoom, search, keyboard selection, and a status legend; geometry stays stable
   when proof statuses change. `webview/views/ProverWorkspace.tsx` shows the plan, dependencies,
   jobs, usage, file links/diffs, and queued guidance; `ProverSettings.tsx` exposes
-  catalogued launch controls. The host uses `runs prover` / `prover-message`,
+  catalogued launch controls. The host uses `runs prover` / `prover-message` / `runs event`,
   validates ownership and paths, and does not substitute another run's artifacts.
 - `src/core/eventBuffer.ts` deduplicates and bounds host-side event tails. When
   eviction occurs the host sends an explicit reset rather than an append, so a

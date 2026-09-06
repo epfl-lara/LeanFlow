@@ -67,6 +67,13 @@ def register_runs_parser(subparsers: Any) -> None:
     events_parser.add_argument("--pretty", action="store_true")
     events_parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
 
+    event_parser = runs_sub.add_parser(
+        "event", help="Read one activity event with the full model output recorded for it"
+    )
+    event_parser.add_argument("run_id")
+    event_parser.add_argument("event_id")
+    event_parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+
     journal_parser = runs_sub.add_parser("journal", help="Read proof-graph journal records")
     journal_parser.add_argument("--limit", type=int, default=200)
     journal_parser.add_argument("--pretty", action="store_true")
@@ -380,6 +387,19 @@ def _handle_events(args: argparse.Namespace, state_root: Path) -> int:
     return 0
 
 
+def _handle_event(args: argparse.Namespace, state_root: Path) -> int:
+    """Join one compact activity row to the complete record behind it."""
+    from leanflow_cli.cli.run_event_detail import read_event_detail
+
+    payload = read_event_detail(
+        state_root,
+        str(getattr(args, "run_id", "") or ""),
+        str(getattr(args, "event_id", "") or ""),
+    )
+    _print_json(payload)
+    return 0
+
+
 def _handle_journal(args: argparse.Namespace, state_root: Path) -> int:
     limit = max(1, int(getattr(args, "limit", 200) or 200))
     records = _read_jsonl(state_root / "journal.jsonl", limit=limit)
@@ -615,6 +635,7 @@ def handle_runs(args: argparse.Namespace) -> int:
         "list": _handle_list,
         "status": _handle_status,
         "events": _handle_events,
+        "event": _handle_event,
         "journal": _handle_journal,
         "outcomes": _handle_outcomes,
         "log": _handle_log,

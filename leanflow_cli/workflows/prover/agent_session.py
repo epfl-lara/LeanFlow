@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -147,12 +148,19 @@ def run_session(
         return callable(cancelled) and bool(cancelled())
 
     def emit(kind: str, details: dict[str, Any]) -> None:
-        """Persist full redacted evidence and project compact live activity."""
+        """Persist full redacted evidence and project compact live activity.
+
+        The private log keeps the complete record; observers receive the same
+        ``evidence_id`` so an editor can expand a compact activity row into this
+        exact transcript entry.
+        """
+        evidence_id = uuid.uuid4().hex[:12]
         event = {
             "type": kind,
             "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": context.get("job_id", role),
             "run_id": context.get("run_id", ""),
+            "evidence_id": evidence_id,
             "details": details,
         }
         with log_path.open("a", encoding="utf-8") as handle:
@@ -160,7 +168,7 @@ def run_session(
                 redact_sensitive_text(json.dumps(event, ensure_ascii=False, default=str)) + "\n"
             )
         if on_event is not None:
-            on_event(kind, details)
+            on_event(kind, {**details, "evidence_id": evidence_id})
 
     emit("job-session-start", {"role": role, "api_budget": api_budget, "api_calls": used})
 

@@ -3,14 +3,41 @@
  *
  * The runtime emits ~50 distinct event types at very different densities, so
  * the filter is the feature: reading a campaign means choosing which of those
- * layers to look at, not scrolling everything.
+ * layers to look at, not scrolling everything. Each row expands into the model
+ * output behind it, fetched from the job's own transcript on demand.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
+import { eventSearchText } from "../../src/core/eventDetail";
 import type { ActivityEvent } from "../../src/core/types";
 import { Card, Empty, Notice } from "../components";
 import { useSelectedRun, useStore } from "../store";
 import { post } from "../vscodeApi";
+import { EventDetailPanel } from "./EventDetail";
+
+/** Events that tell the story of a run, across the legacy runner and the bounded prover. */
+const NARRATIVE_TYPES = new Set([
+  "assistant-response",
+  "api-response",
+  "api-error",
+  "runner-start",
+  "runner-exit",
+  "conversation-start",
+  "conversation-end",
+  "job-session-start",
+  "job-session-end",
+  "job_finished",
+  "submission-feedback",
+  "submission_checked",
+  "candidate_checked",
+  "negation_checked",
+  "plan_rejected",
+  "plan_refinement_budget_exhausted",
+  "libraries_installed",
+  "context-compacted",
+  "user_message",
+  "user-guidance-received",
+]);
 
 /** Curated groupings so the filter is usable without knowing all 50 types. */
 const PRESETS: { id: string; label: string; match: (type: string) => boolean }[] = [
@@ -29,10 +56,7 @@ const PRESETS: { id: string; label: string; match: (type: string) => boolean }[]
     id: "narrative",
     label: "Narrative",
     match: (type) =>
-      type === "assistant-response" ||
-      type === "runner-start" ||
-      type === "conversation-start" ||
-      type === "conversation-end" ||
+      NARRATIVE_TYPES.has(type) ||
       type.startsWith("queue-") ||
       type.startsWith("orchestrator") ||
       type.startsWith("research-portfolio"),
@@ -83,6 +107,7 @@ export function LogsView() {
   const run = useSelectedRun();
   const [preset, setPreset] = useState("narrative");
   const [follow, setFollow] = useState(true);
+  const [expanded, setExpanded] = useState<Record<string, true>>({});
   const listRef = useRef<HTMLDivElement>(null);
 
   // Prefer the selected run's own stream; fall back to the newest recorded one
@@ -95,6 +120,8 @@ export function LogsView() {
     if (runId) {
       post({ type: "loadEvents", runId });
     }
+    // Expansion state is per stream; another run's ids would never match anyway.
+    setExpanded({});
   }, [runId]);
 
   useEffect(() => {
@@ -119,10 +146,7 @@ export function LogsView() {
       if (!search) {
         return true;
       }
-      return (
-        event.type.toLowerCase().includes(search) ||
-        event.message.toLowerCase().includes(search)
-      );
+      return eventSearchText(event).includes(search);
     });
   }, [stream, view.logFilter, view.logAgent, activePreset, search]);
 
@@ -131,6 +155,19 @@ export function LogsView() {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
   }, [filtered.length, follow]);
+
+  const toggle = (eventId: string) => {
+    setExpanded((previous) => {
+      const next = { ...previous };
+      if (next[eventId]) {
+        delete next[eventId];
+      } else {
+        next[eventId] = true;
+      }
+      return next;
+    });
+  };
+  const expandedCount = Object.keys(expanded).length;
 
   if (!app?.project.found) {
     return <Empty>Open a LeanFlow project to read run logs.</Empty>;
@@ -144,7 +181,7 @@ export function LogsView() {
         title="Logs"
         subtitle={
           runId
-            ? `Reading ${runId} — ${stream.length} events buffered, ${filtered.length} shown.`
+            ? `Reading ${runId} — ${stream.length} events buffered, ${filtered.length} shown. Select an event to see the model output behind it.`
             : "No recorded run yet."
         }
         actions={
@@ -195,6 +232,11 @@ export function LogsView() {
                 <span>Follow</span>
               </span>
             </label>
+            {expandedCount > 0 && (
+              <button className="btn ghost" onClick={() => setExpanded({})} type="button">
+                Collapse all ({expandedCount})
+              </button>
+            )}
           </div>
         )}
       </Card>
@@ -246,15 +288,34 @@ export function LogsView() {
                 {stream.length > 0 && <> {stream.length} events are buffered.</>}
               </div>
             ) : (
-              filtered.map((event) => (
-                <div key={event.event_id} className={`log-line ${toneFor(event.type)}`}>
-                  <span className="ts">{shortTime(event.timestamp)}</span>
-                  <span className="type" title={event.type}>
-                    {event.type}
-                  </span>
-                  <span className="msg">{event.agent_id && <span className="tag">{event.agent_id}</span>} {event.message}</span>
-                </div>
-              ))
+              filtered.map((event) => {
+                const open = Boolean(expanded[event.event_id]);
+                return (
+                  <Fragment key={event.event_id}>
+                    <div
+                      aria-expanded={open}
+                      className={`log-line ${toneFor(event.type)}${open ? " expanded" : ""}`}
+                      onClick={() => toggle(event.event_id)}
+                      onKeyDown={(keyboard) => {
+                        if (keyboard.key === "Enter" || keyboard.key === " ") {
+                          keyboard.preventDefault();
+                          toggle(event.event_id);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <span aria-hidden="true" className="caret">▶</span>
+                      <span className="ts">{shortTime(event.timestamp)}</span>
+                      <span className="type" title={event.type}>
+                        {event.type}
+                      </span>
+                      <span className="msg">{event.agent_id && <span className="tag">{event.agent_id}</span>} {event.message}</span>
+                    </div>
+                    {open && <EventDetailPanel runId={runId} event={event} />}
+                  </Fragment>
+                );
+              })
             )}
           </div>
         </div>

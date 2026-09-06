@@ -10,7 +10,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { CliError, fetchProfileDiff, fetchProver, previewLaunch, sendProverMessage } from "../core/cli";
+import {
+  CliError,
+  fetchEventDetail,
+  fetchProfileDiff,
+  fetchProver,
+  previewLaunch,
+  sendProverMessage,
+} from "../core/cli";
 import { proverArtifactAllowed } from "../core/prover";
 import {
   buildWorkflowArgs,
@@ -267,6 +274,32 @@ export class WebviewHost implements vscode.Disposable {
           events: events.map(activityEventForDisplay),
           reset: true,
         });
+        return;
+      }
+      case "loadEventDetail": {
+        const { runId, eventId } = message;
+        const root = services.runs.projectRootForRun(runId);
+        if (!root) {
+          this.post({
+            type: "eventDetail",
+            runId,
+            eventId,
+            detail: null,
+            error: "This run is not in the project's recorded history.",
+          });
+          return;
+        }
+        try {
+          const detail = await fetchEventDetail(root, runId, eventId);
+          this.post({ type: "eventDetail", runId, eventId, detail, error: "" });
+        } catch (error) {
+          const raw = error instanceof Error ? error.message : String(error);
+          // An older CLI has no `runs event`; argparse reports the unknown choice.
+          const reason = /invalid choice/i.test(raw)
+            ? "The installed LeanFlow CLI cannot expand events (no `runs event` command). Update LeanFlow to read model output here."
+            : redactSensitiveText(raw);
+          this.post({ type: "eventDetail", runId, eventId, detail: null, error: reason });
+        }
         return;
       }
       case "loadRunLog": {

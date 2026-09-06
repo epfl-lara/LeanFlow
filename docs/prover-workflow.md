@@ -268,6 +268,9 @@ Each run prints its ID and saves:
 leanflow runs prover <run-id> --json
 leanflow runs prover-message <run-id> --message "Try the compactness argument."
 
+# Join one compact activity row to the full model output in the job transcript.
+leanflow runs event <run-id> <event-id> --json
+
 # Resume the same target with its saved configuration and spending.
 LEANFLOW_PROVER_RESUME_RUN_ID=<run-id> leanflow workflow prove Main.lean
 ```

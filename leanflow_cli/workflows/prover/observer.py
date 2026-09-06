@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
+from leanflow_cli.workflows.prover.event_preview import event_message, preview_details
 from leanflow_cli.workflows.workflow_state import (
     append_workflow_activity,
     append_workflow_run_log,
@@ -90,10 +91,18 @@ class RunObserver:
         )
 
     def event(self, kind: str, details: Mapping[str, Any]) -> None:
-        """Emit bounded progress events with the job identity used by editor filters."""
+        """Emit bounded progress events with the job identity used by editor filters.
+
+        The row message says what happened; bounded previews let an editor expand
+        the row immediately; ``evidence_id`` resolves the complete record from the
+        job's own log through ``leanflow runs event`` without copying transcripts
+        into the shared stream.
+        """
         keys = (
             "job_id",
             "node_id",
+            "evidence_id",
+            "role",
             "api_calls",
             "api_budget",
             "model",
@@ -101,18 +110,21 @@ class RunObserver:
             "output_tokens",
             "status",
             "accepted",
+            "conditional",
+            "final_report_only",
             "tool",
             "error",
         )
         compact = {key: details[key] for key in keys if key in details}
-        message = str(details.get("message") or details.get("error") or details.get("tool") or kind)
+        preview = preview_details(kind, details)
+        message = event_message(kind, details, preview)
         append_workflow_activity(
             kind,
             redact_sensitive_text(message[:2000]),
             process_id=os.getpid(),
             agent_session_id=str(details.get("job_id") or "orchestrator"),
             active_skill="lean-bounded-prover",
-            **compact,
+            **{**preview, **compact},
         )
         if kind in {"job_finished", "candidate_checked", "plan_rejected", "api-error"}:
             append_workflow_run_log(redact_sensitive_text(f"{kind}: {compact}\n"))

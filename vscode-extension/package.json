@@ -2,7 +2,7 @@
   "name": "leanflow-vscode",
   "displayName": "LeanFlow",
   "description": "Launch, observe, and ablate LeanFlow proof workflows without leaving the editor.",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "publisher": "epfl-lara",
   "license": "Apache-2.0",
   "homepage": "https://github.com/epfl-lara/LeanFlow/tree/main/vscode-extension#readme",

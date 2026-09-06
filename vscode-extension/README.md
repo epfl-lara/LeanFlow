@@ -27,11 +27,22 @@ than shown as if fresh.
 **Logs** — the structured activity stream rather than scraped console text. The
 runtime emits around fifty event types at very different densities, so the
 filter is the point: presets for narrative, tool calls, Lean, provider, and
-research, plus per-type selection with counts. The structurally raw run log,
-including the closing token and cost summary, is one toggle away after prompt
-and credential fields have been scrubbed. Long runs retain a bounded tail in
-both the extension host and webview; eviction resets the displayed tail instead
-of duplicating or growing it without limit.
+research, plus per-type selection with counts. Each row says what happened —
+what the model answered, or which tool ran with what arguments and outcome —
+and expands to the full model output behind it: the assistant's text and
+reasoning summary, each requested tool call with its arguments, tool results,
+verification verdicts, and the final job report. It renders as readable text
+rather than JSON — model prose keeps its headings, lists, and fenced code; tool
+arguments and results become labelled fields; Lean, Python, and shell payloads
+become code blocks — with the raw JSON one click away. That output is read on
+demand from the job's own transcript through
+`leanflow runs event RUN_ID EVENT_ID`, so the polled stream stays compact; rows
+from runs recorded before shared event ids existed are matched by kind and time
+and say so. The structurally raw run log, including the closing token and cost
+summary, is one toggle away after prompt and credential fields have been
+scrubbed. Long runs retain a bounded tail in both the extension host and
+webview; eviction resets the displayed tail instead of duplicating or growing
+it without limit.
 
 **Knobs** — every declared `LEANFLOW_*` knob, grouped by subsystem, with its
 type, default, and a description of what flipping it does. Knobs worth flipping
@@ -181,7 +192,8 @@ lookup view available, and either view shares the statement and source details.
 
 File changes open in the editor, with **View diff** comparing against the run's
 recorded baseline when one exists. Each job links to its scratch proof and log;
-**Events** opens the structured log filtered to that exact agent. **Send guidance**
+**Events** opens the structured log filtered to that exact agent, where each row
+expands into the model output it summarizes. **Send guidance**
 queues a message for the orchestrator or a prover at its next decision boundary.
 It cannot edit the plan or bypass verification.
 

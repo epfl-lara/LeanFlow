@@ -553,14 +553,291 @@ button:focus-visible {
 
 .log-line {
   display: grid;
-  grid-template-columns: 74px 190px 1fr;
+  grid-template-columns: 10px 74px 190px 1fr;
   gap: 10px;
   padding: 2px 10px;
   border-bottom: 1px solid transparent;
+  cursor: pointer;
+  user-select: text;
 }
 
 .log-line:hover {
   background: var(--vscode-list-hoverBackground);
+}
+
+.log-line:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.log-line .caret {
+  color: var(--lf-muted);
+  font-size: 8px;
+  line-height: inherit;
+  transition: transform 0.1s ease;
+}
+
+.log-line.expanded {
+  background: var(--lf-lift-2);
+}
+
+.log-line.expanded .caret {
+  transform: rotate(90deg);
+}
+
+/* ------------------------------------------------------- expanded event */
+
+.log-detail {
+  padding: 8px 12px 12px 30px;
+  border-bottom: 1px solid var(--lf-border);
+  background: var(--lf-lift-1);
+  font-family: var(--vscode-font-family);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.log-detail-facts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.log-detail-facts .spacer {
+  flex: 1;
+}
+
+.log-detail .notice {
+  margin: 4px 0 8px;
+}
+
+.log-detail-section {
+  margin-top: 10px;
+}
+
+.log-detail-section .label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--lf-muted);
+}
+
+/* A section's top-level body is one bordered panel; nested values inside a
+   fields grid inherit the panel instead of nesting borders. */
+.log-detail-section > .rich,
+.log-detail-section > .section-fields,
+.log-detail-section > .code-block > pre {
+  border: 1px solid var(--lf-border);
+  border-radius: 4px;
+  background: var(--lf-lift-1);
+}
+
+.log-detail-section > .rich,
+.log-detail-section > .section-fields {
+  padding: 8px 12px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.log-detail-section.err > .rich,
+.log-detail-section.err > .section-fields,
+.log-detail-section.err > .code-block > pre {
+  border-left: 3px solid var(--vscode-charts-red);
+}
+
+.log-detail-section.ok > .rich,
+.log-detail-section.ok > .section-fields,
+.log-detail-section.ok > .code-block > pre {
+  border-left: 3px solid var(--vscode-charts-green);
+}
+
+.log-detail-raw-group {
+  margin-top: 12px;
+}
+
+.log-detail-raw summary {
+  cursor: pointer;
+  color: var(--lf-muted);
+  font-size: 11.5px;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.log-detail-raw .code-block {
+  margin: 6px 0 4px;
+}
+
+.log-detail-raw .code-block pre {
+  max-height: 260px;
+}
+
+/* --------------------------------------------------- readable payloads */
+
+.rich {
+  font-family: var(--vscode-font-family);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.rich p {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+
+.rich > :last-child {
+  margin-bottom: 0;
+}
+
+.rich h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 12px 0 6px;
+}
+
+.rich h4 {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--lf-muted);
+  margin: 12px 0 4px;
+}
+
+.rich > h3:first-child,
+.rich > h4:first-child {
+  margin-top: 0;
+}
+
+.rich ul,
+.rich ol {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+
+.rich li {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.rich blockquote {
+  margin: 0 0 8px;
+  padding: 2px 10px;
+  border-left: 3px solid var(--lf-border-strong);
+  color: var(--lf-muted);
+}
+
+.rich hr {
+  border: 0;
+  border-top: 1px solid var(--lf-border);
+  margin: 10px 0;
+}
+
+.rich code,
+.fields code,
+.field-inline code {
+  font-family: var(--lf-mono);
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
+}
+
+.rich .code-block {
+  margin: 0 0 8px;
+}
+
+.code-block {
+  position: relative;
+}
+
+.code-block .code-lang {
+  position: absolute;
+  top: 5px;
+  right: 9px;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--lf-muted);
+  pointer-events: none;
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--lf-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  background: var(--vscode-textCodeBlock-background, var(--lf-lift-2));
+  border: 1px solid var(--lf-border);
+  border-radius: 4px;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+  font-size: 12px;
+  align-items: baseline;
+}
+
+.fields .field {
+  display: contents;
+}
+
+.fields .field.block {
+  display: block;
+  grid-column: 1 / -1;
+  margin: 4px 0;
+}
+
+.fields dt {
+  color: var(--lf-muted);
+  font-family: var(--lf-mono);
+  font-size: 11px;
+}
+
+.fields .field.block dt {
+  margin-bottom: 4px;
+}
+
+.fields dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fields .fields {
+  padding: 6px 0 2px 10px;
+  border-left: 2px solid var(--lf-border);
+}
+
+.field-list {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.field-list li {
+  margin: 4px 0;
+}
+
+.field-inline {
+  white-space: pre-wrap;
+}
+
+.field-scalar {
+  font-family: var(--lf-mono);
+  font-size: 11.5px;
 }
 
 .log-line .ts {

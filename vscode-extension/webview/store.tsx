@@ -19,6 +19,7 @@ import {
 
 import type {
   ActivityEvent,
+  ActivityEventDetail,
   AppState,
   HostMessage,
   LaunchPlanPreview,
@@ -77,10 +78,40 @@ interface Toast {
   message: string;
 }
 
+/** One expanded event's full record, fetched on demand and cached per run+event. */
+export interface EventDetailEntry {
+  detail: ActivityEventDetail | null;
+  error: string;
+  loading: boolean;
+}
+
+/** Expanded rows are cheap to refetch; keep the cache from growing with a campaign. */
+const MAX_CACHED_EVENT_DETAILS = 200;
+
+export function eventDetailKey(runId: string, eventId: string): string {
+  return `${runId}:${eventId}`;
+}
+
+function boundedEventDetails(
+  entries: Record<string, EventDetailEntry>,
+): Record<string, EventDetailEntry> {
+  const keys = Object.keys(entries);
+  if (keys.length <= MAX_CACHED_EVENT_DETAILS) {
+    return entries;
+  }
+  // Object insertion order is the least-recently-fetched order.
+  const next = { ...entries };
+  for (const key of keys.slice(0, keys.length - MAX_CACHED_EVENT_DETAILS)) {
+    delete next[key];
+  }
+  return next;
+}
+
 interface Store {
   app: AppState | null;
   view: ViewState;
   events: Record<string, ActivityEvent[]>;
+  eventDetails: Record<string, EventDetailEntry>;
   runLog: string;
   proverStates: Record<string, { snapshot: ProverSnapshot | null; error: string }>;
   preview: { plan: LaunchPlanPreview | null; error: string; loading: boolean };
@@ -94,6 +125,7 @@ type Action =
   | { type: "form"; patch: Partial<LaunchRequest> }
   | { type: "previewLoading" }
   | { type: "diffLoading" }
+  | { type: "eventDetailLoading"; key: string }
   | { type: "dismissToast"; id: number };
 
 const initialView = (() => {
@@ -112,6 +144,7 @@ const INITIAL: Store = {
   app: null,
   view: initialView,
   events: {},
+  eventDetails: {},
   runLog: "",
   proverStates: {},
   preview: { plan: null, error: "", loading: false },
@@ -137,6 +170,16 @@ function reduce(state: Store, action: Action): Store {
       return { ...state, preview: { ...state.preview, loading: true } };
     case "diffLoading":
       return { ...state, diff: { ...state.diff, loading: true } };
+    case "eventDetailLoading": {
+      const previous = state.eventDetails[action.key];
+      return {
+        ...state,
+        eventDetails: {
+          ...state.eventDetails,
+          [action.key]: { detail: previous?.detail ?? null, error: "", loading: true },
+        },
+      };
+    }
     case "dismissToast":
       return { ...state, toasts: state.toasts.filter((toast) => toast.id !== action.id) };
     case "host":
@@ -172,6 +215,18 @@ function reduceHost(state: Store, message: HostMessage): Store {
       return { ...state, diff: { rows: message.rows, error: message.error, loading: false } };
     case "runLog":
       return { ...state, runLog: message.text };
+    case "eventDetail": {
+      const key = eventDetailKey(message.runId, message.eventId);
+      // Re-insert so the freshest answer is the last to be evicted.
+      const { [key]: _stale, ...rest } = state.eventDetails;
+      return {
+        ...state,
+        eventDetails: boundedEventDetails({
+          ...rest,
+          [key]: { detail: message.detail, error: message.error, loading: false },
+        }),
+      };
+    }
     case "targetPicked": {
       const view = { ...state.view, form: { ...state.view.form, target: message.path } };
       persistViewState(view);
@@ -195,6 +250,7 @@ interface StoreContextValue extends Store {
   setForm: (patch: Partial<LaunchRequest>) => void;
   requestPreview: (request: LaunchRequest) => void;
   requestDiff: (left: string, right: string) => void;
+  requestEventDetail: (runId: string, eventId: string) => void;
   dismissToast: (id: number) => void;
 }
 
@@ -234,13 +290,26 @@ export function StoreProvider(props: { children: ReactNode }) {
     post({ type: "diffProfiles", requestId: String(diffSeq.current), left, right });
   }, []);
 
+  const requestEventDetail = useCallback((runId: string, eventId: string) => {
+    dispatch({ type: "eventDetailLoading", key: eventDetailKey(runId, eventId) });
+    post({ type: "loadEventDetail", runId, eventId });
+  }, []);
+
   const dismissToast = useCallback((id: number) => {
     dispatch({ type: "dismissToast", id });
   }, []);
 
   const value = useMemo<StoreContextValue>(
-    () => ({ ...state, setView, setForm, requestPreview, requestDiff, dismissToast }),
-    [state, setView, setForm, requestPreview, requestDiff, dismissToast],
+    () => ({
+      ...state,
+      setView,
+      setForm,
+      requestPreview,
+      requestDiff,
+      requestEventDetail,
+      dismissToast,
+    }),
+    [state, setView, setForm, requestPreview, requestDiff, requestEventDetail, dismissToast],
   );
 
   return <StoreContext.Provider value={value}>{props.children}</StoreContext.Provider>;

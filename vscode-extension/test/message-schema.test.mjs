@@ -266,3 +266,13 @@ test("profile fields reject missing or malformed values", () => {
     false,
   );
 });
+
+test("event detail requests carry two filesystem-safe identifiers", () => {
+  assert.deepEqual(
+    parseWebviewMessage({ type: "loadEventDetail", runId: "prove-vscode-run-1", eventId: "1a315a12eb10" }),
+    { ok: true, message: { type: "loadEventDetail", runId: "prove-vscode-run-1", eventId: "1a315a12eb10" } },
+  );
+  assert.equal(parseWebviewMessage({ type: "loadEventDetail", runId: "prove-run", eventId: "../x" }).ok, false);
+  assert.equal(parseWebviewMessage({ type: "loadEventDetail", runId: "", eventId: "abc" }).ok, false);
+  assert.equal(parseWebviewMessage({ type: "loadEventDetail", runId: "prove-run" }).ok, false);
+});

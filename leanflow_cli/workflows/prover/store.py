@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -73,14 +74,22 @@ class RunStore:
                 self._plan_snapshot = plan
 
     def event(self, kind: str, details: dict[str, Any]) -> None:
-        """Append one bounded structured event for audit and live progress."""
-        event = {"time": now(), "event": kind, **details}
+        """Append one bounded structured event for audit and live progress.
+
+        Every record carries an ``evidence_id``. A session that already logged
+        the same event in its private job log supplies the id it used there, so
+        the compact activity row, this record, and the job transcript entry can
+        be joined later without guessing by timestamp.
+        """
+        payload = {**details}
+        payload.setdefault("evidence_id", uuid.uuid4().hex[:12])
+        event = {"time": now(), "event": kind, **payload}
         with self.lock, (self.directory / "events.jsonl").open("a") as handle:
             handle.write(
                 redact_sensitive_text(json.dumps(event, ensure_ascii=False, default=str)) + "\n"
             )
         if self.on_event is not None:
-            self.on_event(kind, details)
+            self.on_event(kind, payload)
 
     def baseline(self, document: SourceDocument) -> Path:
         """Preserve a before-view once so editors can show exact diffs."""

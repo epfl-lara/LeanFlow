@@ -9,10 +9,12 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 
+import { normalizeEventDetail } from "./eventDetail";
 import type { LaunchEnv } from "./launch";
 import { normalizeRunHistoryPayload } from "./runHistory";
 import { normalizeProverSnapshot, type ProverSnapshot } from "./prover";
 import {
+  eventDetailForDisplay,
   launchPlanForDisplay,
   liveStatusForDisplay,
   proverStateForDisplay,
@@ -21,6 +23,7 @@ import {
   runSummaryForDisplay,
 } from "./runPrivacy";
 import type {
+  ActivityEventDetail,
   CliStatus,
   FlagCatalog,
   LaunchPlanPreview,
@@ -236,6 +239,25 @@ export async function fetchEvents(
     cursor: payload.cursor ?? since,
     runId: payload.run_id ?? runId,
   };
+}
+
+/**
+ * Join one compact activity row to the full model output recorded for it.
+ *
+ * The runtime keeps transcripts in each job's private log and only projects a
+ * bounded row into the polled stream, so this is read on demand when a row is
+ * expanded rather than shipped with every poll.
+ */
+export async function fetchEventDetail(
+  projectRoot: string,
+  runId: string,
+  eventId: string,
+): Promise<ActivityEventDetail> {
+  const payload = await runCliJson<unknown>(
+    ["runs", "--project", projectRoot, "event", runId, eventId],
+    { cwd: projectRoot },
+  );
+  return eventDetailForDisplay(normalizeEventDetail(payload, runId, eventId));
 }
 
 export async function fetchEventTypes(
