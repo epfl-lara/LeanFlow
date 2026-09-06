@@ -1,18 +1,25 @@
 # Prover readiness and proposed hard target — 2026-09-06
 
-This is a preparation and review record. The proposed problem and configuration
-are awaiting the user's agreement. No new proof campaign was launched.
+This is a preparation and review record. The user increased the requested limits
+and asked for one checkout. No new proof campaign was launched.
 
 ## Checkout and installation
 
-The redesign remains on `milikic/prover-redesign` in the separate
-`LeanFlow-prover-redesign` worktree. The original `LeanFlow` checkout remained on
-`main`; the desktop task still points there. No redesign work was moved to main.
-The pre-existing, untracked `Refactor.md` is preserved in both checkouts.
+The redesign is now checked out on `milikic/prover-redesign` directly in
+`~/Desktop/LeanFlow`. The extra redesign worktree was removed after consolidation.
+The `main` branch remains available in Git. The original `Refactor.md` is untouched;
+the differing worktree copy is preserved under
+`.leanflow/archives/redesign-worktree-20260906/Refactor-redesign.md`.
 
-The installed `~/.local/bin/leanflow` now uses the redesign worktree's dedicated
-`.leanflow-venv`. Its imports resolve to that worktree, dependency consistency
-checks pass, and the installed wrapper exposes the new prover commands.
+The installed `~/.local/bin/leanflow` now uses `~/Desktop/LeanFlow/.leanflow-venv`.
+Its imports resolve to the consolidated checkout. The prepared input and visible
+configuration are in `testdata/workflow_projects/BeckFialaResearch/`; experiment
+records are preserved under `.leanflow/experiments/`.
+
+After relocation, the installed CLI help and isolated LeanProbe preflight pass,
+and the pinned input project builds with its one expected `sorry`. Black, Ruff,
+mypy, all 7,070 Python tests, and all 159 extension tests pass again from this
+checkout. The installed extension bundles match the rebuilt source hashes.
 
 The redesigned VS Code extension was rebuilt and installed as **0.1.10**.
 Type checking, all **159 extension tests**, and VSIX packaging passed. Installed
@@ -54,14 +61,14 @@ statements and dependency pins even though API listing requires authentication.
 | Orchestrator, reviewer, researcher, prover | `gpt-6-astra`, `xhigh` |
 | External design reviewer | Claude Code `claude-fable-5-1`, `max` |
 | Mode and order | Research, bottom-up |
-| Parallel provers | 2 |
-| Calls per prover or negation pass | 150 |
-| Calls per planning/review/research stage | 30 |
-| Total campaign calls | 800 |
+| Parallel provers | 4 |
+| Calls per prover or negation pass | 200 |
+| Calls per planning/review/research stage | 50 |
+| Total campaign calls | 2,000 |
 | Restarts | 2 additional passes per node |
 | Direction refinements / decompositions / nodes | 4 / 8 / 24 |
-| Campaign wall time | 3 hours |
-| Provider and independent verification timeout | 600 seconds |
+| Campaign wall time | 8 hours |
+| Provider and independent verification timeout | 1,200 seconds |
 | Prover / orchestrator context | 64,000 / 96,000 tokens |
 | Compression | Enabled for both roles |
 | Local Loogle in research workers | Disabled; native source and remote search remain available |
@@ -76,6 +83,13 @@ technical ban on fetching formal proofs. The exact installed CLI dry-run resolve
 every proposed setting, including `xhigh`, without starting a model session.
 The user's global default model is unchanged; this launch must select Codex
 explicitly.
+
+The reviewed settings are saved in the input project's `RUN_CONFIG.json` and as
+the project-local `beck-fiala-research` flag profile. Loading that profile selects
+the limits; it does not change global defaults or replace the explicit Codex
+provider selection. The 8-hour campaign and 20-minute request/verification limits
+are the chosen interpretation of the user's request to increase time as well.
+See [budget scope and stop conditions](prover-budget-contract.md).
 
 ## Preparation findings and correction
 
@@ -117,8 +131,8 @@ changed kernel types, and disallowed axioms.
   in that client is not ready or live-validated. Fable is the external reviewer.
 - Reasoning effort is shared across roles, and role models share one provider.
 - Prover scratch checks retain their separate 60-second timeout, including cold
-  import time; the proposed 600 seconds does not override that limit.
-- Negation attempts consume the full prover-sized allowance. The 800-call total
+  import time; the proposed 1,200 seconds does not override that limit.
+- Negation attempts consume the full prover-sized allowance. The 2,000-call total
   is the effective safeguard against repeated expensive failures.
 - A transient provider failure ends the campaign as resumable; resumption is
   manual, using its saved identity and progress.
@@ -128,7 +142,7 @@ changed kernel types, and disallowed axioms.
   mode already disables local Loogle by default; the proposal pins that policy
   explicitly. Updating this shared client's index flags remains separate work.
 - The machine has 24 GiB RAM; observed free memory was 37% during preparation.
-  Two workers is a conservative proposal, not a guarantee against contention.
+  The requested four workers may contend for memory, so local Loogle remains off.
 
 This evidence supports the specific Codex configuration above. It does not
 establish that every provider or every research path is production-ready.
@@ -136,9 +150,12 @@ establish that every provider or every research path is production-ready.
 ## Evidence
 
 Detailed local artifacts are in
-`../LeanFlow-prover-experiments/20260906-readiness-selection/` relative to the
-worktree: `installed-readiness.json`, `fable-review.json`,
+`.leanflow/experiments/20260906-readiness-selection/` relative to this checkout:
+`installed-readiness.json`, `fable-review.json`,
 `fable-concurrence.json`, `fable-skeleton-review.json`, `proposed-config.json`,
 `config-preview.json`, `target-manifest.json`, `target-verification.json`,
 `target-build.log`, `doctor-target.json`, and the test/install logs.
-The isolated input is `beckfiala-pinned/BeckFiala/Problem.lean` there.
+The isolated input is
+`testdata/workflow_projects/BeckFialaResearch/BeckFiala/Problem.lean`.
+Historical logs retain their original absolute paths as provenance;
+`consolidation.json` records the move without rewriting those logs.
