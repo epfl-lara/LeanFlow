@@ -751,6 +751,7 @@ export type HostMessage =
   | { type: "diff"; requestId: string; rows: ProfileDiffRow[]; error: string }
   | { type: "runLog"; runId: string; text: string }
   | { type: "proverState"; runId: string; snapshot: ProverSnapshot | null; error: string }
+  | { type: "proverMessageResult"; runId: string; requestId: string; success: boolean; error: string }
   | { type: "targetPicked"; path: string }
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
@@ -764,7 +765,7 @@ export type WebviewMessage =
   | { type: "loadEvents"; runId: string }
   | { type: "loadRunLog"; runId: string }
   | { type: "loadProver"; runId: string }
-  | { type: "proverMessage"; runId: string; agentId: string; message: string }
+  | { type: "proverMessage"; runId: string; agentId: string; message: string; requestId?: string }
   | { type: "openProverFile"; runId: string; path: string; baselinePath?: string; line?: number }
   | { type: "saveProfile"; profile: FlagProfile }
   | { type: "deleteProfile"; name: string }

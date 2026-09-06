@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,27 @@ def new_job(
     runtime: ProverRuntime, role: str, *, node: Node | None = None, prompt: str = ""
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Reserve a complete job allocation before allowing model work to start."""
+    if (
+        role in {"orchestrator", "review", "research"}
+        and (role, prompt) in runtime.resume_role_jobs
+    ):
+        job = runtime.resume_role_jobs.pop((role, prompt))
+        remaining = job["api_budget"] - job["api_calls"]
+        job["reserved_calls"] = runtime._reserve(remaining)
+        if job["reserved_calls"] != remaining:
+            runtime.reserved -= job["reserved_calls"]
+            raise BudgetExhausted("remaining campaign allocation cannot resume this job")
+        job.update(
+            previous_api_calls=job["api_calls"], resumed=True, status="running", accounted=False
+        )
+        for field in ("input_tokens", "output_tokens", "cost_usd"):
+            job["previous_" + field] = job.get(field)
+        context = runtime._context(node)
+        context.update(
+            job_id=job["id"], candidate_path=str(Path(job["workspace"]) / "candidate.txt")
+        )
+        runtime._persist()
+        return job, context
     resumed_jobs = runtime.resume_negation_jobs if role == "negation" else runtime.resume_jobs
     if role in {"prover", "negation"} and node is not None and node.id in resumed_jobs:
         job = resumed_jobs[node.id]
@@ -40,6 +62,7 @@ def new_job(
         for field in ("input_tokens", "output_tokens", "cost_usd"):
             job["previous_" + field] = job.get(field)
         job["resumed"] = True
+        job["accounted"] = False
         job["status"] = "running"
         workspace = Path(job["workspace"])
         baseline = workspace.parent / ".runtime" / workspace.name / "source-before.lean"
@@ -77,92 +100,104 @@ def new_job(
     except OSError:
         runtime.reserved -= budget
         raise
-    log_path = workspace / "events.jsonl"
-    context = runtime._context(node)
-    context.update(job_id=job_id, candidate_path=str(workspace / "candidate.txt"))
-    job = {
-        "id": job_id,
-        "agent_id": job_id,
-        "node_id": node.id if node else "",
-        "role": role,
-        "status": "running",
-        "api_calls": 0,
-        "api_budget": budget,
-        "reserved_calls": budget,
-        "previous_api_calls": 0,
-        "log_path": str(log_path),
-        "scratch_path": "",
-        "workspace": str(workspace),
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cost_usd": None,
-        "purpose": prompt,
-        "node_revision": node.revision if node else 0,
-        "started_at": now(),
-    }
-    if node:
-        scratch = workspace / "Scratch.lean"
-        before = declaration_source(runtime.documents[node.file], node)
-        write_source(scratch, before)
-        runtime.scratch_before[job_id] = before
-        baseline = workspace.parent / ".runtime" / workspace.name / "source-before.lean"
-        baseline.parent.mkdir(parents=True, exist_ok=True)
-        write_source(baseline, before)
-        context["scratch_file"] = str(scratch)
-        context["original_file"] = node.file
-        context["plan_path"] = str(workspace / "PLAN_job.md")
-        job["scratch_path"] = str(scratch)
-        # Earlier proven holes no longer exist in rendered scratch; remap the target indices.
-        open_holes = [
-            i
-            for i in range(len(sorry_spans(runtime.documents[node.file].baseline)))
-            if str(i) not in runtime.documents[node.file].replacements
-        ]
-        context["scratch_holes"] = [open_holes.index(i) for i in node.holes]
-        job["scratch_holes"] = context["scratch_holes"]
-        previous = next(
-            (
-                item
-                for item in reversed(runtime.state["jobs"])
-                if item.get("node_id") == node.id
-                and item.get("role") == "prover"
-                and item.get("node_revision") == node.revision
-            ),
-            None,
-        )
-        if previous:
-            prior_workspace = Path(previous["workspace"])
-            prior_baseline = (
-                prior_workspace.parent / ".runtime" / prior_workspace.name / "source-before.lean"
+    try:
+        log_path = workspace / "events.jsonl"
+        context = runtime._context(node)
+        context.update(job_id=job_id, candidate_path=str(workspace / "candidate.txt"))
+        job = {
+            "id": job_id,
+            "agent_id": job_id,
+            "node_id": node.id if node else "",
+            "role": role,
+            "status": "running",
+            "api_calls": 0,
+            "api_budget": budget,
+            "reserved_calls": budget,
+            "previous_api_calls": 0,
+            "log_path": str(log_path),
+            "scratch_path": "",
+            "workspace": str(workspace),
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": None,
+            "purpose": prompt,
+            "node_revision": node.revision if node else 0,
+            "started_at": now(),
+        }
+        if node:
+            scratch = workspace / "Scratch.lean"
+            before = declaration_source(runtime.documents[node.file], node)
+            write_source(scratch, before)
+            runtime.scratch_before[job_id] = before
+            baseline = workspace.parent / ".runtime" / workspace.name / "source-before.lean"
+            baseline.parent.mkdir(parents=True, exist_ok=True)
+            write_source(baseline, before)
+            context["scratch_file"] = str(scratch)
+            context["original_file"] = node.file
+            context["plan_path"] = str(workspace / "PLAN_job.md")
+            job["scratch_path"] = str(scratch)
+            # Earlier proven holes no longer exist in rendered scratch; remap the target indices.
+            open_holes = [
+                i
+                for i in range(len(sorry_spans(runtime.documents[node.file].baseline)))
+                if str(i) not in runtime.documents[node.file].replacements
+            ]
+            context["scratch_holes"] = [open_holes.index(i) for i in node.holes]
+            job["scratch_holes"] = context["scratch_holes"]
+            previous = next(
+                (
+                    item
+                    for item in reversed(runtime.state["jobs"])
+                    if item.get("node_id") == node.id
+                    and item.get("role") == "prover"
+                    and item.get("node_revision") == node.revision
+                ),
+                None,
             )
-            prior_scratch = Path(previous["scratch_path"])
-            if (
-                prior_baseline.is_file()
-                and prior_scratch.is_file()
-                and not prior_scratch.is_symlink()
-            ):
-                partial = extract_scratch_replacements(
-                    read_source(prior_baseline),
-                    read_source(prior_scratch),
-                    list(previous.get("scratch_holes", [])),
+            if previous:
+                prior_workspace = Path(previous["workspace"])
+                prior_baseline = (
+                    prior_workspace.parent
+                    / ".runtime"
+                    / prior_workspace.name
+                    / "source-before.lean"
                 )
-                if partial and len(partial) == len(node.holes):
-                    write_source(
-                        scratch,
-                        declaration_source(runtime.documents[node.file], node, candidate=partial),
+                prior_scratch = Path(previous["scratch_path"])
+                if (
+                    prior_baseline.is_file()
+                    and prior_scratch.is_file()
+                    and not prior_scratch.is_symlink()
+                ):
+                    partial = extract_scratch_replacements(
+                        read_source(prior_baseline),
+                        read_source(prior_scratch),
+                        list(previous.get("scratch_holes", [])),
                     )
-            prior_plan = prior_workspace / "PLAN_job.md"
-            if prior_plan.is_file() and not prior_plan.is_symlink():
-                write_source(workspace / "PLAN_job.md", read_source(prior_plan))
-            context["previous_job"] = {
-                "id": previous["id"],
-                "workspace": str(prior_workspace),
-                "report_path": previous.get("result_path", ""),
-            }
-    if node:
-        context["scratch_declaration"] = str(
-            (declaration_region(Path(job["scratch_path"]), node.name) or {}).get("text", "")
-        )[:16000]
+                    if partial and len(partial) == len(node.holes):
+                        write_source(
+                            scratch,
+                            declaration_source(
+                                runtime.documents[node.file], node, candidate=partial
+                            ),
+                        )
+                prior_plan = prior_workspace / "PLAN_job.md"
+                if prior_plan.is_file() and not prior_plan.is_symlink():
+                    write_source(workspace / "PLAN_job.md", read_source(prior_plan))
+                context["previous_job"] = {
+                    "id": previous["id"],
+                    "workspace": str(prior_workspace),
+                    "report_path": previous.get("result_path", ""),
+                }
+        if node:
+            context["scratch_declaration"] = str(
+                (declaration_region(Path(job["scratch_path"]), node.name) or {}).get("text", "")
+            )[:16000]
+    except Exception:
+        runtime.reserved -= budget
+        runtime.scratch_before.pop(job_id, None)
+        shutil.rmtree(workspace)
+        shutil.rmtree(workspace.parent / ".runtime" / workspace.name, ignore_errors=True)
+        raise
     runtime.state["jobs"].append(job)
     runtime._persist()
     return job, context
@@ -173,6 +208,8 @@ def session_event(
 ) -> None:
     """Publish live session usage without allowing worker writes to PLAN or DAG."""
     with runtime.lock:
+        if job.get("accounted") is True:
+            return
         if isinstance(details.get("api_calls"), int):
             job["api_calls"] = max(
                 int(job.get("api_calls", 0)), min(job["api_budget"], details["api_calls"])
@@ -217,7 +254,11 @@ def invoke(
         )
     except Exception as error:
         return {
-            "status": error.status if isinstance(error, InfrastructureFailure) else "error",
+            "status": (
+                error.status
+                if isinstance(error, InfrastructureFailure)
+                else ("source_conflict" if "protected source changed" in str(error) else "error")
+            ),
             "final_response": str(error),
             "api_calls": job.get("api_calls", 0),
         }
@@ -288,12 +329,23 @@ def candidate_feedback(
 def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, Any]) -> None:
     """Reconcile reserved requests using the session's actual monotonic request count."""
     with runtime.lock:
+        if job.get("accounted") is True:
+            return
         calls = max(int(job.get("api_calls", 0)), int(result.get("api_calls", 0) or 0))
         if calls > job["api_budget"]:
             raise RuntimeError("session exceeded its reserved API allocation")
         runtime.reserved -= job.get("reserved_calls", job["api_budget"])
         runtime.consumed += calls - int(job.get("previous_api_calls", 0))
-        job.update(status=str(result.get("status", "error")), api_calls=calls, finished_at=now())
+        job.update(
+            status=str(result.get("status", "error")),
+            api_calls=calls,
+            finished_at=now(),
+            accounted=True,
+        )
+        if result.get("status") == "interrupted":
+            runtime.cancelled.set()
+            runtime.stopping = True
+            runtime.state["stop_status"] = "interrupted"
         for field in ("input_tokens", "output_tokens", "cost_usd", "report_path", "artifacts"):
             if field in result:
                 if field in {"input_tokens", "output_tokens"}:
@@ -310,11 +362,17 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
         )
         runtime._persist()
         if (
-            result.get("status") in {"provider_error", "environment_error", "error"}
+            result.get("status")
+            in {"provider_error", "environment_error", "source_conflict", "error"}
             and not runtime.cancelled.is_set()
         ):
             node = runtime.dag.by_id().get(job["node_id"])
-            if node is not None and job["role"] == "prover":
+            if (
+                node is not None
+                and job["role"] == "prover"
+                and node.revision == job["node_revision"]
+                and node.status != "proved"
+            ):
                 node.status = "retry"
             raise InfrastructureFailure(
                 str(
@@ -323,8 +381,8 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
                     or "Provider session failed; its work and remaining budget were preserved"
                 ),
                 status=(
-                    "environment_error"
-                    if result.get("status") == "environment_error"
+                    str(result["status"])
+                    if result.get("status") in {"environment_error", "source_conflict"}
                     else "provider_error"
                 ),
             )
@@ -342,6 +400,7 @@ def run_role(
     context.update(context_extra or {})
     result = runtime._invoke(job, context, prompt)
     runtime._finish_job(job, result)
+    runtime._ensure_active()
     return result
 
 

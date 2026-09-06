@@ -190,3 +190,23 @@ export function proverArtifactAllowed(snapshot: ProverSnapshot, path: string, ba
 export function proverJobAcceptsGuidance(job: ProverJob): boolean {
   return !job.status || ["running", "starting", "resume_pending"].includes(job.status);
 }
+
+/** Address standard-mode guidance to its active prover; research keeps its coordinator. */
+export function proverDefaultGuidanceRecipient(snapshot: ProverSnapshot): string {
+  return snapshot.mode === "standard"
+    ? snapshot.jobs.find((job) => job.role === "prover" && proverJobAcceptsGuidance(job))?.agent_id || "orchestrator"
+    : "orchestrator";
+}
+
+/** Clear only the acknowledged draft; preserve failures, edits and unrelated requests. */
+export function proverGuidanceUpdate(
+  draft: string,
+  pending: { runId: string; requestId: string; message: string } | null,
+  reply: { runId: string; requestId: string; success: boolean; error: string },
+): { draft: string; error: string } | null {
+  if (!pending || pending.runId !== reply.runId || pending.requestId !== reply.requestId) return null;
+  return {
+    draft: reply.success && draft === pending.message ? "" : draft,
+    error: reply.success ? "" : reply.error,
+  };
+}

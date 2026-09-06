@@ -212,7 +212,7 @@ tool is reachable through the public registry.
 | `workflows/prover/config.py` | Per-role model/context settings and finite campaign/pass limits |
 | `workflows/prover/models.py` | Typed nodes, prerequisite DAG validation, revisions and fingerprints |
 | `workflows/prover/source.py` | Comment-aware hole discovery, frozen source, scratch projection and exact replacements |
-| `workflows/prover/source_transaction.py` | Accepted-proof installation journal, exact before/after hashes, and interrupted-install rollback |
+| `workflows/prover/source_transaction.py` | Proof and multi-file materialization journals, exact before/after images, and conflict-preserving recovery |
 | `workflows/prover/scheduler.py` | Deterministic DFS selection, concurrency leases and shared-dependency deduplication |
 | `workflows/prover/planning.py` | Structured plan proposals, immutable original statements and generated helper placement |
 | `workflows/prover/runtime.py` | Sole source/plan/DAG authority, job admission, completion handling, recovery and resume lineage |
@@ -231,7 +231,8 @@ tool is reachable through the public registry.
 | `workflows/prover/check_process.py` | OS-isolated warm worker RPC and controller-owned restricted commands |
 | `workflows/prover/check_sandbox.py` | Platform sandbox profiles, permitted runtime paths and restricted process environment |
 | `workflows/prover/check_worker.py` | LeanProbe feedback inside the protected process |
-| `workflows/prover/verification.py` | Independent candidate/axiom acceptance, helper compilation and final Lake gate |
+| `workflows/prover/verification.py` | Independent candidate/type/axiom acceptance, importable module refresh and final Lake gate |
+| `workflows/prover/type_profile.py` | Isolated exact-source compilation and trusted inspection of kernel types and local definition dependencies |
 | `workflows/prover/negation.py` | Exact negated-target construction and certificate support |
 | `workflows/prover/negation_job.py` | Separate bounded negation pass and independent certificate acceptance |
 | `workflows/prover/libraries.py` | Additive helper-library registration and pinned Lake dependency installation with rollback |
@@ -369,17 +370,19 @@ User-level state resolves through `LEANFLOW_HOME` (normally `~/.leanflow`).
 Prover runs use `.leanflow/workflow-state/prover/<run-id>/`:
 
 - `PLAN.md`, `DAG.json`, and `state.json` describe current plan, graph and jobs.
-- `source.json` and `baselines/` preserve protected source and reviewable diffs.
-- `source-transaction.json` journals an accepted proof installation until state
-  commits. Resume retains an interrupted candidate for rechecking and refuses
-  source that matches neither journal image. Multi-file helper construction has
-  exception rollback but no complete hard-crash transaction yet.
+- `source.json`, immutable `source-checkpoints/`, and `baselines/` preserve protected source and reviewable diffs. State points to one coherent source generation.
+- `source-transaction.json` journals accepted proof installation and multi-file
+  helper/import/configuration materialization until state commits. Resume retains
+  interrupted candidates for rechecking and recovers only recorded source images;
+  outside edits produce a source conflict. Unchanged source, DAG and PLAN payloads
+  are not rewritten during metric updates or idle polling.
 - Controller `events.jsonl` is separate from each `jobs/<job-id>/events.jsonl`.
 - Jobs keep `Scratch.lean`, `PLAN_job.md`, candidate/report files, and resources.
 - Admission ledgers and scratch baselines live outside job write access under
   `jobs/.runtime/<job-id>/`.
 - `inbox.jsonl` stores user guidance for controller and addressed job request
-  boundaries; per-job delivery offsets survive resume.
+  boundaries; per-job delivery offsets and bounded addressed guidance survive resume
+  and remain pinned across context compaction.
 
 State JSON uses atomic replacement. A resume launch copies durable artifacts to a
 new run ID with `resumed_from` / `parent_run_id`; the old execution remains

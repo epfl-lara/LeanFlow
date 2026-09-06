@@ -174,11 +174,7 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "launch": {
-        const problems = validateLaunch(message.request).filter((problem) =>
-          // The launcher silently corrects the agent count for a file-scoped
-          // prove run, so that advisory must not block the launch.
-          !problem.startsWith("A file-scoped prove run"),
-        );
+        const problems = validateLaunch(message.request);
         if (problems.length > 0) {
           this.notify("error", problems.join(" "));
           return;
@@ -228,7 +224,7 @@ export class WebviewHost implements vscode.Disposable {
           }
           const plan = await previewLaunch(
             services.project.root,
-            buildWorkflowArgs(request),
+            buildWorkflowArgs(request, env.set),
             env,
           );
           this.post({
@@ -409,10 +405,17 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "proverMessage": {
-        const root = services.runs.projectRootForRun(message.runId);
-        if (!root) throw new Error("The selected prover run is no longer available.");
-        await sendProverMessage(root, message.runId, message.agentId, message.message);
-        this.notify("info", "Guidance queued. The agent will receive it at its next decision boundary.");
+        try {
+          const root = services.runs.projectRootForRun(message.runId);
+          if (!root) throw new Error("The selected prover run is no longer available.");
+          await sendProverMessage(root, message.runId, message.agentId, message.message);
+          this.post({ type: "proverMessageResult", runId: message.runId, requestId: message.requestId ?? "", success: true, error: "" });
+          this.notify("info", "Guidance queued. The agent will receive it at its next decision boundary.");
+        } catch (error) {
+          const reason = redactSensitiveText(error instanceof Error ? error.message : String(error));
+          this.post({ type: "proverMessageResult", runId: message.runId, requestId: message.requestId ?? "", success: false, error: reason });
+          this.notify("error", reason);
+        }
         return;
       }
       case "openProverFile": {

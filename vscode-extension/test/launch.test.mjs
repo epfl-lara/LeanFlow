@@ -147,6 +147,21 @@ test("a single agent does not emit --agents", () => {
   assert.deepEqual(buildWorkflowArgs(form({ agents: 1 })), ["prove"]);
 });
 
+test("explicit bounded mode overrides stale legacy concurrency and research switches", () => {
+  const request = form({
+    agents: 4, research: true, researchWorkers: 3,
+    overrides: { LEANFLOW_PROVER_MODE: "standard" },
+  });
+  assert.deepEqual(buildWorkflowArgs(request), ["prove"]);
+  assert.deepEqual(buildWorkflowArgs({ ...request, noParallel: true }), ["prove", "--no-parallel"]);
+});
+
+test("resolved profile mode is authoritative for the actual launch argv", () => {
+  const request = form({ agents: 4, research: true, researchWorkers: 3 });
+  assert.deepEqual(buildWorkflowArgs(request, { LEANFLOW_PROVER_MODE: "standard" }), ["prove"]);
+  assert.deepEqual(buildWorkflowArgs(request, { LEANFLOW_PROVER_MODE: "research", LEANFLOW_PROVER_PARALLELISM: "2" }), ["prove"]);
+});
+
 test("the prompt is last, because --prompt consumes the rest of the line", () => {
   const args = buildWorkflowArgs(
     form({ prompt: "try factorization first", cleanRoom: true, axioms: "Classical.choice" }),

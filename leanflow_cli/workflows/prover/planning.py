@@ -126,6 +126,14 @@ def apply_proposal(
         pending.extend(index[node_id].dependencies)
     if set(skeletons) - reachable:
         raise ValueError("new helper nodes must contribute to an original root")
+    for helper_id in skeletons:
+        helper = index[helper_id]
+        for ancestor_id in updated.affected(helper_id) - {helper_id}:
+            ancestor = index[ancestor_id]
+            if _normalized_claim(helper) == _normalized_claim(ancestor):
+                raise ValueError(
+                    f"helper {helper_id} restates ancestor {ancestor_id}; split a smaller obligation"
+                )
     updated.nodes = [
         node
         for node in updated.nodes
@@ -133,6 +141,14 @@ def apply_proposal(
     ]
     updated.validate(max_nodes)
     return updated, skeletons
+
+
+def _normalized_claim(node: Node) -> str:
+    """Ignore declaration names and formatting while preserving literals in a claim."""
+    signature = re.sub(r"^\s*(?:theorem|lemma|def|abbrev)\s+", "", node.statement)
+    if signature.startswith(node.name):
+        signature = signature[len(node.name) :]
+    return "".join(re.findall(r'"(?:\\.|[^"\\])*"|«[^»]*»|\S', signature))
 
 
 def planning_prompt(*, reason: str, review: bool = False) -> str:

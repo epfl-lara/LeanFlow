@@ -39,6 +39,105 @@ def test_new_session_does_not_repeat_old_plan_guidance(tmp_path: Path) -> None:
     assert reader.poll()[0]["message"] == "new"
 
 
+def test_guidance_addressed_before_session_start_is_not_skipped(tmp_path: Path) -> None:
+    inbox = tmp_path / ".leanflow/workflow-state/prover/run/inbox.jsonl"
+    inbox.parent.mkdir(parents=True)
+    inbox.write_text('{"agent_id":"worker-1","message":"Use induction on n."}\n')
+    ledger = tmp_path / "runtime"
+    ledger.mkdir()
+
+    reader = GuidanceInbox(tmp_path, ledger, {"run_id": "run", "job_id": "worker-1"}, "prover")
+
+    assert [item["message"] for item in reader.poll()] == ["Use induction on n."]
+
+
+def test_consumed_guidance_remains_in_the_resumed_pinned_contract(tmp_path: Path) -> None:
+    inbox = tmp_path / ".leanflow/workflow-state/prover/run/inbox.jsonl"
+    inbox.parent.mkdir(parents=True)
+    inbox.write_text("")
+    ledger = tmp_path / "runtime"
+    ledger.mkdir()
+    context = {"run_id": "run", "job_id": "worker-1"}
+    reader = GuidanceInbox(tmp_path, ledger, context, "prover")
+    inbox.write_text('{"agent_id":"worker-1","message":"Keep the endpoint case separate."}\n')
+    assert len(reader.poll()) == 1
+
+    resumed = GuidanceInbox(tmp_path, ledger, context, "prover")
+
+    assert resumed.poll() == []
+    assert "Keep the endpoint case separate." in resumed.contract()
+    assert resumed.contract() == reader.contract()
+
+
+def test_manager_starts_at_the_offset_incorporated_into_its_plan(tmp_path: Path) -> None:
+    inbox = tmp_path / ".leanflow/workflow-state/prover/run/inbox.jsonl"
+    inbox.parent.mkdir(parents=True)
+    old = '{"agent_id":"orchestrator","message":"Already in the supplied PLAN."}\n'
+    inbox.write_text(old)
+    context = {"run_id": "run", "inbox_offset": inbox.stat().st_size}
+    with inbox.open("a") as handle:
+        handle.write('{"agent_id":"orchestrator","message":"Arrived after PLAN capture."}\n')
+    ledger = tmp_path / "runtime"
+    ledger.mkdir()
+
+    reader = GuidanceInbox(tmp_path, ledger, context, "orchestrator")
+
+    assert [item["message"] for item in reader.poll()] == ["Arrived after PLAN capture."]
+
+
+def test_guidance_contract_has_a_bounded_retention_window(tmp_path: Path) -> None:
+    inbox = tmp_path / ".leanflow/workflow-state/prover/run/inbox.jsonl"
+    inbox.parent.mkdir(parents=True)
+    inbox.write_text("")
+    ledger = tmp_path / "runtime"
+    ledger.mkdir()
+    context = {"run_id": "run", "job_id": "worker-1"}
+    reader = GuidanceInbox(tmp_path, ledger, context, "prover")
+    inbox.write_text(
+        "".join(
+            json.dumps({"agent_id": "worker-1", "message": f"Observation {index}: " + "x" * 1000})
+            + "\n"
+            for index in range(40)
+        )
+    )
+
+    assert len(reader.poll()) == 40
+    contract = reader.contract()
+
+    assert len(contract) <= 16000
+    assert "Observation 39:" in contract
+    assert "Observation 0:" not in contract
+    assert "Earlier guidance outside this bounded window" in contract
+    assert GuidanceInbox(tmp_path, ledger, context, "prover").contract() == contract
+
+
+def test_cursor_only_ledger_upgrade_recovers_previously_consumed_guidance(tmp_path: Path) -> None:
+    inbox = tmp_path / ".leanflow/workflow-state/prover/run/inbox.jsonl"
+    inbox.parent.mkdir(parents=True)
+    inbox.write_text('{"agent_id":"worker-1","message":"Preserve the strict inequality."}\n')
+    ledger = tmp_path / "runtime"
+    ledger.mkdir()
+    (ledger / "guidance-offset.json").write_text(json.dumps({"offset": inbox.stat().st_size}))
+
+    reader = GuidanceInbox(tmp_path, ledger, {"run_id": "run", "job_id": "worker-1"}, "prover")
+    reader.poll()
+
+    assert "Preserve the strict inequality." in reader.contract()
+
+
+def test_direct_planner_guidance_is_not_assumed_to_be_in_the_shared_plan(tmp_path: Path) -> None:
+    inbox = tmp_path / ".leanflow/workflow-state/prover/run/inbox.jsonl"
+    inbox.parent.mkdir(parents=True)
+    inbox.write_text('{"agent_id":"planner-1","message":"Review the boundary hypothesis."}\n')
+    ledger = tmp_path / "runtime"
+    ledger.mkdir()
+    context = {"run_id": "run", "job_id": "planner-1", "inbox_offset": inbox.stat().st_size}
+
+    reader = GuidanceInbox(tmp_path, ledger, context, "planner")
+
+    assert [item["message"] for item in reader.poll()] == ["Review the boundary hypothesis."]
+
+
 def test_selected_skills_are_loaded_with_distinct_orchestrator_contract(
     tmp_path: Path, monkeypatch
 ) -> None:

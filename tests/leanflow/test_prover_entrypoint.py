@@ -145,3 +145,35 @@ def test_lock_conflict_does_not_steal_existing_live_observer(launch, monkeypatch
 def test_runtime_main_preserves_module_launch_compatibility(monkeypatch):
     monkeypatch.setattr(entrypoint, "main", lambda: 47)
     assert runtime.main() == 47
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_resume_keeps_original_target_scope(launch, monkeypatch, explicit):
+    root, _ = launch
+    runtime.ProverRuntime(
+        root=root, targets=[root / "Main.lean"], config=ProverConfig(), run_id="execution-old"
+    )
+    (root / "Other.lean").write_text("theorem other : True := by sorry\n")
+    monkeypatch.setenv("LEANFLOW_PROVER_RESUME_RUN_ID", "execution-old")
+    if explicit:
+        monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", "Other.lean")
+    else:
+        monkeypatch.delenv("LEANFLOW_NATIVE_ACTIVE_FILE")
+    received = []
+    original = runtime.ProverRuntime
+
+    def construct(**kwargs):
+        received.extend(kwargs["targets"])
+        instance = original(**kwargs)
+        instance.run = lambda: {"status": "completed", "metrics": {}}
+        return instance
+
+    monkeypatch.setattr(runtime, "ProverRuntime", construct)
+    code = entrypoint.main()
+    if explicit:
+        assert code == 1
+        assert not received
+        assert "target scope" in _state(root)["error"]
+    else:
+        assert code == 0
+        assert received == [root / "Main.lean"]

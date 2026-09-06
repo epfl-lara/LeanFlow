@@ -15,8 +15,13 @@ import type {
 import { LAUNCH_FIELD_LIMITS } from "./types";
 
 /** Build the argv that follows `leanflow workflow`. */
-export function buildWorkflowArgs(request: LaunchRequest): string[] {
+export function buildWorkflowArgs(
+  request: LaunchRequest,
+  environment: Readonly<Record<string, string>> = {},
+): string[] {
   const args: string[] = [request.kind];
+  const mode = environment.LEANFLOW_PROVER_MODE ?? request.overrides.LEANFLOW_PROVER_MODE;
+  const boundedMode = request.kind === "prove" && ["standard", "research"].includes(mode);
 
   const target = request.target.trim();
   if (target) {
@@ -35,10 +40,10 @@ export function buildWorkflowArgs(request: LaunchRequest): string[] {
   }
   if (request.noParallel) {
     args.push("--no-parallel");
-  } else if (request.agents > 1) {
+  } else if (!boundedMode && request.agents > 1) {
     args.push("--agents", String(request.agents));
   }
-  if (request.research) {
+  if (!boundedMode && request.research) {
     // --research-workers implies --research, but passing both keeps the
     // recorded command self-describing when the worker count is default.
     args.push("--research");
@@ -370,11 +375,11 @@ export function redactPromptArgument(command: string): string {
 }
 
 /** A shell-ish, prompt-redacted rendering of the launch for display. */
-export function describeCommand(request: LaunchRequest): string {
+export function describeCommand(request: LaunchRequest, environment: Readonly<Record<string, string>> = {}): string {
   const args = buildWorkflowArgs({
     ...request,
     prompt: promptDisplayMarker(request.prompt),
-  }).map((arg) =>
+  }, environment).map((arg) =>
     /[\s"']/.test(arg) ? JSON.stringify(arg) : arg,
   );
   return `leanflow workflow ${args.join(" ")}`;
@@ -465,11 +470,6 @@ export function validateLaunch(request: LaunchRequest): string[] {
   }
   if (request.kind === "formalize" && !request.target.trim()) {
     problems.push("formalize needs a source document (.tex or .pdf) as its target.");
-  }
-  if (request.agents > 1 && request.target.trim() && request.kind === "prove") {
-    problems.push(
-      "A file-scoped prove run is single-agent; the launcher will reset agents to 1.",
-    );
   }
   if (request.research && request.kind !== "prove") {
     problems.push("--research is only supported for prove.");

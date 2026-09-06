@@ -89,6 +89,31 @@ def sorry_spans(source: str) -> list[tuple[int, int]]:
     ]
 
 
+def validate_hole_replacement(replacement: str) -> None:
+    """Reject command syntax crossing the boundary of an authorized proof hole.
+
+    Lean's named-target checker deliberately stops before the next command.
+    A completed tactic followed by a declaration or attribute must therefore
+    never reach that checker as an apparently ordinary hole replacement.
+    """
+    mask = lean_code_mask(replacement)
+    command = re.search(
+        r"(?<![\w'.])(?:theorem|lemma|example|def|abbrev|opaque|axiom|constant|"
+        r"instance|class|structure|inductive|coinductive|mutual|namespace|section|"
+        r"end|import|prelude|universe|universes|variable|variables|include|omit|"
+        r"attribute|export|syntax|macro|macro_rules|elab|elab_rules|initialize|"
+        r"builtin_initialize|run_cmd|deriving)(?![\w'])|#[A-Za-z_]",
+        mask,
+    )
+    if command:
+        raise ValueError(f"a sorry replacement cannot introduce command {command.group()!r}")
+    # Both forms can also scope a legitimate term/tactic. Require the local `in`
+    # wrapper; an unscoped command could change later protected declarations.
+    for match in re.finditer(r"(?m)^\s*(?:set_option|open)\b[^\n]*", mask):
+        if not re.search(r"\bin\b", match.group()):
+            raise ValueError("a sorry replacement cannot introduce an unscoped command")
+
+
 @dataclass
 class SourceDocument:
     """Render original bytes with controller-owned insertions and authorized hole replacements."""
@@ -102,8 +127,10 @@ class SourceDocument:
     def render(self, overrides: dict[int, str] | None = None) -> str:
         replacements = {int(key): value for key, value in self.replacements.items()}
         replacements.update(overrides or {})
+        for replacement in replacements.values():
+            validate_hole_replacement(replacement)
         text = self.baseline
-        spans = sorry_spans(text)
+        spans = sorry_spans(text) if replacements else []
         if any(index < 0 or index >= len(spans) for index in replacements):
             raise ValueError("source hole index is no longer valid")
         for index in reversed(range(len(spans))):

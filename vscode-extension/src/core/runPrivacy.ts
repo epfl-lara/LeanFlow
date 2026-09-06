@@ -337,12 +337,13 @@ export function launchRequestForPersistence(request: LaunchRequest): LaunchReque
 export function trackedRunForPersistence(run: TrackedRun): TrackedRun {
   const rawPrompt = run.request.prompt;
   const request = launchRequestForPersistence(run.request);
+  const appliedOverrides = safeOverrideEnvironment(run.appliedOverrides);
   return {
     ...run,
     label: bounded(redactSensitiveText(run.label, [rawPrompt]), 512),
     request,
-    command: boundedCommand(describeCommand(request)),
-    appliedOverrides: safeOverrideEnvironment(run.appliedOverrides),
+    command: boundedCommand(describeCommand(request, appliedOverrides.set)),
+    appliedOverrides,
     error:
       run.error === null ? null : redactSensitiveText(run.error, [rawPrompt]),
   };

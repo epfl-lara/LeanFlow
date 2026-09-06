@@ -259,7 +259,7 @@ export class RunManager implements vscode.Disposable {
             `${resolved.rejected.join(", ")}.`,
         );
       }
-      argv = buildWorkflowArgs(request);
+      argv = buildWorkflowArgs(request, resolved.env.set);
     } catch (error) {
       this.launchingRoots.delete(rootKey);
       throw error;

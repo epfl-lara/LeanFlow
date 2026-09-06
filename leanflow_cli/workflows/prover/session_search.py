@@ -9,6 +9,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+_MATCHES_PER_FILE = 8
+
 
 def search_sources(query: str, path: Path, readable: Callable[[str], Path]) -> dict[str, Any]:
     """Return bounded literal matches without buffering project-wide output in RAM."""
@@ -31,7 +33,7 @@ def search_sources(query: str, path: Path, readable: Callable[[str], Path]) -> d
                 "--max-filesize",
                 "1M",
                 "--max-count",
-                "8",
+                str(_MATCHES_PER_FILE + 1),
                 "--",
                 query,
                 str(path),
@@ -43,6 +45,8 @@ def search_sources(query: str, path: Path, readable: Callable[[str], Path]) -> d
         output.seek(0)
         matches = []
         length = 0
+        matches_per_file: dict[Path, int] = {}
+        truncated = False
         for raw in output:
             row = json.loads(raw)
             if row.get("type") != "match":
@@ -52,13 +56,22 @@ def search_sources(query: str, path: Path, readable: Callable[[str], Path]) -> d
                 source = readable(data["path"]["text"])
             except (ValueError, KeyError):
                 continue
-            text = str(data.get("lines", {}).get("text", ""))[:2000]
+            count = matches_per_file.get(source, 0)
+            if count >= _MATCHES_PER_FILE:
+                # One extra match distinguishes exactly-at-limit from omitted results.
+                truncated = True
+                continue
+            matches_per_file[source] = count + 1
+            raw_text = str(data.get("lines", {}).get("text", ""))
+            text = raw_text[:2000]
+            truncated = truncated or len(raw_text) > len(text)
             matches.append({"path": str(source), "line": data["line_number"], "text": text})
             length += len(text) + len(str(source))
             if length >= 12000 or len(matches) >= 40:
+                truncated = True
                 break
         return {
             "success": process.returncode in {0, 1},
             "results": matches,
-            "truncated": length >= 12000 or len(matches) >= 40,
+            "truncated": truncated,
         }

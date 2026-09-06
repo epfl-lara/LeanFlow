@@ -33,11 +33,11 @@ export function LaunchView() {
   const problems = useMemo(() => validateLaunch(form), [form]);
   const command = useMemo(() => {
     try {
-      return describeCommand(form);
+      return describeCommand(form, { ...app?.profiles?.profiles.find((profile) => profile.name === form.profile)?.overrides, ...form.overrides });
     } catch (error) {
       return `[invalid launch: ${error instanceof Error ? error.message : String(error)}]`;
     }
-  }, [form]);
+  }, [form, app?.profiles]);
   const kindInfo = WORKFLOW_KINDS.find((kind) => kind.id === form.kind);
 
   const profiles = app?.profiles?.profiles ?? [];
@@ -62,14 +62,11 @@ export function LaunchView() {
   useEffect(() => {
     if (form.kind === "prove" && form.humanReview) setForm({ humanReview: false });
   }, [form.kind, form.humanReview, setForm]);
-  const blockingProblems = problems.filter(
-    (problem) => !problem.startsWith("A file-scoped prove run"),
-  );
   const canLaunch = Boolean(
     app?.project.found &&
       app?.cli.ok &&
       restrictedKnobs.length === 0 &&
-      blockingProblems.length === 0,
+      problems.length === 0,
   );
 
   // Re-resolve the plan as the form settles. The CLI's --dry-run has no side
@@ -251,11 +248,11 @@ export function LaunchView() {
           <div>
             <Check
               label="Force single lane"
-              hint="Passes --no-parallel: one agent, no background workers."
+              hint={boundedProver ? "Run one prover job at a time; research planning remains available." : "Passes --no-parallel: one agent, no background workers."}
               checked={form.noParallel}
               onChange={(noParallel) => setForm({ noParallel })}
             />
-            <Field
+            {!boundedProver && <Field
               label="Swarm agents"
               hint="Above 1 opts into file-lock-aware concurrent work. A file-scoped prove run stays single-agent."
             >
@@ -267,7 +264,7 @@ export function LaunchView() {
                 value={form.agents}
                 onChange={(event) => setForm({ agents: Number(event.target.value) })}
               />
-            </Field>
+            </Field>}
             <Field
               label="Allowed axioms"
               hint="Comma or space separated, beyond the standard three."

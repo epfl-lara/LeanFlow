@@ -1,7 +1,8 @@
 /** Inspect an exact prover run: dependency tree, durable plan, jobs, edits, and budgets. */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { proverJobAcceptsGuidance, proverTreeRows, type ProverSnapshot } from "../../src/core/prover";
+import { proverDefaultGuidanceRecipient, proverGuidanceUpdate, proverJobAcceptsGuidance, proverTreeRows, type ProverSnapshot } from "../../src/core/prover";
+import type { HostMessage } from "../../src/core/types";
 import { Card, Notice, Pill, Stat } from "../components";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
@@ -33,8 +34,26 @@ function Workspace({ state }: { state: ProverSnapshot }) {
   const { setView } = useStore();
   const [selected, setSelected] = useState("");
   const [search, setSearch] = useState("");
-  const [recipient, setRecipient] = useState("orchestrator");
+  const [recipient, setRecipient] = useState("");
   const [guidance, setGuidance] = useState("");
+  const [sending, setSending] = useState(false);
+  const [guidanceError, setGuidanceError] = useState("");
+  const pendingGuidance = useRef<{ runId: string; requestId: string; message: string } | null>(null);
+  useEffect(() => {
+    const receive = (event: MessageEvent<HostMessage>) => {
+      if (event.data.type !== "proverMessageResult") return;
+      const reply = event.data;
+      const pending = pendingGuidance.current;
+      const update = proverGuidanceUpdate("", pending, reply);
+      if (!update) return;
+      setGuidance((draft) => proverGuidanceUpdate(draft, pending, reply)!.draft);
+      setGuidanceError(update.error);
+      pendingGuidance.current = null;
+      setSending(false);
+    };
+    window.addEventListener("message", receive);
+    return () => window.removeEventListener("message", receive);
+  }, []);
   const rows = useMemo(() => proverTreeRows(state.dag), [state.dag]);
   const node = state.dag.nodes.find((item) => item.id === selected) ?? state.dag.nodes[0];
   const shown = rows.filter(({ node }) => !search || `${node.name} ${node.file} ${node.status}`.toLowerCase().includes(search.toLowerCase()));
@@ -43,7 +62,7 @@ function Workspace({ state }: { state: ProverSnapshot }) {
   const open = (path: string, line?: number | null, baselinePath?: string) =>
     post({ type: "openProverFile", runId: state.run_id, path, line: line && line > 0 ? line : undefined, baselinePath });
   const agents = [...new Set(state.jobs.filter(proverJobAcceptsGuidance).map((job) => job.agent_id).filter(Boolean))];
-  const addressedAgent = recipient === "orchestrator" || agents.includes(recipient) ? recipient : "orchestrator";
+  const addressedAgent = recipient === "orchestrator" || agents.includes(recipient) ? recipient : proverDefaultGuidanceRecipient(state);
 
   return <>
     <Card title="Proof workspace" subtitle={`${state.mode || "standard"} · ${state.phase || "starting"}`} actions={<Pill>{proved}/{state.dag.nodes.length} verified</Pill>}>
@@ -126,15 +145,20 @@ function Workspace({ state }: { state: ProverSnapshot }) {
     </div>
 
     <Card title="Send guidance" subtitle={state.terminal ? "This run has finished." : "Guidance is saved to the selected run and delivered between agent decisions."}>
+      {guidanceError && <Notice tone="error">{guidanceError} Your message has been kept below.</Notice>}
       <div className="row tight"><select aria-label="Guidance recipient" value={addressedAgent} disabled={state.terminal} onChange={(event) => setRecipient(event.target.value)}>
-        <option value="orchestrator">{state.mode === "standard" ? "Workflow manager" : "Orchestrator"}</option>
+        <option value="orchestrator">{state.mode === "standard" ? "Workflow manager (future work)" : "Orchestrator"}</option>
         {agents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
       </select></div>
+      {addressedAgent === "orchestrator" && <p className="muted">Manager guidance updates the shared plan for future work. To guide a running proof, choose its prover job.</p>}
       <textarea aria-label="Guidance message" maxLength={8192} value={guidance} disabled={state.terminal} placeholder="Share a mathematical observation, useful resource, or change of direction…" onChange={(event) => setGuidance(event.target.value)} />
-      <button className="btn" disabled={state.terminal || !guidance.trim()} onClick={() => {
-        post({ type: "proverMessage", runId: state.run_id, agentId: addressedAgent, message: guidance });
-        setGuidance("");
-      }}>Send guidance</button>
+      <button className="btn" disabled={state.terminal || sending || !guidance.trim()} onClick={() => {
+        const request = { runId: state.run_id, requestId: crypto.randomUUID(), message: guidance };
+        pendingGuidance.current = request;
+        setSending(true);
+        setGuidanceError("");
+        post({ type: "proverMessage", ...request, agentId: addressedAgent });
+      }}>{sending ? "Sending…" : "Send guidance"}</button>
     </Card>
   </>;
 }

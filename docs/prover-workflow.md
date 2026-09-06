@@ -45,7 +45,11 @@ and semantic review. The planner may search general mathematical sources,
 download resources, and run restricted arithmetic experiments. It does not have
 the prover's Lean search/check tools. The controller validates proposed IDs,
 statements, dependencies, acyclicity, and module locations, then independently
-compiles helper skeletons before scheduling proof work. Rejected proposals receive
+compiles helper skeletons before scheduling proof work. It rejects helpers that
+merely rename an ancestor statement after removing irrelevant formatting. This
+textual check does not establish semantic equivalence or certify that every DAG
+edge implies its parent; the independent review and later proofs remain necessary.
+Rejected proposals receive
 bounded reconstruction attempts with the previous critique.
 
 The model proposes a graph; deterministic code schedules it. Each node stores its
@@ -64,7 +68,9 @@ conditional theorem. The controller checks it again after all planned dependenci
 close; it never treats an allowed `sorryAx` as completion.
 
 Failed jobs retain their notes and scratch work. Concrete progress can receive up
-to three additional passes. Research recovery investigates contrary evidence or
+to three additional passes. A changed report or a claimed promising direction
+alone does not earn a restart; retain concrete edits inside the assigned scratch
+proof holes. Research recovery investigates contrary evidence or
 smaller subproblems, then replans the affected graph region. Existing proved nodes
 and original target statements remain immutable; changed helpers receive new IDs.
 Results from an obsolete node revision are rejected. Finite limits also bound
@@ -73,7 +79,13 @@ recovery, so an unresolved run can stop with useful saved evidence.
 Submitting a proof does not end a pass when independent feedback rejects it.
 Malformed or invalid submissions return concrete feedback to the same prover
 session so it can repair them with its remaining calls. The controller still
-rechecks successful submissions before committing canonical source. Top-down
+rechecks successful submissions before committing canonical source. It captures
+the original elaborated target types before planning, compares them after import
+changes, and independently inspects the freshly compiled candidate artifact.
+The comparison also covers referenced local definition types and fixed bodies;
+explicitly authorized missing definitions may still be filled. A term submitted
+for a proof hole cannot append declarations or unscoped commands. Accepted source
+modules are rebuilt before dependent jobs can import them. Top-down
 submission feedback may check elaboration with planned holes; the resulting
 candidate remains untrusted until the later strict gate.
 
@@ -199,7 +211,9 @@ before replanning. Direction changes require remaining refinement capacity befor
 their source changes are admitted.
 
 Compression makes no model calls. It keeps the system contract, selected skill guidance, original assignment
-with PLAN/DAG, current `PLAN_job.md`, and recent complete tool exchanges. Context
+with PLAN/DAG, durable addressed user guidance, current `PLAN_job.md`, and recent
+complete tool exchanges. Large feedback remains valid JSON with explicit
+truncation and a readable artifact containing the full result. Context
 size uses a conservative estimate rather than the provider's exact tokenizer; if
 pinned context does not fit, the session saves its work and returns `context_limit`.
 Token counts use reported usage. Missing monetary costs remain unknown, not zero;
@@ -241,8 +255,7 @@ LEANFLOW_PROVER_RESUME_RUN_ID=<run-id> leanflow workflow prove Main.lean
 
 Resume creates a **new run ID** with `resumed_from` / `parent_run_id` lineage.
 The prior run's records remain available. Source snapshots are reconciled; saved
-budgets and interrupted-job admission ledgers are retained. Use the same requested
-target when resuming. Missing interrupted-job budget evidence is treated
+budgets and interrupted-job admission ledgers are retained. A resume uses the saved target scope; an explicitly different target is rejected. Missing interrupted-job budget evidence is treated
 conservatively as spent capacity.
 
 Accepted proof installation records exact before/after source hashes and a
@@ -288,10 +301,10 @@ or model success message cannot produce exit `0`.
 - The direction/decomposition distinction includes semantic reviewer judgment.
   Total requests, graph size, recovery count, and elapsed time provide independent
   deterministic ceilings regardless of that classification.
-- Multi-file helper construction rolls back ordinary exceptions, but it does not
-  yet have an atomic crash journal spanning all helper/import/configuration files.
-  A hard process kill during that phase can require manual source reconciliation
-  before resume. The accepted-proof installation journal covers a narrower operation.
+- Multi-file helper construction and accepted-proof installation use durable
+  journals. Recovery checks every recorded source image before rollback and
+  refuses to overwrite outside edits. Dependency package caches from an interrupted
+  external install can still require project-specific cleanup.
 - There is no standing advisor, generic shell, model-backed decomposer, or PDF
   interpretation service in the new session tool surface. Prefer a paper's HTML
   source when the model needs readable content.

@@ -14,6 +14,7 @@ from leanflow_cli.workflows.prover.source import (
     extract_scratch_replacements,
     read_source,
     sorry_spans,
+    validate_hole_replacement,
     write_source,
 )
 
@@ -70,6 +71,10 @@ def attempt_negation(runtime: ProverRuntime, node: Node) -> dict[str, Any]:
             "certified": False,
             "notes": str(report.get("notes", result.get("final_response", ""))),
         }
+    try:
+        validate_hole_replacement(proof)
+    except ValueError as error:
+        return {"certified": False, "notes": "Rejected negation replacement: " + str(error)}
     checked_path = runtime.store.directory / "checks" / f"{task.node.id}.lean"
     checked_path.parent.mkdir(exist_ok=True)
     document = SourceDocument(node.file, task.source)

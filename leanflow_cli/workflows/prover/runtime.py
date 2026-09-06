@@ -26,6 +26,7 @@ from leanflow_cli.workflows.prover.source import (
     project_path,
     read_source,
     sorry_spans,
+    validate_hole_replacement,
     write_source,
 )
 from leanflow_cli.workflows.prover.store import RunStore, now
@@ -88,6 +89,7 @@ class ProverRuntime:
         self.scratch_before: dict[str, str] = {}
         self.resume_jobs: dict[str, dict[str, Any]] = {}
         self.resume_negation_jobs: dict[str, dict[str, Any]] = {}
+        self.resume_role_jobs: dict[tuple[str, str], dict[str, Any]] = {}
         self.goal = goal
         self.observer = observer
         self.store.on_event = observer.event if observer is not None else None
@@ -158,19 +160,38 @@ class ProverRuntime:
     def _restore(self) -> None:
         """Resume durable progress without granting interrupted jobs a fresh allocation."""
         self.state = json.loads((self.store.directory / "state.json").read_text())
+        self.state["resume_phase"] = self.state.get(
+            "resume_phase", self.state.get("phase", "inspect")
+        )
         self.elapsed_before = float(self.state.get("metrics", {}).get("elapsed_s", 0))
         self.store.inbox_offset = int(self.state.get("inbox_offset", 0))
         saved = dict(self.state["config"])
         saved["allowed_axioms"] = tuple(saved["allowed_axioms"])
         self.config = ProverConfig(**saved)
         self.dag = Dag.from_dict(self.state["dag"])
-        documents = json.loads((self.store.directory / "source.json").read_text())
+        self.dag.validate(self.config.max_nodes)
+        saved_targets = [project_path(self.root, path) for path in self.state["targets"]]
+        if set(self.targets) != set(saved_targets):
+            raise ValueError("resume target scope differs from the saved run")
+        self.targets = saved_targets
+        checkpoint = self.state.get("source_checkpoint")
+        if checkpoint:
+            if not re.fullmatch(r"source-checkpoints/[a-f0-9]{64}\.json", checkpoint):
+                raise ValueError("Invalid source checkpoint identity")
+            checkpoint_path = project_path(
+                self.root, str((self.store.directory / checkpoint).relative_to(self.root))
+            )
+            documents = json.loads(checkpoint_path.read_text())
+        else:
+            documents = json.loads((self.store.directory / "source.json").read_text())
         self.documents = {key: SourceDocument(**value) for key, value in documents.items()}
         from leanflow_cli.workflows.prover.source_transaction import recover_proof
 
         recover_proof(self)
         self._assert_sources()
         self.state.pop("error", None)
+        self.state.pop("next_step", None)
+        self.dag.validate(self.config.max_nodes)
         for job in self.state.get("jobs", []):
             if job.get("status") in {
                 "running",
@@ -194,6 +215,12 @@ class ProverRuntime:
                 elif job["role"] == "negation" and job.get("negation_assignment"):
                     self.resume_negation_jobs[job["node_id"]] = job
                     job["status"] = "resume_pending"
+                elif (
+                    job["role"] in {"orchestrator", "review", "research"}
+                    and job["api_calls"] < job["api_budget"]
+                ):
+                    self.resume_role_jobs[(job["role"], job.get("purpose", ""))] = job
+                    job["status"] = "resume_pending"
                 else:
                     job["status"] = "interrupted"
         self.consumed = sum(int(job.get("api_calls", 0)) for job in self.state.get("jobs", []))
@@ -204,6 +231,14 @@ class ProverRuntime:
                     if node.id in self.resume_jobs or node.attempts <= self.config.max_restarts
                     else "blocked"
                 )
+        retained_nodes: set[str] = set()
+        for job in reversed(self.state.get("jobs", [])):
+            if job.get("role") != "prover" or job.get("node_id") in retained_nodes:
+                continue
+            retained_nodes.add(job["node_id"])
+            result_path = Path(job.get("result_path", ""))
+            if job.get("accounted") and not job.get("result_processed") and result_path.is_file():
+                self._retain_candidate(job, json.loads(result_path.read_text()))
         self.state.update(status="running", phase="resume", terminal=False)
         self.state["metrics"]["api_calls"] = self.consumed
         self._persist()
@@ -222,7 +257,9 @@ class ProverRuntime:
             metrics[field] = sum(int(job.get(field, 0) or 0) for job in jobs)
         known = [float(job["cost_usd"]) for job in jobs if job.get("cost_usd") is not None]
         metrics["cost_usd"] = sum(known) if known else None
-        metrics["cost_complete"] = all(job.get("cost_usd") is not None for job in jobs)
+        metrics["cost_complete"] = bool(jobs) and all(
+            job.get("cost_usd") is not None for job in jobs
+        )
         metrics["reserved_api_calls"] = self.reserved
         metrics["elapsed_s"] = round(self._elapsed(), 3)
 
@@ -236,6 +273,7 @@ class ProverRuntime:
 
     def _reserve(self, requested: int) -> int:
         with self.lock:
+            self._ensure_active()
             remaining = self.config.total_api_calls - self.consumed - self.reserved
             if remaining <= 0 or self._elapsed() >= self.config.wall_time_s:
                 raise BudgetExhausted("campaign API or wall-clock budget exhausted")
@@ -243,9 +281,27 @@ class ProverRuntime:
             self.reserved += allocation
             return allocation
 
+    def _ensure_active(self) -> None:
+        """Stop new controller work immediately after cancellation or the campaign deadline."""
+        if self.cancelled.is_set() or self.stopping:
+            self.stopping = True
+            raise InfrastructureFailure(
+                "The prover run was interrupted.",
+                status=(
+                    "disproved"
+                    if self.state.get("disproof")
+                    else self.state.get("stop_status", "interrupted")
+                ),
+            )
+        if self._elapsed() >= self.config.wall_time_s:
+            self.cancelled.set()
+            self.stopping = True
+            raise BudgetExhausted("campaign wall-clock budget exhausted")
+
     def _context(self, node: Node | None = None) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
+            "inbox_offset": self.store.inbox_offset,
             "assignment": node.to_dict() if node else {},
             "dag": self.dag.to_dict(),
             "plan": self.state["plan_markdown"],
@@ -353,7 +409,7 @@ class ProverRuntime:
         if not isinstance(candidate, list):
             holes = list(job.get("scratch_holes", []))
             scratch = Path(job["scratch_path"])
-            if scratch.is_file() and not scratch.is_symlink():
+            if scratch.is_file() and not scratch.is_symlink() and job["id"] in self.scratch_before:
                 candidate = extract_scratch_replacements(
                     self.scratch_before[job["id"]], read_source(scratch), holes
                 )
@@ -369,7 +425,36 @@ class ProverRuntime:
             for item in candidate
         ):
             return [], report
+        try:
+            for proof in candidate:
+                validate_hole_replacement(proof)
+        except ValueError as error:
+            report["notes"] = "Rejected proof replacement: " + str(error)
+            return [], report
         return candidate, report
+
+    def _retain_candidate(self, job: dict[str, Any], result: dict[str, Any]) -> None:
+        """Preserve a completed current-revision proof for independent zero-model resume."""
+        node = self.dag.by_id().get(job.get("node_id", ""))
+        if (
+            job.get("role") != "prover"
+            or node is None
+            or node.revision != job.get("node_revision")
+            or node.status == "proved"
+        ):
+            return
+        workspace = Path(job["workspace"])
+        baseline = workspace.parent / ".runtime" / workspace.name / "source-before.lean"
+        if job["id"] not in self.scratch_before and baseline.is_file():
+            self.scratch_before[job["id"]] = read_source(baseline)
+        candidate, _ = self._candidate(job, result, node)
+        if candidate:
+            node.candidate = candidate
+            node.status = "candidate"
+            node.conditional_dependencies = [
+                dep for dep in node.dependencies if self.dag.by_id()[dep].status != "proved"
+            ]
+            self.resume_jobs.pop(node.id, None)
 
     def _accept(self, node: Node, candidate: list[str], job_id: str) -> bool:
         """Serialize independent source verification and its canonical installation."""
@@ -410,26 +495,35 @@ class ProverRuntime:
         for hole, proof in zip(node.holes, candidate, strict=True):
             document.replacements[str(hole)] = proof
         path = self.root / node.file
-        from leanflow_cli.workflows.prover.source_transaction import begin_proof
+        from leanflow_cli.workflows.prover.source_transaction import (
+            begin_proof,
+            recover_proof,
+            replace_source,
+        )
 
         transaction = begin_proof(self, node, candidate, previous_document, document.render())
         try:
-            temporary = path.with_suffix(".leanflow-tmp")
-            write_source(temporary, document.render())
-            temporary.replace(path)
-            # Generated dependencies must have fresh importable artifacts before promotion.
-            if document.generated:
-                compiled = self.verifier.compile_module(node.file)
-                if not compiled.get("accepted"):
-                    raise InfrastructureFailure(
-                        "The independently checked proof could not be compiled into an importable helper module. Its candidate is retained; restore the Lean build environment and resume. "
-                        + str(compiled),
-                        status="environment_error",
-                    )
+            if read_source(path) != previous_document.render():
+                raise InfrastructureFailure(
+                    f"protected source changed before proof installation: {node.file}",
+                    status="source_conflict",
+                )
+            replace_source(path, document.render().encode("utf-8"))
+            # Original declarations can also be imported by another proof obligation.
+            compiled = self.verifier.compile_module(node.file)
+            if not compiled.get("accepted"):
+                raise InfrastructureFailure(
+                    "The independently checked proof could not be compiled into an importable module. Its candidate is retained; restore the Lean build environment and resume. "
+                    + str(compiled),
+                    status="environment_error",
+                )
+            self._assert_sources()
         except Exception as error:
             document.replacements = previous
-            write_source(path, document.render())
-            (self.store.directory / "source-transaction.json").unlink(missing_ok=True)
+            try:
+                recover_proof(self)
+            except ValueError as conflict:
+                raise InfrastructureFailure(str(conflict), status="source_conflict") from error
             node.candidate = list(candidate)
             node.status = "candidate"
             node.notes += "\nProof integration paused: " + str(error)
@@ -453,14 +547,20 @@ class ProverRuntime:
         return True
 
     def _handle_result(self, job: dict[str, Any], result: dict[str, Any]) -> None:
-        self._finish_job(job, result)
         node = self.dag.by_id().get(job["node_id"])
         if node is None or node.revision != job["node_revision"]:
+            try:
+                self._finish_job(job, result)
+            except InfrastructureFailure:
+                pass
             job["status"] = "stale"
             self._persist()
             return
+        self._finish_job(job, result)
+        if self.cancelled.is_set():
+            self._retain_candidate(job, result)
+            self._ensure_active()
         candidate, report = self._candidate(job, result, node)
-        previous_notes = node.notes
         node.notes = str(report.get("notes", result.get("final_response", "")))[-16000:]
         if candidate:
             unresolved = [
@@ -474,11 +574,54 @@ class ProverRuntime:
                 return
             if self._accept(node, candidate, job["id"]):
                 return
-        # Renewals are separate jobs, with a retained concrete handoff and a finite total cap.
-        progress = bool(
-            candidate
-            or report.get("promising") is True
-            or (node.notes and node.notes != previous_notes)
+
+        def partial_work(attempt: dict[str, Any]) -> list[str]:
+            """Read concrete hole edits against the controller's immutable job baseline."""
+            scratch = Path(attempt["scratch_path"])
+            workspace = Path(attempt["workspace"])
+            baseline = workspace.parent / ".runtime" / workspace.name / "source-before.lean"
+            if not scratch.is_file() or scratch.is_symlink():
+                return []
+            try:
+                before = self.scratch_before.get(attempt["id"])
+                if before is None:
+                    if not baseline.is_file() or baseline.is_symlink():
+                        return []
+                    before = read_source(baseline)
+                proofs = extract_scratch_replacements(
+                    before, read_source(scratch), list(attempt.get("scratch_holes", []))
+                )
+                if not proofs or len(proofs) != len(node.holes):
+                    return []
+                normalized = []
+                for proof in proofs:
+                    validate_hole_replacement(proof)
+                    mask = lean_code_mask(proof)
+                    if re.search(r"\b(?:admit|axiom|unsafe|native_decide)\b", mask):
+                        return []
+                    normalized.append(re.sub(r"\s+", "", mask))
+                return normalized if all(normalized) else []
+            except (OSError, UnicodeError, ValueError):
+                return []
+
+        # Reports cannot grant another pass. Retained partial work must also improve on
+        # the previous attempt: copying its scratch or changing comments is not progress.
+        previous = next(
+            (
+                item
+                for item in reversed(self.state["jobs"])
+                if item["id"] != job["id"]
+                and item.get("node_id") == node.id
+                and item.get("role") == "prover"
+                and item.get("node_revision") == node.revision
+            ),
+            None,
+        )
+        partial = partial_work(job)
+        progress = bool(candidate) or bool(
+            partial
+            and partial != ["sorry"] * len(node.holes)
+            and (previous is None or partial != partial_work(previous))
         )
         if progress and node.attempts <= self.config.max_restarts:
             node.status = "retry"
@@ -534,17 +677,29 @@ class ProverRuntime:
             self._persist()
 
     def _promote_candidates(self) -> None:
+        """Independently promote every newly closed dependency chain to a fixed point."""
         index = self.dag.by_id()
-        for node in self.dag.nodes:
-            if node.status != "candidate" or any(
-                index[dep].status != "proved" for dep in node.dependencies
-            ):
-                continue
-            candidate = list(node.candidate)
-            node.candidate = []
-            if not self._accept(node, candidate, "controller"):
-                node.status = "retry" if node.attempts <= self.config.max_restarts else "blocked"
-        self._persist()
+        changed = False
+        while True:
+            promoted = False
+            for node in self.dag.nodes:
+                if node.status != "candidate" or any(
+                    index[dep].status != "proved" for dep in node.dependencies
+                ):
+                    continue
+                candidate = list(node.candidate)
+                node.candidate = []
+                changed = True
+                if self._accept(node, candidate, "controller"):
+                    promoted = True
+                else:
+                    node.status = (
+                        "retry" if node.attempts <= self.config.max_restarts else "blocked"
+                    )
+            if not promoted:
+                break
+        if changed:
+            self._persist()
 
     def _messages(self) -> None:
         for message in self.store.messages():
@@ -574,11 +729,36 @@ class ProverRuntime:
                     raise InfrastructureFailure(
                         str(preflight.get("error", preflight)), status="environment_error"
                     )
-            if self.config.mode == "research" and not resuming:
+            if hasattr(self.verifier, "capture_signatures") and any(
+                node.original and not node.signature_sha256 for node in self.dag.nodes
+            ):
+                if any(
+                    document.imports or document.replacements or document.generated
+                    for document in self.documents.values()
+                ):
+                    raise InfrastructureFailure(
+                        "Original declaration fingerprints are missing after source changes; recover the original baseline before resuming.",
+                        status="source_conflict",
+                    )
+                signatures = self.verifier.capture_signatures(
+                    self.dag, self.documents, self.store.directory / "checks" / "signatures"
+                )
+                if signatures.get("accepted") is not True:
+                    raise InfrastructureFailure(
+                        str(signatures.get("error", signatures)), status="environment_error"
+                    )
+                self._persist()
+            if self.config.mode == "research" and (
+                not resuming
+                or self.state.get("planning_request")
+                or self.state.get("resume_phase")
+                in {"inspect", "preflight", "planning", "reviewing"}
+            ):
                 self._research_plan(
                     "Inspect available sources and design an honest informal proof outline and dependency graph."
                 )
             self.state["phase"] = "proving"
+            self.state.pop("resume_phase", None)
             for node_id in list(self.resume_negation_jobs):
                 node = self.dag.by_id().get(node_id)
                 if node is not None:
@@ -588,9 +768,16 @@ class ProverRuntime:
                 max_workers=workers, thread_name_prefix="leanflow-prover"
             ) as pool:
                 try:
+                    next_source_scan = 0.0
                     while True:
                         self._messages()
-                        self._assert_sources()
+                        if self.cancelled.is_set():
+                            self._ensure_active()
+                        # Acceptance and materialization always recheck exact bytes.
+                        # Idle polling only needs a coarse scan for outside edits.
+                        if time.monotonic() >= next_source_scan:
+                            self._assert_sources()
+                            next_source_scan = time.monotonic() + 5.0
                         self._promote_candidates()
                         if self.stopping or self._elapsed() >= self.config.wall_time_s:
                             self.stopping = True
@@ -613,7 +800,9 @@ class ProverRuntime:
                                     prompt = self._prover_prompt(node)
                                     job, context = self._new_job("prover", node=node, prompt=prompt)
                                 except BudgetExhausted:
-                                    self.stopping = True
+                                    if not self.pending:
+                                        self.stopping = True
+                                        self.state["stop_status"] = "budget_exhausted"
                                     break
                                 node.status = "running"
                                 if not job.get("resumed"):
@@ -629,6 +818,7 @@ class ProverRuntime:
                             continue
                         job = self.pending.pop(completed)
                         self._handle_result(job, completed.result())
+                        job["result_processed"] = True
                         self._persist()
                 except BaseException:
                     self.cancelled.set()
@@ -673,13 +863,17 @@ class ProverRuntime:
             status = error.status
             self.state["error"] = str(error)
         except Exception as error:
-            status = "error"
+            status = "source_conflict" if "protected source changed" in str(error) else "error"
             self.state["error"] = str(error)
         finally:
             self.stopping = True
             for future, job in list(self.pending.items()):
                 try:
-                    self._finish_job(job, future.result())
+                    completed_result = future.result()
+                    try:
+                        self._finish_job(job, completed_result)
+                    finally:
+                        self._retain_candidate(job, completed_result)
                 except Exception as error:
                     self.store.event(
                         "job_cleanup_error", {"job_id": job["id"], "error": str(error)}
@@ -692,6 +886,11 @@ class ProverRuntime:
             self.pending.clear()
             if hasattr(self.verifier, "close"):
                 self.verifier.close(self.store.directory / "checks")
+            if status == "source_conflict":
+                self.state["next_step"] = (
+                    "Compare current source with this run's saved baselines and resolve the conflict before resuming. "
+                    "No external source edits were overwritten."
+                )
             self.state.update(status=status, phase=status, finished_at=now(), terminal=True)
             self._persist()
             if self.observer is not None:

@@ -29,7 +29,7 @@ def run_fake(
         config={"model": "test", "context_tokens": 16000, **overrides.pop("config", {})},
         api_budget=overrides.pop("api_budget", 3),
         log_path=tmp_path / "job.jsonl",
-        context={},
+        context=overrides.pop("context", {}),
         **overrides,
     )
 
@@ -223,3 +223,120 @@ def test_candidate_file_submission_needs_no_extra_model_call(
         tmp_path, monkeypatch, request, config={"_candidate_feedback": lambda _: {"accepted": True}}
     )
     assert result["status"] == "completed" and result["api_calls"] == 1
+
+
+def test_context_admission_counts_tool_schemas_before_charging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(session, "skill_guidance", lambda *_: "")
+    monkeypatch.setattr(
+        SessionTools, "schemas", lambda _: [{"description": "large schema " * 2000}]
+    )
+    calls = []
+    result = run_fake(
+        tmp_path,
+        monkeypatch,
+        lambda *_: (calls.append(1) or {"role": "assistant", "content": '{"proof":"trivial"}'}, {}),
+        config={"context_tokens": 2000},
+    )
+    assert result["status"] == "context_limit"
+    assert result["api_calls"] == 0 and calls == []
+
+
+def test_context_admission_counts_per_request_budget_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(session, "skill_guidance", lambda *_: "")
+    monkeypatch.setattr(SessionTools, "schemas", lambda _: [])
+    captured = []
+
+    def request(_agent, messages, _timeout):
+        captured.append(messages)
+        return {"role": "assistant", "content": '{"proof":"trivial"}'}, {}
+
+    run_fake(tmp_path / "reference", monkeypatch, request)
+    tokens = session.approximate_tokens(captured[0])
+    result = run_fake(
+        tmp_path / "bounded",
+        monkeypatch,
+        request,
+        config={"context_tokens": tokens, "max_output_tokens": 1, "compression": False},
+    )
+    assert result["status"] == "context_limit"
+    assert result["api_calls"] == 0 and len(captured) == 1
+
+
+def test_noop_scratch_write_does_not_reset_repeated_search_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from leanflow_cli.workflows.prover import session_search
+
+    monkeypatch.setattr(
+        session_search, "search_sources", lambda *_: {"success": True, "matches": []}
+    )
+    job = tmp_path / "job"
+    job.mkdir()
+    tools = SessionTools(role="prover", project_root=tmp_path, workspace=job, context={})
+    for _ in range(3):
+        tools.invoke("write_file", {"path": "PLAN_job.md", "content": "Same idea"})
+        result = tools.invoke("search_project", {"query": "same lemma"})
+    assert result["success"] is False
+    assert "already returned" in result["error"]
+
+
+def test_large_tool_result_remains_valid_json_with_full_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {"success": True, "matches": [{"text": "evidence" * 4000}]}
+    monkeypatch.setattr(SessionTools, "invoke", lambda *_: payload)
+    calls = []
+
+    def request(_agent, messages, _timeout):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "evidence",
+                        "function": {"name": "search_project", "arguments": '{"query":"lemma"}'},
+                    }
+                ],
+            }, {}
+        content = next(message["content"] for message in messages if message["role"] == "tool")
+        result = json.loads(content)
+        assert result["success"] is True and result["truncated"] is True
+        assert len(content) <= 16000
+        assert json.loads(Path(result["artifact_path"]).read_text()) == payload
+        return {"role": "assistant", "content": '{"proof":"trivial"}'}, {}
+
+    result = run_fake(tmp_path, monkeypatch, request, config={"context_tokens": 64000})
+    assert result["status"] == "completed", result
+    assert result["api_calls"] == 2
+    assert any("tool-results" in path for path in result["artifacts"])
+
+
+def test_addressed_guidance_is_pinned_before_request_and_after_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inbox = tmp_path / ".leanflow/workflow-state/prover/run/inbox.jsonl"
+    inbox.parent.mkdir(parents=True)
+    inbox.write_text(
+        json.dumps({"id": "m", "agent_id": "job", "message": "Use the new polynomial identity."})
+        + "\n"
+    )
+    context = {"run_id": "run", "job_id": "job", "inbox_offset": 0}
+
+    def interrupted(_agent, messages, _timeout):
+        assert "Use the new polynomial identity." in messages[1]["content"]
+        raise RuntimeError("provider outage")
+
+    first = run_fake(tmp_path, monkeypatch, interrupted, context=context)
+    assert first["status"] == "provider_error"
+
+    def resumed(_agent, messages, _timeout):
+        assert messages[1]["content"].count("Use the new polynomial identity.") == 1
+        return {"role": "assistant", "content": '{"proof":"trivial"}'}, {}
+
+    second = run_fake(tmp_path, monkeypatch, resumed, context=context)
+    assert second["status"] == "completed" and second["api_calls"] == 2

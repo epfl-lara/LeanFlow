@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import contextlib
 import copy
+import json
 import queue
 import re
+import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -17,7 +18,6 @@ from leanflow_cli.workflows.prover.source import (
     lean_code_mask,
     project_path,
     read_source,
-    write_source,
 )
 
 if TYPE_CHECKING:
@@ -32,14 +32,39 @@ def research_plan(
     refinement: bool = False,
 ) -> bool:
     """Run fresh planning and critique contexts, then materialize only reviewed proposals."""
+    checkpoint = runtime.state.get("planning_request")
+    if not isinstance(checkpoint, dict):
+        checkpoint = {
+            "reason": reason,
+            "affected": sorted(affected) if affected is not None else None,
+            "refinement": refinement,
+            "steps": {},
+        }
+        runtime.state["planning_request"] = checkpoint
+    else:
+        reason, refinement = checkpoint["reason"], checkpoint["refinement"]
+        affected = set(checkpoint["affected"]) if checkpoint["affected"] is not None else None
+    runtime._ensure_active()
+    if checkpoint.get("accepted_proposal"):
+        launch_research_requests(runtime, checkpoint["accepted_proposal"].get("research_jobs", []))
+        runtime.state.pop("planning_request", None)
+        runtime.state["phase"] = "proving"
+        runtime._persist()
+        return True
     previous_plan = runtime.state["plan_markdown"]
-    if refinement:
+    if refinement and not checkpoint.get("refinement_charged"):
         if runtime.state["metrics"]["plan_refinements"] >= runtime.config.plan_refinements:
+            runtime.state.pop("planning_request", None)
             return False
         runtime.state["metrics"]["plan_refinements"] += 1
+        checkpoint["refinement_charged"] = True
     runtime.state["phase"] = "planning"
+    runtime._persist()
     # Informal research and graph design receive independent model histories.
-    outline = runtime._run_role(
+    outline = _planning_call(
+        runtime,
+        checkpoint,
+        "outline",
         "orchestrator",
         "Develop an honest informal proof outline for the supplied roots. Research available "
         "mathematical sources and preserve prior findings. Do not search Lean lemmas or prove "
@@ -51,9 +76,16 @@ def research_plan(
         runtime.state["plan_markdown"] = outline_report["plan"]
         runtime._persist()
     critique = ""
-    for _ in range(3):
+    for attempt in range(3):
+        runtime._ensure_active()
         runtime._assert_sources()
-        result = runtime._run_role("orchestrator", planning_prompt(reason=reason + "\n" + critique))
+        result = _planning_call(
+            runtime,
+            checkpoint,
+            f"proposal-{attempt}",
+            "orchestrator",
+            planning_prompt(reason=reason + "\n" + critique),
+        )
         proposal = json_report(str(result.get("final_response", "")))
         try:
             updated, skeletons = apply_proposal(
@@ -66,7 +98,10 @@ def research_plan(
             runtime.store.event("plan_rejected", {"reason": critique})
             continue
         runtime.state["phase"] = "reviewing"
-        reviewed = runtime._run_role(
+        reviewed = _planning_call(
+            runtime,
+            checkpoint,
+            f"review-{attempt}",
             "review",
             planning_prompt(reason=reason, review=True),
             context_extra={
@@ -95,6 +130,7 @@ def research_plan(
             and runtime.state["metrics"]["plan_refinements"] >= runtime.config.plan_refinements
         ):
             runtime.state["plan_markdown"] = previous_plan
+            runtime.state.pop("planning_request", None)
             runtime.store.event("plan_refinement_budget_exhausted", {"reason": reason})
             runtime._persist()
             return False
@@ -114,12 +150,50 @@ def research_plan(
             runtime.state["metrics"]["plan_refinements"] += 1
         runtime.state["plan_markdown"] = proposal["plan"]
         runtime.state["phase"] = "proving"
+        checkpoint["accepted_proposal"] = proposal
         runtime._persist()
         launch_research_requests(runtime, proposal.get("research_jobs", []))
+        runtime.state.pop("planning_request", None)
+        runtime._persist()
         return True
     runtime.state["plan_markdown"] += f"\n\nPlanning review did not converge: {critique}\n"
+    runtime.state.pop("planning_request", None)
+    runtime.state["phase"] = "proving"
     runtime._persist()
     return False
+
+
+def _planning_call(
+    runtime: ProverRuntime,
+    checkpoint: dict[str, Any],
+    step: str,
+    role: str,
+    prompt: str,
+    *,
+    context_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Replay finished planning reports or continue the exact interrupted allocation."""
+    runtime._ensure_active()
+    job_id = checkpoint["steps"].get(step)
+    job = next((item for item in runtime.state["jobs"] if item["id"] == job_id), None)
+    if job is not None and job.get("status") not in {
+        "running",
+        "resume_pending",
+        "provider_error",
+        "environment_error",
+        "error",
+    }:
+        result_path = Path(job["workspace"]) / "result.json"
+        if result_path.is_file():
+            return dict(json.loads(result_path.read_text()))
+    job, context = runtime._new_job(role, prompt=prompt)
+    checkpoint["steps"][step] = job["id"]
+    context.update(context_extra or {})
+    runtime._persist()
+    result = runtime._invoke(job, context, prompt)
+    runtime._finish_job(job, result)
+    runtime._ensure_active()
+    return result
 
 
 def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
@@ -183,7 +257,6 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
     """Compile reviewed helper skeletons before making them dependencies of user goals."""
     runtime._assert_sources()
     index = dag.by_id()
-    previous_documents = runtime.documents
     documents = copy.deepcopy(runtime.documents)
     original_imports = sorted(
         {
@@ -197,11 +270,16 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
     )
     original_modules = {node.module for node in dag.nodes if node.original}
     pending = set(skeletons)
-    created: list[Path] = []
     rewritten: dict[Path, bytes] = {}
-    prior_changes = copy.deepcopy(runtime.state["changes"])
     retired = [node for node in runtime.dag.nodes if node.id not in index and not node.original]
     retired_modules = {node.module for node in retired}
+    from leanflow_cli.workflows.prover.source_transaction import (
+        begin_materialization,
+        materialized_write,
+        recover_materialization,
+    )
+
+    journal = begin_materialization(runtime)
     try:
         if skeletons:
             from leanflow_cli.workflows.prover.libraries import ensure_helper_library
@@ -210,7 +288,22 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
                 path = runtime.root / name
                 if path.is_file():
                     rewritten[path] = path.read_bytes()
-            registered = ensure_helper_library(runtime.root)
+            with tempfile.TemporaryDirectory(prefix="leanflow-helper-config-") as temporary:
+                preview = Path(temporary)
+                for path, content in rewritten.items():
+                    (preview / path.name).write_bytes(content)
+                registered = ensure_helper_library(preview)
+                for change in registered.get("changes", []):
+                    preview_path = Path(change["path"])
+                    original_path = runtime.root / preview_path.name
+                    materialized_write(
+                        runtime,
+                        journal,
+                        original_path,
+                        preview_path.read_bytes(),
+                        expected_before=rewritten[original_path],
+                    )
+                    change["path"] = str(original_path)
             if registered.get("accepted") is not True:
                 raise RuntimeError(f"helper library registration failed: {registered}")
             for change in registered.get("changes", []):
@@ -257,8 +350,9 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
                 if path.exists() or path.is_symlink():
                     raise ValueError(f"helper path already exists: {node.file}")
                 path.parent.mkdir(parents=True, exist_ok=True)
-                write_source(path, document.render())
-                created.append(path)
+                materialized_write(
+                    runtime, journal, path, document.render().encode("utf-8"), require_absent=True
+                )
                 check = runtime.verifier.compile_module(node.file)
                 if not check.get("accepted"):
                     raise RuntimeError(str(check))
@@ -276,7 +370,7 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
             document = documents.pop(node.file)
             path = runtime.root / node.file
             rewritten[path] = path.read_bytes()
-            path.unlink()
+            materialized_write(runtime, journal, path, None)
             for change in runtime.state["changes"]:
                 if change["path"] == str(path):
                     change["status"] = "deleted"
@@ -290,7 +384,7 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
             )
             if artifact.exists():
                 rewritten[artifact] = artifact.read_bytes()
-                artifact.unlink()
+                materialized_write(runtime, journal, artifact, None)
         for document in documents.values():
             document.imports = [
                 module for module in document.imports if module not in retired_modules
@@ -303,31 +397,37 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
                 rewritten.setdefault(
                     runtime.root / relative, (runtime.root / relative).read_bytes()
                 )
-                write_source(runtime.root / relative, document.render())
+                materialized_write(
+                    runtime, journal, runtime.root / relative, document.render().encode("utf-8")
+                )
                 runtime._change(document, "orchestrator")
         for node_id in skeletons:
             runtime._change(documents[index[node_id].file], "orchestrator")
         runtime.documents = documents
         runtime._refresh_locations(dag)
-        runtime.state.setdefault("retired_nodes", []).extend(node.to_dict() for node in retired)
-    except Exception:
-        runtime.documents = previous_documents
-        for path, content in rewritten.items():
-            path.write_bytes(content)
-        runtime.state["changes"] = prior_changes
-        for path in created:
-            with contextlib.suppress(OSError):
-                path.unlink()
-            artifact = (
-                runtime.root
-                / ".lake"
-                / "build"
-                / "lib"
-                / "lean"
-                / path.relative_to(runtime.root).with_suffix(".olean")
+        if hasattr(runtime.verifier, "capture_signatures"):
+            signatures = runtime.verifier.capture_signatures(
+                dag, documents, runtime.store.directory / "checks" / "signatures", initialize=False
             )
-            with contextlib.suppress(OSError):
-                artifact.unlink()
+            if signatures.get("accepted") is not True:
+                raise ValueError(
+                    "Planned imports changed or failed to elaborate a protected declaration type: "
+                    + str(signatures.get("error", signatures))
+                )
+        runtime._assert_sources()
+        runtime._ensure_active()
+        runtime.state.setdefault("retired_nodes", []).extend(node.to_dict() for node in retired)
+        runtime.dag = dag
+        from leanflow_cli.workflows.prover.source_transaction import commit_materialization
+
+        commit_materialization(runtime)
+    except Exception:
+        try:
+            recover_materialization(runtime, journal)
+        except ValueError as conflict:
+            from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
+
+            raise InfrastructureFailure(str(conflict), status="source_conflict") from conflict
         raise
 
 
@@ -338,9 +438,12 @@ def launch_research_requests(runtime: ProverRuntime, requests: Any) -> None:
     completed: queue.SimpleQueue[Future[dict[str, Any]]] = queue.SimpleQueue()
     pending: dict[Future[dict[str, Any]], tuple[dict[str, Any], str]] = {}
     capacity = max(1, runtime.config.parallelism - len(runtime.pending))
+    checkpoint = runtime.state.get("planning_request", {})
+    jobs_by_request = checkpoint.setdefault("research_jobs", {})
     with ThreadPoolExecutor(max_workers=capacity, thread_name_prefix="leanflow-research") as pool:
         try:
-            for request in requests[: runtime.config.parallelism]:
+            for index, request in enumerate(requests[: runtime.config.parallelism]):
+                runtime._ensure_active()
                 if not isinstance(request, dict) or not str(request.get("question", "")).strip():
                     continue
                 question = str(request["question"])
@@ -348,12 +451,40 @@ def launch_research_requests(runtime: ProverRuntime, requests: Any) -> None:
                     "Investigate this bounded question; save resources locally and return concrete evidence with source paths. Do not prove Lean declarations.\n"
                     + question
                 )
-                job, context = runtime._new_job("research", prompt=prompt)
-                future = pool.submit(runtime._invoke, job, context, prompt)
+                previous = next(
+                    (
+                        item
+                        for item in runtime.state["jobs"]
+                        if item["id"] == jobs_by_request.get(str(index))
+                    ),
+                    None,
+                )
+                if previous is not None and previous.get("research_recorded"):
+                    continue
+                result_path = (
+                    Path(previous["workspace"]) / "result.json" if previous is not None else None
+                )
+                if (
+                    previous is not None
+                    and previous.get("accounted")
+                    and previous.get("status")
+                    not in {"resume_pending", "provider_error", "environment_error", "error"}
+                    and result_path is not None
+                    and result_path.is_file()
+                ):
+                    job = previous
+                    future = Future[dict[str, Any]]()
+                    future.set_result(dict(json.loads(result_path.read_text())))
+                else:
+                    job, context = runtime._new_job("research", prompt=prompt)
+                    jobs_by_request[str(index)] = job["id"]
+                    runtime._persist()
+                    future = pool.submit(runtime._invoke, job, context, prompt)
                 pending[future] = (job, question)
                 future.add_done_callback(completed.put)
             while pending:
                 runtime._messages()
+                runtime._ensure_active()
                 try:
                     future = completed.get(timeout=0.5)
                 except queue.Empty:
@@ -367,10 +498,16 @@ def launch_research_requests(runtime: ProverRuntime, requests: Any) -> None:
                     + "\n\n"
                     + str(result.get("final_response", ""))[:16000]
                 )
+                job["research_recorded"] = True
                 runtime._persist()
         except BaseException:
             runtime.cancelled.set()
             raise
         finally:
             for future, (job, _) in pending.items():
-                runtime._finish_job(job, future.result())
+                try:
+                    runtime._finish_job(job, future.result())
+                except Exception as error:
+                    runtime.store.event(
+                        "research_cleanup_error", {"job_id": job["id"], "error": str(error)}
+                    )

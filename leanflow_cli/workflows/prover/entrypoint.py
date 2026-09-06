@@ -30,6 +30,9 @@ _PATH_FIELDS = frozenset(
         "dag_path",
         "baseline_path",
         "source_path",
+        "result_path",
+        "report_path",
+        "evidence_path",
         "metadata_path",
         "artifacts",
     }
@@ -172,6 +175,15 @@ def main() -> int:
                 raise RuntimeError("A prover controller already owns this project") from exc
             if previous:
                 clone_resume_run(root, previous, run_id)
+                snapshot = json.loads(
+                    (root / f".leanflow/workflow-state/prover/{run_id}/state.json").read_text()
+                )
+                saved_targets = [project_path(root, path) for path in snapshot["targets"]]
+                if active and {path.resolve() for path in targets} != set(saved_targets):
+                    raise ValueError(
+                        "resume target scope differs from the saved run; launch a new run to change targets"
+                    )
+                targets = saved_targets
             runtime = ProverRuntime(
                 root=root,
                 targets=targets,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from datetime import UTC, datetime
@@ -29,28 +30,47 @@ class RunStore:
         self.lock = threading.RLock()
         self.inbox_offset = 0
         self.on_event: Any = None
+        self._source_snapshot: dict[str, Any] | None = None
+        self._source_checkpoint = ""
+        self._dag_snapshot: dict[str, Any] | None = None
+        self._plan_snapshot: str | None = None
 
     def write(self, state: dict[str, Any], dag: Dag, documents: dict[str, SourceDocument]) -> None:
         """Atomically publish a coherent state snapshot after controller transitions."""
         with self.lock:
+            source_documents = {key: value.to_dict() for key, value in documents.items()}
+            if source_documents != self._source_snapshot:
+                source_digest = hashlib.sha256(
+                    json.dumps(source_documents, sort_keys=True).encode()
+                ).hexdigest()
+                source_checkpoint = Path("source-checkpoints") / f"{source_digest}.json"
+                checkpoint_path = self.directory / source_checkpoint
+                if not checkpoint_path.exists():
+                    atomic_json_write(checkpoint_path, source_documents)
+                atomic_json_write(self.directory / "source.json", source_documents)
+                self._source_snapshot = source_documents
+                self._source_checkpoint = str(source_checkpoint)
+            dag_snapshot = dag.to_dict()
             state.update(
                 version=1,
                 run_id=self.run_id,
                 updated_at=now(),
-                dag=dag.to_dict(),
+                dag=dag_snapshot,
                 plan_path=str(self.directory / "PLAN.md"),
                 dag_path=str(self.directory / "DAG.json"),
+                source_checkpoint=self._source_checkpoint,
             )
-            atomic_json_write(self.directory / "DAG.json", dag.to_dict())
-            atomic_json_write(
-                self.directory / "source.json",
-                {key: value.to_dict() for key, value in documents.items()},
-            )
+            if dag_snapshot != self._dag_snapshot:
+                atomic_json_write(self.directory / "DAG.json", dag_snapshot)
+                self._dag_snapshot = dag_snapshot
             atomic_json_write(self.directory / "state.json", state)
-            plan_path = self.directory / "PLAN.md"
-            pending = plan_path.with_suffix(".tmp")
-            pending.write_text(str(state.get("plan_markdown", "")))
-            pending.replace(plan_path)
+            plan = str(state.get("plan_markdown", ""))
+            if plan != self._plan_snapshot:
+                plan_path = self.directory / "PLAN.md"
+                pending = plan_path.with_suffix(".tmp")
+                pending.write_text(plan)
+                pending.replace(plan_path)
+                self._plan_snapshot = plan
 
     def event(self, kind: str, details: dict[str, Any]) -> None:
         """Append one bounded structured event for audit and live progress."""

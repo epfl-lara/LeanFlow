@@ -168,6 +168,10 @@ def test_global_budget_caps_all_retry_jobs(tmp_path: Path) -> None:
     path = project(tmp_path)
 
     def unsuccessful(**kwargs: Any) -> dict[str, Any]:
+        scratch = Path(kwargs["context"]["scratch_file"])
+        scratch.write_text(
+            scratch.read_text().replace("sorry", "have h : True := by sorry; exact h")
+        )
         return {
             "status": "budget_exhausted",
             "api_calls": kwargs["api_budget"],
@@ -201,7 +205,8 @@ def test_source_changed_by_worker_is_never_accepted(tmp_path: Path) -> None:
         root=tmp_path, targets=[path], config=ProverConfig(), session=unsafe, verifier=Verifier()
     )
     result = runtime.run()
-    assert result["status"] == "error"
+    assert result["status"] == "source_conflict"
+    assert "saved baselines" in result["next_step"]
     assert "protected source changed" in result["error"]
     assert path.read_text().endswith("by sorry\n")
 
@@ -243,7 +248,7 @@ def test_research_creates_reviewed_helper_and_proves_bottom_up(tmp_path: Path) -
                     {
                         "id": "helper",
                         "name": "help",
-                        "statement": "theorem help : True := by sorry",
+                        "statement": "theorem help : True ∧ True := by sorry",
                         "file": "LeanFlowProofs/Help.lean",
                     },
                     {"id": root["id"], "statement": root["statement"], "dependencies": ["helper"]},
@@ -451,7 +456,7 @@ def test_materialization_rolls_back_original_imports_and_lake_registration(
                 {
                     "id": "helper",
                     "name": "help",
-                    "statement": "theorem help : True := by sorry",
+                    "statement": "theorem help : True ∧ True := by sorry",
                     "file": "LeanFlowProofs/Help.lean",
                 },
                 {"id": root.id, "statement": root.statement, "dependencies": ["helper"]},
@@ -586,7 +591,7 @@ def test_replanning_retires_unused_unresolved_helper_and_its_import(tmp_path: Pa
                 {
                     "id": "helper",
                     "name": "help",
-                    "statement": "theorem help : True := by sorry",
+                    "statement": "theorem help : True ∧ True := by sorry",
                     "file": "LeanFlowProofs/Help.lean",
                 },
                 {"id": root.id, "dependencies": ["helper"]},

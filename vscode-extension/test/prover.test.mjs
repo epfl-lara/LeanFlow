@@ -1,7 +1,7 @@
 /** Exact-run identity, dependency rendering, and artifact authority tests. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeProverSnapshot, proverTreeRows, proverArtifactAllowed, proverJobAcceptsGuidance } from "../dist/test/prover.mjs";
+import { normalizeProverSnapshot, proverTreeRows, proverArtifactAllowed, proverJobAcceptsGuidance, proverGuidanceUpdate, proverDefaultGuidanceRecipient } from "../dist/test/prover.mjs";
 import { parseWebviewMessage } from "../dist/test/messageSchema.mjs";
 
 function snapshot(fields = {}) {
@@ -113,4 +113,34 @@ test("artifact messages reject invalid line locations before reaching VS Code", 
   assert.equal(parseWebviewMessage(message).ok, true);
   assert.equal(parseWebviewMessage({ ...message, line: 0 }).ok, false);
   assert.equal(parseWebviewMessage({ ...message, path: "bad\0file" }).ok, false);
+});
+
+test("guidance requests retain an acknowledgement identity without accepting unsafe ids", () => {
+  const request = { type: "proverMessage", runId: "run-1", agentId: "orchestrator", message: "Try induction.", requestId: "guidance-1" };
+  const parsed = parseWebviewMessage(request);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.message.requestId, "guidance-1");
+  assert.equal(parseWebviewMessage({ ...request, requestId: "bad\0id" }).ok, false);
+});
+
+test("guidance clears only its successful acknowledged draft and preserves a rejected message", () => {
+  const pending = { runId: "run-1", requestId: "send-1", message: "Try induction." };
+  const reply = { runId: "run-1", requestId: "send-1", success: true, error: "" };
+  assert.deepEqual(proverGuidanceUpdate(pending.message, pending, reply), { draft: "", error: "" });
+  assert.deepEqual(proverGuidanceUpdate("New observation", pending, reply), { draft: "New observation", error: "" });
+  assert.deepEqual(proverGuidanceUpdate(pending.message, pending, { ...reply, success: false, error: "Run has finished" }), { draft: pending.message, error: "Run has finished" });
+  assert.equal(proverGuidanceUpdate(pending.message, pending, { ...reply, runId: "run-2" }), null);
+  assert.equal(proverGuidanceUpdate(pending.message, pending, { ...reply, requestId: "old-send" }), null);
+});
+
+test("standard guidance targets the active prover while research and idle runs target the manager", () => {
+  const state = snapshot({ mode: "standard", jobs: [
+    { id: "finished", role: "prover", status: "completed" },
+    { id: "resource", role: "research", status: "running" },
+    { id: "current-prover", role: "prover", status: "running" },
+  ] });
+  assert.equal(proverDefaultGuidanceRecipient(state), "current-prover");
+  assert.equal(proverDefaultGuidanceRecipient({ ...state, mode: "research" }), "orchestrator");
+  assert.equal(proverDefaultGuidanceRecipient({ ...state, jobs: [] }), "orchestrator");
+  assert.equal(proverDefaultGuidanceRecipient({ ...state, jobs: [state.jobs[0]] }), "orchestrator");
 });

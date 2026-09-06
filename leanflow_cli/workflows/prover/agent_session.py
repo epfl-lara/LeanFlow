@@ -12,7 +12,11 @@ from typing import Any
 from agent.accounting.redact import redact_sensitive_text
 from agent.accounting.token_accounting import TokenAccounter
 from core.utils import atomic_json_write
-from leanflow_cli.workflows.prover.session_context import approximate_tokens, compact_history
+from leanflow_cli.workflows.prover.session_context import (
+    approximate_tokens,
+    compact_history,
+    tool_result_message,
+)
 from leanflow_cli.workflows.prover.session_guidance import GuidanceInbox, skill_guidance
 from leanflow_cli.workflows.prover.session_tools import SessionTools
 from leanflow_cli.workflows.prover.session_transport import (
@@ -109,6 +113,8 @@ def run_session(
     context_tokens = int(config.get("context_tokens", 64000))
     max_output_tokens = min(int(config.get("max_output_tokens", 8192)), max(1, context_tokens // 4))
     input_limit = max(1, context_tokens - max_output_tokens)
+    schemas = toolset.schemas()
+    schema_tokens = approximate_tokens(schemas) if schemas else 0
     deadline = time.monotonic() + float(config.get("wall_time_s", 14400))
     messages: list[dict[str, Any]] = [
         {
@@ -128,6 +134,7 @@ def run_session(
     last_error = ""
     agent: Any = None
     inbox = GuidanceInbox(project_root, budget_path.parent, context, role)
+    base_assignment = str(messages[1]["content"])
     cancelled = config.get("_cancelled")
     candidate_feedback = config.get("_candidate_feedback")
 
@@ -176,34 +183,34 @@ def run_session(
                 status = "interrupted"
                 break
             for guidance in inbox.poll():
-                messages.append(
-                    {"role": "user", "content": str(guidance.get("message", ""))[:12000]}
-                )
                 emit(
                     "user-guidance-received",
                     {"message_id": guidance.get("id"), "job_id": context.get("job_id")},
                 )
+            durable_guidance = inbox.contract()
+            messages[1]["content"] = base_assignment + (
+                "\n\nDurable user guidance:\n" + durable_guidance if durable_guidance else ""
+            )
             if time.monotonic() >= deadline:
                 status = "timeout"
                 break
-            if bool(config.get("compression", True)):
-                messages, compacted = compact_history(
-                    messages, context_tokens=input_limit, workspace=workspace
-                )
-                if compacted:
-                    emit("context-compacted", {"method": "deterministic", "api_calls": used})
-            if approximate_tokens(messages) > input_limit:
-                status = "context_limit"
-                last_error = "Pinned assignment or uncompacted history exceeds the configured context; proof notes and transcript were saved"
-                break
-            if agent is None:
-                agent = build_transport(
-                    {**config, "max_output_tokens": max_output_tokens}, toolset.schemas()
-                )
             remaining_note = {
                 "role": "user",
                 "content": f"Calls remaining including this request: {api_budget - used}. Continue concrete work; preserve progress in PLAN_job.md.",
             }
+            history_limit = input_limit - schema_tokens - approximate_tokens([remaining_note])
+            if bool(config.get("compression", True)):
+                messages, compacted = compact_history(
+                    messages, context_tokens=history_limit, workspace=workspace
+                )
+                if compacted:
+                    emit("context-compacted", {"method": "deterministic", "api_calls": used})
+            if approximate_tokens(messages + [remaining_note]) + schema_tokens > input_limit:
+                status = "context_limit"
+                last_error = "The assignment, tool schemas, request budget note and history exceed the configured input context after reserving output; proof notes and transcript were saved"
+                break
+            if agent is None:
+                agent = build_transport({**config, "max_output_tokens": max_output_tokens}, schemas)
             used += 1
             atomic_json_write(budget_path, {"limit": api_budget, "used": used})
             emit("api-request", {"api_calls": used, "api_budget": api_budget, "model": agent.model})
@@ -281,13 +288,15 @@ def run_session(
                     "tool-result",
                     {"tool": name, "arguments": function.get("arguments"), "result": result},
                 )
-                content = json.dumps(result, ensure_ascii=False, default=str)
+                content, artifact = tool_result_message(result, workspace)
+                if artifact is not None:
+                    toolset.artifacts.add(str(artifact))
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": str(call.get("id") or call.get("call_id") or ""),
                         "name": name,
-                        "content": content[:16000],
+                        "content": content,
                     }
                 )
             if status in {"timeout", "interrupted"}:

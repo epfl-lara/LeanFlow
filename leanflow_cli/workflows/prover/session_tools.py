@@ -214,10 +214,13 @@ class SessionTools:
             return {"success": True, "content": content, "next_offset": next_offset}
         if name in {"write_file", "replace_text"}:
             path = self._path(str(args["path"]), write=True)
+            previous = path.read_text(encoding="utf-8") if path.is_file() else None
             if name == "write_file":
                 content = str(args["content"])
             else:
-                content = path.read_text(encoding="utf-8")
+                if previous is None:
+                    raise ValueError("The file to replace does not exist")
+                content = previous
                 old = str(args["old"])
                 if not old or content.count(old) != 1:
                     raise ValueError("The old text must match exactly once")
@@ -226,7 +229,8 @@ class SessionTools:
                 raise ValueError("Scratch files are limited to 512 KB")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-            self.revision += 1
+            if content != previous:
+                self.revision += 1
             self.artifacts.add(str(path))
             return {
                 "success": True,

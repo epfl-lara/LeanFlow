@@ -256,8 +256,9 @@ export function parseWebviewMessage(
       const runId = identifier(raw.runId);
       const agentId = identifier(raw.agentId);
       const message = str(raw.message, 8192);
-      return runId !== null && agentId !== null && message !== null && message.trim()
-        ? { ok: true, message: { type, runId, agentId, message } } : reject("message fields");
+      const requestId = raw.requestId === undefined ? undefined : identifier(raw.requestId);
+      return runId !== null && agentId !== null && message !== null && message.trim() && requestId !== null
+        ? { ok: true, message: { type, runId, agentId, message, requestId } } : reject("message fields");
     }
 
     case "openProverFile": {

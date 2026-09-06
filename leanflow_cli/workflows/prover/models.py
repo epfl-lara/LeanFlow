@@ -47,6 +47,8 @@ class Node:
     candidate: list[str] = field(default_factory=list)
     notes: str = ""
     proof_sha256: str = ""
+    signature_sha256: str = ""
+    signature_mutable_names: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

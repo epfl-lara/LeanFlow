@@ -9,19 +9,21 @@ its pre-existing untracked `Refactor.md` was preserved.
 | Check | Result |
 | --- | --- |
 | Original checkout baseline | 6,761 passed, 105 skipped |
-| Black | 687 files unchanged |
+| Black | 695 files unchanged |
 | Ruff | Passed |
-| Mypy | Passed, 277 gated source files |
-| Full Python suite | 6,934 passed, 106 skipped, 14 warnings |
-| Extension tests | 154 passed |
+| Mypy | Passed, 278 gated source files |
+| Full Python suite | 7,014 passed, 109 skipped, 14 warnings |
+| Extension tests | 159 passed |
 | Extension TypeScript and build | Passed |
 | Installable VSIX package | Built successfully |
 | CLI help, flags JSON, installed-wrapper help | Passed |
 | Exact-run prover CLI snapshot | Completed state, four calls, plan and changed-file data returned |
 
-The Python warnings are existing deprecation/runtime warnings; the additional
-skip is the opt-in Lean integration test. Protected Lean checks were also run
-explicitly outside the default suite.
+The Python warnings are existing deprecation/runtime warnings. Tests requiring a
+built Lean fixture are opt-in and were also run explicitly during the audit.
+The table reflects the second verification pass; the initial implementation gate
+was 6,934 passing tests. See the [second-pass record](prover-second-audit-validation.md)
+for the additional findings, fixes, live theorem and review evidence.
 
 ## End-to-end evidence
 
@@ -66,9 +68,8 @@ experimental; bottom-up is the default. The extension was tested through its
 build, unit tests, CLI contract and isolated browser fixtures, not an installed
 VS Code end-to-end campaign.
 
-Accepted proof commits have a crash journal. Multi-file plan materialization
-rolls back ordinary failures but does not yet recover an abrupt process kill
-between its file writes and state publication. Exact negation declines ambiguous
-section-variable contexts. Linux isolation profiles are tested, while actual OS
-execution was verified on macOS. See [the workflow reference](prover-workflow.md)
-for configuration and supported boundaries.
+Proof installation and multi-file plan materialization now have crash journals
+and immutable source checkpoints. Recovery refuses conflicting outside edits.
+Exact negation declines ambiguous section-variable contexts. Linux isolation
+profiles are tested, while actual OS execution was verified on macOS. See
+[the workflow reference](prover-workflow.md) for supported boundaries.
