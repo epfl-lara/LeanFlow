@@ -3,14 +3,43 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from collections.abc import Mapping
 from typing import Any
 
+_IMPORT_LOCK = threading.Lock()
+_agent_class: Any = None
+
+
+def _load_agent_class() -> Any:
+    """Import the provider adapter without starting unused legacy MCP services.
+
+    The dedicated prover process supplies its own tools. Suppression covers
+    only the first adapter import, serialized across parallel jobs, and restores
+    the caller's environment even on failure. Explicit lean_search requests
+    retain normal on-demand discovery through lean_services afterward.
+    """
+    global _agent_class
+    with _IMPORT_LOCK:
+        if _agent_class is None:
+            previous = os.environ.get("LEANFLOW_DISABLE_MCP")
+            os.environ["LEANFLOW_DISABLE_MCP"] = "1"
+            try:
+                from run_agent import AIAgent
+
+                _agent_class = AIAgent
+            finally:
+                if previous is None:
+                    os.environ.pop("LEANFLOW_DISABLE_MCP", None)
+                else:
+                    os.environ["LEANFLOW_DISABLE_MCP"] = previous
+        return _agent_class
+
 
 def build_transport(config: Mapping[str, Any], schemas: list[dict[str, Any]]) -> Any:
     """Build an adapter without entering the legacy agent conversation loop."""
-    from run_agent import AIAgent
+    agent_class = _load_agent_class()
 
     model = str(config.get("model") or os.getenv("LEANFLOW_NATIVE_MODEL", ""))
     if not model:
@@ -18,7 +47,7 @@ def build_transport(config: Mapping[str, Any], schemas: list[dict[str, Any]]) ->
     effort = str(
         config.get("reasoning_effort") or os.getenv("LEANFLOW_NATIVE_REASONING_EFFORT", "")
     )
-    agent = AIAgent(
+    agent = agent_class(
         model=model,
         base_url=os.getenv("LEANFLOW_NATIVE_BASE_URL", ""),
         api_key=os.getenv("LEANFLOW_NATIVE_API_KEY", ""),
@@ -38,15 +67,26 @@ def build_transport(config: Mapping[str, Any], schemas: list[dict[str, Any]]) ->
 
 
 def request_once(
-    agent: Any, messages: list[dict[str, Any]], timeout_s: float
+    agent: Any,
+    messages: list[dict[str, Any]],
+    timeout_s: float,
+    *,
+    final_report_only: bool = False,
 ) -> tuple[dict[str, Any], Any]:
     """Send one SDK request with retries disabled and normalize its response.
 
-    Stream recovery and final-report calls in the legacy loop are intentionally
-    absent. An interrupted stream consumes its admitted call and returns an error.
+    Stream recovery and extra final-report calls in the legacy loop are absent.
+    An interrupted stream consumes its admitted call and returns an error. A
+    reporting-only request retains schemas/history while disabling new tools.
     """
     prepared = agent._build_api_messages_for_turn(messages[1:], str(messages[0]["content"]))
     kwargs = agent._build_api_kwargs(prepared)
+    if final_report_only:
+        # Tool history still needs its schemas, especially for native Anthropic.
+        # Disable only new calls; never strip definitions or prior tool results.
+        kwargs["tool_choice"] = (
+            {"type": "none"} if agent.api_mode == "anthropic_messages" else "none"
+        )
     if agent.api_mode != "codex_responses":
         kwargs["timeout"] = max(1.0, timeout_s)
     if agent.api_mode == "anthropic_messages":

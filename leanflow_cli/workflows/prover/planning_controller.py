@@ -76,6 +76,7 @@ def research_plan(
         runtime.state["plan_markdown"] = outline_report["plan"]
         runtime._persist()
     critique = ""
+    proposal: dict[str, Any] = {}
     for attempt in range(3):
         runtime._ensure_active()
         runtime._assert_sources()
@@ -85,6 +86,9 @@ def research_plan(
             f"proposal-{attempt}",
             "orchestrator",
             planning_prompt(reason=reason + "\n" + critique),
+            context_extra=(
+                {"previous_proposal": proposal, "planning_critique": critique} if attempt else None
+            ),
         )
         proposal = json_report(str(result.get("final_response", "")))
         try:

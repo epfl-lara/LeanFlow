@@ -1113,7 +1113,10 @@ FLAG_CATALOG: tuple[FlagSpec, ...] = (
         default="0",
         group=_OPS,
         summary="Start with no MCP servers. Lean search and LSP tools become unavailable.",
-        read_in=("tools/mcp/mcp_config.py",),
+        read_in=(
+            "tools/mcp/mcp_config.py",
+            "leanflow_cli/workflows/prover/session_transport.py",
+        ),
     ),
     FlagSpec(
         name="LEANFLOW_MCP_STDERR_INHERIT",

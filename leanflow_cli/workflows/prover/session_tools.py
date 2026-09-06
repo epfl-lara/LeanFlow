@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from core.utils import atomic_json_write
+from leanflow_cli.workflows.prover.resource_handoff import shared_resource
 from tools.utilities.repository_research_policy import clean_room_path_block_reason
 
 
@@ -57,13 +58,14 @@ class SessionTools:
         self.revision = 0
         self.repeated: dict[str, int] = {}
         self.research_job = research_job
+        self.research_resources: dict[str, Any] = {}
 
     def schemas(self) -> list[dict[str, Any]]:
         """Return only tools permitted to this role; advisors are never exposed."""
         tools = [
             _schema(
                 "read_file",
-                "Read project source or your workspace. Omit offset/limit for a normal read. Offset is a UTF-8 byte position (default 0); limit is a CHARACTER count (default 8000, maximum 16000), never a line count.",
+                "Read project source, your workspace, or exact paths in the supplied resource inventory. Relative paths are based on your private workspace; use project_root plus the DAG file path for project source. PLAN and DAG are already in the assignment; other jobs' notes and controller files are private. Omit offset/limit for a normal read. Offset is a UTF-8 byte position (default 0); limit is a CHARACTER count (default 8000, maximum 16000), never a line count.",
                 {"path": TEXT, "offset": INTEGER, "limit": INTEGER},
                 ["path"],
             ),
@@ -120,8 +122,15 @@ class SessionTools:
                 ),
                 _schema(
                     "fetch_resource",
-                    "Download a public paper or source page into your workspace with provenance.",
-                    {"url": TEXT, "filename": TEXT},
+                    "Reuse a resource from the supplied inventory or download a public paper/source page with provenance. Optional filename is a simple basename such as paper.md, never a directory or resources/paper.md. New files go under your workspace's resources directory; read the exact returned path.",
+                    {
+                        "url": TEXT,
+                        "filename": {
+                            "type": "string",
+                            "description": "Optional basename only, without path components; omit to generate a name.",
+                            "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,120}$",
+                        },
+                    },
                     ["url"],
                 ),
                 _schema(
@@ -140,6 +149,10 @@ class SessionTools:
         roots = (self.workspace,) if write else (self.workspace, self.project_root)
         if not any(path.is_relative_to(root) for root in roots):
             raise ValueError("Path is outside this job's permitted workspace")
+        if write and path.is_relative_to(self.workspace / "resources"):
+            raise ValueError(
+                "Downloaded resources are read-only; use fetch_resource to create them"
+            )
         if not write and not path.is_relative_to(self.workspace):
             reason = clean_room_path_block_reason(path, cwd=self.project_root)
             if reason:
@@ -148,9 +161,11 @@ class SessionTools:
             not write
             and path.is_relative_to(self.project_root / ".leanflow")
             and not path.is_relative_to(self.workspace)
+            and shared_resource(self.context, self.project_root, path=path) is None
+            and shared_resource(self.research_resources, self.project_root, path=path) is None
         ):
             raise ValueError(
-                "Other jobs and controller state are private; use the supplied plan and DAG"
+                "Other jobs and controller state are private; use the supplied plan, DAG, and exact resource inventory paths"
             )
         if write and path.name in {
             "PLAN.md",
@@ -199,9 +214,18 @@ class SessionTools:
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_json_write(path, {"used": 1, "question": question})
             assert self.research_job is not None
-            return self.research_job(question)
+            result = self.research_job(question)
+            # The callback is controller-owned and derives grants from completed
+            # resource files; the child model's JSON cannot grant private reads.
+            self.research_resources = {"resources": result.get("resources", {})}
+            return result
         if name == "read_file":
             path = self._path(str(args["path"]))
+            if not path.exists():
+                raise ValueError(
+                    f"File not found: {path}. Relative paths use this job's workspace; "
+                    "use the supplied project_root for source or exact resource inventory paths."
+                )
             if not path.is_file():
                 raise ValueError("Only regular files can be read")
             offset, limit = max(0, int(args.get("offset", 0))), min(
@@ -279,11 +303,16 @@ class SessionTools:
             self.artifacts.add(str(artifact))
             return result
         if name == "fetch_resource":
-            from leanflow_cli.workflows.prover.session_research import fetch_resource
+            from leanflow_cli.workflows.prover.session_research import _url_policy, fetch_resource
 
-            result = fetch_resource(
-                str(args["url"]), self.workspace, str(args.get("filename") or "")
-            )
+            url = str(args["url"]).strip()
+            reason = _url_policy(url)
+            if reason:
+                raise ValueError(reason)
+            saved = shared_resource(self.context, self.project_root, url=url)
+            if saved is not None:
+                return {"success": True, "status": "reused", "model_calls": 0, **saved}
+            result = fetch_resource(url, self.workspace, str(args.get("filename") or ""))
             if result.get("path"):
                 self.artifacts.add(str(result["path"]))
             return result

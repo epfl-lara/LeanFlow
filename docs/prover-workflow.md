@@ -137,6 +137,18 @@ blocked after two results without a scratch edit. Public resource downloads have
 timeouts, redirect and byte limits, public-address validation, and provenance:
 original URL, final URL, retrieval time, content hashes, and local artifact paths.
 HTML is reduced deterministically; source bytes and PDFs can be retained.
+Fresh stages receive a bounded inventory of prior downloaded resources with exact
+readable paths and content hashes. Sharing requires a fetch-owned receipt in the
+private runtime directory as well as matching metadata and file content. Inventory
+scans hash at most 32 MiB and mark omitted resources explicitly. These files can be
+reused without another download; private proof scratch, job notes, and controller
+files remain isolated.
+Model file tools cannot write into the downloaded resources directory. Older
+downloads without a private receipt remain local evidence but need a new fetch
+before another job can receive access; a receipt is never inferred from metadata
+written by a model.
+Relative tool paths use the current job workspace. Project source reads use the
+supplied project root, and download filenames are basenames without directories.
 
 Computation is a restricted integer/rational Python experiment with no filesystem
 or network access. Its output is mathematical evidence, not a Lean certificate.
@@ -209,6 +221,13 @@ decomposition. An accepted review classification controls whether a direction
 refinement is charged; a certified-refutation repair reserves its refinement
 before replanning. Direction changes require remaining refinement capacity before
 their source changes are admitted.
+
+Planning, review, and resource jobs reserve their last admitted request for the
+requested final report, with callable tools disabled. This adds no requests.
+Rejected graph proposals and their specific gate feedback travel together into
+the next fresh planning context, so the planner can repair the rejected graph.
+The dedicated prover transport defers legacy MCP discovery until an explicit
+Lean service needs it, instead of initializing unused services during import.
 
 Compression makes no model calls. It keeps the system contract, selected skill guidance, original assignment
 with PLAN/DAG, durable addressed user guidance, current `PLAN_job.md`, and recent
@@ -325,4 +344,7 @@ third-party dependency combinations still need project-specific validation.
 The [validation record](prover-redesign-validation.md) reports the full quality
 gate and actual Codex/Lean smoke evidence. The live run exercises provider,
 tool, and verification integration on a small fixture; hard-problem effectiveness
-and comparative efficiency remain unmeasured.
+and comparative efficiency require broader measurement. The later
+[independent live experiments](prover-independent-live-validation.md) record two
+completed Putnam problems, a real parallel helper DAG, and specific planning
+inefficiencies found and repaired during observation.

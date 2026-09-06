@@ -228,6 +228,7 @@ tool is reachable through the public registry.
 | `workflows/prover/session_tools.py` | Role-specific read/scratch/Lean/research tools; no generic source-write or terminal authority |
 | `workflows/prover/session_search.py` | Bounded project search and clean-room result filtering |
 | `workflows/prover/session_research.py` | Direct bounded web/resource retrieval with provenance and no hidden model summaries |
+| `workflows/prover/resource_handoff.py` | Bounded downloaded-resource catalogs and exact read grants across private job stages |
 | `workflows/prover/check_process.py` | OS-isolated warm worker RPC and controller-owned restricted commands |
 | `workflows/prover/check_sandbox.py` | Platform sandbox profiles, permitted runtime paths and restricted process environment |
 | `workflows/prover/check_worker.py` | LeanProbe feedback inside the protected process |

@@ -5819,6 +5819,14 @@ def test_scope_entry_releases_other_dispatch_worker_pid_without_signal_and_launc
     monkeypatch, tmp_path
 ):
     """A different worker spec frees the ghost lane without signaling its PID."""
+
+    def run_inline(action, **_kwargs):
+        """Complete this lifecycle assertion independently of the 50 ms async settle window."""
+        action()
+        return True
+
+    # Actual asynchronous scheduling is covered in test_parent_maintenance.py.
+    monkeypatch.setattr(runner, "start_parent_maintained_action", run_inline)
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("LEANFLOW_DISPATCH_ENABLED", "1")
     campaign_id = "campaign-scope-legacy-pid"

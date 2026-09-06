@@ -46,7 +46,11 @@ return JSON with a proof string and notes. All local have obligations must close
 For orchestration/review/research: do not prove Lean theorems. Research, formulate
 and critique a precise plan and smaller obligations; return the requested JSON.
 Keep computations honest: an experiment is not a proof. Report contrary evidence
-and uncertainty. Only the controller owns PLAN.md and DAG.json.
+and uncertainty. Only the controller owns PLAN.md and DAG.json. Their current
+contents are supplied in the assignment; do not try to open earlier jobs' private
+PLAN_job.md or guess controller paths. Use the supplied resource inventory's exact
+paths to reuse downloaded evidence across fresh stages. Relative tool paths are
+based on this job's workspace; project source paths need the supplied project_root.
 Current call ceiling for this job is {api_budget}; remaining calls are shown
 before each request. End with useful results, exact blockers and current progress.
 """
@@ -194,9 +198,23 @@ def run_session(
             if time.monotonic() >= deadline:
                 status = "timeout"
                 break
+            final_report_only = role not in {"prover", "negation"} and used == api_budget - 1
             remaining_note = {
                 "role": "user",
-                "content": f"Calls remaining including this request: {api_budget - used}. Continue concrete work; preserve progress in PLAN_job.md.",
+                "content": (
+                    "This is the final permitted request for this stage. Tools are disabled. "
+                    "Return the complete requested JSON/report in your response now, using the "
+                    "accumulated assignment, history and saved findings. Follow the exact output "
+                    "schema requested in the assignment. Do not return only a file path, defer "
+                    "the report, or issue tool calls. State unresolved uncertainties honestly."
+                    if final_report_only
+                    else f"Calls remaining including this request: {api_budget - used}. Continue concrete work; preserve progress in PLAN_job.md."
+                    + (
+                        " The final call is reserved for the requested JSON/report with tools disabled."
+                        if role not in {"prover", "negation"}
+                        else ""
+                    )
+                ),
             }
             history_limit = input_limit - schema_tokens - approximate_tokens([remaining_note])
             if bool(config.get("compression", True)):
@@ -210,15 +228,27 @@ def run_session(
                 last_error = "The assignment, tool schemas, request budget note and history exceed the configured input context after reserving output; proof notes and transcript were saved"
                 break
             if agent is None:
-                agent = build_transport({**config, "max_output_tokens": max_output_tokens}, schemas)
+                agent = build_transport(
+                    {**config, "max_output_tokens": max_output_tokens},
+                    schemas,
+                )
             used += 1
             atomic_json_write(budget_path, {"limit": api_budget, "used": used})
-            emit("api-request", {"api_calls": used, "api_budget": api_budget, "model": agent.model})
+            emit(
+                "api-request",
+                {
+                    "api_calls": used,
+                    "api_budget": api_budget,
+                    "model": agent.model,
+                    "final_report_only": final_report_only,
+                },
+            )
             try:
                 assistant, usage = request_once(
                     agent,
                     messages + [remaining_note],
                     min(float(config.get("timeout_s", 180)), max(1.0, deadline - time.monotonic())),
+                    **({"final_report_only": True} if final_report_only else {}),
                 )
             except Exception as exc:
                 last_error = redact_sensitive_text(str(exc))
@@ -245,6 +275,10 @@ def run_session(
             messages.append(assistant)
             final_response = str(assistant.get("content") or "")
             tool_calls = assistant.get("tool_calls") or []
+            if final_report_only and tool_calls:
+                last_error = "Final reporting request returned tool calls despite disabled tools; no additional tools or requests were executed"
+                emit("final-report-rejected", {"api_calls": used, "error": last_error})
+                break
             if not tool_calls:
                 if role not in {"prover", "negation"} or _candidate_ready(
                     final_response, workspace

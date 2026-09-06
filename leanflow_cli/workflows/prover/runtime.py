@@ -299,8 +299,11 @@ class ProverRuntime:
             raise BudgetExhausted("campaign wall-clock budget exhausted")
 
     def _context(self, node: Node | None = None) -> dict[str, Any]:
+        from leanflow_cli.workflows.prover.resource_handoff import resource_inventory
+
         return {
             "run_id": self.run_id,
+            "project_root": str(self.root),
             "inbox_offset": self.store.inbox_offset,
             "assignment": node.to_dict() if node else {},
             "dag": self.dag.to_dict(),
@@ -308,6 +311,9 @@ class ProverRuntime:
             "notes": node.notes if node else "",
             "goal": self.goal,
             "permitted_dependencies": list(node.dependencies) if node else [],
+            "resources": resource_inventory(
+                self.state["jobs"], project_root=self.root, run_directory=self.store.directory
+            ),
         }
 
     def _new_job(

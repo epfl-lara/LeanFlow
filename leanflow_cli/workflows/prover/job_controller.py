@@ -406,6 +406,8 @@ def run_role(
 
 def research_job(runtime: ProverRuntime, parent: dict[str, Any], question: str) -> dict[str, Any]:
     """Resolve one concrete resource or computation question as a separately bounded job."""
+    from leanflow_cli.workflows.prover.resource_handoff import resource_inventory
+
     prompt = (
         "Investigate this specific external resource or computation uncertainty. Save evidence locally and return a concise report with paths. Do not advise about Lean proof strategy or solve declarations.\n"
         + question
@@ -424,6 +426,9 @@ def research_job(runtime: ProverRuntime, parent: dict[str, Any], question: str) 
         "report": str(result.get("final_response", ""))[:16000],
         "error": result.get("error", ""),
         "artifacts": result.get("artifacts", []),
+        "resources": resource_inventory(
+            [job], project_root=runtime.root, run_directory=runtime.store.directory
+        ),
     }
 
 

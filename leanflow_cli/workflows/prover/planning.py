@@ -77,7 +77,8 @@ def apply_proposal(
         )
         if mask[:declaration_offset].strip() or mask[hole_end:].strip():
             raise ValueError(
-                "helper skeleton must end at its single sorry and contain no other commands"
+                f"helper {node_id}: helper skeleton must end at its single sorry and contain no other commands; "
+                "omit file-level prefixes such as open scoped and use explicit names in its statement"
             )
         if entry["kind"] not in {"theorem", "lemma", "def", "abbrev"}:
             raise ValueError("new nodes may be theorem, lemma, def, or abbrev declarations")
@@ -158,6 +159,8 @@ def planning_prompt(*, reason: str, review: bool = False) -> str:
         "Use the supplied current PLAN and DAG to make one concrete, bounded advance. "
         "Preserve user statements and all verified progress. Research source mathematics first; "
         "provers own Lean lemma search. Reuse local resources before repeat web searches. "
+        "When previous_proposal and planning_critique are supplied, repair that specific rejected "
+        "proposal and retain its useful work instead of repeating settled research. "
         "No invented axioms. Download sources into your workspace with provenance. "
         "Prefer useful small helpers over broad advice or endless search. "
         f"Current request: {reason}\n"
@@ -175,6 +178,8 @@ def planning_prompt(*, reason: str, review: bool = False) -> str:
         "Existing nodes use their existing id and statement; dependencies may be updated. New nodes "
         "require id, name, statement (a COMPLETE Lean declaration ending := by sorry), "
         "informal_justification, file (LeanFlowProofs/Name.lean), dependencies (node IDs). "
+        "The statement contains only that declaration: no import, open/open scoped, namespace, "
+        "or option commands before or after it. Use explicit names where notation needs a scope. "
         "Use a unique module per helper and fully qualified declaration names when needed. "
         "New helper modules can import original imports and other generated helper modules, but cannot "
         "import original goal modules: that would create a circular Lean import. If required definitions "

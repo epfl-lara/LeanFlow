@@ -301,6 +301,8 @@ def _artifact_content(payload: bytes, content_type: str) -> tuple[bytes, str]:
 
 def fetch_resource(url: str, workspace: Path, filename: str = "") -> dict[str, Any]:
     """Save one bounded public resource and a URL/hash provenance manifest."""
+    from leanflow_cli.workflows.prover.resource_handoff import record_download
+
     created: list[Path] = []
     try:
         url = url.strip()
@@ -350,6 +352,7 @@ def fetch_resource(url: str, workspace: Path, filename: str = "") -> dict[str, A
                 and destination.read_bytes() == content
                 and source.read_bytes() == payload
             ):
+                record_download(root, metadata)
                 return {
                     "success": True,
                     "status": "cached",
@@ -366,6 +369,7 @@ def fetch_resource(url: str, workspace: Path, filename: str = "") -> dict[str, A
         with manifest.open("x", encoding="utf-8") as handle:
             created.append(manifest)
             json.dump(metadata, handle, indent=2)
+        record_download(root, metadata)
         return {"success": True, "status": "saved", "manifest_path": str(manifest), **metadata}
     except (OSError, ValueError, UnicodeError, http.client.HTTPException) as exc:
         for path in reversed(created):
