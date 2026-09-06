@@ -18,11 +18,19 @@ Generated results append to the untracked `evals/results.jsonl`.
 - **T3 Research-grade:** ten multi-hour campaigns: the isolated IMOMath3
   scope and nine solved declarations from Formal Conjectures pinned at
   `bench-v1-lean4.27.0`, including `erdos_865.variants.k2`.
+- **T4 Lean-IMO-Bench:** 60 IMO-style declarations (30 Basic, 30 Advanced)
+  vendored from IMO-LeanProofBench into
+  `testdata/workflow_projects/LeanIMOBench`, one standalone module per problem.
+  Scored per problem against LEAP's published baseline (42/60 overall; Basic
+  25/30, Advanced 17/30). Clean-room only: LEAP's formal proofs of these exact
+  theorems are public, so a scored run must keep solution research disabled.
 - **Adversarial fixtures:** four local Lean files covering a false leaf,
   false decomposition, vacuity, and nonstandard-axiom temptation.
 
 ## Promotion Criteria
 
+- T4 runs are clean-room, one attempt per problem, with no reference
+  solutions on disk; otherwise the LEAP comparison is not reportable
 - forced-stop/resume drills lose no verified work and reconcile the proof graph
 - persistence-coach coverage is 100%, with no strategy or verification authority
 - adversarial fixtures cannot pass through false statements or forbidden axioms

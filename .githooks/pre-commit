@@ -16,6 +16,15 @@ case "${ALLOW_PROVEDEMO_COMMIT:-}" in
     ;;
 esac
 
+case "${ALLOW_LEANIMOBENCH_COMMIT:-}" in
+  1|true|TRUE|yes|YES|on|ON)
+    allow_leanimobench=1
+    ;;
+  *)
+    allow_leanimobench=0
+    ;;
+esac
+
 case "${ALLOW_DOCFORMALIZATIONDEMO_COMMIT:-}" in
   1|true|TRUE|yes|YES|on|ON)
     allow_docformalizationdemo=1
@@ -46,6 +55,18 @@ if [ -n "${docformalizationdemo_paths}" ] && [ "${allow_docformalizationdemo}" -
   echo "For an intentional fixture refresh, rerun with ALLOW_DOCFORMALIZATIONDEMO_COMMIT=1." >&2
   echo >&2
   printf '%s\n' "${docformalizationdemo_paths}" >&2
+  blocked=1
+fi
+
+leanimobench_paths="$(git diff --cached --name-only -- testdata/workflow_projects/LeanIMOBench)"
+if [ -n "${leanimobench_paths}" ] && [ "${allow_leanimobench}" -ne 1 ]; then
+  echo "Commit blocked: staged changes under testdata/workflow_projects/LeanIMOBench are protected." >&2
+  echo "The 60 problem statements are vendored verbatim from IMO-LeanProofBench; editing one" >&2
+  echo "silently invalidates every score compared against the published baseline." >&2
+  echo "Runs should write to ignored paths such as .leanflow/, .lake/, and results/." >&2
+  echo "To refresh from upstream, use scripts/build_benchmark.py and rerun with ALLOW_LEANIMOBENCH_COMMIT=1." >&2
+  echo >&2
+  printf '%s\n' "${leanimobench_paths}" >&2
   blocked=1
 fi
 

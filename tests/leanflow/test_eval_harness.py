@@ -139,6 +139,10 @@ def test_frozen_t2_t3_and_adversarial_corpora_are_complete():
     assert harness.validate_corpus_manifest() == []
     assert len(harness.suite_cases("t2")) == 40
     assert len(harness.suite_cases("t3")) == 10
+    assert len(harness.suite_cases("t4")) == 60
+    t4 = harness.suite_cases("t4")
+    assert sum(1 for case in t4 if case["split"] == "Basic") == 30
+    assert sum(1 for case in t4 if case["split"] == "Advanced") == 30
     assert len(harness.suite_cases("adversarial")) == 4
     assert any(case["declaration"] == "erdos_865.variants.k2" for case in harness.suite_cases("t3"))
 

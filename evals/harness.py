@@ -31,7 +31,7 @@ CORPUS_MANIFEST_PATH = Path(__file__).resolve().parent / "corpus_manifest.json"
 
 #: Graph statuses that count as verified progress (T3 metric).
 VERIFIED_PROGRESS_STATUSES = frozenset({"proved"})
-EXPECTED_SUITE_COUNTS = {"t2": 40, "t3": 10, "adversarial": 4}
+EXPECTED_SUITE_COUNTS = {"t2": 40, "t3": 10, "t4": 60, "adversarial": 4}
 
 
 def load_corpus_manifest(path: Path | str = CORPUS_MANIFEST_PATH) -> dict[str, Any]:

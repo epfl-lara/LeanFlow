@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "Template only. scripts/run_problem.sh writes the real per-run config to",
+    "results/<run-id>/RUN_CONFIG.json with the problem record resolved out of",
+    "manifest.json. Copy this and fill <PLACEHOLDERS> only for a hand-launched run,",
+    "e.g. from the VS Code extension."
+  ],
+  "benchmark": "Lean-IMO-Bench",
+  "approved": false,
+  "launched": false,
+  "preview_only": true,
+  "provider": "<PROVIDER>",
+  "model": "<MODEL>",
+  "reasoning_effort": "high",
+  "project": ".",
+  "target_file": "LeanIMOBench/<SPLIT>/<THEOREM>.lean",
+  "target": "<THEOREM>",
+  "profile_path": "flag-profiles/lean-imo-bench.json",
+  "run_id": "<RUN_ID>",
+  "clean_room": true,
+  "literature_policy": "Clean room. Informal mathematical background is allowed; retrieving, importing, or reconstructing any existing FORMAL Lean solution to this theorem is not. LEAP's proofs of these exact theorems are public at google-deepmind/superhuman/leap/solutions/LEAN-IMO-Bench, so solution research stays disabled for any scored run.",
+  "prompt": "Prove <THEOREM> in <TARGET_FILE>, preserving its exact statement and all original code outside the sorry. The statement is vendored verbatim from IMO-LeanProofBench and must not be weakened, generalized, or restated. Do not retrieve or copy an existing formal Lean solution to this problem. Require independent kernel verification with standard axioms before completion.",
+  "allowed_axioms": ["propext", "Classical.choice", "Quot.sound"],
+  "scoring": {
+    "solved": "sorry-free, kernel-verified, statement byte-identical to manifest.json statement_sha256, axioms within allowed_axioms",
+    "compare_against": "manifest.json -> baseline (LEAP 42/60 overall; Basic 25/30; Advanced 17/30)"
+  }
+}
