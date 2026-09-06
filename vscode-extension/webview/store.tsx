@@ -28,6 +28,7 @@ import type {
 import { launchRequestForViewState } from "../src/core/launch";
 import { trackedRunForLiveStatus } from "../src/core/runSelection";
 import { emptyLaunchRequest } from "../src/core/types";
+import type { ProverSnapshot } from "../src/core/prover";
 import { loadViewState, post, saveViewState } from "./vscodeApi";
 
 export type TabId = "launch" | "live" | "logs" | "knobs" | "sweeps";
@@ -38,6 +39,7 @@ export interface ViewState {
   logFilter: string[];
   logSearch: string;
   logRaw: boolean;
+  logAgent: string;
   knobSearch: string;
   knobAblatableOnly: boolean;
   knobProfile: string;
@@ -52,6 +54,7 @@ const DEFAULT_VIEW: ViewState = {
   logFilter: [],
   logSearch: "",
   logRaw: false,
+  logAgent: "",
   knobSearch: "",
   knobAblatableOnly: false,
   knobProfile: "",
@@ -79,6 +82,7 @@ interface Store {
   view: ViewState;
   events: Record<string, ActivityEvent[]>;
   runLog: string;
+  proverStates: Record<string, { snapshot: ProverSnapshot | null; error: string }>;
   preview: { plan: LaunchPlanPreview | null; error: string; loading: boolean };
   diff: { rows: ProfileDiffRow[]; error: string; loading: boolean };
   toasts: Toast[];
@@ -109,6 +113,7 @@ const INITIAL: Store = {
   view: initialView,
   events: {},
   runLog: "",
+  proverStates: {},
   preview: { plan: null, error: "", loading: false },
   diff: { rows: [], error: "", loading: false },
   toasts: [],
@@ -145,6 +150,9 @@ function reduceHost(state: Store, message: HostMessage): Store {
   switch (message.type) {
     case "state":
       return { ...state, app: message.state };
+    case "proverState":
+      return { ...state, proverStates: { ...state.proverStates,
+        [message.runId]: { snapshot: message.snapshot, error: message.error } } };
     case "events": {
       const existing = message.reset ? [] : (state.events[message.runId] ?? []);
       // The host already de-duplicates by cursor, but a reset push overlapping

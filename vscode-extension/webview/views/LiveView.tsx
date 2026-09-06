@@ -2,6 +2,7 @@
 import { Card, Empty, Notice, Pill, Stat, StatusPill, relativeTime } from "../components";
 import { useSelectedRun, useStore } from "../store";
 import { post } from "../vscodeApi";
+import { ProverWorkspace } from "./ProverWorkspace";
 
 function heartbeatAge(iso: string | undefined): number | null {
   if (!iso) {
@@ -15,12 +16,14 @@ export function LiveView() {
   const { app } = useStore();
   const run = useSelectedRun();
   const status = app?.liveStatus;
+  const runId = run?.runId || String(status?.run_id || "") || app?.history[0]?.run_id || "";
+  const workflowKind = run?.request.kind || status?.workflow_kind || app?.history[0]?.workflow_kind || "";
 
   if (!app?.project.found) {
     return <Empty>Open a LeanFlow project to see live run state.</Empty>;
   }
 
-  if (!status && !run) {
+  if (!status && !run && !runId) {
     return (
       <Empty>
         Nothing running.
@@ -89,6 +92,8 @@ export function LiveView() {
           this too.
         </Notice>
       )}
+
+      {workflowKind.includes("prove") && <ProverWorkspace runId={runId} />}
 
       {status && (
         <>

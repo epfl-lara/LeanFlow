@@ -69,6 +69,7 @@ if (tests) {
       runHistory: "src/core/runHistory.ts",
       runPrivacy: "src/core/runPrivacy.ts",
       messageSchema: "src/panels/messageSchema.ts",
+      prover: "src/core/prover.ts",
     },
     outdir: "dist/test",
     outExtension: { ".js": ".mjs" },

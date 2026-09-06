@@ -3,6 +3,21 @@
 All notable changes to the LeanFlow VS Code extension are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+- Add an exact-run prover workspace with navigable theorem dependencies,
+  conditional-proof status, a readable proof plan, job budgets, and usage metrics.
+- Open recorded source lines, per-agent scratch files and logs, and file diffs
+  against the run baseline; filter structured events by agent.
+- Queue guidance for the selected orchestrator or prover without editing their
+  durable plan directly. Finished runs reject new guidance.
+- Expose standard/research mode and focused model, context, compression,
+  parallelism, API-call, restart, and plan-refinement controls from the CLI catalog.
+- Show terminal failure details, resumed-run lineage, nested research jobs, and
+  candidate proofs separately from verified results. Label incomplete cost totals.
+- Preserve full redacted proof plans and reject guidance for finished jobs.
+  Retire the unsupported prover human-review launch option, including saved presets.
+
 ## [0.1.9] — 2026-08-11
 
 ### Fixed

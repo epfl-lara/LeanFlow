@@ -44,6 +44,9 @@ def register_runs_parser(subparsers: Any) -> None:
         help="Project root to read state from (defaults to discovery from the cwd)",
     )
     runs_sub = runs_parser.add_subparsers(dest="runs_command")
+    from leanflow_cli.cli.prover_status import register_prover_parsers
+
+    register_prover_parsers(runs_sub)
 
     list_parser = runs_sub.add_parser("list", help="List recorded runs, newest first")
     list_parser.add_argument("--limit", type=int, default=50)
@@ -605,6 +608,8 @@ def _handle_provenance(args: argparse.Namespace, state_root: Path) -> int:
 
 def handle_runs(args: argparse.Namespace) -> int:
     """Dispatch one ``leanflow runs`` invocation."""
+    from leanflow_cli.cli.prover_status import handle_prover
+
     command = str(getattr(args, "runs_command", "") or "list")
     handlers = {
         "list": _handle_list,
@@ -617,6 +622,8 @@ def handle_runs(args: argparse.Namespace) -> int:
         "types": _handle_types,
         "metrics": _handle_metrics,
         "provenance": _handle_provenance,
+        "prover": handle_prover,
+        "prover-message": handle_prover,
     }
     handler = handlers.get(command)
     if handler is None:

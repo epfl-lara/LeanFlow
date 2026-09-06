@@ -456,6 +456,12 @@ test("a clean prove form has no problems", () => {
   assert.deepEqual(validateLaunch(form({ target: "Main.lean" })), []);
 });
 
+test("legacy human-review values never reach redesigned prove launches or saved presets", () => {
+  const legacy = form({ kind: "prove", humanReview: true });
+  assert.equal(buildWorkflowArgs(legacy).includes("--human-review"), false);
+  assert.equal(launchRequestForViewState(legacy).humanReview, false);
+});
+
 test("fields the host would reject for length are reported by the form", () => {
   // Without this the launcher posts a request the host drops wholesale, which
   // reads as a dead button. These are the fields no maxLength can express.

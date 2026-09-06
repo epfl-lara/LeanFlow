@@ -10,7 +10,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { CliError, fetchProfileDiff, previewLaunch } from "../core/cli";
+import { CliError, fetchProfileDiff, fetchProver, previewLaunch, sendProverMessage } from "../core/cli";
+import { proverArtifactAllowed } from "../core/prover";
 import {
   buildWorkflowArgs,
   rejectedProfileKnobNames,
@@ -95,6 +96,7 @@ export function buildWebviewHtml(
 export class WebviewHost implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private ready = false;
+  private readonly proverLoads = new Set<string>();
 
   constructor(
     private readonly webview: vscode.Webview,
@@ -385,6 +387,53 @@ export class WebviewHost implements vscode.Disposable {
           return;
         }
         await vscode.window.showTextDocument(vscode.Uri.file(target));
+        return;
+      }
+      case "loadProver": {
+        if (this.proverLoads.has(message.runId)) return;
+        const root = services.runs.projectRootForRun(message.runId);
+        if (!root) {
+          this.post({ type: "proverState", runId: message.runId, snapshot: null, error: "This run is not in the project's recorded history." });
+          return;
+        }
+        this.proverLoads.add(message.runId);
+        try {
+          const snapshot = await fetchProver(root, message.runId);
+          this.post({ type: "proverState", runId: message.runId, snapshot, error: "" });
+        } catch (error) {
+          this.post({ type: "proverState", runId: message.runId, snapshot: null,
+            error: redactSensitiveText(error instanceof Error ? error.message : String(error)) });
+        } finally {
+          this.proverLoads.delete(message.runId);
+        }
+        return;
+      }
+      case "proverMessage": {
+        const root = services.runs.projectRootForRun(message.runId);
+        if (!root) throw new Error("The selected prover run is no longer available.");
+        await sendProverMessage(root, message.runId, message.agentId, message.message);
+        this.notify("info", "Guidance queued. The agent will receive it at its next decision boundary.");
+        return;
+      }
+      case "openProverFile": {
+        const root = services.runs.projectRootForRun(message.runId);
+        if (!root) throw new Error("The selected prover run is no longer available.");
+        const snapshot = await fetchProver(root, message.runId);
+        if (!snapshot || !proverArtifactAllowed(snapshot, message.path, message.baselinePath)) {
+          throw new Error("This artifact is not part of the selected prover run.");
+        }
+        const target = await resolveExistingProjectPath(root, message.path);
+        if (!target) throw new Error("The artifact does not exist inside this run's project.");
+        if (message.baselinePath) {
+          const baseline = await resolveExistingProjectPath(root, message.baselinePath);
+          if (!baseline) throw new Error("The recorded baseline does not exist inside this run's project.");
+          await vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(baseline), vscode.Uri.file(target), `${path.basename(target)} · run changes`);
+        } else {
+          const line = Math.max(0, (message.line ?? 1) - 1);
+          await vscode.window.showTextDocument(vscode.Uri.file(target), {
+            selection: new vscode.Range(line, 0, line, 0), preview: true,
+          });
+        }
         return;
       }
       case "openExternalDoc": {

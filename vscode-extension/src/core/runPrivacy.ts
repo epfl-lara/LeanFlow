@@ -177,6 +177,7 @@ function redactCommandPrompt(value: string): string {
 export function redactSensitiveText(
   value: string,
   exactPrompts: readonly string[] = [],
+  maximumLength = MAX_DIAGNOSTIC_LENGTH,
 ): string {
   let safe = value;
   for (const candidate of exactPrompts) {
@@ -209,7 +210,7 @@ export function redactSensitiveText(
         : `${prefix}${quote}${REDACTED_CREDENTIAL}`;
     },
   );
-  return bounded(safe, MAX_DIAGNOSTIC_LENGTH);
+  return bounded(safe, maximumLength);
 }
 
 function boundedRunLog(value: string): string {
@@ -355,6 +356,15 @@ export function runSummaryForDisplay(summary: RunSummary): RunSummary {
 /** Return live state safe to include in a webview snapshot. */
 export function liveStatusForDisplay(status: LiveStatus): LiveStatus {
   return sanitizeUnknown(status, "", []) as LiveStatus;
+}
+
+/** Preserve a full bounded proof plan while redacting every other diagnostic normally. */
+export function proverStateForDisplay(status: LiveStatus): LiveStatus {
+  const safe = liveStatusForDisplay(status);
+  if (status && typeof status.plan_markdown === "string") {
+    safe.plan_markdown = redactSensitiveText(status.plan_markdown, [], 512 * 1024);
+  }
+  return safe;
 }
 
 /** Return a dry-run plan without prompt or credential values. */

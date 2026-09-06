@@ -11,6 +11,7 @@ import { Card, Check, Field, Notice } from "../components";
 import { PlayIcon } from "../icons";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
+import { ProverSettings } from "./ProverSettings";
 
 /** Providers the CLI understands. Empty means "use the configured default". */
 const PROVIDERS = [
@@ -57,6 +58,10 @@ export function LaunchView() {
   );
   const restrictedKnobs = [...new Set([...restrictedProfileKnobs, ...restrictedOverrideKnobs])];
   const overrideCount = Object.keys(form.overrides).length;
+  const boundedProver = form.kind === "prove" && Boolean(app?.catalog?.groups.some((group) => group.flags.some((flag) => flag.name === "LEANFLOW_PROVER_MODE")));
+  useEffect(() => {
+    if (form.kind === "prove" && form.humanReview) setForm({ humanReview: false });
+  }, [form.kind, form.humanReview, setForm]);
   const blockingProblems = problems.filter(
     (problem) => !problem.startsWith("A file-scoped prove run"),
   );
@@ -208,17 +213,18 @@ export function LaunchView() {
         </div>
       </Card>
 
-      <Card title="Mode">
+      <ProverSettings />
+      <Card title="Workflow options">
         <div className="grid two">
           <div>
-            <Check
+            {!boundedProver && <Check
               label="Research mode"
               hint="Plan, retrieval, orchestration, dispatch, feasibility, reporting and learning as one profile. prove only."
               checked={form.research}
               disabled={form.kind !== "prove"}
               onChange={(research) => setForm({ research })}
-            />
-            {form.research && (
+            />}
+            {!boundedProver && form.research && (
               <div style={{ marginLeft: 22, marginTop: 6 }}>
                 <Field label="Research workers" hint="0 keeps the run single-lane.">
                   <input
@@ -239,13 +245,6 @@ export function LaunchView() {
               checked={form.cleanRoom}
               disabled={form.kind !== "prove"}
               onChange={(cleanRoom) => setForm({ cleanRoom })}
-            />
-            <Check
-              label="Human review"
-              hint="Pause at review points for a verdict instead of routing autonomously."
-              checked={form.humanReview}
-              disabled={form.kind !== "prove"}
-              onChange={(humanReview) => setForm({ humanReview })}
             />
           </div>
 

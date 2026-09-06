@@ -56,6 +56,11 @@ _LEANFLOW_CORE_TOOLS = [
 
 
 TOOLSETS: dict[str, dict[str, Any]] = {
+    "leanflow-prover-session": {
+        "description": "Bounded prover sessions supply their own role-specific scratch tools",
+        "tools": [],
+        "includes": [],
+    },
     "web": {
         "description": "Web research tools",
         "tools": _WEB_TOOLS,

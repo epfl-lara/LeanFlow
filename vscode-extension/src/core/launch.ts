@@ -49,7 +49,7 @@ export function buildWorkflowArgs(request: LaunchRequest): string[] {
   if (request.cleanRoom) {
     args.push("--clean-room");
   }
-  if (request.humanReview) {
+  if (request.humanReview && request.kind !== "prove") {
     args.push("--human-review");
   }
   if (request.axioms.trim()) {
@@ -340,6 +340,7 @@ export function launchRequestForViewState(request: LaunchRequest): LaunchRequest
   return {
     ...request,
     target: safeText(request.target),
+    humanReview: request.kind === "prove" ? false : request.humanReview,
     provider: safeText(request.provider),
     model: safeText(request.model),
     axioms: safeText(request.axioms),

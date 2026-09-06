@@ -247,6 +247,28 @@ export function parseWebviewMessage(
       return runId === null ? reject("runId") : { ok: true, message: { type, runId } };
     }
 
+    case "loadProver": {
+      const runId = identifier(raw.runId);
+      return runId === null ? reject("runId") : { ok: true, message: { type, runId } };
+    }
+
+    case "proverMessage": {
+      const runId = identifier(raw.runId);
+      const agentId = identifier(raw.agentId);
+      const message = str(raw.message, 8192);
+      return runId !== null && agentId !== null && message !== null && message.trim()
+        ? { ok: true, message: { type, runId, agentId, message } } : reject("message fields");
+    }
+
+    case "openProverFile": {
+      const runId = identifier(raw.runId);
+      const filePath = str(raw.path, 4096);
+      const baselinePath = raw.baselinePath === undefined ? undefined : str(raw.baselinePath, 4096);
+      const line = raw.line === undefined ? undefined : strictInt(raw.line, 1, 10000000);
+      return runId !== null && filePath !== null && filePath !== "" && baselinePath !== null && line !== null
+        ? { ok: true, message: { type, runId, path: filePath, baselinePath, line } } : reject("file fields");
+    }
+
     case "saveProfile": {
       const profile = raw.profile;
       if (typeof profile !== "object" || profile === null) {

@@ -23,7 +23,6 @@ from leanflow_cli.cli.commands import (
 )
 from leanflow_cli.formalization.formalization_documents import (
     FormalizationDocumentContext,
-    ensure_formalization_blueprint_skill,
     prepare_formalization_document_context,
 )
 from leanflow_cli.runtime.env_loader import (
@@ -726,6 +725,12 @@ def resolve_workflow_request(
     Loogle build every time the user changes a field.
     """
     workflow = parse_workflow_command(command)
+    if workflow.workflow_kind == "prove" and workflow.human_review:
+        raise ValueError(
+            "--human-review is not supported by the bounded prover; its DAG review is automatic"
+        )
+    if workflow.workflow_kind == "prove" and workflow.parallel_agents > 1:
+        workflow = replace(workflow, research_mode=True, research_workers=workflow.parallel_agents)
     explicit_research_profile = workflow.research_mode
     from leanflow_cli.workflows.research_mode import (
         apply_research_profile_env,
@@ -746,7 +751,11 @@ def resolve_workflow_request(
     # otherwise builds it with a pinned toolchain that may not match the
     # project. Full research campaigns retain foreground lean-lsp but skip the
     # additional resident index unless explicitly memory-provisioned.
-    if not preview and research_local_loogle_enabled(research=workflow.research_mode):
+    if (
+        not preview
+        and workflow.workflow_kind != "prove"
+        and research_local_loogle_enabled(research=workflow.research_mode)
+    ):
         try:
             from leanflow_cli.cli.loogle_local import ensure_local_loogle_for_project_async
 
@@ -800,27 +809,18 @@ def resolve_workflow_request(
     )
     if formalization_document is not None:
         normalized_active_file = formalization_document.target_lean_relative
-    if (
-        normalized_active_file
-        and workflow.workflow_kind == "prove"
-        and workflow.parallel_agents > 1
-    ):
-        workflow = replace(workflow, parallel_agents=1)
     selected_skill = (active_skill or "").strip() or default_workflow_skill(workflow.workflow_kind)
-    if workflow.parallel_agents > 1 and not active_skill:
+    if workflow.workflow_kind == "prove" and not active_skill:
+        selected_skill = "lean-bounded-prover"
+    if workflow.parallel_agents > 1 and not active_skill and workflow.workflow_kind != "prove":
         selected_skill = "lean-autonomous-swarm"
     additional_skills = list(workflow.additional_skills)
     if formalization_document is not None:
         additional_skills.append(str(formalization_document.blueprint_skill_path))
-    elif workflow.workflow_kind == "prove" and normalized_active_file:
-        blueprint_skill = ensure_formalization_blueprint_skill(
-            project_root=project.root,
-            target_lean_relative=normalized_active_file,
-        )
-        if blueprint_skill is not None:
-            additional_skills.append(str(blueprint_skill))
     additional_skills_tuple = _dedupe_skills(additional_skills)
-    if workflow.parallel_agents > 1:
+    if workflow.workflow_kind == "prove":
+        toolset_name = "leanflow-prover-session"
+    elif workflow.parallel_agents > 1:
         toolset_name = "leanflow-native-swarm"
     elif workflow.workflow_kind in {"prove", "autoprove"}:
         # The inner single-agent /prove worker uses a focused toolset (no session/document noise).
@@ -888,14 +888,30 @@ def resolve_workflow_request(
             child_env[NATIVE_AUXILIARY_API_KEY_ENV] = str(runtime.get("api_key", ""))
     if workflow.research_mode:
         child_env["LEANFLOW_RESEARCH_MODE"] = "1"
-        apply_research_profile_env(
-            child_env,
-            workers=workflow.research_workers,
-            explicit_cli=explicit_research_profile,
+        if workflow.workflow_kind != "prove":
+            apply_research_profile_env(
+                child_env,
+                workers=workflow.research_workers,
+                explicit_cli=explicit_research_profile,
+            )
+    if workflow.workflow_kind == "prove":
+        child_env["LEANFLOW_PROVER_MODE"] = (
+            "research"
+            if workflow.research_mode
+            else child_env.get("LEANFLOW_PROVER_MODE", "standard")
         )
+        if workflow.no_parallel:
+            child_env["LEANFLOW_PROVER_PARALLELISM"] = "1"
+        elif workflow.research_mode:
+            if workflow.parallel_agents > 1 or "--research-workers" in shlex.split(command):
+                child_env["LEANFLOW_PROVER_PARALLELISM"] = str(max(1, workflow.research_workers))
+            else:
+                child_env.setdefault(
+                    "LEANFLOW_PROVER_PARALLELISM", str(max(1, workflow.research_workers))
+                )
     if workflow.allowed_axioms:
         child_env["LEANFLOW_NATIVE_ALLOWED_AXIOMS"] = workflow.allowed_axioms
-    if workflow.research_mode or plan_state_enabled():
+    if workflow.workflow_kind != "prove" and (workflow.research_mode or plan_state_enabled()):
         # Every deployed agent can discover live plan artifacts through the
         # environment, independent of prompt injection. Paths are
         # anchored to the resolved project (not the parent's discovery).
@@ -931,7 +947,12 @@ def resolve_workflow_request(
         )
     if formalization_document is not None:
         child_env.update(formalization_document.to_env())
-    argv = [sys.executable, "-m", _native_runner_module()]
+    runner_module = (
+        "leanflow_cli.workflows.prover.runtime"
+        if workflow.workflow_kind == "prove"
+        else _native_runner_module()
+    )
+    argv = [sys.executable, "-m", runner_module]
     return NativeLaunchPlan(
         project=project,
         workflow=workflow,

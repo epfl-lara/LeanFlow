@@ -145,6 +145,13 @@ export class RunManager implements vscode.Disposable {
     return this.runs.get(id);
   }
 
+  /** Resolve only known exact run ids, including isolated experiment checkouts. */
+  projectRootForRun(runId: string): string | null {
+    return [...this.runs.values()].find((run) => run.runId === runId)?.projectRoot
+      ?? this.historyRoots.get(runId)
+      ?? (this.liveStatus?.run_id === runId ? this.project.root : null);
+  }
+
   /** Return live state only when it belongs to this exact tracked run. */
   liveStatusForRun(id: string): LiveStatus | null {
     const run = this.runs.get(id);

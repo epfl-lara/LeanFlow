@@ -123,6 +123,9 @@ no_site_packages = true
 # Incremental gate: ONLY these files are type-checked. The list grows each phase as
 # modules are extracted/cleaned. mypy needs explicit targets — overrides alone do not select.
 files = [
+  "leanflow_cli/workflows/prover",
+  "leanflow_cli/flags/prover_catalog.py",
+  "leanflow_cli/cli/prover_status.py",
   "core/constants.py",
   "core/filesystem.py",
   "leanflow_cli/flags/__init__.py",

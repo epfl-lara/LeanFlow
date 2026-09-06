@@ -5,6 +5,7 @@ import { test } from "node:test";
 import {
   launchPlanForDisplay,
   profileCatalogForDisplay,
+  proverStateForDisplay,
   promptEvidenceMarker,
   redactCredentialUrl,
   redactSensitiveText,
@@ -12,6 +13,15 @@ import {
   runSummaryForDisplay,
   trackedRunForPersistence,
 } from "../dist/test/runPrivacy.mjs";
+
+test("prover plans retain more than diagnostic limits while redacting credentials", () => {
+  const plan = "Proof outline.\n".repeat(3000) + "api_key=secret-value";
+  const safe = proverStateForDisplay({ plan_markdown: plan, diagnostic: "x".repeat(10000) });
+  assert.ok(safe.plan_markdown.startsWith("Proof outline.\n".repeat(3000)));
+  assert.ok(safe.plan_markdown.endsWith("api_key=<redacted:credential>"));
+  assert.ok(safe.diagnostic.length <= 8192);
+  assert.equal(proverStateForDisplay(null), null);
+});
 
 function request(overrides = {}) {
   return {

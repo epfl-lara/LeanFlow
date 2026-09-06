@@ -10,7 +10,7 @@ evaluation harness, and exported results use the same evidence boundary.
 
 **Launch** — a form over the whole `leanflow workflow` surface: workflow kind,
 target, provider, model, swarm width, research mode and worker count, clean
-room, human review, allowed axioms, extra skills, and a free-text prompt. The
+room, allowed axioms, extra skills, and a free-text prompt. The
 rendered command is always visible, and **Preview plan** resolves the launch
 without starting it, showing the exact argv and the complete `LEANFLOW_*`
 environment the child process would receive, with credentials redacted and
@@ -160,6 +160,33 @@ Saved knob profiles are JSON files under `<project>/.leanflow/flag-profiles/`,
 readable by the CLI too (`leanflow flags profiles`). Note that `.leanflow/` is
 git-ignored by default in the LeanFlow repo — if a profile defines a published
 ablation, copy it somewhere tracked.
+
+## Prover workspace
+
+For redesigned `prove` runs, **Live** shows the theorem dependency tree, each
+statement and its informal justification, the current `PLAN.md`, individual
+prover jobs, and files changed. Select a theorem to inspect its dependencies and
+dependants; open its source at the recorded line. Conditional proofs remain
+visibly provisional until their dependencies pass verification.
+
+File changes open in the editor, with **View diff** comparing against the run's
+recorded baseline when one exists. Each job links to its scratch proof and log;
+**Events** opens the structured log filtered to that exact agent. **Send guidance**
+queues a message for the orchestrator or a prover at its next decision boundary.
+It cannot edit the plan or bypass verification.
+
+The **Prover design** launch card provides standard/research mode, dependency
+order, per-pass API limits, restart and plan-refinement limits, parallelism,
+separate prover/orchestrator models and context sizes, and compression. These
+controls come from the installed CLI's `LEANFLOW_PROVER_*` flag catalog, so an
+older CLI keeps its existing launch controls. Usage shows unavailable values as
+`—`; plan refinements are tracked separately from token and API totals.
+
+The editor reads `leanflow runs prover RUN_ID --json`, which returns
+`{version: 1, found, prover}` for that exact run. It submits guidance through
+`leanflow runs prover-message RUN_ID --agent AGENT_ID --message TEXT`.
+The CLI owns state layout and durable inbox writes; editor paths are checked
+against the selected run's project and recorded artifacts before opening them.
 
 ## Development
 

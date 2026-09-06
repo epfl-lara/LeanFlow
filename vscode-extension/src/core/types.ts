@@ -6,6 +6,7 @@
  */
 
 // ---------------------------------------------------------------- CLI shapes
+import type { ProverSnapshot } from "./prover";
 // These mirror the JSON emitted by `leanflow flags`, `leanflow runs`, and
 // `leanflow workflow --dry-run --json`. Keep them in step with
 // leanflow_cli/flags/spec.py and leanflow_cli/cli/runs_command.py.
@@ -749,6 +750,7 @@ export type HostMessage =
   | { type: "preview"; requestId: string; plan: LaunchPlanPreview | null; error: string }
   | { type: "diff"; requestId: string; rows: ProfileDiffRow[]; error: string }
   | { type: "runLog"; runId: string; text: string }
+  | { type: "proverState"; runId: string; snapshot: ProverSnapshot | null; error: string }
   | { type: "targetPicked"; path: string }
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
@@ -761,6 +763,9 @@ export type WebviewMessage =
   | { type: "selectRun"; id: string | null }
   | { type: "loadEvents"; runId: string }
   | { type: "loadRunLog"; runId: string }
+  | { type: "loadProver"; runId: string }
+  | { type: "proverMessage"; runId: string; agentId: string; message: string }
+  | { type: "openProverFile"; runId: string; path: string; baselinePath?: string; line?: number }
   | { type: "saveProfile"; profile: FlagProfile }
   | { type: "deleteProfile"; name: string }
   | { type: "diffProfiles"; requestId: string; left: string; right: string }

@@ -887,3 +887,28 @@ body.vscode-high-contrast-light {
     transition-duration: 0.01ms !important;
   }
 }
+/* Exact-run prover workspace: dependencies, readable plans, and agent activity. */
+.prover-dag-layout { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(260px, 1fr); gap: 18px; }
+.prover-tree { max-height: 460px; overflow: auto; margin-top: 10px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; }
+.prover-node { display: flex; align-items: center; width: 100%; gap: 8px; background: transparent; color: inherit; border: 0; border-bottom: 1px solid var(--vscode-panel-border); padding: 11px 10px; text-align: left; cursor: pointer; }
+.prover-node:hover { background: var(--vscode-list-hoverBackground); }
+.prover-node.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.prover-node-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.prover-node-name small { display: block; opacity: .65; font-size: 10px; padding-top: 3px; overflow-wrap: anywhere; }
+.prover-dot { flex: 0 0 7px; height: 7px; border-radius: 50%; background: var(--vscode-disabledForeground); }
+.prover-dot.ok { background: var(--vscode-testing-iconPassed, #5bb98c); }
+.prover-dot.warn { background: var(--vscode-testing-iconQueued, #c9a653); }
+.prover-dot.err { background: var(--vscode-testing-iconFailed, #da6c72); }
+.prover-node-detail { min-width: 0; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; }
+.prover-statement { white-space: pre-wrap; margin: 12px 0; max-height: 230px; }
+.prover-plan { max-height: 480px; overflow: auto; line-height: 1.6; }
+.prover-plan h3 { font-size: 15px; margin: 17px 0 7px; }
+.prover-plan p { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prover-plan-item { padding-left: 14px; margin: 5px 0; }
+.prover-plan-code { font-family: var(--vscode-editor-font-family), monospace; background: var(--vscode-textCodeBlock-background); padding: 1px 10px; white-space: pre-wrap; }
+.prover-plan-break { height: 5px; }
+.prover-job { padding: 12px 0; border-bottom: 1px solid var(--vscode-panel-border); }
+.prover-job:last-child { border-bottom: 0; }
+.prover-job .row { margin-top: 6px; }
+.prover-panels { align-items: start; }
+@media (max-width: 900px) { .prover-dag-layout { grid-template-columns: 1fr; } }

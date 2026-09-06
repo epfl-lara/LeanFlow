@@ -151,11 +151,12 @@ def _append_unique_result(
 
 
 def _research_headers() -> dict[str, str]:
-    """Return shared HTTP headers for the free research providers.
+    """Return authentication headers exclusively for Semantic Scholar requests.
 
     Attaches a Semantic Scholar API key (``SEMANTIC_SCHOLAR_API_KEY`` / ``S2_API_KEY``) when set, so
     S2 uses its authenticated quota instead of the heavily-throttled shared anonymous pool. Behavior
-    is unchanged when no key is configured.
+    is unchanged when no key is configured. Other providers must not reuse these
+    headers because ``x-api-key`` belongs only to Semantic Scholar.
     """
     headers = {"User-Agent": RESEARCH_SEARCH_USER_AGENT}
     api_key = (os.getenv("SEMANTIC_SCHOLAR_API_KEY") or os.getenv("S2_API_KEY") or "").strip()
@@ -194,7 +195,7 @@ def _search_arxiv(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
                 "sortBy": "relevance",
                 "sortOrder": "descending",
             },
-            headers=_research_headers(),
+            headers={"User-Agent": RESEARCH_SEARCH_USER_AGENT},
             timeout=RESEARCH_SEARCH_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
@@ -325,7 +326,7 @@ def _search_crossref(query: str, limit: int) -> tuple[list[dict[str, Any]], str]
         response = requests.get(
             CROSSREF_SEARCH_URL,
             params={"query": query, "rows": max(1, min(limit, 5))},
-            headers=_research_headers(),
+            headers={"User-Agent": RESEARCH_SEARCH_USER_AGENT},
             timeout=RESEARCH_SEARCH_TIMEOUT_SECONDS,
         )
         if response.status_code == 429:
@@ -969,7 +970,7 @@ query LeanFlowCodeSearch($query: String!) {
             response = requests.post(
                 SOURCEGRAPH_GRAPHQL_URL,
                 json={"query": graphql_query, "variables": {"query": sourcegraph_query}},
-                headers=_research_headers(),
+                headers={"User-Agent": RESEARCH_SEARCH_USER_AGENT},
                 timeout=SOURCEGRAPH_SEARCH_TIMEOUT_SECONDS,
             )
             response.raise_for_status()

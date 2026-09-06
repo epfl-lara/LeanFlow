@@ -190,6 +190,8 @@ def test_sensitive_knobs_are_terminal_only() -> None:
         "LEANFLOW_YOLO_MODE",
         "LEANFLOW_HOME",
         "LEANFLOW_SANDBOX_BASE_IMAGE",
+        "LEANFLOW_PROVER_ALLOWED_AXIOMS",
+        "LEANFLOW_PROVER_RESUME_RUN_ID",
     }
     actual = {spec.name for spec in FLAG_CATALOG if spec.sensitive}
     assert actual == expected

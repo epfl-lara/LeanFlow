@@ -89,6 +89,7 @@ export function LogsView() {
   // so a run started from a terminal is still readable here.
   const runId = run?.runId || app?.history[0]?.run_id || "";
   const stream: ActivityEvent[] = useMemo(() => events[runId] ?? [], [events, runId]);
+  const agents = useMemo(() => [...new Set(stream.map((event) => event.agent_id).filter(Boolean))].sort(), [stream]);
 
   useEffect(() => {
     if (runId) {
@@ -107,6 +108,7 @@ export function LogsView() {
 
   const filtered = useMemo(() => {
     return stream.filter((event) => {
+      if (view.logAgent && event.agent_id !== view.logAgent) return false;
       if (view.logFilter.length > 0) {
         if (!view.logFilter.includes(event.type)) {
           return false;
@@ -122,7 +124,7 @@ export function LogsView() {
         event.message.toLowerCase().includes(search)
       );
     });
-  }, [stream, view.logFilter, activePreset, search]);
+  }, [stream, view.logFilter, view.logAgent, activePreset, search]);
 
   useEffect(() => {
     if (follow && listRef.current) {
@@ -158,6 +160,12 @@ export function LogsView() {
       >
         {!view.logRaw && (
           <div className="row tight">
+            <select aria-label="Agent log" value={view.logAgent || ""} style={{ maxWidth: 240 }}
+              onChange={(event) => setView({ logAgent: event.target.value })}>
+              <option value="">All agents</option>
+              {view.logAgent && !agents.includes(view.logAgent) && <option value={view.logAgent}>{view.logAgent}</option>}
+              {agents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
+            </select>
             {PRESETS.map((entry) => (
               <button
                 key={entry.id}
@@ -244,7 +252,7 @@ export function LogsView() {
                   <span className="type" title={event.type}>
                     {event.type}
                   </span>
-                  <span className="msg">{event.message}</span>
+                  <span className="msg">{event.agent_id && <span className="tag">{event.agent_id}</span>} {event.message}</span>
                 </div>
               ))
             )}

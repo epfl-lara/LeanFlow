@@ -16,7 +16,8 @@ import { Card, Empty, Notice } from "../components";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
 
-function KnobControl(props: {
+/** Render a value editor from the CLI's authoritative flag metadata. */
+export function KnobControl(props: {
   spec: FlagSpec;
   value: string | undefined;
   onChange: (value: string | undefined) => void;
@@ -107,6 +108,7 @@ export function KnobsView() {
       .map((group) => ({
         name: group.name,
         flags: group.flags.filter((flag) => {
+          if (view.form.kind === "prove" && flag.name === "LEANFLOW_HUMAN_REVIEW_ENABLED") return false;
           if (!showInternal && flag.kind === "internal") {
             return false;
           }
@@ -124,7 +126,7 @@ export function KnobsView() {
         }),
       }))
       .filter((group) => group.flags.length > 0);
-  }, [catalog, search, view.knobAblatableOnly, showInternal]);
+  }, [catalog, search, view.knobAblatableOnly, view.form.kind, showInternal]);
 
   const setOverride = (name: string, value: string | undefined) => {
     const next = { ...overrides };

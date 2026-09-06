@@ -11,9 +11,11 @@ import * as vscode from "vscode";
 
 import type { LaunchEnv } from "./launch";
 import { normalizeRunHistoryPayload } from "./runHistory";
+import { normalizeProverSnapshot, type ProverSnapshot } from "./prover";
 import {
   launchPlanForDisplay,
   liveStatusForDisplay,
+  proverStateForDisplay,
   redactSensitiveText,
   runLogForDisplay,
   runSummaryForDisplay,
@@ -134,6 +136,26 @@ export async function checkCli(): Promise<CliStatus> {
 
 export function fetchFlagCatalog(cwd?: string): Promise<FlagCatalog> {
   return runCliJson<FlagCatalog>(["flags", "list", "--json"], { cwd });
+}
+
+/** Read the selected run's plan and DAG without falling back to another run. */
+export async function fetchProver(projectRoot: string, runId: string): Promise<ProverSnapshot | null> {
+  if (!runId) return null;
+  const payload = await runCliJson<{ prover: unknown }>(
+    ["runs", "--project", projectRoot, "prover", runId, "--json"], { cwd: projectRoot },
+  );
+  // Apply the same credential redaction as status before crossing into the webview.
+  const safe = proverStateForDisplay(payload.prover as LiveStatus);
+  return normalizeProverSnapshot(safe, runId);
+}
+
+/** Queue explicit user guidance for the runtime's next decision boundary. */
+export async function sendProverMessage(projectRoot: string, runId: string, agentId: string, message: string): Promise<void> {
+  const result = await runCliJson<{ success: boolean; error?: string }>(
+    ["runs", "--project", projectRoot, "prover-message", runId, "--agent", agentId, `--message=${message}`, "--json"],
+    { cwd: projectRoot },
+  );
+  if (!result.success) throw new CliError(result.error || "The prover did not accept this message.");
 }
 
 export function fetchProfiles(cwd?: string): Promise<ProfileCatalog> {

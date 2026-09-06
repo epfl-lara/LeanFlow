@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Any
 
+from leanflow_cli.flags.prover_catalog import PROVER_FLAGS
 from leanflow_cli.flags.spec import FlagSpec
 
 _RESEARCH = "Research campaign"
@@ -31,6 +32,7 @@ _PLUMBING = "Launcher plumbing"
 
 
 FLAG_CATALOG: tuple[FlagSpec, ...] = (
+    *PROVER_FLAGS,
     # ---------------------------------------------------------------- research
     FlagSpec(
         name="LEANFLOW_RESEARCH_MODE",
