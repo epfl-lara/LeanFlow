@@ -3,7 +3,7 @@
 All notable changes to the LeanFlow VS Code extension are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.10] — 2026-09-06
 
 - Add an exact-run prover workspace with navigable theorem dependencies,
   conditional-proof status, a readable proof plan, job budgets, and usage metrics.

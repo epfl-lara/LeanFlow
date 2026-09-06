@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +96,16 @@ def real_project(tmp_path: Path) -> Path:
             shutil.copyfile(base / name, root / name)
     (root / ".lake").mkdir()
     (root / ".lake" / "packages").symlink_to(base / ".lake" / "packages", target_is_directory=True)
+    # Match project initialization before entering the read-only verifier.
+    # Recent Lake versions create .lake/config even for TOML lakefiles.
+    subprocess.run(
+        ["lake", "env", "lean", "--version"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     return root
 
 

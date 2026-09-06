@@ -122,11 +122,18 @@ class LeanVerifier:
                 isinstance(message, dict) and str(message.get("severity", "")).lower() == "error"
                 for message in messages
             )
+            # LeanProbe keeps ok=False for an elaborated declaration containing
+            # sorry. Skeleton acceptance still requires the independent compile
+            # and matching kernel type below; it never counts as a finished proof.
+            elaborated = result.get("ok") is True or (
+                result.get("has_sorry") is True and result.get("has_errors") is False
+            )
             accepted = (
                 result.get("success") is True
-                and result.get("ok") is True
+                and elaborated
                 and no_errors
                 and not result.get("error_code")
+                and not result.get("timed_out")
             )
         else:
             axioms = result.get("axiom_profile_axioms")
@@ -167,8 +174,9 @@ class LeanVerifier:
         target = profile["profiles"][node.name]
         type_matches = not node.signature_sha256 or node.signature_sha256 == target["sha256"]
         kernel_axioms = target["axioms"]
-        kernel_safe = skeleton or (
-            set(kernel_axioms) <= self.allowed_axioms and "sorryAx" not in kernel_axioms
+        permitted_axioms = self.allowed_axioms | ({"sorryAx"} if skeleton else set())
+        kernel_safe = set(kernel_axioms) <= permitted_axioms and (
+            skeleton or "sorryAx" not in kernel_axioms
         )
         accepted = type_matches and kernel_safe
         if accepted and skeleton and not node.signature_sha256:

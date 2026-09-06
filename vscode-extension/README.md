@@ -124,7 +124,7 @@ Install LeanFlow, set the path if necessary, then reload the window.
 | --- | --- | --- |
 | `leanflow.cliPath` | `leanflow` | Path to the executable. |
 | `leanflow.projectRoot` | *(empty)* | Pin the project instead of discovering it. |
-| `leanflow.pollIntervalMs` | `1500` | How often live status and events are re-read. |
+| `leanflow.pollIntervalMs` | `5000` | How often live status and events are re-read. |
 | `leanflow.cellSettleMs` | `3000` | Wait for a sealed final metrics snapshot before scoring. |
 | `leanflow.eventBufferSize` | `4000` | Activity events kept in memory per run. |
 
