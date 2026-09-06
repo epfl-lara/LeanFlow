@@ -270,7 +270,12 @@ does not read or reinterpret LeanFlow's persistence files directly:
   `src/core/launchPaths.ts` contains manual target and path-like skill containment
   checks, including realpath checks for symbolic-link escapes.
 - `src/core/prover.ts` validates exact-run snapshots and produces bounded DAG
-  tree rows. `webview/views/ProverWorkspace.tsx` shows the plan, dependencies,
+  tree rows. `src/core/proverGraph.ts` lays out unique theorem nodes and directed
+  dependency edges, including shared/disconnected components, and derives live
+  proof states without equating candidates with verified results.
+  `webview/views/ProverGraph.tsx` renders the default interactive graph with
+  zoom, search, keyboard selection, and a status legend; geometry stays stable
+  when proof statuses change. `webview/views/ProverWorkspace.tsx` shows the plan, dependencies,
   jobs, usage, file links/diffs, and queued guidance; `ProverSettings.tsx` exposes
   catalogued launch controls. The host uses `runs prover` / `prover-message`,
   validates ownership and paths, and does not substitute another run's artifacts.

@@ -163,11 +163,21 @@ ablation, copy it somewhere tracked.
 
 ## Prover workspace
 
-For redesigned `prove` runs, **Live** shows the theorem dependency tree, each
+For redesigned `prove` runs, **Live** opens a theorem dependency graph, each
 statement and its informal justification, the current `PLAN.md`, individual
 prover jobs, and files changed. Select a theorem to inspect its dependencies and
 dependants; open its source at the recorded line. Conditional proofs remain
 visibly provisional until their dependencies pass verification.
+
+Arrows run from each goal to its prerequisites. Shared lemmas appear once, with
+all incoming dependencies retained. The legend distinguishes solved, active,
+pending, awaiting-verification, blocked, and failed nodes. Activity reflects the
+current prover jobs; status updates keep the graph layout stable.
+
+Use **Zoom**, **Fit width**, and **Locate selected** to navigate. Search highlights
+matching theorems without removing their dependency context; **Next match** moves
+to each result. Nodes support keyboard selection. **Tree** keeps the compact
+lookup view available, and either view shares the statement and source details.
 
 File changes open in the editor, with **View diff** comparing against the run's
 recorded baseline when one exists. Each job links to its scratch proof and log;

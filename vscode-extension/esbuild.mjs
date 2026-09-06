@@ -70,6 +70,7 @@ if (tests) {
       runPrivacy: "src/core/runPrivacy.ts",
       messageSchema: "src/panels/messageSchema.ts",
       prover: "src/core/prover.ts",
+      proverGraph: "src/core/proverGraph.ts",
     },
     outdir: "dist/test",
     outExtension: { ".js": ".mjs" },

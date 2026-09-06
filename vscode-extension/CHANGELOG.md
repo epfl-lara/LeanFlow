@@ -3,6 +3,16 @@
 All notable changes to the LeanFlow VS Code extension are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.11] — 2026-09-06
+
+- Make an interactive theorem graph the default dependency view, with directed
+  arrows, shared lemmas, goal labels, and live solved/active/pending states.
+- Distinguish candidates awaiting verification, blocked nodes, and invalidated
+  proofs with text and symbols as well as theme-aware colors.
+- Add zoom, fit-to-width, locate-selected, and search navigation. Preserve node
+  positions across status updates and keep the tree/detail view available.
+- Report malformed dependency records without hiding cyclic components.
+
 ## [0.1.10] — 2026-09-06
 
 - Add an exact-run prover workspace with navigable theorem dependencies,

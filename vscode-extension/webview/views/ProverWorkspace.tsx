@@ -1,4 +1,4 @@
-/** Inspect an exact prover run: dependency tree, durable plan, jobs, edits, and budgets. */
+/** Inspect an exact prover run: dependency graph, durable plan, jobs, edits, and budgets. */
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { proverDefaultGuidanceRecipient, proverGuidanceUpdate, proverJobAcceptsGuidance, proverTreeRows, type ProverSnapshot } from "../../src/core/prover";
@@ -6,6 +6,7 @@ import type { HostMessage } from "../../src/core/types";
 import { Card, Notice, Pill, Stat } from "../components";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
+import { ProverGraph } from "./ProverGraph";
 
 function metric(value: number | null): string {
   return value === null ? "—" : value.toLocaleString();
@@ -34,6 +35,7 @@ function Workspace({ state }: { state: ProverSnapshot }) {
   const { setView } = useStore();
   const [selected, setSelected] = useState("");
   const [search, setSearch] = useState("");
+  const [dagView, setDagView] = useState<"graph" | "tree">("graph");
   const [recipient, setRecipient] = useState("");
   const [guidance, setGuidance] = useState("");
   const [sending, setSending] = useState(false);
@@ -80,12 +82,12 @@ function Workspace({ state }: { state: ProverSnapshot }) {
       <div className="muted" style={{ marginTop: 8 }}>Missing usage is shown as —. Candidates await independent verification; conditional proofs still depend on unfinished obligations.</div>
     </Card>
 
-    <Card title="Theorem dependencies" subtitle="Goals lead to their dependencies. Shared dependencies link back to the same node."
-      actions={state.dag_path ? <button className="btn ghost" onClick={() => open(state.dag_path)}>Open DAG</button> : undefined}>
-      {state.dag.nodes.length === 0 ? <div className="empty">The plan is being prepared. Accepted statements appear here.</div> : <div className="prover-dag-layout">
+    <Card title="Theorem dependencies" subtitle="Follow the proof from its goals to the lemmas they need."
+      actions={<div className="row tight"><div className="prover-view-toggle" role="group" aria-label="Dependency view"><button className="btn ghost" aria-pressed={dagView === "graph"} onClick={() => setDagView("graph")}>Graph</button><button className="btn ghost" aria-pressed={dagView === "tree"} onClick={() => setDagView("tree")}>Tree</button></div>{state.dag_path && <button className="btn ghost" onClick={() => open(state.dag_path)}>Open DAG</button>}</div>}>
+      {state.dag.nodes.length === 0 ? <div className="empty">The plan is being prepared. Accepted statements appear here.</div> : <div className={`prover-dag-layout ${dagView === "graph" ? "graph-view" : ""}`}>
         <div>
           <input type="text" aria-label="Find a theorem" placeholder="Find theorem, file, or status…" value={search} onChange={(event) => setSearch(event.target.value)} />
-          <div className="prover-tree" role="list" aria-label="Theorem dependencies">
+          {dagView === "graph" ? <ProverGraph state={state} selected={node?.id ?? ""} search={search} onSelect={setSelected} /> : <div className="prover-tree" role="list" aria-label="Theorem dependencies">
             {shown.map(({ node: item, depth, reference, cycle }, index) => <div key={`${item.id}-${index}`} role="listitem"><button
               className={`prover-node ${node?.id === item.id ? "selected" : ""}`} onClick={() => setSelected(item.id)}
               style={{ paddingLeft: `${12 + Math.min(depth, 12) * 18}px` }} aria-pressed={node?.id === item.id}>
@@ -93,7 +95,7 @@ function Workspace({ state }: { state: ProverSnapshot }) {
               <span className="prover-node-name">{reference ? "↗ " : depth ? "└ " : ""}{item.name}<small>{item.module || item.file || "Placement pending"}</small></span>
               <span className={`pill ${statusTone(item.status)}`}>{cycle ? "cycle" : item.status}</span>
             </button></div>)}
-          </div>
+          </div>}
         </div>
         {node && <div className="prover-node-detail">
           <div className="row"><strong>{node.name}</strong><span className={`pill ${statusTone(node.status)}`}>{node.status}</span></div>
