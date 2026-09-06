@@ -76,6 +76,29 @@ LEAP_SOLVED = {
     "Advanced": {1, 6, 7, 8, 11, 12, 13, 14, 17, 19, 20, 24, 25, 26, 28, 29, 30},
 }
 
+#: The toolchain this fixture is pinned to, and the result of building every
+#: statement against it. Upstream verified the statements at 4.27.0; we run
+#: 4.33.1 so this project shares one on-disk Mathlib with BeckFialaResearch and
+#: SpencerResearch, and the move was checked rather than assumed.
+LOCAL_TOOLCHAIN = "leanprover/lean4:v4.33.1"
+LOCAL_MATHLIB_REV = "0df444a360eaa60ab8c11dca51a86af692955474"
+VERIFICATION = {
+    "verified_on": "2026-09-06",
+    "command": "lake build",
+    "result": "all 60 statements elaborate; 0 errors",
+    "sorry_warnings": 60,
+    "deprecation_warnings": [
+        "PB-Basic-012",
+        "PB-Advanced-018",
+        "PB-Advanced-023",
+    ],
+    "deprecation_note": (
+        "Those three use List.Chain', deprecated in favour of List.IsChain at this "
+        "Mathlib. They still elaborate with the same meaning, but they are the three "
+        "statements most likely to break on a future Mathlib bump -- recheck them first."
+    ),
+}
+
 EXPECTED_TOTAL = 60
 EXPECTED_PER_SPLIT = 30
 
@@ -160,6 +183,13 @@ def build(csv_path: Path) -> dict[str, object]:
             "IMO-LeanProofBench. Each module is standalone (imports Mathlib only) "
             "and carries exactly one theorem with one sorry."
         ),
+        "toolchain": {
+            "lean": LOCAL_TOOLCHAIN,
+            "mathlib_rev": LOCAL_MATHLIB_REV,
+            "shared_with": ["BeckFialaResearch", "SpencerResearch"],
+            "differs_from_upstream": "upstream verified at Lean/Mathlib 4.27.0",
+            "verification": VERIFICATION,
+        },
         "upstream": {
             "repo": f"https://github.com/{UPSTREAM_REPO}",
             "commit": UPSTREAM_COMMIT,

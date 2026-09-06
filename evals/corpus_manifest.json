@@ -146,7 +146,7 @@
     "miniF2F": {"repo": "https://github.com/google-deepmind/miniF2F.git", "revision": "f0a20e14c1eeccd859d51bb4c2b3ee487889c303"},
     "PutnamBench": {"repo": "https://github.com/trishullab/PutnamBench.git", "revision": "a23d8e6d4e9e3418fd78f76de7bfcb9414cbfd39"},
     "FormalConjectures": {"repo": "https://github.com/google-deepmind/formal-conjectures.git", "revision": "7a41db3d761324599812d6ca6cb6a9f311046dc7", "tag": "bench-v1-lean4.27.0"},
-    "IMO-LeanProofBench": {"repo": "https://github.com/google-deepmind/superhuman.git", "revision": "80b2527a0b4e4bfc6a8b28825fadbdcfdd6048a1", "path": "imobench/lean_proof_bench_v2.csv", "note": "Statements vendored verbatim into testdata/workflow_projects/LeanIMOBench; verified upstream against Lean and Mathlib 4.27.0."},
+    "IMO-LeanProofBench": {"repo": "https://github.com/google-deepmind/superhuman.git", "revision": "80b2527a0b4e4bfc6a8b28825fadbdcfdd6048a1", "path": "imobench/lean_proof_bench_v2.csv", "note": "Statements vendored verbatim into testdata/workflow_projects/LeanIMOBench. Upstream verified them at Lean/Mathlib 4.27.0; the fixture runs Lean 4.33.1 / Mathlib 0df444a3 to share one on-disk Mathlib with BeckFialaResearch and SpencerResearch, and all 60 were confirmed to elaborate there (lake build, 0 errors, 2026-09-06)."},
     "LeanFlow": {"repo": ".", "revision": "workspace"}
   }
 }

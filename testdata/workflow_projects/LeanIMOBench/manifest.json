@@ -2,6 +2,27 @@
   "version": 1,
   "name": "Lean-IMO-Bench",
   "description": "60 IMO-style problems formalized in Lean 4, vendored verbatim from IMO-LeanProofBench. Each module is standalone (imports Mathlib only) and carries exactly one theorem with one sorry.",
+  "toolchain": {
+    "lean": "leanprover/lean4:v4.33.1",
+    "mathlib_rev": "0df444a360eaa60ab8c11dca51a86af692955474",
+    "shared_with": [
+      "BeckFialaResearch",
+      "SpencerResearch"
+    ],
+    "differs_from_upstream": "upstream verified at Lean/Mathlib 4.27.0",
+    "verification": {
+      "verified_on": "2026-09-06",
+      "command": "lake build",
+      "result": "all 60 statements elaborate; 0 errors",
+      "sorry_warnings": 60,
+      "deprecation_warnings": [
+        "PB-Basic-012",
+        "PB-Advanced-018",
+        "PB-Advanced-023"
+      ],
+      "deprecation_note": "Those three use List.Chain', deprecated in favour of List.IsChain at this Mathlib. They still elaborate with the same meaning, but they are the three statements most likely to break on a future Mathlib bump -- recheck them first."
+    }
+  },
   "upstream": {
     "repo": "https://github.com/google-deepmind/superhuman",
     "commit": "80b2527a0b4e4bfc6a8b28825fadbdcfdd6048a1",

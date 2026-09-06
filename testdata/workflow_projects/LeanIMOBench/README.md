@@ -28,27 +28,48 @@ python3 scripts/list_problems.py --split Basic --ids     # for xargs
 
 ## First-time setup
 
-Not done yet — this fixture ships without a `lake-manifest.json` because the
-dependency revisions are pinned in `lakefile.toml` and the manifest is whatever
-`lake update` resolves them to:
-
 ```bash
 cd testdata/workflow_projects/LeanIMOBench
-lake update          # writes lake-manifest.json, fetches Mathlib
-lake build           # builds all 60 statements: the statement-integrity gate
+./scripts/setup_project.sh     # reuse a sibling's Mathlib, then build all 60
 leanflow project init
 ```
 
-`lake build` with no target builds every problem module. That is the gate you
-want once, up front: it proves all 60 statements elaborate under this toolchain
-before you spend a single API call. After that, build one problem at a time:
+`setup_project.sh` looks for another project under `testdata/workflow_projects`
+already holding a *built* Mathlib at this exact revision and toolchain, and
+clones it copy-on-write (see "Shared Mathlib"). If it finds none it falls back
+to a normal `lake update`. Then it runs `lake build`, which builds every problem
+module: that is the statement-integrity gate, and you want it green before
+spending an API call.
+
+After that, build one problem at a time:
 
 ```bash
 lake build LeanIMOBench.Basic.PBBasic001
 ```
 
-Expect the first Mathlib build to be long. It is a different toolchain from
-`ProveDemo` (see below), so it does not share that cache.
+## Shared Mathlib
+
+A built Mathlib tree is ~7-8 GB, and this repo already carries two of them
+(4.30.0-rc2 for the demos, 4.33.1 for the research projects). This fixture adds
+**no third copy**: it is pinned to the same toolchain and Mathlib revision as
+`BeckFialaResearch` / `SpencerResearch`, and `setup_project.sh` clones their
+built package tree with APFS copy-on-write (`cp -c`). The clone shares blocks
+with the original, so it is created in seconds and costs essentially no disk:
+
+```
+apparent size   8.0G
+actual cost     ~47 MB
+setup time      27s   (vs. a multi-hour build or a multi-GB download)
+```
+
+Copy-on-write is used deliberately in preference to symlinking one shared
+packages directory. A symlinked store is literally shared, but then a
+`lake update` or a rebuild in any one project mutates the tree every other
+project is running against — including a live research campaign. With CoW the
+projects stay independent and only diverge on the blocks one of them actually
+rewrites.
+
+On a non-APFS filesystem the script falls back to a full copy, and says so.
 
 ## Running one problem
 
@@ -125,22 +146,46 @@ a single attempt per problem, and no reference solutions on disk.
 
 ## Toolchain
 
-Pinned to **Lean 4.27.0 / Mathlib `a3a10db0`**, because upstream states v2 of the
-CSV was fixed "to ensure that problem statements are friendly to automated proof
-comparators under Lean and Mathlib 4.27.0". Statements verified at 4.27.0 are not
-guaranteed to elaborate — or to mean the same thing — under a different Mathlib,
-so the pin is part of the benchmark rather than a default to drift from. It also
-matches the `bench-v1-lean4.27.0` pin the T3 suite already uses.
+Pinned to **Lean 4.33.1 / Mathlib `0df444a3`** -- the same pair as
+`BeckFialaResearch` and `SpencerResearch`, so the three share one Mathlib on
+disk.
 
-This differs from `ProveDemo` / `DocFormalizationDemo` (4.30.0-rc2) and
-`BeckFialaResearch` / `SpencerResearch` (4.33.1). If you retarget it, rerun
-`lake build` first and treat any statement that stops elaborating as a blocker,
-not a warning.
+This is *not* the version upstream verified against. Upstream fixed the v2 CSV
+"to ensure that problem statements are friendly to automated proof comparators
+under Lean and Mathlib 4.27.0", so moving off 4.27.0 carries a real risk that a
+statement stops elaborating or quietly changes meaning. That risk was retired by
+measurement rather than assumption: every one of the 60 statements was built at
+4.33.1 before the pin was changed, and `lake build` is the standing gate that
+keeps it honest. See "Verification" below.
+
+If you ever retarget again, rebuild first and treat any statement that stops
+elaborating as a blocker, not a warning. A statement that still elaborates but
+now means something different is the harder failure and is why the pin is
+recorded here rather than left to drift.
 
 `lakefile.toml` deliberately sets no `[leanOptions]`: upstream verified these as
 plain `import Mathlib` files under default elaboration options, and forcing
 `relaxedAutoImplicit` or the Mathlib linter set could change how a statement
 elaborates.
+
+## Verification
+
+`lake build` on 2026-09-06, at the pinned Lean 4.33.1 / Mathlib `0df444a3`:
+
+```
+Build completed successfully (8766 jobs).
+60/60 statements elaborated      0 errors
+60 `declaration uses sorry`      one per problem, matched against manifest.json
+```
+
+So the move off upstream's 4.27.0 is checked, not assumed. Three statements --
+`PB-Basic-012`, `PB-Advanced-018`, `PB-Advanced-023` -- raise a deprecation
+warning for `List.Chain'` (now `List.IsChain`). They elaborate with unchanged
+meaning, but they are the three most likely to break on a future Mathlib bump,
+so recheck those first if you ever move the pin.
+
+Re-run the gate any time with `lake build`; it is incremental after the first
+pass.
 
 ## Regenerating
 
@@ -185,8 +230,12 @@ ALLOW_LEANIMOBENCH_COMMIT=1 git commit
 
 ## Status
 
-Prepared, not exercised. No `lake update`, `lake build`, or LeanFlow run has been
-performed against this fixture yet — the statements are verified byte-identical
-to upstream and structurally checked (60 modules, one theorem and one `sorry`
-each, `import Mathlib` only), but they have not been elaborated locally.
-`lake build` is the first thing to run.
+Ready to run. Dependencies resolved, Mathlib shared from `BeckFialaResearch`
+via copy-on-write, and all 60 statements built clean at the pinned toolchain
+(see "Verification"). No LeanFlow prover job has been run against the fixture --
+that is the next step, and it is yours to start:
+
+```bash
+./scripts/run_problem.sh PB-Basic-001 --print   # confirm the plan
+./scripts/run_problem.sh PB-Basic-001           # launch one problem
+```
