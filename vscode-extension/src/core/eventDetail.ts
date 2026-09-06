@@ -14,6 +14,8 @@ export type SectionKind = "prose" | "code" | "fields";
 export interface EventOutputSection {
   id: string;
   title: string;
+  /** Secondary heading text shown verbatim, such as a shared directory. */
+  subtitle?: string;
   /** Prose and code render a string; fields render an object or array. */
   kind: SectionKind;
   value: unknown;
@@ -94,6 +96,30 @@ const CODE_FIELDS = new Set([
 /** A string this long, or with a line break, reads as a block rather than inline. */
 const INLINE_MAX_CHARS = 120;
 const MAX_TOOL_CALL_SECTIONS = 20;
+/** Trailing segments that still identify a file inside a long absolute path. */
+const PATH_TAIL_SEGMENTS = 3;
+/** Below this an absolute path is short enough to read whole. */
+const PATH_SHORTEN_OVER_CHARS = 60;
+
+/**
+ * Field order for a terminal event's outcome.
+ *
+ * The CLI serializes its payload with sorted keys, so without an explicit order
+ * a finished job reads alphabetically — artifacts before status, cost before
+ * calls. This is the order someone actually asks the questions in.
+ */
+const OUTCOME_ORDER = [
+  "status",
+  "reason",
+  "exit_code",
+  "api_calls",
+  "new_api_calls",
+  "input_tokens",
+  "output_tokens",
+  "cost_usd",
+  "cost_source",
+  "report_path",
+];
 
 /** Preview fields the runtime projects into the shared stream. */
 const PREVIEW_KEYS = [
@@ -134,6 +160,86 @@ function pretty(value: unknown): string {
 
 function first(...values: unknown[]): unknown {
   return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+/** Drop keys with nothing behind them, so an outcome shows what actually happened. */
+export function pruneEmpty(value: Record<string, unknown>): Record<string, unknown> {
+  const kept: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item === null || item === undefined || item === "") {
+      continue;
+    }
+    if (Array.isArray(item) ? item.length === 0 : false) {
+      continue;
+    }
+    if (
+      typeof item === "object" &&
+      item !== null &&
+      !Array.isArray(item) &&
+      Object.keys(item).length === 0
+    ) {
+      continue;
+    }
+    kept[key] = item;
+  }
+  return kept;
+}
+
+function ordered(
+  value: Record<string, unknown>,
+  order: readonly string[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of order) {
+    if (key in value) {
+      out[key] = value[key];
+    }
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (!(key in out)) {
+      out[key] = item;
+    }
+  }
+  return out;
+}
+
+/** Return the trailing segments of a long path; a full state-directory path names nothing. */
+export function shortenPath(value: string): string {
+  const parts = value.split("/").filter(Boolean);
+  if (!value.startsWith("/") || parts.length <= PATH_TAIL_SEGMENTS) {
+    return value;
+  }
+  return `…/${parts.slice(-PATH_TAIL_SEGMENTS).join("/")}`;
+}
+
+/**
+ * Strip the directory every path shares, leaving names that differ.
+ *
+ * A job's artifacts all sit in one workspace, so repeating its 150-character
+ * path on every row hides the only part that varies.
+ */
+export function relativizePaths(values: readonly string[]): { base: string; names: string[] } {
+  const split = values.map((value) => value.split("/"));
+  if (split.length === 0) {
+    return { base: "", names: [] };
+  }
+  let shared = split[0].slice(0, -1);
+  for (const parts of split.slice(1)) {
+    const directory = parts.slice(0, -1);
+    let index = 0;
+    while (index < shared.length && index < directory.length && shared[index] === directory[index]) {
+      index += 1;
+    }
+    shared = shared.slice(0, index);
+  }
+  if (shared.length <= 1) {
+    return { base: "", names: values.map(shortenPath) };
+  }
+  const prefix = `${shared.join("/")}/`;
+  return {
+    base: shortenPath(shared.join("/")),
+    names: values.map((value) => (value.startsWith(prefix) ? value.slice(prefix.length) : value)),
+  };
 }
 
 /** Parse a JSON value whether it arrives parsed, serialized, or fenced in markdown. */
@@ -320,6 +426,57 @@ function section(
   };
 }
 
+/** Body fields of a terminal event that get their own section rather than a row. */
+const TERMINAL_BODY = new Set(["final_response", "error", "assistant"]);
+
+function statusTone(status: string): "ok" | "err" | undefined {
+  const normalized = status.toLowerCase();
+  if (["completed", "succeeded", "proved", "verified"].includes(normalized)) {
+    return "ok";
+  }
+  if (
+    ["error", "failed", "provider_error", "environment_error", "source_conflict", "verification_failed"].includes(
+      normalized,
+    )
+  ) {
+    return "err";
+  }
+  return undefined;
+}
+
+/** Replace absolute paths with their identifying tail so a row stays one line. */
+function shortenPaths(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      typeof item === "string" &&
+      item.startsWith("/") &&
+      item.length > PATH_SHORTEN_OVER_CHARS
+        ? shortenPath(item)
+        : item,
+    ]),
+  );
+}
+
+/** List what a job left behind by the names that differ, not the path they share. */
+function artifactSection(value: unknown): EventOutputSection | null {
+  const paths = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item !== "")
+    : [];
+  if (paths.length === 0) {
+    return null;
+  }
+  const { base, names } = relativizePaths(paths);
+  return {
+    id: "artifacts",
+    title: "Artifacts",
+    subtitle: base,
+    kind: "fields",
+    value: names,
+    text: paths.join("\n"),
+  };
+}
+
 function toolCallSections(calls: unknown, prefix: string): EventOutputSection[] {
   if (!Array.isArray(calls)) {
     return [];
@@ -403,7 +560,24 @@ export function eventOutputSections(
         ),
       );
     }
-  } else if (type === "job-session-end") {
+  } else if (type === "job-session-end" || type === "job_finished" || type === "runner-exit") {
+    // A finished job answers three questions in order: how did it end, what did
+    // it say, and what did it leave behind.
+    const outcome = pruneEmpty(
+      ordered(
+        {
+          ...Object.fromEntries(
+            Object.entries(full).filter(([key]) => key !== "artifacts" && !TERMINAL_BODY.has(key)),
+          ),
+        },
+        OUTCOME_ORDER,
+      ),
+    );
+    add(
+      section("outcome", "Outcome", shortenPaths(outcome), {
+        tone: statusTone(str(first(full.status, details.status))),
+      }),
+    );
     add(
       section(
         "final",
@@ -412,6 +586,7 @@ export function eventOutputSections(
       ),
     );
     add(section("error", "Error", first(full.error, details.error), { tone: "err" }));
+    add(artifactSection(full.artifacts));
   } else if (type === "conversation-start") {
     add(section("prompt", "Prompt", details.user_message));
   } else if (type === "user_message") {
@@ -438,7 +613,7 @@ export function eventOutputSections(
     for (const key of ["job_id", "node_id", "evidence_id"]) {
       delete rest[key];
     }
-    add(section("record", "Recorded details", rest));
+    add(section("record", "Recorded details", shortenPaths(pruneEmpty(rest))));
   }
   return sections;
 }

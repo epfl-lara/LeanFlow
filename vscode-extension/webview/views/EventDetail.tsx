@@ -120,6 +120,8 @@ export function EventDetailPanel(props: { runId: string; event: ActivityEvent })
         <div className={`log-detail-section ${section.tone ?? ""}`} key={section.id}>
           <div className="label">
             <span>{section.title}</span>
+            {section.subtitle && <span className="subtitle">{section.subtitle}</span>}
+            <span className="spacer" />
             {section.text && (
               <button className="link" onClick={() => copyText(section.text)} type="button">
                 Copy

@@ -16,6 +16,7 @@ from leanflow_cli.workflows.prover.event_preview import (
     PREVIEW_CHARS,
     event_message,
     preview_details,
+    salient_argument,
 )
 from leanflow_cli.workflows.prover.store import RunStore
 
@@ -55,11 +56,50 @@ def test_api_response_preview_bounds_text_and_summarizes_tool_calls() -> None:
     assert preview["finish_reason"] == "tool_calls"
     assert preview["tool_call_count"] == 2
     assert [call["name"] for call in preview["tool_calls"]] == ["write_file", "lean_search"]
+    assert [call["subject"] for call in preview["tool_calls"]] == [
+        "PLAN_job.md",
+        "Finset.sum_le",
+    ]
     assert len(preview["tool_calls"][0]["arguments_preview"]) <= 300
     message = event_message("api-response", details, preview)
     assert len(message) <= MESSAGE_CHARS
     assert message.startswith("Consider the floating-variable argument.")
-    assert "2 tool calls: write_file, lean_search" in message
+    assert "write_file(PLAN_job.md), lean_search(Finset.sum_le)" in message
+
+
+@pytest.mark.parametrize(
+    "arguments,expected",
+    [
+        ({"path": "/abs/jobs/prover_00007/PLAN_job.md", "content": "x" * 900}, "PLAN_job.md"),
+        ('{"file":"Scratch.lean"}', "Scratch.lean"),
+        ({"query": "Finset sum le sum", "limit": 5}, "Finset sum le sum"),
+        ({"code": "y" * 500}, ""),
+        ({"old": "a" * 300, "new": "b" * 300}, ""),
+        ({"limit": 16000}, "limit=16000"),
+        ({}, ""),
+        ("not json at all", "not json at all"),
+        ("z" * 400, ""),
+        # A provider can cut arguments off mid-object; the subject survives.
+        ('{"path":"Scratch.lean","content":"import Mathlib' + "z" * 400, "Scratch.lean"),
+    ],
+)
+def test_salient_argument_names_the_subject_not_the_payload(arguments, expected) -> None:
+    assert salient_argument(arguments) == expected
+
+
+def test_repeated_calls_collapse_to_counts_instead_of_a_list() -> None:
+    details = {
+        "assistant": _assistant(
+            tool_calls=[
+                {"function": {"name": "search_project", "arguments": '{"query":"box"}'}},
+                {"function": {"name": "search_project", "arguments": '{"query":"live"}'}},
+                {"function": {"name": "search_project", "arguments": '{"query":"row"}'}},
+            ]
+        )
+    }
+    assert event_message("api-response", details, preview_details("api-response", details)) == (
+        "search_project ×3"
+    )
 
 
 def test_tool_only_response_and_reasoning_only_response_have_messages() -> None:
@@ -75,7 +115,7 @@ def test_tool_only_response_and_reasoning_only_response_have_messages() -> None:
     }
     assert (
         event_message("api-response", tools, preview_details("api-response", tools))
-        == 'read_file({"path":"a.md"})'
+        == "read_file(a.md)"
     )
     thinking = {"assistant": _assistant(reasoning="**Mapping helper dependencies**")}
     assert (
@@ -88,25 +128,24 @@ def test_tool_only_response_and_reasoning_only_response_have_messages() -> None:
 def test_tool_result_preview_reports_outcome_and_bounded_payload() -> None:
     ok = {
         "tool": "read_file",
-        "arguments": '{"path":"x.lean","limit":40}',
+        "arguments": '{"path":"BeckFiala/x.lean","limit":40}',
         "result": {"success": True, "content": "z" * 5000},
     }
     preview = preview_details("tool-result", ok)
     assert preview["success"] is True and preview["result_chars"] > 5000
+    assert preview["subject"] == "x.lean"
     assert len(preview["result_preview"]) <= PREVIEW_CHARS
-    assert (
-        event_message("tool-result", ok, preview) == 'read_file({"path":"x.lean","limit":40}) → ok'
-    )
+    assert event_message("tool-result", ok, preview) == "read_file(x.lean) → ok"
     failed = {
         "tool": "lean_check",
-        "arguments": "{}",
+        "arguments": '{"file":"Scratch.lean"}',
         "result": {"success": False, "error": "unknown identifier 'foo'"},
     }
     preview = preview_details("tool-result", failed)
     assert preview["error"] == "unknown identifier 'foo'"
     assert (
         event_message("tool-result", failed, preview)
-        == "lean_check({}) → failed: unknown identifier 'foo'"
+        == "lean_check(Scratch.lean) → failed: unknown identifier 'foo'"
     )
 
 
@@ -230,11 +269,13 @@ def test_observer_projects_readable_rows_with_previews_and_evidence_id(
     )
     ((kind, message, details),) = rows
     assert kind == "api-response"
-    assert message == 'The base case follows by simp; now the step. · lean_check({"code":"simp"})'
+    assert message == "The base case follows by simp; now the step. · lean_check(simp)"
     assert details["agent_session_id"] == "prover_00001"
     assert details["evidence_id"] == "abc123def456"
     assert details["content_preview"].startswith("The base case")
-    assert details["tool_calls"] == [{"name": "lean_check", "arguments_preview": '{"code":"simp"}'}]
+    assert details["tool_calls"] == [
+        {"name": "lean_check", "subject": "simp", "arguments_preview": '{"code":"simp"}'}
+    ]
     assert "assistant" not in details, "full transcripts stay out of the shared stream"
 
 

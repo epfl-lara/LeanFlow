@@ -3,6 +3,26 @@
 All notable changes to the LeanFlow VS Code extension are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.13] — 2026-09-06
+
+- Group log rows into the agent sessions they belong to. Each session gets one
+  collapsible header naming its role, theorem, calls against budget, duration,
+  and outcome. Interleaved single rows from parallel provers stay plain rows
+  rather than each acquiring a header of their own.
+- Describe a tool call by its subject instead of its payload: `write_file`
+  followed by the file it wrote, `search_project` repeated three times shown as
+  one row with a count. A row is now always one scannable line, with the full
+  text on hover and in the expanded body.
+- Label events in words. `job-session-start` and `job_finished` read as
+  "Session start" and "Job finished", so the runtime's mixed hyphen and
+  underscore spellings never reach the reader.
+- Number each provider turn against the job's call budget.
+- Lead a finished job with its outcome — status, calls, tokens, cost — in that
+  order, then its final response, then the files it left behind by the names
+  that differ rather than the long directory they share. Empty fields are
+  dropped instead of listed, and large counts are grouped.
+- Collapse the event-type filter by default, and reclaim the vertical space.
+
 ## [0.1.12] — 2026-09-06
 
 - Expand any event in the Logs view to read the model output behind it: the

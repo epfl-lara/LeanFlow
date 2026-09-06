@@ -10,6 +10,7 @@ output, and the evidence id that resolves the complete record on demand through
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -19,6 +20,55 @@ MESSAGE_CHARS = 200
 PREVIEW_CHARS = 600
 ARGUMENT_CHARS = 300
 MAX_TOOL_CALLS = 4
+
+#: Argument names that identify *what* a call acted on, ordered by how well
+#: each names the call's subject. A row shows the verb plus one salient
+#: argument rather than the whole payload.
+_PATH_KEYS = ("path", "file", "file_path", "filename", "scratch_file")
+_SUBJECT_KEYS = (
+    "query",
+    "question",
+    "search",
+    "pattern",
+    "url",
+    "command",
+    "declaration",
+    "theorem",
+    "target",
+    "name",
+    "node_id",
+    "topic",
+)
+#: Payload names that carry a document rather than an identifier. These never
+#: belong on a one-line row.
+_BULK_KEYS = frozenset(
+    {
+        "body",
+        "code",
+        "content",
+        "diff",
+        "new",
+        "notes",
+        "old",
+        "patch",
+        "plan",
+        "program",
+        "proof",
+        "proofs",
+        "replacement",
+        "report",
+        "script",
+        "snippet",
+        "source",
+        "text",
+    }
+)
+SUBJECT_CHARS = 60
+#: Recovers a subject from arguments that are not valid JSON, such as a
+#: response truncated mid-object.
+_TRUNCATED_SUBJECT_RE = re.compile(
+    r'"(path|file|file_path|filename|query|question|command|name)"\s*:\s*"([^"\\]{1,120})"'
+)
 
 _CHECK_KINDS = {
     "submission-feedback",
@@ -66,6 +116,58 @@ def _redact(value: Any) -> Any:
     return value
 
 
+def _short_path(value: str) -> str:
+    """Return the file name that identifies a path, without its directories."""
+    parts = [part for part in value.replace("\\", "/").split("/") if part]
+    return parts[-1] if parts else value
+
+
+def salient_argument(arguments: Any) -> str:
+    """Return the one argument that says what a call acted on, or an empty string.
+
+    Tool arguments are frequently a whole file, proof, or program. Rendering
+    them on a log row buries the call; naming its subject does not.
+    """
+    args = arguments
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (ValueError, TypeError):
+            # A provider can stream arguments that are cut off mid-object. The
+            # subject is usually the first key, so recover it rather than
+            # showing the row nothing at all.
+            named = _TRUNCATED_SUBJECT_RE.search(args)
+            if named:
+                return _short_path(named.group(2))
+            collapsed = " ".join(args.split())
+            return _clip(collapsed, SUBJECT_CHARS) if len(collapsed) <= 80 else ""
+    if not isinstance(args, Mapping):
+        return ""
+    for key in _PATH_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return _short_path(value.strip())
+    for key in _SUBJECT_KEYS:
+        value = args.get(key)
+        if isinstance(value, str | int | float) and not isinstance(value, bool):
+            collapsed = " ".join(str(value).split())
+            if collapsed:
+                return _clip(collapsed, SUBJECT_CHARS)
+    for key, value in args.items():
+        # A one-word tactic or snippet names the call; a whole file does not.
+        if key in _BULK_KEYS and isinstance(value, str) and "\n" not in value:
+            collapsed = value.strip()
+            if collapsed and len(collapsed) <= 40:
+                return collapsed
+    for key, value in args.items():
+        if key in _BULK_KEYS or isinstance(value, Mapping | list):
+            continue
+        collapsed = " ".join(str(value).split())
+        if collapsed and len(collapsed) <= 40:
+            return f"{key}={collapsed}"
+    return ""
+
+
 def _tool_call_summaries(assistant: Mapping[str, Any]) -> tuple[list[dict[str, str]], int]:
     """Summarize requested tool calls in both provider and legacy shapes."""
     calls = assistant.get("tool_calls")
@@ -80,6 +182,7 @@ def _tool_call_summaries(assistant: Mapping[str, Any]) -> tuple[list[dict[str, s
         summaries.append(
             {
                 "name": str(function.get("name") or ""),
+                "subject": salient_argument(function.get("arguments")),
                 "arguments_preview": _line(function.get("arguments"), ARGUMENT_CHARS),
             }
         )
@@ -108,6 +211,7 @@ def preview_details(kind: str, details: Mapping[str, Any]) -> dict[str, Any]:
         result = details.get("result")
         result_text = _text(result)
         preview.update(
+            subject=salient_argument(details.get("arguments")),
             arguments_preview=_clip(details.get("arguments"), ARGUMENT_CHARS),
             result_preview=_clip(result_text, PREVIEW_CHARS),
             result_chars=len(result_text),
@@ -144,15 +248,24 @@ def preview_details(kind: str, details: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _call_text(call: Mapping[str, str]) -> str:
+    return f"{call['name']}({call.get('subject', '')})"
+
+
 def _tool_call_message(calls: list[dict[str, str]], total: int) -> str:
-    names = [call["name"] for call in calls if call.get("name")]
-    if not names:
+    """Name the requested calls compactly: subjects when few, counts when many."""
+    named = [call for call in calls if call.get("name")]
+    if not named:
         return ""
-    if total == 1:
-        arguments = calls[0].get("arguments_preview", "")
-        return f"{names[0]}({arguments})" if arguments else f"{names[0]}()"
-    shown = ", ".join(names)
-    return f"{total} tool calls: {shown}" + ("…" if total > len(names) else "")
+    if len(named) == total and len(named) <= 2:
+        rendered = ", ".join(_call_text(call) for call in named)
+        if len(rendered) <= 90:
+            return rendered
+    counts: dict[str, int] = {}
+    for call in named:
+        counts[call["name"]] = counts.get(call["name"], 0) + 1
+    parts = [name if count == 1 else f"{name} ×{count}" for name, count in counts.items()]
+    return ", ".join(parts) + ("…" if total > len(named) else "")
 
 
 def event_message(kind: str, details: Mapping[str, Any], preview: Mapping[str, Any]) -> str:
@@ -187,7 +300,7 @@ def event_message(kind: str, details: Mapping[str, Any], preview: Mapping[str, A
         return "Empty response"
     if kind == "tool-result":
         tool = str(details.get("tool") or "tool")
-        arguments = str(preview.get("arguments_preview") or "")
+        subject = str(preview.get("subject") or "")
         success = preview.get("success")
         outcome = ""
         if success is False:
@@ -195,8 +308,7 @@ def event_message(kind: str, details: Mapping[str, Any], preview: Mapping[str, A
             outcome = f" → failed: {error}" if error else " → failed"
         elif success is True:
             outcome = " → ok"
-        call = f"{tool}({arguments})" if arguments else tool
-        return _line(f"{call}{outcome}", MESSAGE_CHARS)
+        return _line(f"{tool}({subject}){outcome}", MESSAGE_CHARS)
     if kind == "job-session-start":
         role = str(details.get("role") or "job")
         return f"{role} session started" + (f" · budget {budget} calls" if budgeted else "")

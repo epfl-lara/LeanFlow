@@ -215,6 +215,13 @@ export function ValueView(props: {
   if (value === null || value === undefined) {
     return <span className="field-inline muted">—</span>;
   }
+  if (typeof value === "number") {
+    // Token and call counts are read as magnitudes; grouping is what makes
+    // 152,261 legible at a glance. Small numbers and ids are left alone.
+    const shown =
+      Number.isInteger(value) && Math.abs(value) >= 10_000 ? value.toLocaleString() : String(value);
+    return <code className="field-scalar">{shown}</code>;
+  }
   if (typeof value !== "object") {
     return <code className="field-scalar">{String(value)}</code>;
   }

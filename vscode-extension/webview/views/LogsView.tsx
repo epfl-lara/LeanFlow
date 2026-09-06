@@ -3,12 +3,22 @@
  *
  * The runtime emits ~50 distinct event types at very different densities, so
  * the filter is the feature: reading a campaign means choosing which of those
- * layers to look at, not scrolling everything. Each row expands into the model
- * output behind it, fetched from the job's own transcript on demand.
+ * layers to look at, not scrolling everything. Rows are grouped into the agent
+ * sessions they belong to, each row stays one scannable line, and expanding one
+ * fetches the model output behind it.
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import { eventSearchText } from "../../src/core/eventDetail";
+import {
+  humanEventLabel,
+  indexSessions,
+  segmentFacts,
+  segmentLogRows,
+  shouldFrameSegment,
+  statusTone,
+  turnNumber,
+} from "../../src/core/logRows";
 import type { ActivityEvent } from "../../src/core/types";
 import { Card, Empty, Notice } from "../components";
 import { useSelectedRun, useStore } from "../store";
@@ -97,9 +107,12 @@ function toneFor(type: string): string {
   return "";
 }
 
+/** 24-hour local time: compact, and unambiguous next to a duration. */
 function shortTime(iso: string): string {
   const parsed = new Date(iso);
-  return Number.isNaN(parsed.getTime()) ? iso.slice(11, 19) : parsed.toLocaleTimeString();
+  return Number.isNaN(parsed.getTime())
+    ? iso.slice(11, 19)
+    : parsed.toLocaleTimeString(undefined, { hour12: false });
 }
 
 export function LogsView() {
@@ -108,13 +121,20 @@ export function LogsView() {
   const [preset, setPreset] = useState("narrative");
   const [follow, setFollow] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, true>>({});
+  const [collapsedAgents, setCollapsedAgents] = useState<Record<string, true>>({});
   const listRef = useRef<HTMLDivElement>(null);
 
   // Prefer the selected run's own stream; fall back to the newest recorded one
   // so a run started from a terminal is still readable here.
   const runId = run?.runId || app?.history[0]?.run_id || "";
   const stream: ActivityEvent[] = useMemo(() => events[runId] ?? [], [events, runId]);
-  const agents = useMemo(() => [...new Set(stream.map((event) => event.agent_id).filter(Boolean))].sort(), [stream]);
+  const agents = useMemo(
+    () => [...new Set(stream.map((event) => event.agent_id).filter(Boolean))].sort(),
+    [stream],
+  );
+  // Session facts come from the whole stream, so a segment header still knows
+  // the job's role and outcome when the active filter hides those rows.
+  const sessions = useMemo(() => indexSessions(stream), [stream]);
 
   useEffect(() => {
     if (runId) {
@@ -122,6 +142,7 @@ export function LogsView() {
     }
     // Expansion state is per stream; another run's ids would never match anyway.
     setExpanded({});
+    setCollapsedAgents({});
   }, [runId]);
 
   useEffect(() => {
@@ -150,19 +171,32 @@ export function LogsView() {
     });
   }, [stream, view.logFilter, view.logAgent, activePreset, search]);
 
+  const segments = useMemo(() => segmentLogRows(filtered, sessions), [filtered, sessions]);
+
   useEffect(() => {
     if (follow && listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
   }, [filtered.length, follow]);
 
-  const toggle = (eventId: string) => {
+  const toggleRow = (eventId: string) => {
     setExpanded((previous) => {
       const next = { ...previous };
       if (next[eventId]) {
         delete next[eventId];
       } else {
         next[eventId] = true;
+      }
+      return next;
+    });
+  };
+  const toggleAgent = (agentId: string) => {
+    setCollapsedAgents((previous) => {
+      const next = { ...previous };
+      if (next[agentId]) {
+        delete next[agentId];
+      } else {
+        next[agentId] = true;
       }
       return next;
     });
@@ -185,23 +219,31 @@ export function LogsView() {
             : "No recorded run yet."
         }
         actions={
-          <>
-            <button
-              className={`btn ${view.logRaw ? "" : "ghost"}`}
-              onClick={() => setView({ logRaw: !view.logRaw })}
-            >
-              {view.logRaw ? "Structured" : "Raw log"}
-            </button>
-          </>
+          <button
+            className={`btn ${view.logRaw ? "" : "ghost"}`}
+            onClick={() => setView({ logRaw: !view.logRaw })}
+          >
+            {view.logRaw ? "Structured" : "Raw log"}
+          </button>
         }
       >
         {!view.logRaw && (
           <div className="row tight">
-            <select aria-label="Agent log" value={view.logAgent || ""} style={{ maxWidth: 240 }}
-              onChange={(event) => setView({ logAgent: event.target.value })}>
+            <select
+              aria-label="Agent log"
+              value={view.logAgent || ""}
+              style={{ maxWidth: 240 }}
+              onChange={(event) => setView({ logAgent: event.target.value })}
+            >
               <option value="">All agents</option>
-              {view.logAgent && !agents.includes(view.logAgent) && <option value={view.logAgent}>{view.logAgent}</option>}
-              {agents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
+              {view.logAgent && !agents.includes(view.logAgent) && (
+                <option value={view.logAgent}>{view.logAgent}</option>
+              )}
+              {agents.map((agent) => (
+                <option key={agent} value={agent}>
+                  {agent}
+                </option>
+              ))}
             </select>
             {PRESETS.map((entry) => (
               <button
@@ -242,18 +284,21 @@ export function LogsView() {
       </Card>
 
       {!view.logRaw && knownTypes.length > 0 && (
-        <Card
-          title="Event types"
-          subtitle="Select specific types to override the preset. Counts are across all recorded runs."
-          actions={
-            view.logFilter.length > 0 ? (
+        <details className="card log-types" open={view.logFilter.length > 0}>
+          <summary>
+            <span className="card-title">Event types</span>
+            <span className="muted">
+              {view.logFilter.length > 0
+                ? `${view.logFilter.length} selected — overrides the preset`
+                : "Select specific types to override the preset"}
+            </span>
+          </summary>
+          <div className="row tight" style={{ marginTop: 10 }}>
+            {view.logFilter.length > 0 && (
               <button className="btn ghost" onClick={() => setView({ logFilter: [] })}>
                 Clear ({view.logFilter.length})
               </button>
-            ) : undefined
-          }
-        >
-          <div className="row tight">
+            )}
             {knownTypes.slice(0, 60).map((entry) => {
               const selected = view.logFilter.includes(entry.type);
               return (
@@ -261,6 +306,7 @@ export function LogsView() {
                   key={entry.type}
                   className={`pill ${selected ? "ok" : ""}`}
                   style={{ cursor: "pointer", background: "none" }}
+                  title={entry.type}
                   onClick={() =>
                     setView({
                       logFilter: selected
@@ -269,12 +315,12 @@ export function LogsView() {
                     })
                   }
                 >
-                  {entry.type} <span className="muted">{entry.count}</span>
+                  {humanEventLabel(entry.type)} <span className="muted">{entry.count}</span>
                 </button>
               );
             })}
           </div>
-        </Card>
+        </details>
       )}
 
       {view.logRaw ? (
@@ -288,32 +334,74 @@ export function LogsView() {
                 {stream.length > 0 && <> {stream.length} events are buffered.</>}
               </div>
             ) : (
-              filtered.map((event) => {
-                const open = Boolean(expanded[event.event_id]);
+              segments.map((segment) => {
+                const framed = shouldFrameSegment(segment);
+                const collapsed = framed && Boolean(collapsedAgents[segment.agentId]);
+                const facts = segmentFacts(segment).join(" · ");
+                const status = segment.session?.status ?? "";
                 return (
-                  <Fragment key={event.event_id}>
-                    <div
-                      aria-expanded={open}
-                      className={`log-line ${toneFor(event.type)}${open ? " expanded" : ""}`}
-                      onClick={() => toggle(event.event_id)}
-                      onKeyDown={(keyboard) => {
-                        if (keyboard.key === "Enter" || keyboard.key === " ") {
-                          keyboard.preventDefault();
-                          toggle(event.event_id);
-                        }
-                      }}
-                      role="button"
-                      tabIndex={0}
-                    >
-                      <span aria-hidden="true" className="caret">▶</span>
-                      <span className="ts">{shortTime(event.timestamp)}</span>
-                      <span className="type" title={event.type}>
-                        {event.type}
-                      </span>
-                      <span className="msg">{event.agent_id && <span className="tag">{event.agent_id}</span>} {event.message}</span>
-                    </div>
-                    {open && <EventDetailPanel runId={runId} event={event} />}
-                  </Fragment>
+                  <div className="log-segment" key={segment.key}>
+                    {framed && (
+                      <button
+                        aria-expanded={!collapsed}
+                        className={`log-segment-head${collapsed ? " collapsed" : ""}`}
+                        onClick={() => toggleAgent(segment.agentId)}
+                        type="button"
+                      >
+                        <span aria-hidden="true" className="caret">
+                          ▾
+                        </span>
+                        <strong>{segment.agentId}</strong>
+                        {facts && (
+                          <span className="muted facts" title={facts}>
+                            {facts}
+                          </span>
+                        )}
+                        <span className="spacer" />
+                        <span className="muted count">
+                          {segment.events.length} {segment.events.length === 1 ? "event" : "events"}
+                        </span>
+                        {status && <span className={`pill ${statusTone(status)}`}>{status}</span>}
+                      </button>
+                    )}
+                    {!collapsed &&
+                      segment.events.map((event) => {
+                        const open = Boolean(expanded[event.event_id]);
+                        const turn = turnNumber(event);
+                        return (
+                          <Fragment key={event.event_id}>
+                            <div
+                              aria-expanded={open}
+                              className={`log-line ${toneFor(event.type)}${open ? " expanded" : ""}`}
+                              onClick={() => toggleRow(event.event_id)}
+                              onKeyDown={(keyboard) => {
+                                if (keyboard.key === "Enter" || keyboard.key === " ") {
+                                  keyboard.preventDefault();
+                                  toggleRow(event.event_id);
+                                }
+                              }}
+                              role="button"
+                              tabIndex={0}
+                              title={`${event.type} · ${event.message}`}
+                            >
+                              <span aria-hidden="true" className="caret">
+                                ▶
+                              </span>
+                              <span className="ts">{shortTime(event.timestamp)}</span>
+                              <span className="type">{humanEventLabel(event.type)}</span>
+                              <span className="msg">
+                                {turn !== null && <span className="turn">#{turn}</span>}
+                                {!framed && event.agent_id && (
+                                  <span className="tag">{event.agent_id}</span>
+                                )}
+                                <span className="text">{event.message}</span>
+                              </span>
+                            </div>
+                            {open && <EventDetailPanel runId={runId} event={event} />}
+                          </Fragment>
+                        );
+                      })}
+                  </div>
                 );
               })
             )}

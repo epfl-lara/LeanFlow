@@ -13,7 +13,10 @@ import {
   fieldPresentation,
   normalizeEventDetail,
   parseStructured,
+  pruneEmpty,
   rawDetailsForDisplay,
+  relativizePaths,
+  shortenPath,
 } from "../dist/test/eventDetail.mjs";
 
 function event(type, details = {}, message = type) {
@@ -283,4 +286,77 @@ test("evidence status explains loading, missing, preview-only, and heuristic joi
     "e1",
   );
   assert.equal(evidenceStatus(preview, exact, false, ""), null);
+});
+
+test("a finished job leads with its outcome, not an alphabetical field dump", () => {
+  const evidence = {
+    // The CLI serializes with sorted keys, so this is the order it really arrives in.
+    api_calls: 9,
+    artifacts: [
+      "/Users/x/p/.leanflow/workflow-state/prover/run-2/jobs/prover_00007/PLAN_job.md",
+      "/Users/x/p/.leanflow/workflow-state/prover/run-2/jobs/prover_00007/Scratch.lean",
+      "/Users/x/p/.leanflow/workflow-state/prover/run-2/jobs/prover_00007/tool-results/a.json",
+    ],
+    cost_source: "unavailable",
+    cost_usd: null,
+    error: "",
+    final_response: "",
+    input_tokens: 157941,
+    new_api_calls: 9,
+    output_tokens: 3345,
+    report_path: "/Users/x/p/.leanflow/workflow-state/prover/run-2/jobs/prover_00007/report.json",
+    status: "completed",
+  };
+  const sections = eventOutputSections(event("job-session-end", { status: "completed" }), evidence);
+  assert.deepEqual(titles(sections), ["Outcome", "Artifacts"]);
+  assert.equal(sections[1].subtitle, "…/run-2/jobs/prover_00007");
+  const outcome = sections[0];
+  assert.equal(outcome.tone, "ok");
+  assert.deepEqual(Object.keys(outcome.value), [
+    "status",
+    "api_calls",
+    "new_api_calls",
+    "input_tokens",
+    "output_tokens",
+    "cost_source",
+    "report_path",
+  ]);
+  assert.equal(outcome.value.report_path, "…/jobs/prover_00007/report.json");
+  assert.deepEqual(sections[1].value, ["PLAN_job.md", "Scratch.lean", "tool-results/a.json"]);
+  assert.match(sections[1].text, /^\/Users\/x/, "Copy still yields the real absolute paths");
+});
+
+test("a failed job is toned red and keeps its error and final response", () => {
+  const sections = eventOutputSections(
+    event("job_finished", { status: "provider_error" }),
+    { status: "provider_error", error: "provider timed out", final_response: "partial work saved", api_calls: 3 },
+  );
+  assert.deepEqual(titles(sections), ["Outcome", "Final response", "Error"]);
+  assert.equal(sections[0].tone, "err");
+  assert.equal(sections[2].tone, "err");
+  assert.equal(sections[2].value, "provider timed out");
+});
+
+test("empty fields are dropped from a recorded-details fallback", () => {
+  const sections = eventOutputSections(event("libraries_installed"), {
+    accepted: true,
+    packages: [],
+    error: "",
+    detail: null,
+    note: "physlib pinned",
+  });
+  assert.deepEqual(sections[0].value, { accepted: true, note: "physlib pinned" });
+});
+
+test("path helpers keep the part that differs", () => {
+  assert.equal(shortenPath("/a/b/c/d/e/f.lean"), "…/d/e/f.lean");
+  assert.equal(shortenPath("relative/f.lean"), "relative/f.lean");
+  assert.equal(shortenPath("/a/b.lean"), "/a/b.lean");
+  assert.deepEqual(relativizePaths(["/a/b/one.md", "/a/b/two.md"]), {
+    base: "/a/b",
+    names: ["one.md", "two.md"],
+  });
+  assert.deepEqual(relativizePaths([]), { base: "", names: [] });
+  assert.deepEqual(relativizePaths(["/a/one.md", "/b/two.md"]).base, "");
+  assert.deepEqual(pruneEmpty({ a: 1, b: "", c: null, d: [], e: {}, f: [1] }), { a: 1, f: [1] });
 });

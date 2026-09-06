@@ -57,6 +57,7 @@ if (tests) {
       projectDiscovery: "src/core/projectDiscovery.ts",
       eventBuffer: "src/core/eventBuffer.ts",
       eventDetail: "src/core/eventDetail.ts",
+      logRows: "src/core/logRows.ts",
       experimentIsolation: "src/core/experimentIsolation.ts",
       experimentLaunchContract: "src/core/experimentLaunchContract.ts",
       experimentMatrix: "src/core/experimentMatrix.ts",
