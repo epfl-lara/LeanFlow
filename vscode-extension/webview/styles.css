@@ -1357,3 +1357,27 @@ body.vscode-high-contrast-light {
 .prover-job .row { margin-top: 6px; }
 .prover-panels { align-items: start; }
 @media (max-width: 900px) { .prover-dag-layout { grid-template-columns: 1fr; } }
+/* Controller operations, capacity, and lifecycle detail. */
+.prover-ops { margin-top: 12px; }
+.prover-ops-recent { margin-top: 10px; }
+.prover-ops-recent > summary { cursor: pointer; font-size: 12px; color: var(--lf-muted); }
+.prover-op { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--lf-border); }
+.prover-op:last-child { border-bottom: 0; }
+.prover-op-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.prover-op-meta { font-size: 11px; color: var(--lf-muted); margin-top: 3px; }
+.prover-op-error { color: var(--vscode-charts-red); }
+.prover-progress { height: 6px; border-radius: 3px; background: var(--lf-lift-2, rgba(128, 128, 128, 0.2)); overflow: hidden; margin-top: 6px; max-width: 320px; }
+.prover-progress > span { display: block; height: 100%; background: var(--vscode-progressBar-background, #4c9aff); }
+.prover-stages { margin-top: 12px; }
+.prover-stage { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 5px 0; font-size: 12px; }
+.prover-roles { margin-top: 14px; }
+.prover-roles .table-wrap { margin-top: 6px; }
+.prover-roles table { width: 100%; }
+.prover-lifecycle { margin: 6px 0 10px; font-size: 12px; line-height: 1.5; }
+.prover-lifecycle .row { margin-top: 4px; }
+.prover-notes { max-height: 260px; overflow: auto; white-space: pre-wrap; margin: 6px 0; }
+.prover-change.pending { border-left: 3px solid var(--vscode-charts-yellow); padding-left: 10px; }
+.prover-job-stop { font-size: 12px; margin-top: 4px; }
+.prover-artifacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.prover-node-detail details > summary { cursor: pointer; font-size: 12px; color: var(--lf-muted); margin: 8px 0 4px; }
+.prover-job details > summary { cursor: pointer; font-size: 12px; color: var(--lf-muted); margin: 6px 0 2px; }

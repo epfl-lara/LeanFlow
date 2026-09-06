@@ -44,6 +44,7 @@ __all__ = [
     "_handle_sandbox",
     "_print_mcp_status",
     "_print_mcp_bootstrap",
+    "_print_mcp_repair",
     "workflow_run_help_text",
 ]
 
@@ -221,6 +222,29 @@ def _print_mcp_bootstrap(payload: Mapping[str, Any]) -> None:
                 f"  local Loogle: {power.get('loogle_local_status', 'unknown')} ({power.get('loogle_cache_dir', '')})"
             )
             print(f"  REPL: {power.get('repl_status', 'unknown')}")
+
+
+def _print_mcp_repair(payload: Mapping[str, Any]) -> None:
+    """Print which managed source patches were applied by ``leanflow mcp repair``."""
+    print("Managed Lean MCP patches")
+    print(f"- home: {payload.get('home', '')}")
+    for name, raw_entry in dict(payload.get("patches", {}) or {}).items():
+        entry = dict(raw_entry or {})
+        if not entry.get("installed", False):
+            print(f"- {name}: not installed (run `leanflow mcp bootstrap`)")
+            continue
+        applied = ", ".join(
+            f"{key}={'ok' if value else 'skipped'}"
+            for key, value in entry.items()
+            if key != "installed"
+        )
+        print(f"- {name}: {applied or 'nothing to patch'}")
+    power = dict(payload.get("power_modes", {}) or {})
+    if power:
+        print(f"  local Loogle: {power.get('loogle_local_status', 'unknown')}")
+        client = dict(power.get("loogle_client", {}) or {})
+        if client.get("client_found") and client.get("detail"):
+            print(f"  loogle client: {client.get('detail')}")
 
 
 def _handle_sandbox(args: argparse.Namespace) -> int:

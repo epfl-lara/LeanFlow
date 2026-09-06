@@ -27,6 +27,7 @@ ENV_NAMES = {
     "compression": "LEANFLOW_PROVER_COMPRESSION",
     "orchestrator_compression": "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION",
     "fill_definitions": "LEANFLOW_PROVER_FILL_DEFINITIONS",
+    "allow_internet": "LEANFLOW_PROVER_ALLOW_INTERNET",
     "allowed_axioms": "LEANFLOW_PROVER_ALLOWED_AXIOMS",
 }
 
@@ -54,6 +55,7 @@ class ProverConfig:
     compression: bool = True
     orchestrator_compression: bool = True
     fill_definitions: bool = False
+    allow_internet: bool = True
     allowed_axioms: tuple[str, ...] = ("propext", "Classical.choice", "Quot.sound")
 
     def __post_init__(self) -> None:

@@ -518,16 +518,20 @@ def test_rejected_submission_feedback_stays_inside_same_job(tmp_path: Path) -> N
     assert state["metrics"]["api_calls"] == 2
 
 
-def test_standard_prover_child_research_has_separate_bounded_accounting(tmp_path: Path) -> None:
+@pytest.mark.parametrize("research_count", [1, 2])
+def test_standard_prover_child_research_has_separate_bounded_accounting(
+    tmp_path: Path, research_count: int
+) -> None:
     path = project(tmp_path)
 
     def auxiliary(**kwargs: Any) -> dict[str, Any]:
         if kwargs["role"] == "prover":
-            report = kwargs["config"]["_research_job"](
-                "Compute the parity of the first ten triangular numbers."
-            )
-            assert report["status"] == "complete"
-            assert report["report"] == "Recorded parity table."
+            for _ in range(research_count):
+                report = kwargs["config"]["_research_job"](
+                    "Compute the parity of the first ten triangular numbers."
+                )
+                assert report["status"] == "complete"
+                assert report["report"] == "Recorded parity table."
             return session(**kwargs)
         assert kwargs["role"] == "research"
         assert "_research_job" not in kwargs["config"]
@@ -537,14 +541,17 @@ def test_standard_prover_child_research_has_separate_bounded_accounting(tmp_path
     state = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(job_api_calls=2, orchestrator_api_calls=2, total_api_calls=4),
+        config=ProverConfig(
+            job_api_calls=2, orchestrator_api_calls=2, total_api_calls=2 * (research_count + 1)
+        ),
         session=auxiliary,
         verifier=Verifier(),
     ).run()
     assert state["status"] == "completed"
-    assert state["metrics"]["api_calls"] == 2
+    assert state["metrics"]["api_calls"] == research_count + 1
     assert state["metrics"]["reserved_api_calls"] == 0
-    assert state["jobs"][1]["parent_job_id"] == state["jobs"][0]["id"]
+    assert len(state["jobs"]) == research_count + 1
+    assert all(job["parent_job_id"] == state["jobs"][0]["id"] for job in state["jobs"][1:])
 
 
 def test_reviewed_direction_changes_charge_once_but_splits_do_not(tmp_path: Path) -> None:

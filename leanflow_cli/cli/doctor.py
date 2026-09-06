@@ -216,6 +216,16 @@ def _doctor_payload(
                     issues.append(
                         f"MCP bootstrap recommended for {entry.get('name', '[unknown]')}."
                     )
+                power = entry.get("power_modes")
+                power = dict(power) if isinstance(power, dict) else {}
+                if power.get("loogle_local_status") == "client-incompatible":
+                    client = power.get("loogle_client")
+                    client = dict(client) if isinstance(client, dict) else {}
+                    issues.append(
+                        "Managed lean-lsp Loogle client cannot drive the built Loogle index: "
+                        f"{client.get('detail') or 'index flag dialects differ'}. "
+                        f"Run `{cli_name} mcp repair` to re-apply the managed patches."
+                    )
 
     search_providers = [
         str(item) for item in capability.get("search_providers", []) if str(item).strip()
@@ -361,6 +371,10 @@ def _format_doctor_report(payload: dict[str, Any]) -> str:
                     f"REPL={power.get('repl_status', 'unknown')}, "
                     f"search={power.get('remote_search_policy', 'public-fallbacks-enabled')}"
                 )
+                client = power.get("loogle_client")
+                client = dict(client) if isinstance(client, dict) else {}
+                if client.get("client_found") and client.get("detail"):
+                    lines.append(f"  loogle client: {client.get('detail')}")
 
     search = payload.get("search")
     if isinstance(search, dict):

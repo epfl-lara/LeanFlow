@@ -3,6 +3,8 @@
 import os
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,116 @@ import pytest
 from leanflow_cli.workflows.prover.models import Node
 from leanflow_cli.workflows.prover.source import declaration_source, discover
 from leanflow_cli.workflows.prover.verification import LeanVerifier
+
+
+@pytest.mark.parametrize("first_stage_seconds", [7, 11])
+def test_candidate_check_shares_deadline_with_kernel_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_stage_seconds: int
+) -> None:
+    from leanflow_cli.workflows.prover import check_process, type_profile, verification
+
+    clock = [0.0]
+    monkeypatch.setattr(verification.time, "monotonic", lambda: clock[0])
+    inspected: list[float] = []
+    source = tmp_path / "candidate.lean"
+    source.write_text("theorem goal : True := by trivial\n")
+    node = Node(
+        id="n", name="goal", statement="theorem goal : True", file="Main.lean", module="Main"
+    )
+
+    def check(**kwargs: Any) -> dict[str, Any]:
+        assert kwargs["timeout_s"] == 10
+        clock[0] += first_stage_seconds
+        return {
+            "success": True,
+            "ok": True,
+            "axiom_profile_checked": True,
+            "axiom_profile_axioms": [],
+        }
+
+    def profile(**kwargs: Any) -> dict[str, Any]:
+        inspected.append(kwargs["timeout_s"])
+        return {"accepted": True, "profiles": {"goal": {"sha256": "checked", "axioms": []}}}
+
+    monkeypatch.setattr(check_process, "check_scratch", check)
+    monkeypatch.setattr(type_profile, "compiled_type_profiles", profile)
+    result = LeanVerifier(tmp_path, (), timeout_s=10).check(node, source)
+    if first_stage_seconds < 10:
+        assert result["accepted"] and inspected == [3]
+    else:
+        assert not result["accepted"] and inspected == []
+        assert result["kernel_profile"]["error_code"] == "check_timeout"
+
+
+def test_parallel_queue_wait_does_not_consume_active_check_allowance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from leanflow_cli.workflows.prover import check_process, type_profile
+
+    source = tmp_path / "candidate.lean"
+    source.write_text("theorem goal : True := by trivial\n")
+    node = Node(
+        id="n", name="goal", statement="theorem goal : True", file="Main.lean", module="Main"
+    )
+    verifier = LeanVerifier(tmp_path, ())
+    verifier.configured_timeout_s = 0.1
+    verifier.remaining_time = lambda: 2.0
+    budgets = []
+
+    def check(**kwargs: Any) -> dict[str, Any]:
+        budgets.append(kwargs["timeout_s"])
+        return {
+            "success": True,
+            "ok": True,
+            "axiom_profile_checked": True,
+            "axiom_profile_axioms": [],
+        }
+
+    monkeypatch.setattr(check_process, "check_scratch", check)
+    monkeypatch.setattr(
+        type_profile,
+        "compiled_type_profiles",
+        lambda **_: {"accepted": True, "profiles": {"goal": {"sha256": "checked", "axioms": []}}},
+    )
+    verifier.lock.acquire()
+    timer = threading.Timer(0.2, verifier.lock.release)
+    timer.start()
+    try:
+        result = verifier.check(node, source)
+        assert result["accepted"], result
+        assert result["verifier_queue_wait_s"] >= 0.15
+        assert budgets[0] > 0.05
+    finally:
+        timer.join()
+
+
+def test_verifier_queue_is_bounded_and_preserves_global_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from leanflow_cli.workflows.prover.runtime import BudgetExhausted
+
+    verifier = LeanVerifier(tmp_path, ())
+    deadline = time.monotonic() + 0.02
+
+    def remaining() -> float:
+        if time.monotonic() >= deadline:
+            raise BudgetExhausted("campaign time exhausted", code="campaign_wall_time")
+        return deadline - time.monotonic()
+
+    verifier.remaining_time = remaining
+    verifier.lock.acquire()
+    monkeypatch.setattr(
+        verifier, "_check_locked", lambda *_args, **_kwargs: pytest.fail("No slot was available")
+    )
+    node = Node(
+        id="n", name="goal", statement="theorem goal : True", file="Main.lean", module="Main"
+    )
+    try:
+        with pytest.raises(BudgetExhausted) as error:
+            verifier.check(node, tmp_path / "candidate.lean")
+        assert error.value.code == "campaign_wall_time"
+    finally:
+        verifier.lock.release()
 
 
 def test_final_gate_creates_a_protected_build_root_before_granting_it(

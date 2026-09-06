@@ -275,6 +275,17 @@ def event_message(kind: str, details: Mapping[str, Any], preview: Mapping[str, A
     budget = details.get("api_budget")
     counted = isinstance(calls, int) and not isinstance(calls, bool)
     budgeted = isinstance(budget, int) and not isinstance(budget, bool)
+    if kind in {"operation-start", "operation-end"}:
+        label = str(details.get("label") or "Controller check")
+        file = str(details.get("file") or "")
+        outcome = str(details.get("status") or "running")
+        error = str(details.get("error") or "")
+        return _line(
+            f"{label}: {outcome}"
+            + (f" · {file}" if file else "")
+            + (f" · {error}" if error else ""),
+            MESSAGE_CHARS,
+        )
     if kind == "api-request":
         model = str(details.get("model") or "")
         text = f"Request {calls}/{budget}" if counted and budgeted else "Request"

@@ -24,7 +24,7 @@ from leanflow_cli.flags import (
     profile_payload,
     resolve_profile,
 )
-from leanflow_cli.flags.resolve import diff_profiles, load_profiles
+from leanflow_cli.flags.resolve import diff_profiles, load_profiles, profile_launch_surfaces
 
 _KIND_STYLES = {
     "feature": "bold cyan",
@@ -201,6 +201,12 @@ def _handle_effective(args: argparse.Namespace) -> int:
         profile=profile,
         include_internal=bool(getattr(args, "include_internal", False)),
     )
+    if profile is not None:
+        surfaces = profile_launch_surfaces(profile)
+        if surfaces["terminal_only_knobs"] or not surfaces["terminal"]["supported"]:
+            # Say up front where this profile can and cannot launch, so the mismatch
+            # is not discovered by a rejected launch later.
+            print(_surface_note(profile.name, surfaces), file=sys.stderr)
     if getattr(args, "changed", False):
         rows = [row for row in rows if not row["is_default"]]
 
@@ -241,6 +247,30 @@ def _handle_effective(args: argparse.Namespace) -> int:
     return 0
 
 
+def _surface_note(name: str, surfaces: dict[str, Any]) -> str:
+    """Render one line saying where a profile can launch and which knobs block it."""
+    if not surfaces["terminal"]["supported"]:
+        return (
+            f"Profile {name} cannot launch anywhere: unusable knobs "
+            f"{', '.join(surfaces['terminal']['rejected'])}"
+        )
+    if surfaces["terminal_only_knobs"]:
+        return (
+            f"Profile {name} is terminal-only; the VS Code extension rejects "
+            f"{', '.join(surfaces['terminal_only_knobs'])}"
+        )
+    return f"Profile {name} launches from the terminal and the VS Code extension"
+
+
+def _surface_label(surfaces: dict[str, Any]) -> str:
+    """Return a compact surface column value for the profile table."""
+    if not surfaces["terminal"]["supported"]:
+        return f"none ({', '.join(surfaces['terminal']['rejected'])})"
+    if surfaces["terminal_only_knobs"]:
+        return f"terminal only ({', '.join(surfaces['terminal_only_knobs'])})"
+    return "terminal, extension"
+
+
 def _handle_profiles(args: argparse.Namespace) -> int:
     root = _project_root()
     payload = profile_payload(root)
@@ -252,12 +282,14 @@ def _handle_profiles(args: argparse.Namespace) -> int:
     table.add_column("Name")
     table.add_column("Origin")
     table.add_column("Overrides", justify="right")
+    table.add_column("Surfaces", overflow="fold")
     table.add_column("Summary", overflow="fold")
     for profile in payload["profiles"]:
         table.add_row(
             profile["name"],
             "built-in" if profile["builtin"] else "saved",
             str(len(profile["overrides"])),
+            _surface_label(profile["launch_surfaces"]),
             profile["summary"],
         )
     console.print(table)

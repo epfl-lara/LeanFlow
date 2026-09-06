@@ -82,6 +82,35 @@ def proposal_for(runtime: ProverRuntime) -> dict[str, Any]:
     }
 
 
+def test_signature_timeout_preserves_paid_plan_instead_of_replanning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    def session(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["role"])
+        report = {"accepted": True} if kwargs["role"] == "review" else proposal_for(runtime)
+        return {"status": "completed", "api_calls": 1, "final_response": json.dumps(report)}
+
+    runtime = make_runtime(tmp_path, session=session)
+
+    def signatures(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        if kwargs.get("initialize") is False:
+            return {
+                "accepted": False,
+                "error": "kernel type inspection failed",
+                "inspect": {"success": False, "error_code": "check_timeout", "timed_out": True},
+            }
+        return {"accepted": True}
+
+    monkeypatch.setattr(runtime.verifier, "capture_signatures", signatures)
+    result = runtime.run()
+    assert result["status"] == "environment_error"
+    assert calls == ["orchestrator", "orchestrator", "review"]
+    assert result["metrics"]["api_calls"] == 3
+    assert result["planning_request"]["steps"]["review-0"]
+
+
 def test_dependent_helpers_stage_once_and_remain_consistent_on_resume(tmp_path: Path) -> None:
     runtime = make_runtime(tmp_path)
     original = runtime.documents["Main.lean"].baseline
@@ -205,6 +234,8 @@ def test_interrupted_signature_gate_recovers_transaction_and_reuses_paid_review(
     stopped = runtime.run()
     assert stopped["status"] == "interrupted"
     assert stopped["metrics"]["api_calls"] == 3
+    assert any(change.get("pending") for change in stopped["changes"])
+    assert not any(change.get("status") == "rolled_back" for change in stopped["changes"])
     assert (runtime.store.directory / "source-transaction.json").exists()
     assert (tmp_path / "LeanFlowProofs/Composite.lean").exists()
 

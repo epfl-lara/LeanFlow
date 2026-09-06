@@ -461,3 +461,36 @@ def test_final_reporting_context_accounts_for_retained_schemas(tmp_path, monkeyp
     )
     assert result["status"] == "context_limit" and result["api_calls"] == 0
     assert not (tmp_path / ".runtime/job/request-count.json").exists()
+
+
+def test_ready_planning_report_stops_well_before_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A complete outline must not trigger the old keep-spending reminder loop."""
+    calls: list[Any] = []
+    monkeypatch.setattr(session, "build_transport", lambda *_: SimpleNamespace(model="test"))
+    monkeypatch.setattr(session, "close_transport", lambda *_: None)
+
+    def request(agent: Any, messages: Any, timeout: Any, **kwargs: Any) -> Any:
+        calls.append(messages)
+        return {
+            "role": "assistant",
+            "content": json.dumps(
+                {"plan": "Ready outline, with the remaining uncertainty recorded."}
+            ),
+        }, {}
+
+    monkeypatch.setattr(session, "request_once", request)
+    result = session.run_session(
+        role="orchestrator",
+        prompt="Return an informal outline",
+        project_root=tmp_path,
+        workspace=tmp_path / "job",
+        config={"model": "test", "context_tokens": 16000},
+        api_budget=50,
+        log_path=tmp_path / "events.jsonl",
+        context={},
+    )
+    assert result["status"] == "completed" and result["api_calls"] == 1
+    assert len(calls) == 1
+    assert "stage report now if ready" in calls[0][-1]["content"]

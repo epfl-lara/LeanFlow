@@ -252,12 +252,59 @@ def diff_profiles(left: FlagProfile, right: FlagProfile) -> list[dict[str, Any]]
     return rows
 
 
+#: Ways a knob profile can be applied to a run, in the order a UI should list them.
+LAUNCH_SURFACES = ("terminal", "extension")
+
+
+def profile_launch_surfaces(profile: FlagProfile) -> dict[str, Any]:
+    """Return which launch surfaces can apply every knob in a profile, and why not.
+
+    A saved profile that carries a terminal-only (sensitive) knob such as
+    ``LEANFLOW_PROVER_ALLOWED_AXIOMS`` is valid in the shell but is rejected by
+    the VS Code extension's allowlist at launch time. Reporting that here lets a
+    profile be labelled when it is saved or listed rather than when a launch
+    fails. Unknown and launcher-internal knobs are unusable on every surface.
+    """
+    unknown: list[str] = []
+    internal: list[str] = []
+    terminal_only: list[str] = []
+    for name in sorted(profile.overrides):
+        spec = lookup_flag(name)
+        if spec is None:
+            unknown.append(name)
+        elif not spec.editable:
+            internal.append(name)
+        elif not spec.extension_editable:
+            terminal_only.append(name)
+    unusable = sorted(unknown + internal)
+    return {
+        "terminal": {"supported": not unusable, "rejected": unusable},
+        "extension": {
+            "supported": not unusable and not terminal_only,
+            "rejected": sorted(unusable + terminal_only),
+        },
+        "unknown_knobs": unknown,
+        "internal_knobs": internal,
+        "terminal_only_knobs": terminal_only,
+    }
+
+
 def profile_payload(project_root: Path | None = None) -> dict[str, Any]:
-    """Return every available profile in the JSON shape the extension consumes."""
+    """Return every available profile in the JSON shape the extension consumes.
+
+    Each profile carries ``launch_surfaces`` so a consumer can flag an
+    incompatible profile before building a launch from it.
+    """
     profiles = load_profiles(project_root)
+    entries = []
+    for name in sorted(profiles):
+        entry = profiles[name].to_payload()
+        entry["launch_surfaces"] = profile_launch_surfaces(profiles[name])
+        entries.append(entry)
     return {
         "version": 1,
         "count": len(profiles),
         "search_paths": [str(path) for path in profile_search_paths(project_root)],
-        "profiles": [profiles[name].to_payload() for name in sorted(profiles)],
+        "launch_surfaces": list(LAUNCH_SURFACES),
+        "profiles": entries,
     }

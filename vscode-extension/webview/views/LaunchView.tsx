@@ -6,6 +6,12 @@ import {
   rejectedProfileKnobNames,
   validateLaunch,
 } from "../../src/core/launch";
+import {
+  compatibleProfileName,
+  compatibleProfileOverrides,
+  profileLaunchSurfaces,
+  proverConfigurationRows,
+} from "../../src/core/profileSurfaces";
 import { LAUNCH_FIELD_LIMITS, WORKFLOW_KINDS } from "../../src/core/types";
 import { Card, Check, Field, Notice } from "../components";
 import { PlayIcon } from "../icons";
@@ -42,11 +48,10 @@ export function LaunchView() {
 
   const profiles = app?.profiles?.profiles ?? [];
   const activeProfile = profiles.find((profile) => profile.name === form.profile);
-  const restrictedProfileKnobs = rejectedProfileKnobNames(
-    activeProfile,
-    app?.catalog ?? null,
-  );
-  const restrictedOverrideKnobs = rejectedProfileKnobNames(
+  // Each refused knob names its reason, so the fix is visible before launch
+  // rather than discovered from a rejected request.
+  const profileSurfaces = profileLaunchSurfaces(activeProfile, app?.catalog ?? null);
+  const overrideSurfaces = profileLaunchSurfaces(
     {
       name: "one-off-overrides",
       summary: "",
@@ -56,7 +61,15 @@ export function LaunchView() {
     app?.catalog ?? null,
     true,
   );
-  const restrictedKnobs = [...new Set([...restrictedProfileKnobs, ...restrictedOverrideKnobs])];
+  const incompatibilities = [
+    ...profileSurfaces.incompatibilities.map((item) => ({ ...item, from: "profile" as const })),
+    ...overrideSurfaces.incompatibilities.map((item) => ({ ...item, from: "override" as const })),
+  ];
+  const restrictedKnobs = [...new Set(incompatibilities.map((item) => item.name))];
+  const compatibleCopy = activeProfile && profileSurfaces.incompatibilities.length > 0
+    ? compatibleProfileOverrides(activeProfile, app?.catalog ?? null)
+    : null;
+  const compatibleCopyName = activeProfile ? compatibleProfileName(activeProfile.name) : "";
   const overrideCount = Object.keys(form.overrides).length;
   const boundedProver = form.kind === "prove" && Boolean(app?.catalog?.groups.some((group) => group.flags.some((flag) => flag.name === "LEANFLOW_PROVER_MODE")));
   useEffect(() => {
@@ -321,8 +334,8 @@ export function LaunchView() {
                     Object.keys(profile.overrides).length
                   } knobs
                   {rejectedProfileKnobNames(profile, app?.catalog ?? null).length > 0
-                    ? " · unavailable in VS Code"
-                    : ""}
+                    ? " · terminal only (see why below)"
+                    : " · VS Code and terminal"}
                 </option>
               ))}
             </select>
@@ -369,9 +382,56 @@ export function LaunchView() {
         )}
         {restrictedKnobs.length > 0 && (
           <Notice tone="error">
-            This configuration contains terminal-only, invalid, or unknown knobs and cannot run from
-            VS Code: <span className="mono">{restrictedKnobs.join(", ")}</span>. Remove
-            those overrides or run the profile explicitly from a trusted terminal.
+            <strong>This configuration cannot launch from VS Code.</strong> A trusted terminal accepts every
+            catalogued knob; the extension refuses the following, and says why:
+            <ul style={{ margin: "6px 0 0 16px", padding: 0 }}>
+              {incompatibilities.map((item) => (
+                <li key={`${item.from}:${item.name}`}>
+                  <span className="mono">{item.name}</span>{" "}
+                  <span className="muted">({item.from === "profile" ? `profile ${activeProfile?.name ?? ""}` : "one-off override"})</span>
+                  {" — "}{item.reason.replace("-", " ")}: {item.detail}.
+                </li>
+              ))}
+            </ul>
+            <div className="row tight" style={{ marginTop: 8 }}>
+              {compatibleCopy && Object.keys(compatibleCopy.overrides).length > 0 && (
+                <button
+                  className="btn"
+                  onClick={() => {
+                    post({
+                      type: "saveProfile",
+                      profile: {
+                        name: compatibleCopyName,
+                        summary: `${activeProfile?.summary ?? ""} (VS Code copy without ${compatibleCopy.removed.join(", ")})`.trim().slice(0, LAUNCH_FIELD_LIMITS.profileSummary),
+                        builtin: false,
+                        overrides: compatibleCopy.overrides,
+                      },
+                    });
+                    setForm({ profile: compatibleCopyName });
+                  }}
+                >
+                  Save a VS Code copy as {compatibleCopyName}
+                </button>
+              )}
+              {overrideSurfaces.incompatibilities.length > 0 && (
+                <button
+                  className="btn ghost"
+                  onClick={() => {
+                    const next = { ...form.overrides };
+                    for (const item of overrideSurfaces.incompatibilities) delete next[item.name];
+                    setForm({ overrides: next });
+                  }}
+                >
+                  Drop refused one-off overrides
+                </button>
+              )}
+            </div>
+            {compatibleCopy && (
+              <div className="muted" style={{ marginTop: 6 }}>
+                The copy keeps every other knob. Dropped knobs resolve to their declared defaults, so the
+                effective run may differ from the terminal profile; the resolved plan below shows exactly what applies.
+              </div>
+            )}
           </Notice>
         )}
       </Card>
@@ -441,9 +501,47 @@ export function LaunchView() {
                         <td className="mono">{value}</td>
                       </tr>
                     ))}
+                    <tr>
+                      <td className="muted" style={{ width: 150 }}>run id</td>
+                      <td className="muted">
+                        Assigned when the run starts, as <span className="mono">{form.kind}-vscode-run-…</span>; it
+                        appears in the start notification, the Live tab, and the Runs tree.
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
+              {boundedProver && (
+                <>
+                  <div className="section-heading">Dedicated prover configuration</div>
+                  <div className="muted" style={{ marginBottom: 6 }}>
+                    Effective values including those inherited from the profile. Provider and reasoning effort are
+                    shared by every role; only model, context, and compression differ per role.
+                  </div>
+                  <div className="table-wrap" style={{ maxHeight: 320 }}>
+                    <table className="data">
+                      <thead>
+                        <tr><th>Setting</th><th>Value</th><th>From</th></tr>
+                      </thead>
+                      <tbody>
+                        {proverConfigurationRows({
+                          envEffective: preview.plan.env_effective,
+                          envDelta: preview.plan.env_delta,
+                          profile: activeProfile,
+                          overrides: form.overrides,
+                          catalog: app?.catalog ?? null,
+                        }).map((row) => (
+                          <tr key={row.name}>
+                            <td title={row.name}>{row.label}</td>
+                            <td className="mono">{row.value || "unset"}</td>
+                            <td><span className={`pill ${row.source === "override" ? "ok" : row.source === "profile" ? "warn" : ""}`}>{row.source}</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
               <div className="section-heading">
                 Environment delta ({Object.keys(preview.plan.env_delta).length})
               </div>

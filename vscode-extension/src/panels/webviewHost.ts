@@ -14,7 +14,6 @@ import {
   CliError,
   fetchEventDetail,
   fetchProfileDiff,
-  fetchProver,
   previewLaunch,
   sendProverMessage,
 } from "../core/cli";
@@ -195,7 +194,8 @@ export class WebviewHost implements vscode.Disposable {
           services.catalog,
         );
         services.selectRun(run.id);
-        this.notify("info", `Started ${run.label}`);
+        // The run id is minted at launch, so this is the first place it exists.
+        this.notify("info", `Started ${run.label} · run id ${run.runId}`);
         return;
       }
       case "preview": {
@@ -419,19 +419,13 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "loadProver": {
+        // One load per run at a time; the service serves an unchanged state
+        // file from cache, so a fast webview refresh costs no CLI process.
         if (this.proverLoads.has(message.runId)) return;
-        const root = services.runs.projectRootForRun(message.runId);
-        if (!root) {
-          this.post({ type: "proverState", runId: message.runId, snapshot: null, error: "This run is not in the project's recorded history." });
-          return;
-        }
         this.proverLoads.add(message.runId);
         try {
-          const snapshot = await fetchProver(root, message.runId);
-          this.post({ type: "proverState", runId: message.runId, snapshot, error: "" });
-        } catch (error) {
-          this.post({ type: "proverState", runId: message.runId, snapshot: null,
-            error: redactSensitiveText(error instanceof Error ? error.message : String(error)) });
+          const result = await services.prover.load(message.runId);
+          this.post({ type: "proverState", runId: message.runId, snapshot: result.snapshot, error: result.error });
         } finally {
           this.proverLoads.delete(message.runId);
         }
@@ -454,7 +448,9 @@ export class WebviewHost implements vscode.Disposable {
       case "openProverFile": {
         const root = services.runs.projectRootForRun(message.runId);
         if (!root) throw new Error("The selected prover run is no longer available.");
-        const snapshot = await fetchProver(root, message.runId);
+        // The allowlist is the run's own advertised artifacts; the cached
+        // snapshot is that same list, so opening a file needs no new CLI read.
+        const snapshot = services.prover.cached(message.runId) ?? (await services.prover.load(message.runId)).snapshot;
         if (!snapshot || !proverArtifactAllowed(snapshot, message.path, message.baselinePath)) {
           throw new Error("This artifact is not part of the selected prover run.");
         }

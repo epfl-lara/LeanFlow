@@ -203,16 +203,16 @@ def test_running_prover_receives_only_controller_derived_child_resource_grants(
 
     runtime, _, _ = handoff
     parent, context = runtime._new_job("prover", node=runtime.dag.nodes[0])
-    child_files: dict[str, str] = {}
+    child_files: list[dict[str, str]] = []
 
     def research(**kwargs: Any) -> dict[str, Any]:
         workspace = Path(kwargs["workspace"])
         private = workspace / "PLAN_job.md"
         private.write_text("Private child notes")
         resource = session_research.fetch_resource(
-            "https://example.org/child-background", workspace, "child.md"
+            f"https://example.org/child-background-{len(child_files)}", workspace, "child.md"
         )
-        child_files.update(path=resource["path"], private=str(private))
+        child_files.append({"path": resource["path"], "private": str(private)})
         return {
             "status": "completed",
             "api_calls": 1,
@@ -229,11 +229,15 @@ def test_running_prover_receives_only_controller_derived_child_resource_grants(
         context=context,
         research_job=lambda question: research_job(runtime, parent, question),
     )
-    result = toolset.invoke("research_job", {"question": "Find this general background source."})
-    assert result["resources"]["items"][0]["path"] == child_files["path"]
-    assert toolset.invoke("read_file", {"path": child_files["path"]})["success"]
-    assert not toolset.invoke("read_file", {"path": child_files["private"]})["success"]
-    assert context["resources"]["items"][0]["path"] != child_files["path"]
+    for _ in range(2):
+        result = toolset.invoke("research_job", {"question": "Find a general background source."})
+        assert {item["path"] for item in result["resources"]["items"]} == {
+            files["path"] for files in child_files
+        }
+        for files in child_files:
+            assert toolset.invoke("read_file", {"path": files["path"]})["success"]
+            assert not toolset.invoke("read_file", {"path": files["private"]})["success"]
+            assert context["resources"]["items"][0]["path"] != files["path"]
 
 
 def test_model_cannot_publish_self_consistent_fake_download(handoff: tuple[Any, ...]) -> None:

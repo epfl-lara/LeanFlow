@@ -149,6 +149,20 @@ def test_filesystem_process_and_dynamic_execution_are_denied(monkeypatch, tmp_pa
     assert not (tmp_path / "owned").exists()
 
 
+def test_denied_program_returns_the_capability_summary_through_the_tool(monkeypatch):
+    _enable_empirical_worker(monkeypatch)
+
+    result = _payload("import sympy\nprint(sympy.isprime(7))\n")
+
+    assert result["success"] is False
+    assert result["status"] == "empirical_compute_denied"
+    assert "module 'sympy' is not available" in result["error"]
+    assert "Preloaded helpers" in result["capabilities"]
+    assert "sympy" in EMPIRICAL_COMPUTE_SCHEMA["description"] or "itertools" in (
+        EMPIRICAL_COMPUTE_SCHEMA["description"]
+    )
+
+
 def test_infinite_computation_is_killed_at_hard_timeout(monkeypatch):
     _enable_empirical_worker(monkeypatch)
     started = time.monotonic()

@@ -1007,7 +1007,7 @@ FLAG_CATALOG: tuple[FlagSpec, ...] = (
         default="",
         group=_PROVIDER,
         summary="Reasoning effort requested from the Codex provider.",
-        choices=("", "low", "medium", "high"),
+        choices=("", "low", "medium", "high", "xhigh"),
         read_in=("agent/providers/",),
         ablatable=True,
     ),

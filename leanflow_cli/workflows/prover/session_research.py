@@ -11,6 +11,7 @@ import socket
 import ssl
 import threading
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -45,8 +46,111 @@ def _url_policy(url: str) -> str:
     return ""
 
 
+#: Words so common in mathematical queries that matching them says little about
+#: relevance; they still count, but far less than a distinctive term.
+_GENERIC_QUERY_TERMS = frozenset(
+    {
+        "abstract",
+        "and",
+        "arxiv",
+        "bound",
+        "bounds",
+        "conjecture",
+        "for",
+        "formal",
+        "formalization",
+        "from",
+        "lemma",
+        "math",
+        "mathematics",
+        "new",
+        "note",
+        "notes",
+        "the",
+        "paper",
+        "problem",
+        "proof",
+        "proofs",
+        "result",
+        "results",
+        "survey",
+        "theorem",
+        "theorems",
+        "with",
+    }
+)
+_DASH_TRANSLATION = str.maketrans({"‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "−": "-"})
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_COMPOUND_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
+
+
+def _normalize_search_text(text: str) -> str:
+    """Casefold and unify dashes so ``Beck–Fiala`` and ``beck-fiala`` compare equal."""
+    return re.sub(r"\s+", " ", str(text or "").translate(_DASH_TRANSLATION).casefold()).strip()
+
+
+def _query_terms(query: str) -> dict[str, float]:
+    """Return the query's weighted terms; generic mathematical words weigh less."""
+    terms: dict[str, float] = {}
+    for token in _TOKEN_RE.findall(_normalize_search_text(query)):
+        if len(token) < 2:
+            continue
+        terms.setdefault(token, 0.3 if token in _GENERIC_QUERY_TERMS else 1.0)
+    return terms
+
+
+def result_relevance(
+    query: str, title: str, snippet: str, *, terms: Mapping[str, float] | None = None
+) -> tuple[float, list[str]]:
+    """Score one result against the query by term coverage and phrase matches.
+
+    Title matches count fully, snippet matches partially, and the whole phrase
+    or a hyphenated compound such as ``beck-fiala`` earns a bonus.  The score is
+    provider-neutral, so an unrelated paper that a provider ranked first sinks
+    below a modest web hit that actually names the subject.
+    """
+    weights = dict(terms) if terms is not None else _query_terms(query)
+    if not weights:
+        return 0.0, []
+    title_text = _normalize_search_text(title)
+    snippet_text = _normalize_search_text(snippet)
+    title_tokens = set(_TOKEN_RE.findall(title_text))
+    snippet_tokens = set(_TOKEN_RE.findall(snippet_text))
+    matched: list[str] = []
+    score = 0.0
+    for term, weight in weights.items():
+        if term in title_tokens:
+            score += weight
+            matched.append(term)
+        elif term in snippet_tokens:
+            score += 0.6 * weight
+            matched.append(term)
+    score /= sum(weights.values())
+    phrase = _normalize_search_text(query)
+    if len(weights) > 1 and phrase:
+        if phrase in title_text:
+            score += 0.5
+        elif phrase in snippet_text:
+            score += 0.25
+        else:
+            for compound in _COMPOUND_RE.findall(phrase):
+                if compound in title_text:
+                    score += 0.3
+                    break
+                if compound in snippet_text:
+                    score += 0.15
+                    break
+    return round(min(1.0, score), 3), matched
+
+
 def web_search(query: str, limit: int = 5) -> dict[str, Any]:
-    """Search two existing providers once each and return bounded, filtered evidence."""
+    """Search two existing providers once each and return bounded, filtered evidence.
+
+    Results are ranked by :func:`result_relevance` and, at equal relevance,
+    interleaved across providers by their own rank, so one provider's broad
+    disjunction query cannot push the other's relevant hits past the limit.
+    ``providers`` reports what each provider returned, kept, or failed with.
+    """
     query = query.strip()
     if not query or len(query) > 1000 or not 1 <= limit <= 10:
         return {
@@ -56,22 +160,29 @@ def web_search(query: str, limit: int = 5) -> dict[str, Any]:
     reason = solution_research_query_block_reason(unquote(query))
     if reason:
         return {"success": False, "status": "clean_room_denied", "error": reason}
-    results: list[dict[str, str]] = []
+    terms = _query_terms(query)
+    ranked: list[tuple[float, int, int, dict[str, Any]]] = []
     failures: list[str] = []
+    provider_reports: list[dict[str, Any]] = []
     seen: set[str] = set()
     # Avoid the general provider's fallback cascade and the extraction summarizer.
-    searchers = (providers._search_arxiv, providers._search_duckduckgo_html)
+    searchers = (("arxiv", providers._search_arxiv), ("web", providers._search_duckduckgo_html))
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="prover-search") as pool:
-        jobs = [pool.submit(searcher, query, limit) for searcher in searchers]
-        for job in jobs:
+        jobs = [(label, pool.submit(searcher, query, limit)) for label, searcher in searchers]
+        for order, (label, job) in enumerate(jobs):
+            report: dict[str, Any] = {"name": label, "returned": 0, "kept": 0, "degraded": ""}
+            provider_reports.append(report)
             try:
                 found, error = job.result()
             except Exception as exc:
+                report["degraded"] = str(exc)[:300]
                 failures.append(str(exc)[:300])
                 continue
             if error:
+                report["degraded"] = error[:300]
                 failures.append(error[:300])
-            for item in found[:limit]:
+            report["returned"] = len(found)
+            for rank, item in enumerate(found[:limit]):
                 url = str(item.get("url") or "")[:2000]
                 evidence = " ".join(str(item.get(key) or "") for key in ("title", "url", "snippet"))
                 if (
@@ -82,21 +193,36 @@ def web_search(query: str, limit: int = 5) -> dict[str, Any]:
                 ):
                     continue
                 seen.add(url)
-                results.append(
-                    {
-                        "url": url,
-                        "title": str(item.get("title") or "")[:300],
-                        "snippet": str(item.get("snippet") or "")[:1200],
-                        "provider": str(item.get("provider") or "")[:80],
-                    }
+                title = str(item.get("title") or "")[:300]
+                snippet = str(item.get("snippet") or "")[:1200]
+                relevance, matched = result_relevance(query, title, snippet, terms=terms)
+                report["kept"] += 1
+                ranked.append(
+                    (
+                        -relevance,
+                        rank,
+                        order,
+                        {
+                            "url": url,
+                            "title": title,
+                            "snippet": snippet,
+                            "provider": str(item.get("provider") or label)[:80],
+                            "relevance": relevance,
+                            "matched_terms": matched[:12],
+                        },
+                    )
                 )
+    ranked.sort(key=lambda entry: entry[:3])
+    results = [entry[3] for entry in ranked]
     return {
         "success": bool(results),
         "status": "complete" if results else "no_results",
         "query": query,
         "results": results[:limit],
         "truncated": len(results) > limit,
+        "ranking": "relevance descending; ties interleave providers by their own rank",
         "provider_calls": len(searchers),
+        "providers": provider_reports,
         "degraded_reasons": failures,
         "model_calls": 0,
     }

@@ -123,6 +123,7 @@ no_site_packages = true
 # Incremental gate: ONLY these files are type-checked. The list grows each phase as
 # modules are extracted/cleaned. mypy needs explicit targets — overrides alone do not select.
 files = [
+  "scripts/lean_imo_campaign",
   "leanflow_cli/workflows/prover",
   "leanflow_cli/flags/prover_catalog.py",
   "leanflow_cli/cli/prover_status.py",
@@ -358,6 +359,7 @@ files = [
   "leanflow_cli/cli/cli_handlers.py",
   "leanflow_cli/cli/shell_ui.py",
   "leanflow_cli/cli/loogle_local.py",
+  "leanflow_cli/cli/loogle_index_compat.py",
   "tools/mcp/mcp_reclaim.py",
   "tools/mcp/mcp_transport.py",
   "tools/mcp/mcp_sampling.py",

@@ -5,6 +5,7 @@
  * on disk. This class is the single place that starts one, tracks it across a
  * window reload, tails its activity, and reports when it ends.
  */
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
@@ -18,12 +19,14 @@ import {
   stopWorkflow,
 } from "./cli";
 import { mergeActivityEvents } from "./eventBuffer";
+import { idleDiscoveryDecision, type IdleDiscoveryState } from "./idleDiscovery";
 import {
   buildWorkflowArgs,
   describeLaunchLabel,
   resolveLaunchEnv,
 } from "./launch";
 import { validateLaunchProjectInputs } from "./launchPaths";
+import type { FileSignature } from "./proverCache";
 import {
   durableOwnerDescription,
   researchConflictDescription,
@@ -53,6 +56,9 @@ import type {
 
 const RUNS_STORAGE_KEY = "leanflow.trackedRuns";
 const MAX_CACHED_EVENT_RUNS = 20;
+/** The runtime's live-owner snapshot; a change to it is the signal that a run started or ended. */
+const LIVE_STATUS_FILE = "live_status.json";
+const WATCHER_DEBOUNCE_MS = 1_000;
 
 interface LiveHandle {
   kill: () => boolean;
@@ -82,6 +88,14 @@ export class RunManager implements vscode.Disposable {
   private polling = false;
   private persistQueue: Promise<void> = Promise.resolve();
   private project: ProjectInfo;
+  // Idle discovery: while nothing is polled, watch the live-status file and
+  // check its signature on a bounded interval so a run started from a terminal
+  // is noticed without a CLI read per tick.
+  private idleTimer: NodeJS.Timeout | null = null;
+  private idleWatcher: vscode.FileSystemWatcher | null = null;
+  private idleDebounce: NodeJS.Timeout | null = null;
+  private idleState: IdleDiscoveryState = { lastSignature: undefined, lastCheckedAt: 0 };
+  private disposed = false;
 
   private readonly changed = new vscode.EventEmitter<void>();
   /** Fires whenever tracked runs, history, or live status change. */
@@ -103,7 +117,9 @@ export class RunManager implements vscode.Disposable {
   }
 
   dispose(): void {
-    this.stopPolling();
+    this.disposed = true;
+    this.clearPollTimer();
+    this.clearIdleWatch();
     this.changed.dispose();
     this.eventsAppended.dispose();
   }
@@ -115,6 +131,8 @@ export class RunManager implements vscode.Disposable {
       return;
     }
     this.project = project;
+    this.stopIdleWatch();
+    this.idleState = { lastSignature: undefined, lastCheckedAt: 0 };
     this.events.clear();
     this.cursors.clear();
     this.liveStatus = null;
@@ -150,6 +168,23 @@ export class RunManager implements vscode.Disposable {
     return [...this.runs.values()].find((run) => run.runId === runId)?.projectRoot
       ?? this.historyRoots.get(runId)
       ?? (this.liveStatus?.run_id === runId ? this.project.root : null);
+  }
+
+  /**
+   * The state file the runtime advertises for an exact run id, if live status
+   * names one. Used only as a change signal; the CLI remains the reader.
+   */
+  proverStatePathHint(runId: string): string | null {
+    if (!runId) {
+      return null;
+    }
+    for (const status of this.statusesByRoot.values()) {
+      if (status !== null && String(status.run_id ?? "") === runId) {
+        const hint = status.prover_state_path;
+        return typeof hint === "string" && hint !== "" ? hint : null;
+      }
+    }
+    return null;
   }
 
   /** Return live state only when it belongs to this exact tracked run. */
@@ -434,6 +469,8 @@ export class RunManager implements vscode.Disposable {
   // ---------------------------------------------------------------- polling
 
   startPolling(): void {
+    // Continuous polling supersedes idle discovery until the run ends.
+    this.stopIdleWatch();
     if (this.timer) {
       return;
     }
@@ -445,9 +482,99 @@ export class RunManager implements vscode.Disposable {
   }
 
   stopPolling(): void {
+    this.clearPollTimer();
+    this.startIdleWatch();
+  }
+
+  private clearPollTimer(): void {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+  }
+
+  // --------------------------------------------------------- idle discovery
+
+  /**
+   * Notice a run started or resumed outside this window while nothing is polled.
+   *
+   * Two bounded signals: a file watcher on the project's live-status snapshot,
+   * and a slow timer that stats the same file and polls only when its
+   * signature changed. Neither reads the file; `leanflow runs status` does.
+   */
+  private startIdleWatch(): void {
+    if (this.disposed || !this.project.found || !this.project.stateRoot) {
+      return;
+    }
+    // Restart so a changed interval setting takes effect on the next stop.
+    this.clearIdleWatch();
+    const interval = Math.max(
+      5_000,
+      vscode.workspace.getConfiguration("leanflow").get<number>("idlePollIntervalMs", 20_000),
+    );
+    this.idleTimer = setInterval(() => void this.idleProbe(false), interval);
+    try {
+      this.idleWatcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(vscode.Uri.file(this.project.stateRoot), LIVE_STATUS_FILE),
+      );
+      const notify = () => {
+        if (this.idleDebounce) {
+          clearTimeout(this.idleDebounce);
+        }
+        this.idleDebounce = setTimeout(() => {
+          this.idleDebounce = null;
+          void this.idleProbe(true);
+        }, WATCHER_DEBOUNCE_MS);
+      };
+      this.idleWatcher.onDidCreate(notify);
+      this.idleWatcher.onDidChange(notify);
+      this.idleWatcher.onDidDelete(notify);
+    } catch {
+      // A state directory outside every workspace folder may not be watchable
+      // on this VS Code version; the timer alone still discovers the run.
+      this.idleWatcher = null;
+    }
+    // Record the baseline now so only a later change triggers a read.
+    void this.idleProbe(false);
+  }
+
+  private clearIdleWatch(): void {
+    if (this.idleTimer) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = null;
+    }
+    if (this.idleDebounce) {
+      clearTimeout(this.idleDebounce);
+      this.idleDebounce = null;
+    }
+    this.idleWatcher?.dispose();
+    this.idleWatcher = null;
+  }
+
+  private stopIdleWatch(): void {
+    this.clearIdleWatch();
+  }
+
+  private async liveStatusSignature(): Promise<FileSignature | null> {
+    try {
+      const stat = await fs.promises.stat(path.join(this.project.stateRoot, LIVE_STATUS_FILE));
+      return stat.isFile() ? { mtimeMs: stat.mtimeMs, size: stat.size } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async idleProbe(fromWatcher: boolean): Promise<void> {
+    if (this.disposed || this.timer || !this.project.found) {
+      return;
+    }
+    const signature = await this.liveStatusSignature();
+    const decision = idleDiscoveryDecision(this.idleState, signature, Date.now());
+    this.idleState = decision.next;
+    // The watcher names the exact file, so its notification is itself the
+    // change; the timer only reads when the signature moved.
+    if ((decision.poll || fromWatcher) && !this.disposed) {
+      await this.poll();
     }
   }
 

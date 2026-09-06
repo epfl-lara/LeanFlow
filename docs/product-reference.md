@@ -508,6 +508,26 @@ state belongs to the exact run under
 `.leanflow/workflow-state/prover/<run-id>/`, including `PLAN.md`, `DAG.json`,
 `state.json`, baselines, and independent job logs.
 
+The prover publishes progress independently of source transactions, with a
+two-second heartbeat during long Lean or provider operations. The VS Code Live
+view refreshes live prover state every three seconds, rejects older snapshots,
+and preserves the last good state after a read failure. Submission checking and
+source integration count as awaiting verification, including when a prover job
+is still waiting synchronously for the independent check. Only accepted,
+integrated proofs count as solved. Proposed DAGs and staged diffs are labelled
+separately from the committed source checkpoint.
+
+The budget view distinguishes total spent calls, outstanding reservations and
+capacity available to new jobs. Each planning/review/resource stage has its own
+ceiling and may finish early. A job exhausting its allocation does not mean the
+campaign has exhausted its total budget; terminal reports identify the limiting
+scope and retained obligations. One independent candidate-check deadline covers
+Lean elaboration and kernel inspection after acquiring the verifier. Queue waits
+are bounded by remaining campaign time and reported separately; scratch checks inherit
+the configured check cap. New stages are also capped by remaining campaign time.
+Graph validation is a multi-check controller operation, so its individual
+checks and overall campaign allowance are displayed separately.
+
 ```bash
 leanflow runs prover <run-id> --json
 leanflow runs prover-message <run-id> --message "Use the compactness argument."

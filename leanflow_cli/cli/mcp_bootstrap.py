@@ -505,6 +505,53 @@ def _patch_lean_proof_auto_stdio_logging(venv_dir: Path) -> bool:
     return True
 
 
+def _apply_lean_lsp_patches(venv_dir: Path) -> dict[str, bool]:
+    """Apply every managed lean-lsp-mcp source patch and report which ones took."""
+    from leanflow_cli.cli.loogle_index_compat import patch_lean_lsp_loogle_index_flags
+    from leanflow_cli.cli.loogle_local import (
+        patch_lean_lsp_loogle_build_lock,
+        patch_lean_lsp_loogle_lifecycle,
+    )
+
+    return {
+        "project_paths": _patch_lean_lsp_loogle_project_paths(venv_dir),
+        "build_lock": patch_lean_lsp_loogle_build_lock(venv_dir),
+        "lifecycle": patch_lean_lsp_loogle_lifecycle(venv_dir),
+        "index_flags": patch_lean_lsp_loogle_index_flags(venv_dir),
+    }
+
+
+def repair_managed_mcp_patches(home: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    """Re-apply the managed source patches to installed MCP backends without reinstalling.
+
+    ``bootstrap`` refreshes pip packages and needs the network; a patch that
+    shipped after the backends were installed (such as Loogle index-flag
+    negotiation) only needs the files already on disk. Missing virtualenvs are
+    reported, never created.
+    """
+    home_path = Path(home).expanduser().resolve() if home else get_leanflow_home()
+    patches: dict[str, dict[str, Any]] = {}
+    lean_lsp_venv = managed_mcp_venv_dir("lean-lsp", home_path)
+    if lean_lsp_venv.is_dir():
+        patches["lean-lsp"] = {"installed": True, **_apply_lean_lsp_patches(lean_lsp_venv)}
+    else:
+        patches["lean-lsp"] = {"installed": False}
+    proof_auto_venv = managed_mcp_venv_dir("lean-proof-auto", home_path)
+    if proof_auto_venv.is_dir():
+        patches["lean-proof-auto"] = {
+            "installed": True,
+            "stdio_logging": _patch_lean_proof_auto_stdio_logging(proof_auto_venv),
+        }
+    else:
+        patches["lean-proof-auto"] = {"installed": False}
+    return {
+        "success": True,
+        "home": str(home_path),
+        "patches": patches,
+        "power_modes": managed_mcp_power_status(home_path),
+    }
+
+
 def managed_mcp_power_status(
     home: str | os.PathLike[str] | None = None,
     *,
@@ -541,9 +588,18 @@ def managed_mcp_power_status(
     loogle_toolchain_compatible = bool(
         not loogle_toolchain or not project_toolchain or loogle_toolchain == project_toolchain
     )
+    # A matching toolchain is not enough: the managed client must also speak the
+    # index flags of the binary it built, or its index build fails on every start.
+    from leanflow_cli.cli.loogle_index_compat import managed_loogle_client_status
+
+    loogle_client = managed_loogle_client_status(
+        home_path, project_root=project_root, cache_dir=loogle_cache_dir
+    )
+    loogle_client_compatible = loogle_client.get("compatible")
     loogle_ready = bool(
         loogle_configured
         and loogle_toolchain_compatible
+        and loogle_client_compatible is not False
         and loogle_cache_dir.is_dir()
         and any(loogle_cache_dir.iterdir())
     )
@@ -553,6 +609,8 @@ def managed_mcp_power_status(
         loogle_status = "disabled"
     elif not loogle_toolchain_compatible:
         loogle_status = "incompatible"
+    elif loogle_client_compatible is False:
+        loogle_status = "client-incompatible"
     elif loogle_ready:
         loogle_status = "ready"
     elif loogle_configured:
@@ -571,6 +629,8 @@ def managed_mcp_power_status(
         "loogle_toolchain": loogle_toolchain,
         "project_toolchain": project_toolchain,
         "loogle_toolchain_compatible": loogle_toolchain_compatible,
+        "loogle_index_flags_compatible": loogle_client_compatible,
+        "loogle_client": loogle_client,
         "loogle_cache_dir": str(loogle_cache_dir),
         "repl_configured": repl_configured,
         "repl_available": repl_available,
@@ -652,14 +712,7 @@ def bootstrap_lean_mcp(
             extra_install_specs=spec.extra_install_specs,
         )
         if spec.name == "lean-lsp":
-            from leanflow_cli.cli.loogle_local import (
-                patch_lean_lsp_loogle_build_lock,
-                patch_lean_lsp_loogle_lifecycle,
-            )
-
-            _patch_lean_lsp_loogle_project_paths(venv_dir)
-            patch_lean_lsp_loogle_build_lock(venv_dir)
-            patch_lean_lsp_loogle_lifecycle(venv_dir)
+            _apply_lean_lsp_patches(venv_dir)
         elif spec.name == "lean-proof-auto":
             _patch_lean_proof_auto_stdio_logging(venv_dir)
         installed_servers.append(

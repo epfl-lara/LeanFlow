@@ -82,6 +82,15 @@ class RunObserver:
                 "sorry_count": remaining,
                 "proof_solved": state.get("status") == "completed",
                 "prover_mode": state.get("mode"),
+                "provider": state.get("provider", ""),
+                "model": state.get("config", {}).get("model", ""),
+                "reasoning_effort": state.get("reasoning_effort", ""),
+                "parallel_agents": (
+                    1
+                    if state.get("mode") == "standard"
+                    else state.get("config", {}).get("parallelism", 1)
+                ),
+                "prover_operations": state.get("operations", []),
                 "prover_state_path": str(
                     self.root / ".leanflow/workflow-state/prover" / self.run_id / "state.json"
                 ),
@@ -114,6 +123,12 @@ class RunObserver:
             "final_report_only",
             "tool",
             "error",
+            "reason",
+            "label",
+            "file",
+            "elapsed_s",
+            "completed",
+            "total",
         )
         compact = {key: details[key] for key in keys if key in details}
         preview = preview_details(kind, details)

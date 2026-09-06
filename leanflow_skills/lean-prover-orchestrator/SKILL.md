@@ -22,3 +22,9 @@ direction from a difficult obligation that needs a better split. Only an
 independently checked closed negation can certify that a statement is false.
 Keep trying useful directions within the explicit plan, call and time budgets.
 Do not create advisory loops, hidden model calls or budget resets.
+
+Return the requested stage report as soon as it is ready. Call and time limits
+are ceilings, not spending targets. Do not repeat an audit after resolving its
+uncertainty. Carry unresolved questions into the handoff with supporting evidence.
+The controller may add generated-module imports under its independent protected
+kernel-type gate; proposing organized helper modules does not require inlining them.

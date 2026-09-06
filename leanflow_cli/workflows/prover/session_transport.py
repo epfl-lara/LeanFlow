@@ -79,6 +79,7 @@ def request_once(
     An interrupted stream consumes its admitted call and returns an error. A
     reporting-only request retains schemas/history while disabling new tools.
     """
+    refresh_stored_credentials(agent)
     prepared = agent._build_api_messages_for_turn(messages[1:], str(messages[0]["content"]))
     kwargs = agent._build_api_kwargs(prepared)
     if final_report_only:
@@ -126,6 +127,22 @@ def request_once(
         finally:
             agent._close_request_openai_client(client, reason="bounded_prover_complete")
     return agent._build_assistant_message(assistant, reason), getattr(response, "usage", None)
+
+
+def refresh_stored_credentials(agent: Any) -> None:
+    """Adopt rotated Codex credentials from the local store without another model request."""
+    if getattr(agent, "provider", "") != "openai-codex":
+        return
+    from leanflow_cli.runtime.auth import resolve_codex_runtime_credentials
+
+    credentials = resolve_codex_runtime_credentials(allow_legacy_store=True)
+    key = credentials.get("api_key")
+    if not key or key == getattr(agent, "api_key", None):
+        return
+    if credentials.get("base_url", "").rstrip("/") != str(agent.base_url).rstrip("/"):
+        raise ValueError("Codex credential rotation cannot change the provider endpoint")
+    if not agent._try_refresh_codex_client_credentials(force=False):
+        raise ValueError("Could not adopt rotated Codex credentials")
 
 
 def close_transport(agent: Any) -> None:

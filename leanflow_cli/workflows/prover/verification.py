@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +24,28 @@ class LeanVerifier:
     def __init__(self, root: Path, allowed_axioms: tuple[str, ...], timeout_s: int = 180) -> None:
         self.root = root
         self.allowed_axioms = set(allowed_axioms)
-        self.timeout_s = timeout_s
+        self.configured_timeout_s = timeout_s
+        self.remaining_time: Callable[[], float] | None = None
+        self.on_operation: Callable[..., Any] | None = None
         self.lock = threading.Lock()
         self.workspaces: set[Path] = set()
+
+    @property
+    def timeout_s(self) -> float:
+        """Bound every new verification stage by the remaining campaign deadline."""
+        return (
+            min(self.configured_timeout_s, self.remaining_time())
+            if self.remaining_time
+            else self.configured_timeout_s
+        )
+
+    def _operation(
+        self, kind: str, label: str, action: Callable[[], dict[str, Any]], **details: Any
+    ) -> dict[str, Any]:
+        """Report long deterministic checks without granting source mutation authority."""
+        if self.on_operation is not None:
+            return dict(self.on_operation(kind, label, action, timeout_s=self.timeout_s, **details))
+        return action()
 
     def preflight(self, workspace: Path) -> dict[str, Any]:
         """Check isolated Lean availability before any paid model request."""
@@ -60,7 +81,8 @@ class LeanVerifier:
 
         pending: dict[str, str] = {}
         mutable_by_id: dict[str, list[str]] = {}
-        for relative in dict.fromkeys(node.file for node in dag.nodes):
+        files = list(dict.fromkeys(node.file for node in dag.nodes))
+        for completed, relative in enumerate(files):
             nodes = [node for node in dag.nodes if node.file == relative]
             mutable_names = list(
                 dict.fromkeys(
@@ -70,13 +92,20 @@ class LeanVerifier:
                 )
             )
             with self.lock:
-                result = compiled_type_profiles(
-                    root=self.root,
-                    source=documents[relative].render(),
-                    names=[node.name for node in nodes],
-                    workspace=workspace,
-                    timeout_s=self.timeout_s,
-                    mutable_names=mutable_names,
+                result = self._operation(
+                    "signature_check",
+                    "Checking protected declaration types",
+                    lambda: compiled_type_profiles(
+                        root=self.root,
+                        source=documents[relative].render(),
+                        names=[node.name for node in nodes],
+                        workspace=workspace,
+                        timeout_s=self.timeout_s,
+                        mutable_names=mutable_names,
+                    ),
+                    file=relative,
+                    completed=completed,
+                    total=len(files),
                 )
             if not result.get("accepted"):
                 return {**result, "file": relative}
@@ -102,20 +131,75 @@ class LeanVerifier:
         return {"accepted": True, "signatures": pending}
 
     def check(self, node: Node, file: Path, *, skeleton: bool = False) -> dict[str, Any]:
-        """Check the exact declaration and require complete, permitted axiom evidence."""
+        """Queue under campaign time, then share one Lean deadline across verification stages."""
+        wait_started = time.monotonic()
+        queue_limit = self.remaining_time() if self.remaining_time else self.configured_timeout_s
+        queue_deadline = wait_started + queue_limit
+        acquired = False
+
+        def acquire() -> dict[str, Any]:
+            """Wait for the shared verifier without charging the active Lean allowance."""
+            nonlocal acquired
+            while not acquired:
+                remaining = queue_deadline - time.monotonic()
+                if self.remaining_time is not None:
+                    remaining = min(remaining, self.remaining_time())
+                if remaining <= 0:
+                    break
+                # Observe cancellation while waiting for another proof's check.
+                acquired = self.lock.acquire(timeout=min(0.25, remaining))
+            return {
+                "accepted": acquired,
+                "success": acquired,
+                "error_code": "" if acquired else "check_busy",
+                "error": "" if acquired else "Verifier queue wait exhausted its available time.",
+            }
+
+        try:
+            if self.on_operation is not None:
+                admission = self.on_operation(
+                    "verification_queue",
+                    "Waiting for the independent verifier",
+                    acquire,
+                    node_id=node.id,
+                    file=str(file),
+                    timeout_s=queue_limit,
+                )
+            else:
+                admission = acquire()
+            if not acquired:
+                if self.remaining_time is not None:
+                    # The campaign callback reports its typed global deadline,
+                    # rather than misclassifying normal contention as broken Lean.
+                    self.remaining_time()
+                return dict(admission)
+            waited = time.monotonic() - wait_started
+            result = self._check_locked(node, file, skeleton=skeleton)
+            return {**result, "verifier_queue_wait_s": round(waited, 3)}
+        finally:
+            if acquired:
+                self.lock.release()
+
+    def _check_locked(self, node: Node, file: Path, *, skeleton: bool) -> dict[str, Any]:
+        """Check the exact declaration and kernel type while owning the verifier slot."""
         from leanflow_cli.workflows.prover.check_process import check_scratch
 
-        with self.lock:
+        deadline = time.monotonic() + self.timeout_s
+
+        def elaborate(remaining: float) -> dict[str, Any]:
+            """Register the warm worker while holding the verifier's invalidation lock."""
             self.workspaces.add(file.parent)
-            result = check_scratch(
+            return check_scratch(
                 project_root=self.root,
                 workspace=file.parent,
                 file=file,
                 declaration=node.name,
                 include_axiom_profile=not skeleton,
                 allow_placeholders_for_elaboration=skeleton,
-                timeout_s=self.timeout_s,
+                timeout_s=remaining,
             )
+
+        result = self._candidate_stage(elaborate, deadline)
         if skeleton:
             messages = result.get("messages", [])
             no_errors = not any(
@@ -155,15 +239,17 @@ class LeanVerifier:
             }
         from leanflow_cli.workflows.prover.type_profile import compiled_type_profiles
 
-        with self.lock:
-            profile = compiled_type_profiles(
+        profile = self._candidate_stage(
+            lambda remaining: compiled_type_profiles(
                 root=self.root,
                 source=read_source(file),
                 names=[node.name],
                 workspace=file.parent,
-                timeout_s=self.timeout_s,
+                timeout_s=remaining,
                 mutable_names=node.signature_mutable_names or [node.name],
-            )
+            ),
+            deadline,
+        )
         if not profile.get("accepted"):
             return {
                 **result,
@@ -196,6 +282,20 @@ class LeanVerifier:
                 )
             ),
         }
+
+    def _candidate_stage(
+        self, action: Callable[[float], dict[str, Any]], deadline: float
+    ) -> dict[str, Any]:
+        """Share one active candidate deadline across both Lean stages."""
+        timeout = {
+            "success": False,
+            "accepted": False,
+            "timed_out": True,
+            "error_code": "check_timeout",
+            "error": "Independent candidate check exhausted its active verification deadline.",
+        }
+        remaining = min(self.timeout_s, deadline - time.monotonic())
+        return action(remaining) if remaining > 0 else timeout
 
     def compile_module(self, relative: str) -> dict[str, Any]:
         """Build one generated helper artifact so dependent scratch modules can import it."""

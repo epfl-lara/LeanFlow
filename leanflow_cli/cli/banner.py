@@ -433,6 +433,8 @@ def render_workflow_launch(console: Console, *, launch_summary: dict[str, str]) 
         table.add_row("Reasoning", launch_summary.get("reasoning_effort", ""))
     table.add_row("Skill", launch_summary.get("skill", ""))
     table.add_row("Agents", launch_summary.get("agents", "1"))
+    if launch_summary.get("prover_config"):
+        table.add_row("Prover", launch_summary.get("prover_config", ""))
     if launch_summary.get("document"):
         table.add_row("Document", launch_summary.get("document", ""))
     if launch_summary.get("target_file"):

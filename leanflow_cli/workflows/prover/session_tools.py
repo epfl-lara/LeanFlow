@@ -6,12 +6,14 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from core.utils import atomic_json_write
 from leanflow_cli.workflows.prover.resource_handoff import shared_resource
+from tools.utilities.empirical_compute_runtime import capability_summary
 from tools.utilities.repository_research_policy import clean_room_path_block_reason
 
 
@@ -49,7 +51,15 @@ class SessionTools:
         workspace: Path,
         context: Mapping[str, Any],
         research_job: Callable[[str], dict[str, Any]] | None = None,
+        timeout_s: float = 180,
+        deadline: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        allow_internet: bool = True,
     ) -> None:
+        self.timeout_s = timeout_s
+        self.deadline = deadline
+        self.cancelled = cancelled
+        self.allow_internet = allow_internet
         self.role = role
         self.project_root = project_root.resolve()
         self.workspace = workspace.resolve()
@@ -98,7 +108,11 @@ class SessionTools:
                 ),
                 _schema(
                     "lean_search",
-                    "Search Lean libraries with the existing Lean search service.",
+                    (
+                        "Search Lean libraries with the existing Lean search service."
+                        if self.allow_internet
+                        else "Search installed Lean source by literal text, entirely locally. No remote search services are available."
+                    ),
                     {"query": TEXT},
                     ["query"],
                 ),
@@ -107,7 +121,12 @@ class SessionTools:
             tools.append(
                 _schema(
                     "research_job",
-                    "Launch one separate bounded research agent for a concrete external source or computational question. It cannot solve Lean goals or provide generic proof advice. Its calls count against the campaign budget. Available once per prover job, including resumes.",
+                    (
+                        "Launch a separate bounded research agent for a concrete external source or computational question. "
+                        if self.allow_internet
+                        else "Launch a separate bounded local computation agent for a concrete mathematical experiment. It has no internet access; do not ask it to retrieve external sources. "
+                    )
+                    + "It cannot solve Lean goals or provide generic proof advice. Its calls count against the campaign budget. Available at most twice per prover job, including resumes.",
                     {"question": TEXT},
                     ["question"],
                 )
@@ -135,10 +154,17 @@ class SessionTools:
                 ),
                 _schema(
                     "compute",
-                    "Run a short exact integer/rational Python experiment in a restricted subprocess. No filesystem or network access. Empirical results are evidence, not Lean proofs.",
+                    "Run a short exact integer/rational Python experiment in a restricted subprocess. No filesystem or network access. Empirical results are evidence, not Lean proofs. "
+                    + capability_summary(),
                     {"program": TEXT},
                     ["program"],
                 ),
+            ]
+        if not self.allow_internet:
+            tools = [
+                tool
+                for tool in tools
+                if tool["function"]["name"] not in {"web_search", "fetch_resource"}
             ]
         return tools
 
@@ -202,17 +228,23 @@ class SessionTools:
 
     def _invoke(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
         """Dispatch tools without a generic terminal or project write escape."""
+        if not self.allow_internet and name in {"web_search", "fetch_resource"}:
+            raise ValueError("Internet research is disabled for this campaign")
         if name == "research_job":
             question = str(args["question"]).strip()
             if not question or len(question) > 4000:
                 raise ValueError("Supply one concrete research question of at most 4000 characters")
             path = self.workspace.parent / ".runtime" / self.workspace.name / "research-count.json"
-            if path.is_file():
+            used = json.loads(path.read_text(encoding="utf-8"))["used"] if path.is_file() else 0
+            if type(used) is not int or used < 0:
+                raise ValueError("Invalid research admission count; cannot launch another job")
+            if used >= 2:
                 raise ValueError(
-                    "This prover job already requested its research agent; use the returned evidence"
+                    "This prover job already requested two research agents; use the returned evidence"
                 )
             path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_json_write(path, {"used": 1, "question": question})
+            # Reserve before dispatch so interruption cannot refund an admitted job.
+            atomic_json_write(path, {"used": used + 1, "question": question})
             assert self.research_job is not None
             result = self.research_job(question)
             # The callback is controller-owned and derives grants from completed
@@ -279,9 +311,18 @@ class SessionTools:
                 file=path,
                 declaration=declaration,
                 replacement=str(args.get("replacement") or ""),
-                timeout_s=60,
+                timeout_s=(
+                    max(0.01, min(self.timeout_s, self.deadline - time.monotonic()))
+                    if self.deadline is not None
+                    else self.timeout_s
+                ),
+                cancelled=self.cancelled,
             )
         if name == "lean_search":
+            if not self.allow_internet:
+                from leanflow_cli.workflows.prover.session_search import search_sources
+
+                return search_sources(str(args["query"]), self.project_root, self._path)
             from leanflow_cli.lean.lean_services import lean_search
             from tools.implementations.lean_tool import _filter_clean_room_lean_search_results
 

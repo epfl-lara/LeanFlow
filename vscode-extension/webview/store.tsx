@@ -27,6 +27,7 @@ import type {
   ProfileDiffRow,
 } from "../src/core/types";
 import { launchRequestForViewState } from "../src/core/launch";
+import { isNewerProverSnapshot } from "../src/core/proverProgress";
 import { trackedRunForLiveStatus } from "../src/core/runSelection";
 import { emptyLaunchRequest } from "../src/core/types";
 import type { ProverSnapshot } from "../src/core/prover";
@@ -107,13 +108,21 @@ function boundedEventDetails(
   return next;
 }
 
+/** The latest accepted snapshot for a run; `error` marks it stale when a later read failed. */
+export interface ProverStateEntry {
+  snapshot: ProverSnapshot | null;
+  error: string;
+  /** Wall-clock time this entry was received, for "snapshot age" displays. */
+  receivedAt: number;
+}
+
 interface Store {
   app: AppState | null;
   view: ViewState;
   events: Record<string, ActivityEvent[]>;
   eventDetails: Record<string, EventDetailEntry>;
   runLog: string;
-  proverStates: Record<string, { snapshot: ProverSnapshot | null; error: string }>;
+  proverStates: Record<string, ProverStateEntry>;
   preview: { plan: LaunchPlanPreview | null; error: string; loading: boolean };
   diff: { rows: ProfileDiffRow[]; error: string; loading: boolean };
   toasts: Toast[];
@@ -193,9 +202,17 @@ function reduceHost(state: Store, message: HostMessage): Store {
   switch (message.type) {
     case "state":
       return { ...state, app: message.state };
-    case "proverState":
+    case "proverState": {
+      // Two reads can settle out of order, and a failed read must not blank a
+      // dashboard that was showing real state: keep the newest good snapshot.
+      const previous = state.proverStates[message.runId];
+      const incoming = message.snapshot;
+      const snapshot = incoming !== null && isNewerProverSnapshot(previous?.snapshot ?? null, incoming)
+        ? incoming
+        : previous?.snapshot ?? incoming;
       return { ...state, proverStates: { ...state.proverStates,
-        [message.runId]: { snapshot: message.snapshot, error: message.error } } };
+        [message.runId]: { snapshot, error: message.error, receivedAt: Date.now() } } };
+    }
     case "events": {
       const existing = message.reset ? [] : (state.events[message.runId] ?? []);
       // The host already de-duplicates by cursor, but a reset push overlapping

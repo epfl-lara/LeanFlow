@@ -35,8 +35,23 @@ class RunStore:
         self._source_checkpoint = ""
         self._dag_snapshot: dict[str, Any] | None = None
         self._plan_snapshot: str | None = None
+        self._sequence = 0
 
-    def write(self, state: dict[str, Any], dag: Dag, documents: dict[str, SourceDocument]) -> None:
+    def write_progress(self, state: dict[str, Any]) -> None:
+        """Publish metadata with a monotonic sequence, retaining committed source identity."""
+        with self.lock:
+            self._sequence = max(self._sequence, int(state.get("snapshot_sequence", 0))) + 1
+            state.update(updated_at=now(), snapshot_sequence=self._sequence)
+            atomic_json_write(self.directory / "state.json", state)
+
+    def write(
+        self,
+        state: dict[str, Any],
+        dag: Dag,
+        documents: dict[str, SourceDocument],
+        *,
+        publish: bool = True,
+    ) -> None:
         """Atomically publish a coherent state snapshot after controller transitions."""
         with self.lock:
             source_documents = {key: value.to_dict() for key, value in documents.items()}
@@ -64,7 +79,6 @@ class RunStore:
             if dag_snapshot != self._dag_snapshot:
                 atomic_json_write(self.directory / "DAG.json", dag_snapshot)
                 self._dag_snapshot = dag_snapshot
-            atomic_json_write(self.directory / "state.json", state)
             plan = str(state.get("plan_markdown", ""))
             if plan != self._plan_snapshot:
                 plan_path = self.directory / "PLAN.md"
@@ -72,6 +86,8 @@ class RunStore:
                 pending.write_text(plan)
                 pending.replace(plan_path)
                 self._plan_snapshot = plan
+            if publish:
+                self.write_progress(state)
 
     def event(self, kind: str, details: dict[str, Any]) -> None:
         """Append one bounded structured event for audit and live progress.

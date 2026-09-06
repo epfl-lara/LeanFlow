@@ -15,6 +15,7 @@ import {
   listLeanFiles,
   NO_PROJECT,
 } from "./project";
+import { ProverService } from "./proverService";
 import { RunManager } from "./runManager";
 import { trackedRunForLiveStatus } from "./runSelection";
 import {
@@ -35,6 +36,8 @@ export class LeanFlowServices implements vscode.Disposable {
 
   readonly runs: RunManager;
   readonly experiments: ExperimentEngine;
+  /** Cached, change-gated reads of exact-run prover state. */
+  readonly prover: ProverService;
 
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changed.event;
@@ -44,6 +47,7 @@ export class LeanFlowServices implements vscode.Disposable {
   constructor(context: vscode.ExtensionContext) {
     this.project = discoverProject();
     this.runs = new RunManager(context, this.project);
+    this.prover = new ProverService(this.runs);
     this.experiments = new ExperimentEngine(context, this.runs, () => this.profiles, () => this.catalog);
 
     this.disposables.push(
@@ -116,6 +120,9 @@ export class LeanFlowServices implements vscode.Disposable {
   async reload(): Promise<void> {
     this.busy = true;
     this.changed.fire();
+    // An explicit refresh must re-read prover state even if its file signature
+    // is unchanged; that is the user's escape hatch from any cache.
+    this.prover.invalidate();
     try {
       this.project = await discoverProjectIncludingNested();
       this.runs.setProject(this.project);

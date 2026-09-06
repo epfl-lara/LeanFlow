@@ -95,6 +95,111 @@ def test_search_rejects_invalid_bounds(query, limit):
     assert not research.web_search(query, limit)["success"]
 
 
+#: A small mathematical-search set modelled on the Beck–Fiala campaign, where the
+#: arXiv token disjunction ranked unrelated algebra papers ahead of the subject.
+_BECK_FIALA_ARXIV = [
+    {
+        "url": "https://arxiv.org/abs/2401.00001",
+        "title": "Discrepancy of algebraic structures in group theory",
+        "snippet": "We study algebra and representation theory of finite groups.",
+        "provider": "arxiv",
+    },
+    {
+        "url": "https://arxiv.org/abs/2401.00002",
+        "title": "A note on proof complexity",
+        "snippet": "Lower bounds for theorem proving systems.",
+        "provider": "arxiv",
+    },
+    {
+        "url": "https://arxiv.org/abs/2401.00003",
+        "title": "The Beck–Fiala conjecture for small degrees",
+        "snippet": "We prove the Beck-Fiala theorem bound 2t-1 for hypergraphs of degree t.",
+        "provider": "arxiv",
+    },
+]
+_BECK_FIALA_WEB = [
+    {
+        "url": "https://en.wikipedia.org/wiki/Beck%E2%80%93Fiala_theorem",
+        "title": "Beck–Fiala theorem - Wikipedia",
+        "snippet": "In discrepancy theory, the Beck–Fiala theorem bounds the discrepancy.",
+        "provider": "duckduckgo",
+    },
+    {
+        "url": "https://example.org/blog",
+        "title": "My blog",
+        "snippet": "Unrelated notes.",
+        "provider": "duckduckgo",
+    },
+]
+
+
+def test_search_ranks_relevant_results_above_provider_order(monkeypatch):
+    monkeypatch.setattr(research.providers, "_search_arxiv", lambda *_: (_BECK_FIALA_ARXIV, ""))
+    monkeypatch.setattr(
+        research.providers, "_search_duckduckgo_html", lambda *_: (_BECK_FIALA_WEB, "")
+    )
+
+    result = research.web_search("Beck–Fiala theorem discrepancy proof", 3)
+
+    urls = [item["url"] for item in result["results"]]
+    assert set(urls[:2]) == {
+        "https://arxiv.org/abs/2401.00003",
+        "https://en.wikipedia.org/wiki/Beck%E2%80%93Fiala_theorem",
+    }
+    assert urls[2] == "https://arxiv.org/abs/2401.00001"
+    relevances = [item["relevance"] for item in result["results"]]
+    assert relevances == sorted(relevances, reverse=True)
+    assert relevances[0] > 0.8 > relevances[2]
+    assert "beck" in result["results"][0]["matched_terms"]
+    assert result["truncated"] is True
+    assert [entry["name"] for entry in result["providers"]] == ["arxiv", "web"]
+    assert result["providers"][0] == {"name": "arxiv", "returned": 3, "kept": 3, "degraded": ""}
+
+
+def test_equal_relevance_interleaves_providers_by_their_own_rank(monkeypatch):
+    arxiv = [{"url": f"https://arxiv.org/abs/{n}", "title": "x", "snippet": ""} for n in range(3)]
+    web = [{"url": f"https://example.org/{n}", "title": "x", "snippet": ""} for n in range(3)]
+    monkeypatch.setattr(research.providers, "_search_arxiv", lambda *_: (arxiv, ""))
+    monkeypatch.setattr(research.providers, "_search_duckduckgo_html", lambda *_: (web, ""))
+
+    result = research.web_search("bounded mathematics", 4)
+
+    assert [item["url"] for item in result["results"]] == [
+        "https://arxiv.org/abs/0",
+        "https://example.org/0",
+        "https://arxiv.org/abs/1",
+        "https://example.org/1",
+    ]
+    assert result["results"][1]["provider"] == "web"
+
+
+def test_degraded_provider_is_reported_per_provider(monkeypatch):
+    def broken(*_):
+        raise RuntimeError("DuckDuckGo HTML blocked")
+
+    monkeypatch.setattr(research.providers, "_search_arxiv", lambda *_: (_BECK_FIALA_ARXIV, ""))
+    monkeypatch.setattr(research.providers, "_search_duckduckgo_html", broken)
+
+    result = research.web_search("Beck-Fiala theorem", 3)
+
+    assert result["success"] is True
+    assert result["degraded_reasons"] == ["DuckDuckGo HTML blocked"]
+    assert result["providers"][1]["degraded"] == "DuckDuckGo HTML blocked"
+    assert result["providers"][1]["kept"] == 0
+    assert result["results"][0]["url"] == "https://arxiv.org/abs/2401.00003"
+
+
+def test_relevance_normalizes_dashes_and_rewards_phrases():
+    exact, matched = research.result_relevance("Beck–Fiala theorem", "beck-fiala theorem", "")
+    partial, _ = research.result_relevance("Beck–Fiala theorem", "", "the beck fiala bound")
+    unrelated, unmatched = research.result_relevance("Beck–Fiala theorem", "Group algebras", "")
+
+    assert exact == 1.0
+    assert matched == ["beck", "fiala", "theorem"]
+    assert 0 < partial < exact
+    assert unrelated == 0.0 and unmatched == []
+
+
 @pytest.mark.parametrize(
     "address",
     ["127.0.0.1", "10.1.2.3", "169.254.169.254", "::1", "fc00::1", "224.0.0.1", "ff0e::1"],

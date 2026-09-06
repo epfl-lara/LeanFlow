@@ -164,7 +164,7 @@ def test_search_includes_gitignored_installed_dependencies(tmp_path: Path) -> No
     assert [row["path"] for row in result["results"]] == [str(dependency.resolve())]
 
 
-def test_one_research_agent_per_job_survives_resume(tmp_path: Path) -> None:
+def test_two_research_agents_per_job_survive_resume(tmp_path: Path) -> None:
     workspace = tmp_path / "job"
     workspace.mkdir()
     calls = []
@@ -173,7 +173,7 @@ def test_one_research_agent_per_job_survives_resume(tmp_path: Path) -> None:
         calls.append(question)
         return {"success": True, "report": "Recorded external evidence"}
 
-    for expected in (True, False):
+    for expected in (True, True, False):
         tools = SessionTools(
             role="prover",
             project_root=tmp_path,
@@ -187,7 +187,7 @@ def test_one_research_agent_per_job_survives_resume(tmp_path: Path) -> None:
             ]
             == expected
         )
-    assert len(calls) == 1
+    assert len(calls) == 2
     child = SessionTools(
         role="research",
         project_root=tmp_path,
@@ -196,3 +196,44 @@ def test_one_research_agent_per_job_survives_resume(tmp_path: Path) -> None:
         research_job=research,
     )
     assert not child.invoke("research_job", {"question": "recursive request"})["success"]
+
+
+def test_previous_research_marker_leaves_only_one_admission(tmp_path: Path) -> None:
+    workspace = tmp_path / "job"
+    workspace.mkdir()
+    ledger = tmp_path / ".runtime/job/research-count.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({"used": 1, "question": "Already researched"}))
+    calls: list[str] = []
+
+    def research(question: str) -> dict[str, bool]:
+        calls.append(question)
+        return {"success": True}
+
+    tools = SessionTools(
+        role="prover", project_root=tmp_path, workspace=workspace, context={}, research_job=research
+    )
+    assert tools.invoke("research_job", {"question": "One remaining question"})["success"]
+    assert not tools.invoke("research_job", {"question": "Over budget"})["success"]
+    assert calls == ["One remaining question"]
+
+
+def test_failed_research_admissions_remain_charged_after_resume(tmp_path: Path) -> None:
+    workspace = tmp_path / "job"
+    workspace.mkdir()
+    calls: list[str] = []
+
+    def research(question: str) -> dict[str, bool]:
+        calls.append(question)
+        raise RuntimeError("Research interrupted after admission")
+
+    for _ in range(3):
+        tools = SessionTools(
+            role="prover",
+            project_root=tmp_path,
+            workspace=workspace,
+            context={},
+            research_job=research,
+        )
+        assert not tools.invoke("research_job", {"question": "Find external evidence"})["success"]
+    assert len(calls) == 2

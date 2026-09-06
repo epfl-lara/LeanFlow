@@ -146,7 +146,8 @@ Install LeanFlow, set the path if necessary, then reload the window.
 | --- | --- | --- |
 | `leanflow.cliPath` | `leanflow` | Path to the executable. |
 | `leanflow.projectRoot` | *(empty)* | Pin the project instead of discovering it. |
-| `leanflow.pollIntervalMs` | `5000` | How often live status and events are re-read. |
+| `leanflow.pollIntervalMs` | `5000` | How often live status and events are re-read while a run is active. |
+| `leanflow.idlePollIntervalMs` | `20000` | How often an idle dashboard checks the live-status file for a run started elsewhere; the CLI is read only when the file changed. |
 | `leanflow.cellSettleMs` | `3000` | Wait for a sealed final metrics snapshot before scoring. |
 | `leanflow.eventBufferSize` | `4000` | Activity events kept in memory per run. |
 
@@ -157,6 +158,13 @@ reload, a sweep can keep going while you work, and their output is already
 recorded as structured state that the log viewer reads. On reload the extension
 re-adopts tracked runs and reconciles them against recorded status, because the
 process outlives the exit callback that would otherwise report it finished.
+
+A run started or resumed from a terminal is noticed while the dashboard is
+idle. The extension watches the project's `live_status.json` and, on a bounded
+interval, compares that file's size and modification time; only a change makes
+it read state through `leanflow runs status`. The file is a change signal, never
+parsed by the editor. A discovered run is observed in the Live tab; stopping it
+remains with the terminal that owns it.
 
 Stopping a run started by the current window interrupts its owned process group.
 After a reload, the extension asks `leanflow runs stop RUN_ID` instead; the CLI
@@ -191,6 +199,27 @@ prover jobs, and files changed. Select a theorem to inspect its dependencies and
 dependants; open its source at the recorded line. Conditional proofs remain
 visibly provisional until their dependencies pass verification.
 
+Every theorem is classified once and shown the same way in the header count,
+the graph, the tree, its detail panel, and its job row. Only the independent
+verifier marks a theorem solved. A live prover makes it active. A prover that
+completed while the theorem still reads `running` is "Pending verification";
+`submitted`, `verifying`, and `integrating` show the check or integration step
+in progress; a failed prover never implies a proof. The header reads, for
+example, `Solved 0 · Active 2 · Pending 2 · Awaiting verification 1`.
+
+The workspace also shows the complete campaign budget (calls used of total,
+calls available for new work as the runtime reports them, outstanding
+reservations, elapsed time against the wall-clock limit, plan-refinement,
+decomposition, theorem and restart allowances), the controller's current work
+(skeleton compiles, signature checks, submission checks, proof integration and
+the final build with progress, duration and timeout, plus the planning stages
+of the current request), one orchestrator versus the prover slots in use and
+the reason idle slots wait, the shared provider and reasoning effort with the
+per-role model and context, staged file changes marked pending validation, and
+the exact stop reason with its scope when a run ends. A proposed graph under
+review or validation can be inspected in a separately labelled view while the
+canonical graph stays authoritative.
+
 Arrows run from each goal to its prerequisites. Shared lemmas appear once, with
 all incoming dependencies retained. The legend distinguishes solved, active,
 pending, awaiting-verification, blocked, and failed nodes. Activity reflects the
@@ -220,6 +249,20 @@ The editor reads `leanflow runs prover RUN_ID --json`, which returns
 `leanflow runs prover-message RUN_ID --agent AGENT_ID --message TEXT`.
 The CLI owns state layout and durable inbox writes; editor paths are checked
 against the selected run's project and recorded artifacts before opening them.
+
+The workspace refreshes every three seconds while a run is live, but the CLI is
+invoked only when the run's `state.json` has changed: the host compares the
+file's size and modification time and otherwise serves the last snapshot.
+Opening an artifact reuses that snapshot for its allowlist check. A snapshot
+never replaces a newer one, and a failed read keeps the last good state visibly
+marked stale. Refresh always re-reads.
+
+Saved profiles say where they can launch. A knob the extension refuses is
+listed with its reason — unknown to the installed catalog, terminal-only,
+launcher-owned, or an invalid value — and one click saves a VS Code-compatible
+copy without those knobs or drops refused one-off overrides. The resolved plan
+lists the effective dedicated prover configuration, including values inherited
+from the profile, and says where the run id appears once it is assigned.
 
 ## Development
 

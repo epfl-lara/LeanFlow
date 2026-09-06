@@ -23,6 +23,7 @@ from leanflow_cli.cli.cli_handlers import (
     _handle_sandbox,
     _print_json,
     _print_mcp_bootstrap,
+    _print_mcp_repair,
     _print_mcp_status,
     _print_project_power_setup,
     _project_payload,
@@ -31,7 +32,7 @@ from leanflow_cli.cli.cli_handlers import (
 from leanflow_cli.cli.commands import build_workflow_command_set
 from leanflow_cli.cli.doctor import run_doctor
 from leanflow_cli.cli.flags_command import handle_flags, register_flags_parser
-from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp
+from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp, repair_managed_mcp_patches
 from leanflow_cli.cli.runs_command import handle_runs, register_runs_parser
 from leanflow_cli.config import (
     ensure_leanflow_home,
@@ -74,6 +75,32 @@ from leanflow_cli.workflows.workflow_state import (
 from tools.mcp.mcp_tool import get_mcp_status
 
 WORKFLOW_COMMANDS = build_workflow_command_set()
+
+#: ``leanflow workflow`` options that select a preview instead of a launch, keyed
+#: to the parser destination they set.
+_PREVIEW_OPTIONS = {"--dry-run": "dry_run", "--json": "json_output"}
+#: Workflow names that report state instead of launching a run.
+_INFORMATIONAL_WORKFLOWS = frozenset({"status", "history", "activity", "log"})
+
+
+def _hoist_preview_options(args: argparse.Namespace) -> None:
+    """Recognize ``--dry-run``/``--json`` placed after the workflow name.
+
+    ``argparse.REMAINDER`` swallows every token after the workflow name, so a
+    misplaced preview option used to become part of the workflow arguments and
+    the CLI launched a run instead of previewing it. Tokens after ``--prompt`` or
+    ``--goal`` are prompt text and are left alone.
+    """
+    remaining: list[str] = []
+    prompt_seen = False
+    for token in list(getattr(args, "args", []) or []):
+        if not prompt_seen and token in _PREVIEW_OPTIONS:
+            setattr(args, _PREVIEW_OPTIONS[token], True)
+            continue
+        if token in {"--prompt", "--goal"}:
+            prompt_seen = True
+        remaining.append(token)
+    args.args = remaining
 
 
 def _seed_environment() -> None:
@@ -126,6 +153,11 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_bootstrap.add_argument("target", nargs="?", default="lean")
     mcp_bootstrap.add_argument("--json", action="store_true", dest="json_output")
     mcp_bootstrap.add_argument("--python", default=None)
+    mcp_repair = mcp_sub.add_parser(
+        "repair",
+        help="Re-apply managed source patches to installed MCP backends without reinstalling",
+    )
+    mcp_repair.add_argument("--json", action="store_true", dest="json_output")
 
     project_parser = subparsers.add_parser("project", help="Manage LeanFlow projects")
     project_sub = project_parser.add_subparsers(dest="project_command")
@@ -318,6 +350,13 @@ def _handle_mcp(args: argparse.Namespace) -> int:
         else:
             _print_mcp_bootstrap(payload)
         return 0
+    if command == "repair":
+        payload = repair_managed_mcp_patches()
+        if getattr(args, "json_output", False):
+            _print_json(payload)
+        else:
+            _print_mcp_repair(payload)
+        return 0
     raise SystemExit("Unknown MCP command")
 
 
@@ -357,9 +396,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sandbox":
         return _handle_sandbox(args)
     if args.command == "workflow":
+        _hoist_preview_options(args)
         if any(token in {"-h", "--help"} for token in args.args):
             print(workflow_run_help_text(args.workflow))
             return 0
+        if (
+            args.workflow not in _INFORMATIONAL_WORKFLOWS
+            and getattr(args, "json_output", False)
+            and not getattr(args, "dry_run", False)
+        ):
+            # ``--json`` only describes a preview; without ``--dry-run`` it must not
+            # silently fall through to a real launch.
+            print(
+                "--json requires --dry-run: use "
+                f"`leanflow workflow --dry-run --json {str(args.workflow).lstrip('/')} ...`. "
+                "No run was started.",
+                file=sys.stderr,
+            )
+            return 2
         if args.workflow in {"status", "history", "activity", "log"}:
             payload = load_workflow_live_status()
             if args.workflow == "history":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -18,6 +19,9 @@ LEANFLOW_PROJECT_DIRNAME = ".leanflow"
 LEANFLOW_PROJECT_MANIFEST_FILENAME = "project.yaml"
 LEANFLOW_PROJECT_SCHEMA_VERSION = 1
 LEANFLOW_PROJECT_TEMPLATE_ENV = "LEANFLOW_BLUEPRINT_TEMPLATE_SOURCE"
+REPL_REPOSITORY_URL = "https://github.com/leanprover-community/repl"
+REPL_TAG_PREFLIGHT_TIMEOUT_S = 20.0
+_REPL_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?$")
 
 _BLUEPRINT_MARKERS = (
     "lean-toolchain",
@@ -124,6 +128,117 @@ def _append_repl_to_lakefile_toml(lean_root: Path, rev: str) -> bool:
     return True
 
 
+def _repl_tag_key(tag: str) -> tuple[int, int, int, int, int] | None:
+    """Order REPL tags so ``v4.33.0-rc1 < v4.33.0 < v4.33.1``; ``None`` for other refs."""
+    match = _REPL_TAG_RE.match(str(tag or "").strip())
+    if match is None:
+        return None
+    major, minor, patch, rc = match.groups()
+    return int(major), int(minor), int(patch), 0 if rc else 1, int(rc or 0)
+
+
+def _list_repl_remote_tags(timeout: float = REPL_TAG_PREFLIGHT_TIMEOUT_S) -> list[str] | None:
+    """Return the REPL repository's tags, or ``None`` when the preflight cannot run.
+
+    One bounded ``git ls-remote`` is the only network access; offline, missing git,
+    or a slow remote all return ``None`` so the caller can say the pin is unverified
+    instead of failing setup.
+    """
+    if not shutil.which("git"):
+        return None
+    try:
+        completed = subprocess.run(
+            ["git", "ls-remote", "--tags", "--refs", REPL_REPOSITORY_URL],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    tags: list[str] = []
+    for line in completed.stdout.splitlines():
+        _sha, _tab, ref = line.strip().partition("\t")
+        if ref.startswith("refs/tags/"):
+            tags.append(ref[len("refs/tags/") :])
+    return tags
+
+
+def resolve_repl_revision(
+    version: str,
+    *,
+    tags: list[str] | None = None,
+    list_tags: Callable[[], list[str] | None] | None = None,
+) -> dict[str, Any]:
+    """Choose a REPL source revision that exists and compiles under the toolchain.
+
+    The REPL repository tags Lean minor releases but not every patch release, so
+    pinning the toolchain tag verbatim (``v4.33.1``) can request a tag that does
+    not exist. Prefer the exact tag; otherwise take the newest tag of the same
+    Lean minor that is not newer than the toolchain (a patch release keeps the
+    REPL source compatible, and Lake compiles it with the project toolchain).
+    ``status`` is ``exact``, ``nearest``, ``unverified`` (preflight unavailable, the
+    toolchain tag is used untested), or ``unresolved`` (no compatible tag exists).
+    """
+    requested = str(version or "").strip()
+    requested_key = _repl_tag_key(requested)
+    # Looked up at call time so tests and callers can replace the network preflight.
+    lister = list_tags if list_tags is not None else _list_repl_remote_tags
+    available = tags if tags is not None else lister()
+    if available is None:
+        return {
+            "requested": requested,
+            "rev": requested,
+            "status": "unverified",
+            "candidates": [],
+            "detail": (
+                f"could not list {REPL_REPOSITORY_URL} tags (offline or git unavailable); "
+                f"pinning the toolchain tag {requested} unverified"
+            ),
+        }
+    if requested in available:
+        return {
+            "requested": requested,
+            "rev": requested,
+            "status": "exact",
+            "candidates": [requested],
+            "detail": f"REPL tag {requested} exists",
+        }
+    candidates: list[tuple[tuple[int, int, int, int, int], str]] = []
+    if requested_key is not None:
+        for tag in available:
+            key = _repl_tag_key(tag)
+            if key is None or key[:2] != requested_key[:2] or key > requested_key:
+                continue
+            candidates.append((key, tag))
+    candidates.sort(reverse=True)
+    ordered = [tag for _key, tag in candidates]
+    if not ordered:
+        return {
+            "requested": requested,
+            "rev": "",
+            "status": "unresolved",
+            "candidates": [],
+            "detail": (
+                f"REPL has no tag {requested} and no earlier tag for the same Lean minor; "
+                "pin a tested revision by hand"
+            ),
+        }
+    chosen = ordered[0]
+    return {
+        "requested": requested,
+        "rev": chosen,
+        "status": "nearest",
+        "candidates": ordered,
+        "detail": (
+            f"REPL has no tag {requested}; pinning {chosen}, the newest tag of the same Lean "
+            "minor not newer than the toolchain (Lake compiles it with the project toolchain)"
+        ),
+    }
+
+
 def _detect_project_repl_binary(lean_root: Path) -> str:
     suffix = ".exe" if os.name == "nt" else ""
     candidates = [
@@ -200,9 +315,36 @@ def setup_project_power_modes(
     note("[3/6] Checking Lake dependency for leanprover-community/repl")
     dependency_present = _repl_dependency_present(root)
     if not dependency_present:
+        # Preflight the pin: the REPL repository does not tag every Lean patch
+        # release, and an unbuildable `rev` fails `lake update` after minutes of
+        # Mathlib work instead of at this step.
+        note(f"[4/6] Checking leanprover-community/repl for a tag compatible with {version}")
+        resolution = resolve_repl_revision(version)
+        note(f"[4/6] {resolution['detail']}")
+        report.update(
+            {
+                "repl_rev": resolution["rev"],
+                "repl_rev_status": resolution["status"],
+                "repl_rev_detail": resolution["detail"],
+            }
+        )
+        if resolution["status"] == "unresolved":
+            report.update(
+                {
+                    "status": "repl-rev-unresolved",
+                    "manual_steps": [
+                        "Pick a REPL revision known to build with this toolchain "
+                        f"(see {REPL_REPOSITORY_URL}/tags).",
+                        "Add it to the Lake configuration as the `repl` requirement.",
+                        "Run `lake update repl` and `lake build repl`.",
+                    ],
+                }
+            )
+            return report
+        repl_rev = str(resolution["rev"])
         if (root / "lakefile.toml").is_file():
-            note("[4/6] Adding REPL dependency to lakefile.toml")
-            dependency_present = _append_repl_to_lakefile_toml(root, version)
+            note(f"[4/6] Adding REPL dependency to lakefile.toml (rev {repl_rev})")
+            dependency_present = _append_repl_to_lakefile_toml(root, repl_rev)
         else:
             note(
                 "[4/6] lakefile.lean detected; automatic REPL edit is not safe, leaving manual setup instructions"
@@ -211,7 +353,7 @@ def setup_project_power_modes(
                 {
                     "status": "manual-setup-needed",
                     "manual_steps": [
-                        f'Add `require repl from git "https://github.com/leanprover-community/repl.git" @ "{version}"` to lakefile.lean.',
+                        f'Add `require repl from git "{REPL_REPOSITORY_URL}.git" @ "{repl_rev}"` to lakefile.lean.',
                         "Run `lake update repl`.",
                         "Run `lake build repl`.",
                     ],

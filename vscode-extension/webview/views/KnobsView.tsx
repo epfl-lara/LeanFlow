@@ -10,6 +10,7 @@ import {
   isExtensionEditableKnob,
   rejectedProfileKnobNames,
 } from "../../src/core/launch";
+import { profileLaunchSurfaces } from "../../src/core/profileSurfaces";
 import type { FlagSpec } from "../../src/core/types";
 import { LAUNCH_FIELD_LIMITS } from "../../src/core/types";
 import { Card, Empty, Notice } from "../components";
@@ -158,7 +159,7 @@ export function KnobsView() {
   }
 
   const overrideCount = Object.keys(overrides).length;
-  const restrictedWorkingKnobs = rejectedProfileKnobNames(
+  const workingSurfaces = profileLaunchSurfaces(
     {
       name: "working-set",
       summary: "",
@@ -168,6 +169,7 @@ export function KnobsView() {
     catalog,
     true,
   );
+  const restrictedWorkingKnobs = workingSurfaces.incompatibilities.map((item) => item.name);
   const totalShown = groups.reduce((sum, group) => sum + group.flags.length, 0);
 
   return (
@@ -231,8 +233,8 @@ export function KnobsView() {
               <option key={profile.name} value={profile.name}>
                 {profile.name} ({Object.keys(profile.overrides).length})
                 {rejectedProfileKnobNames(profile, catalog).length > 0
-                  ? " · unavailable in VS Code"
-                  : ""}
+                  ? " · terminal only"
+                  : " · VS Code and terminal"}
               </option>
             ))}
           </select>
@@ -240,9 +242,27 @@ export function KnobsView() {
 
         {restrictedWorkingKnobs.length > 0 && (
           <Notice tone="error">
-            This working set contains terminal-only, invalid, or unknown knobs and cannot be saved or
-            launched from VS Code: <span className="mono">{restrictedWorkingKnobs.join(", ")}</span>.
-            Use a trusted terminal for sensitive debug/runtime settings.
+            <strong>This working set cannot be saved or launched from VS Code.</strong> A trusted terminal
+            accepts every catalogued knob; the extension refuses these:
+            <ul style={{ margin: "6px 0 0 16px", padding: 0 }}>
+              {workingSurfaces.incompatibilities.map((item) => (
+                <li key={item.name}>
+                  <span className="mono">{item.name}</span> — {item.reason.replace("-", " ")}: {item.detail}.
+                </li>
+              ))}
+            </ul>
+            <div className="row tight" style={{ marginTop: 8 }}>
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  const next = { ...overrides };
+                  for (const item of workingSurfaces.incompatibilities) delete next[item.name];
+                  setForm({ overrides: next });
+                }}
+              >
+                Drop refused knobs from the working set
+              </button>
+            </div>
           </Notice>
         )}
 

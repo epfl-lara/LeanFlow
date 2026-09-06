@@ -209,7 +209,7 @@ tool is reachable through the public registry.
 
 | Module | Responsibility |
 | --- | --- |
-| `workflows/prover/config.py` | Per-role model/context settings and finite campaign/pass limits |
+| `workflows/prover/config.py` | Per-role model/context settings, finite campaign/pass limits, and the optional no-internet boundary (local source search and computation remain available) |
 | `workflows/prover/models.py` | Typed nodes, prerequisite DAG validation, revisions and fingerprints |
 | `workflows/prover/source.py` | Comment-aware hole discovery, frozen source, scratch projection, exact replacements and typed source-consistency failures |
 | `workflows/prover/source_transaction.py` | Proof and multi-file materialization journals, exact before/after images, and conflict-preserving recovery |
@@ -221,6 +221,10 @@ tool is reachable through the public registry.
 | `workflows/prover/planning_controller.py` | Fresh planning/review stages, helper-materialization transactions with removable dependency imports, source-conflict recovery without mathematical replanning, and concurrent resource batches |
 | `workflows/prover/materialization_imports.py` | Dependency-ordered recompilation of changed or missing helper artifacts before signature checks; journaled restoration of previous artifacts on rollback |
 | `workflows/prover/store.py` | Atomic snapshots, PLAN/DAG publication, baselines, events and guidance inbox |
+| `workflows/prover/live_progress.py` | Independent progress lock, bounded operation lifecycle, two-second heartbeat and metadata snapshots that retain the last committed source checkpoint |
+| `workflows/prover/stop_reason.py` | Separate job, scheduler and campaign stop reasons with remaining capacity and unresolved obligations |
+| `workflows/prover/submission_cache.py` | Single-use, in-memory reuse of parent-verified closed submissions only when exact candidate, mutable sources, dependency trust, protected type and axiom policy remain unchanged |
+| `workflows/prover/check_failures.py` | Nested check-result classification that preserves accepted plans when compilation or kernel inspection fails for infrastructure reasons |
 | `workflows/prover/observer.py` | Existing CLI activity/live-status bridge and terminal exit mapping |
 | `workflows/prover/agent_session.py` | One scratch job, durable request admission, persistence encouragement and structured result |
 | `workflows/prover/session_transport.py` | Shared provider adapters, one request per admission, no hidden retry/recovery loop |
@@ -228,7 +232,7 @@ tool is reachable through the public registry.
 | `workflows/prover/session_guidance.py` | Selected skill contracts and durable addressed inbox delivery between requests |
 | `workflows/prover/session_tools.py` | Role-specific read/scratch/Lean/research tools; no generic source-write or terminal authority |
 | `workflows/prover/session_search.py` | Bounded project search and clean-room result filtering |
-| `workflows/prover/session_research.py` | Direct bounded web/resource retrieval with provenance and no hidden model summaries |
+| `workflows/prover/session_research.py` | Direct bounded web/resource retrieval with provenance, relevance ranking, balanced provider merging, explicit degradation and no hidden model summaries |
 | `workflows/prover/resource_handoff.py` | Bounded downloaded-resource catalogs and exact read grants across private job stages |
 | `workflows/prover/check_process.py` | OS-isolated warm worker RPC and controller-owned restricted commands |
 | `workflows/prover/check_sandbox.py` | Platform sandbox profiles, permitted runtime paths and restricted process environment |
@@ -280,6 +284,14 @@ does not read or reinterpret LeanFlow's persistence files directly:
   jobs, usage, file links/diffs, and queued guidance; `ProverSettings.tsx` exposes
   catalogued launch controls. The host uses `runs prover` / `prover-message` / `runs event`,
   validates ownership and paths, and does not substitute another run's artifacts.
+  `proverProgress.ts` and `proverOperations.ts` derive budget, capacity, operation,
+  proposal and stop-reason views from the same snapshot. `proverCache.ts` and
+  `proverService.ts` cache exact-run CLI reads with file-stat change detection;
+  `idleDiscovery.ts` detects external owners even when no run is selected.
+  `profileSurfaces.ts` checks profile compatibility before launch.
+  The workspace delegates to focused `ProverBudget`, `ProverController`,
+  `ProverDag`, `ProverPlan`, `ProverJobs`, `ProverChanges`, and `ProverGuidance`
+  views; `proverFormat.ts` owns their formatting.
 - `src/core/eventBuffer.ts` deduplicates and bounds host-side event tails. When
   eviction occurs the host sends an explicit reset rather than an append, so a
   long-running workflow cannot grow the webview's retained stream without
@@ -337,6 +349,16 @@ bottom-up jobs use completed prerequisites. Experimental top-down output remains
 an untrusted candidate until every planned dependency closes and strict checking
 accepts it. Model success messages never change trusted proof status.
 
+Source transactions retain the controller lock across independent Lean acceptance.
+Worker usage and operation publication take a separate progress lock and serialize
+the last committed DAG/source checkpoint, never in-flight source documents. Live
+`verifying`/`integrating` overlays affect display only; the scheduler marks a node
+proved after the canonical transaction commits. Snapshot sequence numbers increase
+for both controller commits and metadata updates. Proposed graphs and staged diffs
+remain labelled as pending until compilation and protected-type checks pass.
+Scratch checks inherit the configured verification timeout capped by the job's
+remaining deadline; queueing, cold startup, imports and elaboration share that cap.
+
 ### Formalization
 
 ```text
@@ -365,10 +387,13 @@ There is no standing advisor, model-based manager, generic terminal tool, or
 budget-refreshing local decomposition loop. Per-pass and total admitted requests,
 restarts, direction changes, structural recoveries, node count, context, and time
 have separate finite settings. See `docs/prover-workflow.md` for current limits.
-One persisted `research_job` admission per prover workspace can launch a separate
-resource agent. Its allocation consumes campaign capacity without resetting the
-parent pass. Rejected submissions receive independent feedback inside their
-existing session. The accepted reviewer classification distinguishes direction
+Up to two persisted `research_job` admissions per prover workspace can launch
+separately bounded resource agents, with the same cap across resumes. Admissions
+are reserved before dispatch, and each allocation consumes campaign capacity
+without resetting the parent pass. Controller-derived resource grants retain
+evidence from both children within the existing bounded catalog. Rejected
+submissions receive independent feedback inside their existing session. The
+accepted reviewer classification distinguishes direction
 refinements from decomposition; deterministic campaign limits remain independent.
 
 ## Persistence and Resumability
@@ -478,3 +503,30 @@ Before changing a coupled boundary:
 
 The complete contribution and quality-gate requirements are in `AGENTS.md` and
 `CONTRIBUTING.md`.
+
+### Managed tools and launch compatibility
+
+- `cli/loogle_index_compat.py` classifies Loogle's index dialect, patches the
+  managed client to negotiate flags, and records compatibility without starting
+  an index during status reads. `loogle_local.py` owns build/lock/lifecycle;
+  `leanflow mcp repair` reapplies managed patches offline.
+- `workflow.prover_config_preview` resolves dedicated prover settings from the
+  actual child environment. `flags.resolve.profile_launch_surfaces` reports
+  terminal/extension compatibility without bypassing the extension allowlist.
+- `workflows/project.resolve_repl_revision` checks available REPL tags before
+  selecting a compatible source revision and reports unresolved/offline states.
+- `tools/utilities/empirical_compute_runtime.py` remains a standalone isolated
+  child: its capability contract drives both AST checks and the research tool
+  description. Expanded exact arithmetic has no filesystem/network authority.
+
+### Lean-IMO comparison harness
+
+`scripts/lean_imo_campaign/` is repository experiment tooling, outside the product
+workflow layer: `matrix.py` owns problem-lane scheduling, `artifacts.py` freezes
+the runtime and prepares private offline Lake projects, `worker.py` invokes the
+dedicated prover, `recovery.py` bounds provider reconnects without budget resets,
+and `runner.py` persists the two-lane queue and metrics. It introduces no generic
+batch workflow. `vscode-extension/src/core/benchmarkCampaign.ts` owns presentation
+types and navigation confinement; `panels/benchmarkPanel.ts` reads the durable
+manifest and links cells into the existing prover dashboard. See
+`docs/lean-imo-campaign.md` for the explicit experiment contract and controls.

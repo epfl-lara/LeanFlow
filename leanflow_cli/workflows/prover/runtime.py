@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import threading
@@ -13,7 +14,9 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.config import ProverConfig
+from leanflow_cli.workflows.prover.live_progress import LiveProgress
 from leanflow_cli.workflows.prover.models import Dag, Node, digest
 from leanflow_cli.workflows.prover.planning import json_report
 from leanflow_cli.workflows.prover.scheduler import ready_nodes
@@ -31,13 +34,20 @@ from leanflow_cli.workflows.prover.source import (
     write_source,
 )
 from leanflow_cli.workflows.prover.store import RunStore, now
+from leanflow_cli.workflows.prover.submission_cache import SubmissionCache, submission_key
 from leanflow_cli.workflows.prover.verification import LeanVerifier
 
 Session = Callable[..., dict[str, Any]]
 
 
 class BudgetExhausted(RuntimeError):
-    """The campaign cannot reserve another request allocation."""
+    """The campaign cannot reserve another request allocation or check interval."""
+
+    def __init__(self, message: str, *, code: str = "campaign_api_calls") -> None:
+        super().__init__(message)
+        self.code = code
+        self.scope = "campaign"
+        self.status = "timeout" if code == "campaign_wall_time" else "budget_exhausted"
 
 
 class InfrastructureFailure(RuntimeError):
@@ -79,6 +89,8 @@ class ProverRuntime:
         self.verifier = verifier or LeanVerifier(self.root, config.allowed_axioms, config.timeout_s)
         self.store = RunStore(self.root, self.run_id)
         self.lock = threading.RLock()
+        self.progress = LiveProgress(self)
+        self.submission_cache = SubmissionCache()
         self.reserved = 0
         self.consumed = 0
         self.started = time.monotonic()
@@ -116,6 +128,8 @@ class ProverRuntime:
                 "started_at": now(),
                 "goal": goal,
                 "config": config.to_mapping(),
+                "provider": os.getenv("LEANFLOW_NATIVE_PROVIDER", ""),
+                "reasoning_effort": os.getenv("LEANFLOW_NATIVE_REASONING_EFFORT", ""),
                 "jobs": [],
                 "changes": [],
                 "targets": [str(path.relative_to(self.root)) for path in self.targets],
@@ -132,6 +146,15 @@ class ProverRuntime:
                 },
             }
             self._persist()
+
+        if isinstance(self.verifier, LeanVerifier):
+            self.verifier.remaining_time = self._remaining_verification_time
+            self.verifier.on_operation = self.progress.call
+
+    def _remaining_verification_time(self) -> float:
+        """Enforce the global deadline before starting another deterministic check."""
+        self._ensure_active()
+        return max(0.01, self.config.wall_time_s - self._elapsed())
 
     def _initial_plan(self) -> str:
         lines = [
@@ -152,6 +175,7 @@ class ProverRuntime:
                 "## Strategy",
                 "",
                 "Preserve all supplied source outside its literal sorry holes. "
+                "The controller may add reviewed helper imports only after verifying that original kernel types are unchanged. "
                 "Attempt each root directly; use concrete local subproofs when helpful. "
                 "Only independently checked proofs count as complete.",
             ]
@@ -169,7 +193,10 @@ class ProverRuntime:
         saved = dict(self.state["config"])
         saved["allowed_axioms"] = tuple(saved["allowed_axioms"])
         self.config = ProverConfig(**saved)
-        self.dag = Dag.from_dict(self.state["dag"])
+        saved_dag = self.state["dag"]
+        for saved_node in saved_dag.get("nodes", []):
+            saved_node["status"] = saved_node.pop("scheduler_status", saved_node["status"])
+        self.dag = Dag.from_dict(saved_dag)
         self.dag.validate(self.config.max_nodes)
         saved_targets = [project_path(self.root, path) for path in self.state["targets"]]
         if set(self.targets) != set(saved_targets):
@@ -192,6 +219,19 @@ class ProverRuntime:
         self._assert_sources()
         self.state.pop("error", None)
         self.state.pop("next_step", None)
+        self.state.pop("stop_reason", None)
+        if self.state.get("proposal_status") in {"proposed", "validating"}:
+            self.state.update(
+                proposal_status=(
+                    "reviewed" if self.state["proposal_status"] == "validating" else "proposed"
+                ),
+                proposal_critique="Interrupted proposal: validation and any unfinished review must complete before scheduling.",
+            )
+        for operation in self.state.get("operations", []):
+            if operation.get("status") == "running":
+                operation.update(
+                    status="failed", error="Interrupted before controller resume", finished_at=now()
+                )
         self.dag.validate(self.config.max_nodes)
         for job in self.state.get("jobs", []):
             if job.get("status") in {
@@ -226,7 +266,10 @@ class ProverRuntime:
                     job["status"] = "interrupted"
         self.consumed = sum(int(job.get("api_calls", 0)) for job in self.state.get("jobs", []))
         for node in self.dag.nodes:
-            if node.status == "running" or node.id in self.resume_jobs:
+            if (
+                node.status in {"running", "submitted", "verifying", "integrating"}
+                or node.id in self.resume_jobs
+            ):
                 node.status = (
                     "retry"
                     if node.id in self.resume_jobs or node.attempts <= self.config.max_restarts
@@ -245,11 +288,10 @@ class ProverRuntime:
         self._persist()
 
     def _persist(self) -> None:
-        with self.lock:
+        with self.lock, self.progress.lock:
             self._refresh_metrics()
-            self.store.write(self.state, self.dag, self.documents)
-            if self.observer is not None:
-                self.observer.publish(self.state)
+            self.store.write(self.state, self.dag, self.documents, publish=False)
+            self.progress.publish()
 
     def _refresh_metrics(self) -> None:
         jobs = self.state.get("jobs", [])
@@ -262,6 +304,23 @@ class ProverRuntime:
             job.get("cost_usd") is not None for job in jobs
         )
         metrics["reserved_api_calls"] = self.reserved
+        active_spent = sum(
+            max(0, int(job.get("api_calls", 0)) - int(job.get("previous_api_calls", 0)))
+            for job in jobs
+            if not job.get("accounted") and job.get("status") != "resume_pending"
+        )
+        metrics["remaining_reserved_api_calls"] = max(0, self.reserved - active_spent)
+        metrics["available_api_calls"] = max(
+            0,
+            self.config.total_api_calls
+            - metrics["api_calls"]
+            - metrics["remaining_reserved_api_calls"],
+        )
+        metrics.update(
+            wall_time_s=self.config.wall_time_s,
+            max_decompositions=self.config.max_decompositions,
+            max_nodes=self.config.max_nodes,
+        )
         metrics["elapsed_s"] = round(self._elapsed(), 3)
 
     def _elapsed(self) -> float:
@@ -297,7 +356,8 @@ class ProverRuntime:
         if self._elapsed() >= self.config.wall_time_s:
             self.cancelled.set()
             self.stopping = True
-            raise BudgetExhausted("campaign wall-clock budget exhausted")
+            self.state["stop_status"] = "budget_exhausted"
+            raise BudgetExhausted("campaign wall-clock budget exhausted", code="campaign_wall_time")
 
     def _context(self, node: Node | None = None) -> dict[str, Any]:
         from leanflow_cli.workflows.prover.resource_handoff import resource_inventory
@@ -371,7 +431,13 @@ class ProverRuntime:
             "path": str(self.root / document.path),
             "baseline_path": str(baseline),
             "status": "added" if document.generated else "modified",
+            "pending": False,
             "agent_id": agent_id,
+            "job_id": (
+                self.state.get("materialization_job_id", "")
+                if agent_id == "orchestrator"
+                else agent_id
+            ),
         }
         prior = next(
             (item for item in self.state["changes"] if item["path"] == change["path"]), None
@@ -475,20 +541,34 @@ class ProverRuntime:
         workspace = self.store.directory / "checks"
         workspace.mkdir(exist_ok=True)
         check_path = workspace / f"{node.id}_{node.revision}.lean"
-        write_source(check_path, declaration_source(document, node, candidate=candidate))
-        result = self.verifier.check(node, check_path)
+        source = declaration_source(document, node, candidate=candidate)
+        write_source(check_path, source)
+        cached = self.submission_cache.take(node, submission_key(self, node, source))
+        result = self.progress.call(
+            "submission_check",
+            (
+                "Reusing independent check: source unchanged"
+                if cached is not None
+                else "Independently checking candidate"
+            ),
+            lambda: cached if cached is not None else self.verifier.check(node, check_path),
+            node_id=node.id,
+            job_id=job_id,
+            file=node.file,
+            timeout_s=self.config.timeout_s,
+        )
         self.store.event(
             "candidate_checked",
-            {"node_id": node.id, "accepted": bool(result.get("accepted")), "result": result},
+            {
+                "node_id": node.id,
+                "accepted": bool(result.get("accepted")),
+                "result": result,
+                "reused_independent_submission": cached is not None,
+            },
         )
         if not result.get("accepted"):
-            if result.get("error_code") in {
-                "isolation_unavailable",
-                "check_setup_failed",
-                "lean_interact_start_failed",
-                "lean_probe_unavailable",
-                "local_repl_missing",
-            }:
+            if infrastructure_code(result):
+                self._ensure_active()
                 raise InfrastructureFailure(
                     "Lean verification environment unavailable: "
                     + str(result.get("error", result)),
@@ -516,8 +596,21 @@ class ProverRuntime:
                     status="source_conflict",
                 )
             replace_source(path, document.render().encode("utf-8"))
+            self._change(document, job_id)
+            staged_change = next(
+                item for item in self.state["changes"] if item["path"] == str(path)
+            )
+            staged_change.update(status="staged", pending=True)
             # Original declarations can also be imported by another proof obligation.
-            compiled = self.verifier.compile_module(node.file)
+            compiled = self.progress.call(
+                "proof_integration",
+                "Compiling accepted proof into project",
+                lambda: self.verifier.compile_module(node.file),
+                node_id=node.id,
+                job_id=job_id,
+                file=node.file,
+                timeout_s=self.config.timeout_s,
+            )
             if not compiled.get("accepted"):
                 raise InfrastructureFailure(
                     "The independently checked proof could not be compiled into an importable module. Its candidate is retained; restore the Lean build environment and resume. "
@@ -726,11 +819,17 @@ class ProverRuntime:
         resuming = self.state["phase"] == "resume"
         if self.observer is not None:
             self.observer.start(self.state, resumed=self.state["phase"] == "resume")
+        self.progress.start()
         try:
             if hasattr(self.verifier, "preflight"):
                 self.state["phase"] = "preflight"
                 self._persist()
-                preflight = self.verifier.preflight(self.store.directory / "checks")
+                preflight = self.progress.call(
+                    "preflight",
+                    "Checking isolated Lean environment",
+                    lambda: self.verifier.preflight(self.store.directory / "checks"),
+                    timeout_s=self.config.timeout_s,
+                )
                 self.state["preflight"] = preflight
                 if preflight.get("accepted") is not True:
                     raise InfrastructureFailure(
@@ -814,6 +913,7 @@ class ProverRuntime:
                                 node.status = "running"
                                 if not job.get("resumed"):
                                     node.attempts += 1
+                                self._persist()
                                 future = pool.submit(self._invoke, job, context, prompt)
                                 self.pending[future] = job
                                 future.add_done_callback(self.completions.put)
@@ -832,21 +932,26 @@ class ProverRuntime:
                     raise
             index = self.dag.by_id()
             if all(index[root].status == "proved" for root in self.dag.roots):
-                self.state["phase"] = "verifying"
+                self.state["phase"] = "final_build"
+                self._persist()
                 self._assert_sources()
-                final = self.verifier.final(
-                    list(
-                        dict.fromkeys(
-                            [
-                                *self.targets,
-                                *(
-                                    self.root / document.path
-                                    for document in self.documents.values()
-                                    if document.generated
-                                ),
-                            ]
+                final = self.progress.call(
+                    "final_build",
+                    "Verifying the complete project",
+                    lambda: self.verifier.final(
+                        list(
+                            dict.fromkeys(
+                                [
+                                    *self.targets,
+                                    *(
+                                        self.root / document.path
+                                        for document in self.documents.values()
+                                        if document.generated
+                                    ),
+                                ]
+                            )
                         )
-                    )
+                    ),
                 )
                 self.state["verification"] = final
                 status = "completed" if final.get("accepted") else "verification_failed"
@@ -899,6 +1004,11 @@ class ProverRuntime:
                     "No external source edits were overwritten. Preserve source-transaction.json "
                     "and source checkpoints; resume needs them to recover the interrupted transaction."
                 )
+            self.progress.close()
+            from leanflow_cli.workflows.prover.stop_reason import campaign_stop_reason
+
+            self._refresh_metrics()
+            self.state["stop_reason"] = campaign_stop_reason(self, status)
             self.state.update(status=status, phase=status, finished_at=now(), terminal=True)
             self._persist()
             if self.observer is not None:

@@ -1,12 +1,12 @@
 /** Interactive theorem graph; geometry is stable across polling and proof-state updates. */
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ProverSnapshot } from "../../src/core/prover";
-import { GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphProofState, layoutProverGraph, PROOF_STATES, type ProofState } from "../../src/core/proverGraph";
+import type { ProverDag, ProverNode } from "../../src/core/prover";
+import { GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, layoutProverGraph, PROOF_STATES, type NodeLifecycle, type ProofState } from "../../src/core/proverGraph";
 
-export function ProverGraph({ state, selected, search, onSelect }: {
-  state: ProverSnapshot; selected: string; search: string; onSelect: (id: string) => void;
+export function ProverGraph({ dag, lifecycle, selected, search, onSelect }: {
+  dag: ProverDag; lifecycle: (node: ProverNode) => NodeLifecycle; selected: string; search: string; onSelect: (id: string) => void;
 }) {
-  const graph = useMemo(() => layoutProverGraph(state.dag), [state.dag]);
+  const graph = useMemo(() => layoutProverGraph(dag), [dag]);
   const marker = useId().replace(/:/g, "");
   const viewport = useRef<HTMLDivElement>(null);
   const buttons = useRef(new Map<string, HTMLButtonElement>());
@@ -23,10 +23,11 @@ export function ProverGraph({ state, selected, search, onSelect }: {
   const fit = Math.min(1, Math.max(.15, (width - 16) / graph.width));
   const scale = zoom ?? fit;
   const query = search.trim().toLowerCase();
-  const matches = new Set(graph.nodes.filter(({ node }) => `${node.name} ${node.file} ${node.status} ${PROOF_STATES[graphProofState(node, state.jobs, state.terminal)].label}`.toLowerCase().includes(query)).map(({ node }) => node.id));
+  const states = new Map(graph.nodes.map(({ node }) => [node.id, lifecycle(node)]));
+  const matches = new Set(graph.nodes.filter(({ node }) => `${node.name} ${node.file} ${node.status} ${states.get(node.id)!.label} ${PROOF_STATES[states.get(node.id)!.state].label}`.toLowerCase().includes(query)).map(({ node }) => node.id));
   const related = new Set([selected, ...graph.edges.filter((edge) => edge.from === selected || edge.to === selected).flatMap((edge) => [edge.from, edge.to])]);
   const counts = Object.fromEntries(Object.keys(PROOF_STATES).map((key) => [key, 0])) as Record<ProofState, number>;
-  graph.nodes.forEach(({ node }) => counts[graphProofState(node, state.jobs, state.terminal)]++);
+  graph.nodes.forEach(({ node }) => counts[states.get(node.id)!.state]++);
   const focusSelected = () => buttons.current.get(selected)?.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
 
   return <div className="prover-graph">
@@ -59,15 +60,15 @@ export function ProverGraph({ state, selected, search, onSelect }: {
             {graph.edges.map((edge) => <path key={`${edge.from}\0${edge.to}`} d={edge.path} className={`prover-graph-edge ${edge.from === selected || edge.to === selected ? "highlighted" : ""}`} markerEnd={`url(#${marker})`} />)}
           </svg>
           {graph.nodes.map(({ node, x, y }) => {
-            const proofState = graphProofState(node, state.jobs, state.terminal);
-            const status = PROOF_STATES[proofState];
-            const goal = state.dag.roots.includes(node.id);
+            const life = states.get(node.id)!;
+            const status = PROOF_STATES[life.state];
+            const goal = dag.roots.includes(node.id);
             return <button key={node.id} ref={(element) => { if (element) buttons.current.set(node.id, element); else buttons.current.delete(node.id); }}
-              className={`prover-graph-card ${proofState} ${node.id === selected ? "selected" : ""} ${related.has(node.id) ? "related" : ""} ${query && !matches.has(node.id) ? "dimmed" : ""} ${query && matches.has(node.id) ? "matched" : ""}`}
+              className={`prover-graph-card ${life.state} ${node.id === selected ? "selected" : ""} ${related.has(node.id) ? "related" : ""} ${query && !matches.has(node.id) ? "dimmed" : ""} ${query && matches.has(node.id) ? "matched" : ""}`}
               style={{ left: x, top: y, width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT }}
-              aria-pressed={node.id === selected} aria-label={`${node.name}: ${status.label}${goal ? ", goal" : ""}`}
-              title={`${node.name}\n${node.status}\n${node.module || node.file}`} onClick={() => onSelect(node.id)}>
-              <span className="prover-graph-card-top"><span>{goal ? "GOAL" : "LEMMA"}</span><span className={`prover-graph-state ${proofState}`}><span aria-hidden="true">{status.icon}</span> {status.label}</span></span>
+              aria-pressed={node.id === selected} aria-label={`${node.name}: ${life.label}${goal ? ", goal" : ""}`}
+              title={`${node.name}\n${life.label} (${status.label})\n${life.detail}\n${node.module || node.file}`} onClick={() => onSelect(node.id)}>
+              <span className="prover-graph-card-top"><span>{goal ? "GOAL" : "LEMMA"}</span><span className={`prover-graph-state ${life.state}`}><span aria-hidden="true">{status.icon}</span> {life.label}</span></span>
               <strong>{node.name}</strong><small>{node.module || node.file || "Placement pending"}</small>
             </button>;
           })}

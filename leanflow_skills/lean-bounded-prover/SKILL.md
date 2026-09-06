@@ -14,7 +14,10 @@ advisor, start a recursive prover workflow, or reset a budget.
 Keep original declarations and statements fixed. Only the controller can
 integrate source edits, update PLAN.md, or revise DAG.json. Submit the exact text
 replacing the authorized literal `sorry` in `candidate.txt` or the requested JSON
-report. Definitions can be filled only when explicitly included in the assignment.
+report. The controller may add reviewed helper-module imports after checking
+that original declaration kernel types remain unchanged. Use supplied helper
+imports; do not copy already proved helpers into the target to avoid those imports.
+Definitions can be filled only when explicitly included in the assignment.
 
 Decompose concretely when needed: write local `have` statements and discharge
 their obligations in the same scratch job and budget. Do not return an informal

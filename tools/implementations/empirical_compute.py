@@ -15,7 +15,7 @@ from typing import Any, Final
 
 from core.runtime_modes import empirical_compute_enabled
 from tools.registry import registry
-from tools.utilities.empirical_compute_runtime import MAX_PROGRAM_BYTES
+from tools.utilities.empirical_compute_runtime import MAX_PROGRAM_BYTES, capability_contract
 
 EMPIRICAL_COMPUTE_DEFAULT_TIMEOUT_S: Final[int] = 4
 EMPIRICAL_COMPUTE_MIN_TIMEOUT_S: Final[int] = 1
@@ -81,12 +81,18 @@ def _decode_child_result(stdout: bytes, stderr: bytes, returncode: int) -> dict[
             "output": "",
             "error": "isolated computation returned a non-object result",
         }
-    return {
+    result: dict[str, Any] = {
         "success": bool(payload.get("success")),
         "status": str(payload.get("status", "empirical_compute_error") or ""),
         "output": str(payload.get("output", "") or ""),
         "error": payload.get("error"),
     }
+    capabilities = payload.get("capabilities")
+    if isinstance(capabilities, str) and capabilities:
+        # A denial carries the supported subset so the next attempt does not
+        # have to rediscover the contract one rejected construct at a time.
+        result["capabilities"] = capabilities[:4000]
+    return result
 
 
 def empirical_compute_tool(program: str, *, timeout_s: int = 4) -> str:
@@ -183,15 +189,21 @@ def empirical_compute_tool(program: str, *, timeout_s: int = 4) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+_CAPABILITIES = capability_contract()
+
 EMPIRICAL_COMPUTE_SCHEMA = {
     "name": "empirical_compute",
     "description": (
-        "Run a bounded, process-isolated exact integer/Fraction experiment. Fraction, gcd, "
-        "isqrt, lcm, and prod are preloaded; the same names may also be imported from "
-        "fractions/math for compatibility. The restricted program can use arithmetic, loops, "
-        "small functions, and print, but has no filesystem, process, network, environment, "
-        "dynamic-import, background, or PTY capability. Use read_file/search_files or the "
-        "read-only terminal separately to inspect the assigned project."
+        "Run a bounded, process-isolated exact integer/Fraction experiment (evidence, not a "
+        f"proof). Preloaded helpers: {', '.join(_CAPABILITIES['preloaded'])}; the same names "
+        "may also be imported from fractions/math/itertools, with aliases such as "
+        "`from fractions import Fraction as Q`. The restricted program can use arithmetic and "
+        "bitwise operators, `in`, loops, comprehensions, small functions, lambda, dict/set "
+        "methods, and print, but has no filesystem, process, network, environment, "
+        "dynamic-import, background, or PTY capability; other modules, classes, and "
+        "try/except are rejected. A denial returns a `capabilities` summary of the exact "
+        "supported subset. Use read_file/search_files or the read-only terminal separately "
+        "to inspect the assigned project."
     ),
     "parameters": {
         "type": "object",

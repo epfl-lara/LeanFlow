@@ -2,7 +2,7 @@
   "name": "leanflow-vscode",
   "displayName": "LeanFlow",
   "description": "Launch, observe, and ablate LeanFlow proof workflows without leaving the editor.",
-  "version": "0.1.13",
+  "version": "0.1.15",
   "publisher": "epfl-lara",
   "license": "Apache-2.0",
   "homepage": "https://github.com/epfl-lara/LeanFlow/tree/main/vscode-extension#readme",
@@ -120,6 +120,10 @@
       {
         "command": "leanflow.doctor",
         "title": "LeanFlow: Run Doctor"
+      },
+      {
+        "command": "leanflow.openBenchmark",
+        "title": "LeanFlow: Open Benchmark Campaign"
       }
     ],
     "menus": {
@@ -176,6 +180,13 @@
           "minimum": 250,
           "maximum": 30000,
           "description": "How often live status and activity events are re-read while a run is active, including a verified CLI run."
+        },
+        "leanflow.idlePollIntervalMs": {
+          "type": "number",
+          "default": 20000,
+          "minimum": 5000,
+          "maximum": 300000,
+          "description": "How often an idle dashboard checks whether a run was started or resumed outside this window. Only a changed live-status file triggers a CLI read; a file watcher reacts sooner when the state directory is watchable."
         },
         "leanflow.cellSettleMs": {
           "type": "number",

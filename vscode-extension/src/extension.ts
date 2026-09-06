@@ -8,6 +8,7 @@ import { LeanFlowServices } from "./core/services";
 import { emptyLaunchRequest } from "./core/types";
 import { ControlViewProvider } from "./panels/controlView";
 import { DashboardPanel } from "./panels/dashboardPanel";
+import { openBenchmarkPanel } from "./panels/benchmarkPanel";
 import { RunsTreeProvider } from "./views/runsTree";
 
 /** Show a command failure with direct routes to installation and configuration. */
@@ -85,6 +86,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("leanflow.openDashboard", () => {
       DashboardPanel.show(context.extensionUri, services);
     }),
+    vscode.commands.registerCommand("leanflow.openBenchmark", (uri?: vscode.Uri) =>
+      openBenchmarkPanel(context.extensionUri, services, uri),
+    ),
 
     vscode.commands.registerCommand("leanflow.refresh", async () => {
       await services.reload();

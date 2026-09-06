@@ -11,6 +11,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.models import Dag
 from leanflow_cli.workflows.prover.planning import apply_proposal, json_report, planning_prompt
 from leanflow_cli.workflows.prover.source import (
@@ -100,9 +101,18 @@ def research_plan(
                 raise ValueError("planning report must include a concrete plan")
         except ValueError as error:
             critique = str(error)
+            runtime.state.update(proposal_status="rejected", proposal_critique=critique)
             runtime.store.event("plan_rejected", {"reason": critique})
+            runtime._persist()
             continue
-        runtime.state["phase"] = "reviewing"
+        runtime.state.update(
+            phase="reviewing",
+            proposed_dag=updated.to_dict(),
+            proposed_plan=proposal["plan"],
+            proposal_status="proposed",
+            proposal_critique=critique,
+        )
+        runtime._persist()
         reviewed = _planning_call(
             runtime,
             checkpoint,
@@ -120,6 +130,9 @@ def research_plan(
         review = json_report(str(reviewed.get("final_response", "")))
         if review.get("accepted") is not True:
             critique = str(review.get("critique", "review did not accept the graph"))
+            runtime.state.update(proposal_status="rejected", proposal_critique=critique)
+            runtime.store.event("plan_rejected", {"reason": critique})
+            runtime._persist()
             continue
         changed_direction = (
             affected is not None
@@ -139,6 +152,13 @@ def research_plan(
             runtime.store.event("plan_refinement_budget_exhausted", {"reason": reason})
             runtime._persist()
             return False
+        runtime.state["materialization_job_id"] = checkpoint["steps"].get(f"proposal-{attempt}", "")
+        runtime.state.update(
+            phase="validating",
+            proposal_status="validating",
+            proposal_critique=str(review.get("critique", "")),
+        )
+        runtime._persist()
         try:
             install_planned_libraries(runtime, proposal.get("libraries", []))
             materialize(runtime, updated, skeletons)
@@ -150,13 +170,28 @@ def research_plan(
             if isinstance(error, SourceConflictError):
                 raise InfrastructureFailure(str(error), status="source_conflict") from error
             critique = f"Independent skeleton gate rejected proposal: {error}"
+            failed = next(
+                (
+                    op
+                    for op in reversed(runtime.state.get("operations", []))
+                    if op.get("status") == "failed" and op.get("file")
+                ),
+                None,
+            )
+            if failed is not None:
+                for proposed_node in runtime.state.get("proposed_dag", {}).get("nodes", []):
+                    if proposed_node["file"] == failed["file"]:
+                        proposed_node.update(status="check_failed", notes=str(error))
+            runtime.state.update(proposal_status="rejected", proposal_critique=critique)
             runtime.store.event("plan_rejected", {"reason": critique})
+            runtime._persist()
             continue
         runtime.dag = updated
         if changed_direction:
             runtime.state["metrics"]["plan_refinements"] += 1
         runtime.state["plan_markdown"] = proposal["plan"]
         runtime.state["phase"] = "proving"
+        runtime.state["proposal_status"] = "accepted"
         checkpoint["accepted_proposal"] = proposal
         runtime._persist()
         launch_research_requests(runtime, proposal.get("research_jobs", []))
@@ -207,6 +242,8 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
     """Apply only reviewed, immutable library requests and record exact configuration diffs."""
     if not entries:
         return
+    if not runtime.config.allow_internet:
+        raise ValueError("Internet access is disabled; use only already installed libraries")
     if not isinstance(entries, list):
         raise ValueError("planning libraries must be a list")
     from leanflow_cli.workflows.prover.libraries import install_libraries
@@ -257,10 +294,22 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
 def materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) -> None:
     """Serialize the controller's helper and import source mutations."""
     with runtime.lock:
-        _materialize(runtime, dag, skeletons)
+        previous_changes = copy.deepcopy(runtime.state["changes"])
+        runtime.progress.call(
+            "graph_validation",
+            "Materializing and validating reviewed graph",
+            lambda: _materialize(runtime, dag, skeletons, previous_changes),
+            total=len(skeletons),
+            timeout_s=runtime._remaining_verification_time(),
+        )
 
 
-def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) -> None:
+def _materialize(
+    runtime: ProverRuntime,
+    dag: Dag,
+    skeletons: dict[str, str],
+    previous_changes: list[dict[str, Any]],
+) -> None:
     """Compile reviewed helper skeletons before making them dependencies of user goals."""
     runtime._assert_sources()
     index = dag.by_id()
@@ -325,6 +374,7 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
                         "baseline_path": str(baseline),
                         "status": "modified",
                         "agent_id": "orchestrator",
+                        "job_id": runtime.state.get("materialization_job_id", ""),
                     }
                 )
                 if name in documents:
@@ -410,12 +460,24 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
             runtime._change(documents[index[node_id].file], "orchestrator")
         from leanflow_cli.workflows.prover.materialization_imports import compile_changed_helpers
 
+        for change in runtime.state["changes"]:
+            if change not in previous_changes:
+                change.update(pending=True, staged_status=change["status"], status="staged")
+        runtime.progress.publish()
         compile_changed_helpers(runtime, dag, documents, journal)
         if hasattr(runtime.verifier, "capture_signatures"):
             signatures = runtime.verifier.capture_signatures(
                 dag, documents, runtime.store.directory / "checks" / "signatures", initialize=False
             )
             if signatures.get("accepted") is not True:
+                if infrastructure_code(signatures):
+                    from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
+
+                    runtime._ensure_active()
+                    raise InfrastructureFailure(
+                        "Protected-type verification infrastructure failed: " + str(signatures),
+                        status="environment_error",
+                    )
                 raise ValueError(
                     "Planned imports changed or failed to elaborate a protected declaration type: "
                     + str(signatures.get("error", signatures))
@@ -429,14 +491,34 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
         runtime.dag = dag
         from leanflow_cli.workflows.prover.source_transaction import commit_materialization
 
+        for change in runtime.state["changes"]:
+            if change.get("pending"):
+                change.update(status=change.pop("staged_status", "modified"), pending=False)
         commit_materialization(runtime)
     except Exception:
+        staged = copy.deepcopy(
+            [change for change in runtime.state["changes"] if change.get("pending")]
+        )
         try:
             recover_materialization(runtime, journal)
         except (ValueError, SourceConflictError) as conflict:
             from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
 
             raise InfrastructureFailure(str(conflict), status="source_conflict") from conflict
+        for change in staged:
+            change.update(status="rolled_back", pending=False)
+        for change in staged:
+            prior = next(
+                (item for item in runtime.state["changes"] if item["path"] == change["path"]), None
+            )
+            if prior is None:
+                runtime.state["changes"].append(change)
+            else:
+                prior["last_attempt"] = {
+                    "status": "rolled_back",
+                    "agent_id": change.get("agent_id", "orchestrator"),
+                }
+        runtime.progress.publish()
         raise
 
 

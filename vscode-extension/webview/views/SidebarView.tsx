@@ -142,7 +142,7 @@ export function SidebarView() {
               sorries: {status.sorry_count ?? "—"} here, {status.project_sorry_count ?? "—"} in
               project
             </div>
-            <div className="truncate">{status.model || "—"}</div>
+            <div className="truncate">{String(status.model || (status.prover_mode ? `${status.prover_mode} prover` : "") || "—")}</div>
           </div>
           {status.last_activity_message && (
             <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.5 }}>

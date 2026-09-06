@@ -56,6 +56,10 @@ WORKFLOW_ALIAS_MAP = build_workflow_alias_map()
 
 FORGIVING_WORKFLOW_ALIAS_MAP = build_forgiving_workflow_alias_map()
 
+#: ``leanflow workflow`` options that select a preview; they are parsed by the CLI
+#: before the workflow name and must never reach a workflow's own arguments.
+PREVIEW_OPTION_TOKENS = frozenset({"--dry-run", "--json"})
+
 
 @dataclass(frozen=True)
 class NativeWorkflowSpec:
@@ -260,7 +264,63 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
         summary["autoformalizer_verifier_command_template"] = (
             plan.workflow.autoformalizer_verifier_command_template
         )
+    if plan.workflow.workflow_kind == "prove":
+        summary["prover_config"] = str(prover_config_preview(plan)["summary"])
     return summary
+
+
+def prover_config_preview(plan: NativeLaunchPlan) -> dict[str, Any]:
+    """Resolve the dedicated prover's effective configuration for a preview.
+
+    The bounded prover reads its limits from ``LEANFLOW_PROVER_*`` at launch, so
+    a preview that only lists environment keys makes the user re-derive the
+    campaign shape by hand. This resolves the same way the runtime does and
+    records where each value came from: ``environment`` (inherited, e.g. an
+    exported knob profile), ``launcher`` (set by this launch), ``runtime-provider``
+    (the shared model), or ``default``. An invalid combination is reported as
+    ``error`` here rather than as a crash after the run directory exists.
+    """
+    from leanflow_cli.workflows.prover.config import ENV_NAMES, ProverConfig
+
+    env = plan.child_env
+    parent = os.environ
+    sources: dict[str, str] = {}
+    for field, name in ENV_NAMES.items():
+        raw = str(env.get(name, "") or "").strip()
+        if raw:
+            sources[field] = "environment" if parent.get(name) == env.get(name) else "launcher"
+        elif field == "allowed_axioms" and str(env.get("LEANFLOW_NATIVE_ALLOWED_AXIOMS", "")):
+            sources[field] = "launcher"
+        elif field == "model" and str(env.get("LEANFLOW_NATIVE_MODEL", "")):
+            sources[field] = "runtime-provider"
+        else:
+            sources[field] = "default"
+    try:
+        config = ProverConfig.from_env(env)
+    except (ValueError, TypeError) as exc:
+        return {
+            "effective": None,
+            "sources": sources,
+            "env_names": dict(ENV_NAMES),
+            "error": f"invalid prover configuration: {exc}",
+            "summary": f"invalid: {exc}",
+        }
+    effective = config.to_mapping()
+    effective["allowed_axioms"] = list(config.allowed_axioms)
+    hours = config.wall_time_s / 3600
+    summary = (
+        f"{config.mode} · {config.search_order} · {config.parallelism} prover slot(s) · "
+        f"{config.total_api_calls} calls ({config.job_api_calls}/job, "
+        f"{config.orchestrator_api_calls}/planning stage) · {hours:g} h wall · "
+        f"{config.timeout_s} s per request/check · axioms {', '.join(config.allowed_axioms)}"
+    )
+    return {
+        "effective": effective,
+        "sources": sources,
+        "env_names": dict(ENV_NAMES),
+        "error": "",
+        "summary": summary,
+    }
 
 
 #: Child-environment keys whose values must never leave the process in a preview.
@@ -427,10 +487,15 @@ def launch_plan_payload(plan: NativeLaunchPlan) -> dict[str, Any]:
             "formalization document intake (source selection, manifest, target Lean file) "
             "runs at launch, not in a preview"
         )
+    prover: dict[str, Any] | None = None
+    if workflow.workflow_kind == "prove":
+        prover = prover_config_preview(plan)
+        deferred.append("the run id is assigned when the prover run directory is created")
     return {
         "version": 1,
         "deferred": deferred,
         "summary": summary,
+        "prover": prover,
         "argv": list(plan.argv),
         "cwd": str(plan.project.root),
         "project": {
@@ -516,6 +581,14 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     idx = 0
     while idx < len(remaining):
         token = remaining[idx]
+        if token in PREVIEW_OPTION_TOKENS:
+            # A misplaced preview option used to be folded into the target path and
+            # the run started anyway; fail before any plan or run exists.
+            raise ValueError(
+                f"{token} is a `leanflow workflow` preview option and must come before the "
+                f"workflow name, e.g. `leanflow workflow --dry-run --json "
+                f"{command_name.lstrip('/')} ...`; no run was started"
+            )
         if token in {"--no-parallel", "-no-parallel"}:
             no_parallel = True
             idx += 1

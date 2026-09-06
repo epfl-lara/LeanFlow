@@ -3,6 +3,75 @@
 All notable changes to the LeanFlow VS Code extension are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.15] — 2026-09-06
+
+- Add **LeanFlow: Open Benchmark Campaign** for the durable two-lane Lean-IMO
+  comparison: live outcomes and metrics, private cell dashboard navigation,
+  source/plan/log links, and pause-after-active control.
+- Keep missing provider cost visible as unavailable and require independent
+  final Lean acceptance for a verified cell.
+
+## [0.1.14] — 2026-09-06
+
+Dashboard truthfulness for the dedicated prover, from the campaign follow-up
+backlog (D01–D09, J06, J08).
+
+- Count a submitted proof as awaiting verification, not active work. A prover
+  that completed while its theorem still reads `running` now shows "Pending
+  verification"; `submitted`, `verifying`, and `integrating` show their current
+  check or integration step. A failed prover never implies a proof, and only the
+  independent verifier marks a theorem solved. The header pill, graph legend,
+  tree rows, node details, and job rows all derive from one lifecycle
+  classification, so `Solved 0 · Active 2 · Pending 2 · Awaiting verification 1`
+  reads the same everywhere.
+- Show the controller's post-review work: active checks (helper skeleton
+  compiles, protected-signature checks, submission checks, proof integration,
+  the final build) with file, progress, start time, duration, and timeout;
+  recent completed checks; the planning stages of the current request with
+  their jobs; and the explicit reason provers are waiting. Without operation
+  records the phase is named and per-check progress is stated as unreported.
+- Display the complete campaign budget: calls used of total, calls available
+  for new work as the runtime reports them, outstanding reservations without
+  subtracting them from spend again, elapsed time advancing from the snapshot's
+  own clock only while the run is live, plan-refinement, decomposition, theorem
+  and per-node restart allowances, and the per-stage planning limit. Unknown
+  cost stays unknown.
+- Replace the generic provider/model/agents card for prover runs with the
+  effective shared provider and reasoning effort, per-role model, context and
+  compression, one orchestrator versus `n/limit` prover slots, running checks
+  that are not agents, and ready theorems.
+- Expose a proposed graph and its review verdict beside the canonical one. The
+  proposal view is labelled, its new statements are never active or solved, a
+  statement the skeleton check refused reads "Check failed", and statements the
+  canonical graph already proved keep their progress during replanning. The
+  draft plan and critique sit apart from the accepted PLAN.
+- List staged file changes as "Pending validation" ahead of committed ones,
+  with rolled-back and deleted files marked, the responsible controller job
+  linked, and diffs against the run baseline preserved.
+- Name the exact stop reason and its scope — one job's allowance, the campaign
+  API budget, the wall-clock limit, a restart or decomposition limit,
+  infrastructure, or a certified disproof — with used/limit and the permitted
+  next step. An older snapshot's `budget_exhausted` is reported as ambiguous
+  rather than as the campaign budget, next to the campaign spend.
+- Notice a run started or resumed from a terminal while the dashboard is idle:
+  a watcher on the project's live-status file and a bounded idle check
+  (`leanflow.idlePollIntervalMs`, default 20 s) re-read state only when that
+  file changes.
+- Refresh the prover workspace every three seconds without a CLI process per
+  tick: the host re-reads through `leanflow runs prover` only when the run's
+  state file changed, opening an artifact reuses the cached snapshot, a snapshot
+  never replaces a newer one, and a failed read keeps the last good state marked
+  stale.
+- Make saved profiles usable from the launcher: each refused knob names its
+  reason (unknown, terminal-only, launcher-owned, invalid value); one click
+  saves a VS Code-compatible copy without those knobs or drops refused one-off
+  overrides; the resolved plan lists the effective dedicated prover
+  configuration with where each value came from, and says where the run id
+  appears once assigned. The allowlist itself is unchanged.
+- Open job artifacts (draft outlines, graph proposals, resource notes, reports)
+  from the job row; show job timing, phase, recorded model settings, and the
+  check a job is waiting on. Binary artifacts are listed by name.
+
 ## [0.1.13] — 2026-09-06
 
 - Group log rows into the agent sessions they belong to. Each session gets one

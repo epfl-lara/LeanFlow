@@ -35,6 +35,16 @@ def begin_proof(
         "node_id": node.id,
         "candidate": candidate,
         "before_document": before.to_dict(),
+        "before_change": copy.deepcopy(
+            next(
+                (
+                    change
+                    for change in runtime.state["changes"]
+                    if change["path"] == str(runtime.root / node.file)
+                ),
+                None,
+            )
+        ),
         "before_sha256": digest(before.render()),
         "after_sha256": digest(after),
     }
@@ -82,6 +92,18 @@ def recover_proof(runtime: ProverRuntime) -> None:
         dep for dep in node.dependencies if runtime.dag.by_id()[dep].status != "proved"
     ]
     node.notes += "\nRecovered an interrupted proof installation; recheck the retained candidate before promotion."
+    current_change = next(
+        (change for change in runtime.state["changes"] if change["path"] == str(source)), None
+    )
+    previous_change = journal.get("before_change")
+    if current_change is not None:
+        failed_agent = current_change.get("agent_id", "")
+        if previous_change is not None:
+            current_change.clear()
+            current_change.update(previous_change)
+            current_change["last_attempt"] = {"status": "rolled_back", "agent_id": failed_agent}
+        else:
+            current_change.update(status="rolled_back", pending=False)
     runtime._persist()
     path.unlink()
 

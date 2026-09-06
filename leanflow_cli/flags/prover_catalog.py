@@ -115,6 +115,15 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
         read_in=_READER,
     ),
     FlagSpec(
+        name="LEANFLOW_PROVER_ALLOW_INTERNET",
+        kind="feature",
+        value_type="bool",
+        default="1",
+        group=_GROUP,
+        summary="Allow web research, downloads and remote Lean search. Off retains local source search and computation; model API access is unaffected.",
+        read_in=_READER,
+    ),
+    FlagSpec(
         name="LEANFLOW_PROVER_FILL_DEFINITIONS",
         kind="feature",
         value_type="bool",

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from leanflow_cli.workflows.prover import agent_session as session
+from leanflow_cli.workflows.prover.runtime import BudgetExhausted
 from leanflow_cli.workflows.prover.session_context import compact_history
 from leanflow_cli.workflows.prover.session_tools import SessionTools
 
@@ -340,3 +341,21 @@ def test_addressed_guidance_is_pinned_before_request_and_after_resume(
 
     second = run_fake(tmp_path, monkeypatch, resumed, context=context)
     assert second["status"] == "completed" and second["api_calls"] == 2
+
+
+def test_global_deadline_during_submission_keeps_campaign_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def feedback(response: str) -> dict[str, Any]:
+        raise BudgetExhausted("campaign wall-clock budget exhausted", code="campaign_wall_time")
+
+    result = run_fake(
+        tmp_path,
+        monkeypatch,
+        lambda *args: ({"role": "assistant", "content": '{"proof":"trivial"}'}, {}),
+        config={"_candidate_feedback": feedback},
+    )
+    assert result["status"] == "timeout"
+    assert result["api_calls"] == 1
+    assert result["stop_reason"]["scope"] == "campaign"
+    assert result["stop_reason"]["code"] == "campaign_wall_time"

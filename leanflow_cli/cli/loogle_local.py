@@ -6,10 +6,12 @@ so local Loogle stays ``incompatible`` and search silently falls back to remote.
 owns the fix: resolve a per-toolchain cache dir, (re)pin Loogle to the project's toolchain and
 build it (under an exclusive lock so concurrent builders never collide), and gate that work
 behind a fast no-build check. It also patches the managed lean-lsp-mcp environment so timed-out
-and completed sessions reap their Loogle subprocess. The low-level primitives it builds on (``managed_loogle_cache_dir``,
-``local_loogle_supported``, ``_read_lean_toolchain``, …) live in :mod:`leanflow_cli.cli.mcp_bootstrap`;
-the lean-lsp server is pointed at the SAME per-toolchain dir by
-``tools.mcp.mcp_transport._augment_lean_stdio_env``.
+and completed sessions reap their Loogle subprocess. Index-flag negotiation between the client
+and the built binary (``--index-mode`` versus the older ``--write-index``) lives in the sibling
+:mod:`leanflow_cli.cli.loogle_index_compat`; each build records the binary's dialect there.
+The low-level primitives it builds on (``managed_loogle_cache_dir``, ``local_loogle_supported``,
+``_read_lean_toolchain``, …) live in :mod:`leanflow_cli.cli.mcp_bootstrap`; the lean-lsp server
+is pointed at the SAME per-toolchain dir by ``tools.mcp.mcp_transport._augment_lean_stdio_env``.
 """
 
 from __future__ import annotations
@@ -19,9 +21,16 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.cli.loogle_index_compat import (
+    loogle_binary_index_dialect,
+    loogle_binary_path,
+    read_build_record,
+    write_build_record,
+)
 from leanflow_cli.cli.mcp_bootstrap import (
     _lean_lsp_env_from_home,
     _read_lean_toolchain,
@@ -38,10 +47,6 @@ def _active_loogle_cache_dir(home_path: Path) -> Path:
     """Resolve the Loogle cache dir the runtime actually uses (config value, else default)."""
     raw = str(_lean_lsp_env_from_home(home_path).get("LEAN_LOOGLE_CACHE_DIR", "") or "").strip()
     return Path(raw).expanduser() if raw else managed_loogle_cache_dir(home_path)
-
-
-def _loogle_binary_path(repo_dir: Path) -> Path:
-    return repo_dir / ".lake" / "build" / "bin" / ("loogle.exe" if os.name == "nt" else "loogle")
 
 
 def loogle_cache_dir_for_project(
@@ -85,7 +90,7 @@ def local_loogle_needs_build(
     if not _truthy(_lean_lsp_env_from_home(home_path).get("LEAN_LOOGLE_LOCAL")):
         return False
     repo_dir = loogle_cache_dir_for_project(home_path, project_root) / "repo"
-    if not _loogle_binary_path(repo_dir).is_file():
+    if not loogle_binary_path(repo_dir).is_file():
         return True
     return _read_lean_toolchain(repo_dir) != project_tc
 
@@ -103,7 +108,9 @@ def ensure_local_loogle_for_project(
     no Mathlib dependency, so the build is light (~1-2 min) and cached until the project
     toolchain changes. Serialized by an exclusive lock on ``<cache>/.loogle-build.lock`` —
     the same file the patched lean-lsp-mcp server takes — so two builders never run
-    ``lake build`` in the same repo at once.
+    ``lake build`` in the same repo at once. A successful build records the binary's
+    index-flag dialect (``index_dialect``) so status checks can detect a client mismatch
+    without starting Loogle.
 
     Best-effort: returns a status dict and never raises. A no-op (``action="already-built"``)
     when the binary already exists and was built for the project's toolchain.
@@ -123,11 +130,15 @@ def ensure_local_loogle_for_project(
         home_path = Path(home).expanduser().resolve() if home else get_leanflow_home()
         cache_dir = loogle_cache_dir_for_project(home_path, project_root)
         repo_dir = cache_dir / "repo"
-        binary = _loogle_binary_path(repo_dir)
+        binary = loogle_binary_path(repo_dir)
         result.update(toolchain=project_tc, cache_dir=str(cache_dir))
 
-        if binary.is_file() and _read_lean_toolchain(repo_dir) == project_tc:
-            result.update(ok=True, action="already-built")
+        def already_built() -> bool:
+            return binary.is_file() and _read_lean_toolchain(repo_dir) == project_tc
+
+        if already_built():
+            recorded = str(read_build_record(cache_dir).get("index_dialect") or "")
+            result.update(ok=True, action="already-built", index_dialect=recorded)
             return result
 
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -142,8 +153,9 @@ def ensure_local_loogle_for_project(
             with contextlib.suppress(OSError):
                 fcntl.flock(lock_handle, fcntl.LOCK_EX)
             # Re-check after acquiring: another builder may have just finished.
-            if binary.is_file() and _read_lean_toolchain(repo_dir) == project_tc:
-                result.update(ok=True, action="already-built")
+            if already_built():
+                recorded = str(read_build_record(cache_dir).get("index_dialect") or "")
+                result.update(ok=True, action="already-built", index_dialect=recorded)
                 return result
 
             has_lakefile = (repo_dir / "lakefile.lean").exists() or (
@@ -180,7 +192,20 @@ def ensure_local_loogle_for_project(
                     reason="build-failed", detail=((build.stderr or build.stdout) or "")[-400:]
                 )
                 return result
-            result.update(ok=True, action="built")
+            # Record which index flags this exact binary accepts so status checks and
+            # the doctor can detect a client/binary mismatch without running it again.
+            dialect = loogle_binary_index_dialect(binary)
+            write_build_record(
+                cache_dir,
+                {
+                    "toolchain": project_tc,
+                    "index_dialect": dialect,
+                    "binary": str(binary),
+                    "built_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+                    "builder": "leanflow_cli.cli.loogle_local",
+                },
+            )
+            result.update(ok=True, action="built", index_dialect=dialect)
             return result
         finally:
             with contextlib.suppress(OSError):

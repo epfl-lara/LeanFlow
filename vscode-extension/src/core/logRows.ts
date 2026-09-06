@@ -56,6 +56,8 @@ const EVENT_LABELS: Record<string, string> = {
   "runner-start": "Run started",
   "runner-exit": "Run finished",
   "submission-feedback": "Candidate check",
+  "operation-start": "Operation started",
+  "operation-end": "Operation finished",
   submission_checked: "Submission check",
   candidate_checked: "Candidate check",
   negation_checked: "Negation check",

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import copy
-import json
+import os
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from core.utils import atomic_json_write
 from leanflow_cli.lean.lean_declarations import declaration_region
+from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.models import Node
 from leanflow_cli.workflows.prover.runtime import BudgetExhausted, InfrastructureFailure
 from leanflow_cli.workflows.prover.source import (
@@ -20,6 +21,7 @@ from leanflow_cli.workflows.prover.source import (
     write_source,
 )
 from leanflow_cli.workflows.prover.store import now
+from leanflow_cli.workflows.prover.submission_cache import submission_key
 
 if TYPE_CHECKING:
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
@@ -123,6 +125,13 @@ def new_job(
             "purpose": prompt,
             "node_revision": node.revision if node else 0,
             "started_at": now(),
+            "updated_at": now(),
+            "phase": "starting",
+            "provider": os.getenv("LEANFLOW_NATIVE_PROVIDER", ""),
+            "reasoning_effort": os.getenv("LEANFLOW_NATIVE_REASONING_EFFORT", ""),
+            "model": runtime.config.to_mapping(role)["model"],
+            "context_tokens": runtime.config.to_mapping(role)["context_tokens"],
+            "compression": runtime.config.to_mapping(role)["compression"],
         }
         if node:
             scratch = workspace / "Scratch.lean"
@@ -207,7 +216,7 @@ def session_event(
     runtime: ProverRuntime, job: dict[str, Any], kind: str, details: dict[str, Any]
 ) -> None:
     """Publish live session usage without allowing worker writes to PLAN or DAG."""
-    with runtime.lock:
+    with runtime.progress.lock:
         if job.get("accounted") is True:
             return
         if isinstance(details.get("api_calls"), int):
@@ -221,10 +230,72 @@ def session_event(
                     int(job.get("previous_" + field, 0) or 0) + details[field],
                 )
         runtime.store.event(kind, {"job_id": job["id"], "node_id": job["node_id"], **details})
-        runtime._refresh_metrics()
-        snapshot = {**runtime.state, "dag": runtime.dag.to_dict(), "updated_at": now()}
-        atomic_json_write(runtime.store.directory / "state.json", snapshot)
-        if runtime.cancelled.is_set():
+        job["updated_at"] = now()
+        if kind == "api-request":
+            for field in ("model", "provider", "reasoning_effort"):
+                if isinstance(details.get(field), str) and details[field]:
+                    job[field] = details[field]
+                    if field != "model":
+                        runtime.state[field] = details[field]
+        if kind in {"api-request", "tool-start"}:
+            previous_operation_id = job.pop("active_operation_id", "")
+            previous_operation = next(
+                (
+                    op
+                    for op in runtime.state.get("operations", [])
+                    if op["id"] == previous_operation_id
+                ),
+                None,
+            )
+            if previous_operation is not None and previous_operation["status"] == "running":
+                runtime.progress.end(
+                    previous_operation,
+                    failed=True,
+                    error="Operation ended without its expected completion event",
+                )
+            job["phase"] = "model_request" if kind == "api-request" else "tool"
+            operation = runtime.progress.begin(
+                job["phase"],
+                (
+                    "Waiting for model response"
+                    if kind == "api-request"
+                    else "Running " + str(details.get("tool", "tool"))
+                ),
+                job_id=job["id"],
+                node_id=job["node_id"],
+                timeout_s=details.get("timeout_s", runtime.config.timeout_s),
+            )
+            job["active_operation_id"] = operation["id"]
+        elif kind in {"api-response", "api-error", "tool-result", "job-session-end"}:
+            operation_id = job.pop("active_operation_id", "")
+            finished_operation = next(
+                (op for op in runtime.state.get("operations", []) if op["id"] == operation_id), None
+            )
+            if finished_operation is not None:
+                runtime.progress.end(
+                    finished_operation,
+                    failed=(
+                        kind == "api-error"
+                        or (
+                            kind == "tool-result"
+                            and isinstance(details.get("result"), dict)
+                            and (
+                                details["result"].get("success") is False
+                                or details["result"].get("ok") is False
+                            )
+                        )
+                        or (
+                            kind == "job-session-end"
+                            and details.get("status")
+                            in {"error", "environment_error", "interrupted", "timeout"}
+                        )
+                    ),
+                )
+            job["phase"] = "working"
+        runtime.progress.publish()
+        # The final event must retain the typed outcome and its complete usage,
+        # even when cancellation caused the job to finish.
+        if runtime.cancelled.is_set() and kind != "job-session-end":
             raise RuntimeError("prover controller stopped the job")
 
 
@@ -291,24 +362,38 @@ def candidate_feedback(
             dep for dep in node.dependencies if runtime.dag.by_id()[dep].status != "proved"
         ]
         source = declaration_source(runtime.documents[node.file], node, candidate=candidate)
+        checked_inputs = submission_key(runtime, node, source)
     workspace = runtime.store.directory / "checks" / job["id"]
     workspace.mkdir(parents=True, exist_ok=True)
     file = workspace / "Submission.lean"
     write_source(file, source)
-    result = runtime.verifier.check(checked_node, file, skeleton=bool(unresolved))
-    if result.get("error_code") in {
-        "isolation_unavailable",
-        "check_setup_failed",
-        "lean_interact_start_failed",
-        "lean_probe_unavailable",
-        "local_repl_missing",
-    }:
+    job["phase"] = "verifying"
+    result = runtime.progress.call(
+        "submission_check",
+        "Checking submitted proof",
+        lambda: runtime.verifier.check(checked_node, file, skeleton=bool(unresolved)),
+        job_id=job["id"],
+        node_id=node.id,
+        file=str(file),
+        timeout_s=runtime.config.timeout_s,
+    )
+    job["phase"] = "submitted" if result.get("accepted") is True else "working"
+    runtime.progress.publish()
+    if infrastructure_code(result):
+        runtime._ensure_active()
         raise InfrastructureFailure(
             "Lean verification environment unavailable: " + str(result.get("error", result)),
             status="environment_error",
         )
     with runtime.lock:
         runtime._assert_sources()
+        runtime.submission_cache.remember(
+            node,
+            checked_inputs,
+            submission_key(runtime, node, source),
+            result,
+            conditional=bool(unresolved),
+        )
         runtime.store.event(
             "submission_checked",
             {
@@ -319,16 +404,21 @@ def candidate_feedback(
                 "result": result,
             },
         )
+    from leanflow_cli.workflows.prover.session_context import tool_result_message
+
+    feedback, artifact = tool_result_message(result, Path(job["workspace"]))
+    if artifact is not None:
+        job.setdefault("artifacts", []).append(str(artifact))
     return {
         "accepted": result.get("accepted") is True,
         "conditional": bool(unresolved),
-        "feedback": json.dumps(result, default=str)[-16000:],
+        "feedback": feedback,
     }
 
 
 def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, Any]) -> None:
     """Reconcile reserved requests using the session's actual monotonic request count."""
-    with runtime.lock:
+    with runtime.lock, runtime.progress.lock:
         if job.get("accounted") is True:
             return
         calls = max(int(job.get("api_calls", 0)), int(result.get("api_calls", 0) or 0))
@@ -341,6 +431,12 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
             api_calls=calls,
             finished_at=now(),
             accounted=True,
+            phase=(
+                "submitted"
+                if job["role"] == "prover" and result.get("status") == "completed"
+                else "finished"
+            ),
+            updated_at=now(),
         )
         if result.get("status") == "interrupted":
             runtime.cancelled.set()
@@ -355,6 +451,9 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
                 else:
                     job[field] = result[field]
         report_path = Path(job["workspace"]) / "result.json"
+        from leanflow_cli.workflows.prover.stop_reason import job_stop_reason
+
+        job["stop_reason"] = job_stop_reason(job, result)
         atomic_json_write(report_path, result)
         job["result_path"] = str(report_path)
         runtime.store.event(
@@ -427,7 +526,13 @@ def research_job(runtime: ProverRuntime, parent: dict[str, Any], question: str) 
         "error": result.get("error", ""),
         "artifacts": result.get("artifacts", []),
         "resources": resource_inventory(
-            [job], project_root=runtime.root, run_directory=runtime.store.directory
+            [
+                child
+                for child in runtime.state["jobs"]
+                if child.get("parent_job_id") == parent["id"]
+            ],
+            project_root=runtime.root,
+            run_directory=runtime.store.directory,
         ),
     }
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +67,7 @@ def compiled_type_profiles(
     source: str,
     names: list[str],
     workspace: Path,
-    timeout_s: int,
+    timeout_s: float,
     mutable_names: list[str] | None = None,
 ) -> dict[str, Any]:
     """Compile untouched source before importing trusted introspection support.
@@ -77,6 +78,8 @@ def compiled_type_profiles(
     implicit arguments or changed typeclass instances in that representation.
     """
     from leanflow_cli.workflows.prover.check_process import isolated_command
+
+    deadline = time.monotonic() + timeout_s
 
     workspace.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="type-profile-", dir=workspace) as temporary:
@@ -97,7 +100,7 @@ def compiled_type_profiles(
                 str(artifact),
                 str(input_file),
             ],
-            timeout_s=timeout_s,
+            timeout_s=max(0.01, deadline - time.monotonic()),
         )
         if not compiled.get("success") or not artifact.is_file():
             return {
@@ -123,7 +126,7 @@ def compiled_type_profiles(
                 "--",
                 *(mutable_names or []),
             ],
-            timeout_s=timeout_s,
+            timeout_s=max(0.01, deadline - time.monotonic()),
         )
         if not inspected.get("success"):
             return {

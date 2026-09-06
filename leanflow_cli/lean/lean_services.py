@@ -860,6 +860,11 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
                 "local Loogle disabled for this project because its managed Lean toolchain differs "
                 "from the project; public remote Loogle fallback remains enabled"
             )
+        elif power_modes.get("loogle_local_configured") and loogle_status == "client-incompatible":
+            degraded.append(
+                "local Loogle client uses incompatible index flags; run `leanflow mcp repair` "
+                "to repair the managed client; public remote Loogle fallback remains enabled"
+            )
         elif power_modes.get("loogle_local_configured") and not power_modes.get(
             "loogle_local_available"
         ):

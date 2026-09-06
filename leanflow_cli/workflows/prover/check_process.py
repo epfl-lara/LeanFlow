@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +71,7 @@ class _CheckWorker:
         self.buffer = bytearray()
         self.errors = bytearray()
         self.closed = False
+        self.has_checked = False
         try:
             script = Path(__file__).with_name("check_worker.py").resolve()
             bootstrap = "import runpy,sys;sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[2:];runpy.run_path(sys.argv[0],run_name='__main__')"
@@ -118,7 +119,13 @@ class _CheckWorker:
                     stream.close()
         shutil.rmtree(self.private, ignore_errors=True)
 
-    def request(self, request: dict[str, Any], timeout_s: int) -> dict[str, Any]:
+    def request(
+        self,
+        request: dict[str, Any],
+        timeout_s: float,
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         """Exchange one bounded request; kill the entire worker on deadline/protocol errors."""
         assert self.process is not None and self.process.stdin is not None
         process = self.process
@@ -137,6 +144,11 @@ class _CheckWorker:
                 selector.register(process.stdout, selectors.EVENT_READ, "output")
                 selector.register(process.stderr, selectors.EVENT_READ, "error")
                 while True:
+                    if cancelled is not None and cancelled():
+                        self.close()
+                        return _failure(
+                            "check_cancelled", "The controller cancelled this Lean check."
+                        )
                     if b"\n" in self.buffer:
                         line, _, remainder = self.buffer.partition(b"\n")
                         self.buffer = bytearray(remainder)
@@ -198,11 +210,14 @@ def check_scratch(
     file: Path,
     declaration: str = "",
     replacement: str = "",
-    timeout_s: int = 60,
+    timeout_s: float = 60,
+    cancelled: Callable[[], bool] | None = None,
     include_axiom_profile: bool = False,
     allow_placeholders_for_elaboration: bool = False,
 ) -> dict[str, Any]:
     """Check one target/file in a warm process that cannot modify canonical sources."""
+    started = time.monotonic()
+    deadline = started + max(0, timeout_s)
     try:
         project, work = _validated_paths(project_root, workspace)
         target = file.resolve(strict=True)
@@ -214,10 +229,25 @@ def check_scratch(
             if worker is None or worker.closed:
                 worker = _CheckWorker(project, work)
                 _WORKERS[key] = worker
-        if not worker.lock.acquire(timeout=max(1, int(timeout_s))):
-            return _failure("check_busy", "A prior check still owns this workspace's Lean worker.")
+        while not worker.lock.acquire(timeout=min(0.2, max(0, deadline - time.monotonic()))):
+            if cancelled is not None and cancelled():
+                return _failure(
+                    "check_cancelled", "The controller cancelled the queued Lean check."
+                )
+            if time.monotonic() >= deadline:
+                return _failure(
+                    "check_busy",
+                    "A prior check still owns this workspace's Lean worker.",
+                    timed_out=True,
+                )
         try:
-            return worker.request(
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return _failure(
+                    "check_timeout", "Lean startup consumed the check deadline.", timed_out=True
+                )
+            cold_start = not getattr(worker, "has_checked", False)
+            result = worker.request(
                 {
                     "id": uuid.uuid4().hex,
                     "file": str(target),
@@ -227,8 +257,17 @@ def check_scratch(
                     "include_axiom_profile": include_axiom_profile,
                     "allow_placeholders_for_elaboration": allow_placeholders_for_elaboration,
                 },
-                max(1, int(timeout_s)),
+                remaining,
+                **({"cancelled": cancelled} if cancelled is not None else {}),
             )
+            worker.has_checked = True
+            return {
+                **result,
+                "timeout_s": timeout_s,
+                "elapsed_s": round(time.monotonic() - started, 3),
+                "cold_start": cold_start,
+                "timing_scope": "worker queue, startup, imports and elaboration",
+            }
         finally:
             worker.lock.release()
     except IsolationUnavailable as exc:
@@ -245,7 +284,9 @@ def close_check_workers(workspace: Path) -> None:
             _WORKERS.pop(key).close()
 
 
-def preflight_check(*, project_root: Path, workspace: Path, timeout_s: int = 60) -> dict[str, Any]:
+def preflight_check(
+    *, project_root: Path, workspace: Path, timeout_s: float = 60
+) -> dict[str, Any]:
     """Verify the OS sandbox and Lean REPL before spending the first model request."""
     path: Path | None = None
     try:
@@ -275,7 +316,7 @@ def isolated_command(
     project_root: Path,
     workspace: Path,
     argv: Sequence[str],
-    timeout_s: int = 60,
+    timeout_s: float = 60,
     extra_writable_roots: Sequence[Path] = (),
     network_allowed: bool = False,
 ) -> dict[str, Any]:
@@ -304,7 +345,7 @@ def isolated_command(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        stdout, stderr = _capture_command(process, max(1, timeout_s))
+        stdout, stderr = _capture_command(process, max(0.01, timeout_s))
         diagnostic = stderr.decode("utf-8", errors="replace")
         if process.returncode and diagnostic.lstrip().startswith(("bwrap:", "sandbox-exec:")):
             return {
@@ -357,7 +398,7 @@ def isolated_command(
             shutil.rmtree(private, ignore_errors=True)
 
 
-def _capture_command(process: subprocess.Popen[bytes], timeout_s: int) -> tuple[bytes, bytes]:
+def _capture_command(process: subprocess.Popen[bytes], timeout_s: float) -> tuple[bytes, bytes]:
     """Drain both output streams into bounded tails until exit or a hard deadline."""
     assert process.stdout is not None and process.stderr is not None
     deadline = time.monotonic() + timeout_s
