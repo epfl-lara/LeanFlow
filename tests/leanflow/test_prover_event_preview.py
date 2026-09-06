@@ -192,6 +192,14 @@ def test_messages_describe_the_event(kind: str, details: dict, expected: str) ->
 def test_observer_projects_readable_rows_with_previews_and_evidence_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # RunObserver writes these process globals directly; register them for teardown
+    # so later status tests do not append to this test's project directory.
+    for name in (
+        "LEANFLOW_PROJECT_ROOT",
+        "LEANFLOW_WORKFLOW_RUN_ID",
+        "LEANFLOW_NATIVE_WORKFLOW_KIND",
+    ):
+        monkeypatch.setenv(name, "")
     rows: list[tuple[str, str, dict[str, Any]]] = []
     monkeypatch.setattr(
         observer_module,

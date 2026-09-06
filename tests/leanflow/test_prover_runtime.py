@@ -15,7 +15,12 @@ from leanflow_cli.workflows.prover.models import Dag, Node
 from leanflow_cli.workflows.prover.planning import apply_proposal
 from leanflow_cli.workflows.prover.runtime import ProverRuntime
 from leanflow_cli.workflows.prover.scheduler import ready_nodes
-from leanflow_cli.workflows.prover.source import SourceDocument, discover, sorry_spans
+from leanflow_cli.workflows.prover.source import (
+    SourceConflictError,
+    SourceDocument,
+    discover,
+    sorry_spans,
+)
 
 
 class Verifier:
@@ -664,7 +669,7 @@ def test_interrupted_proof_journal_refuses_untracked_external_bytes(
         runtime._accept(runtime.dag.nodes[0], ["trivial"], "controller")
     path.write_text("-- human edit after interrupted commit\n" + path.read_text())
     edited = path.read_bytes()
-    with pytest.raises(ValueError, match="source changed during interrupted"):
+    with pytest.raises(SourceConflictError, match="source changed during interrupted"):
         ProverRuntime(
             root=tmp_path,
             targets=[path],

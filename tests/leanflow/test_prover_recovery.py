@@ -13,6 +13,7 @@ from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.planning import apply_proposal
 from leanflow_cli.workflows.prover.planning_controller import materialize
 from leanflow_cli.workflows.prover.runtime import ProverRuntime
+from leanflow_cli.workflows.prover.source import SourceConflictError
 
 
 class Verifier:
@@ -130,7 +131,7 @@ def test_materialization_recovery_preserves_external_edits(tmp_path: Path) -> No
     helper = tmp_path / "LeanFlowProofs/Help.lean"
     helper.write_text("-- human correction\n" + helper.read_text())
     before = helper.read_bytes()
-    with pytest.raises(ValueError, match="source changed"):
+    with pytest.raises(SourceConflictError, match="source changed"):
         runtime_at(tmp_path, session=lambda **kw: {}, run_id=runtime.run_id, resume=True)
     assert helper.read_bytes() == before
 

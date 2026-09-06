@@ -14,6 +14,10 @@ from leanflow_cli.lean.lean_parsing import (
 from leanflow_cli.workflows.prover.models import Dag, Node, digest
 
 
+class SourceConflictError(RuntimeError):
+    """Report source consistency failures separately from rejected Lean declarations."""
+
+
 def read_source(path: Path) -> str:
     """Read UTF-8 source without newline translation."""
     return path.read_bytes().decode("utf-8")
@@ -149,7 +153,7 @@ class SourceDocument:
         """Fail closed when another actor changed a canonical source since the last commit."""
         path = project_path(root, self.path)
         if path.is_symlink() or not path.is_file() or read_source(path) != self.render():
-            raise RuntimeError(f"protected source changed outside controller: {self.path}")
+            raise SourceConflictError(f"protected source changed outside controller: {self.path}")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

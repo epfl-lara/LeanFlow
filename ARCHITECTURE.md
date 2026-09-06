@@ -211,14 +211,15 @@ tool is reachable through the public registry.
 | --- | --- |
 | `workflows/prover/config.py` | Per-role model/context settings and finite campaign/pass limits |
 | `workflows/prover/models.py` | Typed nodes, prerequisite DAG validation, revisions and fingerprints |
-| `workflows/prover/source.py` | Comment-aware hole discovery, frozen source, scratch projection and exact replacements |
+| `workflows/prover/source.py` | Comment-aware hole discovery, frozen source, scratch projection, exact replacements and typed source-consistency failures |
 | `workflows/prover/source_transaction.py` | Proof and multi-file materialization journals, exact before/after images, and conflict-preserving recovery |
 | `workflows/prover/scheduler.py` | Deterministic DFS selection, concurrency leases and shared-dependency deduplication |
 | `workflows/prover/planning.py` | Structured plan proposals, immutable original statements and generated helper placement |
 | `workflows/prover/runtime.py` | Sole source/plan/DAG authority, job admission, completion handling, recovery and resume lineage |
 | `workflows/prover/entrypoint.py` | CLI startup, controller locking, terminal startup-failure publication and new-run resume cloning |
 | `workflows/prover/job_controller.py` | Job workspaces, durable handoffs, request reservation, submission feedback, and separately accounted resource jobs |
-| `workflows/prover/planning_controller.py` | Fresh planning/review stages, helper-materialization transactions and concurrent resource batches |
+| `workflows/prover/planning_controller.py` | Fresh planning/review stages, helper-materialization transactions with removable dependency imports, source-conflict recovery without mathematical replanning, and concurrent resource batches |
+| `workflows/prover/materialization_imports.py` | Dependency-ordered recompilation of changed or missing helper artifacts before signature checks; journaled restoration of previous artifacts on rollback |
 | `workflows/prover/store.py` | Atomic snapshots, PLAN/DAG publication, baselines, events and guidance inbox |
 | `workflows/prover/observer.py` | Existing CLI activity/live-status bridge and terminal exit mapping |
 | `workflows/prover/agent_session.py` | One scratch job, durable request admission, persistence encouragement and structured result |

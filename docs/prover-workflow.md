@@ -286,6 +286,12 @@ and retains the candidate for independent rechecking. Source content that matche
 neither journal image is treated as a conflict; the controller does not silently
 take a new baseline.
 
+Generated helper dependencies are stored as removable controller-owned imports,
+separate from the original import baseline. Source-consistency failures retain
+the planning checkpoint and stop for repair; they do not request a different
+mathematical decomposition. After repair, resume reuses the completed proposal
+and review while repeating independent source and kernel checks.
+
 The VS Code Live view shows the selected run's dependency tree, shared-node links,
 statement details, prerequisites and dependents, proof plan, jobs, and metrics.
 Click a theorem to open its source location, a job to inspect its scratch proof

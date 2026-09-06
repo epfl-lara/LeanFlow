@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from leanflow_cli.workflows.prover.models import Dag
 from leanflow_cli.workflows.prover.planning import apply_proposal, json_report, planning_prompt
 from leanflow_cli.workflows.prover.source import (
+    SourceConflictError,
     SourceDocument,
     lean_code_mask,
     project_path,
@@ -142,10 +143,12 @@ def research_plan(
             install_planned_libraries(runtime, proposal.get("libraries", []))
             materialize(runtime, updated, skeletons)
         except (ValueError, RuntimeError) as error:
-            from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
+            from leanflow_cli.workflows.prover.runtime import BudgetExhausted, InfrastructureFailure
 
-            if isinstance(error, InfrastructureFailure):
+            if isinstance(error, (BudgetExhausted, InfrastructureFailure)):
                 raise
+            if isinstance(error, SourceConflictError):
+                raise InfrastructureFailure(str(error), status="source_conflict") from error
             critique = f"Independent skeleton gate rejected proposal: {error}"
             runtime.store.event("plan_rejected", {"reason": critique})
             continue
@@ -276,7 +279,6 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
     pending = set(skeletons)
     rewritten: dict[Path, bytes] = {}
     retired = [node for node in runtime.dag.nodes if node.id not in index and not node.original]
-    retired_modules = {node.module for node in retired}
     from leanflow_cli.workflows.prover.source_transaction import (
         begin_materialization,
         materialized_write,
@@ -344,10 +346,13 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
                     raise ValueError("helper would import an original goal module or itself")
                 document = SourceDocument(
                     node.file,
-                    "\n".join(f"import {module}" for module in modules)
+                    "\n".join(f"import {module}" for module in original_imports)
                     + "\n\n"
                     + skeletons[node_id]
                     + "\n",
+                    # Dependency imports must remain removable when the graph changes.
+                    # Represent them once, before both compilation and source checking.
+                    imports=[module for module in modules if module not in original_imports],
                     generated=True,
                 )
                 path = project_path(runtime.root, node.file)
@@ -357,19 +362,19 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
                 materialized_write(
                     runtime, journal, path, document.render().encode("utf-8"), require_absent=True
                 )
-                check = runtime.verifier.compile_module(node.file)
-                if not check.get("accepted"):
-                    raise RuntimeError(str(check))
                 documents[node.file] = document
                 pending.remove(node_id)
+        needed_by_file: dict[str, set[str]] = {}
         for node in dag.nodes:
-            needed = [
-                index[dep].module for dep in node.dependencies if index[dep].file != node.file
-            ]
-            # Existing originals may refer to each other already; only controller-owned helpers add imports.
-            for module in needed:
-                if module not in original_modules and module not in documents[node.file].imports:
-                    documents[node.file].imports.append(module)
+            needed_by_file.setdefault(node.file, set()).update(
+                index[dep].module
+                for dep in node.dependencies
+                if index[dep].file != node.file and index[dep].module not in original_modules
+            )
+        # Replaced edges must remove old imports even when both helpers remain reachable.
+        # Original imports stay protected in the baseline; only controller additions change.
+        for relative, document in documents.items():
+            document.imports = sorted(needed_by_file.get(relative, set()))
         for node in retired:
             document = documents.pop(node.file)
             path = runtime.root / node.file
@@ -389,10 +394,6 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
             if artifact.exists():
                 rewritten[artifact] = artifact.read_bytes()
                 materialized_write(runtime, journal, artifact, None)
-        for document in documents.values():
-            document.imports = [
-                module for module in document.imports if module not in retired_modules
-            ]
         for relative, document in documents.items():
             if (
                 relative in runtime.documents
@@ -407,8 +408,9 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
                 runtime._change(document, "orchestrator")
         for node_id in skeletons:
             runtime._change(documents[index[node_id].file], "orchestrator")
-        runtime.documents = documents
-        runtime._refresh_locations(dag)
+        from leanflow_cli.workflows.prover.materialization_imports import compile_changed_helpers
+
+        compile_changed_helpers(runtime, dag, documents, journal)
         if hasattr(runtime.verifier, "capture_signatures"):
             signatures = runtime.verifier.capture_signatures(
                 dag, documents, runtime.store.directory / "checks" / "signatures", initialize=False
@@ -418,8 +420,11 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
                     "Planned imports changed or failed to elaborate a protected declaration type: "
                     + str(signatures.get("error", signatures))
                 )
-        runtime._assert_sources()
+        for document in documents.values():
+            document.assert_current(runtime.root)
         runtime._ensure_active()
+        runtime.documents = documents
+        runtime._refresh_locations(dag)
         runtime.state.setdefault("retired_nodes", []).extend(node.to_dict() for node in retired)
         runtime.dag = dag
         from leanflow_cli.workflows.prover.source_transaction import commit_materialization
@@ -428,7 +433,7 @@ def _materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) ->
     except Exception:
         try:
             recover_materialization(runtime, journal)
-        except ValueError as conflict:
+        except (ValueError, SourceConflictError) as conflict:
             from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
 
             raise InfrastructureFailure(str(conflict), status="source_conflict") from conflict

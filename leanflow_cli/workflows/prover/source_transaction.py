@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from core.utils import atomic_json_write
-from leanflow_cli.workflows.prover.models import Dag, Node, digest
+from leanflow_cli.workflows.prover.models import Dag, Node, digest, safe_relative_file
 from leanflow_cli.workflows.prover.source import (
+    SourceConflictError,
     SourceDocument,
     project_path,
     read_source,
@@ -54,7 +55,7 @@ def recover_proof(runtime: ProverRuntime) -> None:
     source = project_path(runtime.root, document.path)
     current = digest(read_source(source))
     if current not in {journal["before_sha256"], journal["after_sha256"]}:
-        raise ValueError(
+        raise SourceConflictError(
             f"protected source changed during interrupted proof installation: {document.path}; restore the recorded before or after bytes before resuming"
         )
     if runtime.state.get("source_transaction") == journal["id"]:
@@ -62,7 +63,9 @@ def recover_proof(runtime: ProverRuntime) -> None:
             current != journal["after_sha256"]
             or digest(runtime.documents[document.path].render()) != current
         ):
-            raise ValueError("committed proof source differs from its transaction checkpoint")
+            raise SourceConflictError(
+                "committed proof source differs from its transaction checkpoint"
+            )
         path.unlink()
         return
     replace_source(source, document.render().encode("utf-8"))
@@ -125,11 +128,15 @@ def materialized_write(
         if (require_absent and current is not None) or (
             expected_before is not None and current != expected_before
         ):
-            raise ValueError(f"protected source changed during planning transaction: {relative}")
+            raise SourceConflictError(
+                f"protected source changed during planning transaction: {relative}"
+            )
         entry = {"before": encode(current), "allowed": [encode(current)]}
         journal["writes"][relative] = entry
     elif encode(current) != entry["after"]:
-        raise ValueError(f"protected source changed during planning transaction: {relative}")
+        raise SourceConflictError(
+            f"protected source changed during planning transaction: {relative}"
+        )
     entry["after"] = encode(after)
     if entry["after"] not in entry["allowed"]:
         entry["allowed"].append(entry["after"])
@@ -138,7 +145,9 @@ def materialized_write(
     atomic_json_write(runtime.store.directory / "source-transaction.json", journal)
     # Validate again after journaling so concurrent edits are never adopted as a rollback base.
     if (path.read_bytes() if path.exists() else None) != current:
-        raise ValueError(f"protected source changed during planning transaction: {relative}")
+        raise SourceConflictError(
+            f"protected source changed during planning transaction: {relative}"
+        )
     if after is None:
         path.unlink(missing_ok=True)
     else:
@@ -150,13 +159,29 @@ def recover_materialization(runtime: ProverRuntime, journal: dict[str, Any]) -> 
     """Recover only journaled bytes, validating every file before changing any of them."""
     entries = journal["writes"]
     committed = runtime.state.get("source_transaction") == journal["id"]
+    compiled_artifacts: list[tuple[str, bytes | None]] = []
+    for relative in journal.get("compiled_modules", []):
+        if (
+            not isinstance(relative, str)
+            or not relative.startswith("LeanFlowProofs/")
+            or Path(relative).suffix != ".lean"
+        ):
+            raise ValueError("Invalid helper compilation journal entry")
+        safe_relative_file(relative)
+        artifact_relative = str(Path(".lake/build/lib/lean") / Path(relative).with_suffix(".olean"))
+        project_path(runtime.root, artifact_relative)
+        encoded_before = journal.get("compiled_artifacts", {}).get(relative)
+        before = (
+            base64.b64decode(encoded_before, validate=True) if encoded_before is not None else None
+        )
+        compiled_artifacts.append((artifact_relative, before))
     observed: dict[str, bytes | None] = {}
     for relative, entry in entries.items():
         path = project_path(runtime.root, relative)
         current = path.read_bytes() if path.exists() else None
         encoded = base64.b64encode(current).decode() if current is not None else None
         if encoded not in ([entry["after"]] if committed else entry["allowed"]):
-            raise ValueError(
+            raise SourceConflictError(
                 f"protected source changed during interrupted planning transaction: {relative}"
             )
         observed[relative] = current
@@ -164,7 +189,7 @@ def recover_materialization(runtime: ProverRuntime, journal: dict[str, Any]) -> 
         for relative, entry in reversed(list(entries.items())):
             path = project_path(runtime.root, relative)
             if (path.read_bytes() if path.exists() else None) != observed[relative]:
-                raise ValueError(
+                raise SourceConflictError(
                     f"protected source changed during interrupted planning transaction: {relative}"
                 )
             if entry["before"] is None:
@@ -178,6 +203,14 @@ def recover_materialization(runtime: ProverRuntime, journal: dict[str, Any]) -> 
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 replace_source(path, base64.b64decode(entry["before"]))
+        # Restore usable caches for the previous graph even if planning stops here.
+        # A failed replan must neither retain rejected imports nor strand existing jobs.
+        for relative, before in compiled_artifacts:
+            artifact = project_path(runtime.root, relative)
+            if before is None:
+                artifact.unlink(missing_ok=True)
+            else:
+                replace_source(artifact, before)
         runtime.documents = {
             key: SourceDocument(**value) for key, value in journal["before_documents"].items()
         }
@@ -186,6 +219,23 @@ def recover_materialization(runtime: ProverRuntime, journal: dict[str, Any]) -> 
         runtime.state["retired_nodes"] = journal["before_retired"]
         runtime._persist()
     (runtime.store.directory / "source-transaction.json").unlink(missing_ok=True)
+
+
+def record_compilation(runtime: ProverRuntime, journal: dict[str, Any], relative: str) -> None:
+    """Snapshot a generated module's existing artifact before compilation can replace it."""
+    artifact = project_path(
+        runtime.root, str(Path(".lake/build/lib/lean") / Path(relative).with_suffix(".olean"))
+    )
+    before = artifact.read_bytes() if artifact.is_file() else None
+    if before is not None and len(before) > 8 * 1024 * 1024:
+        raise ValueError("Planning transaction artifact exceeds its 8 MiB recovery limit")
+    journal.setdefault("compiled_modules", []).append(relative)
+    journal.setdefault("compiled_artifacts", {})[relative] = (
+        base64.b64encode(before).decode() if before is not None else None
+    )
+    if len(json.dumps(journal)) > 64 * 1024 * 1024:
+        raise ValueError("Planning transaction exceeds its 64 MiB recovery limit")
+    atomic_json_write(runtime.store.directory / "source-transaction.json", journal)
 
 
 def commit_materialization(runtime: ProverRuntime) -> None:

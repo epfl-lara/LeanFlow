@@ -18,6 +18,7 @@ from leanflow_cli.workflows.prover.models import Dag, Node, digest
 from leanflow_cli.workflows.prover.planning import json_report
 from leanflow_cli.workflows.prover.scheduler import ready_nodes
 from leanflow_cli.workflows.prover.source import (
+    SourceConflictError,
     SourceDocument,
     declaration_source,
     discover,
@@ -528,7 +529,7 @@ class ProverRuntime:
             document.replacements = previous
             try:
                 recover_proof(self)
-            except ValueError as conflict:
+            except (ValueError, SourceConflictError) as conflict:
                 raise InfrastructureFailure(str(conflict), status="source_conflict") from error
             node.candidate = list(candidate)
             node.status = "candidate"
@@ -895,7 +896,8 @@ class ProverRuntime:
             if status == "source_conflict":
                 self.state["next_step"] = (
                     "Compare current source with this run's saved baselines and resolve the conflict before resuming. "
-                    "No external source edits were overwritten."
+                    "No external source edits were overwritten. Preserve source-transaction.json "
+                    "and source checkpoints; resume needs them to recover the interrupted transaction."
                 )
             self.state.update(status=status, phase=status, finished_at=now(), terminal=True)
             self._persist()
