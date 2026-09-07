@@ -122,6 +122,38 @@ def test_signature_binder_count_handles_binder_and_pi_forms():
     assert extraction._signature_binder_count("theorem h a : True := sorry") is None
 
 
+def test_signature_binder_count_counts_quoted_identifiers_once():
+    statement = "theorem demo («left value» : Nat) (a «b c» : Nat) : «left value» = a := sorry"
+
+    assert extraction._signature_binder_count(statement) == 3
+
+
+def test_signature_scanners_ignore_punctuation_inside_quoted_identifiers():
+    statement = (
+        "theorem demo («a:b» c : Nat) («a)b» : Nat) (d : Nat) [«i:n» : Fintype Nat] : "
+        "«a:b» = c := sorry"
+    )
+
+    assert extraction._signature_binder_count(statement) == 5
+    binders = "(«a:b» c : Nat) («a)b» : Nat) : «a:b» = c"
+    assert extraction._top_level_character(binders, ":") == binders.index(" : «a:b»") + 1
+    assert extraction._group_end(binders, 0) == binders.index(")")
+    assert extraction._group_end("(«a)b» : Nat)", 0) == len("(«a)b» : Nat)") - 1
+
+
+def test_signature_scanners_ignore_punctuation_inside_character_literals():
+    statement = (
+        "theorem char_helper (c : Char) (h : c = ')') (h' : c ≠ '\\'') (s : String)"
+        ' (hs : s = ")\'") : h = h := sorry'
+    )
+
+    assert extraction._signature_binder_count(statement) == 5
+    assert extraction._group_end("(h : c = ')')", 0) == len("(h : c = ')')") - 1
+    assert extraction._group_end("(h' : c ≠ '\\'')", 0) == len("(h' : c ≠ '\\'')") - 1
+    # A quote after an identifier character is part of the name, not a literal.
+    assert extraction._top_level_character("(h' : P) : Q", ":") == len("(h' : P) ")
+
+
 def test_instrumented_candidate_dumps_context_before_extract_goal():
     candidate = _candidate("  have hstep : True := by", "    trivial")
 
@@ -242,16 +274,48 @@ def test_switched_candidate_applies_helper_explicitly():
             ("m", "var"),
             ("h✝", "hyp"),
             ("n✝", "var"),
+            ("h", "hyp"),
             ("x", "let"),
+            ("h", "hyp"),
             ("hx", "hyp"),
         ]
     )
 
     switched = extraction._switched_candidate(candidate, "helper", context)
 
+    # The first `h` is shadowed by the later `h`, so only `assumption` can name it.
     assert switched == (
-        "  have hstep : P := by\n    exact @helper α (by infer_instance) m (by assumption) _ hx"
+        "  have hstep : P := by\n"
+        "    exact @helper α (by infer_instance) m (by assumption) _ (by assumption) h hx"
     )
+
+
+def test_tool_treats_check_infrastructure_failure_as_switch_failure(monkeypatch, tmp_path):
+    """A REPL or project failure during the call-site check must not pass the gate."""
+    target = tmp_path / "Demo.lean"
+    target.write_text(SOURCE, encoding="utf-8")
+    responses = iter(
+        [
+            _probe_payload(
+                "theorem leanflow_demo_hstep (a b : ℕ) (h : a = b) : a + 1 = b + 1 := sorry",
+                retained="a:var b:var h:hyp",
+            ),
+            dict(OK_HELPER),
+            {"success": False, "error": "REPL crashed", "error_code": "repl_failed"},
+        ]
+    )
+    monkeypatch.setattr(extraction, "lean_incremental_check", lambda **kwargs: next(responses))
+    monkeypatch.setattr(
+        extraction,
+        "apply_verified_patch_tool",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("patch must not run")),
+    )
+
+    payload = json.loads(extraction.lean_extract_have_tool("demo", str(target), cwd=str(tmp_path)))
+
+    assert payload["status"] == "helper_switch_failed"
+    assert payload["diagnostics"]["error_code"] == "repl_failed"
+    assert target.read_text(encoding="utf-8") == SOURCE
 
 
 def test_tool_verifies_helper_and_switch_before_applying(monkeypatch, tmp_path):

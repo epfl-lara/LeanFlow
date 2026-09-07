@@ -322,34 +322,69 @@ def _declare_levels(statement: str, levels: Sequence[str]) -> str:
     )
 
 
+def _opaque_span_end(text: str, index: int) -> int:
+    """Return the offset just past a string literal or «quoted» identifier at ``index``.
+
+    Both may contain brackets and colons that must not be read as signature
+    syntax; ``-1`` means no opaque span starts here.
+    """
+    char = text[index]
+    if char == '"':
+        cursor = index + 1
+        while cursor < len(text):
+            if text[cursor] == "\\":
+                cursor += 2
+                continue
+            if text[cursor] == '"':
+                return cursor + 1
+            cursor += 1
+        return len(text)
+    if char == "«":
+        close = text.find("»", index + 1)
+        return len(text) if close < 0 else close + 1
+    if char == "'" and (index == 0 or not _is_identifier_character(text[index - 1])):
+        # A quote at a token boundary starts a character literal such as ')' or '\\n';
+        # after an identifier character it is part of a name such as h'.
+        cursor = index + 1
+        if cursor < len(text) and text[cursor] == "\\":
+            escape = text[cursor + 1 : cursor + 2]
+            cursor += 2
+            if escape == "x":
+                cursor += 2
+            elif escape == "u":
+                close = text.find("}", cursor)
+                cursor = len(text) if close < 0 else close + 1
+        else:
+            cursor += 1
+        if cursor < len(text) and text[cursor] == "'":
+            return cursor + 1
+    return -1
+
+
+def _is_identifier_character(char: str) -> bool:
+    """Return whether ``char`` can continue a Lean identifier."""
+    return char.isalnum() or char in "_'.!?»"
+
+
 def _top_level_character(text: str, wanted: str, *, start: int = 0) -> int:
     """Return the first delimiter-free character offset in generated Lean text."""
     closing = set(_BRACKETS.values())
     stack: list[str] = []
-    in_string = False
-    escaped = False
-    for index in range(max(0, start), len(text)):
+    index = max(0, start)
+    while index < len(text):
         char = text[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
+        opaque_end = _opaque_span_end(text, index)
+        if opaque_end >= 0:
+            index = opaque_end
             continue
         if char in _BRACKETS:
             stack.append(_BRACKETS[char])
-            continue
-        if char in closing:
+        elif char in closing:
             if stack and char == stack[-1]:
                 stack.pop()
-            continue
-        if char == wanted and not stack:
+        elif char == wanted and not stack:
             return index
+        index += 1
     return -1
 
 
@@ -357,28 +392,20 @@ def _group_end(text: str, start: int) -> int:
     """Return the offset of the bracket closing the group opened at ``start``."""
     closing = set(_BRACKETS.values())
     stack = [_BRACKETS[text[start]]]
-    in_string = False
-    escaped = False
-    for index in range(start + 1, len(text)):
+    index = start + 1
+    while index < len(text):
         char = text[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
+        opaque_end = _opaque_span_end(text, index)
+        if opaque_end >= 0:
+            index = opaque_end
             continue
         if char in _BRACKETS:
             stack.append(_BRACKETS[char])
-            continue
-        if char in closing and stack and char == stack[-1]:
+        elif char in closing and stack and char == stack[-1]:
             stack.pop()
             if not stack:
                 return index
+        index += 1
     return -1
 
 
@@ -420,7 +447,8 @@ def _signature_binder_count(statement: str) -> int | None:
                 return None
             count += 1
         else:
-            names = group[:group_colon].split()
+            # Quoted identifiers such as «left value» contain spaces but are one binder.
+            names = re.findall(r"«[^»]*»|\S+", group[:group_colon])
             if not names:
                 return None
             count += len(names)
@@ -486,14 +514,18 @@ def _switched_candidate(
     The helper's binders are the reverted locals in context order, so the call
     passes them back positionally with ``@``.  Let-bound locals are ``let``
     binders of the helper type rather than arguments, instances are resolved
-    again at the call site, and inaccessible hypotheses are recovered by
-    ``assumption``.
+    again at the call site, and inaccessible or shadowed hypotheses are
+    recovered by ``assumption``.
     """
     arguments: list[str] = []
-    for entry in context.entries:
+    names = [entry.name for entry in context.entries]
+    for index, entry in enumerate(context.entries):
         if entry.kind == "let":
             continue
-        if _is_accessible(entry.name):
+        # A local shadowed by a later one of the same name cannot be named at
+        # the call site even though its own user name is accessible.
+        shadowed = entry.name in names[index + 1 :]
+        if _is_accessible(entry.name) and not shadowed:
             arguments.append(entry.name)
         elif entry.kind == "inst":
             arguments.append("(by infer_instance)")
@@ -513,7 +545,12 @@ def _v4a_replace(path: Path, old: str, new: str) -> str:
 
 
 def _check_failed(payload: Mapping[str, Any]) -> bool:
-    return bool(payload.get("has_errors")) or bool(payload.get("timed_out"))
+    """Treat an infrastructure failure like a Lean error: an unverified step never passes."""
+    return (
+        payload.get("success") is not True
+        or bool(payload.get("has_errors"))
+        or bool(payload.get("timed_out"))
+    )
 
 
 def _helper_elaborated(payload: Mapping[str, Any]) -> bool:
