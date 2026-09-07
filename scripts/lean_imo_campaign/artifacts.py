@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +27,35 @@ def save(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
+def _clone_commands(source: str, destination: str) -> tuple[list[str], ...]:
+    """Copy strategies, cheapest first. Every one yields an independent tree.
+
+    `-R` copies a symlink as a symlink rather than dereferencing it, so no
+    strategy can leave the frozen evidence pointing back at a live path.
+    """
+    if sys.platform == "darwin":
+        # APFS copy-on-write: no shared writable blocks, near-zero disk.
+        cheap = ["/bin/cp", "-c", "-R", source, destination]
+    else:
+        # GNU cp: reflink on btrfs/XFS, a full copy on ext4 and elsewhere.
+        cheap = ["cp", "--reflink=auto", "-R", source, destination]
+    return (cheap, ["cp", "-R", source, destination])
+
+
 def clone(source: Path, destination: Path) -> None:
-    """Clone APFS blocks without sharing writable files or falling back to symlinks."""
+    """Copy a tree independently, using copy-on-write where the platform offers it."""
     if destination.exists():
         raise ValueError(f"Refusing to replace existing evidence: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["/bin/cp", "-c", "-R", str(source), str(destination)], check=True)
+    failures: list[str] = []
+    for argv in _clone_commands(str(source), str(destination)):
+        result = subprocess.run(argv, capture_output=True, text=True)
+        if result.returncode == 0:
+            return
+        failures.append(f"{' '.join(argv)}: {result.stderr.strip() or result.returncode}")
+        # A partial tree would be mistaken for frozen evidence.
+        shutil.rmtree(destination, ignore_errors=True)
+    raise ValueError(f"Could not clone {source} to {destination}: {'; '.join(failures)}")
 
 
 def initialize_lake(root: Path) -> dict[str, Any]:
