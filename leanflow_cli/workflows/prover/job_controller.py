@@ -109,6 +109,7 @@ def new_job(
         if role in {"prover", "negation"}
         else runtime.config.orchestrator_api_calls
     )
+    role_settings = runtime.config.to_mapping(role)
     job_id = f"{role}_{len(runtime.state['jobs']) + 1:05d}"
     workspace = runtime.store.directory / "jobs" / job_id
     try:
@@ -142,10 +143,13 @@ def new_job(
             "updated_at": now(),
             "phase": "starting",
             "provider": os.getenv("LEANFLOW_NATIVE_PROVIDER", ""),
-            "reasoning_effort": os.getenv("LEANFLOW_NATIVE_REASONING_EFFORT", ""),
-            "model": runtime.config.to_mapping(role)["model"],
-            "context_tokens": runtime.config.to_mapping(role)["context_tokens"],
-            "compression": runtime.config.to_mapping(role)["compression"],
+            "reasoning_effort": (
+                role_settings["reasoning_effort"]
+                or os.getenv("LEANFLOW_NATIVE_REASONING_EFFORT", "")
+            ),
+            "model": role_settings["model"],
+            "context_tokens": role_settings["context_tokens"],
+            "compression": role_settings["compression"],
         }
         if node:
             scratch = workspace / "Scratch.lean"

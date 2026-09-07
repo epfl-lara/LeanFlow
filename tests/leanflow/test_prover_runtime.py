@@ -832,3 +832,44 @@ def test_negation_provider_failure_resumes_same_job_and_decomposition_allowance(
     assert state["metrics"]["api_calls"] == 3
     assert state["metrics"]["decompositions"] == 1
     assert state["dag"]["nodes"][0]["attempts"] == 4
+
+
+def test_reasoning_effort_splits_between_prover_and_orchestrator_roles() -> None:
+    """Planning may think harder than the prover without changing the model."""
+    config = ProverConfig(
+        model="gpt-6-astra",
+        orchestrator_model="gpt-6-astra",
+        reasoning_effort="low",
+        orchestrator_reasoning_effort="xhigh",
+    )
+    for role in ("prover", "negation"):
+        assert config.to_mapping(role)["reasoning_effort"] == "low"
+    for role in ("orchestrator", "review", "research"):
+        assert config.to_mapping(role)["reasoning_effort"] == "xhigh"
+
+
+def test_orchestrator_reasoning_effort_inherits_the_prover_effort_when_unset() -> None:
+    config = ProverConfig(model="m", reasoning_effort="medium")
+    assert config.to_mapping("orchestrator")["reasoning_effort"] == "medium"
+    # Both unset leaves the launch effort (LEANFLOW_NATIVE_REASONING_EFFORT) in charge.
+    assert ProverConfig(model="m").to_mapping("orchestrator")["reasoning_effort"] == ""
+
+
+def test_unknown_reasoning_effort_is_rejected_rather_than_silently_ignored() -> None:
+    """An unknown level is a no-op downstream, which would silently run at the
+    default effort and invalidate a comparison, so it must fail at config time."""
+    for field in ("reasoning_effort", "orchestrator_reasoning_effort"):
+        with pytest.raises(ValueError, match="must be empty or one of"):
+            ProverConfig(model="m", **{field: "light"})
+
+
+def test_reasoning_effort_round_trips_through_the_environment() -> None:
+    config = ProverConfig.from_env(
+        {
+            "LEANFLOW_PROVER_MODEL": "gpt-6-astra",
+            "LEANFLOW_PROVER_REASONING_EFFORT": "low",
+            "LEANFLOW_PROVER_ORCHESTRATOR_REASONING_EFFORT": "xhigh",
+        }
+    )
+    assert config.to_mapping("prover")["reasoning_effort"] == "low"
+    assert config.to_mapping("research")["reasoning_effort"] == "xhigh"

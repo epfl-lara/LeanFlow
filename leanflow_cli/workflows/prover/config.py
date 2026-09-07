@@ -7,6 +7,13 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
+#: Reasoning levels the native runtime recognises. An unknown value is
+#: silently ignored downstream (`_parse_managed_reasoning_config` returns
+#: None), which would quietly run a comparison at the default effort, so the
+#: config rejects it here instead. Empty means "inherit the launch effort"
+#: (LEANFLOW_NATIVE_REASONING_EFFORT).
+REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+
 ENV_NAMES = {
     "mode": "LEANFLOW_PROVER_MODE",
     "search_order": "LEANFLOW_PROVER_SEARCH_ORDER",
@@ -22,6 +29,8 @@ ENV_NAMES = {
     "timeout_s": "LEANFLOW_PROVER_TIMEOUT_S",
     "model": "LEANFLOW_PROVER_MODEL",
     "orchestrator_model": "LEANFLOW_PROVER_ORCHESTRATOR_MODEL",
+    "reasoning_effort": "LEANFLOW_PROVER_REASONING_EFFORT",
+    "orchestrator_reasoning_effort": "LEANFLOW_PROVER_ORCHESTRATOR_REASONING_EFFORT",
     "context_tokens": "LEANFLOW_PROVER_CONTEXT_TOKENS",
     "orchestrator_context_tokens": "LEANFLOW_PROVER_ORCHESTRATOR_CONTEXT_TOKENS",
     "compression": "LEANFLOW_PROVER_COMPRESSION",
@@ -50,6 +59,8 @@ class ProverConfig:
     timeout_s: int = 180
     model: str = ""
     orchestrator_model: str = ""
+    reasoning_effort: str = ""
+    orchestrator_reasoning_effort: str = ""
     context_tokens: int = 64000
     orchestrator_context_tokens: int = 64000
     compression: bool = True
@@ -79,16 +90,23 @@ class ProverConfig:
         for key in ("max_restarts", "plan_refinements", "max_decompositions"):
             if getattr(self, key) < 0:
                 raise ValueError(f"{key} must be non-negative")
+        for key in ("reasoning_effort", "orchestrator_reasoning_effort"):
+            value = getattr(self, key)
+            if value and value not in REASONING_EFFORTS:
+                raise ValueError(
+                    f"{key} must be empty or one of {', '.join(REASONING_EFFORTS)}; got {value!r}"
+                )
         if "sorryAx" in self.allowed_axioms:
             raise ValueError("sorryAx cannot be an allowed completion axiom")
 
     def to_mapping(self, role: str = "prover") -> dict[str, Any]:
-        """Select model and context settings for one role."""
+        """Select model, context and reasoning settings for one role."""
         values = asdict(self)
         if role in {"orchestrator", "review", "research"}:
             values["model"] = self.orchestrator_model or self.model
             values["context_tokens"] = self.orchestrator_context_tokens
             values["compression"] = self.orchestrator_compression
+            values["reasoning_effort"] = self.orchestrator_reasoning_effort or self.reasoning_effort
         return values
 
     @classmethod

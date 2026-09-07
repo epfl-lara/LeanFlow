@@ -17,7 +17,7 @@ from typing import Any
 
 from scripts.lean_imo_campaign.adoption import AdoptedProcess, process_identity
 from scripts.lean_imo_campaign.artifacts import environment, freeze, prepare, save
-from scripts.lean_imo_campaign.matrix import cells, next_cell
+from scripts.lean_imo_campaign.matrix import CONDITION_SETS, cells, next_cell
 from scripts.lean_imo_campaign.recovery import requires_inspection, schedule_recovery
 from scripts.lean_imo_campaign.runtime_versions import runtime_directory
 
@@ -334,6 +334,12 @@ def main() -> None:
     parser.add_argument("directory", type=Path)
     parser.add_argument("--adopt-active", action="store_true")
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument(
+        "--conditions",
+        choices=sorted(CONDITION_SETS),
+        default="full",
+        help="Which comparison arms to freeze (prepare only; default: full)",
+    )
     args = parser.parse_args()
     directory = args.directory.resolve()
     if args.command == "run":
@@ -347,14 +353,17 @@ def main() -> None:
     identity = freeze(repo, fixture, directory)
     manifest = json.loads((directory / "baseline/manifest.json").read_text())
     provider = resolve_runtime_provider(requested="openai-codex")
+    conditions = CONDITION_SETS[args.conditions]
     campaign = {
         "version": 1,
-        "name": "Lean-IMO-Bench · LEAP-unsolved · 2 lanes",
+        "name": f"Lean-IMO-Bench · LEAP-unsolved · {args.conditions} · 2 lanes",
+        "condition_set": args.conditions,
+        "conditions": [c._asdict() for c in conditions],
         "created_at": now(),
         "status": "prepared",
         "provider_base_url": provider["base_url"].rstrip("/"),
         "provenance": identity,
-        "cells": cells([p for p in manifest["problems"] if p["leap_solved"] is False]),
+        "cells": cells([p for p in manifest["problems"] if p["leap_solved"] is False], conditions),
     }
     report(directory, campaign)
     print(directory, flush=True)
