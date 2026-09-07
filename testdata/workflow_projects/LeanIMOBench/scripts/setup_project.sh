@@ -21,6 +21,17 @@ cd "${PROJECT_ROOT}"
 FORCE_BUILD=0
 [ "${1:-}" = "--build" ] && FORCE_BUILD=1
 
+resolve_without_donor() {
+  # Without a donor, resolve the pinned dependencies and then pull Mathlib's
+  # prebuilt olean cache. Skipping the cache means building Mathlib from
+  # source, which is hours instead of minutes -- always try the cache first.
+  lake update
+  if ! lake exe cache get; then
+    echo "WARNING: could not fetch the Mathlib olean cache." >&2
+    echo "The next build will compile Mathlib from source and take hours." >&2
+  fi
+}
+
 WANT_TOOLCHAIN="$(tr -d '[:space:]' < lean-toolchain)"
 WANT_REV="$(sed -n '/name = "mathlib"/,/^$/p' lakefile.toml | sed -n 's/^rev = "\(.*\)"/\1/p' | head -1)"
 echo "want: ${WANT_TOOLCHAIN}  mathlib ${WANT_REV:0:10}"
@@ -50,11 +61,11 @@ elif [ "${FORCE_BUILD}" -eq 0 ]; then
     fi
     [ -f lake-manifest.json ] || cp "${DONOR}lake-manifest.json" lake-manifest.json
   else
-    echo "no sibling project with a built Mathlib at ${WANT_REV:0:10}; resolving normally"
-    lake update
+    echo "no sibling project with a built Mathlib at ${WANT_REV:0:10}; resolving from upstream"
+    resolve_without_donor
   fi
 else
-  lake update
+  resolve_without_donor
 fi
 
 echo
