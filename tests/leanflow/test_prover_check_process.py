@@ -428,3 +428,34 @@ def test_real_lean_feedback_is_warm_and_cannot_write_canonical_source(tmp_path: 
         assert worker.closed
     finally:
         checks.close_check_workers(workspace)
+
+
+def test_merged_usr_symlinks_are_recreated_inside_the_sandbox(tmp_path):
+    """Without these, nothing in the sandbox can exec at all.
+
+    _roots() resolves before binding, so on a merged-/usr distribution /bin and
+    /lib64 collapse into /usr and the link names never exist in the sandbox.
+    Every dynamically linked binary names its interpreter /lib64/ld-linux-*.so,
+    so exec fails with a bare "No such file or directory".
+    """
+    from leanflow_cli.workflows.prover.check_sandbox import _merged_usr_links
+
+    (tmp_path / "usr" / "bin").mkdir(parents=True)
+    (tmp_path / "usr" / "lib64").mkdir()
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "bin").symlink_to("usr/bin")
+    (tmp_path / "lib64").symlink_to("usr/lib64")
+
+    pairs = dict((link, target) for target, link in _merged_usr_links(tmp_path))
+    assert pairs == {"/bin": "usr/bin", "/lib64": "usr/lib64"}
+    # A real directory must be bound, never replaced by a symlink.
+    assert "/etc" not in pairs
+
+
+def test_non_merged_usr_layout_adds_no_symlinks(tmp_path):
+    """A split-/usr host (or macOS) must be left exactly as it was."""
+    from leanflow_cli.workflows.prover.check_sandbox import _merged_usr_links
+
+    for name in ("bin", "lib", "lib64", "usr"):
+        (tmp_path / name).mkdir()
+    assert _merged_usr_links(tmp_path) == []

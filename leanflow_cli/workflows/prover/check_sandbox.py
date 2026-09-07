@@ -48,6 +48,24 @@ def _roots(project: Path, workspace: Path, private: Path) -> list[Path]:
     return list(dict.fromkeys(path.resolve() for path in candidates if path.exists()))
 
 
+def _merged_usr_links(prefix: Path = Path("/")) -> list[tuple[str, str]]:
+    """Return (target, link) pairs for top-level symlinks into /usr.
+
+    On merged-/usr distributions (Ubuntu 20.04+, Debian 11+, Fedora, Arch) /bin,
+    /sbin, /lib and /lib64 are symlinks into /usr. ``_roots`` resolves paths
+    before binding, which collapses them to their /usr targets, so the link
+    names themselves never exist inside the sandbox. Every dynamically linked
+    binary names its ELF interpreter as /lib64/ld-linux-x86-64.so.2, so without
+    these links exec fails with a bare "No such file or directory".
+    """
+    pairs: list[tuple[str, str]] = []
+    for name in ("bin", "sbin", "lib", "lib64", "lib32", "libx32"):
+        link = prefix / name
+        if link.is_symlink():
+            pairs.append((os.readlink(link), "/" + name))
+    return pairs
+
+
 def _sandbox_command(
     argv: Sequence[str],
     *,
@@ -77,7 +95,7 @@ def _sandbox_command(
             )
 
         def rule(path: Path) -> str:
-            return f'({"subpath" if path.is_dir() else "literal"} {json.dumps(str(path))})'
+            return f"({'subpath' if path.is_dir() else 'literal'} {json.dumps(str(path))})"
 
         profile = "\n".join(
             [
@@ -119,6 +137,10 @@ def _sandbox_command(
         command.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
         for root in sorted(readable, key=lambda path: len(path.parts)):
             command.extend(["--ro-bind", str(root), str(root)])
+        # Recreate the merged-/usr symlinks the resolved binds above dropped,
+        # otherwise nothing in the sandbox can be executed at all.
+        for target, link in _merged_usr_links():
+            command.extend(["--symlink", target, link])
         for root in writable:
             command.extend(["--bind", str(root), str(root)])
         return [*command, "--chdir", str(project), "--", *argv]
