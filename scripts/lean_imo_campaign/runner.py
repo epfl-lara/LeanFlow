@@ -22,6 +22,21 @@ from scripts.lean_imo_campaign.recovery import requires_inspection, schedule_rec
 from scripts.lean_imo_campaign.runtime_versions import runtime_directory
 
 
+def lanes() -> tuple[int, ...]:
+    """Lane ids to dispatch on, from LEANFLOW_CAMPAIGN_LANES (default 2).
+
+    Lanes are pure scheduling: each cell still runs in its own project with its
+    own frozen budget, and workers are always spawned from the cell's pinned
+    runtime snapshot, so widening this changes throughput and machine load
+    without touching any cell's configuration or comparability.
+    """
+    raw = os.environ.get("LEANFLOW_CAMPAIGN_LANES", "").strip()
+    count = int(raw) if raw else 2
+    if not 1 <= count <= 8:
+        raise ValueError("LEANFLOW_CAMPAIGN_LANES must be between 1 and 8")
+    return tuple(range(1, count + 1))
+
+
 def now() -> str:
     """Return an unambiguous UTC event timestamp."""
     return datetime.now(UTC).isoformat()
@@ -230,11 +245,16 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
                     raise ValueError("Cannot adopt an unfinished preparation")
                 if cell["status"] == "running":
                     lane = cell["lane"]
-                    if lane not in (1, 2) or lane in active:
+                    if lane not in lanes() or lane in active:
                         raise ValueError("Invalid active lane assignments")
                     refresh(cell)
                     active[lane] = (cell, AdoptedProcess(cell))
-        campaign.update(status="running", runner_pid=os.getpid(), dispatcher_argv=sys.argv)
+        campaign.update(
+            status="running",
+            runner_pid=os.getpid(),
+            dispatcher_argv=sys.argv,
+            dispatcher_lanes=list(lanes()),
+        )
         dispatcher_snapshot = Path(__file__).resolve().parents[3]
         if (dispatcher_snapshot / "provenance.json").is_file():
             campaign["dispatcher_runtime_directory"] = str(dispatcher_snapshot)
@@ -288,7 +308,7 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
                 del active[lane]
                 report(directory, campaign)
             if not paused:
-                for lane in (1, 2):
+                for lane in lanes():
                     if lane in active:
                         continue
                     candidate = next_cell(campaign["cells"], lane)

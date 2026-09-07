@@ -287,3 +287,35 @@ def test_default_condition_set_is_unchanged_by_the_split_arm() -> None:
     for condition in CONDITIONS:
         assert condition.prover_effort == "" and condition.orchestrator_effort == ""
     assert len(cells([{"id": "p"}])) == 4
+
+
+def test_lane_count_is_configurable_and_defaults_to_two(monkeypatch) -> None:
+    """Lanes are scheduling only; widening them must not touch cell config."""
+    from scripts.lean_imo_campaign.runner import lanes
+
+    monkeypatch.delenv("LEANFLOW_CAMPAIGN_LANES", raising=False)
+    assert lanes() == (1, 2)
+    monkeypatch.setenv("LEANFLOW_CAMPAIGN_LANES", "3")
+    assert lanes() == (1, 2, 3)
+    for bad in ("0", "9", "-1"):
+        monkeypatch.setenv("LEANFLOW_CAMPAIGN_LANES", bad)
+        with pytest.raises(ValueError, match="between 1 and 8"):
+            lanes()
+
+
+def test_three_lanes_each_hold_one_problem_at_a_time() -> None:
+    """A third lane claims its own problem without disturbing the other two."""
+    rows = cells([{"id": f"problem-{i}"} for i in range(1, 5)])
+    claimed = [next_cell(rows, lane) for lane in (1, 2, 3)]
+    assert all(c is not None for c in claimed)
+    assert [c["problem"]["id"] for c in claimed] == ["problem-1", "problem-2", "problem-3"]
+    for c in claimed:
+        c["status"] = "running"
+    # Every lane is busy, so no lane may claim anything further.
+    assert all(next_cell(rows, lane) is None for lane in (1, 2, 3))
+    # Each problem is owned by exactly one lane.
+    owners = {}
+    for row in rows:
+        if row["lane"] is not None:
+            owners.setdefault(row["problem"]["id"], set()).add(row["lane"])
+    assert all(len(v) == 1 for v in owners.values())
