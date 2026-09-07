@@ -183,7 +183,9 @@ def prepare(directory: Path, cell: dict[str, Any]) -> Path:
         f"schema_version: 1\nname: {cell['id']}\nkind: lean4\nlean_root: .\n"
     )
     for name in ("lean-bounded-prover", "lean-prover-orchestrator"):
-        source = directory / "runtime/leanflow_skills" / name / "SKILL.md"
+        from scripts.lean_imo_campaign.runtime_versions import runtime_directory
+
+        source = runtime_directory(directory, cell) / "runtime/leanflow_skills" / name / "SKILL.md"
         target_skill = flow / "skills" / name / "SKILL.md"
         target_skill.parent.mkdir(parents=True)
         shutil.copy2(source, target_skill)

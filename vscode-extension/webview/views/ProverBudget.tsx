@@ -1,5 +1,5 @@
 /** The complete campaign budget: spend, reservations, availability, time, and allowances. */
-import type { BudgetView } from "../../src/core/proverProgress";
+import { proverCost, type BudgetView } from "../../src/core/proverProgress";
 import { Stat } from "../components";
 import { metric, ratio, seconds } from "./proverFormat";
 
@@ -19,7 +19,7 @@ export function ProverBudget({ budget }: { budget: BudgetView }) {
       <Stat label="Restarts per theorem" value={metric(budget.maxRestartsPerNode)} small />
       <Stat label="Input tokens" value={metric(budget.tokens.input)} />
       <Stat label="Output tokens" value={metric(budget.tokens.output)} />
-      <Stat label={budget.cost.complete === true ? "Cost" : "Reported cost (partial)"} value={budget.cost.usd === null ? "—" : `$${budget.cost.usd.toFixed(3)}`} />
+      <Stat label="Cost" value={proverCost({cost_usd: budget.cost.usd, cost_source: budget.cost.source, cost_complete: budget.cost.complete})} small />
     </div>
     <div className="muted" style={{ marginTop: 8 }}>
       Reserved counts every outstanding allocation, including calls already spent inside running jobs, so it is

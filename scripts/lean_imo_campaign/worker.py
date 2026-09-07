@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from scripts.lean_imo_campaign.artifacts import digest, save
+from scripts.lean_imo_campaign.runtime_versions import runtime_directory
 
 
 def main() -> int:
@@ -20,9 +21,10 @@ def main() -> int:
     directory, cell_id = Path(sys.argv[1]).resolve(), sys.argv[2]
     manifest = json.loads((directory / "campaign.json").read_text())
     cell = next(c for c in manifest["cells"] if c["id"] == cell_id)
-    identity = json.loads((directory / "provenance.json").read_text())
+    snapshot = runtime_directory(directory, cell)
+    identity = json.loads((snapshot / "provenance.json").read_text())
     for relative, expected in identity["runtime_files"].items():
-        if digest(directory / "runtime" / relative) != expected:
+        if digest(snapshot / "runtime" / relative) != expected:
             raise ValueError(f"Frozen runtime changed: {relative}")
     for external, expected in identity.get("external_inputs", {}).items():
         if digest(Path(external)) != expected:

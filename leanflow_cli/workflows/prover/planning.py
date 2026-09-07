@@ -168,12 +168,16 @@ def planning_prompt(*, reason: str, review: bool = False) -> str:
     if review:
         return common + (
             "Review the proposed graph for mathematical meaning, correct dependency direction, manageable "
-            'subproblems and file organization. Return JSON {"accepted": true|false, "critique": "...", "change_kind":"direction"|"decomposition"}. '
+            'subproblems and file organization. Return JSON {"accepted": true|false, "critique": "...", "change_kind":"direction"|"decomposition"|"repair"}. '
+            "A local tactic, syntax, or rewriting repair is repair, not a changed mathematical direction. "
+            "Compare previous_accepted_plan with proposed_plan when classifying the change; "
+            "explain any replacement of the mathematical approach in critique. Splitting the same "
+            "approach is decomposition even when graph edges change. "
             "Acceptance is a semantic planning review; Lean independently checks syntax later."
         )
     return common + (
         'Return JSON {"plan":"complete updated informal proof outline, findings, failed directions and '
-        'resource paths", "change_kind":"direction"|"decomposition", "nodes":[...], "research_jobs":[{"question":"..."}], '
+        'resource paths", "change_kind":"direction"|"decomposition"|"repair", "nodes":[...], "research_jobs":[{"question":"..."}], '
         '"libraries":[{"name":"packageName", "git":"https://public-host/repository", "rev":"full immutable Git commit hash"}]}. '
         "Existing nodes use their existing id and statement; dependencies may be updated. New nodes "
         "require id, name, statement (a COMPLETE Lean declaration ending := by sorry), "
@@ -187,4 +191,5 @@ def planning_prompt(*, reason: str, review: bool = False) -> str:
         "The original roots must remain. Do not rewrite an existing helper statement; propose a new helper ID. "
         "Do not add an unnecessary helper. research_jobs are optional bounded computation/web tasks, not advice."
         " A changed mathematical proof strategy is direction; splitting the same strategy into smaller obligations is decomposition."
+        " Correcting tactic syntax, rewrite orientation, or a local proof step is repair and does not consume a plan refinement."
     )

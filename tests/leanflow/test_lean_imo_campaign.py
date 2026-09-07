@@ -177,3 +177,71 @@ def test_incomplete_observer_snapshot_does_not_crash_dispatcher(tmp_path: Path) 
     cell = {"project": str(tmp_path), "run_id": "test", "verified": False}
     refresh(cell)
     assert cell["refresh_error"] and cell["verified"] is False
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Invalid prompt: usage policy",
+        "authentication failed",
+        "context_length_exceeded",
+        "insufficient_quota",
+    ],
+)
+def test_recovery_does_not_retry_permanent_provider_errors(error):
+    from scripts.lean_imo_campaign.recovery import schedule_recovery
+
+    assert not schedule_recovery({"status": "provider_error", "error": error, "metrics": {}})
+
+
+def test_recovery_obeys_custom_budget_and_copies_historical_metrics():
+    from scripts.lean_imo_campaign.recovery import schedule_recovery
+
+    cell = {
+        "status": "provider_error",
+        "run_id": "saved",
+        "config": {"total_api_calls": 10, "wall_time_s": 100},
+        "metrics": {"api_calls": 9, "elapsed_s": 99},
+    }
+    assert schedule_recovery(cell)
+    cell["metrics"]["api_calls"] = 10
+    assert cell["executions"][0]["metrics"]["api_calls"] == 9
+    cell["status"] = "provider_error"
+    assert not schedule_recovery(cell)
+
+
+def test_scheduler_stops_pause_dispatch_even_with_legacy_status():
+    from scripts.lean_imo_campaign.recovery import requires_inspection
+
+    assert requires_inspection(
+        {"status": "budget_exhausted", "stop_reason": {"scope": "scheduler"}}
+    )
+    assert requires_inspection({"status": "blocked"})
+    assert not requires_inspection(
+        {"status": "budget_exhausted", "stop_reason": {"scope": "campaign"}}
+    )
+
+
+def test_csv_moves_unverified_legacy_cost_out_of_comparable_cost_column(tmp_path):
+    import csv
+
+    from scripts.lean_imo_campaign.runner import report
+
+    cell = {
+        "id": "test",
+        "problem": {"id": "test"},
+        "condition": "terra-bottom",
+        "status": "budget_exhausted",
+        "verified": False,
+        "metrics": {"cost_usd": 152.81, "cost_complete": True},
+        "stop_reason": {"code": "no_runnable_obligations", "scope": "scheduler"},
+    }
+    report(tmp_path, {"cells": [cell]})
+    with (tmp_path / "metrics.csv").open() as handle:
+        row = next(csv.DictReader(handle))
+    assert row["cost_usd"] == ""
+    assert row["legacy_unverified_cost_usd"] == "152.81"
+    assert row["cost_source"] == "unavailable"
+    assert row["stop_scope"] == "scheduler"
+    assert row["runtime_sha256"] == ""
+    assert cell["metrics"]["cost_usd"] == 152.81

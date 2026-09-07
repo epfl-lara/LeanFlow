@@ -180,7 +180,8 @@ def test_rejected_submission_keeps_same_job_budget(
     assert result["status"] == "completed"
     assert result["api_calls"] == 3 == len(checks)
     ledger = json.loads((tmp_path / ".runtime/job/request-count.json").read_text())
-    assert ledger == {"limit": 3, "used": 3}
+    assert (ledger["limit"], ledger["used"]) == (3, 3)
+    assert ledger["usage"]["api_calls"] == 3
 
 
 def test_cancellation_prevents_next_request(

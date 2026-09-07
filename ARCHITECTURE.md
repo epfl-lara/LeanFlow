@@ -226,7 +226,9 @@ tool is reachable through the public registry.
 | `workflows/prover/submission_cache.py` | Single-use, in-memory reuse of parent-verified closed submissions only when exact candidate, mutable sources, dependency trust, protected type and axiom policy remain unchanged |
 | `workflows/prover/check_failures.py` | Nested check-result classification that preserves accepted plans when compilation or kernel inspection fails for infrastructure reasons |
 | `workflows/prover/observer.py` | Existing CLI activity/live-status bridge and terminal exit mapping |
-| `workflows/prover/agent_session.py` | One scratch job, durable request admission, persistence encouragement and structured result |
+| `workflows/prover/agent_session.py` | One scratch job, durable request admission and response usage, persistence encouragement and structured result |
+| `workflows/prover/allocation.py` | Wait outside the controller lock for parallel allocations; reconcile usage without dequeuing proof results or making a worker wait on itself |
+| `workflows/prover/usage.py` | Exact-model cost estimates, provider cost provenance, request coverage, and cumulative resume telemetry independent of observer flush timing |
 | `workflows/prover/session_transport.py` | Shared provider adapters, one request per admission, no hidden retry/recovery loop |
 | `workflows/prover/session_context.py` | Deterministic compaction retaining the contract, assignment and proof notes |
 | `workflows/prover/session_guidance.py` | Selected skill contracts and durable addressed inbox delivery between requests |
@@ -525,7 +527,9 @@ The complete contribution and quality-gate requirements are in `AGENTS.md` and
 workflow layer: `matrix.py` owns problem-lane scheduling, `artifacts.py` freezes
 the runtime and prepares private offline Lake projects, `worker.py` invokes the
 dedicated prover, `recovery.py` bounds provider reconnects without budget resets,
-and `runner.py` persists the two-lane queue and metrics. It introduces no generic
+`runtime_versions.py` pins each cell to an immutable runtime, `adoption.py`
+reattaches a replacement dispatcher to recorded worker identities, and
+`runner.py` persists the two-lane queue and metrics (including runtime hashes). It introduces no generic
 batch workflow. `vscode-extension/src/core/benchmarkCampaign.ts` owns presentation
 types and navigation confinement; `panels/benchmarkPanel.ts` reads the durable
 manifest and links cells into the existing prover dashboard. See

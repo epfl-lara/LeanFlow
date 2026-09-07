@@ -89,6 +89,7 @@ class ProverRuntime:
         self.verifier = verifier or LeanVerifier(self.root, config.allowed_axioms, config.timeout_s)
         self.store = RunStore(self.root, self.run_id)
         self.lock = threading.RLock()
+        self.controller_thread = threading.get_ident()
         self.progress = LiveProgress(self)
         self.submission_cache = SubmissionCache()
         self.reserved = 0
@@ -248,6 +249,15 @@ class ProverRuntime:
                 if ledger_path.is_file():
                     ledger = json.loads(ledger_path.read_text())
                     job["api_calls"] = int(ledger["used"])
+                    for field in (
+                        "input_tokens",
+                        "output_tokens",
+                        "cost_usd",
+                        "cost_source",
+                        "costed_api_calls",
+                    ):
+                        if field in ledger.get("usage", {}):
+                            job[field] = ledger["usage"][field]
                 else:
                     job["api_calls"] = int(job["api_budget"])
                 if job["role"] == "prover" and job["api_calls"] < job["api_budget"]:
@@ -298,16 +308,14 @@ class ProverRuntime:
         metrics = self.state["metrics"]
         for field in ("api_calls", "input_tokens", "output_tokens"):
             metrics[field] = sum(int(job.get(field, 0) or 0) for job in jobs)
-        known = [float(job["cost_usd"]) for job in jobs if job.get("cost_usd") is not None]
-        metrics["cost_usd"] = sum(known) if known else None
-        metrics["cost_complete"] = bool(jobs) and all(
-            job.get("cost_usd") is not None for job in jobs
-        )
+        from leanflow_cli.workflows.prover.usage import aggregate_cost
+
+        metrics.update(aggregate_cost(jobs))
         metrics["reserved_api_calls"] = self.reserved
         active_spent = sum(
             max(0, int(job.get("api_calls", 0)) - int(job.get("previous_api_calls", 0)))
             for job in jobs
-            if not job.get("accounted") and job.get("status") != "resume_pending"
+            if not job.get("accounted") and job.get("status") == "running"
         )
         metrics["remaining_reserved_api_calls"] = max(0, self.reserved - active_spent)
         metrics["available_api_calls"] = max(
@@ -356,7 +364,7 @@ class ProverRuntime:
         if self._elapsed() >= self.config.wall_time_s:
             self.cancelled.set()
             self.stopping = True
-            self.state["stop_status"] = "budget_exhausted"
+            self.state["stop_status"] = "timeout"
             raise BudgetExhausted("campaign wall-clock budget exhausted", code="campaign_wall_time")
 
     def _context(self, node: Node | None = None) -> dict[str, Any]:
@@ -381,8 +389,10 @@ class ProverRuntime:
         self, role: str, *, node: Node | None = None, prompt: str = ""
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Prepare one reserved job and its retained proof context."""
+        from leanflow_cli.workflows.prover.allocation import wait_for_capacity
         from leanflow_cli.workflows.prover.job_controller import new_job
 
+        wait_for_capacity(self, role, node, prompt)
         with self.lock:
             return new_job(self, role, node=node, prompt=prompt)
 
@@ -612,6 +622,7 @@ class ProverRuntime:
                 timeout_s=self.config.timeout_s,
             )
             if not compiled.get("accepted"):
+                self._ensure_active()
                 raise InfrastructureFailure(
                     "The independently checked proof could not be compiled into an importable module. Its candidate is retained; restore the Lean build environment and resume. "
                     + str(compiled),
@@ -628,7 +639,7 @@ class ProverRuntime:
             node.status = "candidate"
             node.notes += "\nProof integration paused: " + str(error)
             self._persist()
-            if isinstance(error, InfrastructureFailure):
+            if isinstance(error, (InfrastructureFailure, BudgetExhausted)):
                 raise
             raise InfrastructureFailure(
                 "Checked proof integration paused; candidate retained for resume: " + str(error),
@@ -771,9 +782,14 @@ class ProverRuntime:
             if (
                 current is not None
                 and current.status == "blocked"
-                and current.dependencies != node.dependencies
+                and (
+                    current.dependencies != node.dependencies
+                    or current.attempts <= self.config.max_restarts
+                )
             ):
-                current.status = "pending"
+                # An accepted local proof repair can keep the exact DAG interface.
+                # Reopen that obligation without resetting its spent attempts.
+                current.status = "retry"
             self._persist()
 
     def _promote_candidates(self) -> None:
@@ -815,6 +831,7 @@ class ProverRuntime:
 
     def run(self) -> dict[str, Any]:
         """Run until verified, explicitly stopped, or a finite campaign limit is reached."""
+        self.controller_thread = threading.get_ident()
         status = "blocked"
         resuming = self.state["phase"] == "resume"
         if self.observer is not None:
@@ -832,6 +849,7 @@ class ProverRuntime:
                 )
                 self.state["preflight"] = preflight
                 if preflight.get("accepted") is not True:
+                    self._ensure_active()
                     raise InfrastructureFailure(
                         str(preflight.get("error", preflight)), status="environment_error"
                     )
@@ -850,6 +868,7 @@ class ProverRuntime:
                     self.dag, self.documents, self.store.directory / "checks" / "signatures"
                 )
                 if signatures.get("accepted") is not True:
+                    self._ensure_active()
                     raise InfrastructureFailure(
                         str(signatures.get("error", signatures)), status="environment_error"
                     )
@@ -888,6 +907,7 @@ class ProverRuntime:
                         if self.stopping or self._elapsed() >= self.config.wall_time_s:
                             self.stopping = True
                             if self._elapsed() >= self.config.wall_time_s:
+                                self.state["stop_status"] = "timeout"
                                 self.cancelled.set()
                         active = {job["node_id"] for job in self.pending.values()}
                         if not self.stopping:
@@ -905,10 +925,10 @@ class ProverRuntime:
                                 try:
                                     prompt = self._prover_prompt(node)
                                     job, context = self._new_job("prover", node=node, prompt=prompt)
-                                except BudgetExhausted:
+                                except BudgetExhausted as error:
                                     if not self.pending:
                                         self.stopping = True
-                                        self.state["stop_status"] = "budget_exhausted"
+                                        self.state["stop_status"] = error.status
                                     break
                                 node.status = "running"
                                 if not job.get("resumed"):
@@ -954,6 +974,8 @@ class ProverRuntime:
                     ),
                 )
                 self.state["verification"] = final
+                if not final.get("accepted"):
+                    self._ensure_active()
                 status = "completed" if final.get("accepted") else "verification_failed"
             elif self.stopping:
                 status = (
@@ -961,12 +983,10 @@ class ProverRuntime:
                     if self.state.get("disproof")
                     else self.state.get("stop_status", "budget_exhausted")
                 )
-            elif any(
-                job.get("status") in {"budget_exhausted", "timeout"} for job in self.state["jobs"]
-            ):
+            elif self.consumed >= self.config.total_api_calls:
                 status = "budget_exhausted"
         except BudgetExhausted as error:
-            status = "budget_exhausted"
+            status = error.status
             self.state["error"] = str(error)
         except KeyboardInterrupt:
             self.cancelled.set()

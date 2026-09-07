@@ -118,10 +118,9 @@ def test_last_planning_call_returns_report_through_real_chat_transport(
         assert "graph_proposal.json" in json.dumps(requests[1]["messages"])
         assert (tmp_path / "job/graph_proposal.json").read_text() == final
         assert not (tmp_path / "job/PLAN_job.md").exists()
-        assert json.loads((tmp_path / ".runtime/job/request-count.json").read_text()) == {
-            "limit": 2,
-            "used": 2,
-        }
+        ledger = json.loads((tmp_path / ".runtime/job/request-count.json").read_text())
+        assert (ledger["limit"], ledger["used"]) == (2, 2)
+        assert ledger["usage"]["input_tokens"] == 10
         resumed = session.run_session(**kwargs)
         assert resumed["new_api_calls"] == 0 and len(requests) == 2
     finally:

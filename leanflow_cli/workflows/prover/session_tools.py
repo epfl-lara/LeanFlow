@@ -247,6 +247,11 @@ class SessionTools:
             atomic_json_write(path, {"used": used + 1, "question": question})
             assert self.research_job is not None
             result = self.research_job(question)
+            if result.get("status") == "unavailable" and not result.get("job_id"):
+                # The controller declined admission; no child ran and no slot
+                # was consumed. Keep earlier resource grants available too.
+                atomic_json_write(path, {"used": used, "question": question})
+                return result
             # The callback is controller-owned and derives grants from completed
             # resource files; the child model's JSON cannot grant private reads.
             self.research_resources = {"resources": result.get("resources", {})}

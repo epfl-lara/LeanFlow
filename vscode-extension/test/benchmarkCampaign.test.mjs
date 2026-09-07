@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { benchmarkProject, benchmarkEscape, benchmarkSummary } from "../dist/test/benchmarkCampaign.mjs";
+import { benchmarkCost, benchmarkProject, benchmarkEscape, benchmarkSummary } from "../dist/test/benchmarkCampaign.mjs";
 
 test("benchmark navigation is confined to the exact private cell", () => {
   assert.equal(benchmarkProject("/campaign", {id:"p-astra",project:"/campaign/cells/p-astra"}), "/campaign/cells/p-astra");
@@ -19,4 +19,12 @@ test("summary distinguishes active cells from verified results", () => {
     {status:"completed",verified:false,metrics:{}},
   ]});
   assert.deepEqual(summary,{verified:1,active:1,calls:7,tokens:350});
+});
+
+
+test("costs require provenance and retain partial coverage labels", () => {
+  assert.equal(benchmarkCost({cost_usd:152.81,cost_complete:true}), "unavailable");
+  assert.equal(benchmarkCost({cost_usd:0.5,cost_source:"provider_reported",cost_complete:false}), "$0.500 · reported · partial");
+  assert.equal(benchmarkCost({cost_usd:0,cost_source:"provider_reported",cost_complete:true}), "$0.000 · reported");
+  assert.equal(benchmarkCost({cost_usd:1,cost_source:"estimated",cost_complete:true}), "$1.000 · estimated");
 });

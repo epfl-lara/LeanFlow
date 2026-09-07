@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.18
+
+- Label costs by their source and partial coverage; hide unverified historical estimates.
+- Show each benchmark cell's actual runtime and structured stop reason.
+- Freeze stale elapsed counters and explain smaller final prover allocations accurately.
+
 All notable changes to the LeanFlow VS Code extension are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 

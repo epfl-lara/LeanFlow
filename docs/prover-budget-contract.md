@@ -15,7 +15,7 @@ Code reviews, or unrelated Codex tasks.
   job can receive less than its usual allowance if little remains. Unused
   reserved calls are returned when a job finishes; reservation alone is not
   counted as completed use.
-- Each session persists its request count before contacting the provider. Failed
+- Each job starts with a durable zero-admission ledger before dispatch; each session persists its request count before contacting the provider. Response tokens, known costs and coverage are written to that ledger before observer notification. Failed
   model requests count. SDK retries are disabled on the dedicated transport;
   this path does not enter the legacy advisory/retry conversation loop.
 - Context compression and local subproof decomposition do not reset a pass.
@@ -30,7 +30,7 @@ Code reviews, or unrelated Codex tasks.
   consume campaign allocations.
 - Refinement, decomposition, and DAG-size bounds are checked by controller code.
   These structural limits can leave no admissible work before the call ceiling.
-  Ordinary progress notes are not direction refinements.
+  Ordinary progress notes, local tactic repairs, and decompositions are not direction refinements. The independent planning reviewer classifies the mathematical change; only an accepted, materialized direction change consumes a refinement. Rejected drafts consume their model calls but no refinement. Graph edge changes alone cannot distinguish a decomposition from a new mathematical direction.
 
 The total API counter measures model requests, not Lean invocations, search HTTP
 requests, tokens, or dollars. Token and cost totals are telemetry; an unknown
@@ -60,20 +60,38 @@ snapshot is `.leanflow/workflow-state/prover/RUN_ID/state.json`.
 | Status | Meaning |
 | --- | --- |
 | `completed` | All requested roots passed independent proof verification and the final project gate. |
-| `budget_exhausted` | A call/time allowance ended with unresolved work; compare the campaign metrics and job records. |
+| `budget_exhausted` | The campaign call allocation is exhausted. Individual job exhaustion is recorded on the job. |
+| `timeout` | The campaign reached its active-time limit. |
 | `blocked` | The current DAG has no admissible next job under its retry/decomposition limits. It does not establish that a theorem is false. |
 | `disproved` | The exact negation of an original target was independently certified. |
 | `provider_error` / `environment_error` | Model or Lean infrastructure failed; retained progress can be resumed within the saved allowance. |
 | `verification_failed` | Proposed completion failed the final project gate. |
 | `interrupted` | The user or controller stopped the run. |
 
-The current `budget_exhausted` label is broader than overall campaign exhaustion:
-it can also be selected after an individual job exhausts its allowance and no
-further work is admissible. To distinguish the cases, compare
-`metrics.api_calls` with `config.total_api_calls`, and `metrics.elapsed_s` with
-`config.wall_time_s`; inspect each job's `api_calls`, `api_budget`, and `status`.
-`reserved_api_calls` represents allocations still held by active jobs. A more
-specific terminal reason is an outstanding status-UX improvement.
+Every terminal snapshot includes a structured `stop_reason` with a stable code,
+scope, remaining calls, unresolved nodes, and next step. A scheduler dead end
+uses `blocked` / `no_runnable_obligations`, even if earlier individual jobs spent
+their complete allocations. The benchmark harness pauses these cases for inspection.
+`reserved_api_calls` includes complete allocations held by running jobs;
+`remaining_reserved_api_calls` excludes their already spent calls. Interrupted
+historical jobs never reduce a new job's reservation. When all remaining calls are reserved by parallel provers, the controller waits outside its lock for unused allocations to be returned. Their mathematical results remain queued for normal verification; nested research requests never wait on their own prover. The UI freezes its elapsed
+extrapolation when a snapshot is more than two minutes old.
+
+Planning has no separate three-draft cap: fresh proposal/review sessions keep
+receiving the preceding critique within their own stage ceilings, total admitted
+requests, active-time limit, and structural limits. An accepted local repair can
+reopen an unchanged node within its existing retry ceiling; its attempts do not reset.
+A prover-requested research job with no unreserved calls returns an unavailable
+report so the prover can keep working within its current allocation.
+
+Costs carry `cost_source`, `costed_api_calls`, and `cost_complete`. `cost_usd` is
+only the known subtotal; partial coverage is labelled explicitly. Provider-reported
+cost and provider/local estimates are distinguished. Local estimates require an
+exact listed model (optionally its dated version), never a model-family match;
+subscription transports and zero-valued pricing placeholders remain unpriced unless
+the provider reports a cost. Historical unlabelled estimates are not presented as
+verified prices. Listed estimates are not billing statements and do not account
+for every provider-specific discount or caching rule.
 
 ## Evidence
 

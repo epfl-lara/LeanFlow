@@ -107,13 +107,18 @@ def run_session(
     budget_path = workspace.parent / ".runtime" / workspace.name / "request-count.json"
     budget_path.parent.mkdir(parents=True, exist_ok=True)
     used = 0
+    previous_usage = config.get("_previous_usage", {})
     if budget_path.exists():
         ledger = json.loads(budget_path.read_text(encoding="utf-8"))
         if int(ledger["limit"]) != api_budget:
             raise ValueError("A resumed job cannot change its original call budget")
         used = int(ledger["used"])
+        previous_usage = ledger.get("usage", previous_usage)
     initial_used = used
     accounter = TokenAccounter()
+    from leanflow_cli.workflows.prover.usage import CostLedger, usage_checkpoint
+
+    costs = CostLedger()
     deadline = time.monotonic() + float(config.get("wall_time_s", 14400))
     toolset = SessionTools(
         role=role,
@@ -262,7 +267,22 @@ def run_session(
                     schemas,
                 )
             used += 1
-            atomic_json_write(budget_path, {"limit": api_budget, "used": used})
+            atomic_json_write(
+                budget_path,
+                {
+                    "limit": api_budget,
+                    "used": used,
+                    "usage": usage_checkpoint(
+                        previous_usage,
+                        {
+                            "input_tokens": accounter.session_prompt_tokens,
+                            "output_tokens": accounter.session_completion_tokens,
+                            **costs.snapshot(used - initial_used),
+                        },
+                        used,
+                    ),
+                },
+            )
             emit(
                 "api-request",
                 {
@@ -294,12 +314,30 @@ def run_session(
                 total_tokens=0,
                 reported_cost_usd=accounter.extract_reported_cost_usd(usage),
             )
+            costs.record(usage, model=agent.model, provider=getattr(agent, "provider", ""))
+            atomic_json_write(
+                budget_path,
+                {
+                    "limit": api_budget,
+                    "used": used,
+                    "usage": usage_checkpoint(
+                        previous_usage,
+                        {
+                            "input_tokens": accounter.session_prompt_tokens,
+                            "output_tokens": accounter.session_completion_tokens,
+                            **costs.snapshot(used - initial_used),
+                        },
+                        used,
+                    ),
+                },
+            )
             emit(
                 "api-response",
                 {
                     "api_calls": used,
                     "input_tokens": accounter.session_prompt_tokens,
                     "output_tokens": accounter.session_completion_tokens,
+                    **costs.snapshot(used - initial_used),
                     "assistant": assistant,
                 },
             )
@@ -408,7 +446,6 @@ def run_session(
         close_check_workers(workspace)
         if agent is not None:
             close_transport(agent)
-    summary = accounter.session_summary(str(config.get("model") or ""), current_run_api_calls=used)
     result = {
         "status": status,
         "final_response": final_response,
@@ -416,8 +453,7 @@ def run_session(
         "new_api_calls": used - initial_used,
         "input_tokens": accounter.session_prompt_tokens,
         "output_tokens": accounter.session_completion_tokens,
-        "cost_usd": summary["cost"]["total_usd"],
-        "cost_source": summary["cost"]["source"],
+        **costs.snapshot(used - initial_used),
         "artifacts": sorted(toolset.artifacts),
         "error": last_error,
         "report_path": str(workspace / "report.json"),

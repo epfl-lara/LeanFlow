@@ -23,6 +23,7 @@ const LIVE_JOB = new Set(["running", "starting", "resume_pending"]);
 const SOLVED = new Set(["proved", "verified", "completed"]);
 const CONTROLLER_ROLES = new Set(["orchestrator", "review", "research"]);
 const CONTROLLER_PHASES = new Set(["starting", "inspect", "preflight", "planning", "reviewing", "validating", "verifying", "final_build", "resume"]);
+export const STALE_AFTER_MS = 120_000;
 /** Operation kinds that are one job's own model turn or tool call rather than controller work. */
 const JOB_OPERATION_KINDS = new Set(["model_request", "tool"]);
 
@@ -112,7 +113,7 @@ export interface BudgetView {
   maxRestartsPerNode: number | null;
   jobCalls: number | null;
   orchestratorCalls: number | null;
-  cost: { usd: number | null; complete: boolean | null };
+  cost: { usd: number | null; complete: boolean | null; source: string };
   tokens: { input: number | null; output: number | null };
 }
 
@@ -121,7 +122,8 @@ export function proverBudget(snapshot: ProverSnapshot, nowMs: number): BudgetVie
   const metrics = snapshot.metrics;
   const config = snapshot.config;
   const updated = Date.parse(snapshot.updated_at);
-  const elapsedAdvancing = !snapshot.terminal && !Number.isNaN(updated) && metrics.elapsed_s !== null;
+  const elapsedAdvancing = !snapshot.terminal && !Number.isNaN(updated) && metrics.elapsed_s !== null
+    && nowMs - updated <= STALE_AFTER_MS;
   const elapsedS = metrics.elapsed_s === null
     ? null
     : elapsedAdvancing
@@ -142,7 +144,7 @@ export function proverBudget(snapshot: ProverSnapshot, nowMs: number): BudgetVie
     maxRestartsPerNode: config.max_restarts,
     jobCalls: config.job_api_calls,
     orchestratorCalls: config.orchestrator_api_calls,
-    cost: { usd: metrics.cost_usd, complete: metrics.cost_complete },
+    cost: { usd: metrics.cost_usd, complete: metrics.cost_complete, source: metrics.cost_source },
     tokens: { input: metrics.input_tokens, output: metrics.output_tokens },
   };
 }
@@ -213,7 +215,9 @@ export function proverCapacity(snapshot: ProverSnapshot): CapacityView {
     }
   } else if (readyNodes > 0 && snapshot.metrics.available_api_calls !== null && snapshot.config.job_api_calls !== null
     && snapshot.metrics.available_api_calls < snapshot.config.job_api_calls) {
-    waitingReason = `Budget reservation: ${count(snapshot.metrics.available_api_calls)} calls are available for new work, but a prover pass reserves ${count(snapshot.config.job_api_calls)}.`;
+    waitingReason = snapshot.metrics.available_api_calls === 0
+      ? "No unreserved calls are available; outstanding jobs must finish before another allocation can be made."
+      : `The next prover pass can receive the remaining ${count(snapshot.metrics.available_api_calls)} calls, below its usual ${count(snapshot.config.job_api_calls)}-call ceiling.`;
   } else if (readyNodes > 0) {
     waitingReason = `${readyNodes} ready ${readyNodes === 1 ? "theorem is" : "theorems are"} waiting to be dispatched.`;
   } else if (counts.pending > 0) {
@@ -646,4 +650,13 @@ export function jobTimeline(
     return { durationS: Math.max(0, Math.round((finished - started) / 1000)), live: isLive };
   }
   return isLive ? { durationS: Math.max(0, Math.round((nowMs - started) / 1000)), live: true } : { durationS: null, live: false };
+}
+
+/** Never present unlabelled historical estimates or incomplete coverage as a bill. */
+export function proverCost(metrics: Record<string, unknown>): string {
+  const source = String(metrics.cost_source || "unavailable");
+  if (typeof metrics.cost_usd !== "number" || !Number.isFinite(metrics.cost_usd) || metrics.cost_usd < 0
+    || !["provider_reported", "provider_estimated", "estimated", "mixed"].includes(source)) return "unavailable";
+  const label = source === "provider_reported" ? "reported" : source === "mixed" ? "mixed sources" : "estimated";
+  return `$${metrics.cost_usd.toFixed(3)} · ${label}${metrics.cost_complete === true ? "" : " · partial"}`;
 }

@@ -53,9 +53,26 @@ cell project in the existing DAG/plan/jobs/changes dashboard. The queue's pause
 button writes `PAUSE_AFTER_ACTIVE`; active work finishes normally. Transient provider
 failures can reconnect three times through the native resume path, preserving
 cumulative calls, time, proof progress and each failed execution's record.
-Persistent provider failures and other infrastructure errors pause new dispatch.
+Known permanent prompt/authentication/context/quota errors are not automatically retried. Persistent provider failures, infrastructure errors, and scheduler dead ends with unused global budget pause new dispatch. Recovery and the watchdog use each cell's saved limits.
 To continue pending cells, inspect the cause,
 remove that marker if present, and run the same frozen runner. Terminal cells
 are preserved. If the dispatcher crashed with active admissions, it refuses
 automatic replacement: reconcile the recorded PIDs and native state first so
 that surviving jobs cannot be duplicated or their budgets reset.
+
+## Explicit runtime upgrades
+
+An authorized runtime upgrade sets `default_runtime_directory` to a new immutable
+snapshot for unstarted cells. Every launched cell records `runtime_directory`
+and `runtime_sha256`; reconnects retain that version and their cumulative budgets.
+The CSV includes the runtime hash, stop code/scope, cost source, and number of costed calls, so comparisons spanning versions remain visible. Unstarted cells have no assigned runtime hash. Costs with incomplete coverage are labelled as partial; historical unlabelled estimates are unavailable in the UI and exported only in `legacy_unverified_cost_usd`, outside the comparable cost column.
+Never overwrite an existing snapshot.
+
+A dispatcher handoff must record each active worker's process birth time and exact
+command (`process_identity`) while the old dispatcher is stopped. Save the campaign
+backup and handoff provenance, terminate only that dispatcher, then start the new
+snapshot's dispatcher with `run <campaign-directory> --adopt-active`. Its existing
+lock prevents concurrent dispatch; adoption rejects preparation-in-progress and
+reused PIDs. Active workers continue in their own process groups. Adopted workers'
+OS exit codes are unavailable: `returncode_source=adopted_native_state` explicitly
+marks the derived result, and only terminal native acceptance counts as verified.

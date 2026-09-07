@@ -22,6 +22,7 @@ from leanflow_cli.workflows.prover.source import (
 )
 from leanflow_cli.workflows.prover.store import now
 from leanflow_cli.workflows.prover.submission_cache import submission_key
+from leanflow_cli.workflows.prover.usage import merge_usage
 
 if TYPE_CHECKING:
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
@@ -35,7 +36,7 @@ def new_job(
         role in {"orchestrator", "review", "research"}
         and (role, prompt) in runtime.resume_role_jobs
     ):
-        job = runtime.resume_role_jobs.pop((role, prompt))
+        job = runtime.resume_role_jobs[(role, prompt)]
         remaining = job["api_budget"] - job["api_calls"]
         job["reserved_calls"] = runtime._reserve(remaining)
         if job["reserved_calls"] != remaining:
@@ -44,12 +45,19 @@ def new_job(
         job.update(
             previous_api_calls=job["api_calls"], resumed=True, status="running", accounted=False
         )
-        for field in ("input_tokens", "output_tokens", "cost_usd"):
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cost_usd",
+            "cost_source",
+            "costed_api_calls",
+        ):
             job["previous_" + field] = job.get(field)
         context = runtime._context(node)
         context.update(
             job_id=job["id"], candidate_path=str(Path(job["workspace"]) / "candidate.txt")
         )
+        runtime.resume_role_jobs.pop((role, prompt))
         runtime._persist()
         return job, context
     resumed_jobs = runtime.resume_negation_jobs if role == "negation" else runtime.resume_jobs
@@ -61,7 +69,13 @@ def new_job(
             runtime.reserved -= job["reserved_calls"]
             raise BudgetExhausted("remaining campaign allocation cannot resume this job")
         job["previous_api_calls"] = job["api_calls"]
-        for field in ("input_tokens", "output_tokens", "cost_usd"):
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cost_usd",
+            "cost_source",
+            "costed_api_calls",
+        ):
             job["previous_" + field] = job.get(field)
         job["resumed"] = True
         job["accounted"] = False
@@ -201,6 +215,11 @@ def new_job(
             context["scratch_declaration"] = str(
                 (declaration_region(Path(job["scratch_path"]), node.name) or {}).get("text", "")
             )[:16000]
+        # Persist zero admission before publishing or dispatching the job. A crash
+        # during context/transport setup must not consume the entire allocation.
+        ledger = workspace.parent / ".runtime" / workspace.name / "request-count.json"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(ledger, {"limit": budget, "used": 0})
     except Exception:
         runtime.reserved -= budget
         runtime.scratch_before.pop(job_id, None)
@@ -223,12 +242,7 @@ def session_event(
             job["api_calls"] = max(
                 int(job.get("api_calls", 0)), min(job["api_budget"], details["api_calls"])
             )
-        for field in ("input_tokens", "output_tokens"):
-            if isinstance(details.get(field), int):
-                job[field] = max(
-                    int(job.get(field, 0)),
-                    int(job.get("previous_" + field, 0) or 0) + details[field],
-                )
+        merge_usage(job, details)
         runtime.store.event(kind, {"job_id": job["id"], "node_id": job["node_id"], **details})
         job["updated_at"] = now()
         if kind == "api-request":
@@ -305,6 +319,16 @@ def invoke(
     """Execute one isolated session and retain its typed result even on infrastructure failure."""
     try:
         settings = runtime.config.to_mapping(job["role"])
+        settings["_previous_usage"] = {
+            field: job.get("previous_" + field)
+            for field in (
+                "input_tokens",
+                "output_tokens",
+                "cost_usd",
+                "cost_source",
+                "costed_api_calls",
+            )
+        }
         settings["_cancelled"] = runtime.cancelled.is_set
         if job["role"] == "prover":
             settings["_research_job"] = lambda question: research_job(runtime, job, question)
@@ -442,14 +466,10 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
             runtime.cancelled.set()
             runtime.stopping = True
             runtime.state["stop_status"] = "interrupted"
-        for field in ("input_tokens", "output_tokens", "cost_usd", "report_path", "artifacts"):
+        merge_usage(job, result)
+        for field in ("report_path", "artifacts"):
             if field in result:
-                if field in {"input_tokens", "output_tokens"}:
-                    job[field] = int(job.get("previous_" + field, 0) or 0) + int(result[field] or 0)
-                elif field == "cost_usd" and result[field] is not None:
-                    job[field] = float(job.get("previous_cost_usd", 0) or 0) + float(result[field])
-                else:
-                    job[field] = result[field]
+                job[field] = result[field]
         report_path = Path(job["workspace"]) / "result.json"
         from leanflow_cli.workflows.prover.stop_reason import job_stop_reason
 
@@ -511,7 +531,14 @@ def research_job(runtime: ProverRuntime, parent: dict[str, Any], question: str) 
         "Investigate this specific external resource or computation uncertainty. Save evidence locally and return a concise report with paths. Do not advise about Lean proof strategy or solve declarations.\n"
         + question
     )
-    job, context = runtime._new_job("research", prompt=prompt)
+    try:
+        job, context = runtime._new_job("research", prompt=prompt)
+    except BudgetExhausted:
+        runtime._ensure_active()
+        return {
+            "status": "unavailable",
+            "error": "No unreserved campaign calls are available for a research job. Continue within the current prover allocation.",
+        }
     job["parent_job_id"] = parent["id"]
     context["requester"] = {"job_id": parent["id"], "node_id": parent["node_id"]}
     result = runtime._invoke(job, context, prompt)

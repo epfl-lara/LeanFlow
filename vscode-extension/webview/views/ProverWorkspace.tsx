@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ProverNode, ProverSnapshot } from "../../src/core/prover";
 import { nodeLifecycle, proofStateCounts, proofStateSummary } from "../../src/core/proverGraph";
 import {
+  STALE_AFTER_MS,
   controllerActivity,
   proposalView,
   proverBudget,
@@ -26,8 +27,6 @@ import { clock } from "./proverFormat";
 
 /** Refresh cadence while a run is live; the host serves an unchanged state file from cache. */
 const REFRESH_MS = 3000;
-/** A live snapshot older than this is called out as stale rather than shown as current. */
-const STALE_AFTER_MS = 120_000;
 
 /** A ticking clock so elapsed times and durations advance between snapshots. */
 function useNow(intervalMs: number): number {

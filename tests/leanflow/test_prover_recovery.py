@@ -174,7 +174,7 @@ def test_resume_each_planning_job_preserves_its_allocation_and_finished_reports(
             crashed = True
             ledger.write_text(json.dumps({"used": 1, "limit": kwargs["api_budget"]}))
             raise SystemExit("interrupted planning job")
-        used = 2 if ledger.exists() else 1
+        used = int(json.loads(ledger.read_text())["used"]) + 1 if ledger.exists() else 1
         report = (
             {"accepted": True}
             if kwargs["role"] == "review"

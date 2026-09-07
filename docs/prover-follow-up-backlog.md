@@ -293,6 +293,15 @@ run directory in the live smoke fixture.
   disproof. Test parallel reservations and resume accounting at each boundary.
   **Owner:** `runtime.py`, observer/status mapping, dashboard.
 
+  **2026-09-07 follow-through:** scheduler dead ends now use `blocked`, campaign
+  time uses `timeout`, and only campaign call exhaustion uses `budget_exhausted`.
+  The benchmark exports stop scope and pauses dead ends. Accepted local repair
+  reopens within retained retry limits; rejected DAG drafts keep their critique
+  and can continue beyond three attempts inside the global ceilings. Direction
+  refinements charge only after acceptance/materialization; reviewer guidance
+  explicitly classifies tactic/rewrite repair separately. Request-level cost
+  provenance and coverage now survive resume and are durably checkpointed.
+
 - [x] **J07 · P2 · Make timeout behavior and stalled-work detection explicit.**
   **Known limitation:** wall time is cooperative. In-flight tools/checks can
   outlive admission of new work; prover scratch checks still use a separate 60s

@@ -40,6 +40,7 @@ def research_plan(
             "reason": reason,
             "affected": sorted(affected) if affected is not None else None,
             "refinement": refinement,
+            "previous_plan": runtime.state["plan_markdown"],
             "steps": {},
         }
         runtime.state["planning_request"] = checkpoint
@@ -53,13 +54,7 @@ def research_plan(
         runtime.state["phase"] = "proving"
         runtime._persist()
         return True
-    previous_plan = runtime.state["plan_markdown"]
-    if refinement and not checkpoint.get("refinement_charged"):
-        if runtime.state["metrics"]["plan_refinements"] >= runtime.config.plan_refinements:
-            runtime.state.pop("planning_request", None)
-            return False
-        runtime.state["metrics"]["plan_refinements"] += 1
-        checkpoint["refinement_charged"] = True
+    previous_plan = checkpoint.setdefault("previous_plan", runtime.state["plan_markdown"])
     runtime.state["phase"] = "planning"
     runtime._persist()
     # Informal research and graph design receive independent model histories.
@@ -79,7 +74,10 @@ def research_plan(
         runtime._persist()
     critique = ""
     proposal: dict[str, Any] = {}
-    for attempt in range(3):
+    # Every proposal/review remains separately capped and globally accounted.
+    # Three rejected drafts do not consume the remaining campaign allowance.
+    # The global call ceiling also bounds malformed zero-call session adapters.
+    for attempt in range(runtime.config.total_api_calls):
         runtime._ensure_active()
         runtime._assert_sources()
         result = _planning_call(
@@ -120,6 +118,7 @@ def research_plan(
             "review",
             planning_prompt(reason=reason, review=True),
             context_extra={
+                "previous_accepted_plan": previous_plan,
                 "proposed_dag": updated.to_dict(),
                 "proposed_plan": proposal["plan"],
                 "proposed_change_kind": proposal.get(
@@ -134,14 +133,16 @@ def research_plan(
             runtime.store.event("plan_rejected", {"reason": critique})
             runtime._persist()
             continue
-        changed_direction = (
-            affected is not None
-            and not refinement
-            and review.get(
-                "change_kind",
-                proposal.get("change_kind", "decomposition" if skeletons else "direction"),
+        changed_direction = not checkpoint.get("refinement_charged") and (
+            refinement
+            or (
+                affected is not None
+                and review.get(
+                    "change_kind",
+                    proposal.get("change_kind", "decomposition" if skeletons else "direction"),
+                )
+                == "direction"
             )
-            == "direction"
         )
         if (
             changed_direction
@@ -201,6 +202,7 @@ def research_plan(
         runtime.dag = updated
         if changed_direction:
             runtime.state["metrics"]["plan_refinements"] += 1
+            checkpoint["refinement_charged"] = True
         runtime.state["plan_markdown"] = proposal["plan"]
         runtime.state["phase"] = "proving"
         runtime.state["proposal_status"] = "accepted"

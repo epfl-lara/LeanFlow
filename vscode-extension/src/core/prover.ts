@@ -174,6 +174,8 @@ export interface ProverMetrics {
   output_tokens: number | null;
   cost_usd: number | null;
   cost_complete: boolean | null;
+  cost_source: string;
+  costed_api_calls: number | null;
   plan_refinements: number | null;
   max_plan_refinements: number | null;
   total_api_budget: number | null;
@@ -393,6 +395,7 @@ export function normalizeProverSnapshot(value: unknown, runId: string): ProverSn
       api_calls: number(metrics.api_calls), input_tokens: number(metrics.input_tokens),
       output_tokens: number(metrics.output_tokens), cost_usd: number(metrics.cost_usd),
       cost_complete: flag(metrics.cost_complete),
+      cost_source: text(metrics.cost_source), costed_api_calls: number(metrics.costed_api_calls),
       plan_refinements: number(metrics.plan_refinements), max_plan_refinements: number(metrics.max_plan_refinements),
       total_api_budget: number(metrics.total_api_budget), reserved_api_calls: number(metrics.reserved_api_calls),
       remaining_reserved_api_calls: number(metrics.remaining_reserved_api_calls),

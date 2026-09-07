@@ -90,9 +90,10 @@ test("an older snapshot without the new budget fields leaves available calls unk
   assert.equal(budget.nodes.max, 24);
 });
 
-test("elapsed time advances from the snapshot only while the run is nonterminal", () => {
+test("elapsed time advances only for fresh nonterminal snapshots", () => {
   const live = snapshot({ updated_at: "2026-09-06T14:00:00+00:00", metrics: { elapsed_s: 10 } });
-  assert.equal(proverBudget(live, NOW).elapsedS, 310);
+  assert.equal(proverBudget(live, NOW).elapsedS, 10);
+  assert.equal(proverBudget(live, NOW).elapsedAdvancing, false);
   const done = snapshot({ updated_at: "2026-09-06T14:00:00+00:00", terminal: true, metrics: { elapsed_s: 10 } });
   assert.equal(proverBudget(done, NOW).elapsedS, 10);
   assert.equal(proverBudget(done, NOW).elapsedAdvancing, false);
@@ -156,7 +157,7 @@ test("idle prover slots during proving are explained by dependencies or budget",
     metrics: { available_api_calls: 40 },
     dag: { nodes: [{ id: "root", status: "pending" }] },
   });
-  assert.match(proverCapacity(budgetBound).waitingReason, /40 .*available|budget/i);
+  assert.match(proverCapacity(budgetBound).waitingReason, /remaining 40 calls.*200-call ceiling/i);
 
   const standard = proverCapacity(snapshot({ config: { ...CONFIG, mode: "standard", parallelism: 4 }, mode: "standard", phase: "proving" }));
   assert.equal(standard.proverLimit, 1);

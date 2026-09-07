@@ -1,5 +1,6 @@
 /** Read-only presentation and path confinement for the Lean-IMO campaign. */
 import * as path from "node:path";
+export { proverCost as benchmarkCost } from "./proverProgress";
 
 export interface BenchmarkCell {
   id: string;
@@ -16,7 +17,11 @@ export interface BenchmarkCell {
   verified: boolean;
   metrics: Record<string, unknown>;
   error?: string;
+  runtime_sha256?: string;
+  stop_reason?: { code?: string; scope?: string; message?: string };
 }
+
+
 
 export interface BenchmarkCampaign {
   version: number;

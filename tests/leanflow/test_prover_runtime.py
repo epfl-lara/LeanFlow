@@ -824,7 +824,8 @@ def test_negation_provider_failure_resumes_same_job_and_decomposition_allowance(
     )
     monkeypatch.setattr(resumed, "_research_plan", lambda *args, **kwargs: False)
     state = resumed.run()
-    assert state["status"] == "budget_exhausted"
+    assert state["status"] == "blocked"
+    assert state["stop_reason"]["code"] == "no_runnable_obligations"
     assert len(state["jobs"]) == 1
     assert state["jobs"][0]["resumed"] is True
     assert state["metrics"]["api_calls"] == 3
