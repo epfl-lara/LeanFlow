@@ -14,7 +14,7 @@
   {"url": "https://github.com/leanprover-community/mathlib4",
    "type": "git",
    "subDir": null,
-   "scope": "leanprover-community",
+   "scope": "",
    "rev": "0df444a360eaa60ab8c11dca51a86af692955474",
    "name": "mathlib",
    "manifestFile": "lake-manifest.json",
@@ -101,6 +101,6 @@
    "inputRev": "v4.33.0",
    "inherited": true,
    "configFile": "lakefile.toml"}],
- "name": "beckfiala_research",
+ "name": "lean_imo_bench",
  "lakeDir": ".lake",
  "fixedToolchain": false}

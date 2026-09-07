@@ -1728,6 +1728,7 @@ def lean_incremental_check(
     timeout_s: int = LEAN_INCREMENTAL_TIMEOUT_DEFAULT_S,
     timeout_ceiling_s: int | None = None,
     allow_placeholders_for_elaboration: bool = False,
+    preserve_diagnostics: bool = False,
 ) -> dict[str, Any]:
     """Dispatch an incremental Lean check through the appropriate exact backend.
 
@@ -1743,6 +1744,10 @@ def lean_incremental_check(
     ``allow_placeholders_for_elaboration`` is likewise internal. Decomposition
     uses it to distinguish a placeholder template that elaborates from a
     complete proof candidate; ordinary acceptance checks remain fail-closed.
+
+    ``preserve_diagnostics`` is internal as well. Verified extraction reads the
+    complete ``extract_goal`` statement and context dump out of the messages of
+    a placeholder probe, so that probe must not have its diagnostics bounded.
     """
     operation_started = time.monotonic()
     leanflow_action = _leanflow_action(action)
@@ -2284,4 +2289,6 @@ def lean_incremental_check(
         "session_reclaim_s": round(session_reclaim_s, 3),
         "postprocess_s": round(postprocess_s, 3),
     }
+    if preserve_diagnostics:
+        return result
     return _bound_failed_check_payload(result, _feedback_max_chars())
