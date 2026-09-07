@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from scripts.lean_imo_campaign.artifacts import digest, environment, prepare, save
-from scripts.lean_imo_campaign.matrix import CONDITIONS, cells, next_cell
+from scripts.lean_imo_campaign.matrix import CONDITION_SETS, CONDITIONS, cells, next_cell
 from scripts.lean_imo_campaign.runner import refresh
 
 
@@ -18,8 +18,8 @@ def test_two_lanes_finish_conditions_before_claiming_next_problem() -> None:
     first["status"] = second["status"] = "running"
     assert next_cell(rows, 1) is None
     assert next_cell(rows, 2) is None
-    for label, _, _ in CONDITIONS:
-        assert first["condition"] == label
+    for condition in CONDITIONS:
+        assert first["condition"] == condition.label
         first["status"] = "budget_exhausted"
         first = next_cell(rows, 1)
         assert first is not None
@@ -245,3 +245,45 @@ def test_csv_moves_unverified_legacy_cost_out_of_comparable_cost_column(tmp_path
     assert row["stop_scope"] == "scheduler"
     assert row["runtime_sha256"] == ""
     assert cell["metrics"]["cost_usd"] == 152.81
+
+
+def test_top_down_split_arm_pins_the_requested_comparison() -> None:
+    """One top-down arm whose planning outthinks its prover, at the agreed budget."""
+    conditions = CONDITION_SETS["top-down-split"]
+    assert len(conditions) == 1
+    (condition,) = conditions
+    assert (condition.order, condition.prover_effort, condition.orchestrator_effort) == (
+        "top-down",
+        "low",
+        "xhigh",
+    )
+
+    rows = cells([{"id": "p"}, {"id": "q"}], conditions)
+    assert len(rows) == 2  # one cell per problem, not one per model x order
+    config = rows[0]["config"]
+    assert config["search_order"] == "top-down"
+    assert config["reasoning_effort"] == "low"
+    assert config["orchestrator_reasoning_effort"] == "xhigh"
+    assert config["model"] == config["orchestrator_model"] == "gpt-6-astra"
+    assert (
+        config["parallelism"],
+        config["job_api_calls"],
+        config["orchestrator_api_calls"],
+        config["total_api_calls"],
+        config["wall_time_s"],
+    ) == (4, 200, 50, 2000, 28800)
+    assert config["allow_internet"] is False
+
+
+def test_default_condition_set_is_unchanged_by_the_split_arm() -> None:
+    """Adding an arm must not perturb the original four-way comparison."""
+    assert CONDITION_SETS["full"] is CONDITIONS
+    assert [c.label for c in CONDITIONS] == [
+        "astra-bottom",
+        "astra-top",
+        "terra-bottom",
+        "terra-top",
+    ]
+    for condition in CONDITIONS:
+        assert condition.prover_effort == "" and condition.orchestrator_effort == ""
+    assert len(cells([{"id": "p"}])) == 4

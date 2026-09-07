@@ -43,6 +43,13 @@ def _isolate_leanflow_home(tmp_path, monkeypatch):
     # then removes a value written by _build_agent instead of leaking it into
     # unrelated file-tool statement-guard tests.
     monkeypatch.delenv("LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS", raising=False)
+    # workflow_state._workflow_run_id() mints a run id and writes it straight to
+    # os.environ when the variable is unset. Same process-reuse hazard: a test that
+    # records any workflow activity leaves a run id behind, and later tests then see
+    # a "managed run" they never asked for. That silently flips run-id-gated
+    # behaviour -- e.g. the negation-promotion kernel-check audit bracket -- making
+    # those tests pass or fail on xdist scheduling order rather than on the code.
+    monkeypatch.delenv("LEANFLOW_WORKFLOW_RUN_ID", raising=False)
 
     # Importing run_agent (and a few CLI entrypoints) runs load_leanflow_dotenv() at
     # module-import time, which is *before* this fixture runs on the first test that

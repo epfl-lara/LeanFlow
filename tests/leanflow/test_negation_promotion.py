@@ -1807,6 +1807,10 @@ def test_source_negation_rejects_sorry_axiom(monkeypatch, tmp_path):
 
 
 def test_repeated_source_promotion_preserves_ambiguous_tmp_alias_evidence(monkeypatch, tmp_path):
+    # The kernel-check audit bracket is only emitted inside a managed workflow
+    # run (negation_promotion.py:1833/1845). Declare that precondition instead
+    # of inheriting a run id another test leaked into the process environment.
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "tmp-alias-promotion")
     canonical_project, alias_project, source, _node_id = _setup_tmp_alias_project(
         monkeypatch, tmp_path
     )
