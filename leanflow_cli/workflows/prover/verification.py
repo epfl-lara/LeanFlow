@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from leanflow_cli.workflows.prover.models import Dag, Node, safe_relative_file
+from leanflow_cli.workflows.prover.models import Dag, Node, digest, safe_relative_file
 from leanflow_cli.workflows.prover.source import (
     SourceDocument,
     project_path,
@@ -17,11 +19,20 @@ from leanflow_cli.workflows.prover.source import (
     sorry_spans,
 )
 
+SIGNATURE_SCHEMES = ("legacy", "module")
+
 
 class LeanVerifier:
     """Keep parent checks separate from model-reported tool results."""
 
-    def __init__(self, root: Path, allowed_axioms: tuple[str, ...], timeout_s: int = 180) -> None:
+    def __init__(
+        self,
+        root: Path,
+        allowed_axioms: tuple[str, ...],
+        timeout_s: int = 180,
+        *,
+        signature_scheme: str = "legacy",
+    ) -> None:
         self.root = root
         self.allowed_axioms = set(allowed_axioms)
         self.configured_timeout_s = timeout_s
@@ -29,6 +40,21 @@ class LeanVerifier:
         self.on_operation: Callable[..., Any] | None = None
         self.lock = threading.Lock()
         self.workspaces: set[Path] = set()
+        if signature_scheme not in SIGNATURE_SCHEMES:
+            raise ValueError(f"unknown signature scheme: {signature_scheme}")
+        # "legacy" compiles every kernel profile under one fixed module name;
+        # its fingerprints are what earlier runs recorded. "module" compiles
+        # under the real module name so the checked artifact is publishable.
+        self.signature_scheme = signature_scheme
+        # Controller-private directory for checked artifacts. It must never be
+        # a writable root of any sandboxed Lean process.
+        self.artifact_root: Path | None = None
+
+    def profile_module(self, relative: str) -> str | None:
+        """Name the module a kernel profile compiles under, if the scheme fixes it."""
+        from leanflow_cli.workflows.prover.type_profile import module_name
+
+        return module_name(relative) if self.signature_scheme == "module" else None
 
     @property
     def timeout_s(self) -> float:
@@ -40,11 +66,25 @@ class LeanVerifier:
         )
 
     def _operation(
-        self, kind: str, label: str, action: Callable[[], dict[str, Any]], **details: Any
+        self,
+        kind: str,
+        label: str,
+        action: Callable[[], dict[str, Any]],
+        *,
+        timeout_s: float | None = None,
+        **details: Any,
     ) -> dict[str, Any]:
         """Report long deterministic checks without granting source mutation authority."""
         if self.on_operation is not None:
-            return dict(self.on_operation(kind, label, action, timeout_s=self.timeout_s, **details))
+            return dict(
+                self.on_operation(
+                    kind,
+                    label,
+                    action,
+                    timeout_s=self.timeout_s if timeout_s is None else timeout_s,
+                    **details,
+                )
+            )
         return action()
 
     def preflight(self, workspace: Path) -> dict[str, Any]:
@@ -102,6 +142,7 @@ class LeanVerifier:
                         workspace=workspace,
                         timeout_s=self.timeout_s,
                         mutable_names=mutable_names,
+                        module=self.profile_module(relative),
                     ),
                     file=relative,
                     completed=completed,
@@ -199,7 +240,12 @@ class LeanVerifier:
                 timeout_s=remaining,
             )
 
-        result = self._candidate_stage(elaborate, deadline)
+        # Provers already use the warm REPL for feedback. Closed submissions are
+        # authoritatively re-elaborated by the exact-source compiler below; a
+        # second controller REPL pass duplicates that work and retains a large
+        # imported environment during the subsequent cold checks. Skeletons
+        # still need LeanProbe's placeholder-tolerant elaboration diagnostics.
+        result = self._candidate_stage(elaborate, deadline) if skeleton else {}
         if skeleton:
             messages = result.get("messages", [])
             no_errors = not any(
@@ -219,18 +265,8 @@ class LeanVerifier:
                 and not result.get("error_code")
                 and not result.get("timed_out")
             )
-        else:
-            axioms = result.get("axiom_profile_axioms")
-            accepted = (
-                result.get("success") is True
-                and result.get("ok") is True
-                and result.get("axiom_profile_checked") is True
-                and isinstance(axioms, list)
-                and set(axioms) <= self.allowed_axioms
-                and "sorryAx" not in axioms
-            )
-        if not accepted:
-            return {**result, "accepted": False}
+            if not accepted:
+                return {**result, "accepted": False}
         if node.original and not node.signature_sha256:
             return {
                 **result,
@@ -239,14 +275,36 @@ class LeanVerifier:
             }
         from leanflow_cli.workflows.prover.type_profile import compiled_type_profiles
 
+        checked_source = read_source(file)
+        module = self.profile_module(node.file)
+        artifact = (
+            self.artifact_root / f"{node.id}_{node.revision}_{uuid.uuid4().hex[:8]}.olean"
+            if self.artifact_root is not None and module is not None and not skeleton
+            else None
+        )
         profile = self._candidate_stage(
             lambda remaining: compiled_type_profiles(
                 root=self.root,
-                source=read_source(file),
+                source=checked_source,
                 names=[node.name],
                 workspace=file.parent,
                 timeout_s=remaining,
                 mutable_names=node.signature_mutable_names or [node.name],
+                module=module,
+                artifact=artifact,
+                on_stage=lambda stage, action: self._operation(
+                    "verification_stage",
+                    (
+                        "Compiling exact candidate source"
+                        if stage == "compile"
+                        else "Inspecting compiled kernel types and axioms"
+                    ),
+                    action,
+                    stage=stage,
+                    timeout_s=min(self.timeout_s, max(0, deadline - time.monotonic())),
+                    node_id=node.id,
+                    file=str(file),
+                ),
             ),
             deadline,
         )
@@ -255,6 +313,7 @@ class LeanVerifier:
                 **result,
                 "accepted": False,
                 "kernel_profile": profile,
+                "verification_timing": profile.get("timing", {}),
                 "error": profile.get("error", "kernel profile unavailable"),
             }
         target = profile["profiles"][node.name]
@@ -267,11 +326,27 @@ class LeanVerifier:
         accepted = type_matches and kernel_safe
         if accepted and skeleton and not node.signature_sha256:
             node.signature_sha256 = target["sha256"]
+        retained = (
+            {
+                "compiled_artifact": profile["artifact"],
+                "compiled_artifact_sha256": profile["artifact_sha256"],
+            }
+            if accepted and profile.get("artifact") and profile.get("artifact_sha256")
+            else {}
+        )
         return {
             **result,
+            "success": True,
+            "ok": accepted and not skeleton,
             "accepted": accepted,
+            "axiom_profile_checked": True,
+            "axiom_profile_axioms": kernel_axioms,
+            "verification_backend": "compiled_kernel",
+            "verification_timing": profile.get("timing", {}),
+            "checked_source_sha256": digest(checked_source),
             "kernel_profile": target,
             "type_matches": type_matches,
+            **retained,
             "error": (
                 "protected declaration kernel type changed"
                 if not type_matches
@@ -299,10 +374,7 @@ class LeanVerifier:
 
     def compile_module(self, relative: str) -> dict[str, Any]:
         """Build one generated helper artifact so dependent scratch modules can import it."""
-        from leanflow_cli.workflows.prover.check_process import (
-            close_check_workers,
-            isolated_command,
-        )
+        from leanflow_cli.workflows.prover.check_process import isolated_command
 
         relative = safe_relative_file(relative)
         output = project_path(
@@ -326,14 +398,64 @@ class LeanVerifier:
                 and artifact.is_file()
             )
             if accepted:
-                output.write_bytes(artifact.read_bytes())
-                # File-content caches cannot observe a changed imported .olean.
-                # Only this verifier's workers are invalidated; prover scratch
-                # sessions remain independent and their results are rechecked here.
-                for checked_workspace in self.workspaces:
-                    close_check_workers(checked_workspace)
-                self.workspaces.clear()
+                self._publish(output, artifact.read_bytes())
             return {**result, "accepted": accepted}
+
+    def install_module(self, relative: str, artifact: Path, sha256: str) -> dict[str, Any]:
+        """Publish an artifact this verifier compiled and inspected from the exact accepted source.
+
+        The bytes must still match the digest recorded when the candidate
+        compiler was reaped, and must live under the controller-private artifact
+        root; anything else is refused so the caller recompiles instead.
+        """
+        relative = safe_relative_file(relative)
+        output = project_path(
+            self.root,
+            str(Path(".lake/build/lib/lean") / Path(relative).with_suffix(".olean")),
+        )
+        with self.lock:
+            if self.artifact_root is None:
+                return {
+                    "accepted": False,
+                    "error_code": "artifact_unavailable",
+                    "error": "no controller-private artifact root is configured",
+                }
+            try:
+                resolved = artifact.resolve(strict=True)
+                if artifact.is_symlink() or not resolved.is_relative_to(
+                    self.artifact_root.resolve()
+                ):
+                    raise ValueError("artifact is outside the controller-private root")
+                content = resolved.read_bytes()
+            except (OSError, ValueError) as exc:
+                return {
+                    "accepted": False,
+                    "error_code": "artifact_unavailable",
+                    "error": str(exc),
+                }
+            actual = hashlib.sha256(content).hexdigest()
+            if not sha256 or actual != sha256:
+                return {
+                    "accepted": False,
+                    "error_code": "artifact_mismatch",
+                    "error": "checked artifact bytes no longer match their recorded digest",
+                }
+            output.parent.mkdir(parents=True, exist_ok=True)
+            self._publish(output, content)
+            resolved.unlink(missing_ok=True)
+            return {"accepted": True, "artifact": str(artifact), "sha256": actual}
+
+    def _publish(self, output: Path, content: bytes) -> None:
+        """Replace one importable artifact and drop warm environments that imported it."""
+        from leanflow_cli.workflows.prover.check_process import close_check_workers
+
+        output.write_bytes(content)
+        # File-content caches cannot observe a changed imported .olean.
+        # Only this verifier's workers are invalidated; prover scratch
+        # sessions remain independent and their results are rechecked here.
+        for checked_workspace in self.workspaces:
+            close_check_workers(checked_workspace)
+        self.workspaces.clear()
 
     def _lake_config_cache(self) -> tuple[Path, ...]:
         """Allow Lake's compiled configuration artifacts while protecting source and dependencies."""

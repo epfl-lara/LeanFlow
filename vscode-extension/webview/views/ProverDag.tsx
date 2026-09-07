@@ -2,7 +2,7 @@
 import { useMemo, useState } from "react";
 
 import { proverTreeRows, type ProverNode, type ProverSnapshot } from "../../src/core/prover";
-import { PROOF_STATES, proposalNodeLifecycle, type NodeLifecycle } from "../../src/core/proverGraph";
+import { PROOF_STATES, proposalNodeLifecycle, proverNodeLabel, type NodeLifecycle } from "../../src/core/proverGraph";
 import { jobTimeline, type ProposalView } from "../../src/core/proverProgress";
 import { Card, Notice } from "../components";
 import { ProverGraph } from "./ProverGraph";
@@ -50,9 +50,9 @@ export function ProverDag({ state, lifecycle, proposal, now, onOpen, onJob }: {
             const itemLife = classify(item);
             return <div key={`${item.id}-${index}`} role="listitem"><button
               className={`prover-node ${node?.id === item.id ? "selected" : ""}`} onClick={() => setSelected(item.id)}
-              style={{ paddingLeft: `${12 + Math.min(depth, 12) * 18}px` }} aria-pressed={node?.id === item.id}>
+              style={{ paddingLeft: `${12 + Math.min(depth, 12) * 18}px` }} aria-pressed={node?.id === item.id} title={item.name}>
               <span className={`prover-dot ${dotTone(item.status)}`} />
-              <span className="prover-node-name">{reference ? "↗ " : depth ? "└ " : ""}{item.name}<small>{item.module || item.file || "Placement pending"}</small></span>
+              <span className="prover-node-name">{reference ? "↗ " : depth ? "└ " : ""}{proverNodeLabel(item.name)}<small>{proverNodeLabel(item.module) || item.file || "Placement pending"}</small></span>
               <span className={`pill ${lifecycleTone(itemLife.state)}`}>{cycle ? "cycle" : itemLife.label}</span>
             </button></div>;
           })}

@@ -11,6 +11,7 @@ import { test } from "node:test";
 
 import { normalizeProverSnapshot } from "../dist/test/prover.mjs";
 import {
+  acceptedReview,
   changeRows,
   controllerActivity,
   isNewerProverSnapshot,
@@ -31,6 +32,14 @@ const NOW = Date.parse("2026-09-06T14:05:00+00:00");
 function snapshot(fields = {}) {
   return normalizeProverSnapshot({ run_id: "run-1", ...fields }, "run-1");
 }
+
+test("resume-pending allocations do not occupy prover slots or keep finished clocks running", () => {
+  const job = { id: "old", role: "prover", node_id: "goal", status: "resume_pending",
+    started_at: "2026-09-06T14:00:00+00:00", finished_at: "2026-09-06T14:03:30+00:00" };
+  const view = snapshot({ mode: "research", jobs: [job], dag: { nodes: [{ id: "goal", status: "candidate" }] } });
+  assert.equal(proverCapacity(view).proverActive, 0);
+  assert.deepEqual(jobTimeline(job, NOW), { durationS: 210, live: false });
+});
 
 const CONFIG = {
   mode: "research", search_order: "bottom-up", job_api_calls: 200, max_restarts: 2, plan_refinements: 4,
@@ -368,6 +377,26 @@ test("a proposed graph is exposed separately from the canonical one with its rev
   assert.equal(proposalView(snapshot()), null);
   const rejected = proposalView(snapshot({ proposed_dag: { nodes: [{ id: "x" }] }, proposal_status: "rejected", proposal_critique: "Cycle." }));
   assert.match(rejected.label, /rejected/i);
+  assert.match(rejected.planNote, /rejected.*stays authoritative/i);
+  assert.match(view.planNote, /not the plan until/i);
+  assert.equal(acceptedReview(state), "", "a draft under validation has not been accepted");
+});
+
+test("an accepted proposal stops being a draft and its verdict stays with the plan", () => {
+  const fields = {
+    dag: { roots: ["root"], nodes: [{ id: "root", status: "pending" }, { id: "h1", status: "proved" }] },
+    proposed_dag: { roots: ["root"], nodes: [{ id: "root", status: "pending" }, { id: "h1", status: "pending" }] },
+    proposal_status: "accepted",
+    proposed_plan: "Split into one helper.",
+    proposal_critique: "The decomposition is coherent and sufficient.",
+  };
+  // The controller published the proposal: the canonical graph and PLAN.md already carry it,
+  // so neither the draft card nor the Proposed graph toggle has anything left to show.
+  assert.equal(proposalView(snapshot(fields)), null);
+  assert.equal(acceptedReview(snapshot(fields)), "The decomposition is coherent and sufficient.");
+  // A new planning request rewrites the plan; the old verdict would describe the wrong text.
+  assert.equal(acceptedReview(snapshot({ ...fields, planning_request: { reason: "Refine", refinement: true, steps: {} } })), "");
+  assert.equal(acceptedReview(snapshot()), "");
 });
 
 // ------------------------------------------------------------------- ordering

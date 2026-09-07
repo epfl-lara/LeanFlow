@@ -15,14 +15,15 @@ export function PlanContent({ text }: { text: string }) {
   })}</div>;
 }
 
-export function ProverPlan({ state, proposal, onOpen }: {
-  state: ProverSnapshot; proposal: ProposalView | null; onOpen: (path: string) => void;
+export function ProverPlan({ state, proposal, review, onOpen }: {
+  state: ProverSnapshot; proposal: ProposalView | null; review: string; onOpen: (path: string) => void;
 }) {
   return <>
     <Card title="Proof plan" subtitle="The orchestrator's current durable plan. Research results and user guidance are appended to it." actions={state.plan_path ? <button className="btn ghost" onClick={() => onOpen(state.plan_path)}>Open PLAN.md</button> : undefined}>
+      {review && <Notice tone="info"><strong>Accepted by review:</strong> {review}</Notice>}
       {state.plan_markdown ? <PlanContent text={state.plan_markdown} /> : <div className="muted">No plan recorded yet.</div>}
     </Card>
-    {proposal && (proposal.plan || proposal.critique) && <Card title="Proposed plan (draft)" subtitle={`${proposal.label}. This draft is not the accepted plan until the controller publishes the graph.`}>
+    {proposal && (proposal.plan || proposal.critique) && <Card title="Proposed plan (draft)" subtitle={`${proposal.label}. ${proposal.planNote}`}>
       {proposal.critique && <Notice tone={proposal.status === "rejected" ? "error" : "info"}><strong>Review verdict:</strong> {proposal.critique}</Notice>}
       {proposal.plan ? <PlanContent text={proposal.plan} /> : <div className="muted">The proposal carries no plan text.</div>}
     </Card>}

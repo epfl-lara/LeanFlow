@@ -8,6 +8,11 @@ const GAP_X = 36;
 const GAP_Y = 76;
 const MARGIN = 32;
 
+/** Omit the generated namespace from visual labels without changing declaration identity. */
+export function proverNodeLabel(name: string): string {
+  return name.startsWith("LeanFlowProofs.") ? name.slice("LeanFlowProofs.".length) : name;
+}
+
 export interface GraphPlacement { node: ProverNode; x: number; y: number; rank: number }
 export interface GraphEdge { from: string; to: string; path: string }
 export interface ProverGraphLayout {
@@ -89,8 +94,8 @@ export const PROOF_STATES: Record<ProofState, { label: string; icon: string }> =
   blocked: { label: "Blocked", icon: "Ⅱ" }, failed: { label: "Failed / invalidated", icon: "×" },
 };
 
-/** Job statuses under which a session may still make a model decision. */
-const LIVE_JOB = new Set(["running", "starting", "resume_pending"]);
+/** Pending resumptions preserve allocations but do not execute model decisions. */
+const LIVE_JOB = new Set(["running", "starting"]);
 const SOLVED = new Set(["proved", "verified", "completed"]);
 /** Node statuses between a prover's submission and the verifier's verdict. */
 const AWAITING: Record<string, { label: string; detail: string }> = {

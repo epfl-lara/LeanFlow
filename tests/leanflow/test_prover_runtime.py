@@ -641,6 +641,7 @@ def test_interrupted_proof_commit_recovers_candidate_without_new_model_budget(
     monkeypatch.setattr(runtime, "_persist", crash)
     with pytest.raises(SystemExit, match="simulated"):
         runtime._accept(node, ["trivial"], "controller")
+    assert '"proof_integrated"' not in (runtime.store.directory / "events.jsonl").read_text()
     assert path.read_bytes() != before
     assert (runtime.store.directory / "source-transaction.json").is_file()
 

@@ -4,6 +4,7 @@ Recorded 2026-09-06 from Beck–Fiala campaign `prove-vscode-run-mtpu8tot-isdk`
 and the preceding readiness checks. Updated after the completed Spencer campaign
 with runtime fixes and VS Code extension 0.1.14. Research campaigns remain separate
 from the disposable verification project.
+Updated 2026-09-07 with the Spencer universal-bound verification measurements (J15).
 
 Scope: the dedicated standard/research prover and its VS Code surfaces. Preserve
 source protection, independent verification, durable budgets, and resumability.
@@ -71,6 +72,8 @@ run directory in the live smoke fixture.
   comparative time-to-first-prover measurements remain follow-up work. The
   submission cache invalidates on source, candidate, dependency, axiom,
   signature, toolchain or Lake manifest changes; final build remains mandatory.
+  The hard campaign exposed excessive invalidation and repeated candidate checks;
+  see **J15** for measured queue, verification and publication delays.
 - **J04**: phrase/term ranking, provider interleaving and degradation reporting
   are implemented with offline regressions. A live Spencer query put the
   relevant partial-colouring paper first; the web provider returned a connection
@@ -245,6 +248,10 @@ run directory in the live smoke fixture.
   (21 calls), formal proposal 18m09s (12 calls), and review 2m28s (4 calls).
   Skeleton validation then ran sequential isolated Lean processes, each loading
   Mathlib. The system had spent over 45 minutes with no prover dispatched yet.
+  **New baseline:** in `spencer-universal-resume-20260906-1`, accepted review to
+  completed materialization/signature validation took 1,456.809s (24m17s), from
+  22:02:36 to 22:26:53 UTC on 2026-09-06, for 11 helper skeletons and 12 protected
+  declaration signatures. This deterministic phase used no model calls.
   **Done when:** timings separate model reasoning, tool work, imports, and
   validation. Benchmark compact stage handoffs and warm or batched skeleton
   checks against this baseline. Keep fresh review contexts, dependency order,
@@ -433,6 +440,162 @@ run directory in the live smoke fixture.
   remaining-budget exhaustion; do not introduce an unbounded retry loop.
   **Owner:** bounded session and planning controller, resume/recovery status.
 
+- [ ] **J15 · P1 · Reduce queued and repeated independent verification work.**
+  **User decision, 2026-09-07:** record for future fixes; do not interrupt the
+  current campaign or change its verification policy as part of this note.
+  **Measured:** Spencer universal-bound run `spencer-universal-resume-20260906-1`,
+  events on 2026-09-06 from 22:32 to 23:08 UTC. Four prover slots share one
+  independent verifier. These are observed wall times, not estimates of Lean CPU
+  time or a general performance benchmark.
+
+  | Submission | Queue wait | Independent check after admission | LeanProbe portion |
+  | --- | ---: | ---: | ---: |
+  | Geometric-tail mean (`prover_00006`) | 0.008s | 867.22s (14m27s) | 285.698s (4m46s) |
+  | Cube tails (`prover_00004`) | 850.202s (14m10s) | about 462.57s (7m43s) | 166.359s (2m46s) |
+
+  Geometric-tail publication then took 543.375s (9m03s), including a wait for the
+  shared verifier lock; do not attribute this whole interval to compilation.
+  Weighted-fibre submission (`prover_00007`) waited 1,334.006s (22m14s) before
+  admission. Rounded bins submitted earlier but remained queued after that job
+  was admitted, showing that admission is not ordered by arrival.
+
+  **Confirmed implementation causes:** `verification.py` holds one
+  `threading.Lock` across LeanProbe and compiled kernel-profile checks. Publishing
+  a module takes the same lock. `type_profile.py` compiles the candidate in a
+  fresh process, then launches another process to inspect its exported kernel
+  type and axioms. Publication compiles the accepted source again and closes all
+  of this verifier's warm workspaces. Workers are keyed by project and workspace,
+  so prover scratch acceptance does not imply a warm independent checker.
+  The roughly 581.5s beyond LeanProbe for geometric-tail verification belongs to
+  the subsequent compiled-profile stage and wrapper overhead; compilation versus
+  inspection is not separately timed in the successful result yet.
+
+  `submission_cache.py` fingerprints every managed source document. Publishing
+  the unrelated geometric-tail lemma invalidated cube-tail acceptance, and the
+  controller started another independent check at 22:55:33 UTC. Preserve checks
+  against actual imported dependencies and protected inputs when narrowing this
+  cache; merely deleting the document fingerprint would be unsafe.
+
+  **Host observation, not an isolated cause:** the 24 GiB Mac had approximately
+  22 GiB of swap occupied during diagnosis. Measure active paging and individual
+  checker memory before assigning a share of the delay to memory pressure or
+  increasing verification concurrency.
+
+  **Progress, 2026-09-07 (applies to runs launched or resumed after this code):**
+  the controller's own submission-time check is now the acceptance check
+  whenever it was closed. `submission_cache.py` fingerprints the exact candidate
+  plus the transitive import closure of its file (parsed from real `import`
+  commands, failing closed to every managed source on an unparseable header)
+  instead of every managed document, so publishing an unrelated helper no longer
+  forces "Independently checking candidate". Conditional (top-down skeleton)
+  submissions are still never cached; their full check happens at promotion.
+  New runs record `signature_scheme: module`: `type_profile.py` compiles the
+  exact source under its real module name, retains the bytes in the
+  controller-private `artifacts/` directory of the run with a SHA-256, inspects
+  that same copy through a shadow package root, and `_accept_locked` publishes
+  it via `LeanVerifier.install_module` only when the installed render is
+  byte-identical to the checked source; any mismatch recompiles as before.
+  Runs without the key keep the `legacy` scheme (fixed profile module name, so
+  their recorded fingerprints stay comparable) and still recompile on
+  publication. Per accepted node this removes one LeanProbe elaboration, one
+  exact-source compile and one kernel inspection in the bottom-up case, and the
+  publication compile in both orders for new module-scheme runs. Resumed legacy
+  runs retain their original fingerprint scheme and publication compilation.
+  Import layouts the conservative scanner cannot recognize invalidate against
+  every managed source, rather than silently dropping dependencies.
+  **Immediate timeout recovery, 2026-09-07:** resume-2 exhausted its shared
+  1,200-second verification deadline during kernel inspection, after spending
+  533.19 seconds on a redundant controller LeanProbe pass. Closed candidates now
+  go directly through fresh exact-source compilation and trusted kernel
+  type/axiom inspection. Prover feedback and skeleton diagnostics still use
+  LeanProbe. The inspector enumerates the compiled module's own declarations
+  instead of copying the full imported constant map, and marks its process-lived
+  import environment persistent to avoid unnecessary reference-count updates.
+  Compilation and inspection have separate live operation labels and recorded
+  durations, including timeout results, while sharing the existing deadline.
+  Legacy fingerprints, source isolation, axiom policy and final build remain
+  required. Recovery evidence and regression logs are under
+  `.leanflow/experiments/20260907-verification-recovery/`.
+  The retained rounded-row-mean proof passed the repaired live gate in 444.5s
+  (280.3s compilation, 164.2s inspection), then published in 183.6s. It is the
+  sixth integrated helper. A subsequent controlled restart also fixed a
+  repeat-resume bug that relabelled retained candidates as retries, and
+  interruption during promotion now preserves the candidate. Older interrupted
+  checks can recover their completed job's submission only if no verdict was
+  recorded for that check; every recovered candidate is checked afresh.
+  Not addressed here: the single verifier lock, fair admission, and a
+  memory-bounded verifier pool.
+
+  **Done when:**
+  - Cache acceptance against the complete relevant source/import closure, target
+    type, candidate, axiom policy and toolchain; unrelated helper publication
+    must not force a repeat check. Relevant changes must still invalidate it.
+  - Reuse trusted compiled artifacts and unaffected warm sessions where their
+    inputs remain identical. Avoid duplicate elaboration/compilation without
+    weakening source isolation, type/axiom checks or the final project build.
+  - Provide fair admission and evaluate a memory-bounded verifier pool. Benchmark
+    four-prover campaigns with cold and warm caches; do not assume four concurrent
+    verifiers improve throughput on this machine.
+  - Report queue wait, worker startup/imports, LeanProbe, exact-source compilation,
+    kernel inspection and publication separately, including cache miss reasons.
+    The dashboard must distinguish waiting, checking and publishing. Its outer
+    operation time can exceed 20 minutes because the 1,200s active-check allowance
+    starts after admission; queue time still consumes the campaign wall budget.
+  - Regress unchanged-candidate reuse, unrelated and relevant dependency edits,
+    import-cache invalidation, concurrent publication, queue cancellation and
+    budget exhaustion. Verify representative real proofs and compare timings
+    against this recorded baseline before claiming the issue is fixed.
+
+  **Owner:** `verification.py`, `type_profile.py`, `submission_cache.py`,
+  `check_process.py`, source publication, progress metrics and prover dashboard.
+  Related: J02 covers initial skeleton/signature validation before prover launch.
+
+- [ ] **J16 · P1 · Refresh a stale Lake configuration cache from the controller, not from sandboxed checks.**
+  **Observed, 2026-09-07 at 01:43:58 UTC:** Spencer universal-bound run
+  `spencer-universal-resume-20260906-1` stopped with `environment_error` after
+  every sandboxed Lean process (LeanProbe workers, the exact-source profile
+  compile and the publication compile) failed with
+  `operation not permitted ... .lake/config/2/lakefile.olean.lock`. The trigger
+  was external: `lake -d <project> env lean` had been run from another directory
+  whose `lean-toolchain` resolved to 4.32.0-rc1, and that Lake rewrote the
+  project's `.lake/config/2/lakefile.olean` (Mathlib's compiled configuration)
+  with its own `leanHash`. The 4.33.1 Lake inside the sandbox then treated the
+  cache as stale, needed the lock to rebuild it, and the sandbox denied the
+  write; the editor's unsandboxed `lake serve` rebuilt the cache at 01:48 UTC.
+  `verification.py::_lake_config_cache` still grants only the pre-`.lake/config`
+  layout (`.lake/lakefile.olean*`), so nothing inside a check can recover, and
+  granting `.lake/config` writes to candidate compiles would let a proof
+  metaprogram plant a configuration olean that the next trusted `lake` loads.
+  **Immediate recovery safeguards, 2026-09-07:** recognize this exact Lake lock
+  denial, including nested compile/inspection reports, as infrastructure failure
+  before scheduling a mathematical retry. Persist the candidate before stopping.
+  Resume can recover an older completed submission hidden by an empty retry when
+  its last independent gate failed for infrastructure reasons; it must pass a
+  fresh independent check, and all spent calls and attempts remain charged.
+  Emit `proof_integrated` only after the source/state transaction is durable.
+  Spencer readiness checks used the project cwd and explicitly pinned 4.33.1;
+  both the sandboxed version command and LeanProbe preflight passed. Evidence:
+  `.leanflow/experiments/20260907-resume-readiness/`. Automatic cache repair below
+  remains future work; candidate sandbox permissions were not broadened.
+  **Independent Fable 5.1/max follow-up:** confirmed the legacy Spencer resume
+  has no launch blocker. Reproduced and fixed its remaining concrete findings:
+  a later resume must never retry an integrated node; superseded pending jobs
+  become interrupted when their candidate is retained; root-level profile
+  modules create their shadow directory before linking published children;
+  transient profile symlinks now live outside durable run evidence so a hard
+  kill cannot make resume cloning reject that evidence. The resumed live run
+  exposed a related dashboard bug: pending resumptions counted as active provers.
+  Extension 0.1.16 excludes them from activity and running clocks.
+  **Done when:** the controller refreshes the Lake configuration cache
+  unsandboxed (for example `lake env lean --version` in the project) at
+  preflight and once more when a check reports this exact lock denial, then
+  retries that stage instead of ending the campaign; the retained candidate and
+  budget accounting stay unchanged; the terminal cause names the external
+  toolchain when detection is possible. Never grant `.lake/config` writes to
+  sandboxed candidate processes. Test with a deliberately stale cache.
+  **Owner:** `check_process.py` preflight, `verification.py`, campaign stop
+  reasons. Related: J15 evidence directory.
+
 ## Evidence and verification discipline
 
 Runtime files above are under `leanflow_cli/workflows/prover/`; extension files
@@ -444,6 +607,10 @@ Current campaign evidence:
   contains `state.json`, `PLAN.md`, `DAG.json`, and job events/results.
 - `.leanflow/experiments/20260906-readiness-selection/beckfiala-monitor.json`
   records observations made while the campaign runs.
+- [Spencer universal-bound events](../testdata/workflow_projects/SpencerResearch/.leanflow/workflow-state/prover/spencer-universal-resume-20260906-1/events.jsonl)
+  retain operation timestamps and submission results for J02/J15. In that run,
+  `jobs/prover_00004/` and `jobs/prover_00006/` retain the corresponding candidates
+  and job evidence; live `state.json` is a changing snapshot, not a frozen baseline.
 - The same evidence directory contains `beckfiala-launch.json`,
   `loogle-diagnostic.json`, `loogle-query.json`, and
   `materialization-import-mismatch.json`.

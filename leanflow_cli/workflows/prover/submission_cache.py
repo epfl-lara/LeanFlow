@@ -4,16 +4,81 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from leanflow_cli.workflows.prover.models import Node, digest
+from leanflow_cli.workflows.prover.source import lean_code_mask
 
 if TYPE_CHECKING:
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
 
+_IMPORT_COMMAND = re.compile(r"(?m)^[ \t]*import(?=[ \t])")
+_IMPORT_WORD = re.compile(r"(?<![\w'.])import(?![\w'])")
+_MODULE_COMPONENT = r"(?:«[^»./\\\r\n]+»|[^\W\d][\w']*)"
+_IMPORT_NAME = re.compile(rf"[ \t]+({_MODULE_COMPONENT}(?:\.{_MODULE_COMPONENT})*)")
+
+
+def imported_modules(source: str) -> list[str]:
+    """Read simple import headers; reject other syntax so cache keys fail closed."""
+    masked = lean_code_mask(source)
+    commands = list(_IMPORT_COMMAND.finditer(masked))
+    if {match.end() - len("import") for match in commands} != {
+        match.start() for match in _IMPORT_WORD.finditer(masked)
+    }:
+        raise ValueError("unsupported import command layout")
+    modules: list[str] = []
+    for match in commands:
+        # Read quoted names from original bytes; comments may follow a complete
+        # name, but unfamiliar prefixes or continuations require the broad key.
+        name = _IMPORT_NAME.match(source, match.end())
+        line_end = source.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(source)
+        if name is None or masked[name.end() : line_end].strip():
+            raise ValueError("unsupported import module syntax")
+        modules.append(name.group(1).replace("«", "").replace("»", ""))
+    return modules
+
+
+def import_closure(runtime: ProverRuntime, file: str) -> dict[str, str]:
+    """Fingerprint every managed source this file imports, directly or transitively.
+
+    Only these renders determine the compiled environment a candidate was
+    checked against, so publishing an unrelated helper cannot change the
+    verdict. The file itself is excluded: the exact checked source carries it.
+    An unparseable header fails closed to fingerprinting every managed source.
+    """
+    by_module = {path[:-5].replace("/", "."): path for path in runtime.documents}
+    closure: dict[str, str] = {}
+    pending = [file]
+    seen = {file}
+    while pending:
+        path = pending.pop()
+        document = runtime.documents.get(path)
+        if document is None:
+            continue
+        rendered = document.render()
+        if path != file:
+            closure[path] = digest(rendered)
+        try:
+            modules = imported_modules(rendered)
+        except ValueError:
+            return {
+                path: digest(document.render())
+                for path, document in runtime.documents.items()
+                if path != file
+            }
+        for module in modules:
+            target = by_module.get(module)
+            if target is not None and target not in seen:
+                seen.add(target)
+                pending.append(target)
+    return closure
+
 
 def submission_key(runtime: ProverRuntime, node: Node, source: str) -> str:
-    """Fingerprint the exact candidate, protected type, policy, and every mutable source."""
+    """Fingerprint the exact candidate, protected type, policy, and every imported source."""
     return digest(
         json.dumps(
             {
@@ -50,9 +115,7 @@ def submission_key(runtime: ProverRuntime, node: Node, source: str) -> str:
                         "lake-manifest.json",
                     )
                 },
-                "documents": {
-                    path: digest(document.render()) for path, document in runtime.documents.items()
-                },
+                "imports": import_closure(runtime, node.file),
             },
             sort_keys=True,
         )

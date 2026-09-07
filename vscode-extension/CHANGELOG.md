@@ -6,8 +6,27 @@
 - Show each benchmark cell's actual runtime and structured stop reason.
 - Freeze stale elapsed counters and explain smaller final prover allocations accurately.
 
+## 0.1.17
+
+- Show concise theorem and module names in the graph and tree by omitting the generated `LeanFlowProofs.` prefix. Full declaration names remain available in hover text, search and details.
+
 All notable changes to the LeanFlow VS Code extension are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
+
+## [0.1.16] — 2026-09-07
+
+- Pending resumptions no longer count as running provers, obscure retained proof
+  candidates in the graph, or display a finished job clock as still running.
+- Submission checks and proof publication explain why dependent prover jobs are
+  waiting, separately from initial skeleton validation.
+
+- Show one plan once the controller publishes a proposal. The **Proposed plan
+  (draft)** card and the **Proposed** graph toggle disappear when the proposal
+  is accepted, because the proof plan and the canonical graph already carry it;
+  before, the accepted draft stayed on screen as a copy of the plan under a
+  subtitle that called it both "accepted and published" and "not the accepted
+  plan". The reviewer's verdict survives as an **Accepted by review** notice on
+  the Proof plan card, and a rejected draft now says it will not become the plan.
 
 ## [0.1.15] — 2026-09-06
 

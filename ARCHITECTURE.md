@@ -217,13 +217,14 @@ tool is reachable through the public registry.
 | `workflows/prover/planning.py` | Structured plan proposals, immutable original statements and generated helper placement |
 | `workflows/prover/runtime.py` | Sole source/plan/DAG authority, job admission, completion handling, recovery and resume lineage |
 | `workflows/prover/entrypoint.py` | CLI startup, controller locking, terminal startup-failure publication and new-run resume cloning |
+| `workflows/prover/resume_candidates.py` | Recover older submissions hidden by empty retries after an infrastructure failure; retain budgets and require fresh independent verification |
 | `workflows/prover/job_controller.py` | Job workspaces, durable handoffs, request reservation, submission feedback, and separately accounted resource jobs |
 | `workflows/prover/planning_controller.py` | Fresh planning/review stages, helper-materialization transactions with removable dependency imports, source-conflict recovery without mathematical replanning, and concurrent resource batches |
 | `workflows/prover/materialization_imports.py` | Dependency-ordered recompilation of changed or missing helper artifacts before signature checks; journaled restoration of previous artifacts on rollback |
 | `workflows/prover/store.py` | Atomic snapshots, PLAN/DAG publication, baselines, events and guidance inbox |
 | `workflows/prover/live_progress.py` | Independent progress lock, bounded operation lifecycle, two-second heartbeat and metadata snapshots that retain the last committed source checkpoint |
 | `workflows/prover/stop_reason.py` | Separate job, scheduler and campaign stop reasons with remaining capacity and unresolved obligations |
-| `workflows/prover/submission_cache.py` | Single-use, in-memory reuse of parent-verified closed submissions only when exact candidate, mutable sources, dependency trust, protected type and axiom policy remain unchanged |
+| `workflows/prover/submission_cache.py` | Single-use, in-memory reuse of parent-verified closed submissions only when the exact candidate, every transitively imported managed source, dependency trust, protected type and axiom policy remain unchanged; publishing an unrelated helper does not invalidate it, and conditional (skeleton) checks are never reused |
 | `workflows/prover/check_failures.py` | Nested check-result classification that preserves accepted plans when compilation or kernel inspection fails for infrastructure reasons |
 | `workflows/prover/observer.py` | Existing CLI activity/live-status bridge and terminal exit mapping |
 | `workflows/prover/agent_session.py` | One scratch job, durable request admission and response usage, persistence encouragement and structured result |
@@ -239,8 +240,8 @@ tool is reachable through the public registry.
 | `workflows/prover/check_process.py` | OS-isolated warm worker RPC and controller-owned restricted commands |
 | `workflows/prover/check_sandbox.py` | Platform sandbox profiles, permitted runtime paths and restricted process environment |
 | `workflows/prover/check_worker.py` | LeanProbe feedback inside the protected process |
-| `workflows/prover/verification.py` | Independent candidate/type/axiom acceptance, importable module refresh and final Lake gate |
-| `workflows/prover/type_profile.py` | Isolated exact-source compilation and trusted inspection of kernel types and local definition dependencies |
+| `workflows/prover/verification.py` | Independent candidate/type/axiom acceptance from fresh exact-source compilation and trusted inspection (without a duplicate controller REPL pass for closed proofs); skeletons retain LeanProbe diagnostics; publication of the checked artifact or importable module recompilation, per-run signature scheme, and final Lake gate |
+| `workflows/prover/type_profile.py` | Isolated exact-source compilation and trusted inspection of kernel types and local definition dependencies, with separate live stages and timings under one deadline; scans the compiled module's declarations instead of copying the entire import environment; under the `module` scheme compilation retains the checked bytes for publication through a shadow package root beside already published siblings |
 | `workflows/prover/negation.py` | Exact negated-target construction and certificate support |
 | `workflows/prover/negation_job.py` | Separate bounded negation pass and independent certificate acceptance |
 | `workflows/prover/libraries.py` | Additive helper-library registration and pinned Lake dependency installation with rollback |

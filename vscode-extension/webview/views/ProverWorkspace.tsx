@@ -5,6 +5,7 @@ import type { ProverNode, ProverSnapshot } from "../../src/core/prover";
 import { nodeLifecycle, proofStateCounts, proofStateSummary } from "../../src/core/proverGraph";
 import {
   STALE_AFTER_MS,
+  acceptedReview,
   controllerActivity,
   proposalView,
   proverBudget,
@@ -79,7 +80,7 @@ function Workspace({ state, staleError }: { state: ProverSnapshot; staleError: s
 
     <ProverController state={state} controller={controller} capacity={capacity} now={now} onJob={focusJob} />
     <ProverDag state={state} lifecycle={lifecycle} proposal={proposal} now={now} onOpen={open} onJob={focusJob} />
-    <ProverPlan state={state} proposal={proposal} onOpen={open} />
+    <ProverPlan state={state} proposal={proposal} review={acceptedReview(state)} onOpen={open} />
     <div className="grid two prover-panels">
       <ProverJobs state={state} now={now} onOpen={open} onJob={focusJob} />
       <ProverChanges state={state} onOpen={open} onJob={focusJob} />

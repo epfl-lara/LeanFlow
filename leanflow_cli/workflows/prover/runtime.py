@@ -35,7 +35,7 @@ from leanflow_cli.workflows.prover.source import (
 )
 from leanflow_cli.workflows.prover.store import RunStore, now
 from leanflow_cli.workflows.prover.submission_cache import SubmissionCache, submission_key
-from leanflow_cli.workflows.prover.verification import LeanVerifier
+from leanflow_cli.workflows.prover.verification import SIGNATURE_SCHEMES, LeanVerifier
 
 Session = Callable[..., dict[str, Any]]
 
@@ -120,6 +120,9 @@ class ProverRuntime:
                 self.root, self.targets, fill_definitions=config.fill_definitions
             )
             self.dag.validate(config.max_nodes)
+            scheme = os.getenv("LEANFLOW_PROVER_SIGNATURE_SCHEME", "").strip() or "module"
+            if scheme not in SIGNATURE_SCHEMES:
+                raise ValueError(f"unknown signature scheme: {scheme}")
             self.state: dict[str, Any] = {
                 "version": 1,
                 "run_id": self.run_id,
@@ -129,6 +132,9 @@ class ProverRuntime:
                 "started_at": now(),
                 "goal": goal,
                 "config": config.to_mapping(),
+                # Kernel fingerprints are only comparable within one scheme, so a
+                # run keeps the scheme it started with across every resume.
+                "signature_scheme": scheme,
                 "provider": os.getenv("LEANFLOW_NATIVE_PROVIDER", ""),
                 "reasoning_effort": os.getenv("LEANFLOW_NATIVE_REASONING_EFFORT", ""),
                 "jobs": [],
@@ -151,6 +157,11 @@ class ProverRuntime:
         if isinstance(self.verifier, LeanVerifier):
             self.verifier.remaining_time = self._remaining_verification_time
             self.verifier.on_operation = self.progress.call
+            scheme = str(self.state.get("signature_scheme") or "legacy")
+            if scheme not in SIGNATURE_SCHEMES:
+                raise ValueError(f"unknown signature scheme: {scheme}")
+            self.verifier.signature_scheme = scheme
+            self.verifier.artifact_root = self.store.directory / "artifacts"
 
     def _remaining_verification_time(self) -> float:
         """Enforce the global deadline before starting another deterministic check."""
@@ -260,6 +271,10 @@ class ProverRuntime:
                             job[field] = ledger["usage"][field]
                 else:
                     job["api_calls"] = int(job["api_budget"])
+                node = self.dag.by_id().get(job.get("node_id", ""))
+                if job.get("role") == "prover" and node is not None and node.status == "proved":
+                    job.update(status="interrupted", phase="finished")
+                    continue
                 if job["role"] == "prover" and job["api_calls"] < job["api_budget"]:
                     self.resume_jobs[job["node_id"]] = job
                     job["status"] = "resume_pending"
@@ -276,6 +291,17 @@ class ProverRuntime:
                     job["status"] = "interrupted"
         self.consumed = sum(int(job.get("api_calls", 0)) for job in self.state.get("jobs", []))
         for node in self.dag.nodes:
+            if node.status == "proved":
+                continue
+            if node.candidate:
+                # A saved submission takes priority over an abandoned/empty
+                # retry, including on the second resume after recovery. It must
+                # pass the verifier before we spend calls resuming a prover.
+                pending = self.resume_jobs.pop(node.id, None)
+                if pending is not None:
+                    pending.update(status="interrupted", phase="finished")
+                node.status = "candidate"
+                continue
             if (
                 node.status in {"running", "submitted", "verifying", "integrating"}
                 or node.id in self.resume_jobs
@@ -293,6 +319,9 @@ class ProverRuntime:
             result_path = Path(job.get("result_path", ""))
             if job.get("accounted") and not job.get("result_processed") and result_path.is_file():
                 self._retain_candidate(job, json.loads(result_path.read_text()))
+        from leanflow_cli.workflows.prover.resume_candidates import recover_environment_candidates
+
+        recover_environment_candidates(self)
         self.state.update(status="running", phase="resume", terminal=False)
         self.state["metrics"]["api_calls"] = self.consumed
         self._persist()
@@ -537,7 +566,9 @@ class ProverRuntime:
             node.conditional_dependencies = [
                 dep for dep in node.dependencies if self.dag.by_id()[dep].status != "proved"
             ]
-            self.resume_jobs.pop(node.id, None)
+            pending = self.resume_jobs.pop(node.id, None)
+            if pending is not None:
+                pending.update(status="interrupted", phase="finished")
 
     def _accept(self, node: Node, candidate: list[str], job_id: str) -> bool:
         """Serialize independent source verification and its canonical installation."""
@@ -578,6 +609,11 @@ class ProverRuntime:
         )
         if not result.get("accepted"):
             if infrastructure_code(result):
+                # Preserve the submission before stopping; infrastructure failure
+                # must not force a fresh model pass when the run resumes.
+                node.candidate = list(candidate)
+                node.status = "candidate"
+                self._persist()
                 self._ensure_active()
                 raise InfrastructureFailure(
                     "Lean verification environment unavailable: "
@@ -612,15 +648,17 @@ class ProverRuntime:
             )
             staged_change.update(status="staged", pending=True)
             # Original declarations can also be imported by another proof obligation.
-            compiled = self.progress.call(
-                "proof_integration",
-                "Compiling accepted proof into project",
-                lambda: self.verifier.compile_module(node.file),
-                node_id=node.id,
-                job_id=job_id,
-                file=node.file,
-                timeout_s=self.config.timeout_s,
-            )
+            compiled = self._install_checked_artifact(node, result, document, job_id)
+            if compiled is None:
+                compiled = self.progress.call(
+                    "proof_integration",
+                    "Compiling accepted proof into project",
+                    lambda: self.verifier.compile_module(node.file),
+                    node_id=node.id,
+                    job_id=job_id,
+                    file=node.file,
+                    timeout_s=self.config.timeout_s,
+                )
             if not compiled.get("accepted"):
                 self._ensure_active()
                 raise InfrastructureFailure(
@@ -655,7 +693,48 @@ class ProverRuntime:
         self.state["source_transaction"] = transaction["id"]
         self._persist()
         (self.store.directory / "source-transaction.json").unlink(missing_ok=True)
+        self.store.event(
+            "proof_integrated",
+            {
+                "node_id": node.id,
+                "job_id": job_id,
+                "reused_checked_artifact": bool(compiled.get("artifact")),
+            },
+        )
         return True
+
+    def _install_checked_artifact(
+        self, node: Node, result: dict[str, Any], document: SourceDocument, job_id: str
+    ) -> dict[str, Any] | None:
+        """Publish the artifact the accepted check compiled, if it is exactly the installed source.
+
+        The check compiled and kernel-inspected these bytes from the candidate
+        source; when that source is byte-identical to what was just installed,
+        recompiling would only repeat the same work. Any doubt falls back to
+        compiling the installed file.
+        """
+        artifact = result.get("compiled_artifact")
+        if not artifact or not hasattr(self.verifier, "install_module"):
+            return None
+        if result.get("checked_source_sha256") != digest(document.render()):
+            return None
+        installed = self.progress.call(
+            "proof_integration",
+            "Installing the independently checked proof",
+            lambda: self.verifier.install_module(
+                node.file, Path(str(artifact)), str(result.get("compiled_artifact_sha256", ""))
+            ),
+            node_id=node.id,
+            job_id=job_id,
+            file=node.file,
+            timeout_s=self.config.timeout_s,
+        )
+        if installed.get("accepted"):
+            return installed
+        self.store.event(
+            "checked_artifact_declined", {"node_id": node.id, "job_id": job_id, "result": installed}
+        )
+        return None
 
     def _handle_result(self, job: dict[str, Any], result: dict[str, Any]) -> None:
         node = self.dag.by_id().get(job["node_id"])
@@ -806,7 +885,14 @@ class ProverRuntime:
                 candidate = list(node.candidate)
                 node.candidate = []
                 changed = True
-                if self._accept(node, candidate, "controller"):
+                try:
+                    accepted = self._accept(node, candidate, "controller")
+                except BaseException:
+                    if node.status != "proved":
+                        node.candidate = candidate
+                        node.status = "candidate"
+                    raise
+                if accepted:
                     promoted = True
                 else:
                     node.status = (

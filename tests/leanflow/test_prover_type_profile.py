@@ -16,7 +16,7 @@ from leanflow_cli.workflows.prover.verification import LeanVerifier
 
 
 @pytest.mark.parametrize("first_stage_seconds", [7, 11])
-def test_candidate_check_shares_deadline_with_kernel_inspection(
+def test_skeleton_check_shares_deadline_with_kernel_inspection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_stage_seconds: int
 ) -> None:
     from leanflow_cli.workflows.prover import check_process, type_profile, verification
@@ -46,7 +46,7 @@ def test_candidate_check_shares_deadline_with_kernel_inspection(
 
     monkeypatch.setattr(check_process, "check_scratch", check)
     monkeypatch.setattr(type_profile, "compiled_type_profiles", profile)
-    result = LeanVerifier(tmp_path, (), timeout_s=10).check(node, source)
+    result = LeanVerifier(tmp_path, (), timeout_s=10).check(node, source, skeleton=True)
     if first_stage_seconds < 10:
         assert result["accepted"] and inspected == [3]
     else:
@@ -78,12 +78,12 @@ def test_parallel_queue_wait_does_not_consume_active_check_allowance(
             "axiom_profile_axioms": [],
         }
 
+    def profile(**kwargs: Any) -> dict[str, Any]:
+        budgets.append(kwargs["timeout_s"])
+        return {"accepted": True, "profiles": {"goal": {"sha256": "checked", "axioms": []}}}
+
     monkeypatch.setattr(check_process, "check_scratch", check)
-    monkeypatch.setattr(
-        type_profile,
-        "compiled_type_profiles",
-        lambda **_: {"accepted": True, "profiles": {"goal": {"sha256": "checked", "axioms": []}}},
-    )
+    monkeypatch.setattr(type_profile, "compiled_type_profiles", profile)
     verifier.lock.acquire()
     timer = threading.Timer(0.2, verifier.lock.release)
     timer.start()
@@ -254,9 +254,8 @@ def test_real_import_cannot_change_the_claim_elaborated_from_frozen_source(
             declaration_source(documents["Main.lean"], dag.nodes[0], candidate=["trivial"])
         )
         result = verifier.check(dag.nodes[0], candidate)
-        assert (
-            result["ok"] is True
-        ), result  # The named-target Lean check alone accepts the changed claim.
+        # The source compiles, but the trusted profile rejects its changed claim.
+        assert result["success"] is True and result["ok"] is False, result
         assert result["accepted"] is False and result["type_matches"] is False, result
         assert (
             verifier.capture_signatures(dag, documents, workspace, initialize=False)["accepted"]
@@ -317,5 +316,70 @@ def test_real_multiple_holes_custom_axioms_and_fresh_dependency_gate(real_projec
         # warm REPL still carries the previously compiled import environment.
         if result.get("kernel_profile"):
             assert "sorryAx" in result["kernel_profile"]["axioms"], result
+    finally:
+        verifier.close(workspace)
+
+
+def test_real_module_scheme_publishes_the_inspected_artifact(real_project: Path) -> None:
+    """Compile once under the real module name, inspect it beside published siblings, publish it."""
+    root = real_project
+    verifier = LeanVerifier(root, (), signature_scheme="module")
+    verifier.artifact_root = root / ".leanflow" / "artifacts"
+    workspace = root / ".leanflow" / "checks"
+    workspace.mkdir(parents=True)
+    (root / "Pkg").mkdir()
+    (root / "Pkg" / "Base.lean").write_text("theorem base : True := by trivial\n")
+    assert verifier.compile_module("Pkg/Base.lean")["accepted"]
+    target = root / "Pkg" / "Main.lean"
+    target.write_text("import Pkg.Base\ntheorem goal : True := by sorry\n")
+    dag, documents = discover(root, [target], fill_definitions=False)
+    try:
+        baseline = verifier.capture_signatures(dag, documents, workspace)
+        assert baseline["accepted"], baseline
+        candidate = workspace / "Candidate.lean"
+        candidate.write_text(
+            declaration_source(documents["Pkg/Main.lean"], dag.nodes[0], candidate=["exact base"])
+        )
+        result = verifier.check(dag.nodes[0], candidate)
+        assert result["accepted"], result
+        artifact = Path(result["compiled_artifact"])
+        assert artifact.is_file() and artifact.parent == verifier.artifact_root
+        installed = verifier.install_module(
+            "Pkg/Main.lean", artifact, result["compiled_artifact_sha256"]
+        )
+        assert installed["accepted"], installed
+        assert (root / ".lake" / "build" / "lib" / "lean" / "Pkg" / "Main.olean").is_file()
+        (root / "Consumer.lean").write_text("import Pkg.Main\ntheorem consumer : True := goal\n")
+        assert verifier.compile_module("Consumer.lean")["accepted"]
+        # A recheck beside the now published artifact keeps the same fingerprint.
+        again = verifier.check(dag.nodes[0], candidate)
+        assert again["accepted"] and again["type_matches"], again
+    finally:
+        verifier.close(workspace)
+
+
+def test_real_root_module_profile_with_published_child(real_project: Path) -> None:
+    """Inspect a root module beside a published directory sharing its module prefix."""
+    root = real_project
+    workspace = root / ".leanflow" / "checks"
+    workspace.mkdir(parents=True)
+    verifier = LeanVerifier(root, (), signature_scheme="module")
+    verifier.artifact_root = root / ".leanflow" / "artifacts"
+    (root / "Main").mkdir()
+    (root / "Main" / "Child.lean").write_text("theorem child : True := by trivial\n")
+    assert verifier.compile_module("Main/Child.lean")["accepted"]
+    target = root / "Main.lean"
+    target.write_text("import Main.Child\ntheorem goal : True := by sorry\n")
+    dag, documents = discover(root, [target], fill_definitions=False)
+    try:
+        baseline = verifier.capture_signatures(dag, documents, workspace)
+        assert baseline["accepted"], baseline
+        candidate = workspace / "Candidate.lean"
+        candidate.write_text(
+            declaration_source(documents["Main.lean"], dag.nodes[0], candidate=["exact child"])
+        )
+        result = verifier.check(dag.nodes[0], candidate)
+        assert result["accepted"], result
+        assert not any(path.is_symlink() for path in workspace.rglob("*"))
     finally:
         verifier.close(workspace)

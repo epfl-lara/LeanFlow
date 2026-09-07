@@ -19,7 +19,7 @@ import {
 
 export { operationLabel } from "./proverOperations";
 
-const LIVE_JOB = new Set(["running", "starting", "resume_pending"]);
+const LIVE_JOB = new Set(["running", "starting"]);
 const SOLVED = new Set(["proved", "verified", "completed"]);
 const CONTROLLER_ROLES = new Set(["orchestrator", "review", "research"]);
 const CONTROLLER_PHASES = new Set(["starting", "inspect", "preflight", "planning", "reviewing", "validating", "verifying", "final_build", "resume"]);
@@ -184,6 +184,9 @@ function validationReason(operations: readonly ProverOperation[]): string {
     const progress = operationProgress(operation);
     return `${operationLabel(operation)}${progress ? ` (${progress})` : ""}`;
   });
+  if (running.every((operation) => ["submission_check", "proof_integration"].includes(operation.kind))) {
+    return `Verification: ${names.join(", ")} ${running.length === 1 ? "is" : "are"} running; retained proofs are checked and installed before dependent provers can start.`;
+  }
   return `Validation: ${names.join(", ")} ${running.length === 1 ? "is" : "are"} running; helper skeletons are compiled and protected signatures checked before provers are dispatched.`;
 }
 
@@ -514,7 +517,10 @@ export function changeRows(snapshot: ProverSnapshot): ChangeRow[] {
 export interface ProposalView {
   status: string;
   label: string;
+  /** What the proposed graph means next to the canonical one. */
   explanation: string;
+  /** What the draft plan means next to the durable proof plan. */
+  planNote: string;
   dag: ProverDag;
   plan: string;
   critique: string;
@@ -527,12 +533,17 @@ const PROPOSAL_STATUS_LABELS: Record<string, string> = {
   reviewed: "reviewed, awaiting validation",
   validating: "validating helper skeletons",
   rejected: "rejected",
-  accepted: "accepted and published",
 };
 
-/** The proposed graph, explicitly separated from the authoritative canonical one. */
+/**
+ * The proposed graph, explicitly separated from the authoritative canonical one.
+ *
+ * An accepted proposal is no longer a draft: the controller has published it as the
+ * canonical graph and the proof plan and keeps the proposal fields only as a record.
+ * Showing them again would repeat the plan under a "draft" heading.
+ */
 export function proposalView(snapshot: ProverSnapshot): ProposalView | null {
-  if (snapshot.proposed_dag === null) {
+  if (snapshot.proposed_dag === null || snapshot.proposal_status === "accepted") {
     return null;
   }
   const status = snapshot.proposal_status || "proposed";
@@ -542,12 +553,27 @@ export function proposalView(snapshot: ProverSnapshot): ProposalView | null {
     status,
     label: `Proposed graph · ${PROPOSAL_STATUS_LABELS[status] ?? words(status).toLowerCase()}`,
     explanation: "The canonical graph remains authoritative. Proposed statements are not scheduled and never count as proved until review and skeleton validation accept them and the controller publishes the graph.",
+    planNote: status === "rejected"
+      ? "This draft was rejected and will not become the plan; the proof plan above stays authoritative."
+      : "This draft is not the plan until review and skeleton validation accept it and the controller publishes the graph.",
     dag: snapshot.proposed_dag,
     plan: snapshot.proposed_plan,
     critique: snapshot.proposal_critique,
     newNodes: snapshot.proposed_dag.nodes.length - existingNodes,
     existingNodes,
   };
+}
+
+/**
+ * The reviewer's verdict on the proposal the controller published, shown with the
+ * accepted plan. Empty until a proposal is accepted, and again while a new planning
+ * request rewrites the plan, when the stale verdict would describe the wrong text.
+ */
+export function acceptedReview(snapshot: ProverSnapshot): string {
+  if (snapshot.proposal_status !== "accepted" || snapshot.planning.active) {
+    return "";
+  }
+  return snapshot.proposal_critique;
 }
 
 // -------------------------------------------------------------------- ordering

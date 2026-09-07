@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+_LAKE_CONFIG_LOCK = re.compile(r"[\\/]\.lake[\\/](?:config[\\/]\d+[\\/])?lakefile\.olean\.lock")
 
 
 def infrastructure_code(result: Any) -> str:
@@ -19,10 +22,18 @@ def infrastructure_code(result: Any) -> str:
         "check_timeout",
         "check_busy",
         "check_cancelled",
+        "lake_config_cache_error",
     }:
         return str(code)
     if result.get("timed_out") is True:
         return "check_timeout"
+    diagnostic = "\n".join(
+        value for name in ("error", "stderr") if isinstance(value := result.get(name), str)
+    )
+    if _LAKE_CONFIG_LOCK.search(diagnostic) and any(
+        marker in diagnostic.lower() for marker in ("operation not permitted", "permission denied")
+    ):
+        return "lake_config_cache_error"
     for name in ("compile", "inspect", "kernel_profile"):
         found = infrastructure_code(result.get(name))
         if found:

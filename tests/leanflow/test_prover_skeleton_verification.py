@@ -81,4 +81,6 @@ def test_skeleton_gate_requires_elaboration_and_matching_kernel_type(
     assert result["valid_without_sorry"] is False
     assert calls[0]["allow_placeholders_for_elaboration"] is True
     assert verifier.check(node, source)["accepted"] is False
-    assert calls[1]["allow_placeholders_for_elaboration"] is False
+    assert (
+        len(calls) == 1
+    ), "Closed proofs are rejected from fresh kernel axioms without another REPL pass"

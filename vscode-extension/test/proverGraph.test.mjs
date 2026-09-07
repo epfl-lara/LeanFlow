@@ -1,11 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { normalizeProverSnapshot } from "../dist/test/prover.mjs";
-import { layoutProverGraph, graphProofState, GRAPH_NODE_WIDTH, GRAPH_NODE_HEIGHT } from "../dist/test/proverGraph.mjs";
+import { layoutProverGraph, graphProofState, proverNodeLabel, GRAPH_NODE_WIDTH, GRAPH_NODE_HEIGHT } from "../dist/test/proverGraph.mjs";
+
+test("compact labels preserve full graph identity and unrelated namespaces", () => {
+  const input = state([{ id: "goal", name: "LeanFlowProofs.universal_rounded_row_mean" }]);
+  const node = layoutProverGraph(input.dag).nodes[0].node;
+  assert.equal(proverNodeLabel(node.name), "universal_rounded_row_mean");
+  assert.equal(node.name, "LeanFlowProofs.universal_rounded_row_mean");
+  assert.equal(proverNodeLabel("Finset.card_le_card"), "Finset.card_le_card");
+  assert.equal(proverNodeLabel("MyLeanFlowProofs.goal"), "MyLeanFlowProofs.goal");
+});
 
 function state(nodes, jobs = [], roots = ["goal"]) {
   return normalizeProverSnapshot({ run_id: "graph", dag: { nodes, roots }, jobs }, "graph");
 }
+
+test("resume-pending jobs do not hide retained candidates or imply active proving", () => {
+  const input = state([{ id: "goal", status: "candidate" }], [
+    { id: "old", node_id: "goal", role: "prover", status: "resume_pending" },
+  ]);
+  assert.equal(graphProofState(input.dag.nodes[0], input.jobs), "candidate");
+  input.dag.nodes[0].status = "retry";
+  assert.equal(graphProofState(input.dag.nodes[0], input.jobs), "pending");
+});
 
 test("diamond dependencies converge on one shared theorem and preserve every arrow", () => {
   const input = state([

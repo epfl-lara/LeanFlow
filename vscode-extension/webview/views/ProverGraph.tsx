@@ -1,7 +1,7 @@
 /** Interactive theorem graph; geometry is stable across polling and proof-state updates. */
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProverDag, ProverNode } from "../../src/core/prover";
-import { GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, layoutProverGraph, PROOF_STATES, type NodeLifecycle, type ProofState } from "../../src/core/proverGraph";
+import { GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, layoutProverGraph, proverNodeLabel, PROOF_STATES, type NodeLifecycle, type ProofState } from "../../src/core/proverGraph";
 
 export function ProverGraph({ dag, lifecycle, selected, search, onSelect }: {
   dag: ProverDag; lifecycle: (node: ProverNode) => NodeLifecycle; selected: string; search: string; onSelect: (id: string) => void;
@@ -69,7 +69,7 @@ export function ProverGraph({ dag, lifecycle, selected, search, onSelect }: {
               aria-pressed={node.id === selected} aria-label={`${node.name}: ${life.label}${goal ? ", goal" : ""}`}
               title={`${node.name}\n${life.label} (${status.label})\n${life.detail}\n${node.module || node.file}`} onClick={() => onSelect(node.id)}>
               <span className="prover-graph-card-top"><span>{goal ? "GOAL" : "LEMMA"}</span><span className={`prover-graph-state ${life.state}`}><span aria-hidden="true">{status.icon}</span> {life.label}</span></span>
-              <strong>{node.name}</strong><small>{node.module || node.file || "Placement pending"}</small>
+              <strong>{proverNodeLabel(node.name)}</strong><small>{proverNodeLabel(node.module) || node.file || "Placement pending"}</small>
             </button>;
           })}
         </div>
