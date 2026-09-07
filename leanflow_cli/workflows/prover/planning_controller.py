@@ -147,7 +147,19 @@ def research_plan(
             changed_direction
             and runtime.state["metrics"]["plan_refinements"] >= runtime.config.plan_refinements
         ):
+            # The reviewer accepted this direction, but the controller drops it. Label the
+            # draft rejected so persisted state and dashboards stop showing it as awaiting
+            # review, and leave the phase at proving: the repair caller never resets it, and
+            # a persisted "reviewing" phase would replan from scratch on resume.
+            critique = (
+                "Plan refinement budget exhausted: the reviewed proposal changes mathematical "
+                f"direction after the plan refinement limit ({runtime.config.plan_refinements}) "
+                "was reached; the previous plan is retained."
+            )
             runtime.state["plan_markdown"] = previous_plan
+            runtime.state.update(
+                phase="proving", proposal_status="rejected", proposal_critique=critique
+            )
             runtime.state.pop("planning_request", None)
             runtime.store.event("plan_refinement_budget_exhausted", {"reason": reason})
             runtime._persist()

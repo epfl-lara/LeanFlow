@@ -1,8 +1,9 @@
-"""Retain rejected graph proposals across fresh planning and review contexts."""
+"""Retain and label rejected graph proposals across fresh planning and review contexts."""
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -67,3 +68,54 @@ def test_retry_receives_rejected_proposal_and_exact_gate_feedback(tmp_path, monk
     assert expected in proposals[1]["planning_critique"]
     assert "previous_proposal" not in proposals[0]
     assert source.read_text() == "theorem goal : True := by sorry\n"
+
+
+def test_exhausted_refinement_budget_labels_the_dropped_direction_change_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reviewer-accepted direction change the budget cannot admit must not stay "proposed"."""
+    source = tmp_path / "Main.lean"
+    source.write_text("theorem goal : True := by sorry\n")
+    (tmp_path / "lakefile.toml").write_text('name = "Demo"\n')
+
+    def session(**kwargs: Any) -> dict[str, Any]:
+        repairing = "Repair only" in kwargs["prompt"]
+        if kwargs["role"] == "review":
+            response = {"accepted": True, "change_kind": "direction", "critique": "Sound."}
+        else:
+            response = {
+                "plan": "Switch to induction." if repairing else "Argue directly.",
+                "nodes": [],
+                "change_kind": "direction",
+            }
+        return {"status": "completed", "api_calls": 1, "final_response": json.dumps(response)}
+
+    # The budget exit fires before skeleton materialization; skip the Lean gate entirely.
+    monkeypatch.setattr(planning_controller, "materialize", lambda *args: None)
+    runtime = ProverRuntime(
+        root=tmp_path,
+        targets=[source],
+        config=ProverConfig(mode="research", plan_refinements=0),
+        session=session,
+    )
+    assert runtime._research_plan("Construct a useful graph.")
+    assert runtime.state["proposal_status"] == "accepted"
+    assert runtime.state["plan_markdown"] == "Argue directly."
+    assert not runtime._research_plan(
+        "Repair only the branch for goal.", affected={runtime.dag.roots[0]}
+    )
+    persisted = json.loads((runtime.store.directory / "state.json").read_text())
+    for state in (runtime.state, persisted):
+        assert state["proposal_status"] == "rejected"
+        assert state["proposal_critique"].startswith("Plan refinement budget exhausted")
+        assert state["phase"] == "proving"
+        assert state["plan_markdown"] == "Argue directly."
+        assert state["proposed_plan"] == "Switch to induction."
+        assert "planning_request" not in state
+    assert runtime.state["metrics"]["plan_refinements"] == 0
+    events = [
+        json.loads(line)["event"]
+        for line in (runtime.store.directory / "events.jsonl").read_text().splitlines()
+    ]
+    assert events.count("plan_refinement_budget_exhausted") == 1
+    assert "plan_rejected" not in events
