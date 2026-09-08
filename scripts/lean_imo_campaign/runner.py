@@ -1,4 +1,4 @@
-"""Persist and run the requested two-lane, 72-cell Lean-IMO-Bench comparison."""
+"""Persist and run one frozen Lean-IMO-Bench comparison across its problem lanes."""
 
 from __future__ import annotations
 
@@ -396,7 +396,9 @@ def main() -> None:
     conditions = CONDITION_SETS[args.conditions]
     campaign = {
         "version": 1,
-        "name": f"Lean-IMO-Bench · LEAP-unsolved · {args.conditions} · 2 lanes",
+        # Lanes are a run-time scheduling choice (LEANFLOW_CAMPAIGN_LANES),
+        # not part of what was frozen, so the name must not claim a count.
+        "name": f"Lean-IMO-Bench · LEAP-unsolved · {args.conditions}",
         "condition_set": args.conditions,
         "conditions": [c._asdict() for c in conditions],
         "created_at": now(),
