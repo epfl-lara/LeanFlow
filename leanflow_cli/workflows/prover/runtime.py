@@ -20,6 +20,7 @@ from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.live_progress import LiveProgress
 from leanflow_cli.workflows.prover.models import Dag, Node, digest
 from leanflow_cli.workflows.prover.planning import json_report
+from leanflow_cli.workflows.prover.recovery_reports import inconclusive_finding, negation_report
 from leanflow_cli.workflows.prover.scheduler import ready_nodes
 from leanflow_cli.workflows.prover.source import (
     SourceConflictError,
@@ -1072,10 +1073,10 @@ class ProverRuntime:
                     self._persist()
                     continue
                 # Unrefuted: hand back to the orchestrator, which recharges.
+                last_negation = negation_report(outcome, screen)
                 self.record_finding(
-                    f"negation of {node.name} was attempted and did NOT succeed",
-                    "Treat this obligation as true and decompose it; do not repropose "
-                    "that it is false. " + str(outcome.get("notes", "")),
+                    f"negation of {node.name} was not certified",
+                    inconclusive_finding(last_negation),
                 )
                 rec["report"] = {
                     **dict(rec.get("report") or {}),
@@ -1083,10 +1084,7 @@ class ProverRuntime:
                         dict(rec.get("report") or {}).get("negations_attempted", 0)
                     )
                     + 1,
-                    "last_negation": {
-                        "screen": screen,
-                        "notes": str(outcome.get("notes", ""))[:2000],
-                    },
+                    "last_negation": last_negation,
                 }
                 rec["charged"] = False
                 rec["decision"] = None

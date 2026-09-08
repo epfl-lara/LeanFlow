@@ -10,12 +10,12 @@ from leanflow_cli.lean.lean_declarations import declaration_region
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.models import Node
 from leanflow_cli.workflows.prover.negation import NegationTask, prepare_negation
-from leanflow_cli.workflows.prover.planning import json_report
+from leanflow_cli.workflows.prover.negation_submission import (
+    SUBMISSION_CONTRACT,
+    rejection_notes,
+    render_submission,
+)
 from leanflow_cli.workflows.prover.source import (
-    SourceDocument,
-    extract_scratch_replacements,
-    read_source,
-    sorry_spans,
     validate_hole_replacement,
     write_source,
 )
@@ -62,6 +62,8 @@ def attempt_negation(
     prompt = (
         runtime._prover_prompt(task.node)
         + "\nThis assignment proves the exact negation of the original claim. The original sorry theorem is never evidence."
+        + "\n"
+        + SUBMISSION_CONTRACT
     )
     if screen is not None:
         if screen.get("found") is True:
@@ -95,21 +97,16 @@ def attempt_negation(
     context.update(
         assignment=task.node.to_dict(),
         scratch_holes=task.node.holes,
+        submission_format=SUBMISSION_CONTRACT,
         scratch_declaration=str(
             (declaration_region(scratch, task.node.name) or {}).get("text", "")
         )[:16000],
     )
     runtime._persist()
     result = runtime._invoke(job, context, prompt)
-    report = json_report(str(result.get("final_response", "")))
-    proof = report.get("proof")
-    candidate_path = Path(job["workspace"]) / "candidate.txt"
-    if not isinstance(proof, str) and candidate_path.is_file() and not candidate_path.is_symlink():
-        proof = read_source(candidate_path)
-    if not isinstance(proof, str):
-        recovered = extract_scratch_replacements(task.source, read_source(scratch), task.node.holes)
-        proof = recovered[0] if recovered else ""
-    usable = bool(proof.strip()) and not sorry_spans(proof)
+    candidate, report = runtime._candidate(job, result, task.node)
+    proof = candidate[0] if candidate else ""
+    usable = bool(proof)
     # Record the outcome (the proof, or "" as a no-proof marker) BEFORE finishing
     # the job, so finish_job's persist commits the terminal status and the
     # outcome together. A completed negation job is not re-queued for resume, so
@@ -124,6 +121,7 @@ def attempt_negation(
         "interrupted",
     }:
         runtime.state.setdefault("negation_proofs", {})[node.id] = proof if usable else ""
+        job.pop("negation_pending_submission", None)
     runtime._finish_job(job, result)
     # A cancelled/interrupted session finishes WITHOUT raising (finish_job only
     # sets cancelled+stopping for status "interrupted"). Bail before the caller
@@ -135,7 +133,11 @@ def attempt_negation(
     if not usable:
         return {
             "certified": False,
-            "notes": str(report.get("notes", result.get("final_response", ""))),
+            "notes": rejection_notes(
+                {"notes": report.get("notes") or result.get("final_response", "")},
+                job.get("negation_submission_feedback", {}),
+            ),
+            "verification": job.get("negation_submission_feedback", {}),
         }
     return _certify_negation(runtime, node, task, proof, report)
 
@@ -161,8 +163,7 @@ def _certify_negation(
         return {"certified": False, "notes": "Rejected negation replacement: " + str(error)}
     checked_path = runtime.store.directory / "checks" / f"{task.node.id}.lean"
     checked_path.parent.mkdir(exist_ok=True)
-    document = SourceDocument(node.file, task.source)
-    write_source(checked_path, document.render({task.node.holes[0]: proof}))
+    write_source(checked_path, render_submission(task, proof))
     # Persist the proof across the check, so an interruption here replays the
     # verification rather than re-running the model.
     runtime.state.setdefault("negation_proofs", {})[node.id] = proof
@@ -188,7 +189,7 @@ def _certify_negation(
     runtime.store.event("negation_checked", {"node_id": node.id, "result": checked})
     return {
         "certified": checked.get("accepted") is True,
-        "notes": str(report.get("notes", "")),
+        "notes": rejection_notes(report, checked),
         "evidence_path": str(checked_path),
         "verification": checked,
     }

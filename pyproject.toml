@@ -155,6 +155,7 @@ files = [
   "core/verified_edit_authority.py",
   "core/utils.py",
   "leanflow_cli/lean/lean_interact_compat.py",
+  "leanflow_cli/lean/lean_check_outcomes.py",
   "leanflow_cli/lean/lean_probe_deadline.py",
   "leanflow_cli/native/support_module_materialization.py",
   "leanflow_cli/native/managed_edit_rollback.py",

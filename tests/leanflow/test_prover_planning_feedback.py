@@ -119,3 +119,53 @@ def test_exhausted_refinement_budget_labels_the_dropped_direction_change_rejecte
     ]
     assert events.count("plan_refinement_budget_exhausted") == 1
     assert "plan_rejected" not in events
+
+
+def test_comment_only_copy_rejection_reaches_retry_and_metadata_update_keeps_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repair a rejected root copy through an update object in the next planning context."""
+    source = tmp_path / "Main.lean"
+    baseline = b"theorem goal : True := by sorry\n"
+    source.write_bytes(baseline)
+    (tmp_path / "lakefile.toml").write_text('name = "Demo"\n')
+    proposals: list[dict[str, Any]] = []
+
+    def session(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["role"] == "review":
+            response = {"accepted": True, "critique": "Retains the original claim."}
+        elif '"nodes"' in kwargs["prompt"]:
+            proposals.append(kwargs["context"])
+            root = runtime.dag.by_id()[runtime.dag.roots[0]]
+            update = (
+                {"id": root.id, "statement": root.statement + " /- extra explanation -/"}
+                if len(proposals) == 1
+                else {"id": root.id, "informal_justification": "Prove the original goal directly."}
+            )
+            response = {"plan": "Use the original goal.", "nodes": [update]}
+        else:
+            response = {"plan": "Initial outline."}
+        return {"status": "completed", "api_calls": 1, "final_response": json.dumps(response)}
+
+    monkeypatch.setattr(planning_controller, "materialize", lambda *args: None)
+    runtime = ProverRuntime(
+        root=tmp_path,
+        targets=[source],
+        config=ProverConfig(mode="research"),
+        session=session,
+    )
+    original = runtime.dag.by_id()[runtime.dag.roots[0]].statement
+
+    assert runtime._research_plan("Construct a useful graph.")
+
+    assert len(proposals) == 2
+    details = json.loads(proposals[1]["planning_critique"].split(": ", 1)[1])
+    assert details["node_id"] == runtime.dag.roots[0]
+    assert details["node_kind"] == "original_root"
+    assert details["first_difference"]["expected"] == "<end of statement>"
+    assert details["first_difference"]["received"] == " /- extra explanation -/"
+    assert "omit the statement field entirely" in details["repair"]
+    root = runtime.dag.by_id()[runtime.dag.roots[0]]
+    assert root.statement == original
+    assert root.informal_justification == "Prove the original goal directly."
+    assert source.read_bytes() == baseline

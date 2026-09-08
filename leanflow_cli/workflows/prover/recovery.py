@@ -13,6 +13,7 @@ screen is advisory: only a kernel-accepted negation ever marks a node false.
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -142,7 +143,12 @@ def recovery_decision(
         f"({runtime.config.negation_api_calls} calls) to PROVE the exact negation. Choose it when "
         "you genuinely suspect the obligation is false or a witness looks reachable.\n"
         "- decompose: replan this branch -- split it into helper obligations or change direction. "
-        "Choose it when the statement is true but too large to close directly.\n\n"
+        "Choose it when a different plan is needed, including replacing an unproved generated "
+        "helper that may be false or unnecessarily strong. Replacing an unproved helper does "
+        "not require certifying its negation; original target statements must remain unchanged.\n\n"
+        "A failed refutation does not establish truth. Use its checker feedback to distinguish "
+        "a malformed candidate from an unsuccessful mathematical search. Repeat an attempt only "
+        "with a concrete correction or new approach.\n\n"
         f"Every decision spends one unit of the campaign recovery budget: {remaining_recoveries} of "
         f"{runtime.config.max_decompositions} remain. A prover retry costs up to "
         f"{runtime.config.job_api_calls} calls; a refutation up to "
@@ -152,7 +158,7 @@ def recovery_decision(
         f"Last attempt made new partial progress: {bool(report.get('progress'))}. "
         f"Refutations attempted: {int(report.get('negations_attempted', 0))}.\n"
         + (
-            f"Last refutation: screen={negation.get('screen')} notes={negation.get('notes', '')}\n"
+            f"Last refutation: {json.dumps(dict(negation), ensure_ascii=False)}\n"
             if isinstance(negation, Mapping)
             else ""
         )

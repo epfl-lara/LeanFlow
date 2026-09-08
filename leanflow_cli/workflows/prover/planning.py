@@ -47,7 +47,9 @@ def apply_proposal(
                 continue
             statement = str(raw.get("statement", existing.statement))
             if statement not in {existing.statement, existing.statement + " := by sorry"}:
-                raise ValueError("existing statements are immutable; add a different helper ID")
+                raise _immutable_statement_error(
+                    existing, statement, is_root=node_id in updated.roots
+                )
             dependencies = raw.get("dependencies", existing.dependencies)
             if not isinstance(dependencies, list) or not all(
                 isinstance(item, str) for item in dependencies
@@ -144,6 +146,50 @@ def apply_proposal(
     return updated, skeletons
 
 
+def _immutable_statement_error(node: Node, supplied: str, *, is_root: bool) -> ValueError:
+    """Identify the exact copied-statement mismatch and the legal update for this node."""
+    expected = node.statement
+    offset = next(
+        (i for i, (left, right) in enumerate(zip(expected, supplied)) if left != right),
+        min(len(expected), len(supplied)),
+    )
+    repair = (
+        "For dependency or informal_justification updates, omit the statement field entirely; "
+        "the controller retains its exact original text, including comments and whitespace. "
+    )
+    if is_root or node.original:
+        repair += (
+            "This original declaration cannot be changed or replaced by a new helper ID. "
+            "Keep its existing ID and express the plan through dependencies and helper declarations."
+        )
+    else:
+        repair += (
+            "To express a different helper claim, create a fresh helper ID and declaration name, "
+            "then update its dependents. Preserve existing verified progress."
+        )
+    details = {
+        "error_code": "immutable_statement",
+        "node_id": node.id,
+        "node_name": node.name,
+        "file": node.file,
+        "node_kind": (
+            "original_root"
+            if is_root
+            else "original_declaration" if node.original else "generated_helper"
+        ),
+        "first_difference": {
+            "line": expected.count("\n", 0, offset) + 1,
+            "column": offset - expected.rfind("\n", 0, offset),
+            "expected": expected[offset : offset + 80] or "<end of statement>",
+            "received": supplied[offset : offset + 80] or "<end of statement>",
+        },
+        "repair": repair,
+    }
+    return ValueError(
+        "existing statements are immutable: " + json.dumps(details, ensure_ascii=False)
+    )
+
+
 def _normalized_claim(node: Node) -> str:
     """Ignore declaration names and formatting while preserving literals in a claim."""
     signature = re.sub(r"^\s*(?:theorem|lemma|def|abbrev)\s+", "", node.statement)
@@ -183,7 +229,11 @@ def planning_prompt(*, reason: str, review: bool = False) -> str:
         'Return JSON {"plan":"complete updated informal proof outline, findings, failed directions and '
         'resource paths", "change_kind":"direction"|"decomposition"|"repair", "nodes":[...], "research_jobs":[{"question":"..."}], '
         '"libraries":[{"name":"packageName", "git":"https://public-host/repository", "rev":"full immutable Git commit hash"}]}. '
-        "Existing nodes use their existing id and statement; dependencies may be updated. New nodes "
+        "Existing nodes are update objects: use their existing id and only the fields to change "
+        "(dependencies and/or informal_justification). Omit statement, name, and file for existing nodes; "
+        "the controller retains their exact declaration text. Omit unchanged nodes entirely. "
+        'Example existing-node update: {"id":"existing_node_id", "dependencies":["helper_id"], '
+        '"informal_justification":"Why this helper advances the proof."}. New nodes '
         "require id, name, statement (a COMPLETE Lean declaration ending := by sorry), "
         "informal_justification, file (LeanFlowProofs/Name.lean), dependencies (node IDs). "
         "The statement contains only that declaration: no import, open/open scoped, namespace, "
@@ -192,7 +242,9 @@ def planning_prompt(*, reason: str, review: bool = False) -> str:
         "New helper modules can import original imports and other generated helper modules, but cannot "
         "import original goal modules: that would create a circular Lean import. If required definitions "
         "are local to the goal file, use local have statements inside the existing sorry instead. "
-        "The original roots must remain. Do not rewrite an existing helper statement; propose a new helper ID. "
+        "The original roots must remain with their original statements, including comments and whitespace. "
+        "To change a generated helper claim, propose a fresh helper ID and declaration name and update "
+        "its dependents; do not rewrite the existing helper statement. "
         "Do not add an unnecessary helper. research_jobs are optional bounded computation/web tasks, not advice."
         " A changed mathematical proof strategy is direction; splitting the same strategy into smaller obligations is decomposition."
         " Correcting tactic syntax, rewrite orientation, or a local proof step is repair and does not consume a plan refinement."

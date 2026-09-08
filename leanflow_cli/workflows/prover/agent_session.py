@@ -195,7 +195,7 @@ def run_session(
 
     def submission_accepted(text: str) -> bool:
         """Return controller feedback without charging another model request."""
-        if role != "prover" or not callable(candidate_feedback):
+        if role not in {"prover", "negation"} or not callable(candidate_feedback):
             return True
         feedback = candidate_feedback(text)
         emit("submission-feedback", feedback)
@@ -211,7 +211,20 @@ def run_session(
         return False
 
     try:
-        while used < api_budget:
+        pending_submission = config.get("_pending_submission_response")
+        if (
+            role in {"prover", "negation"}
+            and callable(candidate_feedback)
+            and isinstance(pending_submission, str)
+            and pending_submission
+        ):
+            final_response = pending_submission
+            messages.append({"role": "assistant", "content": pending_submission})
+            if is_cancelled():
+                status = "interrupted"
+            elif submission_accepted(final_response):
+                status = "completed"
+        while status not in {"completed", "interrupted"} and used < api_budget:
             if is_cancelled():
                 status = "interrupted"
                 break

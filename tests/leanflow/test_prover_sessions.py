@@ -23,7 +23,7 @@ def run_fake(
     monkeypatch.setattr(session, "close_transport", lambda *_: None)
     monkeypatch.setattr(session, "request_once", request)
     return session.run_session(
-        role="prover",
+        role=overrides.pop("role", "prover"),
         prompt="Prove the assigned statement",
         project_root=tmp_path,
         workspace=tmp_path / "job",
@@ -231,8 +231,9 @@ def test_tool_request_uses_same_remaining_budget(
     assert (tmp_path / "job/PLAN_job.md").read_text() == "Attempt 3"
 
 
+@pytest.mark.parametrize("role", ["prover", "negation"])
 def test_rejected_submission_keeps_same_job_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str
 ) -> None:
     checks = []
 
@@ -245,6 +246,7 @@ def test_rejected_submission_keeps_same_job_budget(
         monkeypatch,
         lambda *_: ({"role": "assistant", "content": '{"proof":"by trivial"}'}, {}),
         config={"_candidate_feedback": feedback},
+        role=role,
     )
     assert result["status"] == "completed"
     assert result["api_calls"] == 3 == len(checks)
@@ -413,8 +415,9 @@ def test_addressed_guidance_is_pinned_before_request_and_after_resume(
     assert second["status"] == "completed" and second["api_calls"] == 2
 
 
+@pytest.mark.parametrize("role", ["prover", "negation"])
 def test_global_deadline_during_submission_keeps_campaign_scope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str
 ) -> None:
     def feedback(response: str) -> dict[str, Any]:
         raise BudgetExhausted("campaign wall-clock budget exhausted", code="campaign_wall_time")
@@ -424,6 +427,7 @@ def test_global_deadline_during_submission_keeps_campaign_scope(
         monkeypatch,
         lambda *args: ({"role": "assistant", "content": '{"proof":"trivial"}'}, {}),
         config={"_candidate_feedback": feedback},
+        role=role,
     )
     assert result["status"] == "timeout"
     assert result["api_calls"] == 1

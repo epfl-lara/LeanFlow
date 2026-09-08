@@ -96,6 +96,22 @@ that target; a refuted invented helper triggers branch repair. The adapter decli
 ambiguous ambient section-variable contexts rather than constructing a potentially
 vacuous negation. An experiment or diagnostic report alone cannot certify disproof.
 
+Negation candidates replace a literal `sorry` inside an existing `:= by` block:
+submit tactics without another leading `by`, or use `exact (<proof term>)`.
+The controller checks the exact rendered source and returns rejected candidates
+to the same job for repair within its remaining allocation. If checking is
+interrupted, the pending candidate is retained and checked again on resume
+before another model request, even when the job has used its last call. Checker
+diagnostics are retained for subsequent recovery decisions even when no model notes were
+submitted. A failed refutation leaves the claim unresolved; it does not establish
+truth. Replanning can replace an unproved generated helper with a fresh helper
+and update its dependents without first certifying a negation.
+
+Existing-node plan updates should include only the existing ID and changed
+dependencies or informal justification. Omit the statement to retain its exact
+bytes. A copied-statement mismatch identifies the node and the first difference;
+original target statements remain immutable.
+
 ## Source and verification boundaries
 
 The controller snapshots original project source. It accepts replacements only
@@ -124,6 +140,10 @@ supported; `sorryAx` is never a permitted completion axiom. A final gate require
 the requested source files to be free of `sorry` and runs `lake build` for the
 project. With a file target, unrelated files are not automatically added to the
 proof assignment; a project-wide run discovers all eligible project source files.
+
+Lean `maxHeartbeats` exhaustion is reported as `lean_heartbeat_limit` and remains
+a proof-repair error. Actual process deadlines, cancellation, and unavailable
+verification infrastructure retain their separate failure and resume handling.
 
 Source protection also means `prove` cannot repair an arbitrary broken statement,
 import, or definition outside an authorized hole. Make that correction separately
@@ -178,14 +198,15 @@ All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
 | --- | --- | --- |
 | `MODE` | `standard` | `standard` or `research` |
 | `SEARCH_ORDER` | `bottom-up` | `bottom-up` or experimental `top-down` |
-| `JOB_API_CALLS` | `300` | Request ceiling for one prover or exact-negation pass |
+| `JOB_API_CALLS` | `300` | Request ceiling for one prover pass |
+| `NEGATION_API_CALLS` | `60` | Request ceiling for one exact-negation pass |
 | `MAX_RESTARTS` | `3` | Additional passes per node |
 | `PLAN_REFINEMENTS` | `16` | Changes of informal proof direction |
 | `PARALLELISM` | `2` | Concurrent research-mode provers; standard uses one |
 | `TOTAL_API_CALLS` | `10000` | Total admitted requests across roles and passes |
 | `ORCHESTRATOR_API_CALLS` | `40` | Per planning, review, or resource-agent session, including a prover's research request |
 | `MAX_NODES` | `128` | Maximum admitted DAG nodes |
-| `MAX_DECOMPOSITIONS` | `32` | Structural recovery limit, separate from direction changes |
+| `MAX_DECOMPOSITIONS` | `32` | Research recovery decisions, including retry, negate, and decompose |
 | `WALL_TIME_S` | `14400` | Campaign wall-clock limit, retaining recorded elapsed time on resume |
 | `TIMEOUT_S` | `180` | Provider request and independent Lean-check deadline |
 | `MODEL` | launch model | Prover model override |

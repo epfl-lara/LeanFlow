@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import shutil
 from pathlib import Path
@@ -74,7 +75,8 @@ def new_job(
     if role in {"prover", "negation"} and node is not None and node.id in resumed_jobs:
         job = resumed_jobs[node.id]
         remaining = job["api_budget"] - job["api_calls"]
-        job["reserved_calls"] = runtime._reserve(remaining)
+        runtime._ensure_active()
+        job["reserved_calls"] = runtime._reserve(remaining) if remaining else 0
         if job["reserved_calls"] != remaining:
             runtime.reserved -= job["reserved_calls"]
             raise BudgetExhausted("remaining campaign allocation cannot resume this job")
@@ -345,6 +347,17 @@ def invoke(
             settings["_candidate_feedback"] = lambda response: candidate_feedback(
                 runtime, job, response
             )
+        elif job["role"] == "negation":
+            from leanflow_cli.workflows.prover.negation_submission import (
+                candidate_feedback as negation_candidate_feedback,
+            )
+
+            settings["_candidate_feedback"] = lambda response: negation_candidate_feedback(
+                runtime, job, response
+            )
+            pending_submission = job.get("negation_pending_submission")
+            if job.get("resumed") and isinstance(pending_submission, dict):
+                settings["_pending_submission_response"] = json.dumps(pending_submission)
         settings["wall_time_s"] = max(1.0, runtime.config.wall_time_s - runtime._elapsed())
         return runtime.session(
             role=job["role"],

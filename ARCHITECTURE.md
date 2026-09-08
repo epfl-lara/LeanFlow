@@ -194,7 +194,9 @@ tool is reachable through the public registry.
   `LeanBackend` facade. Tactic-hole portfolios route
   through `lean_attempt_screening.py`, which prepares the target environment
   once and exact-checks bounded candidates with LeanProbe before any positional
-  LSP fallback.
+  LSP fallback. `lean_check_outcomes.py` distinguishes deterministic Lean
+  heartbeat exhaustion from process deadlines, including older reports whose
+  timeout flag was inferred from a heartbeat diagnostic.
 - `formalization/` owns source-document extraction, TeX discovery, generated
   Lean shaping, and the statement-review handoff.
 - `workflows/prover/` owns the active bounded proof workflow; see its leaf map
@@ -214,7 +216,7 @@ tool is reachable through the public registry.
 | `workflows/prover/source.py` | Comment-aware hole discovery, frozen source, scratch projection, exact replacements and typed source-consistency failures |
 | `workflows/prover/source_transaction.py` | Proof and multi-file materialization journals, exact before/after images, and conflict-preserving recovery |
 | `workflows/prover/scheduler.py` | Deterministic DFS selection, concurrency leases and shared-dependency deduplication |
-| `workflows/prover/planning.py` | Structured plan proposals, immutable original statements and generated helper placement |
+| `workflows/prover/planning.py` | Structured plan proposals, metadata-only updates to existing nodes, immutable statements with node-specific repair feedback, and generated helper placement |
 | `workflows/prover/runtime.py` | Sole source/plan/DAG authority, job admission, completion handling, recovery and resume lineage |
 | `workflows/prover/entrypoint.py` | CLI startup, controller locking, terminal startup-failure publication and new-run resume cloning |
 | `workflows/prover/resume_candidates.py` | Recover older submissions hidden by empty retries after an infrastructure failure; retain budgets and require fresh independent verification |
@@ -244,6 +246,9 @@ tool is reachable through the public registry.
 | `workflows/prover/type_profile.py` | Isolated exact-source compilation and trusted inspection of kernel types and local definition dependencies, with separate live stages and timings under one deadline; scans the compiled module's declarations instead of copying the entire import environment; under the `module` scheme compilation retains the checked bytes for publication through a shadow package root beside already published siblings |
 | `workflows/prover/negation.py` | Exact negated-target construction and certificate support |
 | `workflows/prover/negation_job.py` | Separate bounded negation pass and independent certificate acceptance |
+| `workflows/prover/negation_submission.py` | Explicit tactic-slot contract, exact-source feedback within the negation job, and durable pending candidates rechecked before model requests on resume |
+| `workflows/prover/recovery.py` | Budgeted recovery decisions and advisory counterexample screening; failed refutations never establish truth |
+| `workflows/prover/recovery_reports.py` | Bounded checker evidence and neutral findings retained across unsuccessful negation attempts |
 | `workflows/prover/libraries.py` | Additive helper-library registration and pinned Lake dependency installation with rollback |
 | `flags/prover_catalog.py` | Public prover setting descriptions and defaults |
 | `cli/prover_status.py` | Exact-run snapshot reads and durable guidance submission |

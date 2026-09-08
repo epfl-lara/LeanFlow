@@ -23,6 +23,7 @@ from core.project_resource_admission import (
     project_lean_service_reclaim_enabled,
 )
 from core.runtime_modes import dispatch_worker_enabled, low_memory_mode_enabled
+from leanflow_cli.lean.lean_check_outcomes import normalize_check_outcome
 from leanflow_cli.lean.lean_command_timeout import configured_hard_timeout_s
 from leanflow_cli.lean.lean_diagnostics import diagnostic_items
 from leanflow_cli.lean.lean_ephemeral import lean_ephemeral_source_check
@@ -62,14 +63,6 @@ _ADMISSION_DEADLINE_CHARGE_THRESHOLD_S: Final[float] = 0.05
 
 _PROBE: Any | None = None
 _PROBE_EVER_STARTED = False
-
-_TIMEOUT_DIAGNOSTIC_MARKERS: Final[tuple[str, ...]] = (
-    "maximum number of heartbeats",
-    "maxheartbeats",
-    "deterministic timeout",
-    "wall-clock deadline",
-    "timed out",
-)
 
 
 def _import_lean_probe() -> tuple[Any, Any, Any, str]:
@@ -1099,28 +1092,12 @@ def compact_successful_check_payload(
 
 
 def _normalize_payload(payload: dict[str, Any], action: str) -> dict[str, Any]:
-    """Normalize LeanProbe metadata and recover timeout semantics from diagnostics."""
-    result = dict(payload)
+    """Normalize LeanProbe metadata and distinguish Lean limits from process deadlines."""
+    result = normalize_check_outcome(payload)
     result["action"] = action
     result.setdefault("backend", "lean_interact")
     result.setdefault("tool", "lean_probe")
     result["command"] = f"lean_probe {action}"
-    diagnostic_text = " ".join(
-        (
-            *(str(result.get(key, "") or "") for key in ("error", "output", "message")),
-            *(
-                str(item.get("message", "") or "")
-                for item in (result.get("messages") or [])
-                if isinstance(item, Mapping)
-            ),
-        )
-    ).lower()
-    diagnostic_timeout = any(marker in diagnostic_text for marker in _TIMEOUT_DIAGNOSTIC_MARKERS)
-    if diagnostic_timeout and not bool(result.get("timed_out")):
-        # LeanProbe can report heartbeat exhaustion as an ordinary Lean error
-        # while leaving its transport-level timeout flag false.
-        result["timed_out"] = True
-        result["timed_out_inferred_from_diagnostics"] = True
     if action == "feedback":
         result = _bound_feedback_payload(result, _feedback_max_chars())
     return result

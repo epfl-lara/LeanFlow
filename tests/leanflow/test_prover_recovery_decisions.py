@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -135,6 +136,7 @@ def test_unrefuted_negation_returns_to_the_orchestrator_and_spends_again(
 
     def negate(rt: ProverRuntime, n: Node, *, screen: Any = None) -> dict[str, Any]:
         negations.append({"screen": screen})
+        rt.state.setdefault("negation_proofs", {})[n.id] = "cached proof"
         return {"certified": False, "notes": "no witness"}
 
     monkeypatch.setattr(negation_job, "attempt_negation", negate)
@@ -145,8 +147,93 @@ def test_unrefuted_negation_returns_to_the_orchestrator_and_spends_again(
     # The second decision saw the failed refutation.
     assert calls[1]["negations_attempted"] == 1
     assert calls[1]["last_negation"]["notes"] == "no witness"
+    assert calls[1]["notes"] == "stuck"
+    assert node.id not in runtime.state["negation_proofs"]
     assert runtime.state["metrics"]["decompositions"] == 2
     assert node.status == "retry"
+
+
+def test_failed_negation_retains_checker_evidence_with_the_stage_transition(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = research_runtime(tmp_path)
+    node = runtime.dag.nodes[0]
+    node.status = "blocked"
+    decide, calls = scripted(["negate", "retry"])
+    monkeypatch.setattr(recovery, "recovery_decision", decide)
+    monkeypatch.setattr(recovery, "empirical_screen", lambda rt, n: {"found": None})
+
+    def negate(rt: ProverRuntime, n: Node, *, screen: Any = None) -> dict[str, Any]:
+        rt.state.setdefault("negation_proofs", {})[n.id] = "by intro h"
+        return {
+            "certified": False,
+            "notes": "",
+            "evidence_path": "checks/negation.lean",
+            "verification": {
+                "accepted": False,
+                "compile": {"messages": [{"message": "unexpected token 'by'; expected tactic"}]},
+            },
+        }
+
+    monkeypatch.setattr(negation_job, "attempt_negation", negate)
+    snapshots: list[dict[str, Any]] = []
+    persist = runtime._persist
+
+    def capture_persist() -> None:
+        snapshots.append(deepcopy(runtime.state))
+        persist()
+
+    monkeypatch.setattr(runtime, "_persist", capture_persist)
+    runtime._recover(node, {"notes": "a concrete counterexample is available"})
+
+    last = calls[1]["last_negation"]
+    assert last["notes"] == ""
+    assert last["certified"] is False
+    assert "unexpected token 'by'" in last["verification"]["diagnostics"]
+    assert last["evidence_path"] == "checks/negation.lean"
+    committed = [
+        snapshot
+        for snapshot in snapshots
+        if snapshot["recovery_in_flight"].get(node.id, {}).get("report", {}).get("last_negation")
+        == last
+    ]
+    assert committed
+    first = committed[0]
+    assert first["recovery_in_flight"][node.id]["stage"] == "decide"
+    assert first["recovery_in_flight"][node.id]["charged"] is False
+    assert node.id not in first["negation_proofs"]
+    finding = first["plan_journal"][-1]["detail"]
+    assert "truth of this obligation remains unresolved" in finding
+    assert "unexpected token 'by'" in finding
+    assert "Treat this obligation as true" not in finding
+
+
+def test_recovery_prompt_includes_negation_errors_and_allows_replacing_unproved_helpers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = research_runtime(tmp_path)
+    prompts: list[str] = []
+
+    def run_role(role: str, prompt: str, **kwargs: Any) -> dict[str, Any]:
+        prompts.append(prompt)
+        return {"final_response": '{"action":"decompose"}'}
+
+    monkeypatch.setattr(runtime, "_run_role", run_role)
+    recovery.recovery_decision(
+        runtime,
+        runtime.dag.nodes[0],
+        {
+            "last_negation": {
+                "notes": "",
+                "verification": {"accepted": False, "diagnostics": "unexpected token 'by'"},
+            }
+        },
+    )
+
+    assert "unexpected token 'by'" in prompts[0]
+    assert "failed refutation does not establish truth" in prompts[0]
+    assert "Replacing an unproved helper does not require certifying its negation" in prompts[0]
+    assert "original target statements must remain unchanged" in prompts[0]
 
 
 def test_exhausted_global_budget_leaves_the_node_blocked_with_a_note(

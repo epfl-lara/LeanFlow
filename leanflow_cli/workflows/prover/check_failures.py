@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from leanflow_cli.lean.lean_check_outcomes import process_timed_out
+
 _LAKE_CONFIG_LOCK = re.compile(r"[\\/]\.lake[\\/](?:config[\\/]\d+[\\/])?lakefile\.olean\.lock")
 
 
@@ -25,7 +27,7 @@ def infrastructure_code(result: Any) -> str:
         "lake_config_cache_error",
     }:
         return str(code)
-    if result.get("timed_out") is True:
+    if process_timed_out(result):
         return "check_timeout"
     diagnostic = "\n".join(
         value for name in ("error", "stderr") if isinstance(value := result.get(name), str)
