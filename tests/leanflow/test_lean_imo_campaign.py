@@ -6,14 +6,7 @@ from pathlib import Path
 import pytest
 
 from scripts.lean_imo_campaign.artifacts import digest, environment, prepare, save
-from scripts.lean_imo_campaign.matrix import (
-    CONDITION_SETS,
-    CONDITIONS,
-    TIGHT,
-    WIDE,
-    cells,
-    next_cell,
-)
+from scripts.lean_imo_campaign.matrix import CONDITION_SETS, CONDITIONS, WIDE, cells, next_cell
 from scripts.lean_imo_campaign.runner import refresh
 
 
@@ -309,27 +302,29 @@ def test_luna_arm_replicates_the_split_at_the_tighter_budget() -> None:
         config["total_api_calls"],
         config["wall_time_s"],
         config["timeout_s"],
-    ) == (4, 150, 50, 1000, 28800, 1200)
+    ) == (4, 200, 50, 2000, 28800, 1200)
     assert config["search_order"] == "top-down"
     assert config["mode"] == "research"
     assert config["allow_internet"] is False
 
 
-def test_only_the_budgeted_limits_differ_between_the_two_split_arms() -> None:
-    """Isolate model, effort and budget; every other setting must be shared."""
+def test_only_model_and_prover_effort_differ_between_the_two_split_arms() -> None:
+    """The luna arm must be a model comparison, not a budget comparison."""
     (astra,) = cells([{"id": "p"}], CONDITION_SETS["top-down-split"])
     (luna,) = cells([{"id": "p"}], CONDITION_SETS["luna-top-down-split"])
-    expected = set(TIGHT._fields) - {
-        field for field in TIGHT._fields if getattr(WIDE, field) == getattr(TIGHT, field)
-    }
-    assert expected == {"job_api_calls", "total_api_calls"}
     differing = {k for k, v in astra["config"].items() if luna["config"][k] != v}
-    assert differing == expected | {"model", "orchestrator_model", "reasoning_effort"}
+    assert differing == {"model", "orchestrator_model", "reasoning_effort"}
+    for field in WIDE._fields:
+        assert astra["config"][field] == luna["config"][field] == getattr(WIDE, field)
 
 
-def test_a_condition_without_an_explicit_budget_keeps_the_original_limits() -> None:
-    """Arms frozen before budgets existed must regenerate byte-identical config."""
-    for condition in (*CONDITIONS, *CONDITION_SETS["top-down-split"]):
+def test_every_arm_shares_one_named_budget() -> None:
+    """Limits live in a named constant, not hardcoded inside configuration()."""
+    for condition in (
+        *CONDITIONS,
+        *CONDITION_SETS["top-down-split"],
+        *CONDITION_SETS["luna-top-down-split"],
+    ):
         assert condition.budget is WIDE
     config = cells([{"id": "p"}], CONDITION_SETS["top-down-split"])[0]["config"]
     assert (config["job_api_calls"], config["total_api_calls"]) == (200, 2000)

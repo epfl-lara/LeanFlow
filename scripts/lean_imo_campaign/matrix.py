@@ -16,23 +16,13 @@ class Budget(NamedTuple):
     timeout_s: int
 
 
-#: The limits every arm of the gpt-6-astra comparison ran under.
+#: The limits every arm runs under. Named and shared rather than hardcoded in
+#: configuration(), so an arm that needs different ceilings states them instead
+#: of silently rewriting everyone else's.
 WIDE = Budget(
     job_api_calls=200,
     orchestrator_api_calls=50,
     total_api_calls=2000,
-    parallelism=4,
-    wall_time_s=28800,
-    timeout_s=1200,
-)
-
-#: Tighter per-pass and campaign ceilings for the gpt-5.6-luna replication:
-#: the same wall clock and parallelism, but a prover pass and a campaign that
-#: must reach the same proofs on fewer calls.
-TIGHT = Budget(
-    job_api_calls=150,
-    orchestrator_api_calls=50,
-    total_api_calls=1000,
     parallelism=4,
     wall_time_s=28800,
     timeout_s=1200,
@@ -64,12 +54,13 @@ CONDITIONS = (
 #: "does expensive planning plus a cheap prover work?" from model choice.
 TOP_DOWN_SPLIT_EFFORT = (Condition("astra-top-split", "gpt-6-astra", "top-down", "low", "xhigh"),)
 
-#: The same split-effort question asked of gpt-5.6-luna on a tighter budget.
-#: The prover runs at medium rather than low because luna is the smaller model:
-#: holding the effort label fixed across models would compare two different
-#: things, so the arm holds the *role* fixed -- cheap prover, expensive planner.
+#: The same split-effort question asked of gpt-5.6-luna, at the astra budget so
+#: the two arms differ only by model and prover effort. The prover runs at medium
+#: rather than low because luna is the smaller model: holding the effort label
+#: fixed across models would compare two different things, so the arm holds the
+#: *role* fixed -- cheap prover, expensive planner.
 LUNA_TOP_DOWN_SPLIT_EFFORT = (
-    Condition("luna-top-split", "gpt-5.6-luna", "top-down", "medium", "xhigh", TIGHT),
+    Condition("luna-top-split", "gpt-5.6-luna", "top-down", "medium", "xhigh"),
 )
 
 CONDITION_SETS = {
