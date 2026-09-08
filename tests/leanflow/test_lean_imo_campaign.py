@@ -318,6 +318,53 @@ def test_only_model_and_prover_effort_differ_between_the_two_split_arms() -> Non
         assert astra["config"][field] == luna["config"][field] == getattr(WIDE, field)
 
 
+def test_planning_and_proving_can_run_on_different_models() -> None:
+    """The cross-model arm: astra plans, luna proves, one budget for both."""
+    from leanflow_cli.workflows.prover.config import ProverConfig
+
+    (condition,) = CONDITION_SETS["astra-plan-luna-prove"]
+    assert (condition.model, condition.orchestrator_model) == ("gpt-5.6-luna", "gpt-6-astra")
+
+    (cell,) = cells([{"id": "p"}], CONDITION_SETS["astra-plan-luna-prove"])
+    assert cell["model"] == "gpt-5.6-luna"
+    assert cell["orchestrator_model"] == "gpt-6-astra"
+    assert cell["effort"] == "medium"
+    config = cell["config"]
+    assert config["model"] == "gpt-5.6-luna"
+    assert config["orchestrator_model"] == "gpt-6-astra"
+    assert config["reasoning_effort"] == config["orchestrator_reasoning_effort"] == "medium"
+
+    # The split is only real if to_mapping routes each role to its own model;
+    # session_transport prefers config["model"] over the launch env var, so a
+    # role that resolved to the wrong model would silently run the wrong one.
+    resolved = ProverConfig(
+        **{k: (tuple(v) if isinstance(v, list) else v) for k, v in config.items()}
+    )
+    assert {role: resolved.to_mapping(role)["model"] for role in ("prover", "negation")} == {
+        "prover": "gpt-5.6-luna",
+        "negation": "gpt-5.6-luna",
+    }
+    assert {
+        role: resolved.to_mapping(role)["model"] for role in ("orchestrator", "review", "research")
+    } == {
+        "orchestrator": "gpt-6-astra",
+        "review": "gpt-6-astra",
+        "research": "gpt-6-astra",
+    }
+
+
+def test_a_single_model_arm_keeps_both_roles_on_that_model() -> None:
+    """An empty orchestrator_model must still mean 'same model', not empty."""
+    for label in ("full", "top-down-split", "luna-top-down-split"):
+        for condition in CONDITION_SETS[label]:
+            assert condition.orchestrator_model == ""
+    for label in ("top-down-split", "luna-top-down-split"):
+        (cell,) = cells([{"id": "p"}], CONDITION_SETS[label])
+        config = cell["config"]
+        assert config["model"] == config["orchestrator_model"] == cell["model"]
+        assert cell["orchestrator_model"] == cell["model"]
+
+
 def test_every_arm_shares_one_named_budget() -> None:
     """Limits live in a named constant, not hardcoded inside configuration()."""
     for condition in (

@@ -37,6 +37,9 @@ class Condition(NamedTuple):
     order: str
     prover_effort: str = ""
     orchestrator_effort: str = ""
+    #: Empty means the planning roles share the prover's model. Set it to run
+    #: planning and proving on different models.
+    orchestrator_model: str = ""
     budget: Budget = WIDE
 
 
@@ -63,10 +66,28 @@ LUNA_TOP_DOWN_SPLIT_EFFORT = (
     Condition("luna-top-split", "gpt-5.6-luna", "top-down", "medium", "xhigh"),
 )
 
+#: Planning and proving on different models. astra planned every one of the
+#: eighteen proofs the top-down split arm completed, while luna's planning
+#: livelocked on two cells and talked itself out of a true statement on a third;
+#: luna's provers, meanwhile, closed nodes whenever a plan reached them. This
+#: arm buys astra's planning for luna's proving and measures whether that is
+#: where the difference lives.
+ASTRA_PLAN_LUNA_PROVE = (
+    Condition(
+        label="astra-plan-luna-prove",
+        model="gpt-5.6-luna",
+        order="top-down",
+        prover_effort="medium",
+        orchestrator_effort="medium",
+        orchestrator_model="gpt-6-astra",
+    ),
+)
+
 CONDITION_SETS = {
     "full": CONDITIONS,
     "top-down-split": TOP_DOWN_SPLIT_EFFORT,
     "luna-top-down-split": LUNA_TOP_DOWN_SPLIT_EFFORT,
+    "astra-plan-luna-prove": ASTRA_PLAN_LUNA_PROVE,
 }
 
 
@@ -76,6 +97,7 @@ def configuration(
     prover_effort: str = "",
     orchestrator_effort: str = "",
     budget: Budget = WIDE,
+    orchestrator_model: str = "",
 ) -> dict[str, Any]:
     """Return every prover setting explicitly, avoiding mutable home profile defaults."""
     from leanflow_cli.workflows.prover.config import ProverConfig
@@ -84,7 +106,7 @@ def configuration(
         mode="research",
         search_order=order,
         model=model,
-        orchestrator_model=model,
+        orchestrator_model=orchestrator_model or model,
         reasoning_effort=prover_effort,
         orchestrator_reasoning_effort=orchestrator_effort,
         **budget._asdict(),
@@ -112,6 +134,7 @@ def cells(
             "problem": problem,
             "condition": condition.label,
             "model": condition.model,
+            "orchestrator_model": condition.orchestrator_model or condition.model,
             "order": condition.order,
             # The launch effort the native runtime starts at. Per-role efforts
             # live in "config" and win over this wherever both apply.
@@ -122,6 +145,7 @@ def cells(
                 condition.prover_effort,
                 condition.orchestrator_effort,
                 condition.budget,
+                condition.orchestrator_model,
             ),
             "status": "pending",
             "lane": None,
