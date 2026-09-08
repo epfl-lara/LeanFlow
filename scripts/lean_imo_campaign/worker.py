@@ -60,7 +60,9 @@ def main() -> int:
         env[ENV_NAMES[key]] = (
             ("1" if value else "0")
             if isinstance(value, bool)
-            else ",".join(value) if isinstance(value, (list, tuple)) else str(value)
+            else ",".join(value)
+            if isinstance(value, (list, tuple))
+            else str(value)
         )
     os.environ.update(env)
     if cell.get("resume_run_id"):
@@ -79,7 +81,9 @@ def main() -> int:
         root / ".leanflow" / f"launch-{cell['run_id']}.json",
         {
             "model": cell["model"],
-            "orchestrator_model": cell["model"],
+            # The config is what actually routes each role, so report it rather
+            # than assuming the planning roles share the prover's model.
+            "orchestrator_model": cell["config"].get("orchestrator_model") or cell["model"],
             "effort": cell["effort"],
             "provider": runtime["provider"],
             "api_mode": runtime["api_mode"],

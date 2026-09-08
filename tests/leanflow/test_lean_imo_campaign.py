@@ -365,6 +365,19 @@ def test_a_single_model_arm_keeps_both_roles_on_that_model() -> None:
         assert cell["orchestrator_model"] == cell["model"]
 
 
+def test_the_launch_record_names_the_model_each_role_actually_uses() -> None:
+    """A provenance record that assumes one model per cell misreports the split."""
+    import scripts.lean_imo_campaign.worker as worker
+
+    source = Path(worker.__file__).read_text()
+    assert '"orchestrator_model": cell["model"],' not in source
+    assert '"orchestrator_model": cell["config"].get("orchestrator_model")' in source
+
+    (cell,) = cells([{"id": "p"}], CONDITION_SETS["astra-plan-luna-prove"])
+    recorded = cell["config"].get("orchestrator_model") or cell["model"]
+    assert recorded == "gpt-6-astra" != cell["model"]
+
+
 def test_every_arm_shares_one_named_budget() -> None:
     """Limits live in a named constant, not hardcoded inside configuration()."""
     for condition in (
