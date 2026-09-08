@@ -75,11 +75,6 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
     ),
     _integer("WALL_TIME_S", 14400, "Maximum campaign runtime in seconds."),
     _integer("TIMEOUT_S", 180, "Maximum seconds per provider request and independent Lean check."),
-    _integer(
-        "MAX_NODE_DECOMPOSITIONS",
-        1,
-        "Recoveries (negation + replan) allowed per node; 1 is the historical behaviour.",
-    ),
     _integer("CONTEXT_TOKENS", 64000, "Prover context cap, including space reserved for output."),
     _integer("ORCHESTRATOR_CONTEXT_TOKENS", 64000, "Planning and research context cap."),
     FlagSpec(

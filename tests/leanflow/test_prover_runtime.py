@@ -875,18 +875,21 @@ def test_reasoning_effort_round_trips_through_the_environment() -> None:
     assert config.to_mapping("research")["reasoning_effort"] == "xhigh"
 
 
-def test_per_node_recovery_budget_defaults_to_the_historical_single_attempt() -> None:
-    """max_decompositions could never bind for one node; this makes that explicit.
+def test_recovery_is_bounded_only_by_the_campaign_wide_budget() -> None:
+    """No per-node cap: a hard node may take several replans if others do not.
 
-    _recover returns early once a node reaches its per-node cap, so with the
-    historical hardcoded 1 the campaign-wide max_decompositions (32) and
-    max_nodes (128) were unreachable for any single node.
+    _recover previously refused a second recovery for any node, which made
+    max_decompositions and max_nodes unreachable for a single node. The
+    campaign-wide budget is now the only limit, so a genuinely hard node can
+    keep replanning while easier nodes leave their share unspent.
     """
-    assert ProverConfig(model="m").max_node_decompositions == 1
-    assert ProverConfig(model="m", max_node_decompositions=3).max_node_decompositions == 3
-    with pytest.raises(ValueError, match="must be non-negative"):
-        ProverConfig(model="m", max_node_decompositions=-1)
-    config = ProverConfig.from_env(
-        {"LEANFLOW_PROVER_MODEL": "m", "LEANFLOW_PROVER_MAX_NODE_DECOMPOSITIONS": "4"}
-    )
-    assert config.to_mapping("prover")["max_node_decompositions"] == 4
+    from pathlib import Path as _Path
+
+    source = _Path("leanflow_cli/workflows/prover/runtime.py").read_text(encoding="utf-8")
+    assert "node.decompositions >= 1" not in source
+    assert "max_node_decompositions" not in source
+    assert 'metrics"]["decompositions"] >= self.config.max_decompositions' in source
+    # The exhausted budget must be recorded on the node, not returned silently.
+    assert "Campaign recovery budget exhausted" in source
+    assert not hasattr(ProverConfig(model="m"), "max_node_decompositions")
+    assert ProverConfig(model="m").max_decompositions == 32

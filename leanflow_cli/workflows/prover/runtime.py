@@ -826,18 +826,19 @@ class ProverRuntime:
         """Diagnose a blocked statement, then refine direction or split its affected branch."""
         resuming_negation = node.id in self.resume_negation_jobs
         if not resuming_negation:
-            if (
-                node.decompositions >= self.config.max_node_decompositions
-                or self.state["metrics"]["decompositions"] >= self.config.max_decompositions
-            ):
-                # A node that exhausts its recoveries stays blocked with no
-                # further negation or replanning, so say so rather than
-                # returning silently into an unexplained dead end.
+            # One campaign-wide recovery budget, deliberately with no per-node
+            # cap. A node that genuinely needs several replans should be able to
+            # take them; the other nodes are usually easier and will not spend
+            # their share. Runaway recovery on a single node is already bounded
+            # by this budget and by the run's total API allocation.
+            if self.state["metrics"]["decompositions"] >= self.config.max_decompositions:
+                # Once it is spent a blocked node gets no further negation or
+                # replanning, so record that rather than returning silently
+                # into an unexplained dead end.
                 node.notes += (
-                    "\nRecovery budget exhausted for this node "
-                    f"({node.decompositions}/{self.config.max_node_decompositions} node, "
-                    f"{self.state['metrics']['decompositions']}/"
-                    f"{self.config.max_decompositions} campaign); it stays blocked."
+                    "\nCampaign recovery budget exhausted "
+                    f"({self.state['metrics']['decompositions']}/"
+                    f"{self.config.max_decompositions}); this node stays blocked."
                 )
                 self._persist()
                 return
