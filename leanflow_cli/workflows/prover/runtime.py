@@ -142,6 +142,9 @@ class ProverRuntime:
                 "changes": [],
                 "targets": [str(path.relative_to(self.root)) for path in self.targets],
                 "plan_markdown": self._initial_plan(),
+                # Written on rejection, unlike plan_markdown which is only
+                # rewritten on acceptance; see plan_journal for why.
+                "plan_journal": [],
                 "metrics": {
                     "api_calls": 0,
                     "input_tokens": 0,
@@ -436,6 +439,13 @@ class ProverRuntime:
             "assignment": node.to_dict() if node else {},
             "dag": self.dag.to_dict(),
             "plan": self.state["plan_markdown"],
+            # Copied, not aliased: a job's context is a snapshot, and handing out
+            # the live list would let every earlier context grow new findings.
+            "planning_journal": [
+                dict(entry)
+                for entry in self.state.get("plan_journal", [])
+                if isinstance(entry, dict)
+            ],
             "notes": node.notes if node else "",
             "goal": self.goal,
             "permitted_dependencies": list(node.dependencies) if node else [],
@@ -443,6 +453,12 @@ class ProverRuntime:
                 self.state["jobs"], project_root=self.root, run_directory=self.store.directory
             ),
         }
+
+    def record_finding(self, kind: str, detail: str) -> None:
+        """Record one durable planning finding for every later planning context."""
+        from leanflow_cli.workflows.prover import plan_journal
+
+        plan_journal.record(self.state, kind, detail, at=now())
 
     def _new_job(
         self, role: str, *, node: Node | None = None, prompt: str = ""
@@ -1006,6 +1022,10 @@ class ProverRuntime:
                         f"{str(rec.get('report', {}).get('notes', node.notes))[-3000:]}\n"
                         f"Recovery decision: decompose -- {decision.get('rationale', '')}"
                     )
+                self.record_finding(
+                    f"recovery decision for {node.name}: {decision['action']}",
+                    str(decision.get("rationale", "")),
+                )
                 self._persist()
                 with contextlib.suppress(Exception):
                     self.store.event("recovery_decision", record)
@@ -1052,6 +1072,11 @@ class ProverRuntime:
                     self._persist()
                     continue
                 # Unrefuted: hand back to the orchestrator, which recharges.
+                self.record_finding(
+                    f"negation of {node.name} was attempted and did NOT succeed",
+                    "Treat this obligation as true and decompose it; do not repropose "
+                    "that it is false. " + str(outcome.get("notes", "")),
+                )
                 rec["report"] = {
                     **dict(rec.get("report") or {}),
                     "negations_attempted": int(

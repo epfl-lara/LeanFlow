@@ -12,6 +12,7 @@ from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
 from core.utils import atomic_json_write
+from leanflow_cli.workflows.prover import plan_journal
 from leanflow_cli.workflows.prover.models import Dag
 from leanflow_cli.workflows.prover.source import SourceDocument
 
@@ -79,7 +80,13 @@ class RunStore:
             if dag_snapshot != self._dag_snapshot:
                 atomic_json_write(self.directory / "DAG.json", dag_snapshot)
                 self._dag_snapshot = dag_snapshot
+            # PLAN.md shows the plan and the journal together. They are stored
+            # apart because an accepted proposal replaces plan_markdown wholesale
+            # and must not take the journal with it.
             plan = str(state.get("plan_markdown", ""))
+            journal = plan_journal.render(state.get("plan_journal", []))
+            if journal:
+                plan = plan.rstrip("\n") + "\n\n" + journal
             if plan != self._plan_snapshot:
                 plan_path = self.directory / "PLAN.md"
                 pending = plan_path.with_suffix(".tmp")

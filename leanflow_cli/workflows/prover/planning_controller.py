@@ -127,6 +127,7 @@ def research_plan(
         except ValueError as error:
             critique = str(error)
             runtime.state.update(proposal_status="rejected", proposal_critique=critique)
+            runtime.record_finding("rejected plan draft", critique)
             runtime.store.event("plan_rejected", {"reason": critique})
             runtime._persist()
             continue
@@ -157,6 +158,7 @@ def research_plan(
         if review.get("accepted") is not True:
             critique = str(review.get("critique", "review did not accept the graph"))
             runtime.state.update(proposal_status="rejected", proposal_critique=critique)
+            runtime.record_finding("reviewer rejected the graph", critique)
             runtime.store.event("plan_rejected", {"reason": critique})
             runtime._persist()
             continue
@@ -189,6 +191,7 @@ def research_plan(
                 phase="proving", proposal_status="rejected", proposal_critique=critique
             )
             runtime.state.pop("planning_request", None)
+            runtime.record_finding("plan refinement budget exhausted", critique)
             runtime.store.event("plan_refinement_budget_exhausted", {"reason": reason})
             runtime._persist()
             return False
@@ -210,6 +213,7 @@ def research_plan(
             if isinstance(error, SourceConflictError):
                 raise InfrastructureFailure(str(error), status="source_conflict") from error
             critique = f"Independent skeleton gate rejected proposal: {error}"
+            runtime.record_finding("skeleton gate rejected proposal", str(error))
             failed = next(
                 (
                     op
@@ -240,6 +244,7 @@ def research_plan(
         runtime.state.pop("planning_request", None)
         runtime._persist()
         return True
+    runtime.record_finding("planning review did not converge", critique)
     runtime.state["plan_markdown"] += f"\n\nPlanning review did not converge: {critique}\n"
     _finalize_plan_checkpoint(runtime, checkpoint, False)
     runtime.state.pop("planning_request", None)
