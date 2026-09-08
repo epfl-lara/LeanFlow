@@ -873,3 +873,20 @@ def test_reasoning_effort_round_trips_through_the_environment() -> None:
     )
     assert config.to_mapping("prover")["reasoning_effort"] == "low"
     assert config.to_mapping("research")["reasoning_effort"] == "xhigh"
+
+
+def test_per_node_recovery_budget_defaults_to_the_historical_single_attempt() -> None:
+    """max_decompositions could never bind for one node; this makes that explicit.
+
+    _recover returns early once a node reaches its per-node cap, so with the
+    historical hardcoded 1 the campaign-wide max_decompositions (32) and
+    max_nodes (128) were unreachable for any single node.
+    """
+    assert ProverConfig(model="m").max_node_decompositions == 1
+    assert ProverConfig(model="m", max_node_decompositions=3).max_node_decompositions == 3
+    with pytest.raises(ValueError, match="must be non-negative"):
+        ProverConfig(model="m", max_node_decompositions=-1)
+    config = ProverConfig.from_env(
+        {"LEANFLOW_PROVER_MODEL": "m", "LEANFLOW_PROVER_MAX_NODE_DECOMPOSITIONS": "4"}
+    )
+    assert config.to_mapping("prover")["max_node_decompositions"] == 4

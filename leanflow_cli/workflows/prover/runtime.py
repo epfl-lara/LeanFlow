@@ -827,9 +827,19 @@ class ProverRuntime:
         resuming_negation = node.id in self.resume_negation_jobs
         if not resuming_negation:
             if (
-                node.decompositions >= 1
+                node.decompositions >= self.config.max_node_decompositions
                 or self.state["metrics"]["decompositions"] >= self.config.max_decompositions
             ):
+                # A node that exhausts its recoveries stays blocked with no
+                # further negation or replanning, so say so rather than
+                # returning silently into an unexplained dead end.
+                node.notes += (
+                    "\nRecovery budget exhausted for this node "
+                    f"({node.decompositions}/{self.config.max_node_decompositions} node, "
+                    f"{self.state['metrics']['decompositions']}/"
+                    f"{self.config.max_decompositions} campaign); it stays blocked."
+                )
+                self._persist()
                 return
             node.decompositions += 1
             self.state["metrics"]["decompositions"] += 1

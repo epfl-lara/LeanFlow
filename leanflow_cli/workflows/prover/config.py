@@ -25,6 +25,7 @@ ENV_NAMES = {
     "orchestrator_api_calls": "LEANFLOW_PROVER_ORCHESTRATOR_API_CALLS",
     "max_nodes": "LEANFLOW_PROVER_MAX_NODES",
     "max_decompositions": "LEANFLOW_PROVER_MAX_DECOMPOSITIONS",
+    "max_node_decompositions": "LEANFLOW_PROVER_MAX_NODE_DECOMPOSITIONS",
     "wall_time_s": "LEANFLOW_PROVER_WALL_TIME_S",
     "timeout_s": "LEANFLOW_PROVER_TIMEOUT_S",
     "model": "LEANFLOW_PROVER_MODEL",
@@ -55,6 +56,10 @@ class ProverConfig:
     orchestrator_api_calls: int = 40
     max_nodes: int = 128
     max_decompositions: int = 32
+    #: Recoveries (negation + replan) allowed per node over its whole life.
+    #: 1 reproduces the historical behaviour, in which max_decompositions and
+    #: max_nodes could never bind for a single node because this bound first.
+    max_node_decompositions: int = 1
     wall_time_s: int = 14400
     timeout_s: int = 180
     model: str = ""
@@ -87,7 +92,12 @@ class ProverConfig:
         ):
             if getattr(self, key) < 1:
                 raise ValueError(f"{key} must be positive")
-        for key in ("max_restarts", "plan_refinements", "max_decompositions"):
+        for key in (
+            "max_restarts",
+            "plan_refinements",
+            "max_decompositions",
+            "max_node_decompositions",
+        ):
             if getattr(self, key) < 0:
                 raise ValueError(f"{key} must be non-negative")
         for key in ("reasoning_effort", "orchestrator_reasoning_effort"):
