@@ -56,17 +56,22 @@ def main (args : List String) : IO Unit := do
     | throw <| IO.userError "compiled profile module missing"
   let requested := (args.drop 2).takeWhile (· != "--")
   let mutableNames := ((args.drop 2).dropWhile (· != "--")).drop 1
+  -- Report through the writable workspace. stdout is captured with a bounded
+  -- rolling tail, and a single kernel type can exceed it by an order of
+  -- magnitude, which would silently deliver the tail of one JSON object.
+  let profile ← IO.FS.Handle.mk (System.FilePath.mk path / "profile.jsonl") IO.FS.Mode.write
   -- Enumerate this module, not a list copy of the full Mathlib environment.
   for name in env.header.moduleData[idx.toNat]!.constNames do
     let some info := env.find? name | continue
     if env.getModuleIdxFor? name == some idx && selectedName requested name then
       let (axioms, _) ← (collectAxioms name : StateT Environment IO (Array Name)).run env
-      IO.println <| Json.compress <| Json.mkObj [
+      profile.putStrLn <| Json.compress <| Json.mkObj [
         ("name", toJson name.toString),
         ("type", toJson (repr info.type).pretty),
         ("levels", toJson (info.levelParams.map Name.toString)),
         ("dependencies", Json.arr (localTypeDependencies env idx mutableNames info.type)),
         ("axioms", toJson (axioms.map Name.toString))]
+  profile.flush
 """
 
 
@@ -225,11 +230,21 @@ def compiled_type_profiles(
                 "timing": timing,
             }
         try:
-            rows = [
-                json.loads(line)
-                for line in inspected.get("stdout", "").splitlines()
-                if line.strip()
-            ]
+            report = directory / "profile.jsonl"
+            if report.is_file():
+                payload = report.read_text(encoding="utf-8")
+            else:
+                # Older inspectors printed to stdout. That capture keeps only a
+                # bounded tail, so a payload at the cap is very likely the tail
+                # of a longer stream; parsing it would mis-report a complete
+                # kernel profile from a fragment.
+                payload = inspected.get("stdout", "")
+                if inspected.get("stdout_truncated"):
+                    raise ValueError(
+                        "kernel inspection output exceeded the capture limit; "
+                        "the inspector did not write profile.jsonl"
+                    )
+            rows = [json.loads(line) for line in payload.splitlines() if line.strip()]
             profiles: dict[str, dict[str, Any]] = {}
             for name in names:
                 matches = [

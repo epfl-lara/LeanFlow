@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -459,3 +460,52 @@ def test_non_merged_usr_layout_adds_no_symlinks(tmp_path):
     for name in ("bin", "lib", "lib64", "usr"):
         (tmp_path / name).mkdir()
     assert _merged_usr_links(tmp_path) == []
+
+
+def test_bounded_capture_reports_when_it_drops_output(monkeypatch):
+    """A caller cannot distinguish a whole stream from the tail of a longer one.
+
+    The tails are bounded and drop the HEAD, and the process still exits 0, so
+    without this flag a truncated capture looks like a complete success. That is
+    how a 50MB single-line kernel profile arrived as its last 4MB and was parsed
+    as if it were a whole JSON record.
+    """
+    from leanflow_cli.workflows.prover import check_process
+
+    monkeypatch.setattr(check_process, "_MAX_MESSAGE", 1024)
+
+    big = subprocess.Popen(
+        [sys.executable, "-c", "print('x' * 20000)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    stdout, _stderr, truncated = check_process._capture_command(big, 30)
+    assert len(stdout) == 1024
+    assert truncated["stdout"] is True
+
+    small = subprocess.Popen(
+        [sys.executable, "-c", "print('ok')"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    stdout, _stderr, truncated = check_process._capture_command(small, 30)
+    assert stdout.strip() == b"ok"
+    assert truncated["stdout"] is False
+
+
+def test_inspector_writes_its_profile_to_the_workspace_not_stdout():
+    """The kernel profile must not ride a bounded pipe.
+
+    One `repr`-printed kernel type can exceed the capture cap by an order of
+    magnitude (measured: 47.9MiB for a single Euclidean geometry statement),
+    and it is emitted as ONE line, so a bounded tail can never contain a line
+    start.
+    """
+    from leanflow_cli.workflows.prover import type_profile
+
+    source = type_profile._INSPECTOR
+    assert "profile.jsonl" in source
+    assert "profile.putStrLn" in source
+    assert "profile.flush" in source
+    # The profile record itself must no longer go to stdout.
+    assert "IO.println <| Json.compress" not in source

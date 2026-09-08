@@ -345,7 +345,7 @@ def isolated_command(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        stdout, stderr = _capture_command(process, max(0.01, timeout_s))
+        stdout, stderr, truncated = _capture_command(process, max(0.01, timeout_s))
         diagnostic = stderr.decode("utf-8", errors="replace")
         if process.returncode and diagnostic.lstrip().startswith(("bwrap:", "sandbox-exec:")):
             return {
@@ -359,6 +359,8 @@ def isolated_command(
             "returncode": process.returncode,
             "stdout": stdout[-_MAX_MESSAGE:].decode("utf-8", errors="replace"),
             "stderr": stderr[-_MAX_ERROR:].decode("utf-8", errors="replace"),
+            "stdout_truncated": truncated["stdout"],
+            "stderr_truncated": truncated["stderr"],
             "timed_out": False,
         }
     except subprocess.TimeoutExpired:
@@ -398,11 +400,20 @@ def isolated_command(
             shutil.rmtree(private, ignore_errors=True)
 
 
-def _capture_command(process: subprocess.Popen[bytes], timeout_s: float) -> tuple[bytes, bytes]:
-    """Drain both output streams into bounded tails until exit or a hard deadline."""
+def _capture_command(
+    process: subprocess.Popen[bytes], timeout_s: float
+) -> tuple[bytes, bytes, dict[str, bool]]:
+    """Drain both output streams into bounded tails until exit or a hard deadline.
+
+    The tails are bounded, so a chatty command loses the HEAD of its output.
+    Report which streams that happened to: a caller parsing the result cannot
+    otherwise tell a complete stream from the tail of a much longer one, and a
+    process that exits 0 looks entirely successful either way.
+    """
     assert process.stdout is not None and process.stderr is not None
     deadline = time.monotonic() + timeout_s
     tails: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+    truncated: dict[str, bool] = {"stdout": False, "stderr": False}
     with selectors.DefaultSelector() as selector:
         for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
             os.set_blocking(stream.fileno(), False)
@@ -419,10 +430,12 @@ def _capture_command(process: subprocess.Popen[bytes], timeout_s: float) -> tupl
                 tail = tails[key.data]
                 tail.extend(chunk)
                 limit = _MAX_MESSAGE if key.data == "stdout" else _MAX_ERROR
-                del tail[:-limit]
+                if len(tail) > limit:
+                    truncated[key.data] = True
+                    del tail[:-limit]
     remaining = deadline - time.monotonic()
     process.wait(timeout=max(0.001, remaining))
-    return bytes(tails["stdout"]), bytes(tails["stderr"])
+    return bytes(tails["stdout"]), bytes(tails["stderr"]), truncated
 
 
 def _close_all() -> None:
