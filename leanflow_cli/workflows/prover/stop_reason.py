@@ -62,12 +62,13 @@ def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] 
             runtime.config.total_api_calls,
         )
     elif status in {"budget_exhausted", "blocked"}:
-        # A local allocation, retry cap, or failed decomposition can stop all
-        # paths with calls still available. Preserve that distinction in the UI.
+        # Every unproved obligation is blocked -- its recovery budget is spent or
+        # the orchestrator's replan was declined -- while the total call budget
+        # may still have room. Preserve that distinction in the UI.
         code, scope, message, used, limit = (
             "no_runnable_obligations",
             "scheduler",
-            "No runnable obligation remains under the current plan and per-node retry/decomposition limits; the total call budget is not exhausted.",
+            "No runnable obligation remains: every unproved node is blocked (recovery budget spent or replanning declined) while the total call budget is not exhausted.",
             None,
             None,
         )

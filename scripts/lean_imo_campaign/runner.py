@@ -231,6 +231,26 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
     with (directory / "runner.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         campaign = json.loads((directory / "campaign.json").read_text())
+        # Lanes are a claim, not a preference: once a problem is claimed by lane
+        # k every cell of it keeps lane=k for the campaign's life. The dispatch
+        # loop only iterates `lanes()`, so narrowing LEANFLOW_CAMPAIGN_LANES
+        # below a lane that already owns pending cells would strand them --
+        # the campaign would sit in "waiting" forever, never dispatching them.
+        # Widening is always safe; refuse to narrow below the highest claim.
+        dispatch_lanes = set(lanes())
+        stranded = sorted(
+            {
+                c["lane"]
+                for c in campaign["cells"]
+                if c.get("lane") is not None and c["lane"] not in dispatch_lanes
+            }
+        )
+        if stranded:
+            raise ValueError(
+                f"LEANFLOW_CAMPAIGN_LANES={len(dispatch_lanes)} would strand cells already "
+                f"claimed by lane(s) {stranded}; lanes may be widened but never narrowed "
+                f"below the highest lane a cell has claimed."
+            )
         # A crashed dispatcher must not spawn replacements while its children may survive.
         if not adopt_active and any(
             c["status"] in {"running", "preparing"} for c in campaign["cells"]

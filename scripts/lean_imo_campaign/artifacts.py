@@ -53,8 +53,21 @@ def clone(source: Path, destination: Path) -> None:
         if result.returncode == 0:
             return
         failures.append(f"{' '.join(argv)}: {result.stderr.strip() or result.returncode}")
-        # A partial tree would be mistaken for frozen evidence.
-        shutil.rmtree(destination, ignore_errors=True)
+        # A partial tree would be mistaken for frozen evidence, and a dirty
+        # destination would make the next `cp -R` copy INTO it rather than
+        # produce an independent copy. Remove it; if cleanup itself fails, stop
+        # loudly rather than retry against a dirty path or leave a partial behind.
+        if destination.is_symlink() or destination.exists():
+            try:
+                if destination.is_dir() and not destination.is_symlink():
+                    shutil.rmtree(destination)
+                else:
+                    destination.unlink()
+            except OSError as exc:
+                failures.append(f"cleanup of partial {destination} failed: {exc}")
+                raise ValueError(
+                    f"Could not clone {source} to {destination}: {'; '.join(failures)}"
+                ) from exc
     raise ValueError(f"Could not clone {source} to {destination}: {'; '.join(failures)}")
 
 

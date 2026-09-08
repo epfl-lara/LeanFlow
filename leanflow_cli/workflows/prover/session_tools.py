@@ -40,6 +40,66 @@ TEXT = {"type": "string"}
 INTEGER = {"type": "integer"}
 
 
+def _utf8_window(data: bytes, limit_chars: int) -> tuple[str, int]:
+    """Decode at most ``limit_chars`` characters and report SOURCE bytes consumed.
+
+    ``next_offset`` must advance by the number of source bytes the returned text
+    covers, never by the byte length of re-encoded U+FFFD replacements -- a
+    malformed byte decodes to a 3-byte replacement char, so re-encoding would
+    skip unread input on the next page.
+
+    Validity is decided by Python's own decoder, not by hand: overlong forms,
+    surrogates and code points above U+10FFFF are continuation-shaped yet decode
+    to SEVERAL replacement characters, so a hand-rolled sequence walk would both
+    overshoot ``limit_chars`` and miscount bytes. When the wanted prefix is
+    wholly valid, each character re-encodes to exactly its source bytes; only
+    when a replacement is present do we count consumed bytes incrementally,
+    following the decoder's exact segmentation.
+    """
+    if "�" not in data.decode("utf-8", errors="replace")[:limit_chars]:
+        # Wholly valid prefix: each character re-encodes to exactly its source
+        # bytes, so the byte length is exact and cheap.
+        content = data.decode("utf-8", errors="replace")[:limit_chars]
+        return content, len(content.encode("utf-8"))
+    # A replacement is present. Re-encoding U+FFFD does not recover its source
+    # bytes, so walk the source and derive the returned text from the SAME bytes
+    # we report as consumed (``data[:index]``). A VALID sequence is advanced as a
+    # unit (confirmed by a strict decode, which rejects overlong forms,
+    # surrogates and code points above U+10FFFF); anything else advances one
+    # byte. Because valid characters are only ever cut on their own boundaries,
+    # paging never splits, drops or duplicates a valid character -- only runs of
+    # malformed bytes may show an extra replacement at a page seam, which is
+    # harmless for a preview.
+    index = 0
+    chars = 0
+    length = len(data)
+    while index < length and chars < limit_chars:
+        lead = data[index]
+        if 0xC2 <= lead <= 0xDF:
+            size = 2
+        elif 0xE0 <= lead <= 0xEF:
+            size = 3
+        elif 0xF0 <= lead <= 0xF4:
+            size = 4
+        else:
+            size = 1  # ASCII, a stray continuation byte, or an invalid lead
+        if size > 1:
+            chunk = data[index : index + size]
+            try:
+                chunk.decode("utf-8")
+            except UnicodeDecodeError as error:
+                # A multibyte sequence truncated at the data end that is otherwise
+                # a valid prefix is Python's final maximal subpart -- consume the
+                # rest as one character; any other failure is a single bad byte.
+                if len(chunk) < size and "end of data" in error.reason:
+                    index = length
+                    break
+                size = 1
+        index += size
+        chars += 1
+    return data[:index].decode("utf-8", errors="replace"), index
+
+
 class SessionTools:
     """Own one job's read boundary, scratch writes and bounded tool history."""
 
@@ -269,11 +329,18 @@ class SessionTools:
                 max(0, int(args.get("offset", 0))),
                 min(16000, max(1, int(args.get("limit", 8000)))),
             )
-            with path.open(encoding="utf-8") as handle:
+            # offset is a UTF-8 BYTE position, limit a CHARACTER count. Read a
+            # bounded byte window (UTF-8 is <=4 bytes/char, so limit*4 always
+            # covers `limit` whole chars) and decode with replacement so a
+            # latin-1 .tex/.bib or otherwise non-UTF-8 document -- now reachable
+            # through search_project -- previews instead of failing to read at
+            # all. next_offset advances by SOURCE bytes consumed, not re-encoded
+            # replacement bytes, so paging never skips input.
+            with path.open("rb") as handle:
                 handle.seek(offset)
-                content = handle.read(limit)
-                next_offset = handle.tell()
-            return {"success": True, "content": content, "next_offset": next_offset}
+                window = handle.read(limit * 4 + 8)
+            content, consumed = _utf8_window(window, limit)
+            return {"success": True, "content": content, "next_offset": offset + consumed}
         if name in {"write_file", "replace_text"}:
             path = self._path(str(args["path"]), write=True)
             previous = path.read_text(encoding="utf-8") if path.is_file() else None
@@ -303,7 +370,15 @@ class SessionTools:
             from leanflow_cli.workflows.prover.session_search import PROJECT_GLOBS, search_sources
 
             path = self._path(str(args.get("path") or self.project_root))
-            return search_sources(str(args["query"]), path, self._path, globs=PROJECT_GLOBS)
+            # Project docs (extracted papers, blueprints) can exceed the lemma
+            # search's 1M cap; reach them (output stays bounded and time-limited).
+            return search_sources(
+                str(args["query"]),
+                path,
+                self._path,
+                globs=PROJECT_GLOBS,
+                max_filesize="32M",
+            )
         if name == "lean_check":
             from leanflow_cli.workflows.prover.check_process import check_scratch
 

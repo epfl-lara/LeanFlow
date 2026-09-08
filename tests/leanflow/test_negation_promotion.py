@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import pathlib
 import re
 from dataclasses import replace
 
@@ -3115,22 +3114,13 @@ def test_negation_scratch_drops_the_replaced_declarations_docstring(tmp_path, mo
     reason and is misread as an inconclusive refutation -- after burning a full
     prover budget.
     """
-    from leanflow_cli.workflows.prover import negation
+    from leanflow_cli.workflows.prover.negation import _strip_dangling_declaration_docs as strip
 
-    def strip(prefix: str) -> str:
-        stripped = prefix.rstrip()
-        if stripped.endswith("-/"):
-            opener = stripped.rfind("/--")
-            if opener != -1 and "-/" not in stripped[opener + 3 : -2]:
-                return prefix[:opener]
-        return prefix
-
-    # The behaviour under test, as applied in build_source_negation.
-    source = pathlib.Path(negation.__file__).read_text(encoding="utf-8")
-    assert 'stripped.endswith("-/")' in source
-    assert 'stripped.rfind("/--")' in source
-
+    # The dangling doc comment for the replaced declaration is dropped...
     assert strip("import Mathlib\n\n/--\nThe main statement\n-/\n") == "import Mathlib\n\n"
+    # ...even when its body contains a nested block comment (the old rfind-based
+    # heuristic refused to strip this and left the file unparseable).
+    assert strip("import Mathlib\n\n/-- see `/- x -/` above -/\n") == "import Mathlib\n\n"
     # A module docstring is not attached to a declaration and must survive.
     keep = "import Mathlib\n\n/-!\n# Module\n-/\n"
     assert strip(keep) == keep

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -9,7 +10,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -318,7 +319,36 @@ class ProverRuntime:
             retained_nodes.add(job["node_id"])
             result_path = Path(job.get("result_path", ""))
             if job.get("accounted") and not job.get("result_processed") and result_path.is_file():
-                self._retain_candidate(job, json.loads(result_path.read_text()))
+                result = json.loads(result_path.read_text())
+                self._retain_candidate(job, result)
+                node = self.dag.by_id().get(job["node_id"])
+                if (
+                    self.config.mode == "research"
+                    and node is not None
+                    and node.status in {"blocked", "retry"}
+                    and not node.candidate
+                    and node.id not in self.resume_jobs
+                    and node.id not in self.state.get("recovery_in_flight", {})
+                ):
+                    # A prover attempt that FINISHED without a usable candidate but
+                    # whose result _handle_result never processed -- a crash
+                    # between _finish_job and opening recovery. In research mode
+                    # EVERY such failure is the orchestrator's to recover (there is
+                    # no free legacy retry), whatever the restart allowance: the
+                    # status rule above would either mark an over-restart node
+                    # "blocked" with no journal (the drain skips it forever) or set
+                    # a within-allowance node "retry" (a fresh prover allocation
+                    # with no orchestrator decision or recovery charge). Since its
+                    # prover is finished (not in resume_jobs), open recovery now.
+                    self._enqueue_recovery(
+                        node,
+                        {
+                            "status": str(result.get("status", "")),
+                            "progress": False,
+                            "attempts": node.attempts,
+                            "notes": node.notes,
+                        },
+                    )
         from leanflow_cli.workflows.prover.resume_candidates import recover_environment_candidates
 
         recover_environment_candidates(self)
@@ -813,79 +843,293 @@ class ProverRuntime:
             and partial != ["sorry"] * len(node.holes)
             and (previous is None or partial != partial_work(previous))
         )
-        if progress and node.attempts <= self.config.max_restarts:
-            node.status = "retry"
+        # This prover job's result is now consumed (into a retry/blocked/recovery
+        # decision), so mark it processed in the SAME persist as the state that
+        # decision produces. Otherwise a crash before the caller sets the flag
+        # would let _restore resurrect this job's (already-rejected) candidate and
+        # clobber the authorized outcome -- e.g. overwrite a persisted "retry".
+        job["result_processed"] = True
+        if self.config.mode != "research":
+            # Standard mode has no orchestrator to consult, so it keeps the
+            # bounded, progress-gated automatic retry.
+            node.status = (
+                "retry" if progress and node.attempts <= self.config.max_restarts else "blocked"
+            )
             self._persist()
             return
-        node.status = "blocked"
-        self._persist()
-        if self.config.mode == "research" and not self.stopping:
-            self._recover(node)
-
-    def _recover(self, node: Node) -> None:
-        """Diagnose a blocked statement, then refine direction or split its affected branch."""
-        resuming_negation = node.id in self.resume_negation_jobs
-        if not resuming_negation:
-            # One campaign-wide recovery budget, deliberately with no per-node
-            # cap. A node that genuinely needs several replans should be able to
-            # take them; the other nodes are usually easier and will not spend
-            # their share. Runaway recovery on a single node is already bounded
-            # by this budget and by the run's total API allocation.
-            if self.state["metrics"]["decompositions"] >= self.config.max_decompositions:
-                # Once it is spent a blocked node gets no further negation or
-                # replanning, so record that rather than returning silently
-                # into an unexplained dead end.
-                node.notes += (
-                    "\nCampaign recovery budget exhausted "
-                    f"({self.state['metrics']['decompositions']}/"
-                    f"{self.config.max_decompositions}); this node stays blocked."
-                )
-                self._persist()
-                return
-            node.decompositions += 1
-            self.state["metrics"]["decompositions"] += 1
-        from leanflow_cli.workflows.prover.negation_job import attempt_negation
-
-        report = attempt_negation(self, node)
-        affected = self.dag.affected(node.id)
-        if report.get("certified"):
-            node.status = "false"
-            node.notes += "\nExact negation independently verified: " + str(report["evidence_path"])
-            if node.original:
-                self.state["disproof"] = {"node_id": node.id, **report}
-                self.stopping = True
-                self.cancelled.set()
-                self._persist()
-                return
-            for related in self.dag.nodes:
-                if related.id in affected and related.id != node.id and related.status != "proved":
-                    related.status = "pending"
-                    related.revision += 1
-                    related.conditional_dependencies = []
-                    related.notes += "\nA planned prerequisite was refuted; retained candidate requires replanning."
-        reason = f"Repair only the branch for {node.name}. Prover report: {node.notes}\nNegation investigation: {report}"
-        refined = self._research_plan(
-            reason, affected=affected, refinement=report.get("certified") is True
-        )
-        if refined:
-            current = self.dag.by_id().get(node.id)
-            if (
-                current is not None
-                and current.status == "blocked"
-                and (
-                    current.dependencies != node.dependencies
-                    or current.attempts <= self.config.max_restarts
-                )
-            ):
-                # An accepted local proof repair can keep the exact DAG interface.
-                # Reopen that obligation without resetting its spent attempts.
-                current.status = "retry"
+        if not self.stopping:
+            # _recover / _enqueue_recovery sets the node blocked and opens its
+            # recovery journal in ONE persist, so a crash between "blocked" and
+            # the journal entry cannot strand the node. result_processed was set
+            # just above, so the enqueue's persist commits it atomically.
+            self._recover(
+                node,
+                {
+                    "job_id": job["id"],
+                    "status": str(result.get("status", "")),
+                    "api_calls": job.get("api_calls"),
+                    "progress": progress,
+                    "partial_work": bool(partial),
+                    "attempts": node.attempts,
+                    "notes": node.notes,
+                },
+            )
+        else:
+            node.status = "blocked"
             self._persist()
+
+    def _enqueue_recovery(self, node: Node, report: Mapping[str, Any]) -> None:
+        """Open a durable recovery journal for a blocked node, atomically.
+
+        recovery_in_flight[node_id] is a persisted state machine:
+        {stage, report, charged, decision, reason, affected, refinement,
+         plan_started, screen}. Setting the node blocked and opening the journal
+        happen in one persist, so a crash between them cannot strand the node.
+        """
+        in_flight = self.state.setdefault("recovery_in_flight", {})
+        if node.id not in in_flight:
+            node.status = "blocked"
+            # The prover attempts that led here are now consumed into recovery.
+            # Mark every current-revision prover job for this node processed, in
+            # the SAME persist that opens the journal, so a later _restore cannot
+            # resurrect their already-rejected candidates (via _retain_candidate)
+            # and overwrite the recovery outcome -- e.g. clobber a chosen "retry".
+            # This covers the promotion-rejection path, where the candidate came
+            # from a retained job that _handle_result never processed.
+            for prior in self.state.get("jobs", []):
+                if (
+                    prior.get("role") == "prover"
+                    and prior.get("node_id") == node.id
+                    and prior.get("node_revision") == node.revision
+                ):
+                    prior["result_processed"] = True
+            in_flight[node.id] = {
+                "stage": "decide",
+                "report": dict(report),
+                "charged": False,
+                "decision": None,
+                "reason": None,
+                "affected": None,
+                "refinement": False,
+                "plan_started": False,
+                "screen": None,
+            }
+            self._persist()
+
+    def _dismiss_recovery(self, node_id: str) -> None:
+        in_flight = self.state.get("recovery_in_flight", {})
+        removed = node_id in in_flight
+        if removed:
+            del in_flight[node_id]
+        self.state.get("negation_proofs", {}).pop(node_id, None)
+        if removed:
+            self._persist()
+
+    def _recover(self, node: Node, report: Mapping[str, Any] | None = None) -> None:
+        """Recover a blocked node as an explicit, resumable state machine.
+
+        Stages, each advanced by ONE atomic persist that carries all of that
+        stage's side effects, so any crash resumes cleanly from ``rec["stage"]``:
+
+        - decide: charge one campaign recovery unit (once), then ask the
+          orchestrator to retry / negate / decompose. The charge is persisted
+          before the model turn (resume re-asks without recharging); the chosen
+          action and its history entry are persisted together as the stage
+          advances.
+        - negate: an empirical Plausible screen (cached in the journal) then a
+          bounded proof of the exact negation (its model job resumes by node id,
+          its proof cached across verification). A certified negation marks the
+          node false and moves to a refinement plan; an unrefuted one returns to
+          decide (recharging).
+        - plan: decompose or post-refutation refinement via research_plan, which
+          is itself idempotent on resume through its accepted_proposal
+          checkpoint; the stage records plan_started so a crash after the plan
+          committed but before dismissal does not replan.
+
+        There is no per-node cap; the campaign-wide max_decompositions bounds the
+        whole loop.
+        """
+        from leanflow_cli.workflows.prover import negation_job, recovery
+
+        self._enqueue_recovery(node, report or {})
+        while not self.stopping and not self.cancelled.is_set():
+            rec = self.state.setdefault("recovery_in_flight", {}).get(node.id)
+            if rec is None:
+                return
+            stage = rec.get("stage", "decide")
+
+            if stage == "done":
+                self._dismiss_recovery(node.id)
+                return
+
+            if stage == "decide":
+                if not rec["charged"]:
+                    used = int(self.state["metrics"]["decompositions"])
+                    if used >= self.config.max_decompositions:
+                        node.notes += (
+                            f"\nCampaign recovery budget exhausted "
+                            f"({used}/{self.config.max_decompositions}); this node stays blocked."
+                        )
+                        self._dismiss_recovery(node.id)
+                        return
+                    self.state["metrics"]["decompositions"] = used + 1
+                    node.decompositions += 1
+                    rec["charged"] = True
+                    self._persist()
+                decision = recovery.recovery_decision(self, node, dict(rec.get("report") or {}))
+                record = {
+                    "node_id": node.id,
+                    "action": decision["action"],
+                    "rationale": str(decision.get("rationale", "")),
+                    "fallback": bool(decision.get("fallback")),
+                    "budget_used": int(self.state["metrics"]["decompositions"]),
+                }
+                self.state.setdefault("recovery_decisions", []).append(record)
+                node.notes += f"\nRecovery decision: {record['action']} -- {record['rationale']}"[
+                    :2000
+                ]
+                rec["decision"] = decision
+                # The turn is now durably recorded; drop the replay cache so a
+                # later re-decide (after an unrefuted negation) asks afresh.
+                rec.pop("decision_result", None)
+                if decision["action"] == "retry":
+                    node.status = "retry"
+                    rec["stage"] = "done"
+                elif decision["action"] == "negate":
+                    rec["stage"] = "negate"
+                else:
+                    rec["stage"] = "plan"
+                    rec["refinement"] = False
+                    rec["affected"] = sorted(self.dag.affected(node.id))
+                    rec["reason"] = (
+                        f"Repair only the branch for {node.name}. Prover report: "
+                        f"{str(rec.get('report', {}).get('notes', node.notes))[-3000:]}\n"
+                        f"Recovery decision: decompose -- {decision.get('rationale', '')}"
+                    )
+                self._persist()
+                with contextlib.suppress(Exception):
+                    self.store.event("recovery_decision", record)
+                continue
+
+            if stage == "negate":
+                screen = rec.get("screen")
+                if screen is None and node.id not in self.resume_negation_jobs:
+                    screen = recovery.empirical_screen(self, node)
+                    rec["screen"] = screen
+                    self._persist()
+                outcome = negation_job.attempt_negation(self, node, screen=screen)
+                affected = self.dag.affected(node.id)
+                if outcome.get("certified"):
+                    node.status = "false"
+                    node.notes += "\nExact negation independently verified: " + str(
+                        outcome["evidence_path"]
+                    )
+                    if node.original:
+                        self.state["disproof"] = {"node_id": node.id, **outcome}
+                        self.stopping = True
+                        self.cancelled.set()
+                        self._dismiss_recovery(node.id)
+                        return
+                    for related in self.dag.nodes:
+                        if (
+                            related.id in affected
+                            and related.id != node.id
+                            and related.status != "proved"
+                        ):
+                            related.status = "pending"
+                            related.revision += 1
+                            related.conditional_dependencies = []
+                            related.notes += "\nA planned prerequisite was refuted; retained candidate requires replanning."
+                    rec["reason"] = (
+                        f"Repair only the branch for {node.name}. Prover report: {node.notes}\n"
+                        f"Negation investigation: {outcome}"
+                    )
+                    rec["affected"] = sorted(affected)
+                    rec["refinement"] = True
+                    rec["plan_started"] = False
+                    rec["stage"] = "plan"
+                    self.state.get("negation_proofs", {}).pop(node.id, None)
+                    self._persist()
+                    continue
+                # Unrefuted: hand back to the orchestrator, which recharges.
+                rec["report"] = {
+                    **dict(rec.get("report") or {}),
+                    "negations_attempted": int(
+                        dict(rec.get("report") or {}).get("negations_attempted", 0)
+                    )
+                    + 1,
+                    "last_negation": {
+                        "screen": screen,
+                        "notes": str(outcome.get("notes", ""))[:2000],
+                    },
+                }
+                rec["charged"] = False
+                rec["decision"] = None
+                rec["screen"] = None
+                rec["stage"] = "decide"
+                self.state.get("negation_proofs", {}).pop(node.id, None)
+                self._persist()
+                continue
+
+            if stage == "plan":
+                refinement = bool(rec.get("refinement"))
+                affected = set(rec.get("affected") or self.dag.affected(node.id))
+                reason = rec.get("reason") or f"Repair only the branch for {node.name}."
+                if not rec.get("plan_started"):
+                    # Seed research_plan's checkpoint AND mark the plan begun in
+                    # ONE persist, before any planning work. From here the
+                    # checkpoint's presence alone is the signal: a crash before
+                    # research_plan runs still resumes into it (research_plan
+                    # reuses an existing planning_request), and a crash after it
+                    # pops the checkpoint resumes as "completed". Pre-seeding
+                    # closes the window where plan_started was persisted but the
+                    # checkpoint was not, which a bare `planning_request is None`
+                    # test misread as completion and skipped the plan entirely.
+                    rec["plan_started"] = True
+                    if self.state.get("planning_request") is None:
+                        self.state["planning_request"] = {
+                            "reason": reason,
+                            "affected": sorted(affected),
+                            "refinement": refinement,
+                            "previous_plan": self.state["plan_markdown"],
+                            "steps": {},
+                            # research_plan stamps this owner's applied outcome
+                            # into its journal atomically with popping the
+                            # checkpoint, so completion is read node-scoped below
+                            # rather than from the global proposal_status (which a
+                            # later node's plan can overwrite before this one is
+                            # drained).
+                            "owner": node.id,
+                        }
+                    self._persist()
+                if self.state.get("planning_request") is not None:
+                    applied = self._research_plan(reason, affected=affected, refinement=refinement)
+                else:
+                    # research_plan already committed (checkpoint popped) but we
+                    # crashed before dismissal: read the outcome it recorded into
+                    # THIS node's journal, not the shared proposal_status.
+                    applied = bool(rec.get("applied"))
+                if refinement:
+                    for related in self.dag.nodes:
+                        if related.id in affected and related.status == "blocked":
+                            related.status = "pending"
+                elif applied:
+                    current = self.dag.by_id().get(node.id)
+                    if current is not None and current.status == "blocked":
+                        current.status = "retry"
+                else:
+                    node.notes += "\nReplanning was rejected; this node stays blocked."
+                self._dismiss_recovery(node.id)
+                return
+
+            # Unknown stage: do not spin.
+            return
 
     def _promote_candidates(self) -> None:
         """Independently promote every newly closed dependency chain to a fixed point."""
         index = self.dag.by_id()
         changed = False
+        rejected: list[str] = []
         while True:
             promoted = False
             for node in self.dag.nodes:
@@ -905,6 +1149,26 @@ class ProverRuntime:
                     raise
                 if accepted:
                     promoted = True
+                elif self.config.mode == "research":
+                    # A deferred candidate that fails independent verification is a
+                    # node failure like any other: let the orchestrator decide,
+                    # not the legacy max_restarts branch. Defer the call until the
+                    # promotion loop finishes, since a decompose decision may add
+                    # DAG nodes and invalidate `index`. Persist each owed recovery
+                    # now, so an interruption during the first does not strand the
+                    # rest -- resume drains recovery_in_flight.
+                    node.status = "blocked"
+                    self._enqueue_recovery(
+                        node,
+                        {
+                            "status": "candidate_rejected",
+                            "progress": False,
+                            "attempts": node.attempts,
+                            "notes": node.notes,
+                        },
+                    )
+                    if node.id not in rejected:
+                        rejected.append(node.id)
                 else:
                     node.status = (
                         "retry" if node.attempts <= self.config.max_restarts else "blocked"
@@ -913,6 +1177,15 @@ class ProverRuntime:
                 break
         if changed:
             self._persist()
+        for node_id in rejected:
+            rejected_node = self.dag.by_id().get(node_id)
+            if (
+                rejected_node is not None
+                and rejected_node.status == "blocked"
+                and node_id in self.state.get("recovery_in_flight", {})
+                and not self.stopping
+            ):
+                self._recover(rejected_node)
 
     def _messages(self) -> None:
         for message in self.store.messages():
@@ -970,21 +1243,95 @@ class ProverRuntime:
                         str(signatures.get("error", signatures)), status="environment_error"
                     )
                 self._persist()
-            if self.config.mode == "research" and (
-                not resuming
-                or self.state.get("planning_request")
-                or self.state.get("resume_phase")
-                in {"inspect", "preflight", "planning", "reviewing"}
-            ):
-                self._research_plan(
-                    "Inspect available sources and design an honest informal proof outline and dependency graph."
-                )
             self.state["phase"] = "proving"
-            self.state.pop("resume_phase", None)
+            # Finish any planning checkpoint that PRE-DATES this resume BEFORE the
+            # recovery drain. planning_request is a single global slot: a
+            # checkpoint left by a node that was pruned or crashed mid-plan would
+            # otherwise be inherited by the next node whose plan stage runs
+            # (research_plan reuses whatever checkpoint is present), so that node
+            # would silently execute the orphan's plan instead of its own.
+            # Clearing it first means every drained node's plan stage starts from
+            # an empty slot and seeds its own checkpoint. Not gated on
+            # design_plan_complete: an interrupted-but-committed INITIAL design
+            # checkpoint (marker not yet set, phase already "proving") must also
+            # be finished here -- research_plan sets the design marker itself as
+            # it pops such a checkpoint.
+            if self.config.mode == "research" and self.state.get("planning_request"):
+                self._research_plan("Resume the pending planning checkpoint.")
+            # Resume interrupted recovery BEFORE the top-level design plan below.
+            # research_plan resumes from its persisted planning_request checkpoint
+            # (using the checkpointed reason), so a recovery-owned decompose must
+            # replay through _recover here and consume that checkpoint itself --
+            # otherwise the design plan would complete it, and the drain would then
+            # start a SECOND plan for the same charged decision.
+            # Snapshot before the loop: finishing a negation pops its node from
+            # resume_negation_jobs, so a later membership test would be stale.
+            negation_handled = set(self.resume_negation_jobs)
             for node_id in list(self.resume_negation_jobs):
                 node = self.dag.by_id().get(node_id)
                 if node is not None:
                     self._recover(node)
+            for node_id in list(self.state.get("recovery_in_flight", {})):
+                if node_id in negation_handled:
+                    continue  # the negation-resume loop above already re-entered it
+                node = self.dag.by_id().get(node_id)
+                if node is None:
+                    # The node was pruned (e.g. a refinement removed a refuted
+                    # helper). Its recovery is moot; any planning it committed is
+                    # resumed as an orphaned checkpoint just below.
+                    self._dismiss_recovery(node_id)
+                    continue
+                # The journal's stage drives the resume, whatever the node's
+                # current status (blocked mid-decide/negate, or false mid-refine).
+                self._recover(node)
+            # A planning checkpoint can outlive the node that started it (a
+            # refinement that pruned a refuted helper, or any recovery replan
+            # whose node is gone). The drain above consumes a live node's
+            # checkpoint; anything left here after the initial design is complete
+            # is orphaned committed planning/research and must still finish.
+            if (
+                self.config.mode == "research"
+                and self.state.get("design_plan_complete")
+                and self.state.get("planning_request")
+            ):
+                self._research_plan("Resume the pending recovery planning checkpoint.")
+            # The INITIAL design runs at most once. Gate it on a durable marker
+            # AND on not having provably passed design: a run is past design once
+            # it reaches proving/final_build/completed. Never key on the raw early
+            # phases, since a recovery decompose sets phase="planning" -- that is
+            # what the marker guards against (double design on a mid-recovery
+            # resume). A fresh run, or one interrupted at/ before design (incl. a
+            # preflight failure, whose phase is not post-design), still designs.
+            # research_plan resumes an in-progress design checkpoint if present.
+            if (
+                self.config.mode == "research"
+                and not self.state.get("design_plan_complete")
+                and (
+                    not resuming
+                    or self.state.get("resume_phase") not in {"proving", "final_build", "completed"}
+                )
+            ):
+                design_reason = (
+                    "Inspect available sources and design an honest informal proof "
+                    "outline and dependency graph."
+                )
+                # Tag the checkpoint as the design so research_plan sets
+                # design_plan_complete atomically with popping it -- a committed
+                # design that crashed before the marker was set would otherwise
+                # strand (see the ungated pre-drain finish above).
+                if self.state.get("planning_request") is None:
+                    self.state["planning_request"] = {
+                        "reason": design_reason,
+                        "affected": None,
+                        "refinement": False,
+                        "previous_plan": self.state["plan_markdown"],
+                        "steps": {},
+                        "design": True,
+                    }
+                self._research_plan(design_reason)
+                self.state["design_plan_complete"] = True
+            self.state.pop("resume_phase", None)
+            self._persist()
             workers = 1 if self.config.mode == "standard" else self.config.parallelism
             with ThreadPoolExecutor(
                 max_workers=workers, thread_name_prefix="leanflow-prover"

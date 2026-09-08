@@ -86,3 +86,40 @@ def test_project_search_also_reaches_the_projects_documentation(tmp_path: Path) 
     assert found == ["Lemmas.lean", "NOTES_deque.md", "blueprint.tex", "paper.txt", "refs.bib"]
     # Binaries stay out even when their bytes happen to contain the query.
     assert "paper.pdf" not in found
+
+
+def test_explicit_out_of_glob_file_path_returns_no_matches(tmp_path: Path) -> None:
+    """ripgrep's --glob does not exclude a path named explicitly on its command line.
+
+    `path` is model-controlled, so pointing search at an out-of-glob file
+    (a solution script, a state dump) must not leak its lines: the per-match
+    suffix allowlist drops them even though ripgrep grepped the file.
+    """
+    from leanflow_cli.workflows.prover.session_search import PROJECT_GLOBS
+
+    secret = tmp_path / "solution.py"
+    secret.write_text("deque_bound = 'the answer'\n")
+
+    result = search_sources("deque_bound", secret, Path, globs=PROJECT_GLOBS)
+
+    assert result["success"]
+    assert result["results"] == []
+
+
+def test_large_project_document_is_reachable_under_a_wider_cap(tmp_path: Path) -> None:
+    """A big extracted paper must not be silently skipped by the search cap.
+
+    The default 1M cap suits lemma search; the project-documentation search
+    raises it so a large notes/paper file next to the target stays visible.
+    """
+    from leanflow_cli.workflows.prover.session_search import PROJECT_GLOBS
+
+    big = tmp_path / "paper.txt"
+    big.write_text("deque_bound: key idea\n" + "filler line\n" * 120_000)  # > 1 MiB
+    assert big.stat().st_size > 1_048_576
+
+    dropped = search_sources("deque_bound", tmp_path, Path, globs=PROJECT_GLOBS)
+    assert dropped["results"] == []  # skipped at the default 1M cap
+
+    reached = search_sources("deque_bound", tmp_path, Path, globs=PROJECT_GLOBS, max_filesize="32M")
+    assert [Path(m["path"]).name for m in reached["results"]] == ["paper.txt"]

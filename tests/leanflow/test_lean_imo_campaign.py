@@ -1,5 +1,6 @@
 """Check problem-lane ordering, independent sources and conservative scoring."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -301,6 +302,30 @@ def test_lane_count_is_configurable_and_defaults_to_two(monkeypatch) -> None:
         monkeypatch.setenv("LEANFLOW_CAMPAIGN_LANES", bad)
         with pytest.raises(ValueError, match="between 1 and 8"):
             lanes()
+
+
+def test_run_refuses_to_narrow_lanes_below_a_claimed_lane(tmp_path: Path, monkeypatch) -> None:
+    """Narrowing LEANFLOW_CAMPAIGN_LANES must not silently strand claimed cells.
+
+    A cell claimed by lane 3 keeps lane=3 for the campaign's life; a dispatcher
+    restarted with only two lanes would never iterate lane 3 and the cell would
+    wait forever. run() must refuse rather than strand it.
+    """
+    from scripts.lean_imo_campaign.runner import run
+
+    (tmp_path / "campaign.json").write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {"id": "c1", "lane": 1, "status": "pending"},
+                    {"id": "c3", "lane": 3, "status": "pending"},
+                ]
+            }
+        )
+    )
+    monkeypatch.setenv("LEANFLOW_CAMPAIGN_LANES", "2")
+    with pytest.raises(ValueError, match=r"would strand cells already claimed by lane\(s\) \[3\]"):
+        run(tmp_path)
 
 
 def test_three_lanes_each_hold_one_problem_at_a_time() -> None:

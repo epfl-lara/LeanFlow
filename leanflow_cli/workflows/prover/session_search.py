@@ -26,11 +26,24 @@ def search_sources(
     readable: Callable[[str], Path],
     *,
     globs: tuple[str, ...] = LEAN_GLOBS,
+    max_filesize: str = "1M",
 ) -> dict[str, Any]:
-    """Return bounded literal matches without buffering project-wide output in RAM."""
+    """Return bounded literal matches without buffering project-wide output in RAM.
+
+    ``max_filesize`` caps how large a file ripgrep will scan. The default suits
+    the lemma-search fallback; a project-documentation search raises it so a
+    large extracted paper or blueprint is not silently skipped (output stays
+    bounded by the per-file/total caps below, and the whole call is time-limited).
+    """
     if not query or len(query) > 1000:
         raise ValueError("Search query must contain 1 to 1000 characters")
     include = [arg for glob in globs for arg in ("--glob", glob)]
+    # ripgrep's --glob filters directory traversal but NOT a path named
+    # explicitly on the command line: `rg --glob '*.lean' -- q solution.py`
+    # still greps solution.py. `path` is model-controlled, so re-apply the
+    # extension allowlist to every returned match -- otherwise a caller could
+    # point search at an out-of-glob file and read its lines regardless.
+    allowed_suffixes = {glob[1:] for glob in globs if glob.startswith("*.") and "/" not in glob}
     with tempfile.TemporaryFile(mode="w+b") as output:
         process = subprocess.run(
             [
@@ -45,7 +58,7 @@ def search_sources(
                 "--glob",
                 "!.git/**",
                 "--max-filesize",
-                "1M",
+                max_filesize,
                 "--max-count",
                 str(_MATCHES_PER_FILE + 1),
                 "--",
@@ -69,6 +82,9 @@ def search_sources(
             try:
                 source = readable(data["path"]["text"])
             except (ValueError, KeyError):
+                continue
+            if allowed_suffixes and source.suffix not in allowed_suffixes:
+                # An explicitly-named path slipped past ripgrep's --glob include.
                 continue
             count = matches_per_file.get(source, 0)
             if count >= _MATCHES_PER_FILE:

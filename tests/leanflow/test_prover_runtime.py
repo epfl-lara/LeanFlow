@@ -803,14 +803,28 @@ def test_negation_provider_failure_resumes_same_job_and_decomposition_allowance(
     runtime = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(mode="research", job_api_calls=3),
+        config=ProverConfig(mode="research", job_api_calls=3, negation_api_calls=3),
         session=provider,
         verifier=Verifier(),
     )
     node = runtime.dag.nodes[0]
     node.status, node.attempts = "blocked", 4
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.recovery.recovery_decision",
+        lambda rt, n, report: {"action": "negate", "rationale": "suspect", "fallback": False},
+    )
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.recovery.empirical_screen",
+        lambda rt, n: {"found": None, "detail": "skipped in test"},
+    )
     with pytest.raises(InfrastructureFailure, match="temporary outage"):
         runtime._recover(node)
+    # After the resumed refutation comes back empty, the orchestrator is asked
+    # again (one more unit); here it chooses to replan, and the replan is rejected.
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.recovery.recovery_decision",
+        lambda rt, n, report: {"action": "decompose", "rationale": "split", "fallback": False},
+    )
     runtime._persist()
     assert node.status == "blocked"
     assert node.decompositions == 1
@@ -830,7 +844,8 @@ def test_negation_provider_failure_resumes_same_job_and_decomposition_allowance(
     assert len(state["jobs"]) == 1
     assert state["jobs"][0]["resumed"] is True
     assert state["metrics"]["api_calls"] == 3
-    assert state["metrics"]["decompositions"] == 1
+    # One unit for the original negate decision, one for the post-resume decision.
+    assert state["metrics"]["decompositions"] == 2
     assert state["dag"]["nodes"][0]["attempts"] == 4
 
 
@@ -888,7 +903,7 @@ def test_recovery_is_bounded_only_by_the_campaign_wide_budget() -> None:
     source = _Path("leanflow_cli/workflows/prover/runtime.py").read_text(encoding="utf-8")
     assert "node.decompositions >= 1" not in source
     assert "max_node_decompositions" not in source
-    assert 'metrics"]["decompositions"] >= self.config.max_decompositions' in source
+    assert "used >= self.config.max_decompositions" in source
     # The exhausted budget must be recorded on the node, not returned silently.
     assert "Campaign recovery budget exhausted" in source
     assert not hasattr(ProverConfig(model="m"), "max_node_decompositions")

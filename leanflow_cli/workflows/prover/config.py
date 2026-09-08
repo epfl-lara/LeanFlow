@@ -23,6 +23,7 @@ ENV_NAMES = {
     "parallelism": "LEANFLOW_PROVER_PARALLELISM",
     "total_api_calls": "LEANFLOW_PROVER_TOTAL_API_CALLS",
     "orchestrator_api_calls": "LEANFLOW_PROVER_ORCHESTRATOR_API_CALLS",
+    "negation_api_calls": "LEANFLOW_PROVER_NEGATION_API_CALLS",
     "max_nodes": "LEANFLOW_PROVER_MAX_NODES",
     "max_decompositions": "LEANFLOW_PROVER_MAX_DECOMPOSITIONS",
     "wall_time_s": "LEANFLOW_PROVER_WALL_TIME_S",
@@ -48,12 +49,20 @@ class ProverConfig:
     mode: str = "standard"
     search_order: str = "bottom-up"
     job_api_calls: int = 300
+    #: Standard mode only: automatic progress-gated retries before a node blocks.
+    #: In research mode the orchestrator decides every retry instead.
     max_restarts: int = 3
     plan_refinements: int = 16
     parallelism: int = 2
     total_api_calls: int = 10000
     orchestrator_api_calls: int = 40
+    #: Calls for one refutation attempt: a bounded proof of the exact negation,
+    #: run after an empirical Plausible screen. Deliberately much smaller than a
+    #: prover job -- a true theorem should not cost a full job budget to not-refute.
+    negation_api_calls: int = 60
     max_nodes: int = 128
+    #: The campaign-wide recovery budget. Every orchestrator recovery decision --
+    #: retry, negate, or decompose -- spends one unit; there is no per-node cap.
     max_decompositions: int = 32
     wall_time_s: int = 14400
     timeout_s: int = 180
@@ -79,6 +88,7 @@ class ProverConfig:
             "parallelism",
             "total_api_calls",
             "orchestrator_api_calls",
+            "negation_api_calls",
             "max_nodes",
             "wall_time_s",
             "timeout_s",

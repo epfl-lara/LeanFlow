@@ -139,8 +139,8 @@ def _sandbox_command(
             command.extend(["--ro-bind", str(root), str(root)])
         # Recreate the merged-/usr symlinks the resolved binds above dropped,
         # otherwise nothing in the sandbox can be executed at all.
-        for target, link in _merged_usr_links():
-            command.extend(["--symlink", target, link])
+        for usr_target, usr_link in _merged_usr_links():
+            command.extend(["--symlink", usr_target, usr_link])
         for root in writable:
             command.extend(["--bind", str(root), str(root)])
         return [*command, "--chdir", str(project), "--", *argv]

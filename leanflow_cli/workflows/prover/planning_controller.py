@@ -26,6 +26,32 @@ if TYPE_CHECKING:
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
 
 
+def _finalize_plan_checkpoint(
+    runtime: ProverRuntime, checkpoint: dict[str, Any], applied: bool
+) -> None:
+    """Commit a plan checkpoint's terminal bookkeeping, atomically with its pop.
+
+    Called just before the same persist that pops ``planning_request``, so a
+    crash cannot land between the pop and the bookkeeping:
+
+    - A recovery plan seeds ``checkpoint["owner"]`` with its node id; its
+      outcome must live on that node's journal rather than the shared
+      ``proposal_status``, which a later node's plan can overwrite before this
+      node's journal is drained.
+    - The initial design seeds ``checkpoint["design"]``; marking design complete
+      here (not in a later separate step) means an interrupted-but-committed
+      design cannot strand -- resume would otherwise skip both the checkpoint
+      drain (marker unset) and the design guard (phase already "proving").
+    """
+    owner = checkpoint.get("owner")
+    if owner:
+        rec = runtime.state.get("recovery_in_flight", {}).get(owner)
+        if isinstance(rec, dict):
+            rec["applied"] = applied
+    if checkpoint.get("design"):
+        runtime.state["design_plan_complete"] = True
+
+
 def research_plan(
     runtime: ProverRuntime,
     reason: str,
@@ -50,6 +76,7 @@ def research_plan(
     runtime._ensure_active()
     if checkpoint.get("accepted_proposal"):
         launch_research_requests(runtime, checkpoint["accepted_proposal"].get("research_jobs", []))
+        _finalize_plan_checkpoint(runtime, checkpoint, True)
         runtime.state.pop("planning_request", None)
         runtime.state["phase"] = "proving"
         runtime._persist()
@@ -209,10 +236,12 @@ def research_plan(
         checkpoint["accepted_proposal"] = proposal
         runtime._persist()
         launch_research_requests(runtime, proposal.get("research_jobs", []))
+        _finalize_plan_checkpoint(runtime, checkpoint, True)
         runtime.state.pop("planning_request", None)
         runtime._persist()
         return True
     runtime.state["plan_markdown"] += f"\n\nPlanning review did not converge: {critique}\n"
+    _finalize_plan_checkpoint(runtime, checkpoint, False)
     runtime.state.pop("planning_request", None)
     runtime.state["phase"] = "proving"
     runtime._persist()
@@ -238,6 +267,11 @@ def _planning_call(
         "provider_error",
         "environment_error",
         "error",
+        # A cancelled or source-conflicted step never finished cleanly; replaying
+        # its partial result.json as a completed planning report would corrupt
+        # the plan. Re-run it (or, with no budget left, fail loudly) instead.
+        "interrupted",
+        "source_conflict",
     }:
         result_path = Path(job["workspace"]) / "result.json"
         if result_path.is_file():

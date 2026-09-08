@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from core.utils import atomic_json_write
 from leanflow_cli.lean.lean_declarations import declaration_region
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
+from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.models import Node
 from leanflow_cli.workflows.prover.runtime import BudgetExhausted, InfrastructureFailure
 from leanflow_cli.workflows.prover.source import (
@@ -26,6 +27,15 @@ from leanflow_cli.workflows.prover.usage import merge_usage
 
 if TYPE_CHECKING:
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
+
+
+def job_budget(config: ProverConfig, role: str) -> int:
+    """Calls one job of this role may spend. Negation has its own, smaller budget."""
+    if role == "prover":
+        return config.job_api_calls
+    if role == "negation":
+        return config.negation_api_calls
+    return config.orchestrator_api_calls
 
 
 def new_job(
@@ -104,11 +114,7 @@ def new_job(
         resumed_jobs.pop(node.id)
         runtime._persist()
         return job, context
-    budget = runtime._reserve(
-        runtime.config.job_api_calls
-        if role in {"prover", "negation"}
-        else runtime.config.orchestrator_api_calls
-    )
+    budget = runtime._reserve(job_budget(runtime.config, role))
     role_settings = runtime.config.to_mapping(role)
     job_id = f"{role}_{len(runtime.state['jobs']) + 1:05d}"
     workspace = runtime.store.directory / "jobs" / job_id

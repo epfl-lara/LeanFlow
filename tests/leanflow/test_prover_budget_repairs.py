@@ -33,20 +33,30 @@ def test_local_exhaustion_does_not_exhaust_campaign(tmp_path):
     assert result["metrics"]["api_calls"] == 2
 
 
-@pytest.mark.parametrize("attempts,expected", [(1, "retry"), (4, "blocked")])
-def test_accepted_local_plan_repair_reopens_within_retry_limit(
-    tmp_path, monkeypatch, attempts, expected
+@pytest.mark.parametrize("attempts", [1, 4])
+def test_accepted_local_plan_repair_reopens_regardless_of_attempt_count(
+    tmp_path, monkeypatch, attempts
 ):
-    from leanflow_cli.workflows.prover import negation_job
+    """max_restarts no longer gates research-mode reopening: the orchestrator does.
+
+    A decompose decision whose repair is accepted reopens the obligation whether
+    it has one prior attempt or four; the campaign recovery budget is the bound.
+    """
+    from leanflow_cli.workflows.prover import recovery
 
     runtime = make_runtime(tmp_path, config=ProverConfig(mode="research", max_restarts=3))
     node = runtime.dag.nodes[0]
     node.status, node.attempts = "blocked", attempts
-    monkeypatch.setattr(negation_job, "attempt_negation", lambda *args: {"certified": False})
+    monkeypatch.setattr(
+        recovery,
+        "recovery_decision",
+        lambda rt, n, report: {"action": "decompose", "rationale": "split", "fallback": False},
+    )
     monkeypatch.setattr(runtime, "_research_plan", lambda *args, **kwargs: True)
     runtime._recover(node)
-    assert node.status == expected
+    assert node.status == "retry"
     assert node.attempts == attempts
+    assert runtime.state["metrics"]["decompositions"] == 1
 
 
 def test_rejected_reviews_continue_within_total_budget(tmp_path, monkeypatch):

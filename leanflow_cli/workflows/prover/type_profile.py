@@ -248,7 +248,11 @@ def compiled_type_profiles(
                         "kernel inspection output exceeded the capture limit; "
                         "the inspector did not write profile.jsonl"
                     )
-            rows = [json.loads(line) for line in payload.splitlines() if line.strip()]
+            # Split on the record delimiter ONLY. str.splitlines() also breaks on
+            # NEL (U+0085), LS (U+2028) and PS (U+2029), which JSON leaves
+            # unescaped inside strings, so a Lean type/name carrying one would be
+            # torn mid-record and fail json.loads for a purely lexical reason.
+            rows = [json.loads(line) for line in payload.split("\n") if line.strip()]
             profiles: dict[str, dict[str, Any]] = {}
             for name in names:
                 matches = [
