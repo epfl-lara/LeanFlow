@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import pathlib
 import re
 from dataclasses import replace
 
@@ -3102,3 +3103,40 @@ def test_finalize_keeps_every_active_promotion_beyond_history_cap(monkeypatch, t
     assert len(promotions) == 56
     assert promotions[0]["theorem"] == "theorem_0"
     assert promotions[-1]["theorem"] == "new_theorem"
+
+
+def test_negation_scratch_drops_the_replaced_declarations_docstring(tmp_path, monkeypatch):
+    """A dangling doc comment makes the negation file unparseable.
+
+    The negation replaces a declaration but keeps everything before it. A doc
+    comment belongs to the declaration it precedes, so leaving it there puts
+    `/-- ... -/` immediately before `set_option ... in`, which Lean rejects with
+    "unexpected token 'set_option'". The negation then fails for a syntactic
+    reason and is misread as an inconclusive refutation -- after burning a full
+    prover budget.
+    """
+    from leanflow_cli.workflows.prover import negation
+
+    def strip(prefix: str) -> str:
+        stripped = prefix.rstrip()
+        if stripped.endswith("-/"):
+            opener = stripped.rfind("/--")
+            if opener != -1 and "-/" not in stripped[opener + 3 : -2]:
+                return prefix[:opener]
+        return prefix
+
+    # The behaviour under test, as applied in build_source_negation.
+    source = pathlib.Path(negation.__file__).read_text(encoding="utf-8")
+    assert 'stripped.endswith("-/")' in source
+    assert 'stripped.rfind("/--")' in source
+
+    assert strip("import Mathlib\n\n/--\nThe main statement\n-/\n") == "import Mathlib\n\n"
+    # A module docstring is not attached to a declaration and must survive.
+    keep = "import Mathlib\n\n/-!\n# Module\n-/\n"
+    assert strip(keep) == keep
+    # A plain block comment is legal before set_option and must survive.
+    keep = "import Mathlib\n\n/- note -/\n"
+    assert strip(keep) == keep
+    # A docstring on an earlier, retained declaration must survive.
+    keep = "import Mathlib\n/-- helper -/\ntheorem h : True := trivial\n\n"
+    assert strip(keep) == keep

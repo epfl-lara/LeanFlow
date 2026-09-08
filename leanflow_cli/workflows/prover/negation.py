@@ -39,6 +39,16 @@ def prepare_negation(root: Path, node: Node) -> NegationTask | None:
     start = sum(map(len, lines[: int(region["line"]) - 1]))
     end = sum(map(len, lines[: int(region["end_line"])]))
     prefix = source[:start]
+    # A doc comment belongs to the declaration it precedes. Replacing that
+    # declaration leaves the comment dangling in front of "set_option ... in",
+    # which Lean rejects outright ("unexpected token 'set_option'"), so the
+    # negation would fail to parse for a purely syntactic reason and be
+    # misread as an inconclusive refutation. Drop it with its declaration.
+    stripped = prefix.rstrip()
+    if stripped.endswith("-/"):
+        opener = stripped.rfind("/--")
+        if opener != -1 and "-/" not in stripped[opener + 3 : -2]:
+            prefix = prefix[:opener]
     if re.search(r"\b(?:variable|variables|include|omit)\b", lean_code_mask(prefix)):
         return None
     goal = build_negation_goal(str(path), node.name, cwd=str(root))
