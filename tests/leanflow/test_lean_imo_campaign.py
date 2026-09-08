@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 
 from scripts.lean_imo_campaign.artifacts import digest, environment, prepare, save
-from scripts.lean_imo_campaign.matrix import CONDITION_SETS, CONDITIONS, cells, next_cell
+from scripts.lean_imo_campaign.matrix import (
+    CONDITION_SETS,
+    CONDITIONS,
+    TIGHT,
+    WIDE,
+    cells,
+    next_cell,
+)
 from scripts.lean_imo_campaign.runner import refresh
 
 
@@ -274,6 +281,58 @@ def test_top_down_split_arm_pins_the_requested_comparison() -> None:
         config["wall_time_s"],
     ) == (4, 200, 50, 2000, 28800)
     assert config["allow_internet"] is False
+
+
+def test_luna_arm_replicates_the_split_at_the_tighter_budget() -> None:
+    """The gpt-5.6-luna replication: same roles and order, fewer calls per pass."""
+    conditions = CONDITION_SETS["luna-top-down-split"]
+    assert len(conditions) == 1
+    (condition,) = conditions
+    assert condition.model == "gpt-5.6-luna"
+    assert (condition.order, condition.prover_effort, condition.orchestrator_effort) == (
+        "top-down",
+        "medium",
+        "xhigh",
+    )
+
+    rows = cells([{"id": "p"}, {"id": "q"}], conditions)
+    assert [row["id"] for row in rows] == ["p-luna-top-split", "q-luna-top-split"]
+    config = rows[0]["config"]
+    assert config["model"] == config["orchestrator_model"] == "gpt-5.6-luna"
+    assert config["reasoning_effort"] == "medium"
+    assert config["orchestrator_reasoning_effort"] == "xhigh"
+    assert all(row["effort"] == "xhigh" for row in rows)
+    assert (
+        config["parallelism"],
+        config["job_api_calls"],
+        config["orchestrator_api_calls"],
+        config["total_api_calls"],
+        config["wall_time_s"],
+        config["timeout_s"],
+    ) == (4, 150, 50, 1000, 28800, 1200)
+    assert config["search_order"] == "top-down"
+    assert config["mode"] == "research"
+    assert config["allow_internet"] is False
+
+
+def test_only_the_budgeted_limits_differ_between_the_two_split_arms() -> None:
+    """Isolate model, effort and budget; every other setting must be shared."""
+    (astra,) = cells([{"id": "p"}], CONDITION_SETS["top-down-split"])
+    (luna,) = cells([{"id": "p"}], CONDITION_SETS["luna-top-down-split"])
+    expected = set(TIGHT._fields) - {
+        field for field in TIGHT._fields if getattr(WIDE, field) == getattr(TIGHT, field)
+    }
+    assert expected == {"job_api_calls", "total_api_calls"}
+    differing = {k for k, v in astra["config"].items() if luna["config"][k] != v}
+    assert differing == expected | {"model", "orchestrator_model", "reasoning_effort"}
+
+
+def test_a_condition_without_an_explicit_budget_keeps_the_original_limits() -> None:
+    """Arms frozen before budgets existed must regenerate byte-identical config."""
+    for condition in (*CONDITIONS, *CONDITION_SETS["top-down-split"]):
+        assert condition.budget is WIDE
+    config = cells([{"id": "p"}], CONDITION_SETS["top-down-split"])[0]["config"]
+    assert (config["job_api_calls"], config["total_api_calls"]) == (200, 2000)
 
 
 def test_default_condition_set_is_unchanged_by_the_split_arm() -> None:

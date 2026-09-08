@@ -58,7 +58,13 @@ if [ -n "${docformalizationdemo_paths}" ] && [ "${allow_docformalizationdemo}" -
   blocked=1
 fi
 
-leanimobench_paths="$(git diff --cached --name-only -- testdata/workflow_projects/LeanIMOBench)"
+# campaign-results/ holds exported measurements, never a problem statement.
+# It is excluded so archiving a finished run does not need the statement-refresh
+# override -- reaching for that variable routinely is how a real statement edit
+# would eventually slip past this guard.
+leanimobench_paths="$(git diff --cached --name-only \
+  -- testdata/workflow_projects/LeanIMOBench \
+  ':(exclude)testdata/workflow_projects/LeanIMOBench/campaign-results')"
 if [ -n "${leanimobench_paths}" ] && [ "${allow_leanimobench}" -ne 1 ]; then
   echo "Commit blocked: staged changes under testdata/workflow_projects/LeanIMOBench are protected." >&2
   echo "The 60 problem statements are vendored verbatim from IMO-LeanProofBench; editing one" >&2

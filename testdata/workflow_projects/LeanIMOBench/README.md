@@ -209,7 +209,9 @@ Tracked files here are protected by the repo pre-commit hook, for the same
 reason the statements are byte-identical: a prover run that edits a statement
 and gets committed silently invalidates every score compared against the
 published baseline. Runs write to `.leanflow/`, `.lake/`, and `results/`, all
-ignored. To refresh from upstream, regenerate and opt in explicitly:
+ignored. Measurements worth keeping from a finished campaign are exported to
+`campaign-results/`, which is tracked; see its README. To refresh from upstream,
+regenerate and opt in explicitly:
 
 ```bash
 python3 scripts/build_benchmark.py --download

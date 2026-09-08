@@ -5,6 +5,40 @@ from __future__ import annotations
 from typing import Any, NamedTuple
 
 
+class Budget(NamedTuple):
+    """One arm's spending limits, stated in full so no arm inherits a default."""
+
+    job_api_calls: int
+    orchestrator_api_calls: int
+    total_api_calls: int
+    parallelism: int
+    wall_time_s: int
+    timeout_s: int
+
+
+#: The limits every arm of the gpt-6-astra comparison ran under.
+WIDE = Budget(
+    job_api_calls=200,
+    orchestrator_api_calls=50,
+    total_api_calls=2000,
+    parallelism=4,
+    wall_time_s=28800,
+    timeout_s=1200,
+)
+
+#: Tighter per-pass and campaign ceilings for the gpt-5.6-luna replication:
+#: the same wall clock and parallelism, but a prover pass and a campaign that
+#: must reach the same proofs on fewer calls.
+TIGHT = Budget(
+    job_api_calls=150,
+    orchestrator_api_calls=50,
+    total_api_calls=1000,
+    parallelism=4,
+    wall_time_s=28800,
+    timeout_s=1200,
+)
+
+
 class Condition(NamedTuple):
     """One comparison arm. Empty efforts inherit the launch reasoning effort."""
 
@@ -13,6 +47,7 @@ class Condition(NamedTuple):
     order: str
     prover_effort: str = ""
     orchestrator_effort: str = ""
+    budget: Budget = WIDE
 
 
 #: The original four-arm comparison: two models x two search orders, every role
@@ -29,9 +64,18 @@ CONDITIONS = (
 #: "does expensive planning plus a cheap prover work?" from model choice.
 TOP_DOWN_SPLIT_EFFORT = (Condition("astra-top-split", "gpt-6-astra", "top-down", "low", "xhigh"),)
 
+#: The same split-effort question asked of gpt-5.6-luna on a tighter budget.
+#: The prover runs at medium rather than low because luna is the smaller model:
+#: holding the effort label fixed across models would compare two different
+#: things, so the arm holds the *role* fixed -- cheap prover, expensive planner.
+LUNA_TOP_DOWN_SPLIT_EFFORT = (
+    Condition("luna-top-split", "gpt-5.6-luna", "top-down", "medium", "xhigh", TIGHT),
+)
+
 CONDITION_SETS = {
     "full": CONDITIONS,
     "top-down-split": TOP_DOWN_SPLIT_EFFORT,
+    "luna-top-down-split": LUNA_TOP_DOWN_SPLIT_EFFORT,
 }
 
 
@@ -40,6 +84,7 @@ def configuration(
     order: str,
     prover_effort: str = "",
     orchestrator_effort: str = "",
+    budget: Budget = WIDE,
 ) -> dict[str, Any]:
     """Return every prover setting explicitly, avoiding mutable home profile defaults."""
     from leanflow_cli.workflows.prover.config import ProverConfig
@@ -51,12 +96,7 @@ def configuration(
         orchestrator_model=model,
         reasoning_effort=prover_effort,
         orchestrator_reasoning_effort=orchestrator_effort,
-        parallelism=4,
-        job_api_calls=200,
-        orchestrator_api_calls=50,
-        total_api_calls=2000,
-        wall_time_s=28800,
-        timeout_s=1200,
+        **budget._asdict(),
         context_tokens=64000,
         orchestrator_context_tokens=96000,
         max_restarts=3,
@@ -90,6 +130,7 @@ def cells(
                 condition.order,
                 condition.prover_effort,
                 condition.orchestrator_effort,
+                condition.budget,
             ),
             "status": "pending",
             "lane": None,
