@@ -1,0 +1,133 @@
+#!/localhome/milikic/LEAP-BENCH/python-env/bin/python
+"""Reclaim copied Lean libraries from cells that are finished for good.
+
+Each cell gets a private .lake/packages so one arm cannot perturb another's
+libraries. That is deliberate and stays. It is nearly free on APFS
+(copy-on-write) but a real ~7.8 GB per cell on ext4, ~140 GB across 18.
+
+Only two statuses are reclaimed, as an ALLOW-list so an unrecognised status is
+protected rather than deleted:
+
+  completed        - finished and verified; runner.py only keeps "completed"
+                     when cell["verified"], otherwise it rewrites it to
+                     "unverified_exit".
+  budget_exhausted - spent its budget; not in recovery.requires_inspection, so
+                     it never pauses for a human and is never relaunched.
+
+Everything else is left alone, deliberately:
+  - pending/preparing/running: live.
+  - provider_error: recovery.schedule_recovery can requeue it, and launch()
+    then reuses cell["project"], which needs .lake intact.
+  - every other error status is in requires_inspection, so a human may want to
+    inspect or resume it; discarding its libraries would force a re-prepare.
+  - any cell carrying resume_run_id, for the same reason.
+
+Libraries are reproducible from baseline/ and are not evidence. Proof sources,
+cell logs, .leanflow state and campaign metrics are never touched.
+
+    ./reclaim-finished-cells                      # dry run
+    ./reclaim-finished-cells --apply
+    ./reclaim-finished-cells --apply --loop 300
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+D = Path("/localhome/milikic/LEAP-BENCH")
+APPLY = "--apply" in sys.argv
+LOOP = int(sys.argv[sys.argv.index("--loop") + 1]) if "--loop" in sys.argv else 0
+
+RECLAIMABLE = {"completed", "budget_exhausted"}
+SETTLE_S = 300  # let a just-finished cell's processes fully unwind first
+
+
+def free_gb() -> float:
+    out = subprocess.run(["df", "-k", str(D)], capture_output=True, text=True).stdout
+    return int(out.strip().splitlines()[-1].split()[3]) / 1024 / 1024
+
+
+def in_use(path: Path) -> bool:
+    """True if any live process is working inside this directory.
+
+    Deliberately NOT `fuser -m`: -m treats its argument as a mount point and
+    matches every process using the whole filesystem, so on /localhome it is
+    true for everything and nothing is ever reclaimed. Walk /proc instead and
+    compare each process's cwd and open files against this exact subtree.
+    """
+    target = str(path.resolve())
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            cwd = os.readlink(proc / "cwd")
+        except OSError:
+            continue  # process gone, or not ours
+        if cwd == target or cwd.startswith(target + "/"):
+            return True
+        # Only inspect descriptors of processes already inside the campaign.
+        if not cwd.startswith("/localhome/milikic/LEAP-BENCH"):
+            continue
+        try:
+            for fd in (proc / "fd").iterdir():
+                try:
+                    dest = os.readlink(fd)
+                except OSError:
+                    continue
+                if dest == target or dest.startswith(target + "/"):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def sweep() -> int:
+    campaign = json.loads((D / "campaign.json").read_text())
+    done = 0
+    for cell in campaign["cells"]:
+        status = cell.get("status")
+        lake = D / "cells" / cell["id"] / ".lake"
+        if not lake.is_dir():
+            continue
+        if status not in RECLAIMABLE or cell.get("resume_run_id"):
+            continue
+        if status == "completed" and not cell.get("verified"):
+            continue
+        finished = cell.get("finished_at")
+        if not finished:
+            continue
+        age = (datetime.now(UTC) - datetime.fromisoformat(finished)).total_seconds()
+        if age < SETTLE_S:
+            print(f"  {cell['id']}: finished {int(age)}s ago, waiting for settle", flush=True)
+            continue
+        if in_use(lake):
+            print(f"  {cell['id']}: still held by a live process, skipping", flush=True)
+            continue
+        size = sum(f.stat().st_size for f in lake.rglob("*") if f.is_file()) / 1024**3
+        print(f"  {cell['id']}: {status}, .lake={size:.1f} GiB -> reclaim", flush=True)
+        if APPLY:
+            shutil.rmtree(lake, ignore_errors=True)
+        done += 1
+    return done
+
+
+while True:
+    live = [
+        c["id"]
+        for c in json.loads((D / "campaign.json").read_text())["cells"]
+        if c.get("status") in {"preparing", "running"}
+    ]
+    print(f"[{time.strftime('%H:%M:%S')}] free={free_gb():.0f} GiB  live={live or 'none'}", flush=True)
+    n = sweep()
+    if not n:
+        print("  nothing reclaimable", flush=True)
+    else:
+        print(f"  {'reclaimed' if APPLY else 'would reclaim'} {n}; free={free_gb():.0f} GiB", flush=True)
+    if not LOOP:
+        break
+    time.sleep(LOOP)

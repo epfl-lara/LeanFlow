@@ -1,0 +1,33 @@
+#!/bin/bash
+# Run the frozen campaign inside a container, because this host blocks
+# unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=1)
+# and LeanFlow requires bubblewrap for its sandboxed Lean checks.
+#
+# Notes on the flags:
+#  - bwrap is setuid root in the image; that is bubblewrap's supported mode for
+#    hosts without usable unprivileged userns.
+#  - --user is the invoking user, so everything written to the bind mounts keeps
+#    normal ownership. --cap-add entries populate the bounding set only; the
+#    process itself is unprivileged and merely lets the setuid binary acquire
+#    what it needs. This is materially weaker than --privileged.
+#  - paths are bind-mounted at IDENTICAL locations: the campaign froze absolute
+#    paths and verifies file digests, so they must resolve the same inside.
+set -euo pipefail
+D=/localhome/milikic/LEAP-BENCH
+exec docker run --rm -i \
+  --name leap-bench-$$ \
+  --security-opt apparmor=unconfined --security-opt seccomp=unconfined \
+  --cap-add=SYS_ADMIN --cap-add=SETPCAP --cap-add=NET_ADMIN --cap-add=SYS_CHROOT \
+  --cap-add=SETUID --cap-add=SETGID --cap-add=SYS_PTRACE \
+  --user "$(id -u):$(id -g)" \
+  -v "$D:$D" \
+  -v /localhome/milikic/LeanFlow:/localhome/milikic/LeanFlow:ro \
+  -v /localhome/milikic/.elan:/localhome/milikic/.elan \
+  -v /localhome/milikic/.leanflow:/localhome/milikic/.leanflow \
+  -v /localhome/milikic/.codex:/localhome/milikic/.codex \
+  -e HOME=/localhome/milikic \
+  -e LEANFLOW_CAMPAIGN_LANES="${LEANFLOW_CAMPAIGN_LANES:-2}" \
+  -e PATH=/localhome/milikic/.elan/bin:/usr/local/bin:/usr/bin:/bin \
+  -w "$D" \
+  leanflow-leapbench:search \
+  "$@"

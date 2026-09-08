@@ -1,0 +1,70 @@
+#!/localhome/milikic/LEAP-BENCH/python-env/bin/python
+"""Return cells blocked by an infrastructure error to pending, preserving the attempt.
+
+environment_error is deliberately NOT auto-recovered by recovery.schedule_recovery
+(only provider_error is), so a host-level blocker needs a explicit reset once the
+host is fixed. This refuses to touch any cell that actually spent provider budget.
+
+    ./reset-blocked-cells            # dry run, prints what it would do
+    ./reset-blocked-cells --apply
+"""
+
+import copy
+import json
+import shutil
+import sys
+from pathlib import Path
+
+D = Path("/localhome/milikic/LEAP-BENCH")
+APPLY = "--apply" in sys.argv
+
+BLOCKED = {"environment_error", "error", "infrastructure_error"}
+ARCHIVE = ("run_id", "status", "returncode", "started_at", "finished_at", "error", "metrics")
+CLEAR = (
+    "error", "run_id", "started_at", "started_epoch", "finished_at", "returncode",
+    "process_identity", "process_identity_error", "controller_status", "stop_reason",
+    "runtime_directory", "runtime_sha256", "project",
+)
+
+campaign = json.loads((D / "campaign.json").read_text())
+touched = []
+for cell in campaign["cells"]:
+    if cell.get("status") not in BLOCKED:
+        continue
+    spent = int((cell.get("metrics") or {}).get("api_calls", 0) or 0)
+    if spent:
+        print(f"REFUSING {cell['id']}: {spent} api calls already spent; inspect by hand")
+        continue
+    touched.append(cell["id"])
+    print(f"reset  {cell['id']}  (was {cell['status']}, lane {cell['lane']}, 0 calls spent)")
+    print(f"       error was: {str(cell.get('error'))[:110]}")
+    stale = D / "cells" / cell["id"]
+    config = D / "cell-configs" / f"{cell['id']}.json"
+    for path in (stale, config):
+        if path.exists():
+            print(f"       remove partial artifact: {path.relative_to(D)}")
+    if APPLY:
+        cell.setdefault("executions", []).append(
+            {k: copy.deepcopy(cell.get(k)) for k in ARCHIVE}
+        )
+        for key in CLEAR:
+            cell.pop(key, None)
+        cell["status"] = "pending"
+        if stale.is_dir():
+            shutil.rmtree(stale)
+        if config.exists():
+            config.unlink()
+
+if not touched:
+    print("no blocked cells")
+elif APPLY:
+    campaign["status"] = "prepared"
+    # The pause_reason names the cell we just cleared; leaving it makes a
+    # healthy campaign look paused for a failure that no longer exists.
+    campaign.pop("pause_reason", None)
+    tmp = D / "campaign.json.tmp"
+    tmp.write_text(json.dumps(campaign, indent=2, ensure_ascii=False) + "\n")
+    tmp.replace(D / "campaign.json")
+    print(f"\napplied to {len(touched)} cell(s); attempt archived under executions[]")
+else:
+    print(f"\ndry run: {len(touched)} cell(s) would be reset. Re-run with --apply.")
