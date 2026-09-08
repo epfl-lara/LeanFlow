@@ -34,7 +34,11 @@ def localTypeDependencies (env : Environment) (idx : ModuleIdx)
     seen := seen.insert name
     if env.getModuleIdxFor? name != some idx then continue
     let some info := env.find? name | continue
-    let value := if info.isTheorem || selectedName mutableNames name then none
+    -- Match the constructor rather than calling ConstantInfo.isTheorem: that
+    -- accessor does not exist in every supported Lean, and the inspector must
+    -- run against whatever toolchain the target project pins.
+    let isThm := match info with | .thmInfo _ => true | _ => false
+    let value := if isThm || selectedName mutableNames name then none
       else info.value? (allowOpaque := true)
     pending := pending ++ info.type.getUsedConstants
     if let some value := value then pending := pending ++ value.getUsedConstants
