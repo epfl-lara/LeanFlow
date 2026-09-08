@@ -11,11 +11,26 @@ from typing import Any
 
 _MATCHES_PER_FILE = 8
 
+#: Lean sources only: what a lemma search should see.
+LEAN_GLOBS: tuple[str, ...] = ("*.lean",)
+#: Lean sources plus the text documentation a project ships with -- notes,
+#: papers extracted to text, blueprints, bibliographies. A project's own
+#: write-ups were otherwise unreachable by any prover tool: read_file needs a
+#: path, and nothing could discover one.
+PROJECT_GLOBS: tuple[str, ...] = ("*.lean", "*.md", "*.txt", "*.tex", "*.bib")
 
-def search_sources(query: str, path: Path, readable: Callable[[str], Path]) -> dict[str, Any]:
+
+def search_sources(
+    query: str,
+    path: Path,
+    readable: Callable[[str], Path],
+    *,
+    globs: tuple[str, ...] = LEAN_GLOBS,
+) -> dict[str, Any]:
     """Return bounded literal matches without buffering project-wide output in RAM."""
     if not query or len(query) > 1000:
         raise ValueError("Search query must contain 1 to 1000 characters")
+    include = [arg for glob in globs for arg in ("--glob", glob)]
     with tempfile.TemporaryFile(mode="w+b") as output:
         process = subprocess.run(
             [
@@ -24,8 +39,7 @@ def search_sources(query: str, path: Path, readable: Callable[[str], Path]) -> d
                 "--hidden",
                 "--no-ignore-vcs",
                 "-F",
-                "--glob",
-                "*.lean",
+                *include,
                 "--glob",
                 "!.leanflow/**",
                 "--glob",

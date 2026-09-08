@@ -96,7 +96,7 @@ class SessionTools:
             tools += [
                 _schema(
                     "search_project",
-                    "Find Lean declarations by literal text in source and installed dependencies. Use focused searches and act on the results.",
+                    "Find literal text in Lean sources, installed dependencies, and the project's own documentation (.md, .txt, .tex, .bib): notes, extracted papers, blueprints. Use focused searches and act on the results.",
                     {"query": TEXT, "path": TEXT},
                     ["query"],
                 ),
@@ -265,8 +265,9 @@ class SessionTools:
                 )
             if not path.is_file():
                 raise ValueError("Only regular files can be read")
-            offset, limit = max(0, int(args.get("offset", 0))), min(
-                16000, max(1, int(args.get("limit", 8000)))
+            offset, limit = (
+                max(0, int(args.get("offset", 0))),
+                min(16000, max(1, int(args.get("limit", 8000)))),
             )
             with path.open(encoding="utf-8") as handle:
                 handle.seek(offset)
@@ -299,10 +300,10 @@ class SessionTools:
                 "sha256": hashlib.sha256(content.encode()).hexdigest(),
             }
         if name == "search_project":
-            from leanflow_cli.workflows.prover.session_search import search_sources
+            from leanflow_cli.workflows.prover.session_search import PROJECT_GLOBS, search_sources
 
             path = self._path(str(args.get("path") or self.project_root))
-            return search_sources(str(args["query"]), path, self._path)
+            return search_sources(str(args["query"]), path, self._path, globs=PROJECT_GLOBS)
         if name == "lean_check":
             from leanflow_cli.workflows.prover.check_process import check_scratch
 
