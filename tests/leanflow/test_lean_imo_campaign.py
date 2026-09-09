@@ -378,8 +378,44 @@ def test_the_launch_record_names_the_model_each_role_actually_uses() -> None:
     assert recorded == "gpt-6-astra" != cell["model"]
 
 
+def test_bottom_up_arm_changes_only_the_search_order() -> None:
+    """Traversal is the single variable, so a difference cannot be blamed elsewhere."""
+    (top,) = CONDITION_SETS["astra-plan-luna-prove"]
+    (bottom,) = CONDITION_SETS["astra-plan-luna-prove-bottom"]
+    differing = [f for f in top._fields if getattr(top, f) != getattr(bottom, f)]
+    assert differing == ["label", "order"]
+    assert (top.order, bottom.order) == ("top-down", "bottom-up")
+
+    (cell,) = cells([{"id": "p"}], CONDITION_SETS["astra-plan-luna-prove-bottom"])
+    config = cell["config"]
+    assert config["search_order"] == "bottom-up"
+    assert config["model"] == "gpt-5.6-luna"
+    assert config["orchestrator_model"] == "gpt-6-astra"
+    assert (config["total_api_calls"], config["job_api_calls"]) == (5000, 150)
+
+
+def test_calibrated_budget_matches_what_the_top_down_arm_actually_ran() -> None:
+    """The four proofs were produced at 5000/150; the code must say so."""
+    from scripts.lean_imo_campaign.matrix import LUNA_CALIBRATED
+
+    for label in ("astra-plan-luna-prove", "astra-plan-luna-prove-bottom"):
+        (condition,) = CONDITION_SETS[label]
+        assert condition.budget is LUNA_CALIBRATED
+    assert LUNA_CALIBRATED.total_api_calls == 5000
+    assert LUNA_CALIBRATED.job_api_calls == 150
+    # Untouched arms keep the original limits they were frozen under.
+    for label in ("full", "top-down-split", "luna-top-down-split"):
+        for condition in CONDITION_SETS[label]:
+            assert condition.budget is WIDE
+
+
 def test_every_arm_shares_one_named_budget() -> None:
-    """Limits live in a named constant, not hardcoded inside configuration()."""
+    """Limits live in named constants, not hardcoded inside configuration()."""
+    from scripts.lean_imo_campaign.matrix import Budget
+
+    for label, conditions in CONDITION_SETS.items():
+        for condition in conditions:
+            assert isinstance(condition.budget, Budget), label
     for condition in (
         *CONDITIONS,
         *CONDITION_SETS["top-down-split"],

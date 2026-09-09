@@ -380,6 +380,15 @@ def main() -> None:
         default="full",
         help="Which comparison arms to freeze (prepare only; default: full)",
     )
+    parser.add_argument(
+        "--problems",
+        default="",
+        help=(
+            "Comma-separated problem IDs to run (prepare only; default: all 18 "
+            "LEAP-unsolved). The fixture still freezes all 18 statements, so a "
+            "subset campaign stays comparable with a full one."
+        ),
+    )
     args = parser.parse_args()
     directory = args.directory.resolve()
     if args.command == "run":
@@ -394,18 +403,27 @@ def main() -> None:
     manifest = json.loads((directory / "baseline/manifest.json").read_text())
     provider = resolve_runtime_provider(requested="openai-codex")
     conditions = CONDITION_SETS[args.conditions]
+    unsolved = [p for p in manifest["problems"] if p["leap_solved"] is False]
+    selected = unsolved
+    if args.problems:
+        wanted = {name.strip() for name in args.problems.split(",") if name.strip()}
+        unknown = sorted(wanted - {p["id"] for p in unsolved})
+        if unknown:
+            raise ValueError(f"not LEAP-unsolved problem ids: {unknown}")
+        selected = [p for p in unsolved if p["id"] in wanted]
     campaign = {
         "version": 1,
         # Lanes are a run-time scheduling choice (LEANFLOW_CAMPAIGN_LANES),
         # not part of what was frozen, so the name must not claim a count.
         "name": f"Lean-IMO-Bench · LEAP-unsolved · {args.conditions}",
         "condition_set": args.conditions,
+        "problem_subset": sorted(p["id"] for p in selected) if args.problems else None,
         "conditions": [c._asdict() for c in conditions],
         "created_at": now(),
         "status": "prepared",
         "provider_base_url": provider["base_url"].rstrip("/"),
         "provenance": identity,
-        "cells": cells([p for p in manifest["problems"] if p["leap_solved"] is False], conditions),
+        "cells": cells(selected, conditions),
     }
     report(directory, campaign)
     print(directory, flush=True)

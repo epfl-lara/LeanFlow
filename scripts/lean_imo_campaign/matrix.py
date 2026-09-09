@@ -29,6 +29,23 @@ WIDE = Budget(
 )
 
 
+#: Calibrated for luna's provers by the first astra-planned run rather than
+#: chosen. Across 87 observed prover passes no successful one ever exceeded 164
+#: calls (p50 34, p90 111), while 37% ground to the old 200 cap and consumed 65%
+#: of all prover spend, so 150 keeps essentially every productive pass and
+#: returns the rest to replanning. The four proofs that arm produced needed
+#: 687-3162 calls, so the original 2000 ceiling was well short of what luna needs
+#: to finish a problem astra closes in ~175.
+LUNA_CALIBRATED = Budget(
+    job_api_calls=150,
+    orchestrator_api_calls=50,
+    total_api_calls=5000,
+    parallelism=4,
+    wall_time_s=28800,
+    timeout_s=1200,
+)
+
+
 class Condition(NamedTuple):
     """One comparison arm. Empty efforts inherit the launch reasoning effort."""
 
@@ -80,6 +97,21 @@ ASTRA_PLAN_LUNA_PROVE = (
         prover_effort="medium",
         orchestrator_effort="medium",
         orchestrator_model="gpt-6-astra",
+        budget=LUNA_CALIBRATED,
+    ),
+)
+
+#: The same configuration asked bottom-up, so search order is the only thing that
+#: differs from the arm that proved PB-Basic-025/026/028/029 top-down.
+ASTRA_PLAN_LUNA_PROVE_BOTTOM_UP = (
+    Condition(
+        label="astra-plan-luna-prove-bottom",
+        model="gpt-5.6-luna",
+        order="bottom-up",
+        prover_effort="medium",
+        orchestrator_effort="medium",
+        orchestrator_model="gpt-6-astra",
+        budget=LUNA_CALIBRATED,
     ),
 )
 
@@ -88,6 +120,7 @@ CONDITION_SETS = {
     "top-down-split": TOP_DOWN_SPLIT_EFFORT,
     "luna-top-down-split": LUNA_TOP_DOWN_SPLIT_EFFORT,
     "astra-plan-luna-prove": ASTRA_PLAN_LUNA_PROVE,
+    "astra-plan-luna-prove-bottom": ASTRA_PLAN_LUNA_PROVE_BOTTOM_UP,
 }
 
 
