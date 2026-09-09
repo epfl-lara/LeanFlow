@@ -165,10 +165,44 @@ def refresh(cell: dict[str, Any]) -> None:
         cell["error"] = state["error"]
 
 
+def resume_source(project: Path) -> str:
+    """Name the run holding the most consumed calls, or "" when none is readable.
+
+    A resume must continue the run that did the work. Directory age is the wrong
+    signal: a relaunch that fails clones an OLD snapshot into a NEW directory, so
+    the newest run is exactly the one that must not be resumed. Consumed calls
+    only ever grow along a resume chain, so the highest count names the tip.
+    """
+    best, best_calls = "", -1
+    runs = project / ".leanflow/workflow-state/prover"
+    if not runs.is_dir():
+        return ""
+    for path in runs.iterdir():
+        state = path / "state.json"
+        if not path.is_dir() or path.name.endswith(".superseded") or not state.is_file():
+            continue
+        try:
+            calls = int(json.loads(state.read_text()).get("metrics", {}).get("api_calls", 0))
+        except (OSError, ValueError, TypeError):
+            continue
+        if calls > best_calls:
+            best, best_calls = path.name, calls
+    return best
+
+
 def launch(
     directory: Path, campaign: dict[str, Any], cell: dict[str, Any]
 ) -> subprocess.Popen[bytes]:
     """Persist admission before spawning exactly one independent campaign process."""
+    if cell.get("resume_run_id") and cell.get("project"):
+        # A hand-requeued cell can name a run that later runs have moved past;
+        # resuming it would roll proved work back to that snapshot and then stop
+        # on a source conflict against the newer helpers on disk. Continue the
+        # tip instead, and leave the correction visible in the cell record.
+        tip = resume_source(Path(cell["project"]))
+        if tip and tip != cell["resume_run_id"]:
+            cell["resume_source_corrected_from"] = cell["resume_run_id"]
+            cell["resume_run_id"] = tip
     snapshot = (
         runtime_directory(directory, cell)
         if cell.get("runtime_directory")

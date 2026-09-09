@@ -413,6 +413,84 @@ def test_interrupted_job_resumes_same_admission_ledger_and_scratch(tmp_path: Pat
     assert state["dag"]["nodes"][0]["attempts"] == 1
 
 
+def test_resume_retires_a_job_whose_node_was_revised_while_it_was_interrupted(
+    tmp_path: Path,
+) -> None:
+    """Resuming such a job can only buy stale rejections and then strand the node."""
+    path = project(tmp_path)
+    first = ProverRuntime(
+        root=tmp_path,
+        targets=[path],
+        config=ProverConfig(job_api_calls=3, total_api_calls=6),
+        session=session,
+        verifier=Verifier(),
+    )
+    node = first.dag.nodes[0]
+    job, _ = first._new_job("prover", node=node)
+    node.status, node.attempts = "running", 1
+    workspace = Path(job["workspace"])
+    ledger = workspace.parent / ".runtime" / workspace.name / "request-count.json"
+    ledger.write_text(json.dumps({"limit": 3, "used": 1}))
+    # A recovery changed the node's dependencies after the job started: the job
+    # still carries revision 0 while the node is now at revision 1.
+    node.revision += 1
+    first._persist()
+
+    seen: list[dict[str, Any]] = []
+
+    def resumed_session(**kwargs: Any) -> dict[str, Any]:
+        seen.append(kwargs)
+        return {
+            "status": "candidate",
+            "api_calls": 1,
+            "final_response": json.dumps({"proof": "trivial"}),
+        }
+
+    resumed = ProverRuntime(
+        root=tmp_path,
+        targets=[path],
+        config=ProverConfig(),
+        session=resumed_session,
+        verifier=Verifier(),
+        run_id=first.run_id,
+        resume=True,
+    )
+    assert node.id not in resumed.resume_jobs
+    state = resumed.run()
+    assert state["status"] == "completed"
+    stale, fresh = state["jobs"]
+    assert stale["id"] == job["id"] and stale["status"] == "stale"
+    assert fresh["node_revision"] == 1
+    # The interrupted job's spent calls still count; the fresh one ran in a new
+    # workspace at the current revision rather than continuing the stale one.
+    assert state["metrics"]["api_calls"] == 2
+    assert seen and seen[0]["workspace"] != workspace
+
+
+def test_a_stale_finish_never_leaves_its_node_stranded_as_running(tmp_path: Path) -> None:
+    """ready_nodes skips running nodes, so a stale job must hand the node back."""
+    path = project(tmp_path)
+    runtime = ProverRuntime(
+        root=tmp_path,
+        targets=[path],
+        config=ProverConfig(job_api_calls=3, total_api_calls=6),
+        session=session,
+        verifier=Verifier(),
+    )
+    node = runtime.dag.nodes[0]
+    job, _ = runtime._new_job("prover", node=node)
+    node.status, node.attempts = "running", 1
+    node.revision += 1
+    runtime._handle_result(
+        job, {"status": "budget_exhausted", "api_calls": 3, "final_response": "{}"}
+    )
+    assert job["status"] == "stale"
+    assert node.status == "retry"
+    assert [n.id for n in ready_nodes(runtime.dag, order="top-down", active=set(), limit=4)] == [
+        node.id
+    ]
+
+
 def test_parallel_research_results_are_consumed_in_completion_order(tmp_path: Path) -> None:
     from leanflow_cli.workflows.prover.planning_controller import launch_research_requests
 

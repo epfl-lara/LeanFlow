@@ -280,6 +280,21 @@ class ProverRuntime:
                 if job.get("role") == "prover" and node is not None and node.status == "proved":
                     job.update(status="interrupted", phase="finished")
                     continue
+                if (
+                    job.get("role") in {"prover", "negation"}
+                    and node is not None
+                    and "node_revision" in job
+                    and int(job["node_revision"]) != node.revision
+                ):
+                    # The node was revised after this job started -- a recovery
+                    # changed its dependencies and bumped its revision -- so every
+                    # submission it could still make is rejected as stale.
+                    # Resuming it would spend the rest of its allocation on
+                    # guaranteed rejections and then leave the node behind it
+                    # marked running with no job. Retire it; the scheduler starts
+                    # a fresh attempt at the current revision instead.
+                    job.update(status="stale", phase="finished")
+                    continue
                 if job["role"] == "prover" and job["api_calls"] < job["api_budget"]:
                     self.resume_jobs[job["node_id"]] = job
                     job["status"] = "resume_pending"
@@ -791,6 +806,18 @@ class ProverRuntime:
             except InfrastructureFailure:
                 pass
             job["status"] = "stale"
+            if (
+                node is not None
+                and node.status == "running"
+                and not any(other.get("node_id") == node.id for other in self.pending.values())
+            ):
+                # A revision made while a job is in flight sets the node pending,
+                # so a stale finish normally finds it schedulable already. Only a
+                # job resumed onto an already-revised node leaves it "running"
+                # with nothing behind it -- and ready_nodes never picks a running
+                # node, so the cell would stop with no runnable obligation while
+                # holding most of its budget. Hand the current revision back.
+                node.status = "retry"
             self._persist()
             return
         self._finish_job(job, result)

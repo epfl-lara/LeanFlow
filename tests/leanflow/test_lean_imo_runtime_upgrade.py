@@ -85,6 +85,55 @@ def test_launch_pins_new_runtime_but_resume_keeps_old(
     assert resumed["metrics"]["elapsed_s"] == 55
 
 
+def test_launch_resumes_the_run_with_the_most_consumed_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale resume_run_id would roll proved work back; the tip is what continues."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "provenance.json").write_text(json.dumps({"runtime_sha256": "h"}))
+    project = tmp_path / "cell"
+    runs = project / ".leanflow/workflow-state/prover"
+    for name, calls in (("bench-x", 805), ("bench-x-r1", 2294), ("bench-x-r2", 805)):
+        (runs / name).mkdir(parents=True)
+        (runs / name / "state.json").write_text(json.dumps({"metrics": {"api_calls": calls}}))
+    # A failed relaunch's clone is renamed aside; it must never win.
+    (runs / "bench-x-r3.superseded").mkdir()
+    (runs / "bench-x-r3.superseded" / "state.json").write_text(
+        json.dumps({"metrics": {"api_calls": 9999}})
+    )
+    captured = []
+
+    class Process:
+        pid = 123
+
+    monkeypatch.setattr(runner, "process_identity", lambda _: "birth command")
+    monkeypatch.setattr(
+        runner.subprocess, "Popen", lambda argv, **kw: captured.append(argv) or Process()
+    )
+    monkeypatch.setattr(runner, "report", lambda *args: None)
+    monkeypatch.setattr(runner, "environment", lambda *args: {})
+    campaign = {"default_runtime_directory": str(snapshot)}
+
+    cell = {"id": "x", "resume_run_id": "bench-x", "project": str(project), "recovery_attempts": 3}
+    runner.launch(tmp_path, campaign, cell)
+    assert cell["resume_run_id"] == "bench-x-r1"
+    assert cell["resume_source_corrected_from"] == "bench-x"
+    assert cell["run_id"] == "bench-x-r3"
+
+    already = {
+        "id": "x",
+        "resume_run_id": "bench-x-r1",
+        "project": str(project),
+        "recovery_attempts": 4,
+    }
+    runner.launch(tmp_path, campaign, already)
+    assert already["resume_run_id"] == "bench-x-r1"
+    assert "resume_source_corrected_from" not in already
+
+    assert runner.resume_source(tmp_path / "nowhere") == ""
+
+
 def test_adopted_terminal_run_is_scored_without_relaunch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
