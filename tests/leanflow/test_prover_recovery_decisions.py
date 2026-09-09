@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -299,8 +300,17 @@ def test_decompose_decision_replans_and_reopens(tmp_path: Path, monkeypatch) -> 
     assert runtime.state["metrics"]["decompositions"] == 1
 
 
-def test_rejected_replan_ends_the_round_with_the_node_blocked(tmp_path: Path, monkeypatch) -> None:
-    """When planner and reviewer decline every proposal, stop spending on this branch."""
+def test_rejected_replan_buys_another_decision_rather_than_ending_the_round(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A declined proposal rules out a direction, not the branch.
+
+    This previously stopped after one refusal, leaving the node blocked. When
+    the node was the root that ended the whole run through
+    `no_runnable_obligations`, with the campaign recovery budget and most of the
+    call budget unspent. The orchestrator now gets to choose again, and the
+    campaign budget -- not the first refusal -- is what bounds the loop.
+    """
     runtime = research_runtime(tmp_path)
     node = runtime.dag.nodes[0]
     node.status = "blocked"
@@ -312,10 +322,11 @@ def test_rejected_replan_ends_the_round_with_the_node_blocked(tmp_path: Path, mo
 
     runtime._recover(node, {"notes": "too big"})
 
-    assert len(calls) == 1  # no second decision was bought
-    assert node.status == "blocked"
-    assert "Replanning was rejected" in node.notes
-    assert runtime.state["metrics"]["decompositions"] == 1
+    assert len(calls) == 2  # a second decision WAS bought
+    assert calls[1]["replans_rejected"] == 1
+    assert node.status == "retry"
+    assert "declined" in node.notes
+    assert runtime.state["metrics"]["decompositions"] == 2
 
 
 def test_standard_mode_blocks_without_ever_consulting_the_orchestrator(
@@ -1367,3 +1378,64 @@ def test_completed_failure_before_journal_opens_still_recovers_on_resume(
     # Recovery was opened for the node, so the drain will consult the orchestrator
     # instead of leaving it permanently blocked.
     assert node.id in resumed.state["recovery_in_flight"]
+
+
+def test_declined_replan_returns_to_the_orchestrator_instead_of_ending_the_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A rejected proposal rules out a direction, not the node's recovery.
+
+    Giving up here ended whole runs early: a declined replan left the node
+    blocked, and when that node was the root the scheduler stopped with
+    `no_runnable_obligations` while the campaign recovery budget and most of the
+    call budget were still unspent. The orchestrator must get to propose
+    something else, knowing what was refused.
+    """
+    runtime = research_runtime(tmp_path)
+    node = runtime.dag.nodes[0]
+    node.status = "blocked"
+    decide, calls = scripted(["decompose", "retry"])
+    monkeypatch.setattr(recovery, "recovery_decision", decide)
+
+    def decline(reason: str, *, affected: Any = None, refinement: bool = False) -> bool:
+        runtime.state["proposal_status"] = "rejected"
+        runtime.state["proposal_critique"] = "the proposed leaf is root-equivalent"
+        runtime.state.pop("planning_request", None)
+        return False
+
+    monkeypatch.setattr(runtime, "_research_plan", decline)
+
+    runtime._recover(node, {"notes": "stuck"})
+
+    # It came back for a second decision rather than stopping.
+    assert len(calls) == 2
+    assert calls[1]["replans_rejected"] == 1
+    assert calls[1]["last_plan_rejection"] == "the proposed leaf is root-equivalent"
+    # Each hand-back spends a campaign recovery unit, which is what bounds it.
+    assert runtime.state["metrics"]["decompositions"] == 2
+    assert node.status == "retry"
+    assert "declined" in node.notes
+
+
+def test_declined_replans_stop_at_the_campaign_recovery_budget(tmp_path: Path, monkeypatch) -> None:
+    """The hand-back loop is bounded by max_decompositions, not unbounded."""
+    runtime = research_runtime(tmp_path)
+    runtime.config = replace(runtime.config, max_decompositions=3)
+    node = runtime.dag.nodes[0]
+    node.status = "blocked"
+    monkeypatch.setattr(
+        recovery,
+        "recovery_decision",
+        lambda rt, n, report: {"action": "decompose", "rationale": ""},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_research_plan",
+        lambda reason, *, affected=None, refinement=False: False,
+    )
+
+    runtime._recover(node, {"notes": "stuck"})
+
+    assert runtime.state["metrics"]["decompositions"] == 3
+    assert node.status == "blocked"
+    assert "Campaign recovery budget exhausted" in node.notes

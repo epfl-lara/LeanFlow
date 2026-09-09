@@ -803,7 +803,9 @@ def test_negation_provider_failure_resumes_same_job_and_decomposition_allowance(
     runtime = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(mode="research", job_api_calls=3, negation_api_calls=3),
+        config=ProverConfig(
+            mode="research", job_api_calls=3, negation_api_calls=3, max_decompositions=4
+        ),
         session=provider,
         verifier=Verifier(),
     )
@@ -831,6 +833,8 @@ def test_negation_provider_failure_resumes_same_job_and_decomposition_allowance(
     resumed = ProverRuntime(
         root=tmp_path,
         targets=[path],
+        # A resume restores the snapshot's config, so this is ignored; the
+        # budget that binds is max_decompositions=4 from the original run.
         config=ProverConfig(),
         session=provider,
         verifier=Verifier(),
@@ -844,8 +848,12 @@ def test_negation_provider_failure_resumes_same_job_and_decomposition_allowance(
     assert len(state["jobs"]) == 1
     assert state["jobs"][0]["resumed"] is True
     assert state["metrics"]["api_calls"] == 3
-    # One unit for the original negate decision, one for the post-resume decision.
-    assert state["metrics"]["decompositions"] == 2
+    # This stub answers "decompose" every time and rejects every proposal, the
+    # worst case for the hand-back. It must terminate on the CAMPAIGN recovery
+    # budget rather than on the first refusal: one unit for the original negate
+    # decision, then one per rejected replan until max_decompositions is spent.
+    assert state["metrics"]["decompositions"] == 4
+    assert "Campaign recovery budget exhausted" in state["dag"]["nodes"][0]["notes"]
     assert state["dag"]["nodes"][0]["attempts"] == 4
 
 

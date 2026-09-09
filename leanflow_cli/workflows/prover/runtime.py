@@ -1141,7 +1141,32 @@ class ProverRuntime:
                     if current is not None and current.status == "blocked":
                         current.status = "retry"
                 else:
-                    node.notes += "\nReplanning was rejected; this node stays blocked."
+                    # A declined proposal rules out a DIRECTION, not this node's
+                    # recovery. Hand back to the orchestrator exactly as an
+                    # unrefuted negation does: it may retry, negate, or propose a
+                    # different decomposition, now knowing what was refused and
+                    # why. Giving up here ended whole runs with the campaign
+                    # recovery budget and most of the call budget unspent,
+                    # because a blocked root leaves no runnable obligation.
+                    report = dict(rec.get("report") or {})
+                    rejected = int(report.get("replans_rejected", 0)) + 1
+                    critique = str(self.state.get("proposal_critique", ""))[:2000]
+                    node.notes += (
+                        f"\nReplanning proposal {rejected} was declined; "
+                        "returning to the orchestrator for a different direction."
+                    )
+                    rec["report"] = {
+                        **report,
+                        "replans_rejected": rejected,
+                        "last_plan_rejection": critique,
+                    }
+                    rec["charged"] = False
+                    rec["decision"] = None
+                    rec["plan_started"] = False
+                    rec["applied"] = False
+                    rec["stage"] = "decide"
+                    self._persist()
+                    continue
                 self._dismiss_recovery(node.id)
                 return
 
