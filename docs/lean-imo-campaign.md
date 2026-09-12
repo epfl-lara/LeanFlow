@@ -60,6 +60,13 @@ are preserved. If the dispatcher crashed with active admissions, it refuses
 automatic replacement: reconcile the recorded PIDs and native state first so
 that surviving jobs cannot be duplicated or their budgets reset.
 
+The `astra-low-luna-high-top` condition uses Luna at high reasoning for proving
+and negation, with Astra at low reasoning for planning, review, and research.
+It keeps top-down search, four prover workers per cell, 150 calls per prover
+pass, 50 per planning pass, 5,000 total calls per problem, and an eight-hour
+wall limit. Set `LEANFLOW_CAMPAIGN_LANES=3` to run three problems concurrently;
+use `--problems` at preparation to select the remaining unverified problems.
+
 ## Explicit runtime upgrades
 
 An authorized runtime upgrade sets `default_runtime_directory` to a new immutable

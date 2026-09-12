@@ -428,6 +428,30 @@ def test_bottom_up_arm_changes_only_the_search_order() -> None:
     assert (config["total_api_calls"], config["job_api_calls"]) == (5000, 150)
 
 
+def test_luna_high_astra_low_preserves_the_calibrated_top_down_budget() -> None:
+    """Change role efforts without changing the earlier hybrid's proof limits."""
+    from leanflow_cli.workflows.prover.config import ProverConfig
+
+    (old,) = cells([{"id": "p"}], CONDITION_SETS["astra-plan-luna-prove"])
+    (new,) = cells([{"id": "p"}], CONDITION_SETS["astra-low-luna-high-top"])
+    differing = {key for key, value in old["config"].items() if new["config"][key] != value}
+    assert differing == {"reasoning_effort", "orchestrator_reasoning_effort"}
+    config = ProverConfig(**new["config"])
+    for role in ("prover", "negation"):
+        settings = config.to_mapping(role)
+        assert (settings["model"], settings["reasoning_effort"]) == ("gpt-5.6-luna", "high")
+    for role in ("orchestrator", "review", "research"):
+        settings = config.to_mapping(role)
+        assert (settings["model"], settings["reasoning_effort"]) == ("gpt-6-astra", "low")
+    assert config.search_order == "top-down"
+    assert (config.parallelism, config.job_api_calls, config.total_api_calls) == (4, 150, 5000)
+    assert (config.orchestrator_api_calls, config.wall_time_s, config.timeout_s) == (
+        50,
+        28800,
+        1200,
+    )
+
+
 def test_calibrated_budget_matches_what_the_top_down_arm_actually_ran() -> None:
     """The four proofs were produced at 5000/150; the code must say so."""
     from scripts.lean_imo_campaign.matrix import LUNA_CALIBRATED

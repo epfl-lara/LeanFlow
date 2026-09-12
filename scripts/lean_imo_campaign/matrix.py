@@ -119,6 +119,14 @@ ASTRA_PLAN_LUNA_PROVE_BOTTOM_UP = (
     ),
 )
 
+ASTRA_LOW_LUNA_HIGH_TOP = (
+    ASTRA_PLAN_LUNA_PROVE[0]._replace(
+        label="astra-low-luna-high-top",
+        prover_effort="high",
+        orchestrator_effort="low",
+    ),
+)
+
 RCP_FLASH_BUDGET = LUNA_CALIBRATED._replace(parallelism=1)
 
 
@@ -147,6 +155,7 @@ CONDITION_SETS = {
     "luna-top-down-split": LUNA_TOP_DOWN_SPLIT_EFFORT,
     "astra-plan-luna-prove": ASTRA_PLAN_LUNA_PROVE,
     "astra-plan-luna-prove-bottom": ASTRA_PLAN_LUNA_PROVE_BOTTOM_UP,
+    "astra-low-luna-high-top": ASTRA_LOW_LUNA_HIGH_TOP,
     "astra-low-glm-flash-top": rcp_flash_condition(
         "astra-low-glm-flash-top", "zai-org/GLM-5.3-Flash"
     ),
