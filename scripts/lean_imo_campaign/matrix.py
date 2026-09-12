@@ -58,6 +58,10 @@ class Condition(NamedTuple):
     #: planning and proving on different models.
     orchestrator_model: str = ""
     budget: Budget = WIDE
+    provider: str = ""
+    base_url: str = ""
+    api_key_env: str = ""
+    orchestrator_provider: str = ""
 
 
 #: The original four-arm comparison: two models x two search orders, every role
@@ -115,12 +119,40 @@ ASTRA_PLAN_LUNA_PROVE_BOTTOM_UP = (
     ),
 )
 
+RCP_FLASH_BUDGET = LUNA_CALIBRATED._replace(parallelism=1)
+
+
+def rcp_flash_condition(label: str, model: str) -> tuple[Condition, ...]:
+    """Keep one RCP prover per cell so two lanes use at most two key requests."""
+    return (
+        Condition(
+            label=label,
+            model=model,
+            order="top-down",
+            prover_effort="medium",
+            orchestrator_effort="low",
+            orchestrator_model="gpt-6-astra",
+            budget=RCP_FLASH_BUDGET,
+            provider="rcp",
+            base_url="https://inference.rcp.epfl.ch/v1",
+            api_key_env="RCP_API_KEY",
+            orchestrator_provider="openai-codex",
+        ),
+    )
+
+
 CONDITION_SETS = {
     "full": CONDITIONS,
     "top-down-split": TOP_DOWN_SPLIT_EFFORT,
     "luna-top-down-split": LUNA_TOP_DOWN_SPLIT_EFFORT,
     "astra-plan-luna-prove": ASTRA_PLAN_LUNA_PROVE,
     "astra-plan-luna-prove-bottom": ASTRA_PLAN_LUNA_PROVE_BOTTOM_UP,
+    "astra-low-glm-flash-top": rcp_flash_condition(
+        "astra-low-glm-flash-top", "zai-org/GLM-5.3-Flash"
+    ),
+    "astra-low-deepseek-flash-top": rcp_flash_condition(
+        "astra-low-deepseek-flash-top", "deepseek-ai/DeepSeek-V4-Flash-0731"
+    ),
 }
 
 
@@ -131,6 +163,10 @@ def configuration(
     orchestrator_effort: str = "",
     budget: Budget = WIDE,
     orchestrator_model: str = "",
+    provider: str = "",
+    base_url: str = "",
+    api_key_env: str = "",
+    orchestrator_provider: str = "",
 ) -> dict[str, Any]:
     """Return every prover setting explicitly, avoiding mutable home profile defaults."""
     from leanflow_cli.workflows.prover.config import ProverConfig
@@ -140,6 +176,10 @@ def configuration(
         search_order=order,
         model=model,
         orchestrator_model=orchestrator_model or model,
+        provider=provider,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        orchestrator_provider=orchestrator_provider,
         reasoning_effort=prover_effort,
         orchestrator_reasoning_effort=orchestrator_effort,
         **budget._asdict(),
@@ -179,6 +219,10 @@ def cells(
                 condition.orchestrator_effort,
                 condition.budget,
                 condition.orchestrator_model,
+                condition.provider,
+                condition.base_url,
+                condition.api_key_env,
+                condition.orchestrator_provider,
             ),
             "status": "pending",
             "lane": None,

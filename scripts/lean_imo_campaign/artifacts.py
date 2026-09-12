@@ -249,6 +249,8 @@ def environment(directory: Path) -> dict[str, str]:
         "LC_CTYPE",
         "ELAN_HOME",
         "CODEX_HOME",
+        # Each RCP campaign receives only its assigned virtual key at launch.
+        "RCP_API_KEY",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",

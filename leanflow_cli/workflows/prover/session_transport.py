@@ -8,6 +8,8 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from leanflow_cli.workflows.prover.session_provider import resolve_session_provider
+
 _IMPORT_LOCK = threading.Lock()
 _agent_class: Any = None
 
@@ -47,12 +49,13 @@ def build_transport(config: Mapping[str, Any], schemas: list[dict[str, Any]]) ->
     effort = str(
         config.get("reasoning_effort") or os.getenv("LEANFLOW_NATIVE_REASONING_EFFORT", "")
     )
+    route = resolve_session_provider(config)
     agent = agent_class(
         model=model,
-        base_url=os.getenv("LEANFLOW_NATIVE_BASE_URL", ""),
-        api_key=os.getenv("LEANFLOW_NATIVE_API_KEY", ""),
-        provider=os.getenv("LEANFLOW_NATIVE_PROVIDER", ""),
-        api_mode=os.getenv("LEANFLOW_NATIVE_API_MODE", ""),
+        base_url=route["base_url"],
+        api_key=route["api_key"],
+        provider=route["provider"],
+        api_mode=route["api_mode"],
         enabled_toolsets=["leanflow-prover-session"],
         quiet_mode=True,
         skip_context_files=True,

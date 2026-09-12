@@ -150,7 +150,7 @@ def new_job(
             "started_at": now(),
             "updated_at": now(),
             "phase": "starting",
-            "provider": os.getenv("LEANFLOW_NATIVE_PROVIDER", ""),
+            "provider": role_settings.get("provider") or os.getenv("LEANFLOW_NATIVE_PROVIDER", ""),
             "reasoning_effort": (
                 role_settings["reasoning_effort"]
                 or os.getenv("LEANFLOW_NATIVE_REASONING_EFFORT", "")

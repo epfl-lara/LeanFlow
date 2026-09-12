@@ -233,6 +233,7 @@ tool is reachable through the public registry.
 | `workflows/prover/allocation.py` | Wait outside the controller lock for parallel allocations; reconcile usage without dequeuing proof results or making a worker wait on itself |
 | `workflows/prover/usage.py` | Exact-model cost estimates, provider cost provenance, request coverage, and cumulative resume telemetry independent of observer flush timing |
 | `workflows/prover/session_transport.py` | Shared provider adapters, one request per admission, no hidden retry/recovery loop |
+| `workflows/prover/session_provider.py` | Per-role endpoint and credential-variable resolution without changing shared process credentials; legacy jobs retain the native route |
 | `workflows/prover/session_context.py` | Deterministic compaction retaining the contract, assignment and proof notes |
 | `workflows/prover/session_guidance.py` | Selected skill contracts and durable addressed inbox delivery between requests |
 | `workflows/prover/session_tools.py` | Role-specific read/scratch/Lean/research tools; no generic source-write or terminal authority |

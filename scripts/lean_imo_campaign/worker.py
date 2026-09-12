@@ -60,9 +60,7 @@ def main() -> int:
         env[ENV_NAMES[key]] = (
             ("1" if value else "0")
             if isinstance(value, bool)
-            else ",".join(value)
-            if isinstance(value, (list, tuple))
-            else str(value)
+            else ",".join(value) if isinstance(value, (list, tuple)) else str(value)
         )
     os.environ.update(env)
     if cell.get("resume_run_id"):

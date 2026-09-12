@@ -211,6 +211,12 @@ All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
 | `TIMEOUT_S` | `180` | Provider request and independent Lean-check deadline |
 | `MODEL` | launch model | Prover model override |
 | `ORCHESTRATOR_MODEL` | prover model | Planning, review, and research model override |
+| `PROVIDER` | native launch route | Prover and negation provider override |
+| `BASE_URL` | provider default | Explicit prover endpoint |
+| `API_KEY_ENV` | provider credentials | Environment variable name for the prover key; never the key value |
+| `ORCHESTRATOR_PROVIDER` | prover route | Planning, review, and research provider override |
+| `ORCHESTRATOR_BASE_URL` | provider default | Endpoint for an explicit planning route |
+| `ORCHESTRATOR_API_KEY_ENV` | provider credentials | Environment variable name for the planning key |
 | `CONTEXT_TOKENS` | `64000` | Prover context estimate, including output reserve |
 | `ORCHESTRATOR_CONTEXT_TOKENS` | `64000` | Planning/research context estimate |
 | `COMPRESSION` | `1` | Deterministically compact prover history |
@@ -219,6 +225,21 @@ All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
 | `ALLOWED_AXIOMS` | `propext,Classical.choice,Quot.sound` | Allowed completion axioms |
 
 For example:
+
+For RCP proving with Codex planning, set `PROVIDER=rcp`,
+`BASE_URL=https://inference.rcp.epfl.ch/v1`, `API_KEY_ENV=RCP_API_KEY`, and
+`ORCHESTRATOR_PROVIDER=openai-codex` alongside the respective model settings.
+These setting names use the `LEANFLOW_PROVER_` prefix; only the named credential
+variable contains a secret. Selecting an explicit planning provider clears any
+inherited prover endpoint or key name. An unset explicit key fails before a
+request instead of falling back to another provider's credentials.
+
+The campaign presets `astra-low-glm-flash-top` and
+`astra-low-deepseek-flash-top` use Astra at low effort for planning, medium effort
+for the RCP prover, top-down search, 150 calls per prover pass, and 5,000 calls
+per problem. Each cell has one prover; two campaign lanes keep at most two RCP
+requests active. Run one campaign process per key and provide its assigned key
+as `RCP_API_KEY`; the campaign does not inherit `RCP_API_KEY_RESERVE`.
 
 ```bash
 LEANFLOW_PROVER_JOB_API_CALLS=120 \

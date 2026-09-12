@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -30,6 +31,12 @@ ENV_NAMES = {
     "timeout_s": "LEANFLOW_PROVER_TIMEOUT_S",
     "model": "LEANFLOW_PROVER_MODEL",
     "orchestrator_model": "LEANFLOW_PROVER_ORCHESTRATOR_MODEL",
+    "provider": "LEANFLOW_PROVER_PROVIDER",
+    "base_url": "LEANFLOW_PROVER_BASE_URL",
+    "api_key_env": "LEANFLOW_PROVER_API_KEY_ENV",
+    "orchestrator_provider": "LEANFLOW_PROVER_ORCHESTRATOR_PROVIDER",
+    "orchestrator_base_url": "LEANFLOW_PROVER_ORCHESTRATOR_BASE_URL",
+    "orchestrator_api_key_env": "LEANFLOW_PROVER_ORCHESTRATOR_API_KEY_ENV",
     "reasoning_effort": "LEANFLOW_PROVER_REASONING_EFFORT",
     "orchestrator_reasoning_effort": "LEANFLOW_PROVER_ORCHESTRATOR_REASONING_EFFORT",
     "context_tokens": "LEANFLOW_PROVER_CONTEXT_TOKENS",
@@ -68,6 +75,13 @@ class ProverConfig:
     timeout_s: int = 180
     model: str = ""
     orchestrator_model: str = ""
+    #: Credentials stay in the process environment; snapshots retain only names.
+    provider: str = ""
+    base_url: str = ""
+    api_key_env: str = ""
+    orchestrator_provider: str = ""
+    orchestrator_base_url: str = ""
+    orchestrator_api_key_env: str = ""
     reasoning_effort: str = ""
     orchestrator_reasoning_effort: str = ""
     context_tokens: int = 64000
@@ -79,6 +93,13 @@ class ProverConfig:
     allowed_axioms: tuple[str, ...] = ("propext", "Classical.choice", "Quot.sound")
 
     def __post_init__(self) -> None:
+        for prefix in ("", "orchestrator_"):
+            provider = getattr(self, prefix + "provider")
+            key_env = getattr(self, prefix + "api_key_env")
+            if key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_env):
+                raise ValueError(prefix + "api_key_env must name an environment variable")
+            if (key_env or getattr(self, prefix + "base_url")) and not provider:
+                raise ValueError(prefix + "provider is required for an explicit provider route")
         if self.mode not in {"standard", "research"}:
             raise ValueError("prover mode must be standard or research")
         if self.search_order not in {"bottom-up", "top-down"}:
@@ -117,6 +138,11 @@ class ProverConfig:
             values["context_tokens"] = self.orchestrator_context_tokens
             values["compression"] = self.orchestrator_compression
             values["reasoning_effort"] = self.orchestrator_reasoning_effort or self.reasoning_effort
+            if self.orchestrator_provider:
+                # An explicit planning route must not inherit the worker's key.
+                values["provider"] = self.orchestrator_provider
+                values["base_url"] = self.orchestrator_base_url
+                values["api_key_env"] = self.orchestrator_api_key_env
         return values
 
     @classmethod

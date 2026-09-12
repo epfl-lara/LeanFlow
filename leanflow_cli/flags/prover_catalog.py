@@ -23,6 +23,25 @@ def _integer(name: str, default: int, summary: str, minimum: int = 1) -> FlagSpe
 
 
 PROVER_FLAGS: tuple[FlagSpec, ...] = (
+    *(
+        FlagSpec(
+            name="LEANFLOW_PROVER_" + suffix,
+            kind="tuning",
+            value_type="string",
+            default="",
+            group=_GROUP,
+            summary=summary,
+            read_in=_READER,
+        )
+        for suffix, summary in (
+            ("PROVIDER", "Prover provider; empty inherits the native launch route."),
+            ("BASE_URL", "Explicit prover provider endpoint."),
+            ("API_KEY_ENV", "Name of the environment variable holding the prover credential."),
+            ("ORCHESTRATOR_PROVIDER", "Planning, review and research provider override."),
+            ("ORCHESTRATOR_BASE_URL", "Explicit planning provider endpoint."),
+            ("ORCHESTRATOR_API_KEY_ENV", "Name of the planning credential environment variable."),
+        )
+    ),
     FlagSpec(
         name="LEANFLOW_PROVER_MODE",
         kind="feature",

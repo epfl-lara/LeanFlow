@@ -10,6 +10,40 @@ from scripts.lean_imo_campaign.matrix import CONDITION_SETS, CONDITIONS, WIDE, c
 from scripts.lean_imo_campaign.runner import refresh
 
 
+@pytest.mark.parametrize(
+    "name,model",
+    [
+        ("astra-low-glm-flash-top", "zai-org/GLM-5.3-Flash"),
+        ("astra-low-deepseek-flash-top", "deepseek-ai/DeepSeek-V4-Flash-0731"),
+    ],
+)
+def test_rcp_arms_route_workers_and_planning_separately(name, model):
+    from leanflow_cli.workflows.prover.config import ProverConfig
+
+    row = cells([{"id": "p"}], CONDITION_SETS[name])[0]
+    config = ProverConfig(**row["config"])
+    worker = config.to_mapping("prover")
+    planner = config.to_mapping("orchestrator")
+    assert worker["model"] == model and worker["provider"] == "rcp"
+    assert worker["api_key_env"] == "RCP_API_KEY"
+    assert planner["model"] == "gpt-6-astra" and planner["provider"] == "openai-codex"
+    assert planner["reasoning_effort"] == "low" and planner["api_key_env"] == ""
+    assert worker["search_order"] == "top-down"
+    assert (worker["parallelism"], worker["job_api_calls"], worker["total_api_calls"]) == (
+        1,
+        150,
+        5000,
+    )
+
+
+def test_campaign_environment_carries_only_assigned_rcp_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("RCP_API_KEY", "assigned-test-key")
+    monkeypatch.setenv("RCP_API_KEY_RESERVE", "other-test-key")
+    env = environment(tmp_path)
+    assert env["RCP_API_KEY"] == "assigned-test-key"
+    assert "RCP_API_KEY_RESERVE" not in env
+
+
 def test_two_lanes_finish_conditions_before_claiming_next_problem() -> None:
     rows = cells([{"id": f"problem-{i}"} for i in range(1, 4)])
     first = next_cell(rows, 1)
