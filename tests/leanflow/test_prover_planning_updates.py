@@ -86,6 +86,43 @@ def test_metadata_only_update_keeps_revision_status_and_authority() -> None:
     assert changed.status == "conditional"
 
 
+@pytest.mark.parametrize("current_status", ["blocked", "candidate"])
+@pytest.mark.parametrize("requested_status", ["blocked", "proved"])
+def test_replanned_status_is_owned_by_controller(
+    current_status: str, requested_status: str
+) -> None:
+    dag = planning_graph()
+    dag.by_id()["root"].status = current_status
+
+    updated, _ = apply_proposal(
+        dag,
+        {
+            "nodes": [
+                {
+                    "id": "root",
+                    "dependencies": ["old_helper", "pending_helper"],
+                    "status": requested_status,
+                }
+            ]
+        },
+        max_nodes=10,
+    )
+
+    assert updated.by_id()["root"].status == "pending"
+    assert updated.by_id()["root"].candidate == dag.by_id()["root"].candidate
+    assert updated.by_id()["old_helper"] == dag.by_id()["old_helper"]
+    assert dag.by_id()["root"].status == current_status
+
+
+@pytest.mark.parametrize("review", [False, True])
+def test_planner_and_reviewer_understand_controller_status_resets(review: bool) -> None:
+    prompt = planning_prompt(reason="Split a blocked obligation.", review=review)
+    assert "model-supplied status fields are ignored" in prompt
+    assert "resets its proposed status to pending" in prompt
+    assert "Do not request status-field edits or reject a proposal solely" in prompt
+    assert "independent checking after dependencies are proved" in prompt
+
+
 @pytest.mark.parametrize("suffix", ["", " := by sorry"])
 def test_legacy_exact_statement_copies_remain_supported(suffix: str) -> None:
     dag = planning_graph()
