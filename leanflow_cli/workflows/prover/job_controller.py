@@ -263,7 +263,18 @@ def session_event(
                     job[field] = details[field]
                     if field != "model":
                         runtime.state[field] = details[field]
-        if kind in {"api-request", "tool-start"}:
+        if kind == "provider-wait":
+            job["phase"] = "provider_queue"
+            if not job.get("active_operation_id"):
+                operation = runtime.progress.begin(
+                    "provider_queue",
+                    "Waiting for provider request slot",
+                    job_id=job["id"],
+                    node_id=job["node_id"],
+                    timeout_s=details.get("timeout_s", runtime.config.wall_time_s),
+                )
+                job["active_operation_id"] = operation["id"]
+        elif kind in {"api-request", "tool-start"}:
             previous_operation_id = job.pop("active_operation_id", "")
             previous_operation = next(
                 (
@@ -276,8 +287,12 @@ def session_event(
             if previous_operation is not None and previous_operation["status"] == "running":
                 runtime.progress.end(
                     previous_operation,
-                    failed=True,
-                    error="Operation ended without its expected completion event",
+                    failed=previous_operation["kind"] != "provider_queue",
+                    error=(
+                        "Operation ended without its expected completion event"
+                        if previous_operation["kind"] != "provider_queue"
+                        else ""
+                    ),
                 )
             job["phase"] = "model_request" if kind == "api-request" else "tool"
             operation = runtime.progress.begin(

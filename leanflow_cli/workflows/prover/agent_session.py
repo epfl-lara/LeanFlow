@@ -13,6 +13,7 @@ from typing import Any
 from agent.accounting.redact import redact_sensitive_text
 from agent.accounting.token_accounting import TokenAccounter
 from core.utils import atomic_json_write
+from leanflow_cli.workflows.prover.session_admission import provider_request_slot
 from leanflow_cli.workflows.prover.session_context import (
     approximate_tokens,
     compact_history,
@@ -279,48 +280,67 @@ def run_session(
                     {**config, "max_output_tokens": max_output_tokens},
                     schemas,
                 )
-            used += 1
-            atomic_json_write(
-                budget_path,
-                {
-                    "limit": api_budget,
-                    "used": used,
-                    "usage": usage_checkpoint(
-                        previous_usage,
-                        {
-                            "input_tokens": accounter.session_prompt_tokens,
-                            "output_tokens": accounter.session_completion_tokens,
-                            **costs.snapshot(used - initial_used),
-                        },
-                        used,
-                    ),
-                },
-            )
-            emit(
-                "api-request",
-                {
-                    "api_calls": used,
-                    "api_budget": api_budget,
-                    "model": agent.model,
-                    "provider": getattr(agent, "provider", ""),
-                    "reasoning_effort": getattr(agent, "reasoning_config", {}).get("effort", ""),
-                    "final_report_only": final_report_only,
-                },
-            )
-            try:
-                assistant, usage = request_once(
-                    agent,
-                    messages + [remaining_note],
-                    min(float(config.get("timeout_s", 180)), max(1.0, deadline - time.monotonic())),
-                    **({"final_report_only": True} if final_report_only else {}),
+            with provider_request_slot(
+                agent,
+                deadline=deadline,
+                cancelled=is_cancelled,
+                on_wait=lambda: emit(
+                    "provider-wait",
+                    {
+                        "api_calls": used,
+                        "model": agent.model,
+                        "provider": getattr(agent, "provider", ""),
+                        "timeout_s": max(1.0, deadline - time.monotonic()),
+                    },
+                ),
+            ):
+                used += 1
+                atomic_json_write(
+                    budget_path,
+                    {
+                        "limit": api_budget,
+                        "used": used,
+                        "usage": usage_checkpoint(
+                            previous_usage,
+                            {
+                                "input_tokens": accounter.session_prompt_tokens,
+                                "output_tokens": accounter.session_completion_tokens,
+                                **costs.snapshot(used - initial_used),
+                            },
+                            used,
+                        ),
+                    },
                 )
-            except Exception as exc:
-                last_error = redact_sensitive_text(str(exc))
-                emit("api-error", {"api_calls": used, "error": last_error})
-                # Infrastructure errors are explicit outcomes. Retrying must be
-                # an orchestrator decision with a new admitted job allocation.
-                status = "provider_error"
-                break
+                emit(
+                    "api-request",
+                    {
+                        "api_calls": used,
+                        "api_budget": api_budget,
+                        "model": agent.model,
+                        "provider": getattr(agent, "provider", ""),
+                        "reasoning_effort": getattr(agent, "reasoning_config", {}).get(
+                            "effort", ""
+                        ),
+                        "final_report_only": final_report_only,
+                    },
+                )
+                try:
+                    assistant, usage = request_once(
+                        agent,
+                        messages + [remaining_note],
+                        min(
+                            float(config.get("timeout_s", 180)),
+                            max(1.0, deadline - time.monotonic()),
+                        ),
+                        **({"final_report_only": True} if final_report_only else {}),
+                    )
+                except Exception as exc:
+                    last_error = redact_sensitive_text(str(exc))
+                    emit("api-error", {"api_calls": used, "error": last_error})
+                    # Infrastructure errors are explicit outcomes. Retrying must be
+                    # an orchestrator decision with a new admitted job allocation.
+                    status = "provider_error"
+                    break
             accounter.record_usage(
                 prompt_tokens=_usage_value(usage, "prompt_tokens", "input_tokens"),
                 completion_tokens=_usage_value(usage, "completion_tokens", "output_tokens"),

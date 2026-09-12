@@ -237,8 +237,13 @@ request instead of falling back to another provider's credentials.
 The campaign presets `astra-low-glm-flash-top` and
 `astra-low-deepseek-flash-top` use Astra at low effort for planning, medium effort
 for the RCP prover, top-down search, 150 calls per prover pass, and 5,000 calls
-per problem. Each cell has one prover; two campaign lanes keep at most two RCP
-requests active. Run one campaign process per key and provide its assigned key
+per problem. Each cell has one prover; two campaign lanes keep two cells active.
+RCP requests sharing a credential are serialized across processes under the shared
+LeanFlow home, respecting virtual keys limited to one in-flight request. Queued
+requests publish waiting progress and consume no calls until dispatched; waiting
+still respects cancellation and the original wall-time budget. Other providers
+and different RCP credentials remain independent. Run one campaign process per
+key and provide its assigned key
 as `RCP_API_KEY`; the campaign does not inherit `RCP_API_KEY_RESERVE`.
 
 ```bash

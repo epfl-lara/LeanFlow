@@ -286,6 +286,8 @@ def event_message(kind: str, details: Mapping[str, Any], preview: Mapping[str, A
             + (f" · {error}" if error else ""),
             MESSAGE_CHARS,
         )
+    if kind == "provider-wait":
+        return "Waiting for provider request slot; no call spent"
     if kind == "api-request":
         model = str(details.get("model") or "")
         text = f"Request {calls}/{budget}" if counted and budgeted else "Request"
