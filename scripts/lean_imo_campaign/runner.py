@@ -17,8 +17,9 @@ from typing import Any
 
 from scripts.lean_imo_campaign.adoption import AdoptedProcess, process_identity
 from scripts.lean_imo_campaign.artifacts import environment, freeze, prepare, save
+from scripts.lean_imo_campaign.dispatch_policy import active_limit, can_admit, pause_after_failure
 from scripts.lean_imo_campaign.matrix import CONDITION_SETS, cells, next_cell
-from scripts.lean_imo_campaign.recovery import requires_inspection, schedule_recovery
+from scripts.lean_imo_campaign.recovery import schedule_recovery
 from scripts.lean_imo_campaign.runtime_versions import runtime_directory
 
 
@@ -272,6 +273,8 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
         # the campaign would sit in "waiting" forever, never dispatching them.
         # Widening is always safe; refuse to narrow below the highest claim.
         dispatch_lanes = set(lanes())
+        max_active = active_limit(len(dispatch_lanes))
+        continue_transient = os.environ.get("LEANFLOW_CAMPAIGN_CONTINUE_TRANSIENT_ERRORS") == "1"
         stranded = sorted(
             {
                 c["lane"]
@@ -308,6 +311,8 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
             runner_pid=os.getpid(),
             dispatcher_argv=sys.argv,
             dispatcher_lanes=list(lanes()),
+            dispatcher_max_active=max_active,
+            dispatcher_continue_transient_errors=continue_transient,
         )
         dispatcher_snapshot = Path(__file__).resolve().parents[3]
         if (dispatcher_snapshot / "provenance.json").is_file():
@@ -354,7 +359,7 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
                 if cell["status"] in {"running", "completed"} and not cell["verified"]:
                     cell["status"] = "unverified_exit"
                 recovered = schedule_recovery(cell) if not paused else False
-                if not recovered and requires_inspection(cell):
+                if not recovered and pause_after_failure(cell, continue_transient):
                     paused = True
                     campaign["pause_reason"] = (
                         f"Inspect {cell['id']}: {cell['status']}. Existing runs continue; new dispatch is paused."
@@ -364,6 +369,8 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
             if not paused:
                 for lane in lanes():
                     if lane in active:
+                        continue
+                    if not can_admit(campaign["cells"], lane, len(active), max_active):
                         continue
                     candidate = next_cell(campaign["cells"], lane)
                     if candidate is not None:

@@ -535,6 +535,8 @@ The complete contribution and quality-gate requirements are in `AGENTS.md` and
 workflow layer: `matrix.py` owns problem-lane scheduling, `artifacts.py` freezes
 the runtime and prepares private offline Lake projects, `worker.py` invokes the
 dedicated prover, `recovery.py` bounds provider reconnects without budget resets,
+`dispatch_policy.py` limits active cells independently of persistent lane claims
+and optionally advances past exhausted transient transport failures,
 `runtime_versions.py` pins each cell to an immutable runtime, `adoption.py`
 reattaches a replacement dispatcher to recorded worker identities, and
 `runner.py` persists the two-lane queue and metrics (including runtime hashes). It introduces no generic

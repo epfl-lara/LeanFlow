@@ -67,6 +67,15 @@ pass, 50 per planning pass, 5,000 total calls per problem, and an eight-hour
 wall limit. Set `LEANFLOW_CAMPAIGN_LANES=3` to run three problems concurrently;
 use `--problems` at preparation to select the remaining unverified problems.
 
+To serialize a campaign that already has several assigned lanes, retain its
+lane count and set `LEANFLOW_CAMPAIGN_MAX_ACTIVE=1`. This runs pending cells in
+manifest order, automatically admitting the next when the current cell ends,
+without changing any proof budget or lane assignment. The default active limit
+is the lane count. Set `LEANFLOW_CAMPAIGN_CONTINUE_TRANSIENT_ERRORS=1` to advance
+past known connection/access-service failures after their bounded reconnects
+are exhausted; failed cells retain their error and saved progress. Authentication,
+quota, unknown provider errors and integrity failures still pause dispatch.
+
 ## Explicit runtime upgrades
 
 An authorized runtime upgrade sets `default_runtime_directory` to a new immutable
