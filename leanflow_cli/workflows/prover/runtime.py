@@ -259,6 +259,7 @@ class ProverRuntime:
                 "error",
                 "interrupted",
                 "resume_pending",
+                "context_limit",
             }:
                 workspace = Path(job["workspace"])
                 ledger_path = workspace.parent / ".runtime" / workspace.name / "request-count.json"
@@ -274,7 +275,7 @@ class ProverRuntime:
                     ):
                         if field in ledger.get("usage", {}):
                             job[field] = ledger["usage"][field]
-                else:
+                elif job.get("status") != "context_limit":
                     job["api_calls"] = int(job["api_budget"])
                 node = self.dag.by_id().get(job.get("node_id", ""))
                 if job.get("role") == "prover" and node is not None and node.status == "proved":
@@ -1542,6 +1543,13 @@ class ProverRuntime:
                     "Compare current source with this run's saved baselines and resolve the conflict before resuming. "
                     "No external source edits were overwritten. Preserve source-transaction.json "
                     "and source checkpoints; resume needs them to recover the interrupted transaction."
+                )
+            elif status == "context_limit":
+                self.state["next_step"] = (
+                    "Context admission failed; no further planning proposals were requested. "
+                    "Review the failing job's context-limit event and saved assignment evidence. "
+                    "Reduce the pinned input or correct its saved model context settings before explicitly resuming; "
+                    "the unfinished stage, verified proofs and spent-call budget are preserved."
                 )
             self.progress.close()
             from leanflow_cli.workflows.prover.stop_reason import campaign_stop_reason

@@ -158,6 +158,7 @@ def new_job(
             "model": role_settings["model"],
             "context_tokens": role_settings["context_tokens"],
             "compression": role_settings["compression"],
+            "compression_threshold": role_settings["compression_threshold"],
         }
         if node:
             scratch = workspace / "Scratch.lean"
@@ -520,7 +521,7 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
         runtime._persist()
         if (
             result.get("status")
-            in {"provider_error", "environment_error", "source_conflict", "error"}
+            in {"provider_error", "environment_error", "source_conflict", "error", "context_limit"}
             and not runtime.cancelled.is_set()
         ):
             node = runtime.dag.by_id().get(job["node_id"])
@@ -531,6 +532,10 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
                 and node.status != "proved"
             ):
                 node.status = "retry"
+            if result.get("status") == "context_limit":
+                # A smaller request/configuration is required. Cancel in-flight
+                # siblings rather than spending calls while the controller stops.
+                runtime.cancelled.set()
             raise InfrastructureFailure(
                 str(
                     result.get("error")
@@ -539,7 +544,8 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
                 ),
                 status=(
                     str(result["status"])
-                    if result.get("status") in {"environment_error", "source_conflict"}
+                    if result.get("status")
+                    in {"environment_error", "source_conflict", "context_limit"}
                     else "provider_error"
                 ),
             )

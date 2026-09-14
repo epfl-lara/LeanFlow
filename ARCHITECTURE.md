@@ -211,7 +211,8 @@ tool is reachable through the public registry.
 
 | Module | Responsibility |
 | --- | --- |
-| `workflows/prover/config.py` | Per-role model/context settings, finite campaign/pass limits, and the optional no-internet boundary (local source search and computation remain available) |
+| `workflows/prover/config.py` | Per-role settings and exact-model context overrides, finite campaign/pass limits, and the optional no-internet boundary (local source search and computation remain available) |
+| `workflows/prover/context_policy.py` | Validated context caps, output reservations and proactive compression thresholds, shared by every bounded job role |
 | `workflows/prover/models.py` | Typed nodes, prerequisite DAG validation, revisions and fingerprints |
 | `workflows/prover/source.py` | Comment-aware hole discovery, frozen source, scratch projection, exact replacements and typed source-consistency failures |
 | `workflows/prover/source_transaction.py` | Proof and multi-file materialization journals, exact before/after images, and conflict-preserving recovery |
@@ -236,6 +237,7 @@ tool is reachable through the public registry.
 | `workflows/prover/session_admission.py` | Cross-process RCP credential slots before durable request admission; cancellable waiting preserves call budgets and other providers' concurrency |
 | `workflows/prover/session_provider.py` | Per-role endpoint and credential-variable resolution without changing shared process credentials; legacy jobs retain the native route |
 | `workflows/prover/session_context.py` | Deterministic compaction retaining the contract, assignment and proof notes |
+| `workflows/prover/session_assignment.py` | Bounded assignment projection with full proof/notes artifacts and lossless references for unchanged proposed nodes; exact claims, dependencies, status and plans stay pinned |
 | `workflows/prover/session_guidance.py` | Selected skill contracts and durable addressed inbox delivery between requests |
 | `workflows/prover/session_tools.py` | Role-specific read/scratch/Lean/research tools; no generic source-write or terminal authority |
 | `workflows/prover/session_search.py` | Bounded project search and clean-room result filtering |

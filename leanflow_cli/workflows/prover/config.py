@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
+
+from leanflow_cli.workflows.prover.context_policy import (
+    validate_context_settings,
+    validate_model_contexts,
+)
 
 #: Reasoning levels the native runtime recognises. An unknown value is
 #: silently ignored downstream (`_parse_managed_reasoning_config` returns
@@ -43,6 +49,9 @@ ENV_NAMES = {
     "orchestrator_context_tokens": "LEANFLOW_PROVER_ORCHESTRATOR_CONTEXT_TOKENS",
     "compression": "LEANFLOW_PROVER_COMPRESSION",
     "orchestrator_compression": "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION",
+    "compression_threshold": "LEANFLOW_PROVER_COMPRESSION_THRESHOLD",
+    "orchestrator_compression_threshold": "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_THRESHOLD",
+    "model_contexts": "LEANFLOW_PROVER_MODEL_CONTEXTS",
     "fill_definitions": "LEANFLOW_PROVER_FILL_DEFINITIONS",
     "allow_internet": "LEANFLOW_PROVER_ALLOW_INTERNET",
     "allowed_axioms": "LEANFLOW_PROVER_ALLOWED_AXIOMS",
@@ -88,11 +97,22 @@ class ProverConfig:
     orchestrator_context_tokens: int = 64000
     compression: bool = True
     orchestrator_compression: bool = True
+    compression_threshold: float = 0.75
+    orchestrator_compression_threshold: float = 0.75
+    model_contexts: dict[str, dict[str, Any]] = field(default_factory=dict)
     fill_definitions: bool = False
     allow_internet: bool = True
     allowed_axioms: tuple[str, ...] = ("propext", "Classical.choice", "Quot.sound")
 
     def __post_init__(self) -> None:
+        validate_model_contexts(self.model_contexts)
+        for prefix in ("", "orchestrator_"):
+            validate_context_settings(
+                {
+                    "context_tokens": getattr(self, prefix + "context_tokens"),
+                    "compression_threshold": getattr(self, prefix + "compression_threshold"),
+                }
+            )
         for prefix in ("", "orchestrator_"):
             provider = getattr(self, prefix + "provider")
             key_env = getattr(self, prefix + "api_key_env")
@@ -130,19 +150,23 @@ class ProverConfig:
         if "sorryAx" in self.allowed_axioms:
             raise ValueError("sorryAx cannot be an allowed completion axiom")
 
-    def to_mapping(self, role: str = "prover") -> dict[str, Any]:
-        """Select model, context and reasoning settings for one role."""
+    def to_mapping(self, role: str | None = None) -> dict[str, Any]:
+        """Return a resumable snapshot, or resolve settings for an explicit job role."""
         values = asdict(self)
+        if role is None:
+            return values
         if role in {"orchestrator", "review", "research"}:
             values["model"] = self.orchestrator_model or self.model
             values["context_tokens"] = self.orchestrator_context_tokens
             values["compression"] = self.orchestrator_compression
+            values["compression_threshold"] = self.orchestrator_compression_threshold
             values["reasoning_effort"] = self.orchestrator_reasoning_effort or self.reasoning_effort
             if self.orchestrator_provider:
                 # An explicit planning route must not inherit the worker's key.
                 values["provider"] = self.orchestrator_provider
                 values["base_url"] = self.orchestrator_base_url
                 values["api_key_env"] = self.orchestrator_api_key_env
+        values.update(self.model_contexts.get(values["model"], {}))
         return values
 
     @classmethod
@@ -161,6 +185,10 @@ class ProverConfig:
                 values[name] = raw.lower() in {"1", "true", "yes", "on"}
             elif isinstance(default, int):
                 values[name] = int(raw)
+            elif isinstance(default, float):
+                values[name] = float(raw)
+            elif name == "model_contexts":
+                values[name] = json.loads(raw)
             elif name == "allowed_axioms":
                 values[name] = tuple(part.strip() for part in raw.split(",") if part.strip())
             else:

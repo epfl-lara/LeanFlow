@@ -221,6 +221,9 @@ All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
 | `ORCHESTRATOR_CONTEXT_TOKENS` | `64000` | Planning/research context estimate |
 | `COMPRESSION` | `1` | Deterministically compact prover history |
 | `ORCHESTRATOR_COMPRESSION` | `1` | Deterministically compact planning/research history |
+| `COMPRESSION_THRESHOLD` | `0.75` | Prover/negation compression trigger as a fraction of the context cap |
+| `ORCHESTRATOR_COMPRESSION_THRESHOLD` | `0.75` | Planning/review/research compression trigger |
+| `MODEL_CONTEXTS` | empty | JSON keyed by exact model name, overriding role context and trigger defaults |
 | `FILL_DEFINITIONS` | `0` | Authorize replacing definition holes |
 | `ALLOWED_AXIOMS` | `propext,Classical.choice,Quot.sound` | Allowed completion axioms |
 
@@ -276,12 +279,43 @@ the next fresh planning context, so the planner can repair the rejected graph.
 The dedicated prover transport defers legacy MCP discovery until an explicit
 Lean service needs it, instead of initializing unused services during import.
 
-Compression makes no model calls. It keeps the system contract, selected skill guidance, original assignment
-with PLAN/DAG, durable addressed user guidance, current `PLAN_job.md`, and recent
-complete tool exchanges. Large feedback remains valid JSON with explicit
-truncation and a readable artifact containing the full result. Context
-size uses a conservative estimate rather than the provider's exact tokenizer; if
-pinned context does not fit, the session saves its work and returns `context_limit`.
+Compression makes no model calls. Before every request it triggers at 75% of the
+configured context cap by default, counting tool schemas and the request budget
+note. Output space is reserved separately; the trigger cannot exceed the remaining
+input ceiling. Both role thresholds accept fractions strictly between zero and one.
+Exact-model overrides take precedence over role defaults, for example these
+operator-selected caps (not advertised model maxima):
+
+```bash
+export LEANFLOW_PROVER_MODEL_CONTEXTS='{"gpt-5.6-luna":{"context_tokens":64000,"compression_threshold":0.75},"gpt-6-astra":{"context_tokens":96000,"compression_threshold":0.70}}'
+```
+
+Each entry supports `context_tokens`, `compression_threshold`, and optional
+`max_output_tokens` (default 8192, clamped to one quarter of the context cap).
+The prover and negation roles use the worker model's entry; planning, review and
+research use the orchestrator model's entry. Unknown keys and invalid values fail
+configuration before a request. Settings are recorded in the campaign snapshot;
+resumes retain saved settings and spent budgets.
+
+The compressor keeps the system contract, selected skill guidance, exact claims,
+dependencies, proof status, PLAN, durable addressed user guidance and complete
+recent tool exchanges. Oversized assignment proof bodies and long notes move to
+explicit, readable `assignment-evidence/` artifacts; statements and plans are never
+silently shortened. `PLAN_job.md` stays on disk, with a bounded in-context preview.
+Unchanged proposed graph nodes refer to their complete current-DAG entries;
+changed and new nodes remain explicit. If the protected contract itself exceeds
+the soft trigger, recent tool results use the remaining space below the hard
+input ceiling rather than being discarded before the model can read them.
+Large tool feedback likewise remains valid JSON with a full evidence artifact.
+
+Context size uses a conservative estimate rather than the provider's exact
+tokenizer. If pinned context still cannot fit, the session returns `context_limit`
+before charging another request. Provider-reported context rejections retain the
+same status and charge only the failed admission. Either failure stops the
+controller and cancels outstanding jobs; it is never a mathematical rejection
+and never triggers another proposal or an automatic reconnect. The pending
+review checkpoint, proofs and call accounting are preserved for explicit resume.
+Session events record effective limits and before/after compaction estimates.
 Token counts use reported usage. Missing monetary costs remain unknown, not zero;
 a sum of reported costs may be partial (`metrics.cost_complete` records whether
 all jobs supplied costs).

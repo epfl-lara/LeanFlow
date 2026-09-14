@@ -101,6 +101,29 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
     ),
     _integer("CONTEXT_TOKENS", 64000, "Prover context cap, including space reserved for output."),
     _integer("ORCHESTRATOR_CONTEXT_TOKENS", 64000, "Planning and research context cap."),
+    *(
+        FlagSpec(
+            name="LEANFLOW_PROVER_" + suffix,
+            kind="tuning",
+            value_type="float",
+            default="0.75",
+            group=_GROUP,
+            summary="Compact before this fraction of the context cap; must be strictly between 0 and 1.",
+            read_in=_READER,
+            minimum=0,
+            maximum=1,
+        )
+        for suffix in ("COMPRESSION_THRESHOLD", "ORCHESTRATOR_COMPRESSION_THRESHOLD")
+    ),
+    FlagSpec(
+        name="LEANFLOW_PROVER_MODEL_CONTEXTS",
+        kind="tuning",
+        value_type="string",
+        default="",
+        group=_GROUP,
+        summary="JSON keyed by exact model name: context_tokens, compression_threshold, optional max_output_tokens; overrides role defaults.",
+        read_in=_READER,
+    ),
     FlagSpec(
         name="LEANFLOW_PROVER_MODEL",
         kind="tuning",

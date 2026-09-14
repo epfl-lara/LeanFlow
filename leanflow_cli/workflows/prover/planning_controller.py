@@ -277,6 +277,7 @@ def _planning_call(
         # the plan. Re-run it (or, with no budget left, fail loudly) instead.
         "interrupted",
         "source_conflict",
+        "context_limit",
     }:
         result_path = Path(job["workspace"]) / "result.json"
         if result_path.is_file():

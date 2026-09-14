@@ -13,7 +13,9 @@ from typing import Any
 from agent.accounting.redact import redact_sensitive_text
 from agent.accounting.token_accounting import TokenAccounter
 from core.utils import atomic_json_write
+from leanflow_cli.workflows.prover.context_policy import ContextBudget, is_context_error
 from leanflow_cli.workflows.prover.session_admission import provider_request_slot
+from leanflow_cli.workflows.prover.session_assignment import assignment_message, compact_assignment
 from leanflow_cli.workflows.prover.session_context import (
     approximate_tokens,
     compact_history,
@@ -132,9 +134,9 @@ def run_session(
         cancelled=config.get("_cancelled") if callable(config.get("_cancelled")) else None,
         allow_internet=bool(config.get("allow_internet", True)),
     )
-    context_tokens = int(config.get("context_tokens", 64000))
-    max_output_tokens = min(int(config.get("max_output_tokens", 8192)), max(1, context_tokens // 4))
-    input_limit = max(1, context_tokens - max_output_tokens)
+    context_budget = ContextBudget.from_config(config)
+    max_output_tokens = context_budget.output_tokens
+    input_limit = context_budget.input_limit
     schemas = toolset.schemas()
     schema_tokens = approximate_tokens(schemas) if schemas else 0
     messages: list[dict[str, Any]] = [
@@ -148,13 +150,19 @@ def run_session(
             )
             + skill_guidance(project_root, role),
         },
-        {
-            "role": "user",
-            "content": prompt
-            + "\n\nAssignment context:\n"
-            + json.dumps(context, ensure_ascii=False),
-        },
+        assignment_message(prompt, context),
     ]
+    if bool(config.get("compression", True)):
+        messages[1], assignment_artifacts = compact_assignment(
+            prompt,
+            context,
+            workspace=workspace,
+            token_budget=context_budget.trigger_tokens
+            - schema_tokens
+            - approximate_tokens(messages[:1])
+            - 512,
+        )
+        toolset.artifacts.update(assignment_artifacts)
     final_response = ""
     status = "budget_exhausted"
     last_error = ""
@@ -192,7 +200,18 @@ def run_session(
         if on_event is not None:
             on_event(kind, {**details, "evidence_id": evidence_id})
 
-    emit("job-session-start", {"role": role, "api_budget": api_budget, "api_calls": used})
+    emit(
+        "job-session-start",
+        {
+            "role": role,
+            "api_budget": api_budget,
+            "api_calls": used,
+            "context_tokens": context_budget.context_tokens,
+            "input_limit": input_limit,
+            "compression_trigger_tokens": context_budget.trigger_tokens,
+            "max_output_tokens": max_output_tokens,
+        },
+    )
 
     def submission_accepted(text: str) -> bool:
         """Return controller feedback without charging another model request."""
@@ -264,16 +283,47 @@ def run_session(
                     )
                 ),
             }
-            history_limit = input_limit - schema_tokens - approximate_tokens([remaining_note])
+            before_tokens = approximate_tokens(messages + [remaining_note]) + schema_tokens
+            history_limit = (
+                context_budget.trigger_tokens - schema_tokens - approximate_tokens([remaining_note])
+            )
+            if approximate_tokens(messages[:2]) > history_limit:
+                # A protected contract can itself exceed the soft trigger. Use
+                # remaining hard-limit headroom rather than erase every new tool
+                # result before the model has a chance to read it.
+                history_limit = input_limit - schema_tokens - approximate_tokens([remaining_note])
             if bool(config.get("compression", True)):
                 messages, compacted = compact_history(
                     messages, context_tokens=history_limit, workspace=workspace
                 )
                 if compacted:
-                    emit("context-compacted", {"method": "deterministic", "api_calls": used})
+                    emit(
+                        "context-compacted",
+                        {
+                            "method": "deterministic",
+                            "api_calls": used,
+                            "before_tokens": before_tokens,
+                            "after_tokens": approximate_tokens(messages + [remaining_note])
+                            + schema_tokens,
+                            "trigger_tokens": context_budget.trigger_tokens,
+                            "input_limit": input_limit,
+                        },
+                    )
             if approximate_tokens(messages + [remaining_note]) + schema_tokens > input_limit:
                 status = "context_limit"
                 last_error = "The assignment, tool schemas, request budget note and history exceed the configured input context after reserving output; proof notes and transcript were saved"
+                emit(
+                    "context-limit",
+                    {
+                        "estimated_tokens": approximate_tokens(messages + [remaining_note])
+                        + schema_tokens,
+                        "input_limit": input_limit,
+                        "pinned_tokens": approximate_tokens(messages[:2]),
+                        "schema_tokens": schema_tokens,
+                        "model": config.get("model", ""),
+                        "api_calls": used,
+                    },
+                )
                 break
             if agent is None:
                 agent = build_transport(
@@ -339,7 +389,7 @@ def run_session(
                     emit("api-error", {"api_calls": used, "error": last_error})
                     # Infrastructure errors are explicit outcomes. Retrying must be
                     # an orchestrator decision with a new admitted job allocation.
-                    status = "provider_error"
+                    status = "context_limit" if is_context_error(exc) else "provider_error"
                     break
             accounter.record_usage(
                 prompt_tokens=_usage_value(usage, "prompt_tokens", "input_tokens"),

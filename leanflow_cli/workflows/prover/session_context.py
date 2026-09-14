@@ -52,9 +52,22 @@ def compact_history(
     notes = notes_path.read_text(encoding="utf-8")[:16000] if notes_path.is_file() else ""
     pinned = messages[:2]
     if notes:
-        pinned = pinned + [{"role": "user", "content": "Current proof notes:\n" + notes}]
+        note_message = {"role": "user", "content": "Current proof notes:\n" + notes}
+        # Durable notes must not turn an otherwise fitting contract into an
+        # oversized request. Their complete file remains available to read_file.
+        while notes and approximate_tokens(pinned + [note_message]) > context_tokens:
+            notes = notes[: len(notes) // 2]
+            note_message["content"] = (
+                "Current proof notes:\n" + notes + f"\nFull notes: {notes_path}"
+            )
+        if notes:
+            pinned = pinned + [note_message]
     groups: list[list[dict[str, Any]]] = []
     for message in messages[2:]:
+        if message.get("role") == "user" and str(message.get("content", "")).startswith(
+            "Current proof notes:\n"
+        ):
+            continue
         if message.get("role") != "tool" or not groups:
             groups.append([])
         groups[-1].append(message)
@@ -64,4 +77,9 @@ def compact_history(
         if approximate_tokens(candidate) > context_tokens:
             break
         retained = group + retained
-    return pinned + retained, True
+    compacted = pinned + retained
+    return (
+        (compacted, True)
+        if compacted != messages and approximate_tokens(compacted) < approximate_tokens(messages)
+        else (messages, False)
+    )
