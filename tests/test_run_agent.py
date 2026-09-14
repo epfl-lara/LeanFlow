@@ -1038,7 +1038,9 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["reasoning"]["effort"] == "high"
 
-    @pytest.mark.parametrize("model", ["Qwen/Qwen3-30B-A3B", "moonshotai/Kimi-K2.7-Code"])
+    @pytest.mark.parametrize(
+        "model", ["Qwen/Qwen3-30B-A3B", "moonshotai/Kimi-K2.7-Code", "zai-org/GLM-5.3-Flash"]
+    )
     def test_reasoning_sent_for_rcp_route(self, agent, model):
         agent.base_url = "https://inference.rcp.epfl.ch/v1"
         agent.model = model

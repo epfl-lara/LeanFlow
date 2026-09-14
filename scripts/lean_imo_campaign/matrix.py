@@ -63,6 +63,7 @@ class Condition(NamedTuple):
     api_key_env: str = ""
     orchestrator_provider: str = ""
     orchestrator_max_output_tokens: int | None = None
+    prover_max_output_tokens: int | None = None
 
 
 #: The original four-arm comparison: two models x two search orders, every role
@@ -156,7 +157,7 @@ CONDITION_SETS = {
             label="kimi-glm-flash-top",
             model="zai-org/GLM-5.3-Flash",
             order="top-down",
-            prover_effort="medium",
+            prover_effort="high",
             orchestrator_effort="high",
             orchestrator_model="moonshotai/Kimi-K2.7-Code",
             budget=LUNA_CALIBRATED,
@@ -164,6 +165,7 @@ CONDITION_SETS = {
             base_url="https://inference.rcp.epfl.ch/v1",
             api_key_env="RCP_API_KEY",
             orchestrator_max_output_tokens=32768,
+            prover_max_output_tokens=32768,
         ),
     ),
     "full": CONDITIONS,
@@ -193,6 +195,7 @@ def configuration(
     api_key_env: str = "",
     orchestrator_provider: str = "",
     orchestrator_max_output_tokens: int | None = None,
+    prover_max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Return every prover setting explicitly, avoiding mutable home profile defaults."""
     from leanflow_cli.workflows.prover.config import ProverConfig
@@ -211,16 +214,14 @@ def configuration(
         **budget._asdict(),
         context_tokens=64000,
         orchestrator_context_tokens=96000,
-        model_contexts=(
-            {
-                orchestrator_model
-                or model: {
-                    "max_output_tokens": orchestrator_max_output_tokens,
-                }
-            }
-            if orchestrator_max_output_tokens is not None
-            else {}
-        ),
+        model_contexts={
+            name: {"max_output_tokens": output_tokens}
+            for name, output_tokens in (
+                (model, prover_max_output_tokens),
+                (orchestrator_model or model, orchestrator_max_output_tokens),
+            )
+            if output_tokens is not None
+        },
         max_restarts=3,
         plan_refinements=16,
         max_nodes=128,
@@ -260,6 +261,7 @@ def cells(
                 condition.api_key_env,
                 condition.orchestrator_provider,
                 condition.orchestrator_max_output_tokens,
+                condition.prover_max_output_tokens,
             ),
             "status": "pending",
             "lane": None,

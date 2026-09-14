@@ -298,7 +298,8 @@ context window). Explicit output allowances are preserved and must be smaller
 than the context window; the input budget reserves the full requested allowance.
 
 The `kimi-glm-flash-top` campaign requests high reasoning and 32768 output tokens
-for Kimi's planning, review, and research roles through the existing RCP adapter.
+for both Kimi's planning/review/research roles and GLM's prover/negation roles
+through the existing OpenAI-compatible RCP Chat Completions adapter.
 Kimi Code retains all saved assistant reasoning in outgoing conversation history.
 An empty or truncated stage report stops for inspection instead of triggering
 another planning session or an automatic provider reconnect.

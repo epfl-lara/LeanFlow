@@ -61,12 +61,8 @@ def test_kimi_glm_campaign_routes_all_roles_to_one_rcp_key(monkeypatch):
             if role in {"prover", "negation"}
             else "moonshotai/Kimi-K2.7-Code"
         )
-        if role not in {"prover", "negation"}:
-            assert settings["reasoning_effort"] == "high"
-            assert ContextBudget.from_config(settings).output_tokens == 32768
-        else:
-            assert settings["reasoning_effort"] == "medium"
-            assert ContextBudget.from_config(settings).output_tokens == 8192
+        assert settings["reasoning_effort"] == "high"
+        assert ContextBudget.from_config(settings).output_tokens == 32768
     assert (config.parallelism, config.job_api_calls, config.total_api_calls) == (4, 150, 5000)
     assert config.search_order == "top-down"
     monkeypatch.setenv("RCP_API_KEY", "campaign-test-key")
