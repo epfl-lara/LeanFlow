@@ -293,7 +293,15 @@ export LEANFLOW_PROVER_MODEL_CONTEXTS='{"gpt-5.6-luna":{"context_tokens":64000,"
 ```
 
 Each entry supports `context_tokens`, `compression_threshold`, and optional
-`max_output_tokens` (default 8192, clamped to one quarter of the context cap).
+`max_output_tokens` (default 8192, with the default capped at one quarter of the
+context window). Explicit output allowances are preserved and must be smaller
+than the context window; the input budget reserves the full requested allowance.
+
+The `kimi-glm-flash-top` campaign requests high reasoning and 32768 output tokens
+for Kimi's planning, review, and research roles through the existing RCP adapter.
+Kimi Code retains all saved assistant reasoning in outgoing conversation history.
+An empty or truncated stage report stops for inspection instead of triggering
+another planning session or an automatic provider reconnect.
 The prover and negation roles use the worker model's entry; planning, review and
 research use the orchestrator model's entry. Unknown keys and invalid values fail
 configuration before a request. Settings are recorded in the campaign snapshot;

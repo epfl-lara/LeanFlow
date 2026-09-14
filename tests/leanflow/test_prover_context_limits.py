@@ -167,6 +167,15 @@ def test_exact_model_contexts_apply_to_all_roles_and_roundtrip() -> None:
     assert ProverConfig(**saved).to_mapping("review")["context_tokens"] == 96000
 
 
+def test_explicit_output_allowance_is_not_reduced_to_a_quarter_window() -> None:
+    budget = ContextBudget.from_config({"context_tokens": 96000, "max_output_tokens": 32768})
+    assert budget.output_tokens == 32768
+    assert budget.input_limit == 63232
+    assert budget.trigger_tokens <= budget.input_limit
+    with pytest.raises(ValueError, match="smaller than context_tokens"):
+        ContextBudget.from_config({"context_tokens": 32000, "max_output_tokens": 32768})
+
+
 def test_role_thresholds_remain_independent_without_model_override() -> None:
     config = ProverConfig.from_env(
         {

@@ -163,6 +163,35 @@ def test_single_call_stage_retains_schemas_and_keeps_one_call_budget(
     assert result["status"] == "completed" and result["api_calls"] == 1
 
 
+@pytest.mark.parametrize("role", ["orchestrator", "review", "research"])
+@pytest.mark.parametrize("content,reason", [(" ", "stop"), ("", "length"), ('{"plan":', "length")])
+def test_unusable_stage_response_stops_without_spending_remaining_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, content: str, reason: str
+) -> None:
+    monkeypatch.setattr(session, "build_transport", lambda *_: SimpleNamespace(model="test"))
+    monkeypatch.setattr(session, "close_transport", lambda *_: None)
+    calls = []
+
+    def request(*_args: Any, **_kwargs: Any) -> Any:
+        calls.append(True)
+        return {"role": "assistant", "content": content, "finish_reason": reason}, {}
+
+    monkeypatch.setattr(session, "request_once", request)
+    result = session.run_session(
+        role=role,
+        prompt="Return requested JSON.",
+        project_root=tmp_path,
+        workspace=tmp_path / "job",
+        config={"model": "test", "context_tokens": 16000},
+        api_budget=50,
+        log_path=tmp_path / "session.jsonl",
+        context={},
+    )
+    assert result["status"] == "provider_error"
+    assert result["api_calls"] == len(calls) == 1
+    assert "Empty or truncated stage response" in result["error"]
+
+
 def test_prover_keeps_tools_and_candidate_check_on_its_last_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

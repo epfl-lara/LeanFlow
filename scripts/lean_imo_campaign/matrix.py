@@ -62,6 +62,7 @@ class Condition(NamedTuple):
     base_url: str = ""
     api_key_env: str = ""
     orchestrator_provider: str = ""
+    orchestrator_max_output_tokens: int | None = None
 
 
 #: The original four-arm comparison: two models x two search orders, every role
@@ -156,12 +157,13 @@ CONDITION_SETS = {
             model="zai-org/GLM-5.3-Flash",
             order="top-down",
             prover_effort="medium",
-            orchestrator_effort="low",
+            orchestrator_effort="high",
             orchestrator_model="moonshotai/Kimi-K2.7-Code",
             budget=LUNA_CALIBRATED,
             provider="rcp",
             base_url="https://inference.rcp.epfl.ch/v1",
             api_key_env="RCP_API_KEY",
+            orchestrator_max_output_tokens=32768,
         ),
     ),
     "full": CONDITIONS,
@@ -190,6 +192,7 @@ def configuration(
     base_url: str = "",
     api_key_env: str = "",
     orchestrator_provider: str = "",
+    orchestrator_max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Return every prover setting explicitly, avoiding mutable home profile defaults."""
     from leanflow_cli.workflows.prover.config import ProverConfig
@@ -208,6 +211,16 @@ def configuration(
         **budget._asdict(),
         context_tokens=64000,
         orchestrator_context_tokens=96000,
+        model_contexts=(
+            {
+                orchestrator_model
+                or model: {
+                    "max_output_tokens": orchestrator_max_output_tokens,
+                }
+            }
+            if orchestrator_max_output_tokens is not None
+            else {}
+        ),
         max_restarts=3,
         plan_refinements=16,
         max_nodes=128,
@@ -246,6 +259,7 @@ def cells(
                 condition.base_url,
                 condition.api_key_env,
                 condition.orchestrator_provider,
+                condition.orchestrator_max_output_tokens,
             ),
             "status": "pending",
             "lane": None,

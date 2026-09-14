@@ -60,7 +60,11 @@ class ContextBudget:
         """Resolve an explicit role/model configuration without provider calls."""
         validate_context_settings(config)
         context = int(config.get("context_tokens", 64000))
-        output = min(int(config.get("max_output_tokens", 8192)), max(1, context // 4))
+        # The quarter-window cap is only a default. An explicit model allowance
+        # must reach the provider unchanged, with matching input headroom.
+        output = int(config.get("max_output_tokens", min(8192, max(1, context // 4))))
+        if "max_output_tokens" in config and output >= context:
+            raise ValueError("max_output_tokens must be smaller than context_tokens")
         limit = max(1, context - output)
         trigger = min(
             limit, max(1, int(context * float(config.get("compression_threshold", 0.75))))

@@ -1038,13 +1038,16 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["reasoning"]["effort"] == "high"
 
-    def test_reasoning_sent_for_rcp_route(self, agent):
+    @pytest.mark.parametrize("model", ["Qwen/Qwen3-30B-A3B", "moonshotai/Kimi-K2.7-Code"])
+    def test_reasoning_sent_for_rcp_route(self, agent, model):
         agent.base_url = "https://inference.rcp.epfl.ch/v1"
-        agent.model = "Qwen/Qwen3-30B-A3B"
+        agent.model = model
+        agent.max_tokens = 32768
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
         assert kwargs["extra_body"]["reasoning_effort"] == "high"
+        assert kwargs["max_tokens"] == 32768
 
     def test_auto_reasoning_defaults_to_high_for_rcp_route(self, agent):
         agent.base_url = "https://inference.rcp.epfl.ch/v1"
@@ -2925,6 +2928,14 @@ class TestRunConversation:
             m for m in api_all if m.get("role") == "assistant" and "reasoning_content" in m
         ]
         assert len(carriers_all) == 2
+
+        monkeypatch.delenv("LEANFLOW_REPLAY_ALL_REASONING", raising=False)
+        agent.model = "moonshotai/Kimi-K2.7-Code"
+        api_kimi = agent._build_api_messages_for_turn(messages, "sys")
+        assert [m["reasoning_content"] for m in api_kimi if "reasoning_content" in m] == [
+            "older thinking",
+            "newest thinking",
+        ]
 
     @pytest.mark.parametrize(
         ("first_content", "second_content", "expected_final"),

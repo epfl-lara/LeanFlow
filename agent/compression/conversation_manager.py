@@ -421,7 +421,14 @@ class ConversationManager:
         # `reasoning_content`) multiplies hidden-input tokens across every tool turn — a large,
         # uncosted tax during long Lean loops — with little continuity benefit on chat-completions
         # routes. Set LEANFLOW_REPLAY_ALL_REASONING=1 to restore replaying every block.
-        replay_all_reasoning = os.getenv("LEANFLOW_REPLAY_ALL_REASONING", "0").strip().lower() in {
+        # Kimi Code depends on preserved reasoning throughout its tool loop.
+        kimi_code = str(getattr(agent, "model", "")).lower().rsplit("/", 1)[-1] in {
+            "kimi-k2.7-code",
+            "kimi-k2.7-code-highspeed",
+        }
+        replay_all_reasoning = kimi_code or os.getenv(
+            "LEANFLOW_REPLAY_ALL_REASONING", "0"
+        ).strip().lower() in {
             "1",
             "true",
             "yes",

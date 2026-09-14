@@ -48,6 +48,7 @@ def test_campaign_environment_carries_only_assigned_rcp_key(tmp_path, monkeypatc
 
 def test_kimi_glm_campaign_routes_all_roles_to_one_rcp_key(monkeypatch):
     from leanflow_cli.workflows.prover.config import ProverConfig
+    from leanflow_cli.workflows.prover.context_policy import ContextBudget
     from scripts.lean_imo_campaign.provider import resolve_launch_provider
 
     row = cells([{"id": "p"}], CONDITION_SETS["kimi-glm-flash-top"])[0]
@@ -60,6 +61,12 @@ def test_kimi_glm_campaign_routes_all_roles_to_one_rcp_key(monkeypatch):
             if role in {"prover", "negation"}
             else "moonshotai/Kimi-K2.7-Code"
         )
+        if role not in {"prover", "negation"}:
+            assert settings["reasoning_effort"] == "high"
+            assert ContextBudget.from_config(settings).output_tokens == 32768
+        else:
+            assert settings["reasoning_effort"] == "medium"
+            assert ContextBudget.from_config(settings).output_tokens == 8192
     assert (config.parallelism, config.job_api_calls, config.total_api_calls) == (4, 150, 5000)
     assert config.search_order == "top-down"
     monkeypatch.setenv("RCP_API_KEY", "campaign-test-key")
@@ -258,6 +265,7 @@ def test_incomplete_observer_snapshot_does_not_crash_dispatcher(tmp_path: Path) 
         "authentication failed",
         "context_length_exceeded",
         "insufficient_quota",
+        "Empty or truncated stage response; inspect provider output settings",
     ],
 )
 def test_recovery_does_not_retry_permanent_provider_errors(error):

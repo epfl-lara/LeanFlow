@@ -48,6 +48,7 @@ def schedule_recovery(cell: dict[str, Any]) -> bool:
                 "unauthorized",
                 "context_length_exceeded",
                 "insufficient_quota",
+                "empty or truncated stage response",
             )
         )
     ):

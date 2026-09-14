@@ -427,6 +427,18 @@ def run_session(
             messages.append(assistant)
             final_response = str(assistant.get("content") or "")
             tool_calls = assistant.get("tool_calls") or []
+            if (
+                not tool_calls
+                and role not in {"prover", "negation"}
+                and (
+                    not final_response.strip()
+                    or assistant.get("finish_reason") in {"length", "incomplete"}
+                )
+            ):
+                status = "provider_error"
+                last_error = "Empty or truncated stage response; inspect provider output settings before resuming the saved session"
+                emit("final-report-rejected", {"api_calls": used, "error": last_error})
+                break
             if final_report_only and tool_calls:
                 last_error = "Final reporting request returned tool calls despite disabled tools; no additional tools or requests were executed"
                 emit("final-report-rejected", {"api_calls": used, "error": last_error})
