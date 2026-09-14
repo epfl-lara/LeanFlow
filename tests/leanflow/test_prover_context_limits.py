@@ -17,6 +17,19 @@ from tests.leanflow.test_prover_runtime import Verifier, project
 from tests.leanflow.test_prover_sessions import run_fake
 
 
+def test_default_context_limits_match_flags_and_preserve_output_headroom() -> None:
+    from leanflow_cli.flags.prover_catalog import PROVER_FLAGS
+
+    config = ProverConfig()
+    flags = {flag.name: flag.default for flag in PROVER_FLAGS}
+    assert flags["LEANFLOW_PROVER_CONTEXT_TOKENS"] == "256000"
+    assert flags["LEANFLOW_PROVER_ORCHESTRATOR_CONTEXT_TOKENS"] == "256000"
+    for role in ("prover", "negation", "orchestrator", "review", "research"):
+        budget = ContextBudget.from_config(config.to_mapping(role))
+        assert budget == ContextBudget(256000, 8192, 247808, 192000)
+    assert ContextBudget.from_config({}) == budget
+
+
 def test_history_compaction_cannot_shrink_an_oversized_pinned_assignment(tmp_path: Path) -> None:
     messages = [
         {"role": "system", "content": "contract"},

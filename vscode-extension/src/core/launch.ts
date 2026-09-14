@@ -208,6 +208,11 @@ export function extensionKnobValueProblem(
       if (text === "" || !Number.isFinite(parsed)) {
         return "value is not a finite number";
       }
+      if ((flag.name === "LEANFLOW_PROVER_COMPRESSION_THRESHOLD"
+        || flag.name === "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_THRESHOLD")
+        && (parsed <= 0 || parsed >= 1)) {
+        return "compression trigger must be strictly between 0 and 1 (0.75 = 75%)";
+      }
       return numericRangeProblem(flag, parsed);
     }
     case "enum":

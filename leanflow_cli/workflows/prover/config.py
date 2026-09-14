@@ -93,8 +93,8 @@ class ProverConfig:
     orchestrator_api_key_env: str = ""
     reasoning_effort: str = ""
     orchestrator_reasoning_effort: str = ""
-    context_tokens: int = 64000
-    orchestrator_context_tokens: int = 64000
+    context_tokens: int = 256000
+    orchestrator_context_tokens: int = 256000
     compression: bool = True
     orchestrator_compression: bool = True
     compression_threshold: float = 0.75

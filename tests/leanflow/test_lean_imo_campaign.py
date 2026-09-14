@@ -62,7 +62,12 @@ def test_kimi_glm_campaign_routes_all_roles_to_one_rcp_key(monkeypatch):
             else "moonshotai/Kimi-K2.7-Code"
         )
         assert settings["reasoning_effort"] == "high"
-        assert ContextBudget.from_config(settings).output_tokens == 32768
+        assert ContextBudget.from_config(settings) == ContextBudget(
+            context_tokens=256000,
+            output_tokens=32768,
+            input_limit=223232,
+            trigger_tokens=192000,
+        )
     assert (config.parallelism, config.job_api_calls, config.total_api_calls) == (4, 150, 5000)
     assert config.search_order == "top-down"
     monkeypatch.setenv("RCP_API_KEY", "campaign-test-key")

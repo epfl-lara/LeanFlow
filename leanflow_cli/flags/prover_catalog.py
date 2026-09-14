@@ -110,8 +110,8 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
         60,
         "Calls for one refutation attempt (Plausible screen, then a bounded proof of the exact negation).",
     ),
-    _integer("CONTEXT_TOKENS", 64000, "Prover context cap, including space reserved for output."),
-    _integer("ORCHESTRATOR_CONTEXT_TOKENS", 64000, "Planning and research context cap."),
+    _integer("CONTEXT_TOKENS", 256000, "Prover context cap, including space reserved for output."),
+    _integer("ORCHESTRATOR_CONTEXT_TOKENS", 256000, "Planning and research context cap."),
     *(
         FlagSpec(
             name="LEANFLOW_PROVER_" + suffix,
@@ -119,7 +119,7 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
             value_type="float",
             default="0.75",
             group=_GROUP,
-            summary="Compact before this fraction of the context cap; must be strictly between 0 and 1.",
+            summary="Auto-compress at this fraction of the context cap (0.75 = 75%); must be strictly between 0 and 1. Output space stays reserved.",
             read_in=_READER,
             minimum=0,
             maximum=1,

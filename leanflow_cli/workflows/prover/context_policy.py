@@ -59,7 +59,7 @@ class ContextBudget:
     def from_config(cls, config: Mapping[str, Any]) -> ContextBudget:
         """Resolve an explicit role/model configuration without provider calls."""
         validate_context_settings(config)
-        context = int(config.get("context_tokens", 64000))
+        context = int(config.get("context_tokens", 256000))
         # The quarter-window cap is only a default. An explicit model allowance
         # must reach the provider unchanged, with matching input headroom.
         output = int(config.get("max_output_tokens", min(8192, max(1, context // 4))))

@@ -212,8 +212,8 @@ def configuration(
         reasoning_effort=prover_effort,
         orchestrator_reasoning_effort=orchestrator_effort,
         **budget._asdict(),
-        context_tokens=64000,
-        orchestrator_context_tokens=96000,
+        context_tokens=256000,
+        orchestrator_context_tokens=256000,
         model_contexts={
             name: {"max_output_tokens": output_tokens}
             for name, output_tokens in (

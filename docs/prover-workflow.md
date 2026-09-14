@@ -217,8 +217,8 @@ All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
 | `ORCHESTRATOR_PROVIDER` | prover route | Planning, review, and research provider override |
 | `ORCHESTRATOR_BASE_URL` | provider default | Endpoint for an explicit planning route |
 | `ORCHESTRATOR_API_KEY_ENV` | provider credentials | Environment variable name for the planning key |
-| `CONTEXT_TOKENS` | `64000` | Prover context estimate, including output reserve |
-| `ORCHESTRATOR_CONTEXT_TOKENS` | `64000` | Planning/research context estimate |
+| `CONTEXT_TOKENS` | `256000` | Prover context estimate, including output reserve |
+| `ORCHESTRATOR_CONTEXT_TOKENS` | `256000` | Planning/research context estimate |
 | `COMPRESSION` | `1` | Deterministically compact prover history |
 | `ORCHESTRATOR_COMPRESSION` | `1` | Deterministically compact planning/research history |
 | `COMPRESSION_THRESHOLD` | `0.75` | Prover/negation compression trigger as a fraction of the context cap |
@@ -285,11 +285,25 @@ Compression makes no model calls. Before every request it triggers at 75% of the
 configured context cap by default, counting tool schemas and the request budget
 note. Output space is reserved separately; the trigger cannot exceed the remaining
 input ceiling. Both role thresholds accept fractions strictly between zero and one.
+The LeanFlow defaults are 256,000 context tokens and a 192,000-token trigger
+for both roles, including Codex-backed models. These are workflow defaults,
+independent of campaign presets. To compress at 80% instead (204,800 tokens):
+
+```bash
+export LEANFLOW_PROVER_COMPRESSION_THRESHOLD=0.80
+export LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_THRESHOLD=0.80
+```
+
+In VS Code, open LeanFlow's **Knobs** tab, search for `COMPRESSION_THRESHOLD`,
+and save both values in a profile. Select that profile when starting a fresh run.
+Values are fractions: `0.80` means 80%, not `80`. A fresh run uses the new
+settings; resuming deliberately preserves the original settings and spent budget.
+
 Exact-model overrides take precedence over role defaults, for example these
 operator-selected caps (not advertised model maxima):
 
 ```bash
-export LEANFLOW_PROVER_MODEL_CONTEXTS='{"gpt-5.6-luna":{"context_tokens":64000,"compression_threshold":0.75},"gpt-6-astra":{"context_tokens":96000,"compression_threshold":0.70}}'
+export LEANFLOW_PROVER_MODEL_CONTEXTS='{"gpt-5.6-luna":{"context_tokens":256000,"compression_threshold":0.75},"gpt-6-astra":{"context_tokens":256000,"compression_threshold":0.70}}'
 ```
 
 Each entry supports `context_tokens`, `compression_threshold`, and optional

@@ -186,6 +186,12 @@ local provenance paths, so inspect an export before sharing it publicly.
 
 ## Where profiles live
 
+In **Knobs**, search for `COMPRESSION_THRESHOLD` to configure automatic compression
+for the prover and orchestrator separately. Values are fractions: `0.80` means 80%.
+LeanFlow defaults to 256,000 context tokens per role and a 75% compression trigger
+(192,000 tokens), including Codex providers. Save a profile and select it when
+starting a fresh run; resumed runs retain their recorded configuration.
+
 Saved knob profiles are JSON files under `<project>/.leanflow/flag-profiles/`,
 readable by the CLI too (`leanflow flags profiles`). Note that `.leanflow/` is
 git-ignored by default in the LeanFlow repo — if a profile defines a published

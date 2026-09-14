@@ -10,8 +10,9 @@ Terra xhigh bottom-up, Terra xhigh top-down. Two problem lanes advance independe
 a lane finishes all four conditions before claiming another problem. Every cell
 gets 4 prover slots, 200 calls per prover/negation pass, 50 per planning/review/
 research session, 2,000 total calls, and 8 active hours. The 20-minute request/check
-ceiling remains inside the campaign wall-time limit. Context limits are 64,000
-for provers and 96,000 for orchestrators, with deterministic compression enabled.
+ceiling remains inside the campaign wall-time limit. New campaign context limits
+are 256,000 tokens for both provers and orchestrators, with deterministic compression
+at 192,000 tokens (75%). Existing frozen manifests retain their recorded settings.
 Other explicit limits: 3 restarts per node, 16 directional plan refinements,
 32 decompositions, and 128 DAG nodes. These limits are identical in every condition.
 

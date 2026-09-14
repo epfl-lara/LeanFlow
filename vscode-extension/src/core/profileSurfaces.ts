@@ -44,6 +44,9 @@ export const PROVER_KNOB_LABELS: Record<string, string> = {
   LEANFLOW_PROVER_ORCHESTRATOR_CONTEXT_TOKENS: "Orchestrator context tokens",
   LEANFLOW_PROVER_COMPRESSION: "Context compression",
   LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION: "Orchestrator compression",
+  LEANFLOW_PROVER_COMPRESSION_THRESHOLD: "Prover compression trigger (0.75 = 75%)",
+  LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_THRESHOLD: "Orchestrator compression trigger (0.75 = 75%)",
+  LEANFLOW_PROVER_MODEL_CONTEXTS: "Per-model context and compression overrides (JSON)",
   LEANFLOW_PROVER_FILL_DEFINITIONS: "Fill definitions",
   LEANFLOW_PROVER_ALLOWED_AXIOMS: "Allowed axioms",
 };
