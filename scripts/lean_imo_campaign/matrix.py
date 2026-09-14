@@ -150,6 +150,20 @@ def rcp_flash_condition(label: str, model: str) -> tuple[Condition, ...]:
 
 
 CONDITION_SETS = {
+    "kimi-glm-flash-top": (
+        Condition(
+            label="kimi-glm-flash-top",
+            model="zai-org/GLM-5.3-Flash",
+            order="top-down",
+            prover_effort="medium",
+            orchestrator_effort="low",
+            orchestrator_model="moonshotai/Kimi-K2.7-Code",
+            budget=LUNA_CALIBRATED,
+            provider="rcp",
+            base_url="https://inference.rcp.epfl.ch/v1",
+            api_key_env="RCP_API_KEY",
+        ),
+    ),
     "full": CONDITIONS,
     "top-down-split": TOP_DOWN_SPLIT_EFFORT,
     "luna-top-down-split": LUNA_TOP_DOWN_SPLIT_EFFORT,

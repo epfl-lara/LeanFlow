@@ -23,6 +23,17 @@ def _integer(name: str, default: int, summary: str, minimum: int = 1) -> FlagSpe
 
 
 PROVER_FLAGS: tuple[FlagSpec, ...] = (
+    FlagSpec(
+        name="LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS",
+        kind="tuning",
+        value_type="int",
+        default="1",
+        group=_GROUP,
+        summary="Concurrent RCP requests per credential across bounded jobs; match the key's actual allowance in every sharing process.",
+        minimum=1,
+        maximum=256,
+        read_in=("leanflow_cli/workflows/prover/session_admission.py",),
+    ),
     *(
         FlagSpec(
             name="LEANFLOW_PROVER_" + suffix,

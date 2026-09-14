@@ -78,6 +78,16 @@ quota, unknown provider errors and integrity failures still pause dispatch.
 
 ## Explicit runtime upgrades
 
+The `kimi-glm-flash-top` condition runs `moonshotai/Kimi-K2.7-Code` for
+planning/review/research and `zai-org/GLM-5.3-Flash` for proving/negation,
+all through RCP using `RCP_API_KEY`. It uses top-down search, four prover
+workers per problem, 150 calls per prover pass, 50 per planning stage, and
+5,000 total calls per problem. Two lanes run two problems concurrently.
+For a key allowing twenty in-flight requests, set
+`LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS=20` in the launcher; the default remains
+one. Every process sharing that key must use the same allowance. The reserve
+key is not inherited by campaign workers.
+
 An authorized runtime upgrade sets `default_runtime_directory` to a new immutable
 snapshot for unstarted cells. Every launched cell records `runtime_directory`
 and `runtime_sha256`; reconnects retain that version and their cumulative budgets.

@@ -39,9 +39,46 @@ def test_rcp_arms_route_workers_and_planning_separately(name, model):
 def test_campaign_environment_carries_only_assigned_rcp_key(tmp_path, monkeypatch):
     monkeypatch.setenv("RCP_API_KEY", "assigned-test-key")
     monkeypatch.setenv("RCP_API_KEY_RESERVE", "other-test-key")
+    monkeypatch.setenv("LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS", "20")
     env = environment(tmp_path)
     assert env["RCP_API_KEY"] == "assigned-test-key"
     assert "RCP_API_KEY_RESERVE" not in env
+    assert env["LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS"] == "20"
+
+
+def test_kimi_glm_campaign_routes_all_roles_to_one_rcp_key(monkeypatch):
+    from leanflow_cli.workflows.prover.config import ProverConfig
+    from scripts.lean_imo_campaign.provider import resolve_launch_provider
+
+    row = cells([{"id": "p"}], CONDITION_SETS["kimi-glm-flash-top"])[0]
+    config = ProverConfig(**row["config"])
+    for role in ("prover", "negation", "orchestrator", "review", "research"):
+        settings = config.to_mapping(role)
+        assert settings["provider"] == "rcp" and settings["api_key_env"] == "RCP_API_KEY"
+        assert settings["model"] == (
+            "zai-org/GLM-5.3-Flash"
+            if role in {"prover", "negation"}
+            else "moonshotai/Kimi-K2.7-Code"
+        )
+    assert (config.parallelism, config.job_api_calls, config.total_api_calls) == (4, 150, 5000)
+    assert config.search_order == "top-down"
+    monkeypatch.setenv("RCP_API_KEY", "campaign-test-key")
+    route = resolve_launch_provider(row["config"])
+    assert route["api_key"] == "campaign-test-key"
+    assert route["api_mode"] == "chat_completions"
+    assert route["base_url"] == "https://inference.rcp.epfl.ch/v1"
+
+
+def test_worker_environment_roundtrips_model_context_profiles():
+    from leanflow_cli.workflows.prover.config import ENV_NAMES, ProverConfig
+    from scripts.lean_imo_campaign.provider import encode_setting
+
+    config = ProverConfig(
+        model="model",
+        model_contexts={"model": {"context_tokens": 12345, "compression_threshold": 0.65}},
+    )
+    env = {ENV_NAMES[key]: encode_setting(value) for key, value in config.to_mapping().items()}
+    assert ProverConfig.from_env(env) == config
 
 
 def test_two_lanes_finish_conditions_before_claiming_next_problem() -> None:

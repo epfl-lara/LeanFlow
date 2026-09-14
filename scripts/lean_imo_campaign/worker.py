@@ -14,9 +14,9 @@ from scripts.lean_imo_campaign.runtime_versions import runtime_directory
 
 def main() -> int:
     """Pin runtime settings before any provider request or controller startup."""
-    from leanflow_cli.runtime.runtime_provider import resolve_runtime_provider
     from leanflow_cli.workflows.prover.config import ENV_NAMES
     from leanflow_cli.workflows.prover.entrypoint import main as prove
+    from scripts.lean_imo_campaign.provider import encode_setting, resolve_launch_provider
 
     directory, cell_id = Path(sys.argv[1]).resolve(), sys.argv[2]
     manifest = json.loads((directory / "campaign.json").read_text())
@@ -32,10 +32,13 @@ def main() -> int:
                 "Shared LeanFlow configuration changed; pause and review comparability"
             )
     root = Path(cell["project"])
-    runtime = resolve_runtime_provider(requested="openai-codex")
+    runtime = resolve_launch_provider(cell["config"])
+    expected = manifest.get(
+        "provider_identity", {"provider": "openai-codex", "api_mode": "codex_responses"}
+    )
     if (
-        runtime["provider"] != "openai-codex"
-        or runtime["api_mode"] != "codex_responses"
+        runtime["provider"] != expected["provider"]
+        or runtime["api_mode"] != expected["api_mode"]
         or runtime["base_url"].rstrip("/") != manifest["provider_base_url"]
     ):
         raise ValueError("Provider identity differs from the frozen comparison")
@@ -57,11 +60,7 @@ def main() -> int:
         ),
     }
     for key, value in cell["config"].items():
-        env[ENV_NAMES[key]] = (
-            ("1" if value else "0")
-            if isinstance(value, bool)
-            else ",".join(value) if isinstance(value, (list, tuple)) else str(value)
-        )
+        env[ENV_NAMES[key]] = encode_setting(value)
     os.environ.update(env)
     if cell.get("resume_run_id"):
         os.environ["LEANFLOW_PROVER_RESUME_RUN_ID"] = cell["resume_run_id"]

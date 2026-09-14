@@ -251,6 +251,7 @@ def environment(directory: Path) -> dict[str, str]:
         "CODEX_HOME",
         # Each RCP campaign receives only its assigned virtual key at launch.
         "RCP_API_KEY",
+        "LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",

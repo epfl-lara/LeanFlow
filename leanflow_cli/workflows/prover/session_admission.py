@@ -1,12 +1,13 @@
-"""Serialize RCP requests by credential before spending a bounded job admission."""
+"""Bound concurrent RCP requests by credential before spending job admissions."""
 
 from __future__ import annotations
 
 import fcntl
 import hashlib
+import os
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -34,6 +35,8 @@ def provider_request_slot(
     RCP virtual keys can allow only one in-flight request even when separate
     theorem cells run concurrently. A lock shared under LeanFlow home covers
     every model using the same key; neither the key nor its alias is written.
+    LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS raises the default one-slot allowance
+    for a higher-capacity key. Set the same allowance in every sharing process.
     Waiting obeys the session wall deadline and cancellation, and emits progress
     before durable request admission. Other providers retain their concurrency.
     """
@@ -44,10 +47,19 @@ def provider_request_slot(
     key = str(getattr(agent, "api_key", ""))
     if not key:
         raise ValueError("An RCP request requires a credential")
+    capacity = int(os.getenv("LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS", "1"))
+    if not 1 <= capacity <= 256:
+        raise ValueError("LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS must be between 1 and 256")
     identity = hashlib.sha256(key.encode()).hexdigest()
     directory = leanflow_home() / "runtime" / "rcp-request-slots"
     directory.mkdir(parents=True, exist_ok=True)
-    with (directory / (identity + ".lock")).open("a") as handle:
+    with ExitStack() as stack:
+        handles = [
+            stack.enter_context(
+                (directory / (identity + (f".{slot}" if slot else "") + ".lock")).open("a")
+            )
+            for slot in range(capacity)
+        ]
         next_notice = 0.0
         while True:
             if cancelled():
@@ -55,15 +67,21 @@ def provider_request_slot(
             now = time.monotonic()
             if now >= deadline:
                 raise ProviderQueueStopped("timeout")
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = None
+            for handle in handles:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = handle
+                    break
+                except BlockingIOError:
+                    continue
+            if acquired is not None:
                 break
-            except BlockingIOError:
-                if now >= next_notice:
-                    on_wait()
-                    next_notice = now + 5.0
-                time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+            if now >= next_notice:
+                on_wait()
+                next_notice = now + 5.0
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         try:
             yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            fcntl.flock(acquired, fcntl.LOCK_UN)

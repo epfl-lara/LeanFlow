@@ -435,15 +435,15 @@ def main() -> None:
     if args.command == "run":
         run(directory, adopt_active=args.adopt_active)
         return
-    from leanflow_cli.runtime.runtime_provider import resolve_runtime_provider
+    from scripts.lean_imo_campaign.provider import resolve_launch_provider
 
     directory.mkdir(parents=True, exist_ok=False)
     repo = args.repo.resolve()
     fixture = repo / "testdata/workflow_projects/LeanIMOBench"
     identity = freeze(repo, fixture, directory)
     manifest = json.loads((directory / "baseline/manifest.json").read_text())
-    provider = resolve_runtime_provider(requested="openai-codex")
     conditions = CONDITION_SETS[args.conditions]
+    provider = resolve_launch_provider(cells([{"id": "provider-preview"}], conditions)[0]["config"])
     unsolved = [p for p in manifest["problems"] if p["leap_solved"] is False]
     selected = unsolved
     if args.problems:
@@ -463,6 +463,7 @@ def main() -> None:
         "created_at": now(),
         "status": "prepared",
         "provider_base_url": provider["base_url"].rstrip("/"),
+        "provider_identity": {key: provider[key] for key in ("provider", "api_mode")},
         "provenance": identity,
         "cells": cells(selected, conditions),
     }

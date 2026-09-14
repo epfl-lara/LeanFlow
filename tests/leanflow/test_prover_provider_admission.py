@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -151,3 +152,24 @@ def test_waiting_session_preserves_ledger_and_can_resume(tmp_path, monkeypatch):
     result = agent_session.run_session(**args)
     assert result["status"] == "completed" and result["api_calls"] == 1
     assert len(sent) == 1
+
+
+def test_configured_twenty_slots_bound_shared_models_and_release(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS", "20")
+    with ExitStack() as stack:
+        for _ in range(20):
+            stack.enter_context(slot(agent(), on_wait=lambda: pytest.fail("free slot was blocked")))
+        with pytest.raises(ProviderQueueStopped):
+            with slot(agent(), deadline=time.monotonic() + 0.02):
+                pytest.fail("exceeded twenty concurrent requests")
+    with slot(agent(), on_wait=lambda: pytest.fail("released slots still busy")):
+        pass
+
+
+@pytest.mark.parametrize("capacity", ["0", "-1", "257", "invalid"])
+def test_invalid_rcp_capacity_fails_before_admission(tmp_path, monkeypatch, capacity):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS", capacity)
+    with pytest.raises(ValueError), slot(agent()):
+        pytest.fail("invalid capacity was admitted")

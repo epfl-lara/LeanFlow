@@ -234,7 +234,7 @@ tool is reachable through the public registry.
 | `workflows/prover/allocation.py` | Wait outside the controller lock for parallel allocations; reconcile usage without dequeuing proof results or making a worker wait on itself |
 | `workflows/prover/usage.py` | Exact-model cost estimates, provider cost provenance, request coverage, and cumulative resume telemetry independent of observer flush timing |
 | `workflows/prover/session_transport.py` | Shared provider adapters, one request per admission, no hidden retry/recovery loop |
-| `workflows/prover/session_admission.py` | Cross-process RCP credential slots before durable request admission; cancellable waiting preserves call budgets and other providers' concurrency |
+| `workflows/prover/session_admission.py` | Configurable cross-process RCP credential capacity before durable request admission; cancellable waiting preserves call budgets and other providers' concurrency |
 | `workflows/prover/session_provider.py` | Per-role endpoint and credential-variable resolution without changing shared process credentials; legacy jobs retain the native route |
 | `workflows/prover/session_context.py` | Deterministic compaction retaining the contract, assignment and proof notes |
 | `workflows/prover/session_assignment.py` | Bounded assignment projection with full proof/notes artifacts and lossless references for unchanged proposed nodes; exact claims, dependencies, status and plans stay pinned |
@@ -536,7 +536,8 @@ The complete contribution and quality-gate requirements are in `AGENTS.md` and
 `scripts/lean_imo_campaign/` is repository experiment tooling, outside the product
 workflow layer: `matrix.py` owns problem-lane scheduling, `artifacts.py` freezes
 the runtime and prepares private offline Lake projects, `worker.py` invokes the
-dedicated prover, `recovery.py` bounds provider reconnects without budget resets,
+dedicated prover, `provider.py` selects the all-RCP or legacy launch route and
+encodes structured model settings, `recovery.py` bounds provider reconnects without budget resets,
 `dispatch_policy.py` limits active cells independently of persistent lane claims
 and optionally advances past exhausted transient transport failures,
 `runtime_versions.py` pins each cell to an immutable runtime, `adoption.py`
