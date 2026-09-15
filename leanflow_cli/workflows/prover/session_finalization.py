@@ -44,6 +44,13 @@ class ReportRecovery:
         return used < limit
 
     def complete(self, response: str) -> None:
-        """Preserve a recovered report so reopening does not repeat or lose it."""
-        if self.attempted:
-            atomic_json_write(self.path, {"final_response": response})
+        """Preserve every successful stage report, including unused recovery capacity."""
+        atomic_json_write(self.path, {"final_response": response})
+
+    def report_only(self, used: int, limit: int) -> bool:
+        """Reserve a final report and one recovery within the original call ceiling.
+
+        A one-call stage can only report; larger stages stop tool work before
+        the penultimate request so an unusable report still has a recovery call.
+        """
+        return self.attempted or limit - used <= 2

@@ -32,6 +32,7 @@ const PHASE_LABELS: Record<string, string> = {
   inspect: "Inspecting",
   preflight: "Preflight",
   planning: "Planning",
+  planning_stalled: "Planning stalled",
   reviewing: "Reviewing",
   validating: "Validating",
   proving: "Proving",
@@ -401,6 +402,7 @@ const SCOPE_LABELS: [RegExp, string][] = [
   [/^(verification|verification_failed|final_build)$/, "final verification"],
   [/^(source|source_conflict)$/, "protected source"],
   [/^(context_limit)$/, "a context limit"],
+  [/^planning_stalled$/, "repeated planning failures"],
   [/^campaign$/, "the campaign"],
 ];
 

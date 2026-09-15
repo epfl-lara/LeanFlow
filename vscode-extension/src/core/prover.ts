@@ -237,7 +237,7 @@ const TERMINAL = new Set([
   "complete", "completed", "succeeded", "failed", "cancelled", "canceled",
   "stopped", "exhausted", "budget-exhausted", "disproved", "interrupted",
   "provider_error", "environment_error", "source_conflict", "verification_failed",
-  "budget_exhausted", "error", "blocked", "context_limit",
+  "budget_exhausted", "error", "blocked", "context_limit", "planning_stalled",
 ]);
 
 function record(value: unknown): Record<string, unknown> {

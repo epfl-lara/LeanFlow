@@ -249,6 +249,7 @@ const BAD = new Set([
   "environment_error",
   "source_conflict",
   "verification_failed",
+  "planning_stalled",
   "disproved",
   "invalidated",
 ]);

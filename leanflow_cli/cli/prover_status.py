@@ -34,6 +34,7 @@ _TERMINAL_PHASES = frozenset(
         "context_limit",
         "error",
         "blocked",
+        "planning_stalled",
     }
 )
 _MAX_STATE_BYTES = 16 * 1024 * 1024

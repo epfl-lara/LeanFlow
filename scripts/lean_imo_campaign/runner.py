@@ -169,6 +169,12 @@ def refresh(cell: dict[str, Any]) -> None:
     cell["root_proofs_ready"] = bool(roots) and roots <= proved
     if state.get("error"):
         cell["error"] = state["error"]
+    else:
+        cell.pop("error", None)
+    if state.get("error_details"):
+        cell["error_details"] = state["error_details"]
+    else:
+        cell.pop("error_details", None)
 
 
 def resume_source(project: Path) -> str:
@@ -228,6 +234,7 @@ def launch(
     root = Path(cell["project"]) if cell.get("resume_run_id") else prepare(directory, cell)
     cell.pop("controller_status", None)
     cell.pop("error", None)
+    cell.pop("error_details", None)
     cell["project"] = str(root)
     cell["status"] = "running"
     cell["started_epoch"] = time.time() - float(cell.get("metrics", {}).get("elapsed_s", 0))

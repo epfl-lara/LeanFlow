@@ -33,6 +33,27 @@ function snapshot(fields = {}) {
   return normalizeProverSnapshot({ run_id: "run-1", ...fields }, "run-1");
 }
 
+test("a planning stall is visibly stopped and does not keep the controller clock advancing", () => {
+  const state = snapshot({
+    phase: "planning_stalled", status: "planning_stalled",
+    updated_at: "2026-09-06T14:04:00+00:00",
+    metrics: { elapsed_s: 100, api_calls: 7, total_api_budget: 2000 },
+    jobs: [{ id: "planner", role: "orchestrator", status: "running" }],
+    stop_reason: { code: "planning_stalled", scope: "campaign", message: "Three unchanged proposals were rejected.", next_step: "Inspect the saved draft before resuming." },
+  });
+  assert.equal(state.terminal, true);
+  assert.equal(proverPhaseLabel(state), "Planning stalled");
+  assert.equal(proverCapacity(state).controllerActive, false);
+  assert.equal(proverCapacity(state).waitingReason, "");
+  assert.equal(proverBudget(state, NOW).elapsedAdvancing, false);
+  assert.equal(proverBudget(state, NOW).elapsedS, 100);
+  assert.match(controllerActivity(state, NOW).explanation, /finished with planning stalled/);
+  const stopped = stopReasonView(state);
+  assert.equal(stopped.title, "Planning stalled");
+  assert.equal(stopped.scopeLabel, "repeated planning failures");
+  assert.equal(stopped.nextStep, "Inspect the saved draft before resuming.");
+});
+
 test("resume-pending allocations do not occupy prover slots or keep finished clocks running", () => {
   const job = { id: "old", role: "prover", node_id: "goal", status: "resume_pending",
     started_at: "2026-09-06T14:00:00+00:00", finished_at: "2026-09-06T14:03:30+00:00" };

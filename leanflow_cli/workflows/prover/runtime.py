@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import os
 import queue
@@ -55,9 +56,16 @@ class BudgetExhausted(RuntimeError):
 class InfrastructureFailure(RuntimeError):
     """Report unavailable infrastructure without treating it as theorem failure."""
 
-    def __init__(self, message: str, status: str = "provider_error") -> None:
+    def __init__(
+        self,
+        message: str,
+        status: str = "provider_error",
+        *,
+        error_details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.error_details = copy.deepcopy(error_details) if error_details else None
 
 
 class ProverRuntime:
@@ -235,6 +243,7 @@ class ProverRuntime:
         recover_proof(self)
         self._assert_sources()
         self.state.pop("error", None)
+        self.state.pop("error_details", None)
         self.state.pop("next_step", None)
         self.state.pop("stop_reason", None)
         if self.state.get("proposal_status") in {"proposed", "validating"}:
@@ -1514,6 +1523,8 @@ class ProverRuntime:
         except InfrastructureFailure as error:
             status = error.status
             self.state["error"] = str(error)
+            if error.error_details:
+                self.state["error_details"] = error.error_details
         except Exception as error:
             status = "source_conflict" if "protected source changed" in str(error) else "error"
             self.state["error"] = str(error)

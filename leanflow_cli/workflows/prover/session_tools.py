@@ -356,8 +356,8 @@ class SessionTools:
             if len(content.encode()) > 512000:
                 raise ValueError("Scratch files are limited to 512 KB")
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
             if content != previous:
+                path.write_text(content, encoding="utf-8")
                 self.revision += 1
             self.artifacts.add(str(path))
             return {

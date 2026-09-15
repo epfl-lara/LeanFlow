@@ -14,6 +14,11 @@ from typing import TYPE_CHECKING, Any
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.models import Dag
 from leanflow_cli.workflows.prover.planning import apply_proposal, json_report, planning_prompt
+from leanflow_cli.workflows.prover.planning_progress import (
+    ensure_not_stalled,
+    reject_attempt,
+    restore_legacy_progress,
+)
 from leanflow_cli.workflows.prover.source import (
     SourceConflictError,
     SourceDocument,
@@ -52,6 +57,21 @@ def _finalize_plan_checkpoint(
         runtime.state["design_plan_complete"] = True
 
 
+def _accept_materialized_plan(runtime: ProverRuntime, checkpoint: dict[str, Any]) -> None:
+    """Finish plan acceptance once its reviewed graph and source changes have committed."""
+    materialization = checkpoint["materialization"]
+    proposal = materialization["proposal"]
+    if materialization["changed_direction"] and not checkpoint.get("refinement_charged"):
+        runtime.state["metrics"]["plan_refinements"] += 1
+        checkpoint["refinement_charged"] = True
+    runtime.state.update(
+        plan_markdown=proposal["plan"], phase="proving", proposal_status="accepted"
+    )
+    checkpoint["accepted_proposal"] = proposal
+    checkpoint.pop("materialization", None)
+    runtime._persist()
+
+
 def research_plan(
     runtime: ProverRuntime,
     reason: str,
@@ -74,6 +94,17 @@ def research_plan(
         reason, refinement = checkpoint["reason"], checkpoint["refinement"]
         affected = set(checkpoint["affected"]) if checkpoint["affected"] is not None else None
     runtime._ensure_active()
+    ensure_not_stalled(runtime, checkpoint)
+    restore_legacy_progress(runtime, checkpoint)
+    materialization = checkpoint.get("materialization", {})
+    if materialization.get("transaction_id") and materialization[
+        "transaction_id"
+    ] == runtime.state.get("source_transaction"):
+        # Graph/source commit and acceptance bookkeeping are separate persists.
+        # The matching transaction proves the Lean gate already committed this
+        # proposal; applying it again would treat its new skeletons as immutable
+        # existing declarations and could reject work the controller just added.
+        _accept_materialized_plan(runtime, checkpoint)
     if checkpoint.get("accepted_proposal"):
         launch_research_requests(runtime, checkpoint["accepted_proposal"].get("research_jobs", []))
         _finalize_plan_checkpoint(runtime, checkpoint, True)
@@ -99,12 +130,14 @@ def research_plan(
     if isinstance(outline_report.get("plan"), str) and outline_report["plan"].strip():
         runtime.state["plan_markdown"] = outline_report["plan"]
         runtime._persist()
-    critique = ""
-    proposal: dict[str, Any] = {}
+    progress = checkpoint.get("progress", {})
+    critique = str(progress.get("critique", ""))
+    proposal: dict[str, Any] = dict(progress.get("previous_proposal", {}))
     # Every proposal/review remains separately capped and globally accounted.
-    # Three rejected drafts do not consume the remaining campaign allowance.
-    # The global call ceiling also bounds malformed zero-call session adapters.
-    for attempt in range(runtime.config.total_api_calls):
+    # Changed drafts can continue within the campaign allowance; unchanged
+    # failures have their own checkpointed guard. Resume skips rejected attempts
+    # rather than replaying their journal entries or failed Lean materialization.
+    for attempt in range(int(progress.get("next_attempt", 0)), runtime.config.total_api_calls):
         runtime._ensure_active()
         runtime._assert_sources()
         result = _planning_call(
@@ -118,18 +151,25 @@ def research_plan(
             ),
         )
         proposal = json_report(str(result.get("final_response", "")))
+        malformed = not isinstance(proposal.get("plan"), str) or not proposal["plan"].strip()
         try:
+            if malformed:
+                raise ValueError("planning report must include a concrete plan")
             updated, skeletons = apply_proposal(
                 runtime.dag, proposal, max_nodes=runtime.config.max_nodes, affected=affected
             )
-            if not proposal or not isinstance(proposal.get("plan"), str):
-                raise ValueError("planning report must include a concrete plan")
         except ValueError as error:
             critique = str(error)
-            runtime.state.update(proposal_status="rejected", proposal_critique=critique)
-            runtime.record_finding("rejected plan draft", critique)
-            runtime.store.event("plan_rejected", {"reason": critique})
-            runtime._persist()
+            reject_attempt(
+                runtime,
+                checkpoint,
+                attempt,
+                proposal,
+                stage="proposal",
+                critique=critique,
+                finding="rejected plan draft",
+                malformed=malformed,
+            )
             continue
         runtime.state.update(
             phase="reviewing",
@@ -164,10 +204,16 @@ def research_plan(
         review = json_report(str(reviewed.get("final_response", "")))
         if review.get("accepted") is not True:
             critique = str(review.get("critique", "review did not accept the graph"))
-            runtime.state.update(proposal_status="rejected", proposal_critique=critique)
-            runtime.record_finding("reviewer rejected the graph", critique)
-            runtime.store.event("plan_rejected", {"reason": critique})
-            runtime._persist()
+            reject_attempt(
+                runtime,
+                checkpoint,
+                attempt,
+                proposal,
+                stage="review",
+                critique=critique,
+                finding="reviewer rejected the graph",
+                malformed=review.get("accepted") is not False,
+            )
             continue
         changed_direction = not checkpoint.get("refinement_charged") and (
             refinement
@@ -208,6 +254,10 @@ def research_plan(
             proposal_status="validating",
             proposal_critique=str(review.get("critique", "")),
         )
+        checkpoint["materialization"] = {
+            "proposal": copy.deepcopy(proposal),
+            "changed_direction": changed_direction,
+        }
         runtime._persist()
         try:
             install_planned_libraries(runtime, proposal.get("libraries", []))
@@ -220,7 +270,6 @@ def research_plan(
             if isinstance(error, SourceConflictError):
                 raise InfrastructureFailure(str(error), status="source_conflict") from error
             critique = f"Independent skeleton gate rejected proposal: {error}"
-            runtime.record_finding("skeleton gate rejected proposal", str(error))
             failed = next(
                 (
                     op
@@ -233,19 +282,18 @@ def research_plan(
                 for proposed_node in runtime.state.get("proposed_dag", {}).get("nodes", []):
                     if proposed_node["file"] == failed["file"]:
                         proposed_node.update(status="check_failed", notes=str(error))
-            runtime.state.update(proposal_status="rejected", proposal_critique=critique)
-            runtime.store.event("plan_rejected", {"reason": critique})
-            runtime._persist()
+            reject_attempt(
+                runtime,
+                checkpoint,
+                attempt,
+                proposal,
+                stage="skeleton",
+                critique=critique,
+                finding="skeleton gate rejected proposal",
+            )
             continue
         runtime.dag = updated
-        if changed_direction:
-            runtime.state["metrics"]["plan_refinements"] += 1
-            checkpoint["refinement_charged"] = True
-        runtime.state["plan_markdown"] = proposal["plan"]
-        runtime.state["phase"] = "proving"
-        runtime.state["proposal_status"] = "accepted"
-        checkpoint["accepted_proposal"] = proposal
-        runtime._persist()
+        _accept_materialized_plan(runtime, checkpoint)
         launch_research_requests(runtime, proposal.get("research_jobs", []))
         _finalize_plan_checkpoint(runtime, checkpoint, True)
         runtime.state.pop("planning_request", None)
@@ -399,6 +447,9 @@ def _materialize(
     )
 
     journal = begin_materialization(runtime)
+    checkpoint = runtime.state.get("planning_request", {})
+    if isinstance(checkpoint.get("materialization"), dict):
+        checkpoint["materialization"]["transaction_id"] = journal["id"]
     try:
         if skeletons:
             from leanflow_cli.workflows.prover.libraries import ensure_helper_library

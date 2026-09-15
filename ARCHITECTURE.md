@@ -223,6 +223,7 @@ tool is reachable through the public registry.
 | `workflows/prover/resume_candidates.py` | Recover older submissions hidden by empty retries after an infrastructure failure; retain budgets and require fresh independent verification |
 | `workflows/prover/job_controller.py` | Job workspaces, durable handoffs, request reservation, submission feedback, and separately accounted resource jobs |
 | `workflows/prover/planning_controller.py` | Fresh planning/review stages with exact submitted declarations for `new_helper_ids` in the review graph while stored DAG nodes retain signatures; helper-materialization transactions with removable dependency imports, source-conflict recovery without mathematical replanning, and concurrent resource batches |
+| `workflows/prover/planning_progress.py` | Atomic rejected-attempt cursors, conservative legacy checkpoint migration, and persistent stops after three unchanged planning failures |
 | `workflows/prover/installed_libraries.py` | Read-only offline admission of requests already satisfied by an exact locked local checkout, without network validation or installation |
 | `workflows/prover/materialization_imports.py` | Dependency-ordered recompilation of changed or missing helper artifacts before signature checks; journaled restoration of previous artifacts on rollback |
 | `workflows/prover/store.py` | Atomic snapshots, PLAN/DAG publication, baselines, events and guidance inbox |
@@ -232,11 +233,14 @@ tool is reachable through the public registry.
 | `workflows/prover/check_failures.py` | Nested check-result classification that preserves accepted plans when compilation or kernel inspection fails for infrastructure reasons |
 | `workflows/prover/observer.py` | Existing CLI activity/live-status bridge and terminal exit mapping |
 | `workflows/prover/agent_session.py` | One scratch job, durable request admission and response usage, persistence encouragement and structured result |
-| `workflows/prover/session_finalization.py` | One durable report-only recovery for empty/truncated stage output, within the existing call ceiling; restart cannot renew it |
+| `workflows/prover/session_finalization.py` | Reserve the last two stage calls for reporting and one recovery; persist successful reports and prevent restart from renewing recovery |
+| `workflows/prover/session_progress.py` | Persist bounded repeated-evidence hashes; warn after three unchanged observations and require a report after six, without judging mathematical validity or restricting proof attempts |
+| `workflows/prover/session_report_context.py` | Retain bounded, paired report evidence across interruption under controller-owned state, behind fresh system and assignment messages |
 | `workflows/prover/allocation.py` | Wait outside the controller lock for parallel allocations; reconcile usage without dequeuing proof results or making a worker wait on itself |
 | `workflows/prover/usage.py` | Exact-model cost estimates, provider cost provenance, request coverage, and cumulative resume telemetry independent of observer flush timing |
 | `workflows/prover/session_transport.py` | Shared provider adapters, one request per admission, no hidden retry/recovery loop |
 | `workflows/prover/session_admission.py` | Configurable cross-process RCP credential capacity before durable request admission; cancellable waiting preserves call budgets and other providers' concurrency |
+| `workflows/prover/session_errors.py` | Bounded, redacted exception causes and safe provider identifiers; typed controller interruptions remain distinct from transport errors |
 | `workflows/prover/session_provider.py` | Per-role endpoint and credential-variable resolution without changing shared process credentials; legacy jobs retain the native route |
 | `workflows/prover/session_context.py` | Deterministic compaction retaining the contract, assignment and proof notes |
 | `workflows/prover/session_assignment.py` | Bounded assignment projection with full proof/notes artifacts and lossless references for unchanged proposed nodes; exact claims, dependencies, status and plans stay pinned |
@@ -411,6 +415,21 @@ submissions receive independent feedback inside their existing session. The
 accepted reviewer classification distinguishes direction
 refinements from decomposition; deterministic campaign limits remain independent.
 
+Rejected attempts advance a durable cursor. Three identical proposal/gate/critique
+failures (or three malformed reports at one stage) stop with `planning_stalled`;
+plain resume cannot renew the loop. Revised proposals retain their existing
+campaign allowance. Historical reviewer critiques remain fallible feedback.
+A recorded materialization transaction ID links committed helper source and graph
+to their acceptance bookkeeping, so a crash cannot turn accepted new helpers into
+an invalid repeated proposal or charge the same refinement twice.
+
+Planning, review and research reserve their final two calls for a report and at
+most one recovery; a one-call stage can only report. Repeated unchanged read,
+search, fetch or computation evidence warns on the third observation and disables
+further tools on the sixth, including within a batch. Protected bounded report
+history retains completed tool pairs across interruptions. These safeguards never
+mark a helper proved or declare a mathematical plan false.
+
 ## Persistence and Resumability
 
 User-level state resolves through `LEANFLOW_HOME` (normally `~/.leanflow`).
@@ -540,10 +559,13 @@ The complete contribution and quality-gate requirements are in `AGENTS.md` and
 workflow layer: `matrix.py` owns problem-lane scheduling, `artifacts.py` freezes
 the runtime and prepares private offline Lake projects, `worker.py` invokes the
 dedicated prover, `provider.py` selects the all-RCP or legacy launch route and
-encodes structured model settings, `recovery.py` bounds provider reconnects without budget resets,
+encodes structured model settings, `recovery.py` bounds provider reconnects without budget resets
+and admits only recognized transient connection, timeout, rate-limit and server errors,
 `dispatch_policy.py` limits active cells independently of persistent lane claims,
 reserves slots for recorded draining workers, isolates exhausted report failures,
 and optionally advances past exhausted transient transport failures,
+using the same transient classifier; unknown/internal errors and stalled planning
+pause dispatch. Safe exception causes survive job, run and recovery history,
 `runtime_versions.py` pins each cell to an immutable runtime, `adoption.py`
 reattaches a replacement dispatcher to recorded worker identities, and
 `runner.py` persists the two-lane queue and metrics (including runtime hashes). It introduces no generic

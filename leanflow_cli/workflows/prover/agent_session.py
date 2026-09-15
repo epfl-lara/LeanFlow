@@ -21,12 +21,15 @@ from leanflow_cli.workflows.prover.session_context import (
     compact_history,
     tool_result_message,
 )
+from leanflow_cli.workflows.prover.session_errors import request_error_details
 from leanflow_cli.workflows.prover.session_finalization import (
     REPORT_FAILURE,
     REPORT_RECOVERY_PROMPT,
     ReportRecovery,
 )
 from leanflow_cli.workflows.prover.session_guidance import GuidanceInbox, skill_guidance
+from leanflow_cli.workflows.prover.session_progress import SessionProgress
+from leanflow_cli.workflows.prover.session_report_context import SessionReportContext
 from leanflow_cli.workflows.prover.session_tools import SessionTools
 from leanflow_cli.workflows.prover.session_transport import (
     build_transport,
@@ -115,6 +118,7 @@ def run_session(
     budget_path = workspace.parent / ".runtime" / workspace.name / "request-count.json"
     budget_path.parent.mkdir(parents=True, exist_ok=True)
     report_recovery = ReportRecovery(budget_path.parent)
+    progress = SessionProgress(budget_path.parent, role=role, workspace=workspace)
     used = 0
     previous_usage = config.get("_previous_usage", {})
     if budget_path.exists():
@@ -145,6 +149,15 @@ def run_session(
     input_limit = context_budget.input_limit
     schemas = toolset.schemas()
     schema_tokens = approximate_tokens(schemas) if schemas else 0
+    report_context = (
+        SessionReportContext(
+            budget_path.parent,
+            workspace=workspace,
+            token_budget=input_limit - schema_tokens - 512,
+        )
+        if role not in {"prover", "negation"}
+        else None
+    )
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -172,6 +185,7 @@ def run_session(
     final_response = report_recovery.final_response
     status = "provider_error" if report_recovery.previously_admitted else "budget_exhausted"
     last_error = REPORT_FAILURE if report_recovery.previously_admitted else ""
+    error_details: dict[str, Any] = {}
     if final_response:
         status, last_error = "completed", ""
     stop_reason = None
@@ -184,6 +198,15 @@ def run_session(
     def is_cancelled() -> bool:
         """Check a controller cancellation signal at every model and tool boundary."""
         return callable(cancelled) and bool(cancelled())
+
+    def describe_error(error: BaseException) -> dict[str, Any]:
+        """Keep safe failure causes while masking the active route's exact credential."""
+        secrets = tuple(
+            value
+            for value in (getattr(agent, "api_key", None), config.get("api_key"))
+            if isinstance(value, str) and value
+        )
+        return request_error_details(error, exact_secrets=secrets)
 
     def emit(kind: str, details: dict[str, Any]) -> None:
         """Persist full redacted evidence and project compact live activity.
@@ -239,6 +262,8 @@ def run_session(
         return False
 
     try:
+        if report_context is not None and status != "completed":
+            messages = report_context.restore(messages)
         pending_submission = config.get("_pending_submission_response")
         if (
             role in {"prover", "negation"}
@@ -269,12 +294,12 @@ def run_session(
                 status = "timeout"
                 break
             final_report_only = role not in {"prover", "negation"} and (
-                used == api_budget - 1 or report_recovery.attempted
+                report_recovery.report_only(used, api_budget) or progress.report_only
             )
             remaining_note = {
                 "role": "user",
                 "content": (
-                    "This is the final permitted request for this stage. Tools are disabled. "
+                    "This is a final-report request for this stage. Tools are disabled. "
                     "Return the complete requested JSON/report in your response now, using the "
                     "accumulated assignment, history and saved findings. Follow the exact output "
                     "schema requested in the assignment. Do not return only a file path, defer "
@@ -287,7 +312,7 @@ def run_session(
                         else "Continue concrete proof work or submit a ready candidate; preserve progress in PLAN_job.md."
                     )
                     + (
-                        " The final call is reserved for the requested JSON/report with tools disabled."
+                        " The final two calls are reserved for the requested JSON/report and at most one recovery, with tools disabled."
                         if role not in {"prover", "negation"}
                         else ""
                     )
@@ -295,6 +320,8 @@ def run_session(
             }
             if report_recovery.attempted:
                 remaining_note["content"] = REPORT_RECOVERY_PROMPT
+            elif progress.report_only:
+                remaining_note["content"] = progress.report_reason
             before_tokens = approximate_tokens(messages + [remaining_note]) + schema_tokens
             history_limit = (
                 context_budget.trigger_tokens - schema_tokens - approximate_tokens([remaining_note])
@@ -342,6 +369,8 @@ def run_session(
                     {**config, "max_output_tokens": max_output_tokens},
                     schemas,
                 )
+            if report_context is not None:
+                report_context.save(messages)
             with provider_request_slot(
                 agent,
                 deadline=deadline,
@@ -397,8 +426,12 @@ def run_session(
                         **({"final_report_only": True} if final_report_only else {}),
                     )
                 except Exception as exc:
-                    last_error = redact_sensitive_text(str(exc))
-                    emit("api-error", {"api_calls": used, "error": last_error})
+                    error_details = describe_error(exc)
+                    last_error = str(error_details["message"])
+                    emit(
+                        "api-error",
+                        {"api_calls": used, "error": last_error, "error_details": error_details},
+                    )
                     # Infrastructure errors are explicit outcomes. Retrying must be
                     # an orchestrator decision with a new admitted job allocation.
                     status = "context_limit" if is_context_error(exc) else "provider_error"
@@ -426,6 +459,21 @@ def run_session(
                     ),
                 },
             )
+            messages.append(assistant)
+            final_response = str(assistant.get("content") or "")
+            tool_calls = assistant.get("tool_calls") or []
+            if (
+                role not in {"prover", "negation"}
+                and not tool_calls
+                and final_response.strip()
+                and assistant.get("finish_reason") not in {"length", "incomplete"}
+            ):
+                # Observer cancellation after the last admitted response must
+                # not discard a complete report or require another model call.
+                # Its schema and mathematical review remain controller gates.
+                report_recovery.complete(final_response)
+            if report_context is not None:
+                report_context.save(messages)
             emit(
                 "api-response",
                 {
@@ -436,9 +484,6 @@ def run_session(
                     "assistant": assistant,
                 },
             )
-            messages.append(assistant)
-            final_response = str(assistant.get("content") or "")
-            tool_calls = assistant.get("tool_calls") or []
             if (
                 not tool_calls
                 and role not in {"prover", "negation"}
@@ -455,7 +500,27 @@ def run_session(
                 emit("final-report-rejected", {"api_calls": used, "error": last_error})
                 break
             if final_report_only and tool_calls:
-                report_recovery.admit(used, used)
+                # Reply to every denied call so the recovery request has valid
+                # tool history, without executing actions after report-only admission.
+                for call in tool_calls:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id") or call.get("call_id") or ""),
+                            "name": str((call.get("function") or {}).get("name") or ""),
+                            "content": json.dumps(
+                                {
+                                    "success": False,
+                                    "error": "Tools are disabled; return the final report.",
+                                }
+                            ),
+                        }
+                    )
+                if report_context is not None:
+                    report_context.save(messages)
+                if report_recovery.admit(used, api_budget):
+                    emit("final-report-recovery", {"api_calls": used, "api_budget": api_budget})
+                    continue
                 status = "provider_error"
                 last_error = (
                     REPORT_FAILURE + " Provider returned tool calls despite disabled tools."
@@ -468,7 +533,6 @@ def run_session(
                 ):
                     if not submission_accepted(final_response):
                         continue
-                    report_recovery.complete(final_response)
                     status = "completed"
                     break
                 messages.append(
@@ -479,6 +543,7 @@ def run_session(
                 )
                 continue
             submitted = False
+            progress_notices: list[str] = []
             for call in tool_calls:
                 if is_cancelled():
                     status = "interrupted"
@@ -488,6 +553,7 @@ def run_session(
                     break
                 function = call.get("function") or {}
                 name = str(function.get("name") or "")
+                observation: dict[str, Any] | None = None
                 try:
                     raw_args = function.get("arguments") or "{}"
                     args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
@@ -504,7 +570,15 @@ def run_session(
                             ),
                         },
                     )
-                    result = toolset.invoke(name, args)
+                    if progress.report_only:
+                        result = {
+                            "success": False,
+                            "status": "stage_report_required",
+                            "error": progress.report_reason,
+                        }
+                    else:
+                        result = toolset.invoke(name, args)
+                        observation = args
                     if (
                         name in {"write_file", "replace_text"}
                         and result.get("success") is True
@@ -513,10 +587,6 @@ def run_session(
                         submitted = True
                 except (ValueError, TypeError) as exc:
                     result = {"success": False, "error": str(exc)}
-                emit(
-                    "tool-result",
-                    {"tool": name, "arguments": function.get("arguments"), "result": result},
-                )
                 content, artifact = tool_result_message(result, workspace)
                 if artifact is not None:
                     toolset.artifacts.add(str(artifact))
@@ -528,6 +598,34 @@ def run_session(
                         "content": content,
                     }
                 )
+                # Preserve paired evidence before a sticky report handoff can be
+                # committed. A crash in the middle of a batch retains its answered
+                # subset without orphan replies or reissuing unanswered actions.
+                if report_context is not None:
+                    report_context.save(messages)
+                notice = (
+                    progress.observe(name, observation, result) if observation is not None else None
+                )
+                emit(
+                    "tool-result",
+                    {"tool": name, "arguments": function.get("arguments"), "result": result},
+                )
+                if notice is not None:
+                    progress_notices.append(notice.message)
+                    emit(
+                        "tool-progress-" + notice.action,
+                        {
+                            "tool": notice.tool,
+                            "count": notice.count,
+                            "signature": notice.signature,
+                            "reason": notice.message,
+                            "api_calls": used,
+                        },
+                    )
+            # Keep all tool replies adjacent to their assistant batch before
+            # inserting guidance; provider serializers require complete pairs.
+            for notice_message in progress_notices:
+                messages.append({"role": "user", "content": notice_message})
             if status in {"timeout", "interrupted"}:
                 break
             if submitted and role in {"prover", "negation"} and submission_accepted(""):
@@ -548,7 +646,8 @@ def run_session(
             }
             else "error"
         )
-        last_error = redact_sensitive_text(str(exc))
+        error_details = describe_error(exc)
+        last_error = str(error_details["message"])
         if getattr(exc, "scope", None) == "campaign":
             stop_reason = {
                 "code": getattr(exc, "code", status),
@@ -571,6 +670,7 @@ def run_session(
         **costs.snapshot(used - initial_used),
         "artifacts": sorted(toolset.artifacts),
         "error": last_error,
+        **({"error_details": error_details} if error_details else {}),
         "report_path": str(workspace / "report.json"),
         "stop_reason": stop_reason,
     }

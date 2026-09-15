@@ -103,6 +103,7 @@ test("a segment carries session facts even when the filter hides the boundary ro
 test("status tone separates a finished job from a failed one", () => {
   assert.equal(statusTone("completed"), "ok");
   assert.equal(statusTone("provider_error"), "bad");
+  assert.equal(statusTone("planning_stalled"), "bad");
   assert.equal(statusTone("budget_exhausted"), "warn");
   assert.equal(statusTone(""), "");
 });

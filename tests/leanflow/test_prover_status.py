@@ -77,6 +77,7 @@ def test_guidance_preserves_arrival_order_and_exact_agent(tmp_path: Path) -> Non
         "budget_exhausted",
         "error",
         "blocked",
+        "planning_stalled",
     ],
 )
 def test_terminal_run_rejects_guidance(tmp_path: Path, phase: str) -> None:

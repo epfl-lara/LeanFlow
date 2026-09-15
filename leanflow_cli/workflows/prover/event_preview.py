@@ -235,7 +235,12 @@ def preview_details(kind: str, details: Mapping[str, Any]) -> dict[str, Any]:
             preview["feedback_preview"] = _clip(feedback, PREVIEW_CHARS)
         if isinstance(details.get("conditional"), bool):
             preview["conditional"] = details["conditional"]
-    elif kind in {"plan_rejected", "plan_refinement_budget_exhausted"}:
+    elif kind in {
+        "plan_rejected",
+        "plan_refinement_budget_exhausted",
+        "tool-progress-warn",
+        "tool-progress-report",
+    }:
         preview["reason_preview"] = _clip(details.get("reason"), PREVIEW_CHARS)
     elif kind == "user_message":
         preview["message_preview"] = _clip(details.get("message"), PREVIEW_CHARS)
@@ -337,6 +342,15 @@ def event_message(kind: str, details: Mapping[str, Any], preview: Mapping[str, A
         return _line(f"Provider error: {details.get('error', '')}", MESSAGE_CHARS)
     if kind == "final-report-rejected":
         return _line(f"Final report rejected: {details.get('error', '')}", MESSAGE_CHARS)
+    if kind == "final-report-recovery":
+        return "Retrying the final report once within the existing call budget; tools disabled"
+    if kind in {"tool-progress-warn", "tool-progress-report"}:
+        action = "Requesting the final report" if kind == "tool-progress-report" else "Warning"
+        return _line(
+            f"{action}: {details.get('tool', 'tool')} repeated unchanged evidence "
+            f"{details.get('count', '')} times",
+            MESSAGE_CHARS,
+        )
     if kind == "context-compacted":
         return "Context compacted" + (f" at call {calls}" if counted else "")
     if kind == "submission-feedback":

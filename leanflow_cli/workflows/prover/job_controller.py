@@ -15,6 +15,7 @@ from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.models import Node
 from leanflow_cli.workflows.prover.runtime import BudgetExhausted, InfrastructureFailure
+from leanflow_cli.workflows.prover.session_errors import SessionInterrupted
 from leanflow_cli.workflows.prover.source import (
     declaration_source,
     extract_scratch_replacements,
@@ -338,7 +339,7 @@ def session_event(
         # The final event must retain the typed outcome and its complete usage,
         # even when cancellation caused the job to finish.
         if runtime.cancelled.is_set() and kind != "job-session-end":
-            raise RuntimeError("prover controller stopped the job")
+            raise SessionInterrupted("prover controller stopped the job")
 
 
 def invoke(
@@ -390,7 +391,7 @@ def invoke(
         return {
             "status": (
                 error.status
-                if isinstance(error, InfrastructureFailure)
+                if isinstance(error, (InfrastructureFailure, SessionInterrupted))
                 else ("source_conflict" if "protected source changed" in str(error) else "error")
             ),
             "final_response": str(error),
@@ -509,6 +510,12 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
         for field in ("report_path", "artifacts"):
             if field in result:
                 job[field] = result[field]
+        error_details = result.get("error_details")
+        if isinstance(error_details, dict) and error_details:
+            # This is the bounded, redacted record produced by session_errors.
+            job["error_details"] = copy.deepcopy(error_details)
+        else:
+            job.pop("error_details", None)
         report_path = Path(job["workspace"]) / "result.json"
         from leanflow_cli.workflows.prover.stop_reason import job_stop_reason
 
@@ -545,9 +552,10 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
                 status=(
                     str(result["status"])
                     if result.get("status")
-                    in {"environment_error", "source_conflict", "context_limit"}
+                    in {"environment_error", "source_conflict", "context_limit", "error"}
                     else "provider_error"
                 ),
+                error_details=job.get("error_details"),
             )
 
 

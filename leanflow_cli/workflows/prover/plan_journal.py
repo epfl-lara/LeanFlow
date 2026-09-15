@@ -1,4 +1,4 @@
-"""Keep a durable record of what planning has already established or ruled out.
+"""Keep historical planning feedback across fresh model contexts.
 
 Every planning proposal runs in a fresh model context, and the only feedback it
 receives is the immediately preceding draft plus the single newest critique. The
@@ -14,9 +14,11 @@ decomposition, and nothing bounded it: rejected drafts do not spend the plan
 refinement budget, so only the campaign call ceiling and the wall clock ever
 stop it.
 
-This journal is the missing memory. It is written on rejection rather than on
-acceptance, kept beside ``plan_markdown`` so an accepted plan cannot clobber it,
-and handed to every job through the shared context.
+The journal is written on rejection rather than on acceptance, kept beside
+``plan_markdown`` so an accepted plan cannot clobber it, and handed to every job
+through the shared context. Reviewer assessments remain historical feedback,
+not verified facts. The controller separately checkpoints and stops repeated
+unchanged failures through ``planning_progress``.
 """
 
 from __future__ import annotations
@@ -72,8 +74,10 @@ def render(journal: Any) -> str:
     lines = [
         "## Planning journal",
         "",
-        "Findings already established in this run. Do not repropose anything ruled",
-        "out here, and keep satisfying every constraint listed, not only the newest.",
+        "Historical observations and feedback on earlier drafts. Reviewer critiques",
+        "are fallible; check which objections still apply to the current proposal.",
+        "Preserve verified evidence and valid unresolved constraints, and explain",
+        "when a changed draft repairs or invalidates an earlier complaint.",
         "",
     ]
     for entry in journal:

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from scripts.lean_imo_campaign.recovery import requires_inspection
+from scripts.lean_imo_campaign.recovery import is_transient_provider_error, requires_inspection
 
 
 def active_limit(lane_count: int) -> int:
@@ -50,16 +50,8 @@ def can_admit(rows: list[dict[str, Any]], lane: int, active_count: int, limit: i
 def pause_after_failure(cell: dict[str, Any], continue_transient: bool) -> bool:
     """Optionally advance past exhausted transport retries; retain integrity stops."""
     error = str(cell.get("error") or "").lower()
-    transient = any(
-        marker in error
-        for marker in (
-            "incomplete chunked read",
-            "connection refused",
-            "connection reset",
-            "upstream connect error",
-            "unable to verify model access right now",
-        )
-    )
+    if (cell.get("stop_reason") or {}).get("scope") == "scheduler":
+        return True
     access_failure = any(
         marker in error
         for marker in ("unauthorized", "authentication", "invalid api key", "insufficient_quota")
@@ -76,7 +68,7 @@ def pause_after_failure(cell: dict[str, Any], continue_transient: bool) -> bool:
     if (
         continue_transient
         and cell.get("status") == "provider_error"
-        and transient
+        and is_transient_provider_error(error)
         and not access_failure
     ):
         return False

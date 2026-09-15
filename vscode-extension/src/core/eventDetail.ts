@@ -435,7 +435,7 @@ function statusTone(status: string): "ok" | "err" | undefined {
     return "ok";
   }
   if (
-    ["error", "failed", "provider_error", "environment_error", "source_conflict", "verification_failed"].includes(
+    ["error", "failed", "provider_error", "environment_error", "source_conflict", "verification_failed", "planning_stalled"].includes(
       normalized,
     )
   ) {

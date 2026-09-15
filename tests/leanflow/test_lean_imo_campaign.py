@@ -219,6 +219,7 @@ def test_provider_recovery_preserves_cumulative_metrics_and_is_bounded() -> None
     cell = {
         "status": "provider_error",
         "run_id": "original",
+        "error": "Connection error.",
         "metrics": {"api_calls": 132, "elapsed_s": 400},
     }
     for attempt in range(1, 4):
@@ -282,6 +283,7 @@ def test_recovery_obeys_custom_budget_and_copies_historical_metrics():
     cell = {
         "status": "provider_error",
         "run_id": "saved",
+        "error": "Connection error.",
         "config": {"total_api_calls": 10, "wall_time_s": 100},
         "metrics": {"api_calls": 9, "elapsed_s": 99},
     }

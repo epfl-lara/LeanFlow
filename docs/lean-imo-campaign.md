@@ -54,7 +54,13 @@ cell project in the existing DAG/plan/jobs/changes dashboard. The queue's pause
 button writes `PAUSE_AFTER_ACTIVE`; active work finishes normally. Transient provider
 failures can reconnect three times through the native resume path, preserving
 cumulative calls, time, proof progress and each failed execution's record.
-Known permanent prompt/authentication/context/quota errors are not automatically retried. Persistent provider failures, infrastructure errors, and scheduler dead ends with unused global budget pause new dispatch. Recovery and the watchdog use each cell's saved limits.
+Automatic reconnects require recognized connection/timeout, rate-limit, HTTP
+408/429, or server-error evidence. Permanent prompt/authentication/context/quota
+errors, other HTTP client errors, unknown/internal errors, and `planning_stalled`
+are not automatically retried. Persistent provider failures, infrastructure
+errors, and scheduler dead ends with unused global budget pause new dispatch.
+Recovery and the watchdog use each cell's saved limits. Bounded, redacted error
+causes remain attached to each execution's history.
 To continue pending cells, inspect the cause,
 remove that marker if present, and run the same frozen runner. Terminal cells
 are preserved. If the dispatcher crashed with active admissions, it refuses

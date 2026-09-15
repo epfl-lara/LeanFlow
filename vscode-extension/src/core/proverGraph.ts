@@ -106,7 +106,7 @@ const AWAITING: Record<string, { label: string; detail: string }> = {
 const CANDIDATE = new Set(["candidate", "conditional", "provisional"]);
 const RUNNING = new Set(["running", "proving"]);
 const FAILED = new Set(["failed", "invalidated", "disproved", "false", "rejected", "error", "verification_failed"]);
-const BLOCKED = new Set(["blocked", "budget_exhausted", "provider_error", "environment_error", "source_conflict", "context_limit"]);
+const BLOCKED = new Set(["blocked", "budget_exhausted", "provider_error", "environment_error", "source_conflict", "context_limit", "planning_stalled"]);
 /** Proposed statements the independent skeleton check refused. */
 const PROPOSAL_FAILED = new Set(["rejected", "failed", "invalid", "check_failed", "syntax_error", "error"]);
 
@@ -217,6 +217,9 @@ export function nodeLifecycle(node: ProverNode, context: LifecycleContext): Node
     return { state: "failed", label: "Failed / invalidated", detail: `Recorded status: ${node.status}.`, job: latest, operation: null };
   }
   if (BLOCKED.has(node.status)) {
+    if (node.status === "planning_stalled") {
+      return { state: "blocked", label: "Planning stalled", detail: "Repeated planning failures stopped this run. Inspect the saved proposal and feedback before resuming.", job: latest, operation: null };
+    }
     return { state: "blocked", label: "Blocked", detail: `Recorded status: ${node.status}. No further prover pass is scheduled without replanning.`, job: latest, operation: null };
   }
   const unresolved = context.nodes

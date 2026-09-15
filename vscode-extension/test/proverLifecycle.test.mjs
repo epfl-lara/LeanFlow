@@ -24,6 +24,21 @@ function snapshot(fields = {}) {
   return normalizeProverSnapshot({ run_id: "spencer", ...fields }, "spencer");
 }
 
+test("planning stalls are blocked and stale running nodes cannot appear active after the stop", () => {
+  const state = snapshot({
+    phase: "planning_stalled",
+    dag: { nodes: [{ id: "stalled", status: "planning_stalled" }, { id: "running", status: "running" }] },
+    jobs: [{ id: "old", role: "prover", node_id: "running", status: "running" }],
+  });
+  const context = { jobs: state.jobs, terminal: state.terminal };
+  const stalled = nodeLifecycle(state.dag.nodes[0], context);
+  assert.equal(stalled.state, "blocked");
+  assert.equal(stalled.label, "Planning stalled");
+  assert.match(stalled.detail, /Inspect the saved proposal/);
+  assert.equal(nodeLifecycle(state.dag.nodes[1], context).state, "pending");
+  assert.equal(proofStateCounts(state.dag.nodes, state.jobs, state.terminal).active, 0);
+});
+
 /** SpencerResearch at 19:03:34 UTC on 2026-09-06, reduced to the fields that matter. */
 function spencerAt1903() {
   return snapshot({

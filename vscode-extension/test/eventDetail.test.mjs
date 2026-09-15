@@ -337,6 +337,15 @@ test("a failed job is toned red and keeps its error and final response", () => {
   assert.equal(sections[2].value, "provider timed out");
 });
 
+test("a planning-stalled runner exit highlights the stopped outcome and keeps its cause", () => {
+  const sections = eventOutputSections(event("runner-exit", { status: "planning_stalled" }), {
+    status: "planning_stalled", error: "Three unchanged plans were rejected.",
+  });
+  assert.deepEqual(titles(sections), ["Outcome", "Error"]);
+  assert.equal(sections[0].tone, "err");
+  assert.equal(sections[1].value, "Three unchanged plans were rejected.");
+});
+
 test("empty fields are dropped from a recorded-details fallback", () => {
   const sections = eventOutputSections(event("libraries_installed"), {
     accepted: true,

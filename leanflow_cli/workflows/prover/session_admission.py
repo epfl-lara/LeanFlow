@@ -40,6 +40,10 @@ def provider_request_slot(
     Waiting obeys the session wall deadline and cancellation, and emits progress
     before durable request admission. Other providers retain their concurrency.
     """
+    if cancelled():
+        raise ProviderQueueStopped("interrupted")
+    if time.monotonic() >= deadline:
+        raise ProviderQueueStopped("timeout")
     hostname = urlsplit(str(getattr(agent, "base_url", ""))).hostname
     if hostname not in {"inference.rcp.epfl.ch", "inference-rcp.epfl.ch"}:
         yield
@@ -82,6 +86,12 @@ def provider_request_slot(
                 next_notice = now + 5.0
             time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         try:
+            # Cancellation may arrive while acquiring a slot; check it before
+            # the session records an admitted call, including an immediately free slot.
+            if cancelled():
+                raise ProviderQueueStopped("interrupted")
+            if time.monotonic() >= deadline:
+                raise ProviderQueueStopped("timeout")
             yield
         finally:
             fcntl.flock(acquired, fcntl.LOCK_UN)

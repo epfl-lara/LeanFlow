@@ -3,8 +3,61 @@
 from __future__ import annotations
 
 import copy
+import re
 import time
 from typing import Any
+
+_HTTP_STATUS = re.compile(r"\b(?:error code:|http(?: status)?(?: code)?[: ]?)\s*([1-5]\d\d)\b")
+_PERMANENT_ERRORS = (
+    "invalid prompt",
+    "invalid request",
+    "unsupported parameter",
+    "usage policy",
+    "authentication",
+    "invalid api key",
+    "unauthorized",
+    "forbidden",
+    "context_length_exceeded",
+    "insufficient_quota",
+    "empty or truncated stage response",
+    "nameerror",
+    "typeerror",
+    "attributeerror",
+    "valueerror",
+    "assertionerror",
+    "keyerror",
+)
+_TRANSIENT_ERRORS = (
+    "connection error",
+    "request timed out",
+    "provider timed out",
+    "provider stream exceeded the request deadline",
+    "incomplete chunked read",
+    "connection refused",
+    "connection reset",
+    "upstream connect error",
+    "unable to verify model access right now",
+    "rate limit",
+    "rate_limit_exceeded",
+    "too many requests",
+)
+
+
+def is_transient_provider_error(error: str) -> bool:
+    """Recognize recorded transport failures; leave unknown or invalid requests paused.
+
+    Recovery and queue advancement share this policy so SDK connection/timeout
+    messages do not get contradictory treatment. Explicit permanent failures
+    and non-retriable HTTP statuses take precedence over transient wording.
+    """
+    message = error.lower()
+    if any(marker in message for marker in _PERMANENT_ERRORS):
+        return False
+    match = _HTTP_STATUS.search(message)
+    if match is not None:
+        status = int(match.group(1))
+        return status in {408, 429} or 500 <= status <= 599
+    return any(marker in message for marker in _TRANSIENT_ERRORS)
 
 
 def requires_inspection(cell: dict[str, Any]) -> bool:
@@ -22,6 +75,7 @@ def requires_inspection(cell: dict[str, Any]) -> bool:
             "interrupted",
             "blocked",
             "context_limit",
+            "planning_stalled",
         }
         or (cell.get("stop_reason") or {}).get("scope") == "scheduler"
     )
@@ -32,25 +86,13 @@ def schedule_recovery(cell: dict[str, Any]) -> bool:
     attempts = int(cell.get("recovery_attempts", 0))
     metrics = cell.get("metrics", {})
     config = cell.get("config", {})
-    error = str(cell.get("error") or "").lower()
     if (
         cell.get("status") != "provider_error"
+        or (cell.get("stop_reason") or {}).get("scope") == "scheduler"
         or attempts >= 3
         or int(metrics.get("api_calls", 0)) >= int(config.get("total_api_calls", 2000))
         or float(metrics.get("elapsed_s", 0)) >= float(config.get("wall_time_s", 28800))
-        or any(
-            text in error
-            for text in (
-                "invalid prompt",
-                "usage policy",
-                "authentication",
-                "invalid api key",
-                "unauthorized",
-                "context_length_exceeded",
-                "insufficient_quota",
-                "empty or truncated stage response",
-            )
-        )
+        or not is_transient_provider_error(str(cell.get("error") or ""))
     ):
         return False
     cell.setdefault("executions", []).append(
@@ -63,6 +105,7 @@ def schedule_recovery(cell: dict[str, Any]) -> bool:
                 "started_at",
                 "finished_at",
                 "error",
+                "error_details",
                 "metrics",
             )
         }

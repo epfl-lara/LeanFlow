@@ -68,7 +68,11 @@ def test_rejected_reviews_continue_within_total_budget(tmp_path, monkeypatch):
             reviews += 1
             reply = {"accepted": reviews == 4, "critique": "Split the remaining obligation."}
         else:
-            reply = {"plan": "Concrete outline", "nodes": [], "change_kind": "decomposition"}
+            reply = {
+                "plan": f"Revised concrete outline {reviews}",
+                "nodes": [],
+                "change_kind": "decomposition",
+            }
         return {"status": "completed", "api_calls": 1, "final_response": json.dumps(reply)}
 
     runtime = make_runtime(

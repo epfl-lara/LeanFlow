@@ -281,10 +281,17 @@ refinement is charged; a certified-refutation repair reserves its refinement
 before replanning. Direction changes require remaining refinement capacity before
 their source changes are admitted.
 
-Planning, review, and resource jobs reserve their last admitted request for the
-requested final report, with callable tools disabled. This adds no requests.
+Planning, review, and resource jobs reserve their final two requests for the
+requested final report and at most one recovery, with callable tools disabled.
+A one-call job can only report. This adds no requests. Three unchanged results
+from the same read, search, fetch or computation trigger a warning; six end tool
+exploration and request the report early. Changed evidence permits fresh work.
+These limits do not restrict prover or negation proof attempts.
 Rejected graph proposals and their specific gate feedback travel together into
 the next fresh planning context, so the planner can repair the rejected graph.
+Historical reviewer critiques are fallible feedback about earlier drafts. Three
+identical proposal/gate/critique failures, or three malformed reports at one stage,
+stop with `planning_stalled`. Revised plans continue within the saved budget.
 The dedicated prover transport defers legacy MCP discovery until an explicit
 Lean service needs it, instead of initializing unused services during import.
 
@@ -407,17 +414,36 @@ The prior run's records remain available. Source snapshots are reconciled; saved
 budgets and interrupted-job admission ledgers are retained. A resume uses the saved target scope; an explicitly different target is rejected. Missing interrupted-job budget evidence is treated
 conservatively as spent capacity.
 
+Planning and research retain bounded report context in controller-owned state,
+including completed tool exchanges, so an interrupted report handoff keeps its
+findings. Successful reports are reused without spending unused recovery calls.
+Rejected planning attempts retain their cursor and are not charged or checked
+again on resume. A `planning_stalled` checkpoint requires inspecting the saved
+proposals and gate reports, correcting the cause, and deliberately clearing its
+stall marker before resuming; plain resume spends no new model calls.
+
 Accepted proof installation records exact before/after source hashes and a
 committed-state marker. Resume rolls back an interrupted uncommitted installation
 and retains the candidate for independent rechecking. Source content that matches
 neither journal image is treated as a conflict; the controller does not silently
 take a new baseline.
 
+Helper materialization also records the proposal's exact transaction ID. If its
+source and graph committed before acceptance bookkeeping was interrupted, resume
+finishes that acceptance and charges its refinement once. Older checkpoints
+without this marker cannot establish that an ambiguous acceptance completed and
+may require manual inspection.
+
 Generated helper dependencies are stored as removable controller-owned imports,
 separate from the original import baseline. Source-consistency failures retain
 the planning checkpoint and stop for repair; they do not request a different
 mathematical decomposition. After repair, resume reuses the completed proposal
 and review while repeating independent source and kernel checks.
+
+Failure reports retain bounded, redacted exception causes and safe provider
+identifiers through run and campaign history. Controller cancellations are
+reported as interruptions; internal errors retain their own status. A transport
+wrapper's message alone does not establish why the remote backend failed.
 
 The VS Code Live view shows the selected run's dependency tree, shared-node links,
 statement details, prerequisites and dependents, proof plan, jobs, and metrics.

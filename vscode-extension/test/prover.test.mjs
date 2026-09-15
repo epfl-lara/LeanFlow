@@ -24,7 +24,7 @@ test("unknown usage stays unknown and incomplete optional data is tolerated", ()
 });
 
 test("terminal failures remain visible and resumed runs continue polling", () => {
-  for (const phase of ["provider_error", "environment_error", "source_conflict", "disproved", "budget_exhausted", "verification_failed", "error", "blocked"]) {
+  for (const phase of ["provider_error", "environment_error", "source_conflict", "disproved", "budget_exhausted", "verification_failed", "error", "blocked", "planning_stalled"]) {
     const state = snapshot({ phase, error: "Setup failed", next_step: "Resume after correcting setup" });
     assert.equal(state.terminal, true, phase);
     assert.equal(state.error, "Setup failed");

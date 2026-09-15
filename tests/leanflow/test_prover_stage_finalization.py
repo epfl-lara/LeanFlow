@@ -1,4 +1,4 @@
-"""Reserve the final admitted planning request for the actual structured result."""
+"""Reserve admitted planning requests for the structured result and bounded recovery."""
 
 from __future__ import annotations
 
@@ -191,7 +191,7 @@ def test_last_planning_call_returns_report_through_real_chat_transport(
             project_root=tmp_path,
             workspace=tmp_path / "job",
             config={"model": "bounded-test", "context_tokens": 24000},
-            api_budget=2,
+            api_budget=3,
             log_path=tmp_path / "session.jsonl",
             context={},
         )
@@ -206,7 +206,7 @@ def test_last_planning_call_returns_report_through_real_chat_transport(
         assert (tmp_path / "job/graph_proposal.json").read_text() == final
         assert not (tmp_path / "job/PLAN_job.md").exists()
         ledger = json.loads((tmp_path / ".runtime/job/request-count.json").read_text())
-        assert (ledger["limit"], ledger["used"]) == (2, 2)
+        assert (ledger["limit"], ledger["used"]) == (3, 2)
         assert ledger["usage"]["input_tokens"] == 10
         resumed = session.run_session(**kwargs)
         assert resumed["new_api_calls"] == 0 and len(requests) == 2
@@ -267,7 +267,7 @@ def test_unusable_stage_response_has_one_durable_recovery_without_budget_refresh
 
     def request(*_args: Any, **_kwargs: Any) -> Any:
         calls.append(True)
-        assert _kwargs.get("final_report_only", False) == (len(calls) == 2 or budget == 1)
+        assert _kwargs.get("final_report_only", False) == (len(calls) == 2 or budget <= 2)
         return {"role": "assistant", "content": content, "finish_reason": reason}, {}
 
     monkeypatch.setattr(session, "request_once", request)
