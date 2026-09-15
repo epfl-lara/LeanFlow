@@ -52,6 +52,12 @@ edge implies its parent; the independent review and later proofs remain necessar
 Rejected proposals receive
 bounded reconstruction attempts with the previous critique.
 
+When internet access is disabled, a plan may still list an already installed
+library: LeanFlow checks that its URL and immutable revision match the Lake lock
+and the local checkout, then treats the request as a read-only no-op. It does not
+contact the repository or run dependency updates. Missing packages and changed
+revisions remain rejected. Use `libraries: []` when no dependency installation is needed.
+
 The model proposes a graph; deterministic code schedules it. Each node stores its
 statement, informal justification, dependencies, module/file, source locations,
 revision, attempts, and status. New helper declarations use separate modules under

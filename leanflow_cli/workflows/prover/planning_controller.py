@@ -304,7 +304,10 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
     if not entries:
         return
     if not runtime.config.allow_internet:
-        raise ValueError("Internet access is disabled; use only already installed libraries")
+        from leanflow_cli.workflows.prover.installed_libraries import require_installed_libraries
+
+        require_installed_libraries(runtime.root, entries)
+        return
     if not isinstance(entries, list):
         raise ValueError("planning libraries must be a list")
     from leanflow_cli.workflows.prover.libraries import install_libraries

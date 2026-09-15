@@ -223,6 +223,7 @@ tool is reachable through the public registry.
 | `workflows/prover/resume_candidates.py` | Recover older submissions hidden by empty retries after an infrastructure failure; retain budgets and require fresh independent verification |
 | `workflows/prover/job_controller.py` | Job workspaces, durable handoffs, request reservation, submission feedback, and separately accounted resource jobs |
 | `workflows/prover/planning_controller.py` | Fresh planning/review stages with exact submitted declarations for `new_helper_ids` in the review graph while stored DAG nodes retain signatures; helper-materialization transactions with removable dependency imports, source-conflict recovery without mathematical replanning, and concurrent resource batches |
+| `workflows/prover/installed_libraries.py` | Read-only offline admission of requests already satisfied by an exact locked local checkout, without network validation or installation |
 | `workflows/prover/materialization_imports.py` | Dependency-ordered recompilation of changed or missing helper artifacts before signature checks; journaled restoration of previous artifacts on rollback |
 | `workflows/prover/store.py` | Atomic snapshots, PLAN/DAG publication, baselines, events and guidance inbox |
 | `workflows/prover/live_progress.py` | Independent progress lock, bounded operation lifecycle, two-second heartbeat and metadata snapshots that retain the last committed source checkpoint |

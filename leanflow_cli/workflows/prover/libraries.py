@@ -25,8 +25,14 @@ _LEAN_REQUIRE = re.compile(
 )
 
 
-def _entries(entries: list[dict[str, Any]], deadline: float) -> list[dict[str, str]]:
-    """Validate names, immutable revisions, and public HTTPS repository destinations."""
+def _entries(
+    entries: list[dict[str, Any]], deadline: float, *, verify_remote: bool = True
+) -> list[dict[str, str]]:
+    """Validate immutable requests, optionally checking public network reachability.
+
+    Offline reuse checks only identity against an existing locked checkout; it
+    must never open a connection merely to validate that identity's URL.
+    """
     if not isinstance(entries, list) or len(entries) > 8:
         raise ValueError("Install at most eight explicit libraries per plan revision")
     normalized: dict[str, dict[str, str]] = {}
@@ -51,8 +57,9 @@ def _entries(entries: list[dict[str, Any]], deadline: float) -> list[dict[str, s
             or ".." in parsed.path.split("/")
         ):
             raise ValueError("Library repositories must use public HTTPS URLs without options")
-        connection, _, _ = _public_connection(git, min(deadline, time.monotonic() + 10))
-        connection.close()
+        if verify_remote:
+            connection, _, _ = _public_connection(git, min(deadline, time.monotonic() + 10))
+            connection.close()
         candidate = {"name": name, "git": git.rstrip("/"), "rev": rev.lower()}
         if name in normalized and normalized[name] != candidate:
             raise ValueError(f"Conflicting library requests for {name}")
