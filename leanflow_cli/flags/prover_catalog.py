@@ -67,7 +67,7 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
         name="LEANFLOW_PROVER_SEARCH_ORDER",
         kind="tuning",
         value_type="enum",
-        default="bottom-up",
+        default="top-down",
         group=_GROUP,
         summary="DFS scheduling order. Top-down candidates remain unverified until dependencies close.",
         choices=("top-down", "bottom-up"),
@@ -103,7 +103,7 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
         "Campaign-wide recovery budget: every orchestrator retry, negate or decompose decision spends one.",
         0,
     ),
-    _integer("WALL_TIME_S", 14400, "Maximum campaign runtime in seconds."),
+    _integer("WALL_TIME_S", 57600, "Maximum campaign runtime in seconds (default 16 hours)."),
     _integer("TIMEOUT_S", 180, "Maximum seconds per provider request and independent Lean check."),
     _integer(
         "NEGATION_API_CALLS",

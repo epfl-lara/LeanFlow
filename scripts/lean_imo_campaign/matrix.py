@@ -160,7 +160,7 @@ CONDITION_SETS = {
             prover_effort="high",
             orchestrator_effort="high",
             orchestrator_model="moonshotai/Kimi-K2.7-Code",
-            budget=LUNA_CALIBRATED,
+            budget=LUNA_CALIBRATED._replace(wall_time_s=57600),
             provider="rcp",
             base_url="https://inference.rcp.epfl.ch/v1",
             api_key_env="RCP_API_KEY",

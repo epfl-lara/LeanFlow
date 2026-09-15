@@ -22,6 +22,8 @@ def test_default_context_limits_match_flags_and_preserve_output_headroom() -> No
 
     config = ProverConfig()
     flags = {flag.name: flag.default for flag in PROVER_FLAGS}
+    assert config.search_order == flags["LEANFLOW_PROVER_SEARCH_ORDER"] == "top-down"
+    assert config.wall_time_s == int(flags["LEANFLOW_PROVER_WALL_TIME_S"]) == 57600
     assert flags["LEANFLOW_PROVER_CONTEXT_TOKENS"] == "256000"
     assert flags["LEANFLOW_PROVER_ORCHESTRATOR_CONTEXT_TOKENS"] == "256000"
     for role in ("prover", "negation", "orchestrator", "review", "research"):

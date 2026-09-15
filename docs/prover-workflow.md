@@ -59,13 +59,14 @@ revision, attempts, and status. New helper declarations use separate modules und
 proof source. Each job receives a separate workspace and a snapshot of the plan
 and DAG. Planning, construction, and review start with fresh model histories.
 
-The default scheduling order is **bottom-up DFS**: prerequisites are independently
-proved before dependent jobs start. Research mode can work on separate root
-trajectories concurrently and deduplicates shared dependencies. **Top-down** is
-experimental: a submitted proof relying on unfinished planned dependencies is
+The default scheduling order is **top-down DFS**. Research mode can work on
+separate root trajectories concurrently and deduplicates shared dependencies.
+A submitted proof relying on unfinished planned dependencies is
 stored as an **untrusted candidate**. It is not an independently verified
 conditional theorem. The controller checks it again after all planned dependencies
 close; it never treats an allowed `sorryAx` as completion.
+**Bottom-up DFS** remains available explicitly: prerequisites are independently
+proved before dependent jobs start.
 
 Failed jobs retain their notes and scratch work. Concrete progress can receive up
 to three additional passes. A changed report or a claimed promising direction
@@ -197,7 +198,7 @@ All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
 | Setting suffix | Default | Meaning |
 | --- | --- | --- |
 | `MODE` | `standard` | `standard` or `research` |
-| `SEARCH_ORDER` | `bottom-up` | `bottom-up` or experimental `top-down` |
+| `SEARCH_ORDER` | `top-down` | `top-down` or `bottom-up` |
 | `JOB_API_CALLS` | `300` | Request ceiling for one prover pass |
 | `NEGATION_API_CALLS` | `60` | Request ceiling for one exact-negation pass |
 | `MAX_RESTARTS` | `3` | Additional passes per node |
@@ -207,7 +208,7 @@ All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
 | `ORCHESTRATOR_API_CALLS` | `40` | Per planning, review, or resource-agent session, including a prover's research request |
 | `MAX_NODES` | `128` | Maximum admitted DAG nodes |
 | `MAX_DECOMPOSITIONS` | `32` | Research recovery decisions, including retry, negate, and decompose |
-| `WALL_TIME_S` | `14400` | Campaign wall-clock limit, retaining recorded elapsed time on resume |
+| `WALL_TIME_S` | `57600` | 16-hour campaign limit, retaining recorded elapsed time on resume |
 | `TIMEOUT_S` | `180` | Provider request and independent Lean-check deadline |
 | `MODEL` | launch model | Prover model override |
 | `ORCHESTRATOR_MODEL` | prover model | Planning, review, and research model override |
@@ -314,6 +315,8 @@ than the context window; the input budget reserves the full requested allowance.
 The `kimi-glm-flash-top` campaign requests high reasoning and 32768 output tokens
 for both Kimi's planning/review/research roles and GLM's prover/negation roles
 through the existing OpenAI-compatible RCP Chat Completions adapter.
+Each new problem has 16 active hours, 5,000 total calls and 150 calls per prover
+pass; two problem lanes can advance independently with four prover slots each.
 Kimi Code retains all saved assistant reasoning in outgoing conversation history.
 An empty or truncated stage report stops for inspection instead of triggering
 another planning session or an automatic provider reconnect.

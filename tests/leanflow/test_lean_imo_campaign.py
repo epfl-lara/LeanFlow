@@ -69,6 +69,7 @@ def test_kimi_glm_campaign_routes_all_roles_to_one_rcp_key(monkeypatch):
             trigger_tokens=192000,
         )
     assert (config.parallelism, config.job_api_calls, config.total_api_calls) == (4, 150, 5000)
+    assert config.wall_time_s == 57600
     assert config.search_order == "top-down"
     monkeypatch.setenv("RCP_API_KEY", "campaign-test-key")
     route = resolve_launch_provider(row["config"])

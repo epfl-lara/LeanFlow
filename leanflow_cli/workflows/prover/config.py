@@ -63,7 +63,7 @@ class ProverConfig:
     """Keep all campaign limits explicit and independent of conversation resets."""
 
     mode: str = "standard"
-    search_order: str = "bottom-up"
+    search_order: str = "top-down"
     job_api_calls: int = 300
     #: Standard mode only: automatic progress-gated retries before a node blocks.
     #: In research mode the orchestrator decides every retry instead.
@@ -80,7 +80,7 @@ class ProverConfig:
     #: The campaign-wide recovery budget. Every orchestrator recovery decision --
     #: retry, negate, or decompose -- spends one unit; there is no per-node cap.
     max_decompositions: int = 32
-    wall_time_s: int = 14400
+    wall_time_s: int = 57600
     timeout_s: int = 180
     model: str = ""
     orchestrator_model: str = ""

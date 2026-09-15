@@ -185,7 +185,7 @@ def test_prove_preview_reports_effective_prover_configuration(monkeypatch, tmp_p
     assert prover["env_names"]["parallelism"] == "LEANFLOW_PROVER_PARALLELISM"
     assert any("run id" in item for item in payload["deferred"])
     summary = describe_launch_plan(plan)["prover_config"]
-    assert summary.startswith("research · bottom-up · 4 prover slot(s) · 2000 calls")
+    assert summary.startswith("research · top-down · 4 prover slot(s) · 2000 calls")
     assert "8 h wall" in summary
     assert payload["summary"]["prover_config"] == summary
 

@@ -122,7 +122,7 @@ def run_session(
     from leanflow_cli.workflows.prover.usage import CostLedger, usage_checkpoint
 
     costs = CostLedger()
-    deadline = time.monotonic() + float(config.get("wall_time_s", 14400))
+    deadline = time.monotonic() + float(config.get("wall_time_s", 57600))
     toolset = SessionTools(
         role=role,
         project_root=project_root,

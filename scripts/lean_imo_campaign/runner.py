@@ -332,7 +332,7 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
             paused = paused or (directory / "PAUSE_AFTER_ACTIVE").exists()
             for lane, (cell, process) in list(active.items()):
                 refresh(cell)
-                # The controller enforces eight active hours; this bounds a hung process too.
+                # Mirror each cell's active-time limit to bound a hung process too.
                 if (
                     process.poll() is None
                     and time.time() > cell["started_epoch"] + cell["config"]["wall_time_s"] + 120
