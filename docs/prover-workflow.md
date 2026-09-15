@@ -308,18 +308,30 @@ export LEANFLOW_PROVER_MODEL_CONTEXTS='{"gpt-5.6-luna":{"context_tokens":256000,
 ```
 
 Each entry supports `context_tokens`, `compression_threshold`, and optional
-`max_output_tokens` (default 8192, with the default capped at one quarter of the
-context window). Explicit output allowances are preserved and must be smaller
+`max_output_tokens` (default 65536 for context windows of at least 256000 tokens;
+smaller windows cap the default at one quarter of their size). Explicit output allowances are preserved and must be smaller
 than the context window; the input budget reserves the full requested allowance.
 
-The `kimi-glm-flash-top` campaign requests high reasoning and 32768 output tokens
+The `kimi-glm-flash-top` campaign requests high reasoning and 65536 output tokens
 for both Kimi's planning/review/research roles and GLM's prover/negation roles
 through the existing OpenAI-compatible RCP Chat Completions adapter.
 Each new problem has 16 active hours, 5,000 total calls and 150 calls per prover
 pass; two problem lanes can advance independently with four prover slots each.
 Kimi Code retains all saved assistant reasoning in outgoing conversation history.
-An empty or truncated stage report stops for inspection instead of triggering
-another planning session or an automatic provider reconnect.
+An empty or truncated stage report gets at most one report-only follow-up with
+tools disabled, charged to the same stage and global budgets. Reasoning effort
+and output allowance stay unchanged. If it fails again or no call remains, the
+problem stops with its evidence saved; independent queued problems still advance.
+An operations queue may reserve slots for specific still-running cells in a prior
+campaign via `reserved_campaign_cells` entries (`campaign` JSON path and `cell_id`).
+Those slots release only after the prior dispatcher records process termination;
+unreadable evidence retains the reservation. This preserves the overall parallelism
+limit while an old runtime drains.
+Reopening that failed stage cannot renew its recovery allowance. Authentication,
+quota, context and integrity failures still pause the queue for inspection.
+With a 256000-token context and 65536-token output reserve, input is limited to
+190464 tokens; compression triggers no later than that limit even if its configured
+percentage would otherwise permit more input.
 The prover and negation roles use the worker model's entry; planning, review and
 research use the orchestrator model's entry. Unknown keys and invalid values fail
 configuration before a request. Settings are recorded in the campaign snapshot;

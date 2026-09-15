@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+DEFAULT_OUTPUT_TOKENS = 65536
+
 
 def is_context_error(error: Exception) -> bool:
     """Recognize provider context rejections so reconnect logic cannot retry them."""
@@ -60,9 +62,14 @@ class ContextBudget:
         """Resolve an explicit role/model configuration without provider calls."""
         validate_context_settings(config)
         context = int(config.get("context_tokens", 256000))
-        # The quarter-window cap is only a default. An explicit model allowance
-        # must reach the provider unchanged, with matching input headroom.
-        output = int(config.get("max_output_tokens", min(8192, max(1, context // 4))))
+        # Keep small test/operator windows usable. Normal 256K windows receive
+        # the full 64Ki output allowance, with the same reserve on the input side.
+        default_output = (
+            DEFAULT_OUTPUT_TOKENS
+            if context >= 256000
+            else min(DEFAULT_OUTPUT_TOKENS, max(1, context // 4))
+        )
+        output = int(config.get("max_output_tokens", default_output))
         if "max_output_tokens" in config and output >= context:
             raise ValueError("max_output_tokens must be smaller than context_tokens")
         limit = max(1, context - output)

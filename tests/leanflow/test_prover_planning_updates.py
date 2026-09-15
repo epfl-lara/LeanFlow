@@ -47,6 +47,22 @@ def planning_graph() -> Dag:
     )
 
 
+def test_rejected_draft_helper_update_names_the_missing_declaration_and_repair() -> None:
+    """Pin PB028's dependency-only update to an as-yet-unaccepted draft helper."""
+    dag = planning_graph()
+    before = dag.to_dict()
+    with pytest.raises(ValueError) as caught:
+        apply_proposal(
+            dag, {"nodes": [{"id": "n_tangency_quadratic", "dependencies": []}]}, max_nodes=10
+        )
+    message = str(caught.value)
+    assert "n_tangency_quadratic" in message and "absent from the accepted current DAG" in message
+    assert "statement ending := by sorry" in message
+    assert dag.to_dict() == before
+    prompt = planning_prompt(reason="Repair the rejected draft")
+    assert "A rejected draft adds no nodes" in prompt
+
+
 def test_dependency_only_update_preserves_statements_signatures_and_verified_progress() -> None:
     dag = planning_graph()
     before = dag.to_dict()

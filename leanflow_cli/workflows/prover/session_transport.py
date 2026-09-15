@@ -8,6 +8,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from leanflow_cli.workflows.prover.context_policy import ContextBudget
 from leanflow_cli.workflows.prover.session_provider import resolve_session_provider
 
 _IMPORT_LOCK = threading.Lock()
@@ -61,7 +62,7 @@ def build_transport(config: Mapping[str, Any], schemas: list[dict[str, Any]]) ->
         skip_context_files=True,
         skip_memory=True,
         checkpoints_enabled=False,
-        max_tokens=int(config.get("max_output_tokens", 8192)),
+        max_tokens=ContextBudget.from_config(config).output_tokens,
         reasoning_config={"effort": effort} if effort else {},
     )
     agent.tools = schemas

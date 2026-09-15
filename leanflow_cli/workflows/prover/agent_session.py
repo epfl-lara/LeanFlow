@@ -21,6 +21,11 @@ from leanflow_cli.workflows.prover.session_context import (
     compact_history,
     tool_result_message,
 )
+from leanflow_cli.workflows.prover.session_finalization import (
+    REPORT_FAILURE,
+    REPORT_RECOVERY_PROMPT,
+    ReportRecovery,
+)
 from leanflow_cli.workflows.prover.session_guidance import GuidanceInbox, skill_guidance
 from leanflow_cli.workflows.prover.session_tools import SessionTools
 from leanflow_cli.workflows.prover.session_transport import (
@@ -109,6 +114,7 @@ def run_session(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     budget_path = workspace.parent / ".runtime" / workspace.name / "request-count.json"
     budget_path.parent.mkdir(parents=True, exist_ok=True)
+    report_recovery = ReportRecovery(budget_path.parent)
     used = 0
     previous_usage = config.get("_previous_usage", {})
     if budget_path.exists():
@@ -163,9 +169,11 @@ def run_session(
             - 512,
         )
         toolset.artifacts.update(assignment_artifacts)
-    final_response = ""
-    status = "budget_exhausted"
-    last_error = ""
+    final_response = report_recovery.final_response
+    status = "provider_error" if report_recovery.previously_admitted else "budget_exhausted"
+    last_error = REPORT_FAILURE if report_recovery.previously_admitted else ""
+    if final_response:
+        status, last_error = "completed", ""
     stop_reason = None
     agent: Any = None
     inbox = GuidanceInbox(project_root, budget_path.parent, context, role)
@@ -244,7 +252,7 @@ def run_session(
                 status = "interrupted"
             elif submission_accepted(final_response):
                 status = "completed"
-        while status not in {"completed", "interrupted"} and used < api_budget:
+        while status not in {"completed", "interrupted", "provider_error"} and used < api_budget:
             if is_cancelled():
                 status = "interrupted"
                 break
@@ -260,7 +268,9 @@ def run_session(
             if time.monotonic() >= deadline:
                 status = "timeout"
                 break
-            final_report_only = role not in {"prover", "negation"} and used == api_budget - 1
+            final_report_only = role not in {"prover", "negation"} and (
+                used == api_budget - 1 or report_recovery.attempted
+            )
             remaining_note = {
                 "role": "user",
                 "content": (
@@ -283,6 +293,8 @@ def run_session(
                     )
                 ),
             }
+            if report_recovery.attempted:
+                remaining_note["content"] = REPORT_RECOVERY_PROMPT
             before_tokens = approximate_tokens(messages + [remaining_note]) + schema_tokens
             history_limit = (
                 context_budget.trigger_tokens - schema_tokens - approximate_tokens([remaining_note])
@@ -435,12 +447,19 @@ def run_session(
                     or assistant.get("finish_reason") in {"length", "incomplete"}
                 )
             ):
+                if report_recovery.admit(used, api_budget):
+                    emit("final-report-recovery", {"api_calls": used, "api_budget": api_budget})
+                    continue
                 status = "provider_error"
-                last_error = "Empty or truncated stage response; inspect provider output settings before resuming the saved session"
+                last_error = REPORT_FAILURE
                 emit("final-report-rejected", {"api_calls": used, "error": last_error})
                 break
             if final_report_only and tool_calls:
-                last_error = "Final reporting request returned tool calls despite disabled tools; no additional tools or requests were executed"
+                report_recovery.admit(used, used)
+                status = "provider_error"
+                last_error = (
+                    REPORT_FAILURE + " Provider returned tool calls despite disabled tools."
+                )
                 emit("final-report-rejected", {"api_calls": used, "error": last_error})
                 break
             if not tool_calls:
@@ -449,6 +468,7 @@ def run_session(
                 ):
                     if not submission_accepted(final_response):
                         continue
+                    report_recovery.complete(final_response)
                     status = "completed"
                     break
                 messages.append(

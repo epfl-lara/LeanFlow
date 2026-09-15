@@ -231,6 +231,7 @@ tool is reachable through the public registry.
 | `workflows/prover/check_failures.py` | Nested check-result classification that preserves accepted plans when compilation or kernel inspection fails for infrastructure reasons |
 | `workflows/prover/observer.py` | Existing CLI activity/live-status bridge and terminal exit mapping |
 | `workflows/prover/agent_session.py` | One scratch job, durable request admission and response usage, persistence encouragement and structured result |
+| `workflows/prover/session_finalization.py` | One durable report-only recovery for empty/truncated stage output, within the existing call ceiling; restart cannot renew it |
 | `workflows/prover/allocation.py` | Wait outside the controller lock for parallel allocations; reconcile usage without dequeuing proof results or making a worker wait on itself |
 | `workflows/prover/usage.py` | Exact-model cost estimates, provider cost provenance, request coverage, and cumulative resume telemetry independent of observer flush timing |
 | `workflows/prover/session_transport.py` | Shared provider adapters, one request per admission, no hidden retry/recovery loop |
@@ -538,7 +539,8 @@ workflow layer: `matrix.py` owns problem-lane scheduling, `artifacts.py` freezes
 the runtime and prepares private offline Lake projects, `worker.py` invokes the
 dedicated prover, `provider.py` selects the all-RCP or legacy launch route and
 encodes structured model settings, `recovery.py` bounds provider reconnects without budget resets,
-`dispatch_policy.py` limits active cells independently of persistent lane claims
+`dispatch_policy.py` limits active cells independently of persistent lane claims,
+reserves slots for recorded draining workers, isolates exhausted report failures,
 and optionally advances past exhausted transient transport failures,
 `runtime_versions.py` pins each cell to an immutable runtime, `adoption.py`
 reattaches a replacement dispatcher to recorded worker identities, and

@@ -64,9 +64,9 @@ def test_kimi_glm_campaign_routes_all_roles_to_one_rcp_key(monkeypatch):
         assert settings["reasoning_effort"] == "high"
         assert ContextBudget.from_config(settings) == ContextBudget(
             context_tokens=256000,
-            output_tokens=32768,
-            input_limit=223232,
-            trigger_tokens=192000,
+            output_tokens=65536,
+            input_limit=190464,
+            trigger_tokens=190464,
         )
     assert (config.parallelism, config.job_api_calls, config.total_api_calls) == (4, 150, 5000)
     assert config.wall_time_s == 57600

@@ -38,6 +38,93 @@ def _tool_message(path: str, content: str) -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("model", ["moonshotai/Kimi-K2.7-Code", "zai-org/GLM-5.3-Flash"])
+def test_reasoning_only_truncation_recovers_through_real_chat_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """Replay the campaign failure through real serialization, admission and accounting."""
+    requests: list[dict[str, Any]] = []
+    final = '{"plan":"Use the existing findings; one uncertainty remains","nodes":[]}'
+    reasoning = "Saved mathematical reasoning. " * 3000
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            first = len(requests) == 1
+            response = json.dumps(
+                {
+                    "id": "truncated-report",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": "" if first else final,
+                                "reasoning_content": reasoning if first else "Report the findings.",
+                            },
+                            "finish_reason": "length" if first else "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 65536 if first else 20},
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, *_args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("LEANFLOW_NATIVE_PROVIDER", "local")
+    monkeypatch.setenv("LEANFLOW_NATIVE_API_MODE", "chat_completions")
+    # Route recognition uses the endpoint string; keep RCP serialization while
+    # sending every byte to the local HTTP fixture, never the real provider.
+    monkeypatch.setenv(
+        "LEANFLOW_NATIVE_BASE_URL",
+        f"http://127.0.0.1:{server.server_port}/inference.rcp.epfl.ch/v1",
+    )
+    monkeypatch.setenv("LEANFLOW_NATIVE_API_KEY", "local-fixture-key")
+    try:
+        kwargs = dict(
+            role="orchestrator",
+            prompt="Return JSON with plan and nodes.",
+            project_root=tmp_path,
+            workspace=tmp_path / "job",
+            config={"model": model, "reasoning_effort": "high"},
+            api_budget=50,
+            log_path=tmp_path / "session.jsonl",
+            context={},
+        )
+        result = session.run_session(**kwargs)
+        assert result["status"] == "completed", result
+        assert result["final_response"] == final
+        assert result["api_calls"] == result["new_api_calls"] == len(requests) == 2
+        assert result["output_tokens"] == 65556
+        assert all(body["max_tokens"] == 65536 for body in requests)
+        assert all(body["reasoning_effort"] == "high" for body in requests)
+        assert requests[1]["tool_choice"] == "none"
+        assert requests[0]["tools"] == requests[1]["tools"]
+        assert any(m.get("reasoning_content") == reasoning for m in requests[1]["messages"])
+        ledger = json.loads((tmp_path / ".runtime/job/request-count.json").read_text())
+        assert (ledger["limit"], ledger["used"]) == (50, 2)
+        assert ledger["usage"]["output_tokens"] == 65556
+        resumed = session.run_session(**kwargs)
+        assert resumed["status"] == "completed" and resumed["final_response"] == final
+        assert resumed["new_api_calls"] == 0 and len(requests) == 2
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_last_planning_call_returns_report_through_real_chat_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -165,8 +252,14 @@ def test_single_call_stage_retains_schemas_and_keeps_one_call_budget(
 
 @pytest.mark.parametrize("role", ["orchestrator", "review", "research"])
 @pytest.mark.parametrize("content,reason", [(" ", "stop"), ("", "length"), ('{"plan":', "length")])
-def test_unusable_stage_response_stops_without_spending_remaining_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, content: str, reason: str
+@pytest.mark.parametrize("budget", [1, 2, 50])
+def test_unusable_stage_response_has_one_durable_recovery_without_budget_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    content: str,
+    reason: str,
+    budget: int,
 ) -> None:
     monkeypatch.setattr(session, "build_transport", lambda *_: SimpleNamespace(model="test"))
     monkeypatch.setattr(session, "close_transport", lambda *_: None)
@@ -174,22 +267,27 @@ def test_unusable_stage_response_stops_without_spending_remaining_budget(
 
     def request(*_args: Any, **_kwargs: Any) -> Any:
         calls.append(True)
+        assert _kwargs.get("final_report_only", False) == (len(calls) == 2 or budget == 1)
         return {"role": "assistant", "content": content, "finish_reason": reason}, {}
 
     monkeypatch.setattr(session, "request_once", request)
-    result = session.run_session(
+    kwargs = dict(
         role=role,
         prompt="Return requested JSON.",
         project_root=tmp_path,
         workspace=tmp_path / "job",
         config={"model": "test", "context_tokens": 16000},
-        api_budget=50,
+        api_budget=budget,
         log_path=tmp_path / "session.jsonl",
         context={},
     )
+    result = session.run_session(**kwargs)
     assert result["status"] == "provider_error"
-    assert result["api_calls"] == len(calls) == 1
+    assert result["api_calls"] == len(calls) == min(2, budget)
     assert "Empty or truncated stage response" in result["error"]
+    resumed = session.run_session(**kwargs)
+    assert resumed["status"] == "provider_error"
+    assert resumed["new_api_calls"] == 0 and len(calls) == min(2, budget)
 
 
 def test_prover_keeps_tools_and_candidate_check_on_its_last_call(
@@ -255,7 +353,7 @@ def test_final_stage_cannot_execute_a_provider_tool_call_without_tools(
         log_path=tmp_path / "session.jsonl",
         context={},
     )
-    assert result["status"] == "budget_exhausted" and result["api_calls"] == len(calls) == 1
+    assert result["status"] == "provider_error" and result["api_calls"] == len(calls) == 1
     assert "despite disabled tools" in result["error"]
     assert not (tmp_path / "job/unrequested.txt").exists()
 

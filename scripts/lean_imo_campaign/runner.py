@@ -17,7 +17,12 @@ from typing import Any
 
 from scripts.lean_imo_campaign.adoption import AdoptedProcess, process_identity
 from scripts.lean_imo_campaign.artifacts import environment, freeze, prepare, save
-from scripts.lean_imo_campaign.dispatch_policy import active_limit, can_admit, pause_after_failure
+from scripts.lean_imo_campaign.dispatch_policy import (
+    active_limit,
+    can_admit,
+    pause_after_failure,
+    reserved_active_count,
+)
 from scripts.lean_imo_campaign.matrix import CONDITION_SETS, cells, next_cell
 from scripts.lean_imo_campaign.recovery import schedule_recovery
 from scripts.lean_imo_campaign.runtime_versions import runtime_directory
@@ -367,10 +372,12 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
                 del active[lane]
                 report(directory, campaign)
             if not paused:
+                reserved = reserved_active_count(campaign.get("reserved_campaign_cells", []))
+                campaign["reserved_active_count"] = reserved
                 for lane in lanes():
                     if lane in active:
                         continue
-                    if not can_admit(campaign["cells"], lane, len(active), max_active):
+                    if not can_admit(campaign["cells"], lane, len(active) + reserved, max_active):
                         continue
                     candidate = next_cell(campaign["cells"], lane)
                     if candidate is not None:

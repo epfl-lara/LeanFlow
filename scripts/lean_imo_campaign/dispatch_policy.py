@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Any
 
 from scripts.lean_imo_campaign.recovery import requires_inspection
@@ -14,6 +16,24 @@ def active_limit(lane_count: int) -> int:
     if not 1 <= limit <= lane_count:
         raise ValueError("LEANFLOW_CAMPAIGN_MAX_ACTIVE must be between 1 and the lane count")
     return limit
+
+
+def reserved_active_count(reservations: list[dict[str, str]]) -> int:
+    """Reserve slots for recorded workers draining in an earlier campaign.
+
+    Read dispatcher evidence, which releases a cell only after its process exits.
+    Missing or partial evidence retains the slot rather than oversubscribing it.
+    This lets a replacement queue progress without interrupting surviving work.
+    """
+    count = 0
+    for reservation in reservations:
+        try:
+            saved = json.loads(Path(reservation["campaign"]).read_text())
+            cell = next(c for c in saved["cells"] if c["id"] == reservation["cell_id"])
+            count += cell["status"] in {"running", "preparing"}
+        except (OSError, ValueError, KeyError, TypeError, StopIteration):
+            count += 1
+    return count
 
 
 def can_admit(rows: list[dict[str, Any]], lane: int, active_count: int, limit: int) -> bool:
@@ -44,6 +64,15 @@ def pause_after_failure(cell: dict[str, Any], continue_transient: bool) -> bool:
         marker in error
         for marker in ("unauthorized", "authentication", "invalid api key", "insufficient_quota")
     )
+    # A model exhausted its report allowance for this problem. Preserve its
+    # failure, but do not strand independent problems behind a global pause.
+    if (
+        cell.get("status") == "provider_error"
+        and error.startswith("empty or truncated stage response;")
+        and not access_failure
+        and (cell.get("stop_reason") or {}).get("scope") != "scheduler"
+    ):
+        return False
     if (
         continue_transient
         and cell.get("status") == "provider_error"

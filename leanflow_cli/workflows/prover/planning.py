@@ -69,7 +69,10 @@ def apply_proposal(
         entries = _declaration_line_index_from_text(lean_code_mask(skeleton))
         if len(entries) != 1 or len(sorry_spans(skeleton)) != 1:
             raise ValueError(
-                "new nodes require one complete declaration with exactly one literal sorry"
+                f"helper {node_id}: new nodes require one complete declaration with exactly one literal sorry. "
+                "This ID is absent from the accepted current DAG. Helpers appearing only in "
+                "previous_proposal or proposed_dag are still new: resend their full name, "
+                "file and statement ending := by sorry, not a dependency-only update."
             )
         entry = entries[0]
         mask = lean_code_mask(skeleton)
@@ -236,6 +239,9 @@ def planning_prompt(*, reason: str, review: bool = False) -> str:
         'Return JSON {"plan":"complete updated informal proof outline, findings, failed directions and '
         'resource paths", "change_kind":"direction"|"decomposition"|"repair", "nodes":[...], "research_jobs":[{"question":"..."}], '
         '"libraries":[{"name":"packageName", "git":"https://public-host/repository", "rev":"full immutable Git commit hash"}]}. '
+        "Existing means present in the accepted current DAG, not just in previous_proposal "
+        "or proposed_dag. A rejected draft adds no nodes to the current DAG. Resend complete "
+        "declarations for its new helpers when repairing the draft. "
         "Existing nodes are update objects: use their existing id and only the fields to change "
         "(dependencies and/or informal_justification). Omit statement, name, and file for existing nodes; "
         "the controller retains their exact declaration text. Omit unchanged nodes entirely. "
