@@ -242,6 +242,7 @@ tool is reachable through the public registry.
 | `workflows/prover/session_assignment.py` | Bounded assignment projection with full proof/notes artifacts and lossless references for unchanged proposed nodes; exact claims, dependencies, status and plans stay pinned |
 | `workflows/prover/session_guidance.py` | Selected skill contracts and durable addressed inbox delivery between requests |
 | `workflows/prover/session_tools.py` | Role-specific read/scratch/Lean/research tools; no generic source-write or terminal authority |
+| `workflows/prover/session_compute.py` | Bounded research computation execution; distinguish resource kills, wall timeouts and invalid child results before handing feedback to the agent |
 | `workflows/prover/session_search.py` | Bounded project search and clean-room result filtering |
 | `workflows/prover/session_research.py` | Direct bounded web/resource retrieval with provenance, relevance ranking, balanced provider merging, explicit degradation and no hidden model summaries |
 | `workflows/prover/resource_handoff.py` | Bounded downloaded-resource catalogs and exact read grants across private job stages |

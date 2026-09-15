@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
-import sys
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -13,6 +11,7 @@ from typing import Any
 
 from core.utils import atomic_json_write
 from leanflow_cli.workflows.prover.resource_handoff import shared_resource
+from leanflow_cli.workflows.prover.session_compute import run_computation
 from tools.utilities.empirical_compute_runtime import capability_summary
 from tools.utilities.repository_research_policy import clean_room_path_block_reason
 
@@ -439,30 +438,5 @@ class SessionTools:
                 self.artifacts.add(str(result["path"]))
             return result
         if name == "compute":
-            from tools.utilities import empirical_compute_runtime
-
-            program = str(args["program"])
-            if len(program.encode()) > empirical_compute_runtime.MAX_PROGRAM_BYTES:
-                raise ValueError("Experiment exceeds the bounded program size")
-            process = subprocess.run(
-                [
-                    sys.executable,
-                    "-I",
-                    "-S",
-                    "-B",
-                    str(Path(empirical_compute_runtime.__file__).resolve()),
-                    "--timeout-s",
-                    "4",
-                ],
-                input=program,
-                capture_output=True,
-                text=True,
-                cwd=self.workspace,
-                env={"LANG": "C.UTF-8", "PYTHONIOENCODING": "utf-8"},
-                timeout=6,
-            )
-            result = json.loads(process.stdout)
-            if not isinstance(result, dict):
-                raise ValueError("Invalid computation result")
-            return result
+            return run_computation(str(args["program"]), self.workspace)
         raise ValueError(f"Unknown tool {name}")
