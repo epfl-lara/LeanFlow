@@ -59,18 +59,19 @@ def run_computation(program: str, workspace: Path) -> dict[str, Any]:
                 "the child enforces CPU and memory limits. " + guidance
             ),
         }
-    error = ""
-    if process.returncode:
-        error = f"Computation exited with code {process.returncode}."
+    try:
+        result = json.loads(process.stdout)
+    except json.JSONDecodeError:
+        error = "Computation returned no valid structured result."
     else:
-        try:
-            result = json.loads(process.stdout)
-        except json.JSONDecodeError:
-            error = "Computation returned no valid structured result."
-        else:
-            if isinstance(result, dict) and isinstance(result.get("success"), bool):
+        if isinstance(result, dict) and isinstance(result.get("success"), bool):
+            # main() exits 1 for a valid negative verdict, including capability
+            # denials. Preserve that feedback; only exit 0 may claim success.
+            if process.returncode == 0 or (process.returncode == 1 and result["success"] is False):
                 return result
-            error = "Computation returned an invalid result object."
+        error = "Computation returned an invalid result object."
+    if process.returncode:
+        error = f"Computation exited with code {process.returncode}. " + error
     return {
         "success": False,
         "status": "empirical_compute_error",

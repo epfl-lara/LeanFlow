@@ -10,9 +10,9 @@ import pytest
 from leanflow_cli.workflows.prover.session_tools import SessionTools
 
 
-def invoke_compute(tmp_path: Path) -> dict:
+def invoke_compute(tmp_path: Path, program: str = "print(2 + 2)") -> dict:
     tools = SessionTools(role="orchestrator", project_root=tmp_path, workspace=tmp_path, context={})
-    return tools.invoke("compute", {"program": "print(2 + 2)"})
+    return tools.invoke("compute", {"program": program})
 
 
 def test_exact_computation_result_is_preserved(tmp_path: Path) -> None:
@@ -61,7 +61,8 @@ def test_invalid_or_failed_child_cannot_report_success(tmp_path, monkeypatch, co
     assert result["returncode"] == code
 
 
-def test_runtime_denial_preserves_capability_feedback(tmp_path, monkeypatch):
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_runtime_denial_preserves_capability_feedback(tmp_path, monkeypatch, returncode):
     payload = {
         "success": False,
         "status": "empirical_compute_denied",
@@ -71,6 +72,26 @@ def test_runtime_denial_preserves_capability_feedback(tmp_path, monkeypatch):
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 0, json.dumps(payload), ""),
+        lambda *a, **k: subprocess.CompletedProcess(a, returncode, json.dumps(payload), ""),
     )
     assert invoke_compute(tmp_path) == payload
+
+
+@pytest.mark.parametrize(
+    ("program", "detail"),
+    [
+        ("from math import sin\nprint(sin(1))", "sin"),
+        ("print(float(1))", "float"),
+        ("from fractions import Fraction\nprint(Fraction(1, 0))", "ZeroDivisionError"),
+        ("print(undefined_value)", "undefined_value"),
+    ],
+)
+def test_real_child_failure_details_reach_agent(tmp_path, program, detail):
+    # The real runtime exits 1 for its structured denials and execution errors.
+    # Mocking only an exit-0 denial hid this contract in the original regression.
+    result = invoke_compute(tmp_path, program)
+    assert result["success"] is False
+    assert detail in result["error"]
+    assert "Computation exited" not in result["error"]
+    if result["status"] == "empirical_compute_denied":
+        assert result["capabilities"]
