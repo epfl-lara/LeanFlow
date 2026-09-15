@@ -227,6 +227,11 @@ def planning_prompt(*, reason: str, review: bool = False) -> str:
     )
     if review:
         return common + (
+            "In proposed_dag, nodes listed in new_helper_ids contain their exact submitted "
+            "declarations, including proof placeholders. Existing nodes use signature-only "
+            "statements: the controller intentionally omits their proof bodies. Do not reject "
+            "existing nodes for lacking := by sorry, or carry a previous bare-header complaint "
+            "forward when the current new helper declaration includes its placeholder. "
             "Review the proposed graph for mathematical meaning, correct dependency direction, manageable "
             'subproblems and file organization. Return JSON {"accepted": true|false, "critique": "...", "change_kind":"direction"|"decomposition"|"repair"}. '
             "A local tactic, syntax, or rewriting repair is repair, not a changed mathematical direction. "

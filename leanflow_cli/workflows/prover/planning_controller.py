@@ -139,6 +139,12 @@ def research_plan(
             proposal_critique=critique,
         )
         runtime._persist()
+        review_dag = updated.to_dict()
+        # Stored nodes contain signatures. Review the exact declarations that
+        # materialization will receive, so normalization cannot invent a defect.
+        for node in review_dag["nodes"]:
+            if node["id"] in skeletons:
+                node["statement"] = skeletons[node["id"]]
         reviewed = _planning_call(
             runtime,
             checkpoint,
@@ -147,7 +153,8 @@ def research_plan(
             planning_prompt(reason=reason, review=True),
             context_extra={
                 "previous_accepted_plan": previous_plan,
-                "proposed_dag": updated.to_dict(),
+                "proposed_dag": review_dag,
+                "new_helper_ids": list(skeletons),
                 "proposed_plan": proposal["plan"],
                 "proposed_change_kind": proposal.get(
                     "change_kind", "decomposition" if skeletons else "direction"
