@@ -212,7 +212,7 @@ tool is reachable through the public registry.
 | Module | Responsibility |
 | --- | --- |
 | `workflows/prover/config.py` | Per-role settings and exact-model context overrides, finite campaign/pass limits, and the optional no-internet boundary (local source search and computation remain available) |
-| `workflows/prover/context_policy.py` | Validated context caps, output reservations and proactive compression thresholds, shared by every bounded job role |
+| `workflows/prover/context_policy.py` | Validated context caps, output reservations, proactive triggers and lower post-compression targets, shared by every bounded job role |
 | `workflows/prover/models.py` | Typed nodes, prerequisite DAG validation, revisions and fingerprints |
 | `workflows/prover/source.py` | Comment-aware hole discovery, frozen source, scratch projection, exact replacements and typed source-consistency failures |
 | `workflows/prover/source_transaction.py` | Proof and multi-file materialization journals, exact before/after images, and conflict-preserving recovery |
@@ -242,7 +242,8 @@ tool is reachable through the public registry.
 | `workflows/prover/session_admission.py` | Configurable cross-process RCP credential capacity before durable request admission; cancellable waiting preserves call budgets and other providers' concurrency |
 | `workflows/prover/session_errors.py` | Bounded, redacted exception causes and safe provider identifiers; typed controller interruptions remain distinct from transport errors |
 | `workflows/prover/session_provider.py` | Per-role endpoint and credential-variable resolution without changing shared process credentials; legacy jobs retain the native route |
-| `workflows/prover/session_context.py` | Deterministic compaction retaining the contract, assignment and proof notes |
+| `workflows/prover/session_context.py` | Deterministic compaction with lower target, recoverable history checkpoints, exact contract and fresh tool-feedback preservation |
+| `workflows/prover/session_response_guard.py` | Durable bounded recovery for empty, truncated or duplicate prover outputs; block only affected nodes without automatic paid retries |
 | `workflows/prover/session_assignment.py` | Bounded assignment projection with full proof/notes artifacts and lossless references for unchanged proposed nodes; exact claims, dependencies, status and plans stay pinned |
 | `workflows/prover/session_guidance.py` | Selected skill contracts and durable addressed inbox delivery between requests |
 | `workflows/prover/session_tools.py` | Role-specific read/scratch/Lean/research tools; no generic source-write or terminal authority |

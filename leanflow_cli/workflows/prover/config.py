@@ -51,6 +51,8 @@ ENV_NAMES = {
     "orchestrator_compression": "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION",
     "compression_threshold": "LEANFLOW_PROVER_COMPRESSION_THRESHOLD",
     "orchestrator_compression_threshold": "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_THRESHOLD",
+    "compression_target": "LEANFLOW_PROVER_COMPRESSION_TARGET",
+    "orchestrator_compression_target": "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_TARGET",
     "model_contexts": "LEANFLOW_PROVER_MODEL_CONTEXTS",
     "fill_definitions": "LEANFLOW_PROVER_FILL_DEFINITIONS",
     "allow_internet": "LEANFLOW_PROVER_ALLOW_INTERNET",
@@ -99,6 +101,8 @@ class ProverConfig:
     orchestrator_compression: bool = True
     compression_threshold: float = 0.75
     orchestrator_compression_threshold: float = 0.75
+    compression_target: float = 0.5
+    orchestrator_compression_target: float = 0.5
     model_contexts: dict[str, dict[str, Any]] = field(default_factory=dict)
     fill_definitions: bool = False
     allow_internet: bool = True
@@ -111,6 +115,7 @@ class ProverConfig:
                 {
                     "context_tokens": getattr(self, prefix + "context_tokens"),
                     "compression_threshold": getattr(self, prefix + "compression_threshold"),
+                    "compression_target": getattr(self, prefix + "compression_target"),
                 }
             )
         for prefix in ("", "orchestrator_"):
@@ -160,6 +165,7 @@ class ProverConfig:
             values["context_tokens"] = self.orchestrator_context_tokens
             values["compression"] = self.orchestrator_compression
             values["compression_threshold"] = self.orchestrator_compression_threshold
+            values["compression_target"] = self.orchestrator_compression_target
             values["reasoning_effort"] = self.orchestrator_reasoning_effort or self.reasoning_effort
             if self.orchestrator_provider:
                 # An explicit planning route must not inherit the worker's key.

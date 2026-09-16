@@ -30,10 +30,12 @@ def validate_context_settings(settings: Mapping[str, Any]) -> None:
     for key in ("context_tokens", "max_output_tokens"):
         if key in settings and (type(settings[key]) is not int or settings[key] < 1):
             raise ValueError(f"{key} must be a positive integer")
-    if "compression_threshold" in settings:
-        value = settings["compression_threshold"]
+    for key in ("compression_threshold", "compression_target"):
+        if key not in settings:
+            continue
+        value = settings[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < 1:
-            raise ValueError("compression_threshold must be a fraction strictly between 0 and 1")
+            raise ValueError(f"{key} must be a fraction strictly between 0 and 1")
 
 
 def validate_model_contexts(value: Any) -> None:
@@ -43,7 +45,12 @@ def validate_model_contexts(value: Any) -> None:
     for model, settings in value.items():
         if not isinstance(model, str) or not model.strip() or not isinstance(settings, dict):
             raise ValueError("model_contexts requires nonempty model names and settings objects")
-        if set(settings) - {"context_tokens", "compression_threshold", "max_output_tokens"}:
+        if set(settings) - {
+            "context_tokens",
+            "compression_threshold",
+            "compression_target",
+            "max_output_tokens",
+        }:
             raise ValueError(f"Unknown context setting for model {model}")
         validate_context_settings(settings)
 
@@ -56,6 +63,7 @@ class ContextBudget:
     output_tokens: int
     input_limit: int
     trigger_tokens: int
+    target_tokens: int
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> ContextBudget:
@@ -73,7 +81,11 @@ class ContextBudget:
         if "max_output_tokens" in config and output >= context:
             raise ValueError("max_output_tokens must be smaller than context_tokens")
         limit = max(1, context - output)
-        trigger = min(
-            limit, max(1, int(context * float(config.get("compression_threshold", 0.75))))
+        # Keep the operator's fraction of the total window, but never let its
+        # output reservation collapse the soft trigger onto the hard ceiling.
+        trigger = max(
+            1,
+            min(int(limit * 0.9), int(context * float(config.get("compression_threshold", 0.75)))),
         )
-        return cls(context, output, limit, trigger)
+        target = max(1, int(trigger * float(config.get("compression_target", 0.5))))
+        return cls(context, output, limit, trigger, target)

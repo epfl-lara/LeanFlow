@@ -28,7 +28,7 @@ def test_default_context_limits_match_flags_and_preserve_output_headroom() -> No
     assert flags["LEANFLOW_PROVER_ORCHESTRATOR_CONTEXT_TOKENS"] == "256000"
     for role in ("prover", "negation", "orchestrator", "review", "research"):
         budget = ContextBudget.from_config(config.to_mapping(role))
-        assert budget == ContextBudget(256000, 65536, 190464, 190464)
+        assert budget == ContextBudget(256000, 65536, 190464, 171417, 85708)
     assert ContextBudget.from_config({}) == budget
 
 
@@ -174,8 +174,10 @@ def test_exact_model_contexts_apply_to_all_roles_and_roundtrip() -> None:
         settings = config.to_mapping(role)
         expected = profiles[settings["model"]]
         assert all(settings[key] == value for key, value in expected.items())
-        assert ContextBudget.from_config(settings).trigger_tokens == int(
-            expected["context_tokens"] * expected["compression_threshold"]
+        budget = ContextBudget.from_config(settings)
+        assert budget.trigger_tokens == min(
+            int(expected["context_tokens"] * expected["compression_threshold"]),
+            int(budget.input_limit * 0.9),
         )
     saved = config.to_mapping()
     assert "max_output_tokens" not in saved
@@ -204,7 +206,7 @@ def test_role_thresholds_remain_independent_without_model_override() -> None:
         ContextBudget.from_config(
             {"context_tokens": 10000, "max_output_tokens": 2500, "compression_threshold": 0.9}
         ).trigger_tokens
-        == 7500
+        == 6750
     )
 
 

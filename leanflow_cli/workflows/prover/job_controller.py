@@ -160,6 +160,7 @@ def new_job(
             "context_tokens": role_settings["context_tokens"],
             "compression": role_settings["compression"],
             "compression_threshold": role_settings["compression_threshold"],
+            "compression_target": role_settings["compression_target"],
         }
         if node:
             scratch = workspace / "Scratch.lean"

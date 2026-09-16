@@ -23,6 +23,7 @@ from leanflow_cli.workflows.prover.models import Dag, Node, digest
 from leanflow_cli.workflows.prover.planning import json_report
 from leanflow_cli.workflows.prover.recovery_reports import inconclusive_finding, negation_report
 from leanflow_cli.workflows.prover.scheduler import ready_nodes
+from leanflow_cli.workflows.prover.session_response_guard import block_stalled_response
 from leanflow_cli.workflows.prover.source import (
     SourceConflictError,
     SourceDocument,
@@ -351,6 +352,8 @@ class ProverRuntime:
                 result = json.loads(result_path.read_text())
                 self._retain_candidate(job, result)
                 node = self.dag.by_id().get(job["node_id"])
+                if node is not None and block_stalled_response(self, node):
+                    continue
                 if (
                     self.config.mode == "research"
                     and node is not None
@@ -849,6 +852,9 @@ class ProverRuntime:
             if self._accept(node, candidate, job["id"]):
                 return
 
+        if block_stalled_response(self, node):
+            return
+
         def partial_work(attempt: dict[str, Any]) -> list[str]:
             """Read concrete hole edits against the controller's immutable job baseline."""
             scratch = Path(attempt["scratch_path"])
@@ -1005,6 +1011,8 @@ class ProverRuntime:
         """
         from leanflow_cli.workflows.prover import negation_job, recovery
 
+        if block_stalled_response(self, node):
+            return
         self._enqueue_recovery(node, report or {})
         while not self.stopping and not self.cancelled.is_set():
             rec = self.state.setdefault("recovery_in_flight", {}).get(node.id)
@@ -1076,6 +1084,10 @@ class ProverRuntime:
                     rec["screen"] = screen
                     self._persist()
                 outcome = negation_job.attempt_negation(self, node, screen=screen)
+                if not outcome.get("certified") and block_stalled_response(
+                    self, node, negation_checked=True
+                ):
+                    return
                 affected = self.dag.affected(node.id)
                 if outcome.get("certified"):
                     node.status = "false"
@@ -1234,6 +1246,8 @@ class ProverRuntime:
                     raise
                 if accepted:
                     promoted = True
+                elif block_stalled_response(self, node):
+                    continue
                 elif self.config.mode == "research":
                     # A deferred candidate that fails independent verification is a
                     # node failure like any other: let the orchestrator decide,

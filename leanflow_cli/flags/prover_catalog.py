@@ -119,12 +119,26 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
             value_type="float",
             default="0.75",
             group=_GROUP,
-            summary="Auto-compress at this fraction of the context cap (0.75 = 75%); must be strictly between 0 and 1. Output space stays reserved.",
+            summary="Auto-compress at this fraction of the context cap, capped at 90% of the input allowance after output reservation. Must be strictly between 0 and 1.",
             read_in=_READER,
             minimum=0,
             maximum=1,
         )
         for suffix in ("COMPRESSION_THRESHOLD", "ORCHESTRATOR_COMPRESSION_THRESHOLD")
+    ),
+    *(
+        FlagSpec(
+            name="LEANFLOW_PROVER_" + suffix,
+            kind="tuning",
+            value_type="float",
+            default="0.5",
+            group=_GROUP,
+            summary="After compression, aim for this fraction of the trigger (0.5 = half). Exact assignments and the newest tool exchange take priority; must be strictly between 0 and 1.",
+            read_in=_READER,
+            minimum=0,
+            maximum=1,
+        )
+        for suffix in ("COMPRESSION_TARGET", "ORCHESTRATOR_COMPRESSION_TARGET")
     ),
     FlagSpec(
         name="LEANFLOW_PROVER_MODEL_CONTEXTS",
@@ -132,7 +146,7 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
         value_type="string",
         default="",
         group=_GROUP,
-        summary="JSON keyed by exact model name: context_tokens, compression_threshold, optional max_output_tokens; overrides role defaults.",
+        summary="JSON keyed by exact model name: context_tokens, compression_threshold, compression_target, optional max_output_tokens; overrides role defaults.",
         read_in=_READER,
     ),
     FlagSpec(

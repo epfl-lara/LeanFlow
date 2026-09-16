@@ -230,7 +230,9 @@ All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
 | `ORCHESTRATOR_COMPRESSION` | `1` | Deterministically compact planning/research history |
 | `COMPRESSION_THRESHOLD` | `0.75` | Prover/negation compression trigger as a fraction of the context cap |
 | `ORCHESTRATOR_COMPRESSION_THRESHOLD` | `0.75` | Planning/review/research compression trigger |
-| `MODEL_CONTEXTS` | empty | JSON keyed by exact model name, overriding role context and trigger defaults |
+| `COMPRESSION_TARGET` | `0.5` | Desired post-compression size as a fraction of the effective trigger |
+| `ORCHESTRATOR_COMPRESSION_TARGET` | `0.5` | Planning/review/research post-compression target |
+| `MODEL_CONTEXTS` | empty | JSON keyed by exact model name, overriding role context, trigger, target and output defaults |
 | `FILL_DEFINITIONS` | `0` | Authorize replacing definition holes |
 | `ALLOWED_AXIOMS` | `propext,Classical.choice,Quot.sound` | Allowed completion axioms |
 
@@ -295,17 +297,25 @@ stop with `planning_stalled`. Revised plans continue within the saved budget.
 The dedicated prover transport defers legacy MCP discovery until an explicit
 Lean service needs it, instead of initializing unused services during import.
 
-Compression makes no model calls. Before every request it triggers at 75% of the
-configured context cap by default, counting tool schemas and the request budget
-note. Output space is reserved separately; the trigger cannot exceed the remaining
-input ceiling. Both role thresholds accept fractions strictly between zero and one.
-The LeanFlow defaults are 256,000 context tokens and a 192,000-token trigger
-for both roles, including Codex-backed models. These are workflow defaults,
-independent of campaign presets. To compress at 80% instead (204,800 tokens):
+Compression makes no model calls. Before every request it counts tool schemas,
+the request budget note and history using a conservative UTF-8 size estimate.
+Provider-reported usage remains separate from this estimate. The trigger is the
+smaller of `context_tokens * compression_threshold` and 90% of the input allowance
+after reserving output. Compression aims for `trigger * compression_target`,
+rather than filling the context back up to the trigger. Exact contracts and the
+newest tool exchange take priority over this soft target; events report
+`target_tokens`, `target_met`, and remaining `headroom_tokens` explicitly.
+
+With the defaults (256,000 context, 65,536 output, threshold 0.75, target 0.5),
+the hard input limit is 190,464, the trigger is 171,417, and the target is 85,708.
+Both role settings accept fractions strictly between zero and one. Raising the
+threshold cannot remove the input safety margin. For example:
 
 ```bash
 export LEANFLOW_PROVER_COMPRESSION_THRESHOLD=0.80
 export LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_THRESHOLD=0.80
+export LEANFLOW_PROVER_COMPRESSION_TARGET=0.50
+export LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_TARGET=0.50
 ```
 
 In VS Code, open LeanFlow's **Knobs** tab, search for `COMPRESSION_THRESHOLD`,
@@ -320,7 +330,7 @@ operator-selected caps (not advertised model maxima):
 export LEANFLOW_PROVER_MODEL_CONTEXTS='{"gpt-5.6-luna":{"context_tokens":256000,"compression_threshold":0.75},"gpt-6-astra":{"context_tokens":256000,"compression_threshold":0.70}}'
 ```
 
-Each entry supports `context_tokens`, `compression_threshold`, and optional
+Each entry supports `context_tokens`, `compression_threshold`, `compression_target`, and optional
 `max_output_tokens` (default 65536 for context windows of at least 256000 tokens;
 smaller windows cap the default at one quarter of their size). Explicit output allowances are preserved and must be smaller
 than the context window; the input budget reserves the full requested allowance.
@@ -343,18 +353,35 @@ limit while an old runtime drains.
 Reopening that failed stage cannot renew its recovery allowance. Authentication,
 quota, context and integrity failures still pause the queue for inspection.
 With a 256000-token context and 65536-token output reserve, input is limited to
-190464 tokens; compression triggers no later than that limit even if its configured
-percentage would otherwise permit more input.
+190464 tokens; the trigger is capped at 171417 even if its configured percentage
+would otherwise permit more input.
 The prover and negation roles use the worker model's entry; planning, review and
 research use the orchestrator model's entry. Unknown keys and invalid values fail
 configuration before a request. Settings are recorded in the campaign snapshot;
 resumes retain saved settings and spent budgets.
+
+For prover/negation jobs, an empty or truncated response without an actionable
+tool call or usable candidate receives at most one focused recovery request.
+Repeated identical prose without a proof action also enters this recovery path.
+Another unusable response stops that attempt with `response_stalled`, preserving
+its scratch files and budget. The affected node blocks without automatic planning
+or restart charges; other runnable obligations continue. Reopening the same job
+does not renew a pending or exhausted recovery allowance. Complete proof
+submissions still pass independent checking, and useful tool work clears the
+response-failure streak. These guards do not silently lower reasoning effort or
+raise the output limit.
 
 The compressor keeps the system contract, selected skill guidance, exact claims,
 dependencies, proof status, PLAN, durable addressed user guidance and complete
 recent tool exchanges. Oversized assignment proof bodies and long notes move to
 explicit, readable `assignment-evidence/` artifacts; statements and plans are never
 silently shortened. `PLAN_job.md` stays on disk, with a bounded in-context preview.
+Before replacing active history, the compressor saves a redacted recoverable
+checkpoint in the job's `context-history/` directory. The active handoff points
+to it and includes proof notes and recent paired tool feedback. This is deterministic
+evidence retention, not an LLM-generated semantic summary; notes never certify a
+proof. If the exact assignment plus fresh feedback cannot fit even the hard input
+limit, the runtime reports `context_limit` without sending an oversized request.
 Unchanged proposed graph nodes refer to their complete current-DAG entries;
 changed and new nodes remain explicit. If the protected contract itself exceeds
 the soft trigger, recent tool results use the remaining space below the hard

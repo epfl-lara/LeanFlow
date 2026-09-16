@@ -66,7 +66,8 @@ def test_kimi_glm_campaign_routes_all_roles_to_one_rcp_key(monkeypatch):
             context_tokens=256000,
             output_tokens=65536,
             input_limit=190464,
-            trigger_tokens=190464,
+            trigger_tokens=171417,
+            target_tokens=85708,
         )
     assert (config.parallelism, config.job_api_calls, config.total_api_calls) == (4, 150, 5000)
     assert config.wall_time_s == 57600

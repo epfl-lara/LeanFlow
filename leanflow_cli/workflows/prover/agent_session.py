@@ -30,6 +30,10 @@ from leanflow_cli.workflows.prover.session_finalization import (
 from leanflow_cli.workflows.prover.session_guidance import GuidanceInbox, skill_guidance
 from leanflow_cli.workflows.prover.session_progress import SessionProgress
 from leanflow_cli.workflows.prover.session_report_context import SessionReportContext
+from leanflow_cli.workflows.prover.session_response_guard import (
+    ProverResponseGuard,
+    executed_tool_result,
+)
 from leanflow_cli.workflows.prover.session_tools import SessionTools
 from leanflow_cli.workflows.prover.session_transport import (
     build_transport,
@@ -81,10 +85,10 @@ def _usage_value(usage: Any, first: str, second: str) -> int:
     return int(getattr(usage, first, None) or getattr(usage, second, None) or 0)
 
 
-def _candidate_ready(text: str, workspace: Path) -> bool:
+def _candidate_ready(text: str, workspace: Path, *, include_saved: bool = True) -> bool:
     """Recognize a submitted candidate without claiming its correctness."""
     path = workspace / "candidate.txt"
-    if path.is_file() and path.stat().st_size:
+    if include_saved and path.is_file() and path.stat().st_size:
         return True
     try:
         payload = json.loads(text.strip().removeprefix("```json").removesuffix("```").strip())
@@ -118,6 +122,7 @@ def run_session(
     budget_path = workspace.parent / ".runtime" / workspace.name / "request-count.json"
     budget_path.parent.mkdir(parents=True, exist_ok=True)
     report_recovery = ReportRecovery(budget_path.parent)
+    response_guard = ProverResponseGuard(budget_path.parent, role=role)
     progress = SessionProgress(budget_path.parent, role=role, workspace=workspace)
     used = 0
     previous_usage = config.get("_previous_usage", {})
@@ -189,6 +194,9 @@ def run_session(
     if final_response:
         status, last_error = "completed", ""
     stop_reason = None
+    if response_guard.stopped and status != "completed":
+        status, last_error = "response_stalled", response_guard.error
+        stop_reason = response_guard.stop_reason
     agent: Any = None
     inbox = GuidanceInbox(project_root, budget_path.parent, context, role)
     base_assignment = str(messages[1]["content"])
@@ -240,6 +248,7 @@ def run_session(
             "context_tokens": context_budget.context_tokens,
             "input_limit": input_limit,
             "compression_trigger_tokens": context_budget.trigger_tokens,
+            "compression_target_tokens": context_budget.target_tokens,
             "max_output_tokens": max_output_tokens,
         },
     )
@@ -276,8 +285,13 @@ def run_session(
             if is_cancelled():
                 status = "interrupted"
             elif submission_accepted(final_response):
+                response_guard.complete()
                 status = "completed"
-        while status not in {"completed", "interrupted", "provider_error"} and used < api_budget:
+                last_error, stop_reason = "", None
+        while (
+            status not in {"completed", "interrupted", "provider_error", "response_stalled"}
+            and used < api_budget
+        ):
             if is_cancelled():
                 status = "interrupted"
                 break
@@ -332,19 +346,31 @@ def run_session(
                 # result before the model has a chance to read it.
                 history_limit = input_limit - schema_tokens - approximate_tokens([remaining_note])
             if bool(config.get("compression", True)):
+                request_overhead = schema_tokens + approximate_tokens([remaining_note])
                 messages, compacted = compact_history(
-                    messages, context_tokens=history_limit, workspace=workspace
+                    messages,
+                    context_tokens=history_limit,
+                    workspace=workspace,
+                    target_tokens=context_budget.target_tokens - request_overhead,
+                    hard_limit=input_limit - request_overhead,
                 )
                 if compacted:
+                    after_tokens = approximate_tokens(messages + [remaining_note]) + schema_tokens
+                    toolset.artifacts.update(
+                        str(path) for path in (workspace / "context-history").glob("*.json")
+                    )
                     emit(
                         "context-compacted",
                         {
                             "method": "deterministic",
                             "api_calls": used,
                             "before_tokens": before_tokens,
-                            "after_tokens": approximate_tokens(messages + [remaining_note])
-                            + schema_tokens,
+                            "after_tokens": after_tokens,
                             "trigger_tokens": context_budget.trigger_tokens,
+                            "target_tokens": context_budget.target_tokens,
+                            "target_met": after_tokens <= context_budget.target_tokens,
+                            "headroom_tokens": input_limit - after_tokens,
+                            "token_count_method": "utf8_estimate",
                             "input_limit": input_limit,
                         },
                     )
@@ -528,13 +554,49 @@ def run_session(
                 emit("final-report-rejected", {"api_calls": used, "error": last_error})
                 break
             if not tool_calls:
+                rejected_candidate = False
                 if role not in {"prover", "negation"} or _candidate_ready(
                     final_response, workspace
                 ):
-                    if not submission_accepted(final_response):
-                        continue
-                    status = "completed"
-                    break
+                    if submission_accepted(final_response):
+                        response_guard.complete()
+                        status = "completed"
+                        break
+                    rejected_candidate = True
+                response_notice = response_guard.observe(
+                    assistant,
+                    # A stale candidate file is not a new action. A complete
+                    # explicit proof submission is real work even if Lean rejects it.
+                    candidate_ready=(
+                        rejected_candidate
+                        and _candidate_ready(final_response, workspace, include_saved=False)
+                        and assistant.get("finish_reason") not in {"length", "incomplete"}
+                    ),
+                    used=used,
+                    limit=api_budget,
+                )
+                if response_notice is not None:
+                    emit(
+                        "response-" + response_notice.action,
+                        {
+                            "api_calls": used,
+                            "reason": response_notice.reason,
+                            "fingerprint": response_notice.fingerprint,
+                            "count": response_notice.count,
+                        },
+                    )
+                    if response_notice.action == "stop":
+                        status, last_error = "response_stalled", response_guard.error
+                        stop_reason = response_guard.stop_reason
+                        break
+                    if not final_response.strip():
+                        # Full evidence is already in the event log. Replaying a
+                        # 65K reasoning-only failure offers no executable progress.
+                        messages = [message for message in messages if message is not assistant]
+                    messages.append({"role": "user", "content": response_notice.message})
+                    continue
+                if rejected_candidate:
+                    continue
                 messages.append(
                     {
                         "role": "user",
@@ -543,6 +605,8 @@ def run_session(
                 )
                 continue
             submitted = False
+            tool_executed = False
+            permitted_tools = {schema["function"]["name"] for schema in schemas}
             progress_notices: list[str] = []
             for call in tool_calls:
                 if is_cancelled():
@@ -587,6 +651,11 @@ def run_session(
                         submitted = True
                 except (ValueError, TypeError) as exc:
                     result = {"success": False, "error": str(exc)}
+                tool_executed = tool_executed or (
+                    observation is not None
+                    and name in permitted_tools
+                    and executed_tool_result(name, result)
+                )
                 content, artifact = tool_result_message(result, workspace)
                 if artifact is not None:
                     toolset.artifacts.add(str(artifact))
@@ -628,7 +697,30 @@ def run_session(
                 messages.append({"role": "user", "content": notice_message})
             if status in {"timeout", "interrupted"}:
                 break
+            response_notice = response_guard.observe(
+                assistant,
+                candidate_ready=False,
+                tool_executed=tool_executed,
+                used=used,
+                limit=api_budget,
+            )
+            if response_notice is not None:
+                emit(
+                    "response-" + response_notice.action,
+                    {
+                        "api_calls": used,
+                        "reason": response_notice.reason,
+                        "fingerprint": response_notice.fingerprint,
+                        "count": response_notice.count,
+                    },
+                )
+                if response_notice.action == "stop":
+                    status, last_error = "response_stalled", response_guard.error
+                    stop_reason = response_guard.stop_reason
+                    break
+                messages.append({"role": "user", "content": response_notice.message})
             if submitted and role in {"prover", "negation"} and submission_accepted(""):
+                response_guard.complete()
                 status = "completed"
                 break
     except Exception as exc:

@@ -62,13 +62,12 @@ def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] 
             runtime.config.total_api_calls,
         )
     elif status in {"budget_exhausted", "blocked"}:
-        # Every unproved obligation is blocked -- its recovery budget is spent or
-        # the orchestrator's replan was declined -- while the total call budget
-        # may still have room. Preserve that distinction in the UI.
+        # A node can also be blocked by a bounded response failure. Describe the
+        # scheduler state without inventing a recovery-budget or planning cause.
         code, scope, message, used, limit = (
             "no_runnable_obligations",
             "scheduler",
-            "No runnable obligation remains: every unproved node is blocked (recovery budget spent or replanning declined) while the total call budget is not exhausted.",
+            "No runnable obligation remains: every unproved node is blocked while the total call budget is not exhausted. Inspect the individual job stop reasons for the cause.",
             None,
             None,
         )

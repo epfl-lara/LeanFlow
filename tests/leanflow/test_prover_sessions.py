@@ -44,7 +44,7 @@ def test_early_give_up_continues_without_reset(
         _agent: Any, messages: Any, _timeout: float
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         calls.append(messages)
-        return {"role": "assistant", "content": "I cannot solve this"}, {
+        return {"role": "assistant", "content": f"Approach {len(calls)} has not solved this"}, {
             "input_tokens": 10,
             "output_tokens": 5,
         }

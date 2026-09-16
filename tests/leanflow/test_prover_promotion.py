@@ -13,6 +13,7 @@ def controller(
     """Build only the promotion boundary with root-before-dependency ordering."""
     runtime = object.__new__(ProverRuntime)
     runtime.config = ProverConfig(search_order="top-down")
+    runtime.state = {"jobs": []}
     runtime.dag = Dag(
         [
             Node(
