@@ -7,13 +7,9 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from core.utils import atomic_json_write
-
-if TYPE_CHECKING:
-    from leanflow_cli.workflows.prover.models import Node
-    from leanflow_cli.workflows.prover.runtime import ProverRuntime
 
 RESPONSE_RECOVERY_PROMPT = (
     "Your previous response did not produce a usable proof action or submission. "
@@ -50,47 +46,6 @@ def executed_tool_result(name: str, result: Mapping[str, Any]) -> bool:
     if name in {"web_search", "lean_search"}:
         return result.get("status") == "no_results"
     return name == "research_job" and bool(result.get("job_id"))
-
-
-def block_stalled_response(
-    runtime: ProverRuntime, node: Node, *, negation_checked: bool = False
-) -> bool:
-    """Block only the affected revision after preserving any candidate for checking.
-
-    A provider response failure is not evidence against the mathematics. Sending
-    it into research recovery would buy another planner/prover cycle unchanged.
-    Sibling jobs, verified proofs, scratch artifacts, and campaign budget remain.
-    """
-    if node.status == "proved" or node.candidate:
-        return False
-    latest = next(
-        (
-            job
-            for job in reversed(runtime.state["jobs"])
-            if job.get("node_id") == node.id
-            and job.get("node_revision") == node.revision
-            and job.get("role") in {"prover", "negation"}
-        ),
-        None,
-    )
-    if latest is None or latest.get("status") != "response_stalled":
-        return False
-    # A completed negation proof retained across a verification crash must pass
-    # its independent checker before any response-failure decision is consumed.
-    if (
-        not negation_checked
-        and latest.get("role") == "negation"
-        and runtime.state.get("negation_proofs", {}).get(node.id)
-    ):
-        return False
-    node.status = "blocked"
-    if RESPONSE_FAILURE not in node.notes:
-        node.notes += "\n" + RESPONSE_FAILURE
-    latest["result_processed"] = True
-    runtime.state.get("recovery_in_flight", {}).pop(node.id, None)
-    runtime.state.get("negation_proofs", {}).pop(node.id, None)
-    runtime._persist()
-    return True
 
 
 @dataclass(frozen=True)

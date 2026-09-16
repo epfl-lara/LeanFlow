@@ -213,7 +213,7 @@ All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
 | `TOTAL_API_CALLS` | `10000` | Total admitted requests across roles and passes |
 | `ORCHESTRATOR_API_CALLS` | `40` | Per planning, review, or resource-agent session, including a prover's research request |
 | `MAX_NODES` | `128` | Maximum admitted DAG nodes |
-| `MAX_DECOMPOSITIONS` | `32` | Research recovery decisions, including retry, negate, and decompose |
+| `MAX_DECOMPOSITIONS` | `32` | Research recovery decisions, including retry, continue, stop, negate, and decompose |
 | `WALL_TIME_S` | `57600` | 16-hour campaign limit, retaining recorded elapsed time on resume |
 | `TIMEOUT_S` | `180` | Provider request and independent Lean-check deadline |
 | `MODEL` | launch model | Prover model override |
@@ -364,9 +364,21 @@ For prover/negation jobs, an empty or truncated response without an actionable
 tool call or usable candidate receives at most one focused recovery request.
 Repeated identical prose without a proof action also enters this recovery path.
 Another unusable response stops that attempt with `response_stalled`, preserving
-its scratch files and budget. The affected node blocks without automatic planning
-or restart charges; other runnable obligations continue. Reopening the same job
-does not renew a pending or exhausted recovery allowance. Complete proof
+its scratch files and spent-call accounting. In research mode the orchestrator
+receives the exact failure and saved notes and chooses `retry`, `continue` with
+explicit new instructions, `decompose`, `negate`, or `stop`. Every decision spends
+one existing campaign recovery unit; its model calls and subsequent work consume
+the remaining campaign API budget. A stalled attempt is not evidence that the
+theorem is false. Invalid decisions stop the branch explicitly rather than
+implicitly authorizing another paid planning stage.
+
+An authorized retry or continuation starts a new bounded job that retains safe
+scratch work and `PLAN_job.md`. Instructions remain pinned beside the exact
+assignment across compression and job resume. Reopening the old job does not
+renew its pending or exhausted recovery allowance. Recovery journal markers
+prevent duplicate decisions after a crash; explicitly resuming a legacy blocked
+run sends each previously stranded failure to the orchestrator once. Standard
+mode has no orchestrator and keeps such failures blocked. Complete proof
 submissions still pass independent checking, and useful tool work clears the
 response-failure streak. These guards do not silently lower reasoning effort or
 raise the output limit.

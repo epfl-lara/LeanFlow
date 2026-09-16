@@ -23,6 +23,13 @@ independently checked closed negation can certify that a statement is false.
 Keep trying useful directions within the explicit plan, call and time budgets.
 Do not create advisory loops, hidden model calls or budget resets.
 
+When a prover attempt stalls, use its exact failure and retained proof notes to
+choose a bounded recovery: retry, continue with concrete new instructions,
+decompose, investigate the exact negation, or stop with a reason. A response
+failure does not establish mathematical impossibility. Change an unproductive
+approach instead of requesting the same failed response cycle. Instructions
+must preserve the assigned statement, proof evidence and verification rules.
+
 Return the requested stage report as soon as it is ready. Call and time limits
 are ceilings, not spending targets. Do not repeat an audit after resolving its
 uncertainty. Carry unresolved questions into the handoff with supporting evidence.

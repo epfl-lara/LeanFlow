@@ -347,7 +347,10 @@ def invoke(
     runtime: ProverRuntime, job: dict[str, Any], context: dict[str, Any], prompt: str
 ) -> dict[str, Any]:
     """Execute one isolated session and retain its typed result even on infrastructure failure."""
+    from leanflow_cli.workflows.prover.response_recovery import attach_recovery_guidance
+
     try:
+        context = attach_recovery_guidance(runtime, job, context)
         settings = runtime.config.to_mapping(job["role"])
         settings["_previous_usage"] = {
             field: job.get("previous_" + field)

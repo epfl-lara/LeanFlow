@@ -51,9 +51,12 @@ paths; it is justified by LeanFlow's observed failure.
 - Give an empty/truncated output one purposeful recovery within the existing
   budget. A repeated unusable response ends the attempt as `response_stalled`.
   Repeated identical non-actionable prose also enters bounded recovery.
-- Persist recovery admission across compaction and reopening. Preserve candidate
-  verification and block only the affected node, without buying another automatic
-  planner/prover cycle; healthy runnable obligations continue.
+- Persist in-session recovery admission across compaction and reopening. Preserve
+  candidate verification, then hand the stopped attempt to the research
+  orchestrator for a budgeted retry, instructed continuation, decomposition,
+  refutation, or explicit stop. The original implementation incorrectly blocked
+  the node without this decision; that policy has been removed. Saved proofs and
+  other runnable obligations remain available.
 - Identify compression token counts as estimates. Provider-reported input/output
   accounting remains separate. No reasoning level or output cap is changed.
 
@@ -72,9 +75,16 @@ provider metadata. It should not weaken the conservative pre-send hard limit.
 
 Validation uses fake-provider session loops and controller tests: assert what the
 next model request receives, exact helper declarations, recent paired feedback,
-recoverable archives, one recovery only, no paid restart on resume, and independent
-healthy-job progress. No paid model experiments are needed for these invariants.
+recoverable archives, one in-session recovery only, bounded orchestrator decisions,
+instructions reaching the next actual request, no duplicate recovery on resume,
+and independent healthy-job progress. No paid model experiments are needed for
+these invariants.
 
-Final local validation: 7,890 tests passed and 111 skipped. Black, Ruff, mypy and
-`git diff --check` passed. Installation is checked separately by verifying the
+Initial compaction validation: 7,890 tests passed and 111 skipped. Black, Ruff,
+mypy and `git diff --check` passed. Installation is checked separately by verifying the
 deployed source and exercising the installed runtime without model requests.
+
+Orchestrator recovery correction: 7,917 tests passed and 111 skipped, including
+the actual next-provider request, interrupted recovery replay, legacy blocked-run
+migration, explicit stop, all recovery actions, and global budget exhaustion.
+Black, Ruff, mypy and `git diff --check` also passed.

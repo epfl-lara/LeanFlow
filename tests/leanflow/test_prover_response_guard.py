@@ -15,7 +15,6 @@ from leanflow_cli.workflows.prover.runtime import ProverRuntime
 from leanflow_cli.workflows.prover.session_response_guard import (
     RESPONSE_FAILURE,
     ProverResponseGuard,
-    block_stalled_response,
 )
 from tests.leanflow.test_prover_sessions import run_fake
 
@@ -173,7 +172,11 @@ def make_runtime(tmp_path: Path, *, accepted: bool = True) -> ProverRuntime:
         root=tmp_path,
         targets=[target],
         config=ProverConfig(mode="research", parallelism=2, job_api_calls=5, total_api_calls=100),
-        session=lambda **kwargs: {},
+        session=lambda **kwargs: {
+            "status": "complete",
+            "api_calls": 1,
+            "final_response": '{"action":"stop","rationale":"Test-selected stop"}',
+        },
         verifier=Verifier(accepted),
     )
     runtime.state["design_plan_complete"] = True
@@ -191,7 +194,7 @@ def stalled_result(proof: str = "") -> dict[str, Any]:
     }
 
 
-def test_stalled_job_blocks_only_its_node_while_parallel_job_finishes(
+def test_stalled_job_consults_orchestrator_while_parallel_job_finishes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = make_runtime(tmp_path)
@@ -206,11 +209,14 @@ def test_stalled_job_blocks_only_its_node_while_parallel_job_finishes(
 
     def session(**kwargs: Any) -> dict[str, Any]:
         name = kwargs["context"]["assignment"]["name"]
+        if kwargs["role"] == "orchestrator":
+            calls.append("orchestrator")
+            return {"status": "complete", "api_calls": 1, "final_response": '{"action":"stop"}'}
         calls.append(name)
         if name == "stalled":
             assert healthy_started.wait(5)
             return stalled_result()
-        assert name == "healthy", "No recovery/planning request should be sent"
+        assert name == "healthy"
         healthy_started.set()
         assert stalled_handled.wait(5)
         assert not runtime.cancelled.is_set()
@@ -222,10 +228,10 @@ def test_stalled_job_blocks_only_its_node_while_parallel_job_finishes(
     nodes = {node.name: node for node in runtime.dag.nodes}
     assert nodes["stalled"].status == "blocked"
     assert nodes["healthy"].status == "proved"
-    assert sorted(calls) == ["healthy", "stalled"]
+    assert sorted(calls) == ["healthy", "orchestrator", "stalled"]
     assert state["status"] == "blocked"
-    assert state["metrics"]["api_calls"] == 3
-    assert state["metrics"]["decompositions"] == 0
+    assert state["metrics"]["api_calls"] == 4
+    assert state["metrics"]["decompositions"] == 1
     assert state["stop_reason"]["code"] == "no_runnable_obligations"
     assert "call budget is not exhausted" in state["stop_reason"]["message"]
     assert "recovery budget spent" not in state["stop_reason"]["message"]
@@ -252,7 +258,9 @@ def test_saved_candidate_is_checked_before_stall_blocks(tmp_path: Path, accepted
     assert not runtime.cancelled.is_set()
 
 
-def test_crash_after_accounting_does_not_reopen_stalled_job(tmp_path: Path) -> None:
+def test_crash_after_accounting_enqueues_orchestrator_without_reopening_stalled_job(
+    tmp_path: Path,
+) -> None:
     runtime = make_runtime(tmp_path)
     node = runtime.dag.nodes[0]
     job, _ = runtime._new_job("prover", node=node)
@@ -269,11 +277,14 @@ def test_crash_after_accounting_does_not_reopen_stalled_job(tmp_path: Path) -> N
     )
     assert resumed.dag.by_id()[node.id].status == "blocked"
     assert node.id not in resumed.resume_jobs
-    assert not resumed.state.get("recovery_in_flight")
+    assert resumed.state["recovery_in_flight"][node.id]["stage"] == "decide"
+    assert resumed.state["jobs"][0]["response_recovery_enqueued"] is True
     assert resumed.state["jobs"][0]["result_processed"] is True
 
 
-def test_deferred_candidate_rejection_does_not_replan_stalled_response(tmp_path: Path) -> None:
+def test_deferred_candidate_rejection_calls_orchestrator_for_stalled_response(
+    tmp_path: Path,
+) -> None:
     runtime = make_runtime(tmp_path, accepted=False)
     node, prerequisite = runtime.dag.nodes
     node.dependencies = [prerequisite.id]
@@ -287,10 +298,10 @@ def test_deferred_candidate_rejection_does_not_replan_stalled_response(tmp_path:
     assert runtime.verifier.checked == [node.id]
     assert node.status == "blocked"
     assert not runtime.state.get("recovery_in_flight")
-    assert runtime.state["metrics"]["decompositions"] == 0
+    assert runtime.state["metrics"]["decompositions"] == 1
 
 
-def test_negation_response_failure_does_not_buy_another_recovery_decision(
+def test_negation_response_failure_returns_to_orchestrator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from leanflow_cli.workflows.prover import negation_job
@@ -305,25 +316,37 @@ def test_negation_response_failure_does_not_buy_another_recovery_decision(
         return {"certified": False, "notes": "No usable response"}
 
     monkeypatch.setattr(negation_job, "attempt_negation", negation)
-    monkeypatch.setattr(runtime, "session", lambda **kwargs: pytest.fail("No planner retry"))
     runtime._recover(node)
     assert node.status == "blocked"
     assert not runtime.state.get("recovery_in_flight")
     assert not runtime.cancelled.is_set()
-    assert len(runtime.state["jobs"]) == 1
+    assert len(runtime.state["jobs"]) == 2
+    assert runtime.state["metrics"]["decompositions"] == 1
 
 
-def test_stalled_negation_keeps_cached_proof_for_independent_verification(tmp_path: Path) -> None:
+def test_stalled_negation_keeps_cached_proof_for_independent_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from leanflow_cli.workflows.prover import negation_job
+
     runtime = make_runtime(tmp_path)
     node = runtime.dag.nodes[0]
     job, _ = runtime._new_job("negation", node=node)
     runtime._finish_job(job, stalled_result())
     runtime.state["negation_proofs"] = {node.id: "exact a_saved_proof"}
-    assert block_stalled_response(runtime, node) is False
-    assert runtime.state["negation_proofs"][node.id] == "exact a_saved_proof"
-    assert block_stalled_response(runtime, node, negation_checked=True) is True
+    runtime.state["recovery_in_flight"] = {node.id: {"stage": "negate", "screen": {}}}
+    checked = []
+
+    def check_cached(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        checked.append(runtime.state["negation_proofs"][node.id])
+        return {"certified": False, "notes": "Saved proof was checked and rejected"}
+
+    monkeypatch.setattr(negation_job, "attempt_negation", check_cached)
+    runtime._recover(node)
+    assert checked == ["exact a_saved_proof"]
     assert node.status == "blocked"
     assert node.id not in runtime.state["negation_proofs"]
+    assert runtime.state["recovery_decisions"][0]["action"] == "stop"
 
 
 def test_real_session_stops_65k_reasoning_only_loop_and_resume_spends_no_calls(

@@ -1,8 +1,8 @@
 """Let the orchestrator choose how a blocked obligation recovers.
 
 After a prover job fails to close a node, the orchestrator reads the prover's
-report and picks exactly one action: retry the node as it stands, attempt a
-refutation, or decompose the branch. Every decision spends one unit of the
+report and picks exactly one action: retry, continue with new instructions,
+stop the branch, attempt a refutation, or decompose. Every decision spends one unit of the
 campaign-wide recovery budget; there is deliberately no per-node cap.
 
 A refutation runs an empirical Plausible screen first -- a few Lean calls and
@@ -24,11 +24,10 @@ if TYPE_CHECKING:
     from leanflow_cli.workflows.prover.models import Node
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
 
-ACTIONS: tuple[str, ...] = ("retry", "negate", "decompose")
-#: When the orchestrator's reply carries no usable action, replanning is the
-#: safest generic move: it neither burns a refutation budget nor repeats a
-#: failed attempt unchanged.
-FALLBACK_ACTION = "decompose"
+ACTIONS: tuple[str, ...] = ("retry", "continue", "stop", "negate", "decompose")
+#: An unusable decision cannot authorize more model work by implication.
+FALLBACK_ACTION = "stop"
+MAX_INSTRUCTIONS_CHARS = 12000
 #: Plausible itself is quick; elaborating a Mathlib-heavy prefix is the cost.
 SCREEN_TIMEOUT_S = 600.0
 
@@ -38,11 +37,18 @@ def parse_decision(text: str) -> dict[str, Any]:
     report = json_report(text)
     action = str(report.get("action", "")).strip().lower()
     rationale = str(report.get("rationale", "")).strip()
-    if action in ACTIONS:
-        return {"action": action, "rationale": rationale, "fallback": False}
+    instructions = report.get("instructions", "")
+    valid_instructions = (
+        isinstance(instructions, str) and len(instructions) <= MAX_INSTRUCTIONS_CHARS
+    )
+    if action in ACTIONS and valid_instructions and (action != "continue" or instructions.strip()):
+        decision = {"action": action, "rationale": rationale, "fallback": False}
+        if instructions.strip():
+            decision["instructions"] = instructions.strip()
+        return decision
     return {
         "action": FALLBACK_ACTION,
-        "rationale": rationale or "the orchestrator returned no usable action",
+        "rationale": "No usable recovery decision: provide a supported action and, for continue, nonempty instructions of at most 12000 characters.",
         "fallback": True,
         "raw": text[:500],
     }
@@ -104,14 +110,21 @@ def empirical_screen(
 #: Session statuses that mean the turn did not complete normally and must stay
 #: resumable rather than being recorded as a finished outcome.
 _INFRA_FAILURE_STATUSES = frozenset(
-    {"provider_error", "environment_error", "error", "source_conflict", "interrupted"}
+    {
+        "provider_error",
+        "environment_error",
+        "error",
+        "source_conflict",
+        "interrupted",
+        "context_limit",
+    }
 )
 
 
 def recovery_decision(
     runtime: ProverRuntime, node: Node, report: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """One bounded orchestrator turn: choose retry, negate, or decompose.
+    """Spend one bounded orchestrator turn deciding how the obligation should recover.
 
     The reply is cached into the node's recovery journal atomically with
     finishing the job, so a crash between the turn completing and the decide
@@ -128,7 +141,10 @@ def recovery_decision(
     ]
     remaining_recoveries = runtime.config.max_decompositions - int(metrics.get("decompositions", 0))
     prior = (
-        "\n".join(f"  - {item['action']}: {item.get('rationale', '')}" for item in history)
+        "\n".join(
+            f"  - {item['action']}: {item.get('rationale', '')}; instructions: {item.get('instructions', '')}"
+            for item in history
+        )
         or "  (none)"
     )
     negation = report.get("last_negation")
@@ -139,6 +155,11 @@ def recovery_decision(
         "Actions:\n"
         "- retry: run the prover again on this exact statement with the current plan. Choose it "
         "when the report shows a concrete near-miss that another focused pass can finish.\n"
+        "- continue: continue the saved partial proof and notes with explicit NEW instructions. "
+        "Supply concrete instructions: a smaller next Lean action, corrected tool use, or a "
+        "different proof route. This starts a new bounded attempt; spent calls are not refunded.\n"
+        "- stop: leave this obligation blocked with an explicit rationale if no useful funded "
+        "next action is justified. Independent runnable obligations may continue.\n"
         f"- negate: an empirical Plausible screen, then a bounded attempt "
         f"({runtime.config.negation_api_calls} calls) to PROVE the exact negation. Choose it when "
         "you genuinely suspect the obligation is false or a witness looks reachable.\n"
@@ -149,6 +170,12 @@ def recovery_decision(
         "A failed refutation does not establish truth. Use its checker feedback to distinguish "
         "a malformed candidate from an unsuccessful mathematical search. Repeat an attempt only "
         "with a concrete correction or new approach.\n\n"
+        "A response_stalled report describes a failed attempt, not an impossible theorem. "
+        "Reasoning-only output limits and repeated denied tool calls require different recovery. "
+        "Read the exact failure and saved notes before deciding. Avoid repeating the same "
+        "unproductive response cycle; every subsequent failure returns here with its history. "
+        "Retry and continue both retain safe scratch work and notes. Instructions must preserve "
+        "the exact theorem and verification requirements.\n\n"
         f"Every decision spends one unit of the campaign recovery budget: {remaining_recoveries} of "
         f"{runtime.config.max_decompositions} remain. A prover retry costs up to "
         f"{runtime.config.job_api_calls} calls; a refutation up to "
@@ -163,8 +190,11 @@ def recovery_decision(
             else ""
         )
         + f"Prior recovery decisions for this obligation:\n{prior}\n\n"
+        f"Attempt outcome and retained evidence:\n{json.dumps({k: v for k, v in report.items() if k != 'notes'}, ensure_ascii=False, default=str)}\n\n"
         f"Prover report:\n{str(report.get('notes', node.notes))[-4000:]}\n\n"
-        'Respond with JSON only: {"action": "retry" | "negate" | "decompose", "rationale": "..."}'
+        'Respond with JSON only: {"action": "retry" | "continue" | "stop" | "negate" | "decompose", "rationale": "...", "instructions": "..."}. '
+        "Instructions are required for continue (maximum 12000 characters) and optional otherwise. "
+        "Paths in the evidence identify provenance; use the supplied notes and evidence rather than assuming access to another job workspace."
     )
     rec = runtime.state.get("recovery_in_flight", {}).get(node.id)
     if isinstance(rec, dict) and isinstance(rec.get("decision_result"), str):

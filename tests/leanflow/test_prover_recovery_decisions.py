@@ -62,16 +62,16 @@ def scripted(actions: list[str]):
 # --- parsing -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("action", ["retry", "negate", "decompose"])
+@pytest.mark.parametrize("action", ["retry", "stop", "negate", "decompose"])
 def test_decision_accepts_each_action(action: str) -> None:
     decision = parse_decision(json.dumps({"action": action.upper(), "rationale": "why"}))
     assert decision == {"action": action, "rationale": "why", "fallback": False}
 
 
 @pytest.mark.parametrize("text", ["", "not json", '{"action": "give_up"}', '{"rationale": "x"}'])
-def test_unusable_decision_falls_back_to_decompose_and_says_so(text: str) -> None:
+def test_unusable_decision_stops_without_authorizing_more_work(text: str) -> None:
     decision = parse_decision(text)
-    assert decision["action"] == "decompose"
+    assert decision["action"] == "stop"
     assert decision["fallback"] is True
 
 
@@ -395,10 +395,10 @@ def test_certified_negation_of_a_NON_root_node_replans_without_stopping(
     assert "disproof" not in runtime.state
 
 
-def test_garbage_orchestrator_reply_falls_back_to_decompose_and_dispatches_it(
+def test_garbage_orchestrator_reply_stops_without_dispatching_a_plan(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """An unparseable decision must still dispatch -- through the real decision path."""
+    """An unparseable decision cannot authorize another paid planning stage."""
     runtime = research_runtime(tmp_path)
     node = runtime.dag.nodes[0]
     node.status = "blocked"
@@ -415,9 +415,9 @@ def test_garbage_orchestrator_reply_falls_back_to_decompose_and_dispatches_it(
     runtime._recover(node, {"notes": "stuck"})
 
     decision = runtime.state["recovery_decisions"][0]
-    assert decision["action"] == "decompose"
+    assert decision["action"] == "stop"
     assert decision["fallback"] is True
-    assert replans and node.status == "retry"
+    assert not replans and node.status == "blocked"
 
 
 def _resume(runtime: ProverRuntime, **overrides: Any) -> ProverRuntime:
@@ -754,6 +754,7 @@ def test_resume_during_recovery_planning_does_not_re_run_the_design_plan(
     runtime.state["phase"] = "planning"
     runtime.state["recovery_in_flight"] = {
         node.id: {
+            "stage": "plan",
             "report": {"notes": "stuck"},
             "charged": True,
             "decision": {"action": "decompose", "rationale": "split", "fallback": False},

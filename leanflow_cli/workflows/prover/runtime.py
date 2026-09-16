@@ -22,8 +22,13 @@ from leanflow_cli.workflows.prover.live_progress import LiveProgress
 from leanflow_cli.workflows.prover.models import Dag, Node, digest
 from leanflow_cli.workflows.prover.planning import json_report
 from leanflow_cli.workflows.prover.recovery_reports import inconclusive_finding, negation_report
+from leanflow_cli.workflows.prover.response_recovery import (
+    record_recovery_guidance,
+    response_failure_report,
+    restore_stalled_recoveries,
+    stalled_job,
+)
 from leanflow_cli.workflows.prover.scheduler import ready_nodes
-from leanflow_cli.workflows.prover.session_response_guard import block_stalled_response
 from leanflow_cli.workflows.prover.source import (
     SourceConflictError,
     SourceDocument,
@@ -352,8 +357,6 @@ class ProverRuntime:
                 result = json.loads(result_path.read_text())
                 self._retain_candidate(job, result)
                 node = self.dag.by_id().get(job["node_id"])
-                if node is not None and block_stalled_response(self, node):
-                    continue
                 if (
                     self.config.mode == "research"
                     and node is not None
@@ -384,6 +387,7 @@ class ProverRuntime:
         from leanflow_cli.workflows.prover.resume_candidates import recover_environment_candidates
 
         recover_environment_candidates(self)
+        restore_stalled_recoveries(self)
         self.state.update(status="running", phase="resume", terminal=False)
         self.state["metrics"]["api_calls"] = self.consumed
         self._persist()
@@ -852,9 +856,6 @@ class ProverRuntime:
             if self._accept(node, candidate, job["id"]):
                 return
 
-        if block_stalled_response(self, node):
-            return
-
         def partial_work(attempt: dict[str, Any]) -> list[str]:
             """Read concrete hole edits against the controller's immutable job baseline."""
             scratch = Path(attempt["scratch_path"])
@@ -913,7 +914,11 @@ class ProverRuntime:
             # Standard mode has no orchestrator to consult, so it keeps the
             # bounded, progress-gated automatic retry.
             node.status = (
-                "retry" if progress and node.attempts <= self.config.max_restarts else "blocked"
+                "retry"
+                if job.get("status") != "response_stalled"
+                and progress
+                and node.attempts <= self.config.max_restarts
+                else "blocked"
             )
             self._persist()
             return
@@ -965,7 +970,7 @@ class ProverRuntime:
                     prior["result_processed"] = True
             in_flight[node.id] = {
                 "stage": "decide",
-                "report": dict(report),
+                "report": response_failure_report(self, node, report),
                 "charged": False,
                 "decision": None,
                 "reason": None,
@@ -974,6 +979,13 @@ class ProverRuntime:
                 "plan_started": False,
                 "screen": None,
             }
+            failure = in_flight[node.id]["report"].get("response_failure", {})
+            if failure.get("role") == "negation" and node.id in self.state.get(
+                "negation_proofs", {}
+            ):
+                # Preserve verification priority atomically with migration; a
+                # crash cannot buy a new decision before the cached proof check.
+                in_flight[node.id].update(stage="negate", screen={})
             self._persist()
 
     def _dismiss_recovery(self, node_id: str) -> None:
@@ -992,7 +1004,7 @@ class ProverRuntime:
         stage's side effects, so any crash resumes cleanly from ``rec["stage"]``:
 
         - decide: charge one campaign recovery unit (once), then ask the
-          orchestrator to retry / negate / decompose. The charge is persisted
+          orchestrator to retry / continue / stop / negate / decompose. The charge is persisted
           before the model turn (resume re-asks without recharging); the chosen
           action and its history entry are persisted together as the stage
           advances.
@@ -1011,8 +1023,6 @@ class ProverRuntime:
         """
         from leanflow_cli.workflows.prover import negation_job, recovery
 
-        if block_stalled_response(self, node):
-            return
         self._enqueue_recovery(node, report or {})
         while not self.stopping and not self.cancelled.is_set():
             rec = self.state.setdefault("recovery_in_flight", {}).get(node.id)
@@ -1045,6 +1055,9 @@ class ProverRuntime:
                     "rationale": str(decision.get("rationale", "")),
                     "fallback": bool(decision.get("fallback")),
                     "budget_used": int(self.state["metrics"]["decompositions"]),
+                    "node_revision": node.revision,
+                    "source_job_id": str(rec.get("report", {}).get("job_id", "")),
+                    "instructions": str(decision.get("instructions", "")),
                 }
                 self.state.setdefault("recovery_decisions", []).append(record)
                 node.notes += f"\nRecovery decision: {record['action']} -- {record['rationale']}"[
@@ -1054,8 +1067,12 @@ class ProverRuntime:
                 # The turn is now durably recorded; drop the replay cache so a
                 # later re-decide (after an unrefuted negation) asks afresh.
                 rec.pop("decision_result", None)
-                if decision["action"] == "retry":
+                record_recovery_guidance(self, node, decision, dict(rec.get("report") or {}))
+                if decision["action"] in {"retry", "continue"}:
                     node.status = "retry"
+                    rec["stage"] = "done"
+                elif decision["action"] == "stop":
+                    node.status = "blocked"
                     rec["stage"] = "done"
                 elif decision["action"] == "negate":
                     rec["stage"] = "negate"
@@ -1067,6 +1084,7 @@ class ProverRuntime:
                         f"Repair only the branch for {node.name}. Prover report: "
                         f"{str(rec.get('report', {}).get('notes', node.notes))[-3000:]}\n"
                         f"Recovery decision: decompose -- {decision.get('rationale', '')}"
+                        f"\nOrchestrator instructions: {decision.get('instructions', '')}"
                     )
                 self.record_finding(
                     f"recovery decision for {node.name}: {decision['action']}",
@@ -1084,10 +1102,6 @@ class ProverRuntime:
                     rec["screen"] = screen
                     self._persist()
                 outcome = negation_job.attempt_negation(self, node, screen=screen)
-                if not outcome.get("certified") and block_stalled_response(
-                    self, node, negation_checked=True
-                ):
-                    return
                 affected = self.dag.affected(node.id)
                 if outcome.get("certified"):
                     node.status = "false"
@@ -1127,14 +1141,18 @@ class ProverRuntime:
                     f"negation of {node.name} was not certified",
                     inconclusive_finding(last_negation),
                 )
-                rec["report"] = {
-                    **dict(rec.get("report") or {}),
-                    "negations_attempted": int(
-                        dict(rec.get("report") or {}).get("negations_attempted", 0)
-                    )
-                    + 1,
-                    "last_negation": last_negation,
-                }
+                rec["report"] = response_failure_report(
+                    self,
+                    node,
+                    {
+                        **dict(rec.get("report") or {}),
+                        "negations_attempted": int(
+                            dict(rec.get("report") or {}).get("negations_attempted", 0)
+                        )
+                        + 1,
+                        "last_negation": last_negation,
+                    },
+                )
                 rec["charged"] = False
                 rec["decision"] = None
                 rec["screen"] = None
@@ -1246,8 +1264,6 @@ class ProverRuntime:
                     raise
                 if accepted:
                     promoted = True
-                elif block_stalled_response(self, node):
-                    continue
                 elif self.config.mode == "research":
                     # A deferred candidate that fails independent verification is a
                     # node failure like any other: let the orchestrator decide,
@@ -1270,7 +1286,10 @@ class ProverRuntime:
                         rejected.append(node.id)
                 else:
                     node.status = (
-                        "retry" if node.attempts <= self.config.max_restarts else "blocked"
+                        "retry"
+                        if stalled_job(self, node) is None
+                        and node.attempts <= self.config.max_restarts
+                        else "blocked"
                     )
             if not promoted:
                 break
