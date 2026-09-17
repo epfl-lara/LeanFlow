@@ -162,7 +162,18 @@ class SessionTools:
                 _schema(
                     "lean_check",
                     "Check the scratch file with warm LeanProbe. For a temporary declaration replacement give its COMPLETE signature and body. This check does NOT save the replacement to disk. After success, submit candidate.txt or the requested JSON with the exact text replacing the literal sorry. Only the controller can accept a proof.",
-                    {"file": TEXT, "declaration": TEXT, "replacement": TEXT},
+                    {
+                        "file": TEXT,
+                        "declaration": {
+                            "type": "string",
+                            "description": "The exact existing declaration name in the scratch file, qualified or unqualified. Use 'test', never 'theorem test' or a full signature. Omit to check the entire scratch file. Use read_file to confirm the name.",
+                            "examples": ["test", "Namespace.target"],
+                        },
+                        "replacement": {
+                            "type": "string",
+                            "description": "Optional temporary COMPLETE declaration: full signature AND body, such as 'theorem test : True := by trivial'. Requires declaration to name the existing target. Never pass only a proof body. Omit to check the code already saved in the scratch file.",
+                        },
+                    },
                     [],
                 ),
                 _schema(

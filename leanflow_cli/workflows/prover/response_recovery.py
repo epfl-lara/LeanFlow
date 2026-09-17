@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from leanflow_cli.workflows.prover.recovery_reports import recent_tool_evidence
+
 if TYPE_CHECKING:
     from leanflow_cli.workflows.prover.models import Node
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
@@ -53,6 +55,7 @@ def response_failure_report(
         "result_path": str(job.get("result_path", "")),
         "artifacts": list(job.get("artifacts") or []),
         "plan_path": str(plan),
+        "recent_tool_results": recent_tool_evidence(workspace),
     }
     if plan.is_file() and not plan.is_symlink():
         try:

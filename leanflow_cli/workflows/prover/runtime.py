@@ -388,6 +388,9 @@ class ProverRuntime:
 
         recover_environment_candidates(self)
         restore_stalled_recoveries(self)
+        from leanflow_cli.workflows.prover.recovery_liveness import restore_legacy_stops
+
+        restore_legacy_stops(self)
         self.state.update(status="running", phase="resume", terminal=False)
         self.state["metrics"]["api_calls"] = self.consumed
         self._persist()
@@ -1004,7 +1007,7 @@ class ProverRuntime:
         stage's side effects, so any crash resumes cleanly from ``rec["stage"]``:
 
         - decide: charge one campaign recovery unit (once), then ask the
-          orchestrator to retry / continue / stop / negate / decompose. The charge is persisted
+          orchestrator to retry / continue / negate / decompose. The charge is persisted
           before the model turn (resume re-asks without recharging); the chosen
           action and its history entry are persisted together as the stage
           advances.
@@ -1030,6 +1033,13 @@ class ProverRuntime:
                 return
             stage = rec.get("stage", "decide")
 
+            if stage == "budget_exhausted":
+                if int(self.state["metrics"]["decompositions"]) >= self.config.max_decompositions:
+                    return
+                rec.update(stage="decide", charged=False)
+                self._persist()
+                continue
+
             if stage == "done":
                 self._dismiss_recovery(node.id)
                 return
@@ -1040,15 +1050,23 @@ class ProverRuntime:
                     if used >= self.config.max_decompositions:
                         node.notes += (
                             f"\nCampaign recovery budget exhausted "
-                            f"({used}/{self.config.max_decompositions}); this node stays blocked."
+                            f"({used}/{self.config.max_decompositions}); recovery awaits additional capacity."
                         )
-                        self._dismiss_recovery(node.id)
+                        rec["stage"] = "budget_exhausted"
+                        self._persist()
                         return
                     self.state["metrics"]["decompositions"] = used + 1
                     node.decompositions += 1
                     rec["charged"] = True
                     self._persist()
                 decision = recovery.recovery_decision(self, node, dict(rec.get("report") or {}))
+                if node.status == "false" and decision["action"] != "decompose":
+                    decision = {
+                        "action": "invalid",
+                        "rejected_action": decision["action"],
+                        "fallback": True,
+                        "rationale": "This generated helper has a certified negation. Choose decompose to replace it and repair its affected parent obligations; do not retry or negate the refuted helper.",
+                    }
                 record = {
                     "node_id": node.id,
                     "action": decision["action"],
@@ -1058,6 +1076,11 @@ class ProverRuntime:
                     "node_revision": node.revision,
                     "source_job_id": str(rec.get("report", {}).get("job_id", "")),
                     "instructions": str(decision.get("instructions", "")),
+                    **(
+                        {"rejected_action": decision.get("rejected_action", "")}
+                        if decision["action"] == "invalid"
+                        else {}
+                    ),
                 }
                 self.state.setdefault("recovery_decisions", []).append(record)
                 node.notes += f"\nRecovery decision: {record['action']} -- {record['rationale']}"[
@@ -1071,14 +1094,29 @@ class ProverRuntime:
                 if decision["action"] in {"retry", "continue"}:
                     node.status = "retry"
                     rec["stage"] = "done"
-                elif decision["action"] == "stop":
-                    node.status = "blocked"
-                    rec["stage"] = "done"
+                elif decision["action"] not in recovery.ACTIONS:
+                    # Invalid JSON or a retired stop decision must be corrected by
+                    # the orchestrator. Persist the rejection and renewed charge
+                    # boundary together, so a crash cannot duplicate its turn.
+                    rec["report"] = {
+                        **dict(rec.get("report") or {}),
+                        "recovery_correction": {
+                            "code": "invalid_recovery_decision",
+                            "rejected_action": decision.get("rejected_action", decision["action"]),
+                            "message": decision.get("rationale", "Choose an actionable recovery."),
+                            "allowed_actions": (
+                                ["decompose"] if node.status == "false" else list(recovery.ACTIONS)
+                            ),
+                        },
+                    }
+                    rec["charged"] = False
+                    rec["decision"] = None
+                    rec["stage"] = "decide"
                 elif decision["action"] == "negate":
                     rec["stage"] = "negate"
                 else:
                     rec["stage"] = "plan"
-                    rec["refinement"] = False
+                    rec["refinement"] = node.status == "false"
                     rec["affected"] = sorted(self.dag.affected(node.id))
                     rec["reason"] = (
                         f"Repair only the branch for {node.name}. Prover report: "
@@ -1124,6 +1162,11 @@ class ProverRuntime:
                             related.revision += 1
                             related.conditional_dependencies = []
                             related.notes += "\nA planned prerequisite was refuted; retained candidate requires replanning."
+                    rec["report"] = {
+                        **dict(rec.get("report") or {}),
+                        "certified_negation": outcome,
+                        "allowed_actions": ["decompose"],
+                    }
                     rec["reason"] = (
                         f"Repair only the branch for {node.name}. Prover report: {node.notes}\n"
                         f"Negation investigation: {outcome}"
@@ -1199,7 +1242,7 @@ class ProverRuntime:
                     # crashed before dismissal: read the outcome it recorded into
                     # THIS node's journal, not the shared proposal_status.
                     applied = bool(rec.get("applied"))
-                if refinement:
+                if refinement and applied:
                     for related in self.dag.nodes:
                         if related.id in affected and related.status == "blocked":
                             related.status = "pending"
@@ -1237,8 +1280,12 @@ class ProverRuntime:
                 self._dismiss_recovery(node.id)
                 return
 
-            # Unknown stage: do not spin.
-            return
+            # A corrupt journal is an infrastructure error, never an idle loop
+            # or implied authorization to repeat a model action.
+            raise InfrastructureFailure(
+                f"Unknown recovery journal stage {stage!r} for {node.id}.",
+                status="state_error",
+            )
 
     def _promote_candidates(self) -> None:
         """Independently promote every newly closed dependency chain to a fixed point."""
@@ -1500,6 +1547,13 @@ class ProverRuntime:
                                 self.pending[future] = job
                                 future.add_done_callback(self.completions.put)
                         if not self.pending:
+                            if not self.stopping and self.config.mode == "research":
+                                from leanflow_cli.workflows.prover.recovery_liveness import (
+                                    recover_idle_obligation,
+                                )
+
+                                if recover_idle_obligation(self):
+                                    continue
                             break
                         try:
                             completed = self.completions.get(timeout=0.5)

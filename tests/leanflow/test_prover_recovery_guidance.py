@@ -28,7 +28,7 @@ def test_continue_requires_bounded_text_instructions(instructions: Any) -> None:
     result = recovery.parse_decision(
         json.dumps({"action": "continue", "instructions": instructions})
     )
-    assert result["action"] == "stop"
+    assert result["action"] == "invalid"
     assert result["fallback"]
 
 

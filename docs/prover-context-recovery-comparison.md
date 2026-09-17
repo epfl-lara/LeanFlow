@@ -54,7 +54,8 @@ paths; it is justified by LeanFlow's observed failure.
 - Persist in-session recovery admission across compaction and reopening. Preserve
   candidate verification, then hand the stopped attempt to the research
   orchestrator for a budgeted retry, instructed continuation, decomposition,
-  refutation, or explicit stop. The original implementation incorrectly blocked
+  or refutation. Invalid decisions return to the orchestrator for correction
+  within existing campaign limits. The original implementation incorrectly blocked
   the node without this decision; that policy has been removed. Saved proofs and
   other runnable obligations remain available.
 - Identify compression token counts as estimates. Provider-reported input/output

@@ -19,9 +19,10 @@ RESPONSE_RECOVERY_PROMPT = (
     "Keep the next step concise. Do not restart or repeat the preceding derivation."
 )
 RESPONSE_FAILURE = (
-    "The prover returned repeated empty, truncated, or identical responses without "
-    "a tool action or candidate. Its single recovery allowance is unavailable or "
-    "already consumed; no further requests will be sent for this attempt. "
+    "This prover attempt ended after repeated unusable responses or rejected tool "
+    "requests without an executed action or candidate. Its in-session recovery "
+    "allowance is unavailable or already consumed. In research mode, control returns "
+    "to the orchestrator to choose the next proof action within the campaign budget. "
     "Saved proof artifacts and unused campaign calls are preserved."
 )
 _MAX_STATE_BYTES = 8192
@@ -36,6 +37,14 @@ def executed_tool_result(name: str, result: Mapping[str, Any]) -> bool:
     """
     if result.get("success") is True:
         return True
+    if name == "lean_search":
+        if result.get("success") is False:
+            return False
+        # LeanSearchResult has no success/status field. Completed native searches
+        # must clear the guard even when the search found no matching lemmas.
+        attempted = result.get("attempted_providers")
+        if isinstance(result.get("results"), list) and isinstance(attempted, list) and attempted:
+            return True
     if name == "compute":
         return result.get("status") in {
             "empirical_compute_error",
@@ -153,8 +162,9 @@ class ProverResponseGuard:
             "response_kind": self._reason,
             "unusable_responses": self._failures,
             "next_step": (
-                "Inspect this job's saved artifacts and model/output settings before "
-                "authorizing another attempt. Other runnable obligations may continue."
+                "In research mode, the orchestrator uses the saved artifacts and "
+                "failure evidence to select the next proof action. Other runnable "
+                "obligations may continue."
             ),
         }
 

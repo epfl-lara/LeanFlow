@@ -62,16 +62,18 @@ def scripted(actions: list[str]):
 # --- parsing -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("action", ["retry", "stop", "negate", "decompose"])
+@pytest.mark.parametrize("action", ["retry", "negate", "decompose"])
 def test_decision_accepts_each_action(action: str) -> None:
     decision = parse_decision(json.dumps({"action": action.upper(), "rationale": "why"}))
     assert decision == {"action": action, "rationale": "why", "fallback": False}
 
 
-@pytest.mark.parametrize("text", ["", "not json", '{"action": "give_up"}', '{"rationale": "x"}'])
-def test_unusable_decision_stops_without_authorizing_more_work(text: str) -> None:
+@pytest.mark.parametrize(
+    "text", ["", "not json", '{"action": "give_up"}', '{"action": "stop"}', '{"rationale": "x"}']
+)
+def test_unusable_decision_requests_correction_without_guessing_an_action(text: str) -> None:
     decision = parse_decision(text)
-    assert decision["action"] == "stop"
+    assert decision["action"] == "invalid"
     assert decision["fallback"] is True
 
 
@@ -395,7 +397,7 @@ def test_certified_negation_of_a_NON_root_node_replans_without_stopping(
     assert "disproof" not in runtime.state
 
 
-def test_garbage_orchestrator_reply_stops_without_dispatching_a_plan(
+def test_garbage_orchestrator_reply_retries_decision_until_recovery_budget(
     tmp_path: Path, monkeypatch
 ) -> None:
     """An unparseable decision cannot authorize another paid planning stage."""
@@ -415,9 +417,11 @@ def test_garbage_orchestrator_reply_stops_without_dispatching_a_plan(
     runtime._recover(node, {"notes": "stuck"})
 
     decision = runtime.state["recovery_decisions"][0]
-    assert decision["action"] == "stop"
+    assert decision["action"] == "invalid"
     assert decision["fallback"] is True
     assert not replans and node.status == "blocked"
+    assert len(runtime.state["recovery_decisions"]) == runtime.config.max_decompositions
+    assert runtime.state["recovery_in_flight"][node.id]["stage"] == "budget_exhausted"
 
 
 def _resume(runtime: ProverRuntime, **overrides: Any) -> ProverRuntime:
@@ -1044,8 +1048,11 @@ def test_orphaned_checkpoint_does_not_hijack_another_nodes_recovery_plan(
     resumed.run()
 
     # B ran a checkpoint carrying ITS OWN reason, not A's orphan.
+    # Later unfinished work can open a NEW journal; the old plan must not replay.
     assert "B's own branch" in plans
-    assert live.id not in resumed.state.get("recovery_in_flight", {})
+    journal = resumed.state.get("recovery_in_flight", {}).get(live.id, {})
+    assert journal.get("stage") != "plan"
+    assert plans.count("B's own branch") == 1
 
 
 def test_interrupted_negation_does_not_advance_the_recovery_stage(

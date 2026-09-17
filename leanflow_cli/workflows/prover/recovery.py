@@ -2,7 +2,8 @@
 
 After a prover job fails to close a node, the orchestrator reads the prover's
 report and picks exactly one action: retry, continue with new instructions,
-stop the branch, attempt a refutation, or decompose. Every decision spends one unit of the
+attempt a refutation, or decompose. Unusable decisions return to the orchestrator
+with validation feedback; they never abandon the obligation. Every decision spends one unit of the
 campaign-wide recovery budget; there is deliberately no per-node cap.
 
 A refutation runs an empirical Plausible screen first -- a few Lean calls and
@@ -24,9 +25,9 @@ if TYPE_CHECKING:
     from leanflow_cli.workflows.prover.models import Node
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
 
-ACTIONS: tuple[str, ...] = ("retry", "continue", "stop", "negate", "decompose")
-#: An unusable decision cannot authorize more model work by implication.
-FALLBACK_ACTION = "stop"
+ACTIONS: tuple[str, ...] = ("retry", "continue", "negate", "decompose")
+#: This sentinel requests a corrected decision, never a guessed prover action.
+FALLBACK_ACTION = "invalid"
 MAX_INSTRUCTIONS_CHARS = 12000
 #: Plausible itself is quick; elaborating a Mathlib-heavy prefix is the cost.
 SCREEN_TIMEOUT_S = 600.0
@@ -48,7 +49,8 @@ def parse_decision(text: str) -> dict[str, Any]:
         return decision
     return {
         "action": FALLBACK_ACTION,
-        "rationale": "No usable recovery decision: provide a supported action and, for continue, nonempty instructions of at most 12000 characters.",
+        "rationale": "No usable recovery decision: choose retry, continue, negate, or decompose. Stop is not permitted for an unfinished obligation. Continue requires nonempty instructions of at most 12000 characters.",
+        "rejected_action": action,
         "fallback": True,
         "raw": text[:500],
     }
@@ -158,8 +160,6 @@ def recovery_decision(
         "- continue: continue the saved partial proof and notes with explicit NEW instructions. "
         "Supply concrete instructions: a smaller next Lean action, corrected tool use, or a "
         "different proof route. This starts a new bounded attempt; spent calls are not refunded.\n"
-        "- stop: leave this obligation blocked with an explicit rationale if no useful funded "
-        "next action is justified. Independent runnable obligations may continue.\n"
         f"- negate: an empirical Plausible screen, then a bounded attempt "
         f"({runtime.config.negation_api_calls} calls) to PROVE the exact negation. Choose it when "
         "you genuinely suspect the obligation is false or a witness looks reachable.\n"
@@ -172,7 +172,10 @@ def recovery_decision(
         "with a concrete correction or new approach.\n\n"
         "A response_stalled report describes a failed attempt, not an impossible theorem. "
         "Reasoning-only output limits and repeated denied tool calls require different recovery. "
-        "Read the exact failure and saved notes before deciding. Avoid repeating the same "
+        "Read the exact failure and saved notes before deciding. Repeated tool failures require "
+        "an operational correction or a changed actionable plan, never abandonment of the obligation. "
+        "Stop is not an available action: the controller enforces campaign limits and user stops. "
+        "Avoid repeating the same "
         "unproductive response cycle; every subsequent failure returns here with its history. "
         "Retry and continue both retain safe scratch work and notes. Instructions must preserve "
         "the exact theorem and verification requirements.\n\n"
@@ -192,7 +195,8 @@ def recovery_decision(
         + f"Prior recovery decisions for this obligation:\n{prior}\n\n"
         f"Attempt outcome and retained evidence:\n{json.dumps({k: v for k, v in report.items() if k != 'notes'}, ensure_ascii=False, default=str)}\n\n"
         f"Prover report:\n{str(report.get('notes', node.notes))[-4000:]}\n\n"
-        'Respond with JSON only: {"action": "retry" | "continue" | "stop" | "negate" | "decompose", "rationale": "...", "instructions": "..."}. '
+        'Respond with JSON only: {"action": "retry" | "continue" | "negate" | "decompose", "rationale": "...", "instructions": "..."}. '
+        "If the report contains a certified negation, only decompose is permitted: replace that generated helper and repair its affected parents without changing original targets. "
         "Instructions are required for continue (maximum 12000 characters) and optional otherwise. "
         "Paths in the evidence identify provenance; use the supplied notes and evidence rather than assuming access to another job workspace."
     )

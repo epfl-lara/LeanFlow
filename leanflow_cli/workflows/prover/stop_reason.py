@@ -61,6 +61,18 @@ def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] 
             "The campaign used its total call budget.",
             runtime.config.total_api_calls,
         )
+    elif (
+        status == "budget_exhausted"
+        and runtime.config.mode == "research"
+        and int(metrics.get("decompositions", 0)) >= runtime.config.max_decompositions
+    ):
+        code, scope, message, used, limit = (
+            "campaign_recoveries",
+            "campaign",
+            "The campaign used its recovery-decision budget; the remaining API calls do not renew that allocation.",
+            int(metrics.get("decompositions", 0)),
+            runtime.config.max_decompositions,
+        )
     elif status in {"budget_exhausted", "blocked"}:
         # A node can also be blocked by a bounded response failure. Describe the
         # scheduler state without inventing a recovery-budget or planning cause.

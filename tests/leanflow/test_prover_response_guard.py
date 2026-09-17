@@ -15,6 +15,7 @@ from leanflow_cli.workflows.prover.runtime import ProverRuntime
 from leanflow_cli.workflows.prover.session_response_guard import (
     RESPONSE_FAILURE,
     ProverResponseGuard,
+    executed_tool_result,
 )
 from tests.leanflow.test_prover_sessions import run_fake
 
@@ -175,7 +176,7 @@ def make_runtime(tmp_path: Path, *, accepted: bool = True) -> ProverRuntime:
         session=lambda **kwargs: {
             "status": "complete",
             "api_calls": 1,
-            "final_response": '{"action":"stop","rationale":"Test-selected stop"}',
+            "final_response": '{"action":"retry","rationale":"Test-selected retry"}',
         },
         verifier=Verifier(accepted),
     )
@@ -211,8 +212,14 @@ def test_stalled_job_consults_orchestrator_while_parallel_job_finishes(
         name = kwargs["context"]["assignment"]["name"]
         if kwargs["role"] == "orchestrator":
             calls.append("orchestrator")
-            return {"status": "complete", "api_calls": 1, "final_response": '{"action":"stop"}'}
+            return {
+                "status": "complete",
+                "api_calls": 1,
+                "final_response": '{"action":"continue","instructions":"Try exact True.intro."}',
+            }
         calls.append(name)
+        if name == "stalled" and calls.count(name) > 1:
+            return {"status": "completed", "api_calls": 1, "final_response": '{"proof":"trivial"}'}
         if name == "stalled":
             assert healthy_started.wait(5)
             return stalled_result()
@@ -226,16 +233,13 @@ def test_stalled_job_consults_orchestrator_while_parallel_job_finishes(
     monkeypatch.setattr(runtime, "_handle_result", handle)
     state = runtime.run()
     nodes = {node.name: node for node in runtime.dag.nodes}
-    assert nodes["stalled"].status == "blocked"
+    assert nodes["stalled"].status == "proved"
     assert nodes["healthy"].status == "proved"
-    assert sorted(calls) == ["healthy", "orchestrator", "stalled"]
-    assert state["status"] == "blocked"
-    assert state["metrics"]["api_calls"] == 4
+    assert sorted(calls) == ["healthy", "orchestrator", "stalled", "stalled"]
+    assert state["status"] == "completed"
+    assert state["metrics"]["api_calls"] == 5
     assert state["metrics"]["decompositions"] == 1
-    assert state["stop_reason"]["code"] == "no_runnable_obligations"
-    assert "call budget is not exhausted" in state["stop_reason"]["message"]
-    assert "recovery budget spent" not in state["stop_reason"]["message"]
-    assert "replanning declined" not in state["stop_reason"]["message"]
+    assert state["stop_reason"] is None
     assert not state.get("recovery_in_flight")
     assert (
         next(job for job in state["jobs"] if job["status"] == "response_stalled")["stop_reason"][
@@ -253,7 +257,7 @@ def test_saved_candidate_is_checked_before_stall_blocks(tmp_path: Path, accepted
     node.status = "running"
     runtime._handle_result(job, stalled_result("trivial"))
     assert runtime.verifier.checked == [node.id]
-    assert node.status == ("proved" if accepted else "blocked")
+    assert node.status == ("proved" if accepted else "retry")
     assert not runtime.state.get("recovery_in_flight")
     assert not runtime.cancelled.is_set()
 
@@ -296,7 +300,7 @@ def test_deferred_candidate_rejection_calls_orchestrator_for_stalled_response(
     prerequisite.status = "proved"
     runtime._promote_candidates()
     assert runtime.verifier.checked == [node.id]
-    assert node.status == "blocked"
+    assert node.status == "retry"
     assert not runtime.state.get("recovery_in_flight")
     assert runtime.state["metrics"]["decompositions"] == 1
 
@@ -317,7 +321,7 @@ def test_negation_response_failure_returns_to_orchestrator(
 
     monkeypatch.setattr(negation_job, "attempt_negation", negation)
     runtime._recover(node)
-    assert node.status == "blocked"
+    assert node.status == "retry"
     assert not runtime.state.get("recovery_in_flight")
     assert not runtime.cancelled.is_set()
     assert len(runtime.state["jobs"]) == 2
@@ -344,9 +348,9 @@ def test_stalled_negation_keeps_cached_proof_for_independent_verification(
     monkeypatch.setattr(negation_job, "attempt_negation", check_cached)
     runtime._recover(node)
     assert checked == ["exact a_saved_proof"]
-    assert node.status == "blocked"
+    assert node.status == "retry"
     assert node.id not in runtime.state["negation_proofs"]
-    assert runtime.state["recovery_decisions"][0]["action"] == "stop"
+    assert runtime.state["recovery_decisions"][0]["action"] == "retry"
 
 
 def test_real_session_stops_65k_reasoning_only_loop_and_resume_spends_no_calls(
@@ -527,6 +531,124 @@ def test_invalid_tool_batch_replies_are_paired_before_recovery_request(
 
     result = run_fake(tmp_path, monkeypatch, request, api_budget=8)
     assert result["status"] == "completed" and calls == 2
+
+
+@pytest.mark.parametrize("found", [False, True])
+def test_native_lean_search_batch_does_not_consume_invalid_response_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, found: bool
+) -> None:
+    """Replay successful library searches followed by one malformed edit."""
+    from leanflow_cli.lean import lean_services
+    from leanflow_cli.lean.lean_models import LeanSearchResult
+
+    workspace = tmp_path / "job"
+    workspace.mkdir()
+    (workspace / "Scratch.lean").write_text("theorem goal : True := by sorry\n")
+    calls, searches = [], []
+
+    def search(query: str, **kwargs: Any) -> LeanSearchResult:
+        searches.append(query)
+        return LeanSearchResult(
+            query=query,
+            mode="auto",
+            attempted_providers=["leanexplore-local"],
+            results=[{"name": query, "provider": "leanexplore-local"}] if found else [],
+            degraded_reasons=[],
+        )
+
+    def request(_agent: Any, messages: Any, _timeout: float) -> tuple[dict[str, Any], Any]:
+        calls.append(json.loads(json.dumps(messages)))
+        if len(calls) == 1:
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"search_{index}",
+                        "function": {
+                            "name": "lean_search",
+                            "arguments": json.dumps({"query": f"Multiset.lemma_{index}"}),
+                        },
+                    }
+                    for index in range(5)
+                ],
+            }, {}
+        if len(calls) == 2:
+            assert "single recovery request" not in json.dumps(messages)
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "missing_new",
+                        "function": {
+                            "name": "replace_text",
+                            "arguments": '{"path":"Scratch.lean","old":"sorry"}',
+                        },
+                    }
+                ],
+            }, {}
+        return {"role": "assistant", "content": '{"proof":"trivial"}'}, {}
+
+    monkeypatch.setattr(lean_services, "lean_search", search)
+    result = run_fake(tmp_path, monkeypatch, request, api_budget=8)
+    assert result["status"] == "completed"
+    assert result["api_calls"] == len(calls) == 3
+    assert len(searches) == 5
+    events = [json.loads(line) for line in (tmp_path / "job.jsonl").read_text().splitlines()]
+    recoveries = [event for event in events if event["type"] == "response-recovery"]
+    assert len(recoveries) == 1 and recoveries[0]["details"]["api_calls"] == 2
+    assert not any(event["type"] == "response-stop" for event in events)
+
+
+def test_native_lean_search_repetition_denial_still_ends_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep the duplicate-search guard effective after recognizing real results."""
+    from leanflow_cli.lean import lean_services
+    from leanflow_cli.lean.lean_models import LeanSearchResult
+
+    calls, searches = [], []
+
+    def search(query: str, **kwargs: Any) -> LeanSearchResult:
+        searches.append(query)
+        return LeanSearchResult(query, "auto", ["leanexplore-local"], [{"name": query}], [])
+
+    def request(*_args: Any) -> tuple[dict[str, Any], Any]:
+        calls.append(1)
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"search_{len(calls)}",
+                    "function": {
+                        "name": "lean_search",
+                        "arguments": '{"query":"Multiset.card_eq_one"}',
+                    },
+                }
+            ],
+        }, {}
+
+    monkeypatch.setattr(lean_services, "lean_search", search)
+    result = run_fake(tmp_path, monkeypatch, request, api_budget=8)
+    assert result["status"] == "response_stalled"
+    assert result["api_calls"] == len(calls) == 4
+    assert len(searches) == 2
+    assert result["stop_reason"]["response_kind"] == "invalid_tool_batch"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"success": False, "results": [], "attempted_providers": ["local"]},
+        {"error": "Malformed request"},
+        {"results": "not a list", "attempted_providers": ["local"]},
+        {"results": [], "attempted_providers": []},
+    ],
+)
+def test_missing_or_denied_search_execution_does_not_clear_recovery(result: dict[str, Any]) -> None:
+    assert not executed_tool_result("lean_search", result)
 
 
 def test_executed_lean_rejection_clears_response_recovery(

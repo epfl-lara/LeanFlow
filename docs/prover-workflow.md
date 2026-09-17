@@ -213,7 +213,7 @@ All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
 | `TOTAL_API_CALLS` | `10000` | Total admitted requests across roles and passes |
 | `ORCHESTRATOR_API_CALLS` | `40` | Per planning, review, or resource-agent session, including a prover's research request |
 | `MAX_NODES` | `128` | Maximum admitted DAG nodes |
-| `MAX_DECOMPOSITIONS` | `32` | Research recovery decisions, including retry, continue, stop, negate, and decompose |
+| `MAX_DECOMPOSITIONS` | `32` | Research recovery decisions, including retry, continue, negate, decompose, and correction of invalid decisions |
 | `WALL_TIME_S` | `57600` | 16-hour campaign limit, retaining recorded elapsed time on resume |
 | `TIMEOUT_S` | `180` | Provider request and independent Lean-check deadline |
 | `MODEL` | launch model | Prover model override |
@@ -365,19 +365,24 @@ tool call or usable candidate receives at most one focused recovery request.
 Repeated identical prose without a proof action also enters this recovery path.
 Another unusable response stops that attempt with `response_stalled`, preserving
 its scratch files and spent-call accounting. In research mode the orchestrator
-receives the exact failure and saved notes and chooses `retry`, `continue` with
-explicit new instructions, `decompose`, `negate`, or `stop`. Every decision spends
+receives the exact tool errors, checker hints, and saved notes and chooses `retry`,
+`continue` with explicit new instructions, `decompose`, or `negate`. Every decision spends
 one existing campaign recovery unit; its model calls and subsequent work consume
 the remaining campaign API budget. A stalled attempt is not evidence that the
-theorem is false. Invalid decisions stop the branch explicitly rather than
-implicitly authorizing another paid planning stage.
+theorem is false. A `stop` reply or malformed decision returns a correction to
+the orchestrator under the same campaign limits; it cannot abandon the obligation
+or implicitly dispatch a guessed solver action. Research mode returns stranded
+unfinished obligations to recovery before idle termination. Recovery-budget
+exhaustion is reported as `budget_exhausted` with the `campaign_recoveries` counter,
+even if API calls remain.
 
 An authorized retry or continuation starts a new bounded job that retains safe
 scratch work and `PLAN_job.md`. Instructions remain pinned beside the exact
 assignment across compression and job resume. Reopening the old job does not
 renew its pending or exhausted recovery allowance. Recovery journal markers
 prevent duplicate decisions after a crash; explicitly resuming a legacy blocked
-run sends each previously stranded failure to the orchestrator once. Standard
+run also reopens obsolete orchestrator `stop` decisions while preserving spent
+calls, checked proofs, and pending recovery stages. Standard
 mode has no orchestrator and keeps such failures blocked. Complete proof
 submissions still pass independent checking, and useful tool work clears the
 response-failure streak. These guards do not silently lower reasoning effort or

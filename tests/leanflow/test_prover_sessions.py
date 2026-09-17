@@ -133,6 +133,20 @@ def test_tools_enforce_role_paths_and_symlinks(tmp_path: Path) -> None:
     assert not orchestrator.invoke("lean_search", {"query": "trivial"})["success"]
 
 
+def test_lean_check_schema_distinguishes_target_name_from_complete_replacement(
+    tmp_path: Path,
+) -> None:
+    tools = SessionTools(role="prover", project_root=tmp_path, workspace=tmp_path, context={})
+    schema = next(
+        item["function"] for item in tools.schemas() if item["function"]["name"] == "lean_check"
+    )
+    properties = schema["parameters"]["properties"]
+    assert "exact existing declaration name" in properties["declaration"]["description"]
+    assert properties["declaration"]["examples"] == ["test", "Namespace.target"]
+    assert "COMPLETE declaration" in properties["replacement"]["description"]
+    assert "signature AND body" in properties["replacement"]["description"]
+
+
 def test_read_file_previews_a_non_utf8_document(tmp_path: Path) -> None:
     """A latin-1 .tex/.bib doc (now reachable via search_project) must preview.
 

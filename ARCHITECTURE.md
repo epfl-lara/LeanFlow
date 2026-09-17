@@ -245,6 +245,7 @@ tool is reachable through the public registry.
 | `workflows/prover/session_context.py` | Deterministic compaction with lower target, recoverable history checkpoints, exact contract and fresh tool-feedback preservation |
 | `workflows/prover/session_response_guard.py` | Stop an unusable prover attempt after one in-session recovery; keep its request ledger closed across resume |
 | `workflows/prover/response_recovery.py` | Hand stalled attempts to the research orchestrator once, migrate legacy blocked attempts, preserve failure evidence and revision-scoped next-attempt instructions |
+| `workflows/prover/recovery_liveness.py` | Reopen retired stop decisions on explicit resume and return stranded research obligations to the orchestrator before idle termination |
 | `workflows/prover/session_assignment.py` | Bounded assignment projection with full proof/notes artifacts and lossless references for unchanged proposed nodes; exact claims, dependencies, status and plans stay pinned |
 | `workflows/prover/session_guidance.py` | Selected skill contracts and durable addressed inbox delivery between requests |
 | `workflows/prover/session_tools.py` | Role-specific read/scratch/Lean/research tools; no generic source-write or terminal authority |
@@ -260,8 +261,8 @@ tool is reachable through the public registry.
 | `workflows/prover/negation.py` | Exact negated-target construction and certificate support |
 | `workflows/prover/negation_job.py` | Separate bounded negation pass and independent certificate acceptance |
 | `workflows/prover/negation_submission.py` | Explicit tactic-slot contract, exact-source feedback within the negation job, and durable pending candidates rechecked before model requests on resume |
-| `workflows/prover/recovery.py` | Budgeted retry, instructed continuation, stop, decomposition and refutation decisions; malformed decisions authorize no further work and failed refutations never establish truth |
-| `workflows/prover/recovery_reports.py` | Bounded checker evidence and neutral findings retained across unsuccessful negation attempts |
+| `workflows/prover/recovery.py` | Budgeted retry, instructed continuation, decomposition and refutation decisions; invalid decisions require orchestrator correction within existing limits and failed refutations never establish truth |
+| `workflows/prover/recovery_reports.py` | Bounded exact tool diagnostics for recovery and neutral checker findings retained across unsuccessful negation attempts |
 | `workflows/prover/libraries.py` | Additive helper-library registration and pinned Lake dependency installation with rollback |
 | `flags/prover_catalog.py` | Public prover setting descriptions and defaults |
 | `cli/prover_status.py` | Exact-run snapshot reads and durable guidance submission |

@@ -113,9 +113,9 @@ def test_old_terminal_blocks_migrate_once_even_without_result_file(tmp_path: Pat
     again = resume(first)
     assert again.state["recovery_in_flight"][node.id] == journal
     again._recover(again.dag.by_id()[node.id])
-    assert again.state["recovery_decisions"][0]["action"] == "stop"
+    assert again.state["recovery_decisions"][0]["action"] == "retry"
     stopped = resume(again)
-    assert stopped.dag.by_id()[node.id].status == "blocked"
+    assert stopped.dag.by_id()[node.id].status == "retry"
     assert not stopped.state.get("recovery_in_flight")
     assert len(stopped.state["recovery_decisions"]) == 1
     assert stopped.consumed == 3
@@ -190,7 +190,7 @@ def test_stalls_obey_campaign_recovery_budget_instead_of_private_node_limit(tmp_
     assert node.status == "blocked"
     assert runtime.consumed == 11
     assert "Campaign recovery budget exhausted (3/3)" in node.notes
-    assert not resume(runtime).state.get("recovery_in_flight")
+    assert resume(runtime).state["recovery_in_flight"][node.id]["stage"] == "budget_exhausted"
 
 
 def test_stall_never_spends_calls_beyond_remaining_campaign_allocation(tmp_path: Path) -> None:

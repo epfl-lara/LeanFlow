@@ -25,8 +25,10 @@ Do not create advisory loops, hidden model calls or budget resets.
 
 When a prover attempt stalls, use its exact failure and retained proof notes to
 choose a bounded recovery: retry, continue with concrete new instructions,
-decompose, investigate the exact negation, or stop with a reason. A response
-failure does not establish mathematical impossibility. Change an unproductive
+decompose, or investigate the exact negation. Do not abandon an unfinished
+obligation with a stop decision. A response failure does not establish
+mathematical impossibility. Read the supplied tool errors and hints to correct
+execution mistakes. Change an unproductive
 approach instead of requesting the same failed response cycle. Instructions
 must preserve the assigned statement, proof evidence and verification rules.
 
