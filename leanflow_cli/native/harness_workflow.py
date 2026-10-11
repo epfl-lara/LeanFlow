@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.runtime.harness import HarnessRequest, build_runtime_isolation, run_harness
+from agent.runtime.harness.network_policy import network_policy_error
 from core.campaign_limits import CampaignLimits, LimitReached
 from core.utils import atomic_json_write
 from leanflow_cli.native.harness_artifacts import promote, source_files, verify_proposal
@@ -30,18 +31,9 @@ def run_workflow(env: dict[str, str] | None = None) -> dict[str, Any]:
     root = Path(environment.get("LEANFLOW_PROJECT_ROOT", os.getcwd())).resolve()
     kind = environment.get("LEANFLOW_NATIVE_WORKFLOW_KIND", "review")
     backend = environment.get("LEANFLOW_NATIVE_PROVIDER", "codex")
-    if any(
-        environment.get(key, "").lower() in {"1", "true", "yes", "on"}
-        for key in ("LEANFLOW_DISABLE_SOLUTION_RESEARCH", "LEANFLOW_DISABLE_REPOSITORY_RESEARCH")
-    ) or environment.get("LEANFLOW_PROVER_ALLOW_INTERNET", "").lower() in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }:
-        raise ValueError(
-            "Native clean-room runs require model-only network isolation; this host mode is not yet available"
-        )
+    policy_error = network_policy_error(environment)
+    if policy_error:
+        raise ValueError(policy_error)
     resume = environment.get("LEANFLOW_NATIVE_RESUME_RUN_ID", "")
     run_id = resume or environment.get("LEANFLOW_WORKFLOW_RUN_ID") or uuid.uuid4().hex[:16]
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", run_id):

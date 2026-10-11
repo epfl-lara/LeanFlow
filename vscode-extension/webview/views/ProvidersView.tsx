@@ -1,4 +1,5 @@
 /** Native setup cards send actions only; API keys never enter the webview. */
+import { changeNativeSelection } from "../../src/core/providerModels";
 import { Card, Notice } from "../components";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
@@ -15,7 +16,7 @@ export function credentialLabel(row: BackendSetup): string {
 }
 
 export function ProvidersView() {
-  const { app, setView, setForm } = useStore();
+  const { app, view, setView, setForm } = useStore();
   const setup = app?.providers;
   return <div className="providers-view">
     <Card title="Providers" subtitle="Configure once on the host that runs LeanFlow. Each native agent keeps its own model defaults, login, tools, and context management.">
@@ -35,11 +36,11 @@ export function ProvidersView() {
           {row.savedKey && <button className="btn ghost" onClick={() => action("removeKey")}>Remove saved key</button>}
           {row.id === "lemex" && <button className="btn" onClick={() => action("endpoint")}>Set endpoint</button>}
           <button className="btn ghost" onClick={() => action("config")}>Open native config</button>
-          <button className="btn ghost" onClick={() => { setForm({ provider: row.id }); setView({ tab: "launch" }); }}>Use for next run</button>
+          <button className="btn ghost" onClick={() => { setForm(changeNativeSelection(view.form, { provider: row.id }, setup, app?.profiles?.profiles.find(profile => profile.name === view.form.profile)?.overrides)); setView({ tab: "launch" }); }}>Use for next run</button>
         </div>
         {row.id === "lemex" && <p className="muted">Endpoint: <span className="mono">{row.endpoint || "Lemex native default"}</span> {row.savedEndpoint ? "· saved in VS Code" : "· inherited"}. Leave the endpoint blank to restore native settings.</p>}
         {!row.installed && <p className="muted">{row.id === "lemex" ? "Run the LeanFlow installer on this host to install its managed Lemex runtime." : `Install ${NAMES[row.id]} on this host and make its CLI available on PATH.`} <button className="link" onClick={() => post({ type: "openExternalDoc", topic: "install" })}>Installation guide</button></p>}
-        <details><summary>Native paths and environment</summary><p className="mono">{row.executable || "Executable not found"}</p><p className="mono">{row.config_path}</p><p className="mono">{row.key_env}{row.id === "lemex" ? " · LEMEX_BASE_URL · LEMEX_HOME" : row.id === "codex" ? " · CODEX_HOME" : " · CLAUDE_CONFIG_DIR"}</p></details>
+        <details className="provider-native-details"><summary>Native paths and environment</summary><p className="mono">{row.executable || "Executable not found"}</p><p className="mono">{row.config_path}</p><p className="mono">{row.key_env}{row.id === "lemex" ? " · LEMEX_BASE_URL · LEMEX_HOME" : row.id === "codex" ? " · CODEX_HOME" : " · CLAUDE_CONFIG_DIR"}</p></details>
       </Card>;
     })}
   </div>;

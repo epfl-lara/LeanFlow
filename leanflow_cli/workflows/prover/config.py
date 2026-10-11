@@ -142,7 +142,10 @@ class ProverConfig:
             same_backend = (self.orchestrator_provider or prover_provider) == prover_provider
             values["model"] = self.orchestrator_model or (self.model if same_backend else "")
             values["reasoning_effort"] = self.orchestrator_reasoning_effort or (
-                self.reasoning_effort if same_backend else ""
+                self.reasoning_effort
+                if same_backend
+                and (not self.orchestrator_model or self.orchestrator_model == self.model)
+                else ""
             )
             values["provider"] = self.orchestrator_provider or self.provider
         return values
@@ -176,9 +179,16 @@ class ProverConfig:
                 values[name] = tuple(part.strip() for part in raw.split(",") if part.strip())
             else:
                 values[name] = raw
-        values.setdefault("model", source.get("LEANFLOW_NATIVE_MODEL", ""))
-        values.setdefault("provider", source.get("LEANFLOW_NATIVE_PROVIDER", "") or "codex")
-        values.setdefault("reasoning_effort", source.get("LEANFLOW_NATIVE_REASONING_EFFORT", ""))
+        launch_provider = source.get("LEANFLOW_NATIVE_PROVIDER", "").strip() or "codex"
+        values.setdefault("provider", launch_provider)
+        # Native model names and reasoning levels are scoped to their own backend.
+        if values["provider"] == launch_provider:
+            launch_model = source.get("LEANFLOW_NATIVE_MODEL", "").strip()
+            values.setdefault("model", launch_model)
+            if values["model"] == launch_model:
+                values.setdefault(
+                    "reasoning_effort", source.get("LEANFLOW_NATIVE_REASONING_EFFORT", "").strip()
+                )
         if "allowed_axioms" not in values and source.get("LEANFLOW_NATIVE_ALLOWED_AXIOMS"):
             values["allowed_axioms"] = tuple(
                 part.strip()

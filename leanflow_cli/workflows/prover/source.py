@@ -93,6 +93,18 @@ def sorry_spans(source: str) -> list[tuple[int, int]]:
     ]
 
 
+def import_only_source(source: str) -> bool:
+    """Recognize simple import aggregators without classifying declaration files as empty."""
+    lines = [line.strip() for line in lean_code_mask(source).splitlines() if line.strip()]
+    return any(re.match(r"import\s", line) for line in lines) and all(
+        re.fullmatch(
+            r"import\s+[\w.'.]+(?:\s+[\w.'.]+)*|prelude|set_option\s+[\w.]+\s+(?:\d+|true|false)",
+            line,
+        )
+        for line in lines
+    )
+
+
 def validate_hole_replacement(replacement: str) -> None:
     """Reject command syntax crossing the boundary of an authorized proof hole.
 

@@ -15,6 +15,8 @@ test("launch names the inherited provider and keeps setup outside the control la
     assert.equal(option.props.value, "");
     const setup = ui.button("Manage login, API key, or endpoint");
     for (let parent = setup.parent; parent; parent = parent.parent) assert.notEqual(parent.type, "label");
+    ui.click("Refresh models");
+    assert.ok(message(ui, "refreshProviders"));
     ui.click(setup);
     assert.equal(ui.view.tab, "providers");
   } finally { ui.dispose(); }

@@ -6,15 +6,18 @@ import json
 import os
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from leanflow_cli.runtime.provider_models import model_catalog
 from leanflow_cli.runtime.runtime_provider import (
     NATIVE_BACKENDS,
     RuntimeProviderError,
     resolve_backend_executable,
     resolve_requested_provider,
+    resolve_runtime_provider,
 )
 
 KEY_NAMES = {
@@ -93,6 +96,7 @@ def backend_setup(backend: str, *, check: bool = False) -> dict[str, Any]:
         "config_path": str(home / ("settings.json" if backend == "claude" else "config.toml")),
         "endpoint": endpoint,
         "checked": check,
+        "model_catalog": model_catalog(backend, executable, check=check),
     }
 
 
@@ -102,8 +106,20 @@ def provider_setup(*, requested: str | None = None, check: bool = False) -> dict
         selected = resolve_requested_provider(requested)
     except RuntimeProviderError:
         selected = ""
+    # Native metadata requests have independent connections; slow login checks
+    # for one provider must not serially delay every other provider's catalog.
+    with ThreadPoolExecutor(max_workers=len(NATIVE_BACKENDS)) as executor:
+        backends = list(
+            executor.map(lambda name: backend_setup(name, check=check), NATIVE_BACKENDS)
+        )
+    try:
+        overrides = resolve_runtime_provider(requested=selected or None)
+    except RuntimeProviderError:
+        overrides = {}
     return {
         "version": 1,
         "selected": selected,
-        "backends": [backend_setup(name, check=check) for name in NATIVE_BACKENDS],
+        "model_override": overrides.get("model", ""),
+        "reasoning_effort_override": overrides.get("reasoning_effort", ""),
+        "backends": backends,
     }

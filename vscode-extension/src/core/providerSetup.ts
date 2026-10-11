@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { runCli } from "./cli";
 import { BACKEND_IDS, ProviderCredentials, validateApiKey, validateEndpoint, type BackendId, type BackendSetup, type ProviderAction, type ProviderSetupState } from "./providerCredentials";
 import { redactSensitiveText } from "./runPrivacy";
+import { normalizeModelCatalog } from "./providerModelMetadata";
 
 export class ProviderSetup implements vscode.Disposable {
   readonly credentials: ProviderCredentials;
@@ -13,7 +14,10 @@ export class ProviderSetup implements vscode.Disposable {
   private readonly secretsChanged: vscode.Disposable;
   private snapshot: ProviderSetupState;
 
-  constructor(context: vscode.ExtensionContext) {
+  constructor(
+    context: vscode.ExtensionContext,
+    private readonly projectRoot: () => string | undefined = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+  ) {
     const host = vscode.workspace.workspaceFolders?.[0]?.uri.authority || "local";
     this.credentials = new ProviderCredentials(context.secrets, host);
     this.snapshot = { selected: "", backends: [], checking: false, error: "", host };
@@ -35,7 +39,8 @@ export class ProviderSetup implements vscode.Disposable {
     this.changed.fire();
     try {
       const env = await this.credentials.environment();
-      const raw = JSON.parse(await runCli(["provider", "--json", "--check"], { env, timeoutMs: 65_000 })) as { selected: string; backends: BackendSetup[] };
+      const cwd = this.projectRoot();
+      const raw = JSON.parse(await runCli(["provider", "--json", "--check"], { env, cwd, timeoutMs: 65_000 })) as { selected: string; backends: BackendSetup[]; model_override?: string; reasoning_effort_override?: string };
       if (!Array.isArray(raw.backends) || raw.backends.length !== 3 || !BACKEND_IDS.every(id => raw.backends.some(row => row.id === id))) throw new Error("The installed CLI returned an unsupported provider setup response.");
       const text = (value: unknown): string => {
         let safe = typeof value === "string" ? value : "";
@@ -48,11 +53,12 @@ export class ProviderSetup implements vscode.Disposable {
         id: row.id, installed: row.installed === true, executable: text(row.executable),
         version: text(row.version), auth: row.auth, key_env: text(row.key_env),
         config_path: text(row.config_path), endpoint: text(row.endpoint), checked: row.checked === true,
+        model_catalog: normalizeModelCatalog(row.model_catalog, text),
         ...await this.credentials.presence(row.id),
       })));
-      this.snapshot = { ...this.snapshot, selected: raw.selected, backends };
+      this.snapshot = { ...this.snapshot, selected: raw.selected, backends, model_override: text(raw.model_override), reasoning_effort_override: text(raw.reasoning_effort_override) };
     } catch {
-      this.snapshot = { ...this.snapshot, backends: [], error: "Provider setup is unavailable. Update LeanFlow or check the CLI path in Settings, then refresh." };
+      this.snapshot = { ...this.snapshot, backends: [], model_override: "", reasoning_effort_override: "", error: "Provider setup is unavailable. Update LeanFlow or check the CLI path in Settings, then refresh." };
     } finally {
       this.snapshot = { ...this.snapshot, checking: false };
       this.changed.fire();

@@ -25,6 +25,7 @@ import {
   validateLaunch,
 } from "../core/launch";
 import { validateLaunchProjectInputs } from "../core/launchPaths";
+import { launchModelProblems } from "../core/providerModels";
 import {
   activityEventForDisplay,
   launchPlanForDisplay,
@@ -194,7 +195,8 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "launch": {
-        const problems = validateLaunch(message.request);
+        const profile = services.profiles?.profiles.find(row => row.name === message.request.profile);
+        const problems = [...validateLaunch(message.request), ...launchModelProblems(message.request, services.providers.state(), profile?.overrides)];
         if (problems.length > 0) {
           this.notify("error", problems.join(" "));
           return;

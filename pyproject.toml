@@ -128,6 +128,8 @@ files = [
   "leanflow_cli/runtime/lemex_install.py",
   "leanflow_cli/runtime/runtime_provider.py",
   "leanflow_cli/runtime/provider_setup.py",
+  "leanflow_cli/runtime/provider_models.py",
+  "leanflow_cli/runtime/provider_protocol.py",
   "scripts/lean_imo_campaign",
   "leanflow_cli/workflows/prover",
   "leanflow_cli/flags/prover_catalog.py",

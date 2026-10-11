@@ -1,12 +1,12 @@
 /** Present the native prover's primary controls using the installed CLI's catalog. */
 import { isExtensionEditableKnob } from "../../src/core/launch";
+import { BACKEND_IDS, BACKEND_LABELS, isBackend } from "../../src/core/providerCredentials";
+import { changeNativeSelection, nativeSelections, ROLE_PREFIXES } from "../../src/core/providerModels";
 import { PROVER_KNOB_LABELS } from "../../src/core/profileSurfaces";
 import { Card, Field } from "../components";
 import { useStore } from "../store";
 import { KnobControl } from "./KnobsView";
-
-/** Suggested native levels; saved runtime-specific values remain visible. */
-const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+import { NativeEffortControl, NativeModelControl } from "./NativeModelControls";
 
 const BUDGETS = ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"];
 
@@ -40,20 +40,43 @@ export function ProverSettings() {
         ? { overrides, research: suffix === "MODE" ? mode === "research" : effectiveMode === "research", agents: 1, researchWorkers: null }
         : { overrides });
     };
-    const isEffort = suffix.endsWith("REASONING_EFFORT");
-    const efforts = spec.choices?.filter(Boolean) ?? REASONING_EFFORTS;
-    const inheritLabel = suffix === "ORCHESTRATOR_REASONING_EFFORT" ? "Use prover effort" : "Use launch default";
     return <Field key={name} label={shortLabel ?? label} source={inherited ? "Profile" : form.overrides[name] !== undefined ? "Override" : undefined} hint={hint ?? spec.summary}>
-      {isEffort ? <select
-        aria-label={name}
-        value={value ?? "__default__"}
-        onChange={(event) => onChange(event.target.value === "__default__" ? undefined : event.target.value)}
-      >
-        <option value="__default__">{profile?.overrides[name] ? `Use profile (${profile.overrides[name]})` : inheritLabel}</option>
-        {(profile?.overrides[name] || value === "") && <option value="">{inheritLabel}</option>}
-        {efforts.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra high" : effort[0].toUpperCase() + effort.slice(1)}</option>)}
-        {value && !efforts.includes(value) && <option value={value}>{value}</option>}
-      </select> : <KnobControl spec={spec} value={value} onChange={onChange} />}
+      <KnobControl spec={spec} value={value} onChange={onChange} />
+    </Field>;
+  }
+
+  /** Share runtime choices across roles without losing explicit profile inheritance. */
+  function roleControl(role: "prover" | "orchestrator", suffix: "PROVIDER" | "MODEL" | "REASONING_EFFORT") {
+    const name = ROLE_PREFIXES[role] + suffix;
+    if (!specs.has(name)) return null;
+    const value = form.overrides[name] ?? profile?.overrides[name];
+    const source = form.overrides[name] !== undefined ? "Override" : profile?.overrides[name] !== undefined ? "Profile" : undefined;
+    const selections = nativeSelections(form, app?.providers, profile?.overrides);
+    const selected = selections[role];
+    const parent = role === "prover" ? selections.launch : selections.prover;
+    const parentLabel = role === "prover" ? "launch" : "prover";
+    const inherited = nativeSelections({ ...form, overrides: { ...form.overrides, [name]: "" } }, app?.providers, profile?.overrides)[role];
+    const onChange = (next: string | undefined) => {
+      const overrides = { ...form.overrides };
+      if (next === undefined) delete overrides[name]; else overrides[name] = next;
+      setForm(suffix === "REASONING_EFFORT" ? { overrides } : changeNativeSelection(form, { overrides }, app?.providers, profile?.overrides));
+    };
+    const modelLabel = selected.provider === parent.provider
+      ? `Use ${parentLabel} model (${inherited.model || "runtime chooses"})`
+      : `Native default (${inherited.model || "not reported"})`;
+    const effortLabel = role === "orchestrator" && selected.provider === parent.provider && inherited.explicitEffort && parent.explicitEffort
+      ? `Use prover effort (${parent.explicitEffort})`
+      : `${inherited.explicitEffort ? "Launch default" : "Native default"} (${inherited.effort || "runtime chooses"})`;
+    const common = { ariaLabel: name, value, profileValue: profile?.overrides[name], source, catalog: selected.catalog, onChange };
+    if (suffix === "MODEL") return <NativeModelControl key={name} {...common} label="Model" inheritedLabel={modelLabel} />;
+    if (suffix === "REASONING_EFFORT") return <NativeEffortControl key={name} {...common} label="Reasoning effort" model={selected.model} effectiveEffort={selected.effort} inheritedLabel={effortLabel} />;
+    const providerLabel = isBackend(parent.provider) ? BACKEND_LABELS[parent.provider] : "not available";
+    return <Field key={name} label="Backend" source={source} hint="Uses this native agent's own login and configuration.">
+      <select aria-label={name} value={value ?? "__default__"} onChange={event => onChange(event.target.value === "__default__" ? undefined : event.target.value)}>
+        <option value="__default__">{profile?.overrides[name] ? `Use profile (${profile.overrides[name]})` : `Use ${parentLabel} backend (${providerLabel})`}</option>
+        {(profile?.overrides[name] !== undefined || value === "") && <option value="">Use {parentLabel} backend ({providerLabel})</option>}
+        {BACKEND_IDS.map(id => <option key={id} value={id}>{BACKEND_LABELS[id]}</option>)}
+      </select>
     </Field>;
   }
 
@@ -66,17 +89,17 @@ export function ProverSettings() {
     <section className="prover-role" aria-label="Prover settings">
       <div className="prover-role-heading"><strong>Prover</strong><span>Works on individual proof goals</span></div>
       <div className="launch-fields">
-        {control("PROVIDER", "Backend")}
-        {control("MODEL", "Model", "Leave empty to use the launch model above.")}
-        {control("REASONING_EFFORT", "Reasoning effort", "Controls the prover's reasoning effort.")}
+        {roleControl("prover", "PROVIDER")}
+        {roleControl("prover", "MODEL")}
+        {roleControl("prover", "REASONING_EFFORT")}
       </div>
     </section>
     <section className="prover-role" aria-label="Orchestrator settings">
       <div className="prover-role-heading"><strong>Orchestrator</strong><span>Plans, reviews, and revises the graph</span></div>
       <div className="launch-fields">
-        {control("ORCHESTRATOR_PROVIDER", "Backend")}
-        {control("ORCHESTRATOR_MODEL", "Model", "Leave empty to use the prover model.")}
-        {control("ORCHESTRATOR_REASONING_EFFORT", "Reasoning effort", "Controls planning, review, and research effort.")}
+        {roleControl("orchestrator", "PROVIDER")}
+        {roleControl("orchestrator", "MODEL")}
+        {roleControl("orchestrator", "REASONING_EFFORT")}
       </div>
     </section>
     <div className="launch-fields">

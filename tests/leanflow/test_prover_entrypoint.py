@@ -71,6 +71,75 @@ def test_invalid_configuration_also_publishes_terminal_state(launch, monkeypatch
     assert observed[-1][0] == "finish"
 
 
+@pytest.mark.parametrize(
+    "setting,value,action",
+    [
+        ("LEANFLOW_DISABLE_SOLUTION_RESEARCH", "true", "turn off Clean room"),
+        ("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1", "clear LEANFLOW_DISABLE_REPOSITORY_RESEARCH"),
+        ("LEANFLOW_PROVER_ALLOW_INTERNET", "false", "enable Allow internet"),
+    ],
+)
+def test_network_restrictions_fail_before_controller_or_lean_initialization(
+    launch, monkeypatch, capsys, setting, value, action
+):
+    root, observed = launch
+    monkeypatch.setenv(setting, value)
+    monkeypatch.setattr(
+        runtime, "ProverRuntime", lambda **kwargs: pytest.fail("Controller must not initialize")
+    )
+    assert entrypoint.main() == 1
+    state = _state(root)
+    assert state["startup_failed"] and state["terminal"]
+    assert state["jobs"] == [] and state["metrics"]["api_calls"] == 0
+    assert setting in state["error"] and action in state["error"]
+    assert state["error"] in capsys.readouterr().out
+    assert observed[-1][0] == "finish"
+
+
+@pytest.mark.parametrize(
+    "source", ["import Problem\n", "-- aggregator\nimport Problem\nset_option maxRecDepth 1024\n"]
+)
+def test_import_only_target_reports_how_to_select_actual_goals(launch, monkeypatch, capsys, source):
+    root, observed = launch
+    (root / "Main.lean").write_text(source)
+    proof = "theorem goal : True := by sorry\n"
+    (root / "Problem.lean").write_text(proof)
+    monkeypatch.setattr(
+        runtime.ProverRuntime, "run", lambda *_: pytest.fail("No Lean checks or agent calls")
+    )
+    assert entrypoint.main() == 1
+    state = _state(root)
+    assert "No literal sorry goals were found in Main.lean" in state["error"]
+    assert "leave Target empty" in state["error"]
+    assert state["error"] in capsys.readouterr().out
+    assert state["jobs"] == [] and state["metrics"]["api_calls"] == 0
+    assert (root / "Problem.lean").read_text() == proof
+    assert observed[-1][0] == "finish"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "theorem goal : True := by trivial\n",
+        "import Std\ntheorem goal : True := by trivial\n",
+        "import Std\ntheorem broken : True := by exact False.elim\n",
+    ],
+)
+def test_declaration_without_sorry_reaches_verification(launch, monkeypatch, source):
+    root, _ = launch
+    (root / "Main.lean").write_text(source)
+    reached = []
+
+    def verify(instance):
+        reached.append(instance.targets)
+        return {"status": "completed", "metrics": {}}
+
+    monkeypatch.setattr(runtime.ProverRuntime, "run", verify)
+    assert entrypoint.main() == 0
+    assert reached == [[root / "Main.lean"]]
+    assert not _state(root).get("startup_failed")
+
+
 def test_missing_resume_snapshot_publishes_new_execution_failure(launch, monkeypatch):
     root, observed = launch
     monkeypatch.setenv("LEANFLOW_PROVER_RESUME_RUN_ID", "missing-old")

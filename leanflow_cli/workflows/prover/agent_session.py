@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
+from agent.runtime.harness.network_policy import network_policy_error
 from core.utils import atomic_json_write
 from leanflow_cli.workflows.prover.native_bridge import NativeBridge
 from leanflow_cli.workflows.prover.native_snapshot import create_snapshot, remap_project_text
@@ -68,17 +69,9 @@ def run_session(
 ) -> dict[str, Any]:
     """Invoke one CLI process with job-bound tools and independent proof acceptance."""
     from agent.runtime.harness import HarnessRequest, build_runtime_isolation, run_harness
-    from tools.utilities.repository_research_policy import (
-        repository_research_disabled,
-        solution_research_disabled,
-    )
 
-    if (
-        config.get("allow_internet") is False
-        or repository_research_disabled()
-        or solution_research_disabled()
-    ):
-        error = "Native agent tools require model-only network isolation for offline or clean-room runs. That isolation is not available; this launch was refused before starting an agent."
+    error = network_policy_error(allow_internet=config.get("allow_internet"))
+    if error:
         return {
             "status": "environment_error",
             "final_response": error,

@@ -116,6 +116,13 @@ test("a bare prove run passes only the workflow kind", () => {
   assert.deepEqual(buildWorkflowArgs(form()), ["prove"]);
 });
 
+test("clean-room native runs are rejected before starting, without silently clearing the choice", () => {
+  const request = form({ cleanRoom: true });
+  assert.match(validateLaunch(request).join(" "), /Clean room is unavailable with native agents/);
+  assert.equal(request.cleanRoom, true);
+  assert.deepEqual(validateLaunch(form()), []);
+});
+
 test("a file-scoped run passes the target positionally", () => {
   assert.deepEqual(buildWorkflowArgs(form({ target: "IMO2026/P1.lean" })), [
     "prove",

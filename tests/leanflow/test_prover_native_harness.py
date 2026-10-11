@@ -30,6 +30,55 @@ def test_native_defaults_leave_global_limits_and_model_settings_unset() -> None:
     assert ProverConfig.from_env({"LEANFLOW_PROVER_AGENT_CALLS": "0"}).agent_calls == 0
 
 
+@pytest.mark.parametrize("launch_provider", ["", "codex", "claude", "lemex"])
+@pytest.mark.parametrize("prover_provider", ["", "codex", "claude", "lemex"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_prover_only_inherits_launch_model_choices_within_the_same_backend(
+    launch_provider: str, prover_provider: str, explicit: bool
+) -> None:
+    config = ProverConfig.from_env(
+        {
+            "LEANFLOW_NATIVE_PROVIDER": launch_provider,
+            "LEANFLOW_PROVER_PROVIDER": prover_provider,
+            "LEANFLOW_NATIVE_MODEL": "launch-model",
+            "LEANFLOW_NATIVE_REASONING_EFFORT": "high",
+            "LEANFLOW_PROVER_MODEL": "prover-model" if explicit else "",
+            "LEANFLOW_PROVER_REASONING_EFFORT": "medium" if explicit else "",
+        }
+    )
+    same_backend = not prover_provider or prover_provider == (launch_provider or "codex")
+    assert config.provider == (prover_provider or launch_provider or "codex")
+    assert config.model == ("prover-model" if explicit else "launch-model" if same_backend else "")
+    assert config.reasoning_effort == ("medium" if explicit else "high" if same_backend else "")
+
+
+@pytest.mark.parametrize("model", ["", "launch-model", "different-model"])
+@pytest.mark.parametrize("effort", ["", "medium"])
+def test_new_role_model_uses_native_effort_unless_explicitly_overridden(
+    model: str, effort: str
+) -> None:
+    config = ProverConfig.from_env(
+        {
+            "LEANFLOW_NATIVE_PROVIDER": "lemex",
+            "LEANFLOW_NATIVE_MODEL": "launch-model",
+            "LEANFLOW_NATIVE_REASONING_EFFORT": "xhigh",
+            "LEANFLOW_PROVER_MODEL": model,
+            "LEANFLOW_PROVER_REASONING_EFFORT": effort,
+        }
+    )
+    inherited_effort = "xhigh" if model in {"", "launch-model"} else ""
+    assert config.reasoning_effort == (effort or inherited_effort)
+    orchestrator = ProverConfig(
+        provider="lemex",
+        model="launch-model",
+        reasoning_effort="xhigh",
+        orchestrator_model=model,
+        orchestrator_reasoning_effort=effort,
+    )
+    for role in ("orchestrator", "review", "research"):
+        assert orchestrator.to_mapping(role)["reasoning_effort"] == (effort or inherited_effort)
+
+
 @pytest.mark.parametrize("provider", ["lemex", "codex", ""])
 @pytest.mark.parametrize("orchestrator", ["codex", "claude", "lemex", ""])
 @pytest.mark.parametrize("explicit", [False, True])
@@ -430,3 +479,41 @@ def test_long_command_bridge_runs_with_no_timeout_and_cancels_process_tree(tmp_p
         timer.join()
     assert result["status"] == "cancelled"
     assert result["elapsed_s"] < 5
+
+
+@pytest.mark.parametrize("explicit_elan_home", [False, True])
+def test_native_commands_keep_installed_lean_when_home_moves_to_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_elan_home: bool
+) -> None:
+    from leanflow_cli.workflows.prover import native_command
+
+    original_home = tmp_path / "original-home"
+    elan = tmp_path / "custom-elan" if explicit_elan_home else original_home / ".elan"
+    elan.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(original_home))
+    monkeypatch.setenv("ELAN_TOOLCHAIN", "leanprover/lean4:v4.33.1")
+    if explicit_elan_home:
+        monkeypatch.setenv("ELAN_HOME", str(elan))
+    else:
+        monkeypatch.delenv("ELAN_HOME", raising=False)
+    policies = []
+
+    def sandbox(argv, policy):
+        policies.append(policy)
+        return argv
+
+    monkeypatch.setattr(native_command, "sandbox_command", sandbox)
+    directory = tmp_path / "scratch"
+    result = native_command.run_command(
+        ["/bin/sh", "-c", 'printf "%s\\n%s\\n%s" "$HOME" "$ELAN_HOME" "$ELAN_TOOLCHAIN"'],
+        snapshot=tmp_path,
+        directory=directory,
+    )
+    assert result["success"]
+    assert result["stdout"].splitlines() == [
+        str(directory),
+        str(elan.resolve()),
+        "leanprover/lean4:v4.33.1",
+    ]
+    assert elan.resolve() in policies[0].readable_roots
+    assert elan.resolve() not in policies[0].writable_roots

@@ -47,7 +47,7 @@ async function fixture() {
     project: { found: true, root }, profiles: null,
     catalog: { groups: [{ flags: [{ name: "LEANFLOW_PROVER_PARALLELISM", value_type: "int", editable: true, extension_editable: true, minimum: 1, default: "1" }] }] },
     onDidChange: () => disposable, state: () => ({ project: { found: true, root } }), reload: record("refresh"), reloadProfiles: record("profiles"), selectRun: record("select"),
-    providers: { refresh: record("providers"), act: record("providerAction") },
+    providers: { refresh: record("providers"), act: record("providerAction"), state: () => f.providerState },
     runs: { onDidAppendEvents: () => disposable, projectRootForRun: id => id === "run-1" ? root : null,
       launch: async (...args) => { f.calls.push(["launch", ...args]); return { id: "tracked-1", runId: "run-1", label: "Test run" }; },
       stop: async id => { f.calls.push(["stop", id]); return { stopped: true }; }, loadEvents: async () => [], runLog: async () => "test log",
@@ -104,6 +104,22 @@ test("launch, preview, stop, events, transcripts and guidance bind to the reques
     assert.match(ui.last("eventDetail").error, /recorded history/);
     await ui.send({ type: "proverMessage", runId: "missing", agentId: "prover-1", message: "Try simp" });
     assert.equal(ui.last("proverMessageResult").success, false);
+  } finally { await ui.dispose(); }
+});
+
+test("launch refuses known unsupported model efforts and clean-room before spawning", async () => {
+  const ui = await fixture();
+  try {
+    const request = { ...emptyLaunchRequest(), provider: "lemex", model: "fixture-model", cleanRoom: true };
+    await ui.send({ type: "launch", request });
+    assert.equal(ui.calls.filter(row => row[0] === "launch").length, 0);
+    assert.match(ui.last("notify").message, /Clean room is unavailable/);
+    ui.f.providerState = { selected: "lemex", error: "", backends: [{ id: "lemex", model_catalog: { status: "ready", default_model: "fixture-model", models: [{ id: "fixture-model", reasoning_known: true, reasoning_efforts: ["low"] }] } }] };
+    await ui.send({ type: "launch", request: { ...request, cleanRoom: false, overrides: { LEANFLOW_PROVER_REASONING_EFFORT: "ultra" } } });
+    assert.equal(ui.calls.filter(row => row[0] === "launch").length, 0);
+    assert.match(ui.last("notify").message, /does not support reasoning effort ultra/);
+    await ui.send({ type: "launch", request: { ...request, cleanRoom: false, overrides: { LEANFLOW_PROVER_REASONING_EFFORT: "low" } } });
+    assert.equal(ui.calls.filter(row => row[0] === "launch").length, 1);
   } finally { await ui.dispose(); }
 });
 

@@ -48,7 +48,7 @@ export class LeanFlowServices implements vscode.Disposable {
 
   constructor(context: vscode.ExtensionContext) {
     this.project = discoverProject();
-    this.providers = new ProviderSetup(context);
+    this.providers = new ProviderSetup(context, () => this.project.root || undefined);
     this.runs = new RunManager(context, this.project, () => this.providers.credentials.environment());
     this.prover = new ProverService(this.runs);
     this.experiments = new ExperimentEngine(context, this.runs, () => this.profiles, () => this.catalog);

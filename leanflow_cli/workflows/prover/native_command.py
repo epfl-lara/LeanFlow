@@ -31,6 +31,7 @@ def run_command(
         raise ValueError("argv must contain nonempty executable arguments without NUL bytes")
     temporary = directory / "tmp"
     temporary.mkdir(parents=True, exist_ok=True)
+    elan_home = Path(os.environ.get("ELAN_HOME", str(Path.home() / ".elan"))).expanduser().resolve()
     reads = tuple(
         path.resolve()
         for path in [
@@ -51,7 +52,7 @@ def run_command(
         + [
             Path(sys.prefix),
             Path(sys.base_prefix),
-            Path(os.environ.get("ELAN_HOME", str(Path.home() / ".elan"))),
+            elan_home,
         ]
         if path.exists()
     )
@@ -62,10 +63,15 @@ def run_command(
     environment = {
         key: value
         for key, value in os.environ.items()
-        if key in {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "ELAN_HOME", "LEAN_PATH"}
+        if key in {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "ELAN_TOOLCHAIN", "LEAN_PATH"}
     }
     environment.update(
-        HOME=str(directory), TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary)
+        HOME=str(directory),
+        # Redirecting HOME must not make Elan search an empty scratch installation.
+        ELAN_HOME=str(elan_home),
+        TMPDIR=str(temporary),
+        TMP=str(temporary),
+        TEMP=str(temporary),
     )
     started = time.monotonic()
     process = subprocess.Popen(

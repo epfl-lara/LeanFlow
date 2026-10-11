@@ -33,6 +33,8 @@ const flags = [
   ["MODE", "enum", "standard", ["standard", "research"]],
   ["SEARCH_ORDER", "enum", "bottom-up", ["bottom-up", "top-down"]],
   ["PARALLELISM", "int", "2"],
+  ["PROVIDER", "enum", "", ["", "codex", "claude", "lemex"]],
+  ["ORCHESTRATOR_PROVIDER", "enum", "", ["", "codex", "claude", "lemex"]],
   ["MODEL", "string", ""],
   ["ORCHESTRATOR_MODEL", "string", ""],
   ["REASONING_EFFORT", "string", ""],
@@ -51,9 +53,12 @@ function elements(node) {
 }
 
 function fixture(patch = {}, profileOverrides = {}) {
-  const form = { kind: "prove", profile: "demo", overrides: {}, research: false, agents: 1, researchWorkers: null, ...patch };
+  const form = { kind: "prove", provider: "lemex", model: "", profile: "demo", overrides: {}, research: false, agents: 1, researchWorkers: null, ...patch };
   const state = {
-    app: { catalog: { groups: [{ flags }] }, profiles: { profiles: [{ name: "demo", overrides: profileOverrides }] } },
+    app: { providers: { selected: "lemex", backends: [{ id: "lemex", model_catalog: {
+      status: "ready", source: "fixture", default_model: "native-prover", default_reasoning_effort: "medium",
+      models: ["native-prover", "my-prover", "saved-prover", "saved-planner"].map(id => ({ id, label: id, reasoning_known: true, reasoning_efforts: ["low", "medium", "high"], default_reasoning_effort: "medium" })),
+    } }] }, catalog: { groups: [{ flags }] }, profiles: { profiles: [{ name: "demo", overrides: profileOverrides }] } },
     view: { form },
     setForm: (next) => Object.assign(form, next),
   };
@@ -74,6 +79,8 @@ test("the launch controls preserve profile values and explicit model overrides",
   assert.equal(ui.control("MODEL").props.value, "my-prover");
   assert.equal(ui.control("ORCHESTRATOR_MODEL").props.value, "saved-planner");
   ui.control("MODEL").props.onChange({ target: { value: "" } });
+  assert.equal(ui.control("MODEL").props.value, "");
+  ui.control("MODEL").props.onChange({ target: { value: "__default__" } });
   assert.equal(ui.control("MODEL").props.value, "saved-prover");
 });
 
@@ -121,7 +128,7 @@ test("reasoning defaults do not force a level, and unknown saved values stay vis
   const ui = fixture();
   assert.equal(ui.control("REASONING_EFFORT").props.value, "__default__");
   const options = elements(ui.control("REASONING_EFFORT")).filter((item) => item.type === "option").map((item) => item.props.value);
-  assert.deepEqual(options, ["__default__", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+  assert.deepEqual(options, ["__default__", "low", "medium", "high"]);
   const future = fixture({}, { [prefix + "REASONING_EFFORT"]: "future-level" });
   assert.equal(future.control("REASONING_EFFORT").props.value, "future-level");
   assert.ok(elements(future.control("REASONING_EFFORT")).some((item) => item.type === "option" && item.props.value === "future-level"));

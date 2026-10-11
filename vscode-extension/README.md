@@ -31,12 +31,27 @@ setup. Existing runs and independent terminal sessions keep their current settin
 Native auth files, native homes, model defaults and sampling settings remain owned
 by each CLI. **Open native config** opens that CLI's configuration in the editor.
 
-**Refresh setup** checks executable discovery/version and native login status
-without making an inference request. A saved or exported key is shown as present,
+**Refresh setup** checks executable discovery/version, native login status, and
+the runtime's model catalog without making an inference request. A saved or exported key is shown as present,
 not as validated API access. Complete any login in its terminal and refresh again.
 For Remote SSH, install and configure the native runtimes on the displayed remote
 host. This page requires the matching LeanFlow CLI with `provider --json --check`;
 an older CLI shows an update message.
+
+**Model** shows the configured default by name and offers the models reported by
+the selected runtime. Prover and orchestrator can choose separate backends and
+models; their reasoning menus contain only the levels reported for that model.
+Switching a backend or model clears incompatible role overrides. Native defaults
+stay native: no sampling or compression settings are injected. **Refresh models**
+reloads the catalog after native configuration or account changes. When a runtime
+cannot report its catalog or reasoning capabilities, the UI explains what is
+unknown instead of inventing choices. Listing a model does not verify paid access.
+
+Native runtimes currently cannot enforce **Clean room** or offline research.
+A saved Clean room selection remains visible and blocks launch with an explanation;
+turn it off for an online run. To prove a file, select the file containing the
+`sorry` goals, rather than an import-only module, or leave Target empty to scan
+the project.
 
 ## What it gives you
 

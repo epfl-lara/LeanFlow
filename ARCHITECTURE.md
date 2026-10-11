@@ -58,8 +58,11 @@ that already enforced boundary because nested seatbelt creation is unsupported.
 No unconstrained fallback is permitted. Native home/session/auth state remains
 native; runtime configuration is protected from tool writes. Unrelated MCP,
 hooks, plugins and project-local runtime settings cannot import extra authority.
-General runs permit network access. Clean-room/no-internet launches fail before
-agent admission until model-only network isolation is implemented.
+General runs permit network access. `harness/network_policy.py` explains unsupported
+clean-room/no-internet settings at startup, before Lean initialization or agent
+admission, until model-only network isolation is implemented. An explicit import-only prover
+target reports how to select the actual source file
+or the whole project; imported files are never silently added to its proof scope.
 
 ## Core primitives
 
@@ -239,6 +242,16 @@ does not read or reinterpret LeanFlow's persistence files directly:
   and auth files are neither copied nor modified. `ProvidersView.tsx` exposes the
   setup actions without handling secret values; remote setup executes on the
   workspace host. Presence checks do not validate paid API access.
+- `runtime/provider_models.py` reads native model catalogs and resolved defaults
+  through Codex/Lemex app-server metadata and Claude's SDK control messages.
+  `runtime/provider_protocol.py` bounds and reaps these metadata-only subprocesses;
+  it sends no user prompt or inference request. Provider checks run concurrently.
+  `src/core/providerModelMetadata.ts` bounds and redacts catalog fields at the
+  editor boundary. `src/core/providerModels.ts` mirrors role inheritance and
+  validates model-specific reasoning choices; `NativeModelControls.tsx` renders
+  those choices without a second hardcoded model or effort list. Unknown capability
+  metadata stays distinct from a model that reports no configurable reasoning.
+  The extension caches the snapshot until setup refresh or credential changes.
 - `src/core/agentActivity.ts` selects a bounded narrative for an exact run/job.
   `webview/views/AgentActivity.tsx` shows it beside each prover job, with emitted
   reasoning optionally visible and complete output expanded through the existing

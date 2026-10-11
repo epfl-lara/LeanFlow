@@ -17,6 +17,29 @@ export interface SecretVault {
   delete(key: string): Thenable<void>;
 }
 
+/** One model offered by the native runtime, with capabilities it actually reported. */
+export interface NativeModelOption {
+  id: string;
+  label: string;
+  /** Native aliases can resolve to a concrete model identifier. */
+  resolved_model?: string;
+  reasoning_efforts: string[];
+  default_reasoning_effort: string;
+  /** Unknown capabilities must not be presented as lack of reasoning support. */
+  reasoning_known: boolean;
+}
+
+export interface NativeModelCatalog {
+  status: "ready" | "unavailable" | "not_checked";
+  source: string;
+  default_model: string;
+  default_reasoning_effort: string;
+  /** Explicit native configuration, when the runtime can distinguish it from a model default. */
+  configured_reasoning_effort?: string;
+  models: NativeModelOption[];
+  error: string;
+}
+
 export interface BackendSetup {
   id: BackendId;
   installed: boolean;
@@ -27,6 +50,8 @@ export interface BackendSetup {
   config_path: string;
   endpoint: string;
   checked: boolean;
+  /** Older CLIs omit this; the UI explains how to refresh or update. */
+  model_catalog?: NativeModelCatalog;
   savedKey?: boolean;
   savedEndpoint?: boolean;
 }
@@ -37,6 +62,8 @@ export interface ProviderSetupState {
   checking: boolean;
   error: string;
   host: string;
+  model_override?: string;
+  reasoning_effort_override?: string;
 }
 
 /** Validate key shape without interpreting or displaying the credential. */

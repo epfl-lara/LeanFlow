@@ -1577,3 +1577,16 @@ body.vscode-high-contrast-light {
 .agent-activity-toggle:hover { background: var(--vscode-list-hoverBackground); }
 .agent-activity-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
 .agent-activity-preview { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Provider setup and model metadata need breathing room beside wrapped actions. */
+.provider-native-details {
+  margin-top: 18px;
+  border-top: 1px solid var(--lf-border);
+  padding-top: 12px;
+}
+.provider-native-details > summary { cursor: pointer; padding-block: 4px; }
+.provider-native-details > summary:focus-visible { outline-offset: 3px; }
+.provider-native-details p { overflow-wrap: anywhere; }
+.native-model-status { margin-top: 14px; font-size: 11px; gap: 8px 12px; }
+.providers-view .row { row-gap: 10px; }
+.providers-view .btn { white-space: normal; }

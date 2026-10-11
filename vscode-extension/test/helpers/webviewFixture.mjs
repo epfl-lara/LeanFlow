@@ -47,6 +47,7 @@ export function mount(tab = "launch", patch = {}, component = App) {
   const flags = [
     { name: "LEANFLOW_PROVER_MODE", value_type: "enum", default: "standard", choices: ["standard", "research"], ablatable: true },
     { name: "LEANFLOW_PROVER_PARALLELISM", value_type: "int", default: "1", minimum: 1, maximum: 16, ablatable: true },
+    ...["PROVIDER", "ORCHESTRATOR_PROVIDER"].map(suffix => ({ name: `LEANFLOW_PROVER_${suffix}`, value_type: "enum", default: "", choices: ["", "codex", "claude", "lemex"] })),
     { name: "LEANFLOW_PROVER_MODEL", value_type: "string", default: "" },
     { name: "LEANFLOW_PROVER_ORCHESTRATOR_MODEL", value_type: "string", default: "" },
     { name: "LEANFLOW_PROVER_REASONING_EFFORT", value_type: "string", default: "" },
@@ -70,7 +71,12 @@ export function mount(tab = "launch", patch = {}, component = App) {
     app: { project: { found: true, root: "/fixture", label: "Button audit" }, cli: { ok: true, version: "0.3.0" },
       catalog: { count: flags.length, groups: [{ name: "Prover", flags }] },
       profiles: { profiles: [{ name: "default", builtin: true, summary: "Default", overrides: {} }, { name: "custom", builtin: false, summary: "Custom", overrides: { LEANFLOW_PROVER_PARALLELISM: "2" } }] },
-      providers: { selected: "lemex", host: "local", checking: false, error: "", backends: ["codex", "claude", "lemex"].map(id => ({ id, installed: true, version: "1.0", auth: "native_login", savedKey: false, config_path: `/${id}/config`, executable: `/bin/${id}` })) },
+      providers: { selected: "lemex", host: "local", checking: false, error: "", backends: ["codex", "claude", "lemex"].map(id => ({ id, installed: true, version: "1.0", auth: "native_login", savedKey: false, config_path: `/${id}/config`, executable: `/bin/${id}`,
+        model_catalog: { status: "ready", source: "Native runtime", error: "", default_model: id === "lemex" ? "fixture-model" : `${id}-model`, default_reasoning_effort: "high", models: [
+          { id: id === "lemex" ? "fixture-model" : `${id}-model`, label: `${id} model`, reasoning_known: true, reasoning_efforts: ["low", "high"], default_reasoning_effort: "high" },
+          { id: `${id}-fast`, label: `${id} fast`, reasoning_known: true, reasoning_efforts: [], default_reasoning_effort: "" },
+        ] },
+      })) },
       runs: [{ id: "tracked-1", runId: "run-1", label: "Test run", request: form, status: "running", startedAt: now, command: "leanflow workflow prove", appliedOverrides: { set: {}, unset: [] }, pid: 1 }],
       selectedRunId: "tracked-1", history: [], experiments: [], leanFiles: ["Main.lean"], eventTypes: [{ type: "agent-output", count: 1 }, { type: "agent-reasoning", count: 1 }], liveStatus: null,
     },

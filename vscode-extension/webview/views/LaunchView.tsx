@@ -13,11 +13,13 @@ import {
   proverConfigurationRows,
 } from "../../src/core/profileSurfaces";
 import { BACKEND_IDS, BACKEND_LABELS, isBackend } from "../../src/core/providerCredentials";
+import { changeNativeSelection, launchModelProblems, nativeSelections } from "../../src/core/providerModels";
 import { LAUNCH_FIELD_LIMITS, WORKFLOW_KINDS } from "../../src/core/types";
 import { Card, Check, Field, Notice } from "../components";
 import { PlayIcon } from "../icons";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
+import { NativeModelControl } from "./NativeModelControls";
 import { ProverSettings } from "./ProverSettings";
 
 export function LaunchView() {
@@ -29,7 +31,9 @@ export function LaunchView() {
     ? `Default (${BACKEND_LABELS[defaultProvider]})`
     : app?.providers?.checking ? "Default (checking…)" : "Default (unavailable)";
 
-  const problems = useMemo(() => validateLaunch(form), [form]);
+  const activeProfile = app?.profiles?.profiles.find((profile) => profile.name === form.profile);
+  const selections = nativeSelections(form, app?.providers, activeProfile?.overrides);
+  const problems = [...validateLaunch(form), ...launchModelProblems(form, app?.providers, activeProfile?.overrides)];
   const command = useMemo(() => {
     try {
       return describeCommand(form, { ...app?.profiles?.profiles.find((profile) => profile.name === form.profile)?.overrides, ...form.overrides });
@@ -40,7 +44,6 @@ export function LaunchView() {
   const kindInfo = WORKFLOW_KINDS.find((kind) => kind.id === form.kind);
 
   const profiles = app?.profiles?.profiles ?? [];
-  const activeProfile = profiles.find((profile) => profile.name === form.profile);
   // Each refused knob names its reason, so the fix is visible before launch
   // rather than discovered from a rejected request.
   const profileSurfaces = profileLaunchSurfaces(activeProfile, app?.catalog ?? null);
@@ -195,7 +198,8 @@ export function LaunchView() {
             <Field label="Agent backend">
               <select
                 value={form.provider}
-                onChange={(event) => setForm({ provider: event.target.value })}
+                aria-label="Agent backend"
+                onChange={(event) => setForm(changeNativeSelection(form, { provider: event.target.value }, app?.providers, activeProfile?.overrides))}
               >
                 <option value="">{defaultProviderLabel}</option>
                 {BACKEND_IDS.map((id) => <option key={id} value={id}>{BACKEND_LABELS[id]}</option>)}
@@ -204,15 +208,15 @@ export function LaunchView() {
             <button className="link" onClick={() => setView({ tab: "providers" })}>Manage login, API key, or endpoint</button>
           </div>
 
-          <Field label="Model" hint="Empty uses the provider's configured default.">
-            <input
-              type="text"
-              maxLength={LAUNCH_FIELD_LIMITS.model}
-              placeholder="Optional native model override"
-              value={form.model}
-              onChange={(event) => setForm({ model: event.target.value })}
-            />
-          </Field>
+          <NativeModelControl label="Model" ariaLabel="Launch model" launch
+            value={form.model} catalog={selections.launch.catalog}
+            inheritedLabel={`${app?.providers?.model_override ? "LeanFlow default" : "Native default"} (${app?.providers?.model_override || selections.launch.catalog?.default_model || (app?.providers?.checking ? "checking…" : "not reported")})`}
+            onChange={model => setForm(changeNativeSelection(form, { model: model ?? "" }, app?.providers, activeProfile?.overrides))}
+          />
+        </div>
+        <div className="row native-model-status">
+          <button className="btn ghost" disabled={app?.providers?.checking} onClick={() => post({ type: "refreshProviders" })}>{app?.providers?.checking ? "Checking models…" : "Refresh models"}</button>
+          <span className="muted">{selections.launch.catalog?.status === "ready" && isBackend(selections.launch.provider) ? `Model list from ${BACKEND_LABELS[selections.launch.provider]}. Refresh after changing native settings.` : "Open Providers to check login, API key, or endpoint."}</span>
         </div>
       </Card>
 
@@ -243,10 +247,10 @@ export function LaunchView() {
               </div>
             )}
             <Check
-              label="Clean room"
-              hint="Forbid looking up an existing solution to the target. Required for uncontaminated benchmark runs."
+              label="Clean room (unavailable)"
+              hint="Clean room is unavailable with native agents. Turn it off to start a run."
               checked={form.cleanRoom}
-              disabled={form.kind !== "prove"}
+              disabled={!form.cleanRoom}
               onChange={(cleanRoom) => setForm({ cleanRoom })}
             />
           </div>

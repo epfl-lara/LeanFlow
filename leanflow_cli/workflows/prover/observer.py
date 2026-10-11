@@ -148,6 +148,7 @@ class RunObserver:
         """Publish terminal state and the exact exit event used by run discovery."""
         self.publish(state)
         code = exit_code(str(state.get("status", "error")))
+        error = redact_sensitive_text(str(state.get("error") or ""))[:2000]
         append_workflow_activity(
             "runner-exit",
             f"Prover finished: {state.get('status')}",
@@ -159,5 +160,8 @@ class RunObserver:
             active_skill="lean-bounded-prover",
             prover_metrics=state.get("metrics", {}),
             run_scope="top-level",
+            **({"error": error} if error else {}),
         )
+        if error:
+            append_workflow_run_log(f"Cause: {error}\n")
         append_workflow_run_log(f"Prover finished: {state.get('status')} (exit {code})\n")

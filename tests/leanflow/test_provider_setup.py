@@ -62,3 +62,16 @@ def test_missing_native_cli_and_legacy_default_do_not_hide_setup(monkeypatch):
     assert result["selected"] == ""
     assert len(result["backends"]) == 3
     assert not any(row["installed"] for row in result["backends"])
+
+
+def test_setup_exposes_leanflow_overrides_separately_from_native_defaults(monkeypatch):
+    monkeypatch.setattr(setup, "resolve_requested_provider", lambda requested: "lemex")
+    monkeypatch.setattr(
+        setup,
+        "resolve_runtime_provider",
+        lambda **kwargs: {"model": "explicit-model", "reasoning_effort": "max"},
+    )
+    monkeypatch.setattr(setup, "backend_setup", lambda name, **kwargs: {"id": name})
+    result = setup.provider_setup()
+    assert result["model_override"] == "explicit-model"
+    assert result["reasoning_effort_override"] == "max"

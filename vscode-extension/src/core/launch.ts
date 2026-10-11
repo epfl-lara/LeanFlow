@@ -480,6 +480,8 @@ export function validateLaunch(request: LaunchRequest): string[] {
   }
   if (request.cleanRoom && request.kind !== "prove") {
     problems.push("--clean-room is only supported for prove.");
+  } else if (request.cleanRoom) {
+    problems.push("Clean room is unavailable with native agents because their network access cannot be restricted to model requests. Turn off Clean room to start a run.");
   }
   if (request.humanReview && request.kind !== "prove") {
     problems.push("--human-review is only supported for prove.");

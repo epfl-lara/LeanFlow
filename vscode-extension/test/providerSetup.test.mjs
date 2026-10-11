@@ -10,7 +10,7 @@ const bundle = await build({
     builder.onResolve({ filter: /^vscode$/ }, () => ({ path: "vscode", namespace: "fixture" }));
     builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: `
       export class EventEmitter { event = () => ({ dispose() {} }); fire() {} dispose() {} }
-      export const workspace = { isTrusted: true, workspaceFolders: [{uri: {authority: "ssh-remote+test"}}], openTextDocument: async uri => { if (globalThis.providerFixture.missingConfig) throw new Error('Missing file'); return uri; } };
+      export const workspace = { isTrusted: true, workspaceFolders: [{uri: {authority: "ssh-remote+test", fsPath: "/fixture/project"}}], openTextDocument: async uri => { if (globalThis.providerFixture.missingConfig) throw new Error('Missing file'); return uri; } };
       export const Uri = { file: value => value };
       export const window = {
         showInputBox: async options => { globalThis.providerFixture.prompts.push(options); return globalThis.providerFixture.input; },
@@ -98,5 +98,53 @@ test("native config buttons open the advertised path and report missing setup", 
     }
     f.missingConfig = true;
     await assert.rejects(setup.act("lemex", "config"), /No native config file exists/);
+  } finally { setup.dispose(); }
+});
+
+test("native catalogs preserve reported defaults and capabilities without copying arbitrary fields", async () => {
+  const { f, setup } = fixture();
+  try {
+    await setup.credentials.saveKey("lemex", "opaque-private-model-key");
+    f.metadata.backends[2].model_catalog = {
+      status: "ready", source: "Lemex model/list", default_model: "model-a", default_reasoning_effort: "high",
+      error: "", private_key: "do-not-copy", models: [
+        { id: "model-a", label: "Model A opaque-private-model-key", reasoning_efforts: ["low", "high", "high", "invalid effort", null], reasoning_known: true, default_reasoning_effort: "high", api_key: "do-not-copy" },
+        { id: "model-a", label: "Duplicate" },
+        { id: "model-b", reasoning_efforts: ["high"], reasoning_known: false },
+        { id: "model-c", reasoning_efforts: [], reasoning_known: true },
+        { id: "bad\nmodel" }, { id: 7 }, null,
+      ],
+    };
+    await setup.refresh();
+    assert.equal(f.calls.at(-1).options.cwd, "/fixture/project");
+    const catalog = setup.state().backends[2].model_catalog;
+    assert.equal(catalog.default_model, "model-a");
+    assert.equal(catalog.default_reasoning_effort, "high");
+    assert.deepEqual(catalog.models.map(row => row.id), ["model-a", "model-b", "model-c"]);
+    assert.deepEqual(catalog.models[0].reasoning_efforts, ["low", "high"]);
+    assert.equal(catalog.models[0].label, "Model A [REDACTED]");
+    assert.deepEqual(catalog.models[1].reasoning_efforts, []);
+    assert.equal(catalog.models[1].reasoning_known, false);
+    assert.equal(catalog.models[2].reasoning_known, true);
+    assert.ok(!JSON.stringify(setup.state()).includes("do-not-copy"));
+    assert.ok(!JSON.stringify(setup.state()).includes("opaque-private-model-key"));
+    assert.equal(setup.state().backends[0].model_catalog.status, "unavailable");
+    assert.match(setup.state().backends[0].model_catalog.error, /Update LeanFlow/);
+  } finally { setup.dispose(); }
+});
+
+test("malformed model metadata cannot break credential setup or pretend capabilities are known", async () => {
+  const { f, setup } = fixture();
+  try {
+    f.metadata.backends[0].model_catalog = { status: "made-up", models: {}, default_model: { secret: true }, error: null };
+    f.metadata.backends[1].model_catalog = { status: "ready", models: Array.from({length: 550}, (_, i) => ({ id: `model-${i}`, label: "x".repeat(500) })) };
+    await setup.refresh();
+    assert.equal(setup.state().error, "");
+    assert.equal(setup.state().backends[0].model_catalog.status, "unavailable");
+    assert.equal(setup.state().backends[0].model_catalog.default_model, "");
+    assert.deepEqual(setup.state().backends[0].model_catalog.models, []);
+    assert.equal(setup.state().backends[1].model_catalog.models.length, 500);
+    assert.equal(setup.state().backends[1].model_catalog.models[0].label.length, 256);
+    assert.equal(setup.state().backends[1].model_catalog.models[0].reasoning_known, false);
   } finally { setup.dispose(); }
 });
