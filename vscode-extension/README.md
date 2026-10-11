@@ -57,8 +57,12 @@ rather than an import-only module, or leave Target empty to scan the project.
 ## What it gives you
 
 **Launch** — a form over the whole `leanflow workflow` surface: workflow kind,
-target, provider, model, swarm width, research mode and worker count, clean
-room, allowed axioms, extra skills, and a free-text prompt. The
+target, provider, model, research mode and concurrent prover count, clean
+room, allowed axioms, extra skills, and a free-text prompt. Global time, session
+and reported-token limits are available for every workflow. Prove adds optional
+session limits for prover, orchestrator and refutation roles, plus retry,
+proof-direction, recovery-decision and graph-size controls. Session limits count
+native invocations, not the model requests inside them. The
 rendered command is always visible, and **Preview plan** resolves the launch
 without starting it, showing the exact argv and the complete `LEANFLOW_*`
 environment the child process would receive, with credentials redacted and

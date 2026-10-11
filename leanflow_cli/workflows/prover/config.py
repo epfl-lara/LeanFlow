@@ -1,4 +1,4 @@
-"""Resolve native backend selection, Lean policy, and optional campaign-wide limits."""
+"""Resolve native backends, Lean policy, and campaign, role, and recovery limits."""
 
 from __future__ import annotations
 
@@ -15,8 +15,14 @@ ENV_NAMES = {
     "search_order": "LEANFLOW_PROVER_SEARCH_ORDER",
     "parallelism": "LEANFLOW_PROVER_PARALLELISM",
     "agent_calls": "LEANFLOW_PROVER_AGENT_CALLS",
+    "prover_sessions": "LEANFLOW_PROVER_PROVER_SESSIONS",
+    "orchestrator_sessions": "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS",
+    "negation_sessions": "LEANFLOW_PROVER_NEGATION_SESSIONS",
     "tokens": "LEANFLOW_PROVER_TOKENS",
     "max_nodes": "LEANFLOW_PROVER_MAX_NODES",
+    "max_restarts": "LEANFLOW_PROVER_MAX_RESTARTS",
+    "plan_refinements": "LEANFLOW_PROVER_PLAN_REFINEMENTS",
+    "max_decompositions": "LEANFLOW_PROVER_MAX_DECOMPOSITIONS",
     "wall_time_s": "LEANFLOW_PROVER_WALL_TIME_S",
     "model": "LEANFLOW_PROVER_MODEL",
     "orchestrator_model": "LEANFLOW_PROVER_ORCHESTRATOR_MODEL",
@@ -52,9 +58,15 @@ class ProverConfig:
     search_order: str = "top-down"
     parallelism: int = 2
     agent_calls: int | None = None
+    prover_sessions: int | None = None
+    orchestrator_sessions: int | None = None
+    negation_sessions: int | None = None
     tokens: int | None = None
     wall_time_s: float | None = None
     max_nodes: int = 128
+    max_restarts: int | None = None
+    plan_refinements: int | None = None
+    max_decompositions: int | None = None
     model: str = ""
     orchestrator_model: str = ""
     provider: str = ""
@@ -70,9 +82,6 @@ class ProverConfig:
     job_api_calls: int = 1
     orchestrator_api_calls: int = 1
     negation_api_calls: int = 1
-    max_restarts: int | None = None
-    plan_refinements: int | None = None
-    max_decompositions: int | None = None
 
     def __post_init__(self) -> None:
         """Reject ambiguous limits and unsupported backend names before allocating work."""
@@ -95,6 +104,9 @@ class ProverConfig:
                 raise ValueError(f"{key} must be a positive integer")
         for key in (
             "agent_calls",
+            "prover_sessions",
+            "orchestrator_sessions",
+            "negation_sessions",
             "tokens",
             "wall_time_s",
             "max_restarts",
@@ -158,7 +170,7 @@ class ProverConfig:
             for prefix in ("LEANFLOW_PROVER_", "LEANFLOW_PROVER_ORCHESTRATOR_"):
                 if source.get(prefix + suffix, "").strip():
                     raise ValueError(
-                        f"{prefix + suffix} is retired. Use native runtime configuration and global agent_calls, tokens, or wall_time_s limits."
+                        f"{prefix + suffix} is retired. Use native runtime configuration, role session limits, or global agent_calls, tokens, and wall_time_s limits."
                     )
         values: dict[str, Any] = {}
         defaults = asdict(cls())

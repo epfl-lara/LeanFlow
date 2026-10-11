@@ -36,7 +36,10 @@ def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] 
     """Return the exact stopping scope and preserved obligations for the final report."""
     if status == "completed":
         return None
+    from leanflow_cli.workflows.prover.role_limits import stop_details
+
     metrics = runtime.state["metrics"]
+    role_stop = stop_details(runtime)
     limit: int | float | None
     used = metrics.get("api_calls", 0)
     if status not in {"budget_exhausted", "blocked", "timeout"}:
@@ -62,6 +65,14 @@ def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] 
             "The campaign reached its total active-time limit.",
             round(runtime._elapsed(), 3),
             runtime.config.wall_time_s,
+        )
+    elif role_stop is not None:
+        code, scope, message, used, limit = (
+            runtime.state["stop_code"],
+            "role",
+            str(runtime.state.get("error") or "The agent role reached its campaign session limit."),
+            role_stop["used"],
+            role_stop["limit"],
         )
     elif runtime.config.agent_calls is not None and used >= runtime.config.agent_calls:
         code, scope, message, limit = (

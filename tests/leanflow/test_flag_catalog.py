@@ -261,12 +261,10 @@ def test_effective_values_hide_internal_plumbing_by_default() -> None:
 
 
 def test_builtin_research_profile_tracks_the_runtime() -> None:
-    from leanflow_cli.workflows.research_mode import research_profile_env
+    from leanflow_cli.workflows.research_mode import prover_research_profile_env
 
     profile = resolve_profile("research")
-    for name, value in research_profile_env().items():
-        assert profile.overrides[name] == value
-    assert profile.overrides["LEANFLOW_RESEARCH_MODE"] == "1"
+    assert profile.overrides == prover_research_profile_env()
 
 
 def test_diff_ignores_knobs_that_resolve_to_the_same_value() -> None:

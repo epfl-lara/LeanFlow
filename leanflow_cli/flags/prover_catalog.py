@@ -1,4 +1,4 @@
-"""Describe native-backend prover orchestration and optional global limits."""
+"""Describe native prover orchestration, role sessions, and optional controller limits."""
 
 from __future__ import annotations
 
@@ -65,9 +65,40 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
     ),
     _integer("PARALLELISM", 2, "Maximum simultaneous jobs in research mode; standard uses one.", 1),
     _integer(
+        "MAX_RESTARTS",
+        None,
+        "Maximum additional prover passes per goal in standard mode. Research delegates retries to the orchestrator. Empty means unlimited; 0 disables retries.",
+    ),
+    _integer(
+        "PLAN_REFINEMENTS",
+        None,
+        "Campaign-wide accepted changes of mathematical direction in research mode; routine plan notes do not count. Empty means unlimited; 0 keeps the initial direction.",
+    ),
+    _integer(
+        "MAX_DECOMPOSITIONS",
+        None,
+        "Campaign-wide research recovery decisions, including retry, continue, refutation, and decomposition. Empty means unlimited; 0 disables recovery.",
+    ),
+    _integer("MAX_NODES", 128, "Maximum total theorem and helper nodes in the proof graph.", 1),
+    _integer(
         "AGENT_CALLS",
         None,
         "Global native CLI invocation limit. Each resume or retry is another call; empty means unlimited.",
+    ),
+    _integer(
+        "PROVER_SESSIONS",
+        None,
+        "Campaign-wide native prover invocation limit across all goals, retries, and resumes. Each invocation may make multiple model requests. Empty means unlimited; 0 disables prover invocations.",
+    ),
+    _integer(
+        "ORCHESTRATOR_SESSIONS",
+        None,
+        "Campaign-wide native invocation limit shared by planning, review, and research jobs, including retries and resumes. Each invocation may make multiple model requests. Empty means unlimited; 0 disables these invocations.",
+    ),
+    _integer(
+        "NEGATION_SESSIONS",
+        None,
+        "Campaign-wide native refutation invocation limit, including retries and resumes. Each invocation may make multiple model requests. Empty means unlimited; 0 disables refutation invocations.",
     ),
     _integer(
         "TOKENS",

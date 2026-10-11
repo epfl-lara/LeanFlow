@@ -58,6 +58,21 @@ def research_mode_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def prover_research_mode_enabled() -> bool:
+    """Prefer an explicit native prover mode over the legacy research switch."""
+    if "LEANFLOW_PROVER_MODE" in os.environ:
+        return os.environ["LEANFLOW_PROVER_MODE"].strip() == "research"
+    return research_mode_enabled()
+
+
+def prover_research_profile_env(workers: int = 2) -> dict[str, str]:
+    """Select the native research controller without enabling retired runner features."""
+    return {
+        "LEANFLOW_PROVER_MODE": "research",
+        "LEANFLOW_PROVER_PARALLELISM": str(max(1, workers)),
+    }
+
+
 def research_local_loogle_enabled(*, research: bool | None = None) -> bool:
     """Return whether this profile may start the private local Loogle index.
 

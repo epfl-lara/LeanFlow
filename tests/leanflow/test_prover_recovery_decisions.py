@@ -12,7 +12,6 @@ import pytest
 
 from leanflow_cli.workflows.prover import negation_job, recovery
 from leanflow_cli.workflows.prover.config import ProverConfig
-from leanflow_cli.workflows.prover.job_controller import job_budget
 from leanflow_cli.workflows.prover.models import Node
 from leanflow_cli.workflows.prover.recovery import parse_decision, parse_screen
 from leanflow_cli.workflows.prover.runtime import ProverRuntime
@@ -90,13 +89,6 @@ def test_screen_reads_plausible_verdicts() -> None:
 
 
 # --- budgets -----------------------------------------------------------------
-
-
-def test_negation_reserves_one_native_invocation() -> None:
-    config = ProverConfig(job_api_calls=1000, orchestrator_api_calls=100)
-    assert job_budget(config, "negation") == 1
-    assert job_budget(config, "prover") == 1
-    assert job_budget(config, "orchestrator") == 1
 
 
 def test_retry_decision_spends_one_unit_and_reopens_the_node(tmp_path: Path, monkeypatch) -> None:

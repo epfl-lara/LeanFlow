@@ -28,12 +28,10 @@ PROFILE_DIR_NAME = "flag-profiles"
 
 
 def _research_profile_overrides() -> dict[str, str]:
-    """Read the research profile straight from the module that applies it."""
-    from leanflow_cli.workflows.research_mode import research_profile_env
+    """Read the native research profile without reviving legacy runner switches."""
+    from leanflow_cli.workflows.research_mode import prover_research_profile_env
 
-    overrides = {"LEANFLOW_RESEARCH_MODE": "1"}
-    overrides.update(research_profile_env())
-    return overrides
+    return prover_research_profile_env()
 
 
 def _builtin_profiles() -> dict[str, FlagProfile]:
@@ -46,8 +44,8 @@ def _builtin_profiles() -> dict[str, FlagProfile]:
         "research": FlagProfile(
             name="research",
             summary=(
-                "The complete relentless-research profile applied by --research: plan, "
-                "retrieval, orchestration, dispatch, feasibility, reporting, and learning."
+                "Research with a planning and review orchestrator, parallel proof jobs, "
+                "refutation, and branch recovery."
             ),
             overrides=_research_profile_overrides(),
         ),

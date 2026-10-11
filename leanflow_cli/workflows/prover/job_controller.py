@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 from core.utils import atomic_json_write
 from leanflow_cli.lean.lean_declarations import declaration_region
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
-from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.models import Node
 from leanflow_cli.workflows.prover.runtime import BudgetExhausted, InfrastructureFailure
 from leanflow_cli.workflows.prover.session_errors import SessionInterrupted
@@ -32,15 +31,45 @@ if TYPE_CHECKING:
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
 
 
-def job_budget(config: ProverConfig, role: str) -> int:
-    """Calls one job of this role may spend. Negation has its own, smaller budget."""
-    return 1
-
-
 def new_job(
     runtime: ProverRuntime, role: str, *, node: Node | None = None, prompt: str = ""
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Reserve a complete job allocation before allowing model work to start."""
+    """Prepare a session without leaking reservations if resumed context setup fails."""
+    resumed_jobs: dict[Any, dict[str, Any]] = (
+        runtime.resume_role_jobs
+        if role in {"orchestrator", "review", "research"}
+        else runtime.resume_negation_jobs if role == "negation" else runtime.resume_jobs
+    )
+    key = (
+        (role, prompt)
+        if role in {"orchestrator", "review", "research"}
+        else node.id if node else ""
+    )
+    resumed = resumed_jobs.get(key)
+    previous = dict(resumed) if resumed is not None else None
+    reserved_before = runtime.reserved
+    try:
+        job, context = _prepare_job(runtime, role, node=node, prompt=prompt)
+        from leanflow_cli.workflows.prover.role_limits import context_allowances
+
+        context["role_sessions"] = context_allowances(runtime)
+        return job, context
+    except Exception:
+        if resumed is not None and previous is not None:
+            runtime.reserved = reserved_before
+            resumed.clear()
+            resumed.update(previous)
+            resumed_jobs[key] = resumed
+        raise
+
+
+def _prepare_job(
+    runtime: ProverRuntime, role: str, *, node: Node | None = None, prompt: str = ""
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Reserve one native invocation before allowing model work to start."""
+    from leanflow_cli.workflows.prover.role_limits import require_capacity
+
+    require_capacity(runtime, role)
     if (
         role in {"orchestrator", "review", "research"}
         and (role, prompt) in runtime.resume_role_jobs
@@ -116,7 +145,7 @@ def new_job(
         resumed_jobs.pop(node.id)
         runtime._persist()
         return job, context
-    budget = runtime._reserve(job_budget(runtime.config, role))
+    budget = runtime._reserve(1)
     role_settings = runtime.config.to_mapping(role)
     job_id = f"{role}_{len(runtime.state['jobs']) + 1:05d}"
     workspace = runtime.store.directory / "jobs" / job_id
@@ -608,6 +637,10 @@ def run_role(
 ) -> dict[str, Any]:
     job, context = runtime._new_job(role, node=node, prompt=prompt)
     context.update(context_extra or {})
+    if context.get("recovery_decision"):
+        from leanflow_cli.workflows.prover.role_limits import recovery_actions
+
+        context["recovery_actions"] = recovery_actions(runtime)
     result = runtime._invoke(job, context, prompt)
     runtime._finish_job(job, result)
     runtime._ensure_active()
@@ -624,11 +657,12 @@ def research_job(runtime: ProverRuntime, parent: dict[str, Any], question: str) 
     )
     try:
         job, context = runtime._new_job("research", prompt=prompt)
-    except BudgetExhausted:
+    except BudgetExhausted as error:
         runtime._ensure_active()
         return {
             "status": "unavailable",
-            "error": "No unreserved campaign calls are available for a research job. Continue within the current prover allocation.",
+            "error": str(error) + " Continue within the current prover session.",
+            "stop_code": error.code,
         }
     job["parent_job_id"] = parent["id"]
     context["requester"] = {"job_id": parent["id"], "node_id": parent["node_id"]}

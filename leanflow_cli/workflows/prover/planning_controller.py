@@ -134,8 +134,8 @@ def research_plan(
     progress = checkpoint.get("progress", {})
     critique = str(progress.get("critique", ""))
     proposal: dict[str, Any] = dict(progress.get("previous_proposal", {}))
-    # Every proposal/review remains separately capped and globally accounted.
-    # Changed drafts can continue within the campaign allowance; unchanged
+    # Every proposal/review is globally accounted. Changed drafts can continue
+    # within the campaign allowance; unchanged
     # failures have their own checkpointed guard. Resume skips rejected attempts
     # rather than replaying their journal entries or failed Lean materialization.
     for attempt in itertools.count(int(progress.get("next_attempt", 0))):

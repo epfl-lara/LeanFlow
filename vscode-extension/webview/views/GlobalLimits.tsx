@@ -14,7 +14,7 @@ export function GlobalLimits() {
   const { form } = view;
   const specs = new Map(app?.catalog?.groups.flatMap(group => group.flags).filter(isExtensionEditableKnob).map(flag => [flag.name, flag]));
   const profile = app?.profiles?.profiles.find(item => item.name === form.profile);
-  if (form.kind !== "prove" || !LIMITS.some(limit => specs.has(`LEANFLOW_PROVER_${limit.suffix}`))) return null;
+  if (!LIMITS.some(limit => specs.has(`LEANFLOW_PROVER_${limit.suffix}`))) return null;
 
   /** An explicit empty override removes a profile limit instead of restoring it. */
   function setLimit(name: string, value: string | undefined) {

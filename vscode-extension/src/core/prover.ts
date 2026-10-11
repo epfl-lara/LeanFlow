@@ -171,8 +171,16 @@ export interface ProverDag {
   roots: string[];
 }
 
+export interface RoleSessionUsage {
+  role: "prover" | "orchestrator" | "negation";
+  used: number | null;
+  reserved: number | null;
+  limit: number | null;
+}
+
 export interface ProverMetrics {
   agent_calls: number | null;
+  role_sessions: RoleSessionUsage[];
   agent_call_limit: number | null;
   token_limit: number | null;
   usage_complete: boolean | null;
@@ -402,6 +410,10 @@ export function normalizeProverSnapshot(value: unknown, runId: string): ProverSn
     })).filter((operation) => operation.id),
     metrics: {
       agent_calls: number(metrics.agent_calls), agent_call_limit: number(metrics.agent_call_limit),
+      role_sessions: (["prover", "orchestrator", "negation"] as const).flatMap(role => {
+        const usage = record(record(metrics.role_sessions)[role]);
+        return Object.keys(usage).length ? [{ role, used: number(usage.used), reserved: number(usage.reserved), limit: number(usage.limit) }] : [];
+      }),
       token_limit: number(metrics.token_limit), usage_complete: flag(metrics.usage_complete),
       api_calls: number(metrics.api_calls), input_tokens: number(metrics.input_tokens),
       output_tokens: number(metrics.output_tokens), cost_usd: number(metrics.cost_usd),

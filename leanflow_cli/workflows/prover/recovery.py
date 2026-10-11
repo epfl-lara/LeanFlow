@@ -145,6 +145,8 @@ def recovery_decision(
     An infrastructure failure is never cached: that job stays resumable and its
     turn is continued.
     """
+    from leanflow_cli.workflows.prover.role_limits import recovery_actions
+
     metrics = runtime.state["metrics"]
     history = [
         item
@@ -193,6 +195,12 @@ def recovery_decision(
         "unproductive response cycle; every subsequent failure returns here with its history. "
         "Retry and continue both retain safe scratch work and notes. Instructions must preserve "
         "the exact theorem and verification requirements.\n\n"
+        "The assignment role_sessions and recovery_actions fields contain remaining native "
+        "session allowances after reserving this decision. Choose an action whose can_start "
+        "is true; negate is unavailable when the negation allowance is zero. Decompose needs "
+        "at least three further orchestrator sessions for a fresh outline, proposal, and review; "
+        "additional review attempts may need more. Parallel jobs may consume the remaining "
+        "allowance, so the controller rechecks every launch. "
         "Each native prover, orchestrator, or refutation invocation counts as one agent call. "
         f"Global agent-call limit: {runtime.config.agent_calls}; reported-token limit: {runtime.config.tokens}; "
         f"active-time limit: {runtime.config.wall_time_s} seconds. Unset limits are unlimited. "
@@ -227,6 +235,7 @@ def recovery_decision(
     # finishing the job so the terminal status and the decision persist together.
     job, context = runtime._new_job("orchestrator", node=node, prompt=prompt)
     context.update({"recovery_decision": node.id})
+    context["recovery_actions"] = recovery_actions(runtime)
     result = runtime._invoke(job, context, prompt)
     if str(result.get("status", "")) not in _INFRA_FAILURE_STATUSES:
         rec["decision_result"] = str(result.get("final_response", ""))

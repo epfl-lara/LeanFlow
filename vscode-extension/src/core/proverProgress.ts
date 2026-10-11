@@ -7,7 +7,7 @@
  * the controller checking right now, and why did the run stop. Unknown stays
  * unknown; nothing is estimated from other fields.
  */
-import type { ProverChange, ProverDag, ProverJob, ProverOperation, ProverSnapshot, ProverStopReason } from "./prover";
+import type { ProverChange, ProverDag, ProverJob, ProverOperation, ProverSnapshot, ProverStopReason, RoleSessionUsage } from "./prover";
 import { proofStateCounts } from "./proverGraph";
 import {
   isCheckOperation,
@@ -98,6 +98,7 @@ export function snapshotAgeMs(snapshot: Pick<ProverSnapshot, "updated_at">, nowM
 
 export interface BudgetView {
   nativeBackend: boolean;
+  roleSessions: RoleSessionUsage[];
   tokenLimit: number | null;
   usageComplete: boolean | null;
   usedCalls: number | null;
@@ -135,6 +136,7 @@ export function proverBudget(snapshot: ProverSnapshot, nowMs: number): BudgetVie
       : metrics.elapsed_s;
   return {
     nativeBackend: config.native_backend,
+    roleSessions: metrics.role_sessions,
     tokenLimit: metrics.token_limit ?? config.tokens,
     usageComplete: metrics.usage_complete,
     usedCalls: config.native_backend ? metrics.agent_calls : metrics.api_calls,
@@ -393,6 +395,9 @@ export interface StopReasonView {
 
 /** Reason codes first, then coarse scopes; the runtime emits both. */
 const SCOPE_LABELS: [RegExp, string][] = [
+  [/^prover_sessions$/, "the prover session limit"],
+  [/^orchestrator_sessions$/, "the shared planning, review and research session limit"],
+  [/^negation_sessions$/, "the refutation session limit"],
   [/^(campaign_calls|campaign_api|campaign_api_calls|total_api_calls|api_calls)$/, "the campaign API budget"],
   [/^(campaign_time|campaign_wall_time|wall_time|wall_clock|wall_time_s)$/, "the campaign wall-clock limit"],
   [/^(job_budget|job|job_api_calls)$/, "one job's call allocation"],

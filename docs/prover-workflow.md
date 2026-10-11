@@ -29,8 +29,9 @@ leanflow workflow prove Main.lean --clean-room
 with that concurrency. `--no-parallel` limits proving to one job while retaining
 research planning. Provider, model, prompt and axiom options remain available.
 Clean-room and no-internet execution support Codex, Claude Code and Lemex through
-local controller tools while preserving native model connections. Use the global limits below; legacy
-per-response and per-job settings are rejected.
+local controller tools while preserving native model connections. Global and
+role-session limits are available below; the old per-request API settings are
+rejected rather than silently interpreted as session counts.
 
 ## What each mode does
 
@@ -222,19 +223,26 @@ native compaction still operates within each invocation. LeanFlow never override
 temperature/top-p or invents a context window.
 Default model and reasoning effort are inherited; explicit overrides are optional.
 
-All resource limits default to unset. Zero means exhausted, and negative,
-non-finite or boolean limits are invalid. These global settings apply to proving,
-planning, review, research, negation and continuation invocations together:
+Resource limits default to unset. Zero means exhausted, and negative,
+non-finite or boolean limits are invalid. The first three settings apply to
+every role together; the remaining settings further limit one role group:
 
 | Environment setting | Default | Meaning |
 | --- | --- | --- |
 | `LEANFLOW_PROVER_AGENT_CALLS` | unset | Maximum native process invocations |
 | `LEANFLOW_PROVER_TOKENS` | unset | Reported-token threshold for admitting future invocations |
 | `LEANFLOW_PROVER_WALL_TIME_S` | unset | Cumulative active campaign time, including tools and verification |
+| `LEANFLOW_PROVER_PROVER_SESSIONS` | unset | Prover invocations across all goals, retries and resumes |
+| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | unset | Shared planning, review, research and recovery invocations |
+| `LEANFLOW_PROVER_NEGATION_SESSIONS` | unset | Refutation invocations across the campaign |
 
 The same defaults can be configured as `limits.agent_calls`, `limits.tokens` and
 `limits.wall_time_s` in LeanFlow configuration. There is no three-minute or
 twenty-minute response, job, command, or Lean-check wall-time cutoff.
+The three role-session allowances are additional ceilings within the global
+allowance. They are exposed on the VS Code role cards and in the Live view.
+They cannot cap model requests inside a native session; Codex and Lemex do not
+currently expose a native per-request ceiling.
 
 One successfully spawned native agent process is one call. Its internal requests,
 retries and compaction are owned by that runtime. Admission is reserved before
@@ -261,12 +269,22 @@ Additional configuration remains focused on Lean orchestration:
 | `SEARCH_ORDER` | `top-down` | Top-down candidates or bottom-up prerequisites |
 | `PARALLELISM` | 2 in research, 1 in standard | Concurrent prover jobs |
 | `MAX_NODES` | 128 | Structural DAG bound |
+| `MAX_RESTARTS` | unset | Additional passes per goal in Standard mode |
+| `PLAN_REFINEMENTS` | unset | Accepted changes of mathematical direction in Research mode |
+| `MAX_DECOMPOSITIONS` | unset | Research recovery decisions, including retry, continue, refutation and decomposition |
 | `PROVIDER` | selected backend | `codex`, `claude` or `lemex` |
 | `ORCHESTRATOR_PROVIDER` | prover backend | Optional native planning/review backend |
 | `MODEL`, `ORCHESTRATOR_MODEL` | native defaults | Explicit model overrides |
 | `REASONING_EFFORT`, `ORCHESTRATOR_REASONING_EFFORT` | native defaults | Explicit effort overrides |
 | `FILL_DEFINITIONS` | false | Authorize filling existing definition holes |
 | `ALLOWED_AXIOMS` | propext, Classical.choice, Quot.sound | Strict completion policy |
+
+The optional controller limits accept an empty value for unlimited and zero to
+disable additional work of that kind. The initial research plan is not a
+refinement, and routine notes do not consume a direction change. Saved limits
+and counters survive resume. The builtin `research` profile selects Research
+and two concurrent provers; an explicit mode selection takes precedence over
+legacy research-profile flags.
 
 RCP is configured through Lemex itself:
 

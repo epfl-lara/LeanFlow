@@ -19,6 +19,7 @@ import { Card, Check, Field, Notice } from "../components";
 import { PlayIcon } from "../icons";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
+import { GlobalLimits } from "./GlobalLimits";
 import { NativeModelControl } from "./NativeModelControls";
 import { ProverSettings } from "./ProverSettings";
 
@@ -150,10 +151,15 @@ export function LaunchView() {
         <div className="launch-fields">
           <Field label="Workflow">
             <select
+              aria-label="Workflow"
               value={form.kind}
-              onChange={(event) =>
-                setForm({ kind: event.target.value as typeof form.kind })
-              }
+              onChange={(event) => {
+                const kind = event.target.value as typeof form.kind;
+                setForm(kind === "prove" ? { kind } : {
+                  kind, research: false, researchWorkers: null, agents: 1,
+                  cleanRoom: false, noParallel: false,
+                });
+              }}
             >
               {WORKFLOW_KINDS.map((kind) => (
                 <option key={kind.id} value={kind.id}>
@@ -220,32 +226,11 @@ export function LaunchView() {
         </div>
       </Card>
 
+      <GlobalLimits />
       <ProverSettings />
       <Card title="Workflow options">
         <div className="launch-options">
           <div>
-            {!boundedProver && <Check
-              label="Research mode"
-              hint="Plan, retrieval, orchestration, dispatch, feasibility, reporting and learning as one profile. prove only."
-              checked={form.research}
-              disabled={form.kind !== "prove"}
-              onChange={(research) => setForm({ research })}
-            />}
-            {!boundedProver && form.research && (
-              <div style={{ marginLeft: 22, marginTop: 6 }}>
-                <Field label="Research workers" hint="0 keeps the run single-lane.">
-                  <input
-                    type="number"
-                    min={0}
-                    max={16}
-                    value={form.researchWorkers ?? 2}
-                    onChange={(event) =>
-                      setForm({ researchWorkers: Number(event.target.value) })
-                    }
-                  />
-                </Field>
-              </div>
-            )}
             <Check
               label="Clean room"
               hint="Block external research. Use only this project and installed libraries; model connections remain available."
@@ -257,25 +242,12 @@ export function LaunchView() {
           </div>
 
           <div>
-            <Check
+            {form.kind === "prove" && <Check
               label="Force single lane"
-              hint={boundedProver ? "Run one prover job at a time; research planning remains available." : "Passes --no-parallel: one agent, no background workers."}
+              hint="Run one prover job at a time; research planning remains available."
               checked={form.noParallel}
               onChange={(noParallel) => setForm({ noParallel })}
-            />
-            {!boundedProver && <Field
-              label="Swarm agents"
-              hint="Above 1 opts into file-lock-aware concurrent work. A file-scoped prove run stays single-agent."
-            >
-              <input
-                type="number"
-                min={1}
-                max={16}
-                disabled={form.noParallel}
-                value={form.agents}
-                onChange={(event) => setForm({ agents: Number(event.target.value) })}
-              />
-            </Field>}
+            />}
             <Field
               label="Allowed axioms"
               hint="Comma or space separated, beyond the standard three."

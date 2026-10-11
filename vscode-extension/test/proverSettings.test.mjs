@@ -2,10 +2,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
+import { mount, textOf } from "./helpers/webviewFixture.mjs";
 
 const bundle = await build({
   stdin: {
-    contents: 'export { ProverSettings } from "./webview/views/ProverSettings"; export { setFixture } from "./webview/store"; export { resolveLaunchEnv } from "./src/core/launch";',
+    contents: 'export { ProverSettings } from "./webview/views/ProverSettings"; export { GlobalLimits } from "./webview/views/GlobalLimits"; export { setFixture } from "./webview/store"; export { resolveLaunchEnv } from "./src/core/launch";',
     resolveDir: process.cwd(),
     loader: "tsx",
   },
@@ -26,7 +27,7 @@ const bundle = await build({
     },
   }],
 });
-const { ProverSettings, setFixture, resolveLaunchEnv } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`);
+const { ProverSettings, GlobalLimits, setFixture, resolveLaunchEnv } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`);
 
 const prefix = "LEANFLOW_PROVER_";
 const flags = [
@@ -42,6 +43,13 @@ const flags = [
   ["AGENT_CALLS", "int", ""],
   ["TOKENS", "int", ""],
   ["WALL_TIME_S", "float", ""],
+  ["PROVER_SESSIONS", "int", ""],
+  ["ORCHESTRATOR_SESSIONS", "int", ""],
+  ["NEGATION_SESSIONS", "int", ""],
+  ["MAX_RESTARTS", "int", ""],
+  ["PLAN_REFINEMENTS", "int", ""],
+  ["MAX_DECOMPOSITIONS", "int", ""],
+  ["MAX_NODES", "int", "128"],
 ].map(([suffix, value_type, fallback, choices]) => ({
   name: prefix + suffix, value_type, default: fallback, choices, summary: suffix,
   editable: true, extension_editable: true, sensitive: false,
@@ -70,7 +78,7 @@ function fixture(patch = {}, profileOverrides = {}) {
     form,
     environment: () => resolveLaunchEnv(form, state.app.profiles, state.app.catalog),
     control(suffix) {
-      const control = elements(ProverSettings()).find((item) => item.props?.["aria-label"] === prefix + suffix);
+      const control = elements([GlobalLimits(), ProverSettings()]).find((item) => item.props?.["aria-label"] === prefix + suffix);
       assert.ok(control, `Missing ${suffix} control`);
       return control;
     },
@@ -139,7 +147,7 @@ test("reasoning defaults do not force a level, and unknown saved values stay vis
 
 test("global limits are immediately visible and explicitly show Unlimited", () => {
   const ui = fixture();
-  const rendered = elements(ProverSettings());
+  const rendered = elements([GlobalLimits(), ProverSettings()]);
   assert.ok(rendered.some(item => item.props?.className === "card-title" && item.props.children === "Global limits"));
   assert.equal(rendered.filter(item => item.type === "details").length, 0);
   for (const suffix of ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"]) {
@@ -171,7 +179,7 @@ test("clearing an inherited limit makes it Unlimited and profile reset restores 
   assert.equal(ui.control("AGENT_CALLS").props.value, "");
   assert.equal(ui.environment().env.set[prefix + "AGENT_CALLS"], undefined);
   assert.deepEqual(ui.environment().env.unset, [prefix + "AGENT_CALLS"]);
-  const reset = elements(ProverSettings()).find(item => item.props?.["aria-label"] === "Restore profile agent calls");
+  const reset = elements([GlobalLimits(), ProverSettings()]).find(item => item.props?.["aria-label"] === "Restore profile agent calls");
   assert.ok(reset);
   reset.props.onClick();
   assert.equal(ui.control("AGENT_CALLS").props.value, "7");
@@ -185,3 +193,144 @@ test("zero stays an explicit exhausted limit instead of becoming Unlimited", () 
     assert.equal(ui.environment().env.set[prefix + suffix], "0");
   }
 });
+
+
+test("research profile mode is visible and an explicit standard choice wins", () => {
+  const ui = fixture({}, { LEANFLOW_RESEARCH_MODE: "1" });
+  assert.equal(ui.control("MODE").props.value, "research");
+  ui.control("MODE").props.onChange({ target: { value: "standard" } });
+  assert.equal(ui.control("MODE").props.value, "standard");
+  assert.equal(ui.form.research, false);
+  assert.equal(ui.environment().env.set[prefix + "MODE"], "standard");
+  ui.control("MODE").props.onChange({ target: { value: "__default__" } });
+  assert.equal(ui.control("MODE").props.value, "research");
+  assert.equal(ui.form.research, true);
+});
+
+test("explicit empty mode masks a research profile and modern mode wins legacy state", () => {
+  let ui = fixture({ overrides: { [prefix + "MODE"]: "" }, research: true }, { LEANFLOW_RESEARCH_MODE: "1" });
+  assert.equal(ui.control("MODE").props.value, "standard");
+  ui = fixture({ research: true }, { [prefix + "MODE"]: "standard", LEANFLOW_RESEARCH_MODE: "1" });
+  assert.equal(ui.control("MODE").props.value, "standard");
+});
+
+test("structural allowances are visible and reach the runtime without changing role selection", () => {
+  const ui = fixture({ overrides: { [prefix + "MODEL"]: "my-prover" } });
+  for (const suffix of ["MAX_RESTARTS", "PLAN_REFINEMENTS", "MAX_DECOMPOSITIONS"]) {
+    assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
+    assert.equal(ui.control(suffix).props.value, "");
+    ui.control(suffix).props.onChange({ target: { value: "4" } });
+    assert.equal(ui.environment().env.set[prefix + suffix], "4");
+  }
+  assert.equal(ui.control("MAX_NODES").props.value, "128");
+  ui.control("MAX_NODES").props.onChange({ target: { value: "32" } });
+  assert.equal(ui.environment().env.set[prefix + "MAX_NODES"], "32");
+  assert.deepEqual(ui.environment().rejected, []);
+  assert.equal(ui.form.overrides[prefix + "MODEL"], "my-prover");
+});
+
+test("clearing structural limits masks profiles while zero stays explicit", () => {
+  const labels = { MAX_RESTARTS: "standard retries per goal", PLAN_REFINEMENTS: "proof-direction changes", MAX_DECOMPOSITIONS: "recovery decisions", MAX_NODES: "maximum graph nodes" };
+  for (const [suffix, label] of Object.entries(labels)) {
+    const ui = fixture({}, { [prefix + suffix]: "7" });
+    assert.equal(ui.control(suffix).props.value, "7");
+    ui.control(suffix).props.onChange({ target: { value: "" } });
+    assert.deepEqual(ui.environment().env.unset, [prefix + suffix]);
+    assert.equal(ui.control(suffix).props.value, "");
+    const restore = elements(ProverSettings()).find(item => item.props?.["aria-label"] === `Restore profile ${label}`);
+    assert.ok(restore);
+    restore.props.onClick();
+    assert.equal(ui.control(suffix).props.value, "7");
+    if (suffix !== "MAX_NODES") {
+      ui.control(suffix).props.onChange({ target: { value: "0" } });
+      assert.equal(ui.environment().env.set[prefix + suffix], "0");
+    }
+  }
+});
+
+for (const kind of ["prove", "formalize", "review", "refactor", "golf", "draft"]) {
+  test(`${kind} launch displays global limits and preserves profile limits when edited`, () => {
+    const ui = mount();
+    try {
+      ui.update(state => {
+        state.view.form.kind = kind;
+        state.view.form.target = "Main.lean";
+        state.view.form.profile = "custom";
+        state.app.profiles.profiles[1].overrides = { [prefix + "AGENT_CALLS"]: "7" };
+        state.app.catalog.groups[0].flags.push(...flags.filter(flag => ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"].some(suffix => flag.name === prefix + suffix)));
+      });
+      assert.equal(ui.root().findAllByProps({ className: "card-title" }).filter(node => textOf(node) === "Global limits").length, 1);
+      assert.equal(ui.input(prefix + "AGENT_CALLS").props.value, "7");
+      ui.change(ui.input(prefix + "AGENT_CALLS"), "");
+      ui.change(ui.input(prefix + "WALL_TIME_S"), "2.5");
+      let launch = resolveLaunchEnv(ui.view.form, ui.app.profiles, ui.app.catalog);
+      assert.deepEqual(launch.rejected, []);
+      assert.deepEqual(launch.env.unset, [prefix + "AGENT_CALLS"]);
+      assert.equal(launch.env.set[prefix + "WALL_TIME_S"], "150");
+      ui.click("Restore profile agent calls");
+      launch = resolveLaunchEnv(ui.view.form, ui.app.profiles, ui.app.catalog);
+      assert.equal(launch.env.set[prefix + "AGENT_CALLS"], "7");
+      assert.equal(ui.input(prefix + "TOKENS").props.placeholder, "Unlimited");
+      const roleControls = ui.root().findAll(node => node.props["aria-label"] === prefix + "ORCHESTRATOR_MODEL");
+      assert.equal(roleControls.length, kind === "prove" ? 1 : 0);
+    } finally { ui.dispose(); }
+  });
+}
+
+
+test("role session limits are independent, inherited, and explicitly clearable", () => {
+  for (const [suffix, label] of [["PROVER_SESSIONS", "prover sessions"], ["ORCHESTRATOR_SESSIONS", "orchestrator sessions"], ["NEGATION_SESSIONS", "refutation sessions"]]) {
+    const ui = fixture({ overrides: { [prefix + "AGENT_CALLS"]: "20" } }, { [prefix + suffix]: "7" });
+    assert.equal(ui.control(suffix).props.value, "7");
+    ui.control(suffix).props.onChange({ target: { value: "0" } });
+    assert.equal(ui.environment().env.set[prefix + suffix], "0");
+    assert.equal(ui.environment().env.set[prefix + "AGENT_CALLS"], "20");
+    ui.control(suffix).props.onChange({ target: { value: "" } });
+    assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
+    assert.deepEqual(ui.environment().env.unset, [prefix + suffix]);
+    const reset = elements(ProverSettings()).find(item => item.props?.["aria-label"] === `Restore profile ${label}`);
+    assert.ok(reset);
+    reset.props.onClick();
+    assert.equal(ui.environment().env.set[prefix + suffix], "7");
+    assert.deepEqual(ui.environment().rejected, []);
+  }
+});
+
+
+for (const kind of ["formalize", "review", "refactor", "golf", "draft"]) {
+  test(`switching from research proving to ${kind} clears unsupported switches and preserves profile choices`, () => {
+    const ui = mount();
+    try {
+      ui.update(state => {
+        state.view.form.target = kind === "formalize" ? "paper.tex" : "Main.lean";
+        state.view.form.profile = "custom";
+        state.view.form.research = true;
+        state.view.form.researchWorkers = 3;
+        state.view.form.agents = 3;
+        state.view.form.cleanRoom = true;
+        state.view.form.noParallel = true;
+        state.view.form.overrides = { [prefix + "MODE"]: "research", [prefix + "MODEL"]: "fixture-model" };
+      });
+      const savedOverrides = { ...ui.view.form.overrides };
+      ui.change(ui.input("Workflow"), kind);
+      assert.equal(ui.view.form.kind, kind);
+      assert.equal(ui.view.form.research, false);
+      assert.equal(ui.view.form.researchWorkers, null);
+      assert.equal(ui.view.form.agents, 1);
+      assert.equal(ui.view.form.cleanRoom, false);
+      assert.equal(ui.view.form.noParallel, false);
+      assert.equal(ui.view.form.profile, "custom");
+      assert.deepEqual(ui.view.form.overrides, savedOverrides);
+      assert.doesNotMatch(textOf(ui.root()), /Research workers|Swarm agents|Force single lane|Plan, retrieval, orchestration, dispatch/);
+      assert.equal(ui.button("Start run").props.disabled, false);
+      ui.click("Start run");
+      assert.equal(ui.messages.at(-1).request.kind, kind);
+      assert.equal(ui.messages.at(-1).request.cleanRoom, false);
+      ui.change(ui.input("Workflow"), "prove");
+      assert.equal(ui.input(prefix + "MODE").props.value, "research");
+      assert.equal(ui.view.form.profile, "custom");
+      assert.deepEqual(ui.view.form.overrides, savedOverrides);
+      assert.match(textOf(ui.root()), /Force single lane/);
+    } finally { ui.dispose(); }
+  });
+}

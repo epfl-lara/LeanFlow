@@ -509,3 +509,30 @@ test("native campaigns preserve unlimited and exhausted limits without legacy fa
   assert.equal(budget.tokens.input, null);
   assert.equal(budget.usageComplete, false);
 });
+
+test("native role and research limits retain zero, unlimited, reservations, and unknown usage", () => {
+  const state = snapshot({
+    config: { agent_calls: null, max_restarts: 0, plan_refinements: 2, max_decompositions: 4, max_nodes: 20 },
+    metrics: {
+      role_sessions: {
+        prover: { used: 3, reserved: 1, limit: 4 },
+        orchestrator: { used: 2, reserved: 0, limit: null },
+        negation: { used: null, reserved: 0, limit: 0 },
+      },
+      plan_refinements: 1, decompositions: 2,
+    },
+    stop_reason: { code: "orchestrator_sessions", scope: "role", used: 2, limit: 2, message: "No more planning sessions can start." },
+  });
+  const budget = proverBudget(state, NOW);
+  assert.deepEqual(budget.roleSessions, [
+    { role: "prover", used: 3, reserved: 1, limit: 4 },
+    { role: "orchestrator", used: 2, reserved: 0, limit: null },
+    { role: "negation", used: null, reserved: 0, limit: 0 },
+  ]);
+  assert.deepEqual(budget.planRefinements, { used: 1, max: 2 });
+  assert.deepEqual(budget.decompositions, { used: 2, max: 4 });
+  assert.equal(budget.maxRestartsPerNode, 0);
+  assert.equal(budget.nodes.max, 20);
+  assert.match(stopReasonView(state).scopeLabel, /planning, review and research session limit/);
+  assert.deepEqual(proverBudget(snapshot(), NOW).roleSessions, []);
+});

@@ -107,7 +107,7 @@ establish proof or disproof.
 | `config.py` | Three native backends, optional global limits and Lean policy |
 | `research_policy.py` | Persist local-only policy and reject reuse of online or unclassified campaign history |
 | `runtime.py`, `controller.py` | Campaign lifecycle, shared progress and scheduling |
-| `allocation.py`, `usage.py`, `live_progress.py` | Durable invocation admission, usage and active elapsed time |
+| `allocation.py`, `role_limits.py`, `usage.py`, `live_progress.py` | Durable invocation admission, campaign session limits per role, usage and active elapsed time |
 | `agent_session.py` | Native invocation and same-session submission feedback |
 | `native_snapshot.py` | Independent filtered copies, no escaping symlinks or shared inodes |
 | `native_bridge.py`, `mcp_relay.py` | Authenticated job capability; durable start/poll/cancel operations and acceptance receipts |

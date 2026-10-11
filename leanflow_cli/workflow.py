@@ -771,15 +771,17 @@ def resolve_workflow_request(
         )
     if workflow.workflow_kind == "prove" and workflow.parallel_agents > 1:
         workflow = replace(workflow, research_mode=True, research_workers=workflow.parallel_agents)
-    explicit_research_profile = workflow.research_mode
     from leanflow_cli.workflows.research_mode import (
-        apply_research_profile_env,
+        prover_research_mode_enabled,
         research_local_loogle_enabled,
-        research_mode_enabled,
         research_worker_count,
     )
 
-    if workflow.workflow_kind == "prove" and not workflow.research_mode and research_mode_enabled():
+    if (
+        workflow.workflow_kind == "prove"
+        and not workflow.research_mode
+        and prover_research_mode_enabled()
+    ):
         workflow = replace(
             workflow,
             research_mode=True,
@@ -911,19 +913,14 @@ def resolve_workflow_request(
         workflow = replace(workflow, clean_room_labels=labels)
         child_env[DISABLE_SOLUTION_RESEARCH_ENV] = "1"
         child_env[CLEAN_ROOM_TASK_LABELS_ENV] = "|".join(labels)
-    if workflow.research_mode:
-        child_env["LEANFLOW_RESEARCH_MODE"] = "1"
-        if workflow.workflow_kind != "prove":
-            apply_research_profile_env(
-                child_env,
-                workers=workflow.research_workers,
-                explicit_cli=explicit_research_profile,
-            )
     if workflow.workflow_kind == "prove":
+        # The native mode is authoritative for both the controller and its tools.
+        # A saved legacy research profile must not undo an explicit Standard choice.
+        child_env["LEANFLOW_RESEARCH_MODE"] = "1" if workflow.research_mode else "0"
         child_env["LEANFLOW_PROVER_MODE"] = (
             "research"
             if workflow.research_mode
-            else child_env.get("LEANFLOW_PROVER_MODE", "standard")
+            else child_env.get("LEANFLOW_PROVER_MODE", "").strip() or "standard"
         )
         if workflow.no_parallel:
             child_env["LEANFLOW_PROVER_PARALLELISM"] = "1"

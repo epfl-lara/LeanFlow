@@ -5,7 +5,6 @@ import { changeNativeSelection, nativeSelections, ROLE_PREFIXES } from "../../sr
 import { PROVER_KNOB_LABELS } from "../../src/core/profileSurfaces";
 import { Card, Field } from "../components";
 import { useStore } from "../store";
-import { GlobalLimits } from "./GlobalLimits";
 import { KnobControl } from "./KnobsView";
 import { NativeEffortControl, NativeModelControl } from "./NativeModelControls";
 
@@ -15,8 +14,16 @@ export function ProverSettings() {
   const specs = new Map(app?.catalog?.groups.flatMap((group) => group.flags).filter(isExtensionEditableKnob).map((flag) => [flag.name, flag]));
   const profile = app?.profiles?.profiles.find((item) => item.name === form.profile);
   if (form.kind !== "prove" || !specs.has("LEANFLOW_PROVER_MODE")) return null;
-  const effectiveMode = form.overrides.LEANFLOW_PROVER_MODE ?? profile?.overrides.LEANFLOW_PROVER_MODE
-    ?? (form.research || form.agents > 1 ? "research" : specs.get("LEANFLOW_PROVER_MODE")!.default);
+  const modeDefault = specs.get("LEANFLOW_PROVER_MODE")!.default;
+  const profileMode = profile?.overrides.LEANFLOW_PROVER_MODE
+    ?? (["1", "true", "yes", "on"].includes((profile?.overrides.LEANFLOW_RESEARCH_MODE ?? "").toLowerCase()) ? "research" : undefined);
+  const inheritedResearch = form.overrides.LEANFLOW_RESEARCH_MODE ?? profile?.overrides.LEANFLOW_RESEARCH_MODE;
+  const inheritedMode = profile?.overrides.LEANFLOW_PROVER_MODE
+    ?? (inheritedResearch !== undefined
+      ? ["1", "true", "yes", "on"].includes(inheritedResearch.toLowerCase()) ? "research" : modeDefault
+      : form.research || form.agents > 1 ? "research" : modeDefault);
+  // An explicit empty mode clears the profile too; it resolves to the CLI default.
+  const effectiveMode = (form.overrides.LEANFLOW_PROVER_MODE ?? inheritedMode) || modeDefault;
 
   /** Keep profile inheritance and the legacy research switches consistent with the form. */
   function control(suffix: string, shortLabel?: string, hint?: string) {
@@ -24,16 +31,15 @@ export function ProverSettings() {
     const spec = specs.get(name);
     if (!spec) return null;
     const label = PROVER_KNOB_LABELS[name] ?? spec.name;
-    const value = form.overrides[name] ?? profile?.overrides[name]
-      ?? (suffix === "MODE" && (form.research || form.agents > 1) ? "research" : undefined)
+    const value = suffix === "MODE" ? effectiveMode : form.overrides[name] ?? profile?.overrides[name]
       ?? (suffix === "PARALLELISM" && form.researchWorkers !== null ? String(form.researchWorkers)
         : suffix === "PARALLELISM" && form.agents > 1 ? String(form.agents) : undefined);
-    const inherited = form.overrides[name] === undefined && profile?.overrides[name] !== undefined;
+    const inherited = form.overrides[name] === undefined && (suffix === "MODE" ? profileMode !== undefined : profile?.overrides[name] !== undefined);
     const onChange = (next: string | undefined) => {
       const overrides = { ...form.overrides };
       if (next === undefined) delete overrides[name]; else overrides[name] = next;
       // The visible mode and legacy CLI switch describe the same launch.
-      const mode = next ?? profile?.overrides[name] ?? spec.default;
+      const mode = (next ?? (suffix === "MODE" ? profileMode : profile?.overrides[name]) ?? spec.default) || spec.default;
       if (suffix === "PARALLELISM") overrides.LEANFLOW_PROVER_MODE = effectiveMode;
       setForm(suffix === "MODE" || suffix === "PARALLELISM"
         ? { overrides, research: suffix === "MODE" ? mode === "research" : effectiveMode === "research", agents: 1, researchWorkers: null }
@@ -42,6 +48,29 @@ export function ProverSettings() {
     return <Field key={name} label={shortLabel ?? label} source={inherited ? "Profile" : form.overrides[name] !== undefined ? "Override" : undefined} hint={hint ?? spec.summary}>
       <KnobControl spec={spec} value={value} onChange={onChange} />
     </Field>;
+  }
+
+  /** Keep an emptied optional allowance unlimited, including over a saved profile. */
+  function limitControl(suffix: string, label: string, hint: string) {
+    const name = `LEANFLOW_PROVER_${suffix}`;
+    const spec = specs.get(name);
+    if (!spec) return null;
+    const override = form.overrides[name];
+    const saved = profile?.overrides[name];
+    const value = override ?? saved ?? spec.default;
+    const setValue = (next: string | undefined) => {
+      const overrides = { ...form.overrides };
+      if (next === undefined) delete overrides[name]; else overrides[name] = next;
+      setForm({ overrides });
+    };
+    return <div className="global-limit" key={name}>
+      <Field label={label} source={override !== undefined ? "Override" : saved !== undefined ? "Profile" : undefined} hint={hint}>
+        <input aria-label={name} type="number" min={spec.minimum} max={spec.maximum} step={1}
+          placeholder={spec.default || "Unlimited"} value={value}
+          onChange={event => setValue(event.target.value)} />
+      </Field>
+      {override !== undefined && saved !== undefined && <button className="link" onClick={() => setValue(undefined)} aria-label={`Restore profile ${label.toLowerCase()}`}>Use profile limit</button>}
+    </div>;
   }
 
   /** Share runtime choices across roles without losing explicit profile inheritance. */
@@ -79,11 +108,12 @@ export function ProverSettings() {
     </Field>;
   }
 
-  return <><GlobalLimits /><Card title="Prover setup" subtitle="Choose how LeanFlow plans and proves. Set the model and reasoning effort separately for each role.">
+  return <Card title="Prover setup" subtitle="Research builds, reviews, and revises a proof plan while provers work on its goals. Standard works through proof goals directly.">
     {profile && <div className="prover-profile-note">Profile <strong>{profile.name}</strong><span>Changes here apply to this launch.</span></div>}
     <div className="launch-fields">
-      {control("MODE", "Mode", "Research plans and schedules a theorem graph.")}
+      {control("MODE", "Mode", "Research coordinates planning, review, research jobs, and proving. Standard uses one prover.")}
       {control("SEARCH_ORDER", "Dependency order", "Choose where work begins in the theorem graph.")}
+      {control("PARALLELISM", "Concurrent prover jobs", "Maximum simultaneous proof jobs in research mode; standard uses one.")}
     </div>
     <section className="prover-role" aria-label="Prover settings">
       <div className="prover-role-heading"><strong>Prover</strong><span>Works on individual proof goals</span></div>
@@ -91,18 +121,28 @@ export function ProverSettings() {
         {roleControl("prover", "PROVIDER")}
         {roleControl("prover", "MODEL")}
         {roleControl("prover", "REASONING_EFFORT")}
+        {limitControl("PROVER_SESSIONS", "Prover sessions", "Total native prover invocations across the run. Retries and resumes count again. Empty means Unlimited; 0 starts none.")}
       </div>
     </section>
     <section className="prover-role" aria-label="Orchestrator settings">
-      <div className="prover-role-heading"><strong>Orchestrator</strong><span>Plans, reviews, and revises the graph</span></div>
+      <div className="prover-role-heading"><strong>Orchestrator</strong><span>Research uses this agent to plan, review, and revise the graph</span></div>
       <div className="launch-fields">
         {roleControl("orchestrator", "PROVIDER")}
         {roleControl("orchestrator", "MODEL")}
         {roleControl("orchestrator", "REASONING_EFFORT")}
+        {limitControl("ORCHESTRATOR_SESSIONS", "Orchestrator sessions", "Total planning, review, and research invocations across the run. Retries and resumes count again. Empty means Unlimited; 0 starts none.")}
       </div>
     </section>
-    <div className="launch-fields">
-      {control("PARALLELISM", "Concurrent prover jobs", "Maximum proof jobs running at the same time.")}
-    </div>
-  </Card></>;
+    <p className="muted">Each native session can make many model requests. These session limits count native agent invocations, and the global limits apply across all roles.</p>
+    <section className="prover-role" aria-label="Research and recovery limits">
+      <div className="prover-role-heading"><strong>Research and recovery limits</strong><span>Control retries and changes to the proof plan</span></div>
+      <div className="launch-fields">
+        {limitControl("NEGATION_SESSIONS", "Refutation sessions", "Total native refutation invocations across the run, including retries and resumes. Empty means Unlimited; 0 starts none.")}
+        {limitControl("MAX_RESTARTS", "Standard retries per goal", "Additional passes after the first attempt in Standard mode only. Research uses orchestrator recovery decisions. Empty means Unlimited; 0 allows no retries.")}
+        {limitControl("PLAN_REFINEMENTS", "Proof-direction changes", "Limits changes of informal proof direction. Routine plan notes do not count. Empty means Unlimited; 0 keeps the initial direction.")}
+        {limitControl("MAX_DECOMPOSITIONS", "Recovery decisions", "Shared allowance for orchestrator retry, refutation, and decomposition decisions. Empty means Unlimited; 0 disables these recovery decisions.")}
+        {limitControl("MAX_NODES", "Maximum graph nodes", "Maximum original declarations and helper lemmas in the theorem graph. Clear to use the CLI default.")}
+      </div>
+    </section>
+  </Card>;
 }

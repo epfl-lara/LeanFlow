@@ -135,6 +135,29 @@ test("global limits restore a saved profile after making the launch unlimited", 
   } finally { ui.dispose(); }
 });
 
+test("role and recovery limit resets restore their own saved allowance", () => {
+  const ui = mount();
+  try {
+    const limits = [["PROVER_SESSIONS", "prover sessions"], ["MAX_RESTARTS", "standard retries per goal"]];
+    ui.update(f => {
+      for (const [suffix] of limits) {
+        const name = `LEANFLOW_PROVER_${suffix}`;
+        f.app.catalog.groups[0].flags.push({ name, value_type: "int", default: "", minimum: 0, editable: true, extension_editable: true, sensitive: false });
+        f.app.profiles.profiles[1].overrides[name] = "8";
+      }
+      f.view.form.profile = "custom";
+    });
+    for (const [suffix, label] of limits) {
+      const name = `LEANFLOW_PROVER_${suffix}`;
+      ui.change(ui.input(name), "");
+      assert.equal(ui.view.form.overrides[name], "");
+      ui.click(`Restore profile ${label}`);
+      assert.equal(ui.input(name).props.value, "8");
+      assert.equal(ui.view.form.overrides[name], undefined);
+    }
+  } finally { ui.dispose(); }
+});
+
 test("knob filtering, group expansion, profile save/delete/diff and resets work", () => {
   const ui = mount("knobs");
   try {

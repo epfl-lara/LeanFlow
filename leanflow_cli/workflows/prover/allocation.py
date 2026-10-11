@@ -20,6 +20,8 @@ def wait_for_capacity(runtime: ProverRuntime, role: str, node: Node | None, prom
     """
     if threading.get_ident() != runtime.controller_thread:
         return
+    from leanflow_cli.workflows.prover.role_limits import has_capacity, role_group
+
     resumed = (
         runtime.resume_role_jobs.get((role, prompt))
         if role in {"orchestrator", "review", "research"}
@@ -31,13 +33,17 @@ def wait_for_capacity(runtime: ProverRuntime, role: str, node: Node | None, prom
     while True:
         with runtime.lock:
             runtime._ensure_active()
-            if (
+            global_capacity = (
                 runtime.config.agent_calls is None
                 or runtime.config.agent_calls - runtime.consumed - runtime.reserved >= minimum
-            ):
+            )
+            if global_capacity and has_capacity(runtime, role):
                 return
             outstanding = {
-                future: job for future, job in runtime.pending.items() if not job.get("accounted")
+                future: job
+                for future, job in runtime.pending.items()
+                if not job.get("accounted")
+                and (not global_capacity or role_group(job["role"]) == role_group(role))
             }
         if not outstanding:
             return

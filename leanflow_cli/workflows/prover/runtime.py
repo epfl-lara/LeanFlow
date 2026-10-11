@@ -272,6 +272,7 @@ class ProverRuntime:
         self.state.pop("error_details", None)
         self.state.pop("next_step", None)
         self.state.pop("stop_reason", None)
+        self.state.pop("stop_code", None)
         if self.state.get("proposal_status") in {"proposed", "validating"}:
             self.state.update(
                 proposal_status=(
@@ -427,9 +428,11 @@ class ProverRuntime:
         metrics = self.state["metrics"]
         for field in ("api_calls", "input_tokens", "output_tokens"):
             metrics[field] = sum(int(job.get(field, 0) or 0) for job in jobs)
+        from leanflow_cli.workflows.prover.role_limits import session_metrics
         from leanflow_cli.workflows.prover.usage import aggregate_cost
 
         metrics.update(aggregate_cost(jobs))
+        metrics["role_sessions"] = session_metrics(jobs, self.config)
         metrics["reserved_api_calls"] = self.reserved
         active_spent = sum(
             max(0, int(job.get("api_calls", 0)) - int(job.get("previous_api_calls", 0)))
@@ -524,10 +527,12 @@ class ProverRuntime:
 
     def _context(self, node: Node | None = None) -> dict[str, Any]:
         from leanflow_cli.workflows.prover.resource_handoff import resource_inventory
+        from leanflow_cli.workflows.prover.role_limits import context_allowances
 
         return {
             "run_id": self.run_id,
             "project_root": str(self.root),
+            "role_sessions": context_allowances(self),
             "inbox_offset": self.store.inbox_offset,
             "assignment": node.to_dict() if node else {},
             "dag": self.dag.to_dict(),
@@ -1614,6 +1619,8 @@ class ProverRuntime:
                                     if not self.pending:
                                         self.stopping = True
                                         self.state["stop_status"] = error.status
+                                        self.state["stop_code"] = error.code
+                                        self.state["error"] = str(error)
                                     break
                                 node.status = "running"
                                 if not job.get("resumed"):

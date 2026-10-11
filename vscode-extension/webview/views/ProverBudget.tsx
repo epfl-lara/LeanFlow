@@ -12,6 +12,13 @@ export function ProverBudget({ budget }: { budget: BudgetView }) {
       <Stat label="Reported output tokens" value={metric(budget.tokens.output)} />
       <Stat label="Global token limit" value={budget.tokenLimit === null ? "Unlimited" : metric(budget.tokenLimit)} />
       <Stat label="Token coverage" value={budget.usageComplete === true ? "Complete" : "Incomplete or unknown"} small />
+      {budget.roleSessions.map(usage => <Stat key={usage.role}
+        label={`${usage.role === "negation" ? "Refutation" : usage.role === "orchestrator" ? "Orchestrator" : "Prover"} sessions / limit`}
+        value={`${metric(usage.used)} / ${usage.limit === null ? "Unlimited" : metric(usage.limit)}${usage.reserved ? ` · ${metric(usage.reserved)} reserved` : ""}`} small />)}
+      <Stat label="Proof-direction changes / limit" value={`${metric(budget.planRefinements.used)} / ${budget.planRefinements.max === null ? "Unlimited" : metric(budget.planRefinements.max)}`} small />
+      <Stat label="Recovery decisions / limit" value={`${metric(budget.decompositions.used)} / ${budget.decompositions.max === null ? "Unlimited" : metric(budget.decompositions.max)}`} small />
+      <Stat label="Graph nodes / limit" value={ratio(budget.nodes.used, budget.nodes.max)} small />
+      <Stat label="Standard retries per goal" value={budget.maxRestartsPerNode === null ? "Unlimited" : metric(budget.maxRestartsPerNode)} small />
     </div>
     <p className="muted">One native CLI invocation counts as one agent call. Token limits stop future calls; active calls can overshoot. Missing usage stays unknown. Native runtimes own sampling and context compression.</p>
   </>;

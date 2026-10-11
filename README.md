@@ -193,12 +193,21 @@ leanflow config set limits.wall_time_s 28800
 
 The corresponding environment overrides are `LEANFLOW_PROVER_AGENT_CALLS`,
 `LEANFLOW_PROVER_TOKENS`, and `LEANFLOW_PROVER_WALL_TIME_S`. These also apply to
-formalization and review workflows. One native process invocation is one agent
+formalization, review, refactor, golf and draft workflows. One native process invocation is one agent
 call, regardless of its internal model requests or compaction. Active time is
 cumulative across resumes and includes tools and verification. Native-reported
 tokens gate future invocations; a running invocation can exceed the threshold.
 Missing usage remains unknown and prevents another token-capped invocation.
 There are no LeanFlow three-minute or twenty-minute response/check cutoffs.
+
+The VS Code launch page exposes global limits for every workflow. Prove also
+offers separate **Prover sessions**, **Orchestrator sessions** (including
+planning, review and research), and **Refutation sessions** limits across the
+campaign. Each native session can contain many model requests; these do not
+recreate the former per-request API caps. Retry, proof-direction change,
+recovery-decision and graph-size controls are available alongside them. See
+[limits and accounting](docs/product-reference.md#limits-and-accounting) for
+their exact meanings and environment overrides.
 
 ## Multi-agent mode
 
