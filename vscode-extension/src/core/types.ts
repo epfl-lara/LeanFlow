@@ -789,6 +789,7 @@ export type HostMessage =
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
 export type WebviewMessage =
+  | { type: "copyText"; text: string }
   | { type: "refreshProviders" }
   | { type: "providerAction"; backend: import("./providerCredentials").BackendId; action: import("./providerCredentials").ProviderAction }
   | { type: "ready" }

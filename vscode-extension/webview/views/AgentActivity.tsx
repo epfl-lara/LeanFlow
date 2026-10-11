@@ -6,7 +6,7 @@ import { useStore } from "../store";
 import { EventDetailPanel } from "./EventDetail";
 import { clock } from "./proverFormat";
 
-export function AgentActivity({ runId, jobId }: { runId: string; jobId: string }) {
+export function AgentActivity({ runId, jobId, agentId }: { runId: string; jobId: string; agentId: string }) {
   const { events, setView } = useStore();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showReasoning, setShowReasoning] = useState(true);
@@ -27,7 +27,7 @@ export function AgentActivity({ runId, jobId }: { runId: string; jobId: string }
           {expanded === event.event_id && <EventDetailPanel runId={runId} event={event} />}
         </div>)}
       </div>
-      <div className="row tight"><span className="muted">Latest {activity.rows.length} events from the bounded run buffer.</span><button className="link" onClick={() => setView({ tab: "logs", logAgent: jobId, logRaw: false, logFilter: [], logSearch: "" })}>Open agent log</button></div>
+      <div className="row tight"><span className="muted">Latest {activity.rows.length} events from the bounded run buffer.</span><button className="link" onClick={() => setView({ tab: "logs", logAgent: agentId, logRaw: false, logFilter: [], logSearch: "" })}>Open agent log</button></div>
     </details>
   </div>;
 }

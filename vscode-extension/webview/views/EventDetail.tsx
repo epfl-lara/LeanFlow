@@ -15,12 +15,6 @@ import { eventDetailKey, useStore } from "../store";
 import { post } from "../vscodeApi";
 import { CodeBlock, RichText, ValueView, sectionLanguage } from "./RichText";
 
-function copyText(value: string): void {
-  // Clipboard access needs a user gesture, which the Copy button supplies. A
-  // refusal (older webview host, restricted context) is not worth a toast.
-  void navigator.clipboard?.writeText(value).catch(() => undefined);
-}
-
 function SectionBody({ section }: { section: EventOutputSection }) {
   if (section.kind === "fields") {
     return (
@@ -123,7 +117,7 @@ export function EventDetailPanel(props: { runId: string; event: ActivityEvent })
             {section.subtitle && <span className="subtitle">{section.subtitle}</span>}
             <span className="spacer" />
             {section.text && (
-              <button className="link" onClick={() => copyText(section.text)} type="button">
+              <button className="link" onClick={() => post({ type: "copyText", text: section.text })} type="button">
                 Copy
               </button>
             )}

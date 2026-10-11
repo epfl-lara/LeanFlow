@@ -66,7 +66,7 @@ export function ProverController({ state, controller, capacity, now, onJob }: {
             <button className="link mono" onClick={() => onJob(stage.job!.id)}>{stage.job.agent_id}</button>
             <span className={`pill ${pillTone(stage.job.status)}`}>{stage.job.status || "queued"}</span>
             <span className="muted">{metric(stage.job.api_calls)}{state.config.native_backend ? " agent calls" : ` / ${metric(stage.job.api_budget)} API calls`}{timeline?.durationS !== null && timeline ? ` · ${seconds(timeline.durationS)}` : ""}</span>
-            <button className="btn ghost" onClick={() => setView({ tab: "logs", logAgent: stage.job!.agent_id, logRaw: false, logFilter: [] })}>Events</button>
+            <button className="btn ghost" onClick={() => setView({ tab: "logs", logAgent: stage.job!.agent_id, logRaw: false, logFilter: [], logSearch: "" })}>Events</button>
           </> : <span className="muted">not started</span>}
         </div>;
       })}

@@ -170,6 +170,12 @@ export class WebviewHost implements vscode.Disposable {
   private async dispatch(message: WebviewMessage): Promise<void> {
     const { services } = this;
     switch (message.type) {
+      case "copyText": {
+        // The host clipboard works even when webview clipboard permission is unavailable.
+        await vscode.env.clipboard.writeText(message.text);
+        this.notify("info", "Copied to clipboard.");
+        return;
+      }
       case "ready": {
         this.ready = true;
         this.pushState();

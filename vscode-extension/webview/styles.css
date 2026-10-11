@@ -456,11 +456,24 @@ button:focus-visible {
 }
 
 .launch-fields > label.field,
+.launch-provider-field,
 .launch-options > div > label.field {
   display: grid;
   grid-template-rows: subgrid;
   grid-row: span 3;
   row-gap: 6px;
+}
+
+.launch-provider-field > label.field {
+  display: grid;
+  grid-template-rows: subgrid;
+  grid-row: span 2;
+}
+
+.launch-provider-field > button.link {
+  justify-self: start;
+  align-self: start;
+  text-align: left;
 }
 
 .launch-view label.field {

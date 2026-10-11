@@ -243,6 +243,8 @@ does not read or reinterpret LeanFlow's persistence files directly:
   `webview/views/AgentActivity.tsx` shows it beside each prover job, with emitted
   reasoning optionally visible and complete output expanded through the existing
   per-event evidence cache. Missing reasoning is labelled as unreported.
+  Agent-log navigation uses the recorded agent identity and clears stale search
+  filters. Launch displays the resolved default backend from provider metadata.
 - `src/core/runManager.ts` persists a run record before spawn, binds it to its
   project root and process identity, and reconciles restored runs only from an
   exact run-id status or immutable terminal result. A restored run is stopped
@@ -297,6 +299,11 @@ runtime before it reaches filesystem or process APIs; modules included in the
 webview bundle may import host types but not host runtime code. Workspace Trust
 and virtual-workspace declarations fail closed because LeanFlow executes the
 workspace's local toolchain and requires a real filesystem checkout.
+Clipboard copies also pass through this boundary to VS Code's clipboard API,
+with bounded text and visible success or failure feedback. Interaction tests in
+`test/webviewButtons.test.mjs` exercise every webview button definition;
+`test/webviewHost.test.mjs` checks every host action with disposable files and
+inert process, credential, and editor services.
 
 ## Runtime contracts and development
 

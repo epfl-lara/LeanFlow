@@ -10,12 +10,13 @@ const bundle = await build({
     builder.onResolve({ filter: /^vscode$/ }, () => ({ path: "vscode", namespace: "fixture" }));
     builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: `
       export class EventEmitter { event = () => ({ dispose() {} }); fire() {} dispose() {} }
-      export const workspace = { isTrusted: true, workspaceFolders: [{uri: {authority: "ssh-remote+test"}}] };
+      export const workspace = { isTrusted: true, workspaceFolders: [{uri: {authority: "ssh-remote+test"}}], openTextDocument: async uri => { if (globalThis.providerFixture.missingConfig) throw new Error('Missing file'); return uri; } };
       export const Uri = { file: value => value };
       export const window = {
         showInputBox: async options => { globalThis.providerFixture.prompts.push(options); return globalThis.providerFixture.input; },
         showInformationMessage() {},
         createTerminal: options => { globalThis.providerFixture.terminals.push(options); return {show() {}}; },
+        showTextDocument: async document => { globalThis.providerFixture.documents.push(document); },
       };
     ` }));
     builder.onLoad({ filter: /src\/core\/cli\.ts$/ }, () => ({ contents: `export async function runCli(args, options) { globalThis.providerFixture.calls.push({ args, options }); return JSON.stringify(globalThis.providerFixture.metadata); }` }));
@@ -25,7 +26,7 @@ const { ProviderSetup } = await import(`data:text/javascript;base64,${Buffer.fro
 
 function fixture() {
   const values = new Map();
-  const f = globalThis.providerFixture = { input: undefined, prompts: [], calls: [], terminals: [], metadata: { selected: "codex", backends: ["codex", "claude", "lemex"].map(id => ({ id, installed: true, executable: `/bin/${id}`, auth: "native_login", version: "1.2.3", key_env: "NATIVE_API_KEY", config_path: `/home/.${id}/config.toml`, endpoint: "", checked: true, accidental_key: "never-copy-extra-fields" })) } };
+  const f = globalThis.providerFixture = { input: undefined, prompts: [], calls: [], terminals: [], documents: [], metadata: { selected: "codex", backends: ["codex", "claude", "lemex"].map(id => ({ id, installed: true, executable: `/bin/${id}`, auth: "native_login", version: "1.2.3", key_env: "NATIVE_API_KEY", config_path: `/home/.${id}/config.toml`, endpoint: "", checked: true, accidental_key: "never-copy-extra-fields" })) } };
   const secrets = { get: async key => values.get(key), store: async (key, value) => values.set(key, value), delete: async key => values.delete(key), onDidChange: () => ({ dispose() {} }) };
   const setup = new ProviderSetup({ secrets });
   return { ...f, f, setup, values, secrets };
@@ -67,4 +68,35 @@ test("secret storage failures never echo the entered value", async () => {
   secrets.store = async () => { throw new Error(`vault rejected ${f.input}`); };
   await assert.rejects(setup.act("lemex", "apiKey"), error => !error.message.includes(f.input) && error.message.includes("secret storage"));
   setup.dispose();
+});
+
+test("replace/remove keys and set/clear endpoint restore native inheritance", async () => {
+  const { f, setup } = fixture();
+  try {
+    for (const backend of ["codex", "claude", "lemex"]) {
+      f.input = "first-key"; await setup.act(backend, "apiKey");
+      f.input = "replacement-key"; await setup.act(backend, "apiKey");
+      assert.ok(Object.values(await setup.credentials.environment(backend)).includes("replacement-key"));
+      await setup.act(backend, "removeKey");
+      assert.deepEqual(await setup.credentials.environment(backend), {});
+    }
+    f.input = "https://inference.example/v1"; await setup.act("lemex", "endpoint");
+    assert.equal((await setup.credentials.environment()).LEMEX_BASE_URL, f.input);
+    f.input = undefined; await setup.act("lemex", "endpoint");
+    assert.equal((await setup.credentials.environment()).LEMEX_BASE_URL, "https://inference.example/v1");
+    f.input = ""; await setup.act("lemex", "endpoint");
+    assert.equal((await setup.credentials.environment()).LEMEX_BASE_URL, undefined);
+  } finally { setup.dispose(); }
+});
+
+test("native config buttons open the advertised path and report missing setup", async () => {
+  const { f, setup } = fixture();
+  try {
+    for (const backend of ["codex", "claude", "lemex"]) {
+      await setup.act(backend, "config");
+      assert.equal(f.documents.at(-1), `/home/.${backend}/config.toml`);
+    }
+    f.missingConfig = true;
+    await assert.rejects(setup.act("lemex", "config"), /No native config file exists/);
+  } finally { setup.dispose(); }
 });

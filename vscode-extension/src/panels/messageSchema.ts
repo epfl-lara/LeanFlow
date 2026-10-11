@@ -207,6 +207,10 @@ export function parseWebviewMessage(
   const reject = (field: string) => ({ ok: false as const, reason: `${type}: bad ${field}` });
 
   switch (type) {
+    case "copyText": {
+      const text = str(raw.text, 4 * 1024 * 1024);
+      return text === null ? reject("text") : { ok: true, message: { type, text } };
+    }
     case "ready":
     case "refresh":
     case "openDashboard":

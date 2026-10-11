@@ -39,7 +39,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
           {!state.config.native_backend && settings.compression !== null && <> · compression {settings.compression ? "on" : "off"}</>}
           {settings.source === "shared" && <> · run-level settings</>}
         </div>}
-        <AgentActivity runId={state.run_id} jobId={job.id} />
+        <AgentActivity runId={state.run_id} jobId={job.id} agentId={job.agent_id} />
         {job.error && <div className="prover-op-error">{job.error}</div>}
         {job.stop_reason && <div className="prover-job-stop">
           <strong>Allocation ended:</strong> {job.stop_reason.message || job.stop_reason.code}
@@ -55,7 +55,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
             : <span className="tag" key={artifact} title={artifact}>{artifactName(artifact)}</span>)}</div>
         </details>}
         <div className="row tight">
-          <button className="btn ghost" onClick={() => setView({ tab: "logs", logAgent: job.agent_id, logRaw: false, logFilter: [] })}>Events</button>
+          <button className="btn ghost" onClick={() => setView({ tab: "logs", logAgent: job.agent_id, logRaw: false, logFilter: [], logSearch: "" })}>Events</button>
           {job.log_path && <button className="btn ghost" onClick={() => onOpen(job.log_path)}>Log file</button>}
           {job.scratch_path && <button className="btn ghost" onClick={() => onOpen(job.scratch_path)}>Scratch proof</button>}
           {job.result_path && <button className="btn ghost" onClick={() => onOpen(job.result_path)}>Result report</button>}

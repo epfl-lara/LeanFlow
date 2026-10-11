@@ -12,7 +12,7 @@ import {
   profileLaunchSurfaces,
   proverConfigurationRows,
 } from "../../src/core/profileSurfaces";
-import { BACKEND_IDS, BACKEND_LABELS } from "../../src/core/providerCredentials";
+import { BACKEND_IDS, BACKEND_LABELS, isBackend } from "../../src/core/providerCredentials";
 import { LAUNCH_FIELD_LIMITS, WORKFLOW_KINDS } from "../../src/core/types";
 import { Card, Check, Field, Notice } from "../components";
 import { PlayIcon } from "../icons";
@@ -20,16 +20,14 @@ import { useStore } from "../store";
 import { post } from "../vscodeApi";
 import { ProverSettings } from "./ProverSettings";
 
-/** Providers the CLI understands. Empty means "use the configured default". */
-const PROVIDERS = [
-  { id: "", label: "Configured default" },
-  ...BACKEND_IDS.map(id => ({ id, label: BACKEND_LABELS[id] })),
-];
-
 export function LaunchView() {
   const { app, view, setView, setForm, preview, requestPreview } = useStore();
   const form = view.form;
   const [showPlan, setShowPlan] = useState(false);
+  const defaultProvider = app?.providers?.error ? "" : app?.providers?.selected;
+  const defaultProviderLabel = isBackend(defaultProvider)
+    ? `Default (${BACKEND_LABELS[defaultProvider]})`
+    : app?.providers?.checking ? "Default (checking…)" : "Default (unavailable)";
 
   const problems = useMemo(() => validateLaunch(form), [form]);
   const command = useMemo(() => {
@@ -193,19 +191,18 @@ export function LaunchView() {
             </datalist>
           </Field>
 
-          <Field label="Agent backend" hint="Uses the runtime’s own login, API configuration, and defaults.">
-            <button className="link" onClick={() => setView({ tab: "providers" })}>Set up login, API key, or endpoint</button>
-            <select
-              value={form.provider}
-              onChange={(event) => setForm({ provider: event.target.value })}
-            >
-              {PROVIDERS.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.label}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <div className="launch-provider-field">
+            <Field label="Agent backend">
+              <select
+                value={form.provider}
+                onChange={(event) => setForm({ provider: event.target.value })}
+              >
+                <option value="">{defaultProviderLabel}</option>
+                {BACKEND_IDS.map((id) => <option key={id} value={id}>{BACKEND_LABELS[id]}</option>)}
+              </select>
+            </Field>
+            <button className="link" onClick={() => setView({ tab: "providers" })}>Manage login, API key, or endpoint</button>
+          </div>
 
           <Field label="Model" hint="Empty uses the provider's configured default.">
             <input
