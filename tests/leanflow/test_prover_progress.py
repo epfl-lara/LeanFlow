@@ -28,7 +28,7 @@ def runtime(tmp_path: Path) -> ProverRuntime:
     return ProverRuntime(
         root=tmp_path,
         targets=[target],
-        config=ProverConfig(job_api_calls=2, max_restarts=3),
+        config=ProverConfig(mode="standard", job_api_calls=2, max_restarts=3),
         session=lambda **kwargs: {},
         verifier=RejectingVerifier(),
     )

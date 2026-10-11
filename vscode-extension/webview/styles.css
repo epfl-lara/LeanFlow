@@ -557,10 +557,65 @@ button:focus-visible {
 
 /* Role grids mix selectors and limit groups with optional reset actions.
    Each field owns its height, so a wrapped hint cannot stretch a label row. */
-.prover-role .launch-fields > label.field {
+.prover-role .launch-fields > label.field,
+.prover-mode-fields > label.field {
   display: flex;
   grid-row: auto;
   gap: 6px;
+}
+
+.prover-mode-control {
+  position: relative;
+  min-width: 0;
+}
+
+.prover-mode-control > label.field > .label {
+  padding-right: 24px;
+}
+
+.prover-mode-help {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+.prover-mode-help > summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground);
+  width: 20px;
+  text-align: center;
+}
+
+.prover-mode-help > summary::-webkit-details-marker {
+  display: none;
+}
+
+.prover-mode-help > summary:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+.prover-mode-help-body {
+  position: absolute;
+  top: 24px;
+  right: 0;
+  z-index: 4;
+  width: min(320px, 70vw);
+  padding: 10px 12px;
+  border: 1px solid var(--lf-border);
+  border-radius: var(--lf-radius);
+  background: var(--vscode-editorWidget-background, var(--lf-base));
+  box-shadow: 0 4px 16px #0006;
+  font-size: 12px;
+}
+
+.prover-mode-help-body p {
+  margin: 0;
+}
+
+.prover-mode-help-body p + p {
+  margin-top: 8px;
 }
 
 .global-limit {

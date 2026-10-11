@@ -59,10 +59,10 @@ def research_mode_enabled() -> bool:
 
 
 def prover_research_mode_enabled() -> bool:
-    """Prefer an explicit native prover mode over the legacy research switch."""
-    if "LEANFLOW_PROVER_MODE" in os.environ:
-        return os.environ["LEANFLOW_PROVER_MODE"].strip() == "research"
-    return research_mode_enabled()
+    """Share the native prover's explicit mode, legacy switch, and default precedence."""
+    from leanflow_cli.workflows.prover.config import resolve_prover_mode
+
+    return resolve_prover_mode(os.environ) == "research"
 
 
 def prover_research_profile_env(workers: int = 2) -> dict[str, str]:

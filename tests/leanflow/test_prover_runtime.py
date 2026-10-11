@@ -140,7 +140,7 @@ def test_standard_runtime_completes_only_after_parent_gate(tmp_path: Path) -> No
     runtime = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(job_api_calls=3),
+        config=ProverConfig(mode="standard", job_api_calls=3),
         session=session,
         verifier=verifier,
     )
@@ -160,7 +160,7 @@ def test_parent_gate_rejection_never_installs_child_proof(tmp_path: Path) -> Non
     runtime = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(job_api_calls=1, max_restarts=0),
+        config=ProverConfig(mode="standard", job_api_calls=1, max_restarts=0),
         session=session,
         verifier=Verifier(False),
     )
@@ -186,7 +186,7 @@ def test_global_budget_caps_all_retry_jobs(tmp_path: Path) -> None:
     runtime = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(job_api_calls=2, total_api_calls=3),
+        config=ProverConfig(mode="standard", job_api_calls=2, total_api_calls=3),
         session=unsuccessful,
         verifier=Verifier(),
     )
@@ -228,13 +228,17 @@ def test_multi_hole_candidate_preserves_existing_constructor(tmp_path: Path) -> 
         }
 
     result = ProverRuntime(
-        root=tmp_path, targets=[path], config=ProverConfig(), session=multiple, verifier=Verifier()
+        root=tmp_path,
+        targets=[path],
+        config=ProverConfig(mode="standard"),
+        session=multiple,
+        verifier=Verifier(),
     ).run()
     assert result["status"] == "completed"
     assert path.read_text() == source.replace("sorry", "trivial")
 
 
-def test_research_creates_reviewed_helper_and_proves_bottom_up(tmp_path: Path) -> None:
+def test_default_research_creates_reviewed_helper_and_proves_bottom_up(tmp_path: Path) -> None:
     path = project(tmp_path)
     roles: list[str] = []
 
@@ -268,7 +272,7 @@ def test_research_creates_reviewed_helper_and_proves_bottom_up(tmp_path: Path) -
     result = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(mode="research"),
+        config=ProverConfig(),
         session=planned,
         verifier=Verifier(),
     ).run()
@@ -284,7 +288,7 @@ def test_resume_preserves_original_configuration_and_progress(tmp_path: Path) ->
     runtime = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(total_api_calls=4),
+        config=ProverConfig(mode="standard", total_api_calls=4),
         session=session,
         verifier=Verifier(),
     )
@@ -357,7 +361,7 @@ def test_retry_retains_partial_scratch_and_private_notes(tmp_path: Path) -> None
     state = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(max_restarts=1),
+        config=ProverConfig(mode="standard", max_restarts=1),
         session=continuing,
         verifier=Verifier(),
     ).run()
@@ -370,7 +374,7 @@ def test_interrupted_job_resumes_same_admission_ledger_and_scratch(tmp_path: Pat
     first = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(job_api_calls=3, total_api_calls=3),
+        config=ProverConfig(mode="standard", job_api_calls=3, total_api_calls=3),
         session=session,
         verifier=Verifier(),
     )
@@ -421,7 +425,7 @@ def test_resume_retires_a_job_whose_node_was_revised_while_it_was_interrupted(
     first = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(job_api_calls=3, total_api_calls=6),
+        config=ProverConfig(mode="standard", job_api_calls=3, total_api_calls=6),
         session=session,
         verifier=Verifier(),
     )
@@ -587,7 +591,7 @@ def test_rejected_submission_feedback_stays_inside_same_job(tmp_path: Path) -> N
     state = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(job_api_calls=3, max_restarts=0),
+        config=ProverConfig(mode="standard", job_api_calls=3, max_restarts=0),
         session=persistent,
         verifier=CandidateVerifier(),
     ).run()
@@ -620,7 +624,10 @@ def test_standard_prover_child_research_has_separate_bounded_accounting(
         root=tmp_path,
         targets=[path],
         config=ProverConfig(
-            job_api_calls=2, orchestrator_api_calls=2, total_api_calls=2 * (research_count + 1)
+            mode="standard",
+            job_api_calls=2,
+            orchestrator_api_calls=2,
+            total_api_calls=2 * (research_count + 1),
         ),
         session=auxiliary,
         verifier=Verifier(),
@@ -709,7 +716,11 @@ def test_interrupted_proof_commit_recovers_candidate_without_new_model_budget(
     path = project(tmp_path)
     before = path.read_bytes()
     runtime = ProverRuntime(
-        root=tmp_path, targets=[path], config=ProverConfig(), session=session, verifier=Verifier()
+        root=tmp_path,
+        targets=[path],
+        config=ProverConfig(mode="standard"),
+        session=session,
+        verifier=Verifier(),
     )
     node = runtime.dag.nodes[0]
 
@@ -773,7 +784,11 @@ def test_helper_compilation_pause_retains_checked_candidate_without_model_retry(
 ) -> None:
     path = project(tmp_path)
     runtime = ProverRuntime(
-        root=tmp_path, targets=[path], config=ProverConfig(), session=session, verifier=Verifier()
+        root=tmp_path,
+        targets=[path],
+        config=ProverConfig(mode="standard"),
+        session=session,
+        verifier=Verifier(),
     )
     node = runtime.dag.nodes[0]
     runtime.documents[node.file].generated = True
@@ -821,7 +836,11 @@ def test_session_closes_exact_private_submission_checker_workspace(tmp_path: Pat
 
     verifier = ClosingVerifier()
     runtime = ProverRuntime(
-        root=tmp_path, targets=[path], config=ProverConfig(), session=session, verifier=verifier
+        root=tmp_path,
+        targets=[path],
+        config=ProverConfig(mode="standard"),
+        session=session,
+        verifier=verifier,
     )
     state = runtime.run()
     assert state["status"] == "completed"

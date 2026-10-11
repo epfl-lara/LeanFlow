@@ -10,10 +10,10 @@ design choices; this page describes the implemented runtime.
 
 ```bash
 # One prover, direct proof attempts.
-leanflow workflow prove Main.lean
+LEANFLOW_PROVER_MODE=standard leanflow workflow prove Main.lean
 
-# Research planning and up to two concurrent prover jobs.
-leanflow workflow prove Main.lean --research
+# Default: research planning and up to two concurrent prover jobs, bottom-up.
+leanflow workflow prove Main.lean
 
 # An explicit research concurrency limit.
 leanflow workflow prove Main.lean --research --research-workers 3
@@ -30,8 +30,8 @@ with that concurrency. `--no-parallel` limits proving to one job while retaining
 research planning. Provider, model, prompt and axiom options remain available.
 Clean-room and no-internet execution support Codex, Claude Code and Lemex through
 local controller tools while preserving native model connections. Global and
-role-session limits are available below; the old per-request API settings are
-rejected rather than silently interpreted as session counts.
+role call limits are available below; each native CLI invocation counts as one
+call. The old per-request API settings are rejected with migration guidance.
 
 ## What each mode does
 
@@ -72,7 +72,8 @@ revision, attempts, and status. New helper declarations use separate modules und
 proof source. Each job receives a separate workspace and a snapshot of the plan
 and DAG. Planning, construction, and review start with fresh model histories.
 
-The default scheduling order is **top-down DFS**. Research mode can work on
+The default scheduling order is **bottom-up**, proving prerequisites before
+dependent goals. **Top-down DFS** remains selectable. Research mode can work on
 separate root trajectories concurrently and deduplicates shared dependencies.
 A submitted proof relying on unfinished planned dependencies is
 stored as an **untrusted candidate**. It is not an independently verified
@@ -223,7 +224,7 @@ native compaction still operates within each invocation. LeanFlow never override
 temperature/top-p or invents a context window.
 Default model and reasoning effort are inherited; explicit overrides are optional.
 
-Resource limits default to unset. Zero means exhausted, and negative,
+Global resource limits default to unset. Zero means exhausted, and negative,
 non-finite or boolean limits are invalid. The first three settings apply to
 every role together; the remaining settings further limit one role group:
 
@@ -232,17 +233,17 @@ every role together; the remaining settings further limit one role group:
 | `LEANFLOW_PROVER_AGENT_CALLS` | unset | Maximum native process invocations |
 | `LEANFLOW_PROVER_TOKENS` | unset | Reported-token threshold for admitting future invocations |
 | `LEANFLOW_PROVER_WALL_TIME_S` | unset | Cumulative active campaign time, including tools and verification |
-| `LEANFLOW_PROVER_PROVER_SESSIONS` | unset | Prover invocations across all goals, retries and resumes |
-| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | unset | Shared planning, review, research and recovery invocations |
+| `LEANFLOW_PROVER_PROVER_SESSIONS` | 150 | Prover invocations across all goals, retries and resumes |
+| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | 50 | Shared planning, review, research and recovery invocations |
 | `LEANFLOW_PROVER_NEGATION_SESSIONS` | unset | Refutation invocations across the campaign |
 
 The same defaults can be configured as `limits.agent_calls`, `limits.tokens` and
 `limits.wall_time_s` in LeanFlow configuration. There is no three-minute or
 twenty-minute response, job, command, or Lean-check wall-time cutoff.
-The three role-session allowances are additional ceilings within the global
-allowance. They are exposed on the VS Code role cards and in the Live view.
-They cannot cap model requests inside a native session; Codex and Lemex do not
-currently expose a native per-request ceiling.
+The three role-call allowances are additional ceilings within the global
+allowance. Prover and Orchestrator cards appear only in Research mode; the Live
+view shows spending. An absent setting uses the default, while an explicitly
+empty role limit selects Unlimited. Saved campaigns retain their original caps.
 
 One successfully spawned native agent process is one call. Its internal requests,
 retries and compaction are owned by that runtime. Admission is reserved before
@@ -265,8 +266,8 @@ Additional configuration remains focused on Lean orchestration:
 
 | `LEANFLOW_PROVER_` suffix | Default | Meaning |
 | --- | --- | --- |
-| `MODE` | `standard` | Standard or research workflow |
-| `SEARCH_ORDER` | `top-down` | Top-down candidates or bottom-up prerequisites |
+| `MODE` | `research` | Research planning/review or Standard direct proving |
+| `SEARCH_ORDER` | `bottom-up` | Bottom-up prerequisites or top-down candidates |
 | `PARALLELISM` | 2 in research, 1 in standard | Concurrent prover jobs |
 | `MAX_NODES` | 128 | Structural DAG bound |
 | `MAX_RESTARTS` | unset | Additional passes per goal in Standard mode |

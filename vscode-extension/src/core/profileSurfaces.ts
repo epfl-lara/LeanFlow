@@ -6,7 +6,7 @@
  * only explains its verdicts and derives a compatible copy that drops the
  * offending knobs, so the user can act instead of guessing.
  */
-import { extensionKnobValueProblem, isExtensionEditableKnob } from "./launch";
+import { EMPTY_UNLIMITED_KNOBS, extensionKnobValueProblem, isExtensionEditableKnob } from "./launch";
 import type { FlagCatalog, FlagProfile, FlagSpec } from "./types";
 
 export type IncompatibilityReason = "unknown" | "terminal-only" | "launcher-owned" | "invalid-value";
@@ -30,6 +30,9 @@ export const PROVER_KNOB_LABELS: Record<string, string> = {
   LEANFLOW_PROVER_SEARCH_ORDER: "Dependency order",
   LEANFLOW_PROVER_PARALLELISM: "Concurrent prover jobs",
   LEANFLOW_PROVER_AGENT_CALLS: "Global agent calls",
+  LEANFLOW_PROVER_PROVER_SESSIONS: "Prover calls",
+  LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS: "Orchestrator calls",
+  LEANFLOW_PROVER_NEGATION_SESSIONS: "Refutation calls",
   LEANFLOW_PROVER_TOKENS: "Global reported tokens",
   LEANFLOW_PROVER_WALL_TIME_S: "Global active time (s)",
   LEANFLOW_PROVER_PROVIDER: "Prover backend",
@@ -146,7 +149,7 @@ export function proverConfigurationRows(input: {
       const effective = input.envEffective?.[flag.name] ?? input.envDelta?.[flag.name];
       const override = input.overrides[flag.name];
       const fromProfile = input.profile?.overrides[flag.name];
-      if (override !== undefined && override !== "") {
+      if (override !== undefined && (override !== "" || EMPTY_UNLIMITED_KNOBS.has(flag.name) || flag.name === "LEANFLOW_PROVER_MODE")) {
         rows.push({ name: flag.name, label, value: effective ?? override, source: "override" });
       } else if (fromProfile !== undefined && override === undefined) {
         rows.push({ name: flag.name, label, value: effective ?? fromProfile, source: "profile" });
@@ -157,5 +160,9 @@ export function proverConfigurationRows(input: {
       }
     }
   }
-  return rows;
+  return rows.map(row => row.value === "" && EMPTY_UNLIMITED_KNOBS.has(row.name)
+    ? { ...row, value: "Unlimited" }
+    : row.name === "LEANFLOW_PROVER_MODE" && row.value === ""
+      ? { ...row, value: input.catalog?.groups.flatMap(group => group.flags).find(flag => flag.name === row.name)?.default ?? "research" }
+      : row);
 }

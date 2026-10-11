@@ -138,7 +138,7 @@ test("global limits restore a saved profile after making the launch unlimited", 
 test("role and recovery limit resets restore their own saved allowance", () => {
   const ui = mount();
   try {
-    const limits = [["PROVER_SESSIONS", "prover sessions"], ["MAX_RESTARTS", "standard retries per goal"]];
+    const limits = [["PROVER_SESSIONS", "prover calls"], ["MAX_RESTARTS", "standard retries per goal"]];
     ui.update(f => {
       for (const [suffix] of limits) {
         const name = `LEANFLOW_PROVER_${suffix}`;
@@ -148,6 +148,7 @@ test("role and recovery limit resets restore their own saved allowance", () => {
       f.view.form.profile = "custom";
     });
     for (const [suffix, label] of limits) {
+      ui.change(ui.input("LEANFLOW_PROVER_MODE"), suffix === "MAX_RESTARTS" ? "standard" : "research");
       const name = `LEANFLOW_PROVER_${suffix}`;
       ui.change(ui.input(name), "");
       assert.equal(ui.view.form.overrides[name], "");

@@ -417,7 +417,10 @@ def test_native_rejected_candidate_repairs_in_same_process_and_receipt_is_bound(
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", harness)
     state = ProverRuntime(
-        root=tmp_path, targets=[path], config=ProverConfig(), verifier=CandidateVerifier()
+        root=tmp_path,
+        targets=[path],
+        config=ProverConfig(mode="standard"),
+        verifier=CandidateVerifier(),
     ).run()
     assert state["status"] == "completed", state.get("error")
     assert state["metrics"]["agent_calls"] == 1

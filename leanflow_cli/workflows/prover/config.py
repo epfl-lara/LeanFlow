@@ -54,12 +54,12 @@ _RETIRED_SETTINGS = (
 class ProverConfig:
     """Keep native settings explicit and global resource limits unlimited when unset."""
 
-    mode: str = "standard"
-    search_order: str = "top-down"
+    mode: str = "research"
+    search_order: str = "bottom-up"
     parallelism: int = 2
     agent_calls: int | None = None
-    prover_sessions: int | None = None
-    orchestrator_sessions: int | None = None
+    prover_sessions: int | None = 150
+    orchestrator_sessions: int | None = 50
     negation_sessions: int | None = None
     tokens: int | None = None
     wall_time_s: float | None = None
@@ -172,11 +172,14 @@ class ProverConfig:
                     raise ValueError(
                         f"{prefix + suffix} is retired. Use native runtime configuration, role session limits, or global agent_calls, tokens, and wall_time_s limits."
                     )
-        values: dict[str, Any] = {}
+        values: dict[str, Any] = {"mode": resolve_prover_mode(source)}
         defaults = asdict(cls())
         for name, env_name in ENV_NAMES.items():
             raw = source.get(env_name, "").strip()
             if not raw:
+                if env_name in source and name in {"prover_sessions", "orchestrator_sessions"}:
+                    # Clearing a visible limit means Unlimited, not the new-run default.
+                    values[name] = None
                 continue
             default = defaults[name]
             if default is None:
@@ -208,3 +211,13 @@ class ProverConfig:
                 if part.strip()
             )
         return cls(**values)
+
+
+def resolve_prover_mode(env: Mapping[str, str]) -> str:
+    """Resolve explicit native choices, then legacy switches, then the new-run default."""
+    if "LEANFLOW_PROVER_MODE" in env:
+        return env["LEANFLOW_PROVER_MODE"].strip() or ProverConfig.mode
+    legacy = env.get("LEANFLOW_RESEARCH_MODE", "").strip().lower()
+    if legacy:
+        return "research" if legacy in {"1", "true", "yes", "on"} else "standard"
+    return ProverConfig.mode

@@ -56,7 +56,8 @@ def test_role_invocation_limits_are_serialized_and_editable(
     assert getattr(ProverConfig(**config.to_mapping()), name) == expected
     spec = lookup_flag(env_name)
     assert spec is not None and spec.extension_editable
-    assert spec.default == "" and spec.minimum == 0
+    assert spec.default == {"prover_sessions": "150", "orchestrator_sessions": "50"}.get(name, "")
+    assert spec.minimum == 0
 
 
 @pytest.mark.parametrize("name", ["prover_sessions", "orchestrator_sessions", "negation_sessions"])
@@ -95,18 +96,92 @@ def native_launch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return tmp_path
 
 
-@pytest.mark.parametrize("mode", ["standard", ""])
 def test_explicit_standard_selection_beats_legacy_research_identity(
-    native_launch: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+    native_launch: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
-    monkeypatch.setenv("LEANFLOW_PROVER_MODE", mode)
+    monkeypatch.setenv("LEANFLOW_PROVER_MODE", "standard")
     plan = workflow.resolve_workflow_request(
         "/prove Main.lean", active_cwd=native_launch, preview=True
     )
     assert not plan.workflow.research_mode
     assert plan.child_env["LEANFLOW_RESEARCH_MODE"] == "0"
     assert ProverConfig.from_env(plan.child_env).mode == "standard"
+
+
+@pytest.mark.parametrize("mode", [None, ""])
+def test_new_prover_launch_defaults_to_research_bottom_up_and_role_limits(
+    native_launch: Path, monkeypatch: pytest.MonkeyPatch, mode: str | None
+) -> None:
+    if mode is not None:
+        monkeypatch.setenv("LEANFLOW_PROVER_MODE", mode)
+        monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "0")
+    plan = workflow.resolve_workflow_request(
+        "/prove Main.lean", active_cwd=native_launch, preview=True
+    )
+    config = ProverConfig.from_env(plan.child_env)
+    assert plan.workflow.research_mode
+    assert plan.child_env["LEANFLOW_RESEARCH_MODE"] == "1"
+    assert (config.mode, config.search_order) == ("research", "bottom-up")
+    assert (config.prover_sessions, config.orchestrator_sessions) == (150, 50)
+    for suffix, expected in (("MODE", "research"), ("SEARCH_ORDER", "bottom-up")):
+        spec = lookup_flag("LEANFLOW_PROVER_" + suffix)
+        assert spec is not None and spec.default == expected
+
+
+def test_explicit_legacy_research_false_preserves_standard_selection(
+    native_launch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "false")
+    monkeypatch.setenv("LEANFLOW_PROVER_SEARCH_ORDER", "top-down")
+    plan = workflow.resolve_workflow_request(
+        "/prove Main.lean", active_cwd=native_launch, preview=True
+    )
+    assert not plan.workflow.research_mode
+    config = ProverConfig.from_env(plan.child_env)
+    assert (config.mode, config.search_order) == ("standard", "top-down")
+
+
+def test_explicit_unlimited_role_calls_have_an_honest_preview_source(
+    native_launch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("LEANFLOW_PROVER_PROVER_SESSIONS", "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS"):
+        monkeypatch.setenv(name, "")
+    plan = workflow.resolve_workflow_request(
+        "/prove Main.lean", active_cwd=native_launch, preview=True
+    )
+    preview = workflow.prover_config_preview(plan)
+    for name in ("prover_sessions", "orchestrator_sessions"):
+        assert preview["effective"][name] is None
+        assert preview["sources"][name] == "environment"
+
+
+def test_old_native_campaign_keeps_unlimited_roles_and_saved_mode_on_resume() -> None:
+    from leanflow_cli.workflows.prover.research_policy import restore_research_config
+
+    original = ProverConfig(mode="standard", search_order="top-down").to_mapping()
+    for name in ("prover_sessions", "orchestrator_sessions", "negation_sessions"):
+        original.pop(name)
+    resumed = restore_research_config(
+        ProverConfig(), {"config": original, "research_policy": "online-v1"}
+    )
+    assert (resumed.prover_sessions, resumed.orchestrator_sessions, resumed.negation_sessions) == (
+        None,
+        None,
+        None,
+    )
+    assert (resumed.mode, resumed.search_order) == ("standard", "top-down")
+
+
+@pytest.mark.parametrize("limit", [None, 0, 17])
+def test_saved_role_limits_survive_new_defaults(limit: int | None) -> None:
+    from leanflow_cli.workflows.prover.research_policy import restore_research_config
+
+    saved = ProverConfig(prover_sessions=limit, orchestrator_sessions=limit).to_mapping()
+    resumed = restore_research_config(
+        ProverConfig(), {"config": saved, "research_policy": "online-v1"}
+    )
+    assert (resumed.prover_sessions, resumed.orchestrator_sessions) == (limit, limit)
 
 
 def test_builtin_research_profile_activates_native_controller_without_legacy_features(

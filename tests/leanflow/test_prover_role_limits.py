@@ -143,7 +143,9 @@ def test_planning_roles_share_one_allowance_and_leave_prover_capacity(
 def test_zero_blocks_only_its_role_and_unset_is_unlimited(tmp_path: Path, role: str) -> None:
     from leanflow_cli.workflows.prover.config import ProverConfig
 
-    runtime = make_runtime(tmp_path, config=ProverConfig(**{role + "_sessions": 0}))
+    limits = {group + "_sessions": None for group in ("prover", "orchestrator", "negation")}
+    limits[role + "_sessions"] = 0
+    runtime = make_runtime(tmp_path, config=ProverConfig(**limits))
     with pytest.raises(BudgetExhausted) as caught:
         runtime._new_job(role, node=runtime.dag.nodes[0])
     assert caught.value.code == role + "_sessions"
@@ -203,7 +205,9 @@ def test_scheduler_reports_role_limit_and_accepts_work_at_exact_limit(tmp_path: 
     from tests.leanflow.test_prover_runtime import session
 
     runtime = make_runtime(
-        tmp_path, config=ProverConfig(prover_sessions=0, agent_calls=10), session=session
+        tmp_path,
+        config=ProverConfig(mode="standard", prover_sessions=0, agent_calls=10),
+        session=session,
     )
     state = runtime.run()
     assert state["status"] == "budget_exhausted"
@@ -213,7 +217,9 @@ def test_scheduler_reports_role_limit_and_accepts_work_at_exact_limit(tmp_path: 
     assert state["stop_reason"]["remaining_api_calls"] == 10
     second = tmp_path / "second"
     second.mkdir()
-    runtime = make_runtime(second, config=ProverConfig(prover_sessions=1), session=session)
+    runtime = make_runtime(
+        second, config=ProverConfig(mode="standard", prover_sessions=1), session=session
+    )
     assert runtime.run()["status"] == "completed"
 
 
@@ -304,7 +310,9 @@ def test_resumed_research_setup_failure_does_not_leak_allowance(
 def test_coincident_global_limit_preserves_recorded_role_stop(tmp_path: Path) -> None:
     from leanflow_cli.workflows.prover.config import ProverConfig
 
-    runtime = make_runtime(tmp_path, config=ProverConfig(agent_calls=0, prover_sessions=0))
+    runtime = make_runtime(
+        tmp_path, config=ProverConfig(mode="standard", agent_calls=0, prover_sessions=0)
+    )
     state = runtime.run()
     assert state["stop_code"] == state["stop_reason"]["code"] == "prover_sessions"
     assert state["stop_reason"]["scope"] == "role"

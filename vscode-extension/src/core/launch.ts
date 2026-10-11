@@ -22,7 +22,7 @@ export function buildWorkflowArgs(
 ): string[] {
   const args: string[] = [request.kind];
   const mode = environment.LEANFLOW_PROVER_MODE ?? request.overrides.LEANFLOW_PROVER_MODE;
-  const boundedMode = request.kind === "prove" && ["standard", "research"].includes(mode);
+  const boundedMode = request.kind === "prove" && ["", "standard", "research"].includes(mode);
 
   const target = request.target.trim();
   if (target) {
@@ -88,6 +88,13 @@ export interface LaunchEnv {
 
 /** Values above this length are rejected rather than passed to a child process. */
 const MAX_ENV_VALUE_LENGTH = 4096;
+
+// These native role limits distinguish an absent default from explicit Unlimited.
+export const EMPTY_UNLIMITED_KNOBS = new Set([
+  "LEANFLOW_PROVER_PROVER_SESSIONS",
+  "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS",
+  "LEANFLOW_PROVER_NEGATION_SESSIONS",
+]);
 
 /**
  * Compatibility fence for a CLI catalog predating `extension_editable`.
@@ -156,7 +163,7 @@ export function resolveLaunchEnv(
       rejected.push(name);
       continue;
     }
-    if (value === "") {
+    if (value === "" && !EMPTY_UNLIMITED_KNOBS.has(name) && name !== "LEANFLOW_PROVER_MODE") {
       delete merged[name];
       unset.push(name);
       continue;
@@ -182,7 +189,7 @@ export function extensionKnobValueProblem(
   if (value.includes("\0")) {
     return "value contains a NUL character";
   }
-  if (allowUnset && value === "") {
+  if (value === "" && (allowUnset || EMPTY_UNLIMITED_KNOBS.has(flag.name) || flag.name === "LEANFLOW_PROVER_MODE")) {
     return null;
   }
 

@@ -20,7 +20,7 @@ leanflow workflow prove Main.lean --provider lemex --model zai-org/GLM-5.2
 
 - **Protected proof completion** — fills authorized `sorry` holes with independently checked proofs. Warm LeanProbe provides feedback; strict axiom checks and a final Lake build decide completion.
 - **Formalization** — turns a LaTeX/PDF source document or TeX project into a buildable, statement-verified Lean draft with source-linked declarations, then hands off to proof repair.
-- **Two proving modes** — standard uses one prover; research adds fresh planning/review sessions and a deterministic theorem-DAG scheduler with bounded concurrent provers.
+- **Two proving modes** — research is the default, with fresh planning/review sessions and concurrent provers working bottom-up through a theorem graph. Standard uses one prover directly.
 - **Resumable limits** — agent invocations, active time, notes, scratch proofs, and failed attempts survive restart. Limits are optional; there is no LeanFlow per-response deadline.
 - **Grounded research** — bounded paper/web retrieval and arithmetic experiments support an informal plan; reviewed plans can add explicitly pinned Lean libraries.
 - **Live proof workspace** — the VS Code extension shows theorem dependencies, the plan, per-job logs, clickable source changes and diffs, and usage metrics.
@@ -98,7 +98,7 @@ separate editing workflow.
 
 - **`prove <file>`** completes holes in that file. Definition holes require explicit `LEANFLOW_PROVER_FILL_DEFINITIONS=1` authorization.
 - **`prove`** without a file discovers eligible project source files.
-- **`prove --research`** develops an informal plan, constructs and reviews a DAG, and schedules independent prover jobs. Top-down candidates remain untrusted until dependencies close and strict checks pass; bottom-up scheduling is also available.
+- **Research (the default)** develops an informal plan, constructs and reviews a DAG, and schedules independent prover jobs bottom-up. Optional top-down candidates remain untrusted until dependencies close and strict checks pass.
 - **`prove --clean-room`** works with Codex, Claude Code and Lemex using only project files and installed libraries. External web/repository research and remote Lean search are disabled; bridge commands run without network access. Native model connections remain available. Clean-room checkpoints can resume, but online or legacy runs cannot be converted into clean-room tests.
 - **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
 
@@ -200,23 +200,28 @@ tokens gate future invocations; a running invocation can exceed the threshold.
 Missing usage remains unknown and prevents another token-capped invocation.
 There are no LeanFlow three-minute or twenty-minute response/check cutoffs.
 
-The VS Code launch page exposes global limits for every workflow. Prove also
-offers separate **Prover sessions**, **Orchestrator sessions** (including
-planning, review and research), and **Refutation sessions** limits across the
-campaign. Each native session can contain many model requests; these do not
-recreate the former per-request API caps. Retry, proof-direction change,
-recovery-decision and graph-size controls are available alongside them. See
+The VS Code launch page exposes global limits for every workflow. Research
+shows separate **Prover calls** and **Orchestrator calls** settings, defaulting
+to **150** and **50** per run. One `codex exec`, `lemex exec`, or Claude invocation
+counts as one call; planning, review and research share the orchestrator allowance.
+Clear a role limit for unlimited calls. Retry, proof-direction change,
+recovery-decision and graph-size controls remain configurable. See
 [limits and accounting](docs/product-reference.md#limits-and-accounting) for
 their exact meanings and environment overrides.
 
 ## Multi-agent mode
 
-Standard proving uses one prover at a time. Enable research mode for a planning
-orchestrator and concurrent jobs on the theorem DAG:
+Research is the default: a planning orchestrator coordinates concurrent provers
+on the theorem DAG, solving dependencies first (bottom-up). Change concurrency
+with:
 
 ```bash
 leanflow workflow prove Main.lean --research --research-workers 3
 ```
+
+Choose Standard in VS Code for direct sequential proving, or set
+`LEANFLOW_PROVER_MODE=standard` in the shell. The help control beside Mode
+explains both options. Explicit saved mode and order choices are preserved.
 
 `--agents 3` is a compatibility spelling for the same prover concurrency. Only
 one controller owns canonical source; jobs have independent scratch workspaces.
@@ -256,7 +261,7 @@ variables. `leanflow flags` is the catalog of them:
 leanflow flags list --ablatable        # knobs worth flipping in an experiment
 leanflow flags show LEANFLOW_PROVER_AGENT_CALLS
 leanflow flags effective --changed     # what this environment actually sets
-leanflow flags diff default research   # what --research really turns on
+leanflow flags diff default research   # compare the named profiles
 ```
 
 Named knob profiles are JSON files under `.leanflow/flag-profiles/` (project) or

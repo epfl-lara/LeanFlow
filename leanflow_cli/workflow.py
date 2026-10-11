@@ -280,7 +280,7 @@ def prover_config_preview(plan: NativeLaunchPlan) -> dict[str, Any]:
     sources: dict[str, str] = {}
     for field, name in ENV_NAMES.items():
         raw = str(env.get(name, "") or "").strip()
-        if raw:
+        if raw or (name in env and field in {"prover_sessions", "orchestrator_sessions"}):
             sources[field] = "environment" if parent.get(name) == env.get(name) else "launcher"
         elif field == "allowed_axioms" and str(env.get("LEANFLOW_NATIVE_ALLOWED_AXIOMS", "")):
             sources[field] = "launcher"

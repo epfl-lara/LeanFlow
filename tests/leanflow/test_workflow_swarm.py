@@ -141,6 +141,7 @@ def test_parse_workflow_command_defaults_to_single_agent():
 
 def test_resolve_prover_agents_select_research_without_legacy_swarm(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_HUMAN_REVIEW_ENABLED", "1")
+    monkeypatch.setenv("LEANFLOW_PROVER_MODE", "standard")
     monkeypatch.setattr(
         workflow_mod,
         "discover_leanflow_project",

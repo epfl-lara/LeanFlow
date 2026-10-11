@@ -15,13 +15,15 @@ export function ProverSettings() {
   const profile = app?.profiles?.profiles.find((item) => item.name === form.profile);
   if (form.kind !== "prove" || !specs.has("LEANFLOW_PROVER_MODE")) return null;
   const modeDefault = specs.get("LEANFLOW_PROVER_MODE")!.default;
+  const profileResearch = profile?.overrides.LEANFLOW_RESEARCH_MODE;
   const profileMode = profile?.overrides.LEANFLOW_PROVER_MODE
-    ?? (["1", "true", "yes", "on"].includes((profile?.overrides.LEANFLOW_RESEARCH_MODE ?? "").toLowerCase()) ? "research" : undefined);
+    ?? (profileResearch?.trim() ? ["1", "true", "yes", "on"].includes(profileResearch.trim().toLowerCase()) ? "research" : "standard" : undefined);
   const inheritedResearch = form.overrides.LEANFLOW_RESEARCH_MODE ?? profile?.overrides.LEANFLOW_RESEARCH_MODE;
   const inheritedMode = profile?.overrides.LEANFLOW_PROVER_MODE
-    ?? (inheritedResearch !== undefined
-      ? ["1", "true", "yes", "on"].includes(inheritedResearch.toLowerCase()) ? "research" : modeDefault
-      : form.research || form.agents > 1 ? "research" : modeDefault);
+    ?? (form.research || (!form.noParallel && form.agents > 1) ? "research"
+      : inheritedResearch?.trim()
+        ? ["1", "true", "yes", "on"].includes(inheritedResearch.trim().toLowerCase()) ? "research" : "standard"
+        : modeDefault);
   // An explicit empty mode clears the profile too; it resolves to the CLI default.
   const effectiveMode = (form.overrides.LEANFLOW_PROVER_MODE ?? inheritedMode) || modeDefault;
 
@@ -66,7 +68,7 @@ export function ProverSettings() {
     return <div className="global-limit" key={name}>
       <Field label={label} source={override !== undefined ? "Override" : saved !== undefined ? "Profile" : undefined} hint={hint}>
         <input aria-label={name} type="number" min={spec.minimum} max={spec.maximum} step={1}
-          placeholder={spec.default || "Unlimited"} value={value}
+          placeholder={suffix === "MAX_NODES" ? spec.default : "Unlimited"} value={value}
           onChange={event => setValue(event.target.value)} />
       </Field>
       {override !== undefined && saved !== undefined && <button className="link" onClick={() => setValue(undefined)} aria-label={`Restore profile ${label.toLowerCase()}`}>Use profile limit</button>}
@@ -110,18 +112,28 @@ export function ProverSettings() {
 
   return <Card title="Prover setup" subtitle="Research builds, reviews, and revises a proof plan while provers work on its goals. Standard works through proof goals directly.">
     {profile && <div className="prover-profile-note">Profile <strong>{profile.name}</strong><span>Changes here apply to this launch.</span></div>}
-    <div className="launch-fields">
-      {control("MODE", "Mode", "Research coordinates planning, review, research jobs, and proving. Standard uses one prover.")}
-      {control("SEARCH_ORDER", "Dependency order", "Choose where work begins in the theorem graph.")}
-      {control("PARALLELISM", "Concurrent prover jobs", "Maximum simultaneous proof jobs in research mode; standard uses one.")}
+    <div className="launch-fields prover-mode-fields">
+      <div className="prover-mode-control">
+        {control("MODE", "Mode", "Choose research coordination or direct sequential proving.")}
+        <details className="prover-mode-help">
+          <summary aria-label="About Research and Standard modes" title="About Research and Standard modes">ⓘ</summary>
+          <div className="prover-mode-help-body">
+            <p><strong>Research</strong> uses an orchestrator to plan and review a theorem graph, revise the proof direction, and coordinate parallel provers.</p>
+            <p><strong>Standard</strong> works directly through proof goals with one prover at a time, without the research planning stages.</p>
+          </div>
+        </details>
+      </div>
+      {control("SEARCH_ORDER", "Dependency order", "Bottom-up solves dependencies before the goals that use them. Top-down starts from the main goals.")}
+      {effectiveMode === "research" && control("PARALLELISM", "Concurrent prover jobs", "Maximum simultaneous proof jobs in research mode.")}
     </div>
+    {effectiveMode === "research" ? <>
     <section className="prover-role" aria-label="Prover settings">
       <div className="prover-role-heading"><strong>Prover</strong><span>Works on individual proof goals</span></div>
       <div className="launch-fields">
         {roleControl("prover", "PROVIDER")}
         {roleControl("prover", "MODEL")}
         {roleControl("prover", "REASONING_EFFORT")}
-        {limitControl("PROVER_SESSIONS", "Prover sessions", "Total native prover invocations across the run. Retries and resumes count again. Empty means Unlimited; 0 starts none.")}
+        {limitControl("PROVER_SESSIONS", "Prover calls", "Total native prover invocations across the run. Retries and resumes count again. Empty means Unlimited; 0 starts none.")}
       </div>
     </section>
     <section className="prover-role" aria-label="Orchestrator settings">
@@ -130,19 +142,24 @@ export function ProverSettings() {
         {roleControl("orchestrator", "PROVIDER")}
         {roleControl("orchestrator", "MODEL")}
         {roleControl("orchestrator", "REASONING_EFFORT")}
-        {limitControl("ORCHESTRATOR_SESSIONS", "Orchestrator sessions", "Total planning, review, and research invocations across the run. Retries and resumes count again. Empty means Unlimited; 0 starts none.")}
+        {limitControl("ORCHESTRATOR_SESSIONS", "Orchestrator calls", "Total planning, review, and research invocations across the run. Retries and resumes count again. Empty means Unlimited; 0 starts none.")}
       </div>
     </section>
-    <p className="muted">Each native session can make many model requests. These session limits count native agent invocations, and the global limits apply across all roles.</p>
+    <p className="muted">One call is one native agent invocation, which can make many model requests. Retries and resumes count again. Global limits apply across all roles.</p>
     <section className="prover-role" aria-label="Research and recovery limits">
       <div className="prover-role-heading"><strong>Research and recovery limits</strong><span>Control retries and changes to the proof plan</span></div>
       <div className="launch-fields">
-        {limitControl("NEGATION_SESSIONS", "Refutation sessions", "Total native refutation invocations across the run, including retries and resumes. Empty means Unlimited; 0 starts none.")}
-        {limitControl("MAX_RESTARTS", "Standard retries per goal", "Additional passes after the first attempt in Standard mode only. Research uses orchestrator recovery decisions. Empty means Unlimited; 0 allows no retries.")}
+        {limitControl("NEGATION_SESSIONS", "Refutation calls", "Total native refutation invocations across the run, including retries and resumes. Empty means Unlimited; 0 starts none.")}
         {limitControl("PLAN_REFINEMENTS", "Proof-direction changes", "Limits changes of informal proof direction. Routine plan notes do not count. Empty means Unlimited; 0 keeps the initial direction.")}
         {limitControl("MAX_DECOMPOSITIONS", "Recovery decisions", "Shared allowance for orchestrator retry, refutation, and decomposition decisions. Empty means Unlimited; 0 disables these recovery decisions.")}
         {limitControl("MAX_NODES", "Maximum graph nodes", "Maximum original declarations and helper lemmas in the theorem graph. Clear to use the CLI default.")}
       </div>
     </section>
+    </> : <>
+      <p className="muted">Standard uses one prover at a time. Saved role overrides remain available in Knobs.</p>
+      <div className="launch-fields">
+        {limitControl("MAX_RESTARTS", "Standard retries per goal", "Additional passes after the first attempt in Standard mode. Empty means Unlimited; 0 allows no retries.")}
+      </div>
+    </>}
   </Card>;
 }

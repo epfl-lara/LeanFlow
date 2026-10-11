@@ -533,6 +533,6 @@ test("native role and research limits retain zero, unlimited, reservations, and 
   assert.deepEqual(budget.decompositions, { used: 2, max: 4 });
   assert.equal(budget.maxRestartsPerNode, 0);
   assert.equal(budget.nodes.max, 20);
-  assert.match(stopReasonView(state).scopeLabel, /planning, review and research session limit/);
+  assert.match(stopReasonView(state).scopeLabel, /planning, review and research call limit/);
   assert.deepEqual(proverBudget(snapshot(), NOW).roleSessions, []);
 });

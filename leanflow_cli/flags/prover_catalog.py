@@ -46,7 +46,7 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
         name="LEANFLOW_PROVER_MODE",
         kind="feature",
         value_type="enum",
-        default="standard",
+        default="research",
         group=_GROUP,
         summary="Standard uses one prover; research adds planning and parallel jobs.",
         choices=("standard", "research"),
@@ -56,7 +56,7 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
         name="LEANFLOW_PROVER_SEARCH_ORDER",
         kind="tuning",
         value_type="enum",
-        default="top-down",
+        default="bottom-up",
         group=_GROUP,
         summary="Schedule theorem dependencies top-down or bottom-up.",
         choices=("top-down", "bottom-up"),
@@ -87,12 +87,12 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
     ),
     _integer(
         "PROVER_SESSIONS",
-        None,
+        150,
         "Campaign-wide native prover invocation limit across all goals, retries, and resumes. Each invocation may make multiple model requests. Empty means unlimited; 0 disables prover invocations.",
     ),
     _integer(
         "ORCHESTRATOR_SESSIONS",
-        None,
+        50,
         "Campaign-wide native invocation limit shared by planning, review, and research jobs, including retries and resumes. Each invocation may make multiple model requests. Empty means unlimited; 0 disables these invocations.",
     ),
     _integer(

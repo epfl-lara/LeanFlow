@@ -17,14 +17,14 @@ def make_runtime(tmp_path: Path, **kwargs) -> ProverRuntime:
     source = tmp_path / "Main.lean"
     source.write_text("theorem goal : True := by sorry\n")
     (tmp_path / "lakefile.toml").write_text('name = "Demo"\n')
-    kwargs.setdefault("config", ProverConfig())
+    kwargs.setdefault("config", ProverConfig(mode="standard"))
     return ProverRuntime(root=tmp_path, targets=[source], verifier=Verifier(), **kwargs)
 
 
 def test_local_exhaustion_does_not_exhaust_campaign(tmp_path):
     runtime = make_runtime(
         tmp_path,
-        config=ProverConfig(job_api_calls=2, total_api_calls=20),
+        config=ProverConfig(mode="standard", job_api_calls=2, total_api_calls=20),
         session=lambda **kw: {"status": "completed", "api_calls": 1},
     )
     result = runtime.run()

@@ -112,7 +112,7 @@ def _startup_failure(
         state.update(
             version=1,
             run_id=run_id,
-            mode=state.get("mode", config.mode if config else "standard"),
+            mode=state.get("mode", config.mode if config else ProverConfig().mode),
             phase=status,
             status=status,
             terminal=True,

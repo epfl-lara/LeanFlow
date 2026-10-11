@@ -115,3 +115,18 @@ test("an older CLI without an effective environment still previews profile and d
   assert.equal(byName.LEANFLOW_PROVER_PARALLELISM.value, "2");
   assert.equal(byName.LEANFLOW_PROVER_PARALLELISM.source, "default");
 });
+
+
+test("empty role-call limits remain Unlimited in the preview before CLI resolution", () => {
+  const catalog = { groups: [{ flags: [
+    { name: "LEANFLOW_PROVER_PROVER_SESSIONS", default: "150" },
+    { name: "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS", default: "50" },
+    { name: "LEANFLOW_PROVER_MODE", default: "research" },
+  ] }] };
+  const rows = proverConfigurationRows({
+    envEffective: undefined, envDelta: undefined,
+    profile: { overrides: { LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS: "" } },
+    overrides: { LEANFLOW_PROVER_PROVER_SESSIONS: "", LEANFLOW_PROVER_MODE: "" }, catalog,
+  });
+  assert.deepEqual(rows.map(row => [row.value, row.source]), [["Unlimited", "override"], ["Unlimited", "profile"], ["research", "override"]]);
+});

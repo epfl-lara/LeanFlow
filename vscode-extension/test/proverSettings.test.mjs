@@ -6,7 +6,7 @@ import { mount, textOf } from "./helpers/webviewFixture.mjs";
 
 const bundle = await build({
   stdin: {
-    contents: 'export { ProverSettings } from "./webview/views/ProverSettings"; export { GlobalLimits } from "./webview/views/GlobalLimits"; export { setFixture } from "./webview/store"; export { resolveLaunchEnv } from "./src/core/launch";',
+    contents: 'export { ProverSettings } from "./webview/views/ProverSettings"; export { GlobalLimits } from "./webview/views/GlobalLimits"; export { setFixture } from "./webview/store"; export { resolveLaunchEnv, buildWorkflowArgs } from "./src/core/launch";',
     resolveDir: process.cwd(),
     loader: "tsx",
   },
@@ -27,11 +27,11 @@ const bundle = await build({
     },
   }],
 });
-const { ProverSettings, GlobalLimits, setFixture, resolveLaunchEnv } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`);
+const { ProverSettings, GlobalLimits, setFixture, resolveLaunchEnv, buildWorkflowArgs } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`);
 
 const prefix = "LEANFLOW_PROVER_";
 const flags = [
-  ["MODE", "enum", "standard", ["standard", "research"]],
+  ["MODE", "enum", "research", ["standard", "research"]],
   ["SEARCH_ORDER", "enum", "bottom-up", ["bottom-up", "top-down"]],
   ["PARALLELISM", "int", "2"],
   ["PROVIDER", "enum", "", ["", "codex", "claude", "lemex"]],
@@ -43,8 +43,8 @@ const flags = [
   ["AGENT_CALLS", "int", ""],
   ["TOKENS", "int", ""],
   ["WALL_TIME_S", "float", ""],
-  ["PROVER_SESSIONS", "int", ""],
-  ["ORCHESTRATOR_SESSIONS", "int", ""],
+  ["PROVER_SESSIONS", "int", "150"],
+  ["ORCHESTRATOR_SESSIONS", "int", "50"],
   ["NEGATION_SESSIONS", "int", ""],
   ["MAX_RESTARTS", "int", ""],
   ["PLAN_REFINEMENTS", "int", ""],
@@ -54,6 +54,7 @@ const flags = [
   name: prefix + suffix, value_type, default: fallback, choices, summary: suffix,
   editable: true, extension_editable: true, sensitive: false,
 }));
+flags.push({ name: "LEANFLOW_RESEARCH_MODE", value_type: "bool", default: "0", summary: "Legacy research", editable: true, extension_editable: true, sensitive: false });
 
 /** Expand these presentational React elements to inspect and operate controls. */
 function elements(node) {
@@ -149,7 +150,7 @@ test("global limits are immediately visible and explicitly show Unlimited", () =
   const ui = fixture();
   const rendered = elements([GlobalLimits(), ProverSettings()]);
   assert.ok(rendered.some(item => item.props?.className === "card-title" && item.props.children === "Global limits"));
-  assert.equal(rendered.filter(item => item.type === "details").length, 0);
+  assert.equal(elements(GlobalLimits()).filter(item => item.type === "details").length, 0);
   for (const suffix of ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"]) {
     assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
     assert.equal(ui.control(suffix).props.value, "");
@@ -207,9 +208,10 @@ test("research profile mode is visible and an explicit standard choice wins", ()
   assert.equal(ui.form.research, true);
 });
 
-test("explicit empty mode masks a research profile and modern mode wins legacy state", () => {
-  let ui = fixture({ overrides: { [prefix + "MODE"]: "" }, research: true }, { LEANFLOW_RESEARCH_MODE: "1" });
-  assert.equal(ui.control("MODE").props.value, "standard");
+test("explicit empty mode resets Research and modern mode wins legacy state", () => {
+  let ui = fixture({ overrides: { [prefix + "MODE"]: "" } }, { LEANFLOW_RESEARCH_MODE: "0" });
+  assert.equal(ui.control("MODE").props.value, "research");
+  assert.equal(ui.environment().env.set[prefix + "MODE"], "");
   ui = fixture({ research: true }, { [prefix + "MODE"]: "standard", LEANFLOW_RESEARCH_MODE: "1" });
   assert.equal(ui.control("MODE").props.value, "standard");
 });
@@ -217,6 +219,7 @@ test("explicit empty mode masks a research profile and modern mode wins legacy s
 test("structural allowances are visible and reach the runtime without changing role selection", () => {
   const ui = fixture({ overrides: { [prefix + "MODEL"]: "my-prover" } });
   for (const suffix of ["MAX_RESTARTS", "PLAN_REFINEMENTS", "MAX_DECOMPOSITIONS"]) {
+    ui.control("MODE").props.onChange({ target: { value: suffix === "MAX_RESTARTS" ? "standard" : "research" } });
     assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
     assert.equal(ui.control(suffix).props.value, "");
     ui.control(suffix).props.onChange({ target: { value: "4" } });
@@ -232,7 +235,7 @@ test("structural allowances are visible and reach the runtime without changing r
 test("clearing structural limits masks profiles while zero stays explicit", () => {
   const labels = { MAX_RESTARTS: "standard retries per goal", PLAN_REFINEMENTS: "proof-direction changes", MAX_DECOMPOSITIONS: "recovery decisions", MAX_NODES: "maximum graph nodes" };
   for (const [suffix, label] of Object.entries(labels)) {
-    const ui = fixture({}, { [prefix + suffix]: "7" });
+    const ui = fixture({ overrides: { [prefix + "MODE"]: suffix === "MAX_RESTARTS" ? "standard" : "research" } }, { [prefix + suffix]: "7" });
     assert.equal(ui.control(suffix).props.value, "7");
     ui.control(suffix).props.onChange({ target: { value: "" } });
     assert.deepEqual(ui.environment().env.unset, [prefix + suffix]);
@@ -279,7 +282,7 @@ for (const kind of ["prove", "formalize", "review", "refactor", "golf", "draft"]
 
 
 test("role session limits are independent, inherited, and explicitly clearable", () => {
-  for (const [suffix, label] of [["PROVER_SESSIONS", "prover sessions"], ["ORCHESTRATOR_SESSIONS", "orchestrator sessions"], ["NEGATION_SESSIONS", "refutation sessions"]]) {
+  for (const [suffix, label] of [["PROVER_SESSIONS", "prover calls"], ["ORCHESTRATOR_SESSIONS", "orchestrator calls"], ["NEGATION_SESSIONS", "refutation calls"]]) {
     const ui = fixture({ overrides: { [prefix + "AGENT_CALLS"]: "20" } }, { [prefix + suffix]: "7" });
     assert.equal(ui.control(suffix).props.value, "7");
     ui.control(suffix).props.onChange({ target: { value: "0" } });
@@ -287,7 +290,8 @@ test("role session limits are independent, inherited, and explicitly clearable",
     assert.equal(ui.environment().env.set[prefix + "AGENT_CALLS"], "20");
     ui.control(suffix).props.onChange({ target: { value: "" } });
     assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
-    assert.deepEqual(ui.environment().env.unset, [prefix + suffix]);
+    assert.equal(ui.environment().env.set[prefix + suffix], "");
+    assert.deepEqual(ui.environment().env.unset, []);
     const reset = elements(ProverSettings()).find(item => item.props?.["aria-label"] === `Restore profile ${label}`);
     assert.ok(reset);
     reset.props.onClick();
@@ -334,3 +338,94 @@ for (const kind of ["formalize", "review", "refactor", "golf", "draft"]) {
     } finally { ui.dispose(); }
   });
 }
+
+
+test("Research, bottom-up and role call defaults come from the current catalog", () => {
+  const ui = fixture();
+  assert.equal(ui.control("MODE").props.value, "research");
+  const order = ui.control("SEARCH_ORDER");
+  assert.equal(elements(order).find(item => item.type === "option" && item.props.value === "__default__").props.children.join(""), "default (bottom-up)");
+  assert.equal(ui.control("PROVER_SESSIONS").props.value, "150");
+  assert.equal(ui.control("ORCHESTRATOR_SESSIONS").props.value, "50");
+  assert.deepEqual(ui.environment().env.set, {});
+});
+
+test("an explicit empty role allowance is Unlimited rather than restoring a finite default", () => {
+  const ui = fixture();
+  for (const suffix of ["PROVER_SESSIONS", "ORCHESTRATOR_SESSIONS"]) {
+    ui.control(suffix).props.onChange({ target: { value: "" } });
+    assert.equal(ui.control(suffix).props.value, "");
+    assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
+    assert.equal(ui.environment().env.set[prefix + suffix], "");
+    assert.ok(!ui.environment().env.unset.includes(prefix + suffix));
+  }
+  assert.deepEqual(ui.environment().rejected, []);
+  const saved = fixture({}, { [prefix + "PROVER_SESSIONS"]: "", [prefix + "ORCHESTRATOR_SESSIONS"]: "" });
+  assert.deepEqual(saved.environment().rejected, []);
+  assert.equal(saved.environment().env.set[prefix + "PROVER_SESSIONS"], "");
+  assert.equal(saved.environment().env.set[prefix + "ORCHESTRATOR_SESSIONS"], "");
+});
+
+test("legacy research false is Standard while empty modern mode explicitly resets Research", () => {
+  const ui = fixture({}, { LEANFLOW_RESEARCH_MODE: "false" });
+  assert.equal(ui.control("MODE").props.value, "standard");
+  ui.control("MODE").props.onChange({ target: { value: "" } });
+  assert.equal(ui.control("MODE").props.value, "research");
+  assert.equal(ui.environment().env.set[prefix + "MODE"], "");
+});
+
+test("mode changes hide the appropriate panels and preserve all research choices", () => {
+  const ui = mount();
+  try {
+    ui.update(state => {
+      state.app.catalog.groups[0].flags = flags;
+      state.view.form.overrides = { [prefix + "PROVER_SESSIONS"]: "88", [prefix + "ORCHESTRATOR_SESSIONS"]: "22", [prefix + "PARALLELISM"]: "4", [prefix + "PLAN_REFINEMENTS"]: "5" };
+    });
+    const shared = { ...ui.view.form.overrides };
+    const panels = () => ui.root().findAllByType("section").filter(node => ["Prover settings", "Orchestrator settings", "Research and recovery limits"].includes(node.props["aria-label"]));
+    assert.equal(panels().length, 3);
+    const help = ui.root().findByType("summary");
+    assert.equal(help.props["aria-label"], "About Research and Standard modes");
+    assert.equal(help.parent.type, "details");
+    assert.equal(help.parent.props.open, undefined);
+    assert.match(textOf(help.parent), /parallel provers/);
+    assert.match(textOf(help.parent), /one prover at a time/);
+    // Native summary semantics provide click, Enter, and Space toggling without a hover-only handler.
+    assert.equal(help.props.tabIndex, undefined);
+    ui.change(ui.input(prefix + "MODE"), "standard");
+    assert.equal(panels().length, 0);
+    assert.equal(ui.root().findAll(node => node.props["aria-label"] === prefix + "PARALLELISM").length, 0);
+    assert.ok(ui.input(prefix + "MAX_RESTARTS"));
+    assert.ok(ui.input(prefix + "SEARCH_ORDER"));
+    for (const [name, value] of Object.entries(shared)) assert.equal(ui.view.form.overrides[name], value);
+    ui.change(ui.input(prefix + "MODE"), "research");
+    assert.equal(panels().length, 3);
+    assert.equal(ui.input(prefix + "PROVER_SESSIONS").props.value, "88");
+    assert.equal(ui.input(prefix + "ORCHESTRATOR_SESSIONS").props.value, "22");
+    assert.equal(ui.input(prefix + "PARALLELISM").props.value, "4");
+    assert.equal(ui.input(prefix + "PLAN_REFINEMENTS").props.value, "5");
+    assert.equal(ui.root().findAll(node => node.props["aria-label"] === prefix + "MAX_RESTARTS").length, 0);
+  } finally { ui.dispose(); }
+});
+
+
+test("cleared legacy mode and stale legacy launch switches match the displayed mode", () => {
+  let ui = fixture({ overrides: { LEANFLOW_RESEARCH_MODE: "" } }, { LEANFLOW_RESEARCH_MODE: "false" });
+  assert.equal(ui.control("MODE").props.value, "research");
+  assert.deepEqual(ui.environment().env.unset, ["LEANFLOW_RESEARCH_MODE"]);
+  ui = fixture({ agents: 3 }, { LEANFLOW_RESEARCH_MODE: "false" });
+  assert.equal(ui.control("MODE").props.value, "research");
+  assert.ok(buildWorkflowArgs({ target: "", provider: "", model: "", additionalSkills: [], prompt: "", axioms: "", ...ui.form }, ui.environment().env.set).includes("--agents"));
+  ui = fixture({ agents: 3, noParallel: true }, { LEANFLOW_RESEARCH_MODE: "false" });
+  assert.equal(ui.control("MODE").props.value, "standard");
+  ui = fixture({ research: true }, { LEANFLOW_RESEARCH_MODE: "false" });
+  assert.equal(ui.control("MODE").props.value, "research");
+});
+
+test("an empty modern mode saved in a profile resets Research without legacy arguments", () => {
+  const ui = fixture({ research: true, agents: 4 }, { [prefix + "MODE"]: "", LEANFLOW_RESEARCH_MODE: "false" });
+  assert.equal(ui.control("MODE").props.value, "research");
+  assert.deepEqual(ui.environment().rejected, []);
+  assert.equal(ui.environment().env.set[prefix + "MODE"], "");
+  assert.deepEqual(buildWorkflowArgs({ target: "", provider: "", model: "", additionalSkills: [], prompt: "", axioms: "", ...ui.form }, ui.environment().env.set), ["prove", "--provider", "lemex"]);
+});

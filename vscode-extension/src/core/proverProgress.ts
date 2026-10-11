@@ -395,9 +395,9 @@ export interface StopReasonView {
 
 /** Reason codes first, then coarse scopes; the runtime emits both. */
 const SCOPE_LABELS: [RegExp, string][] = [
-  [/^prover_sessions$/, "the prover session limit"],
-  [/^orchestrator_sessions$/, "the shared planning, review and research session limit"],
-  [/^negation_sessions$/, "the refutation session limit"],
+  [/^prover_sessions$/, "the prover call limit"],
+  [/^orchestrator_sessions$/, "the shared planning, review and research call limit"],
+  [/^negation_sessions$/, "the refutation call limit"],
   [/^(campaign_calls|campaign_api|campaign_api_calls|total_api_calls|api_calls)$/, "the campaign API budget"],
   [/^(campaign_time|campaign_wall_time|wall_time|wall_clock|wall_time_s)$/, "the campaign wall-clock limit"],
   [/^(job_budget|job|job_api_calls)$/, "one job's call allocation"],

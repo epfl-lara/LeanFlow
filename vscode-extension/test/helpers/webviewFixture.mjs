@@ -45,7 +45,7 @@ export function mount(tab = "launch", patch = {}, component = App) {
   globalThis.ResizeObserver = class { observe() {} disconnect() {} };
   const now = new Date().toISOString();
   const flags = [
-    { name: "LEANFLOW_PROVER_MODE", value_type: "enum", default: "standard", choices: ["standard", "research"], ablatable: true },
+    { name: "LEANFLOW_PROVER_MODE", value_type: "enum", default: "research", choices: ["standard", "research"], ablatable: true },
     { name: "LEANFLOW_PROVER_PARALLELISM", value_type: "int", default: "1", minimum: 1, maximum: 16, ablatable: true },
     ...["PROVIDER", "ORCHESTRATOR_PROVIDER"].map(suffix => ({ name: `LEANFLOW_PROVER_${suffix}`, value_type: "enum", default: "", choices: ["", "codex", "claude", "lemex"] })),
     { name: "LEANFLOW_PROVER_MODEL", value_type: "string", default: "" },

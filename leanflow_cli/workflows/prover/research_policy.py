@@ -26,6 +26,9 @@ def restore_research_config(requested: ProverConfig, state: Mapping[str, Any]) -
     """Reject contaminated history before restoring its graph or accepting saved candidates."""
     saved = dict(state["config"])
     saved["allowed_axioms"] = tuple(saved["allowed_axioms"])
+    # Older native runs predate role limits. New defaults must never tighten a resume.
+    for name in ("prover_sessions", "orchestrator_sessions", "negation_sessions"):
+        saved.setdefault(name, None)
     config = restrict_config(ProverConfig(**saved))
     restricted = (
         not requested.allow_internet

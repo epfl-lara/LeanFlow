@@ -151,21 +151,22 @@ admission. No default per-response, per-job or Lean-check wall timeout is impose
 Transport connectivity checks and process-cleanup grace periods are separate
 from execution budgets.
 
-Proving also supports separate optional campaign session limits:
+Proving also supports separate campaign call limits. One native CLI invocation
+is one call, regardless of the requests, tools or compaction within it:
 
-| Launch override | Sessions counted |
-| --- | --- |
-| `LEANFLOW_PROVER_PROVER_SESSIONS` | Prover sessions, including retries and resumes |
-| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | Planning, independent review, research and recovery sessions combined |
-| `LEANFLOW_PROVER_NEGATION_SESSIONS` | Refutation sessions |
+| Launch override | Default | Calls counted |
+| --- | --- | --- |
+| `LEANFLOW_PROVER_PROVER_SESSIONS` | 150 | Prover invocations, including retries and resumes |
+| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | 50 | Planning, independent review, research and recovery invocations combined |
+| `LEANFLOW_PROVER_NEGATION_SESSIONS` | Unlimited | Refutation invocations |
 
 These limits share the global allowance. Reservations prevent concurrent jobs
 from exceeding a role's limit; processes that fail before starting are refunded.
-Consumed sessions persist on resume. Empty means unlimited; zero disables new
-sessions for that role. A session may contain many model requests. These are
-not the former per-job API-request ceilings: the current Codex and Lemex native
-interfaces do not expose an enforceable request limit. Claude's native turn cap
-counts tool-use rounds, which also differs from API requests.
+Consumed calls persist on resume. An absent setting uses its declared default;
+an explicitly empty value means unlimited, and zero disables new calls for that
+role. Existing saved campaigns retain their original limits. The VS Code
+Prover and Orchestrator panels appear in Research mode and expose these settings
+as **Prover calls** and **Orchestrator calls**.
 
 The Prove launch page also exposes the controller's structural limits:
 
@@ -181,8 +182,9 @@ be positive. Routine plan notes do not spend a proof-direction change. Plan
 refinement changes the proof approach; the separate Refactor workflow changes
 Lean source while preserving its verified declarations.
 
-The builtin `research` profile selects the current research controller and two
-concurrent prover jobs. An explicit mode selection overrides an inherited
+New proof runs default to **Research**, **bottom-up** dependency order and two
+concurrent prover jobs. The help control beside Mode explains Research planning
+and review versus Standard direct sequential proving. An explicit mode selection overrides an inherited
 legacy research-mode flag. Research still performs outline, graph proposal,
 independent review and Lean validation before scheduling proof work; the mode
 selector does not replace these stages with a single agent prompt.
