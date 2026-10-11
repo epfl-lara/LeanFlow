@@ -16,8 +16,8 @@ def cell(error: str, **changes):
         "status": "provider_error",
         "run_id": "original",
         "error": error,
-        "metrics": {"api_calls": 101, "elapsed_s": 6093.228},
-        "config": {"total_api_calls": 5000, "wall_time_s": 57600},
+        "metrics": {"agent_calls": 101, "elapsed_s": 6093.228},
+        "config": {"agent_calls": 5000, "wall_time_s": 57600},
         **changes,
     }
 
@@ -65,7 +65,7 @@ def test_identified_transients_share_retry_and_opt_in_advancement_policy(error):
     assert schedule_recovery(saved)
     assert saved["resume_run_id"] == "original"
     assert saved["recovery_attempts"] == 1
-    assert saved["metrics"] == {"api_calls": 101, "elapsed_s": 6093.228}
+    assert saved["metrics"] == {"agent_calls": 101, "elapsed_s": 6093.228}
     saved["status"] = "provider_error"
     assert pause_after_failure(saved, False)
     assert not pause_after_failure(saved, True)

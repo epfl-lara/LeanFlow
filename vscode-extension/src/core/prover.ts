@@ -100,6 +100,9 @@ export interface ProverOperation {
 }
 
 export interface ProverConfig {
+  native_backend: boolean;
+  agent_calls: number | null;
+  tokens: number | null;
   mode: string;
   search_order: string;
   job_api_calls: number | null;
@@ -169,6 +172,10 @@ export interface ProverDag {
 }
 
 export interface ProverMetrics {
+  agent_calls: number | null;
+  agent_call_limit: number | null;
+  token_limit: number | null;
+  usage_complete: boolean | null;
   api_calls: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
@@ -296,6 +303,8 @@ function normalizeDag(value: unknown): ProverDag {
 function normalizeConfig(value: unknown): ProverConfig {
   const config = record(value);
   return {
+    native_backend: Object.prototype.hasOwnProperty.call(config, "agent_calls"),
+    agent_calls: number(config.agent_calls), tokens: number(config.tokens),
     mode: text(config.mode), search_order: text(config.search_order),
     job_api_calls: number(config.job_api_calls), max_restarts: number(config.max_restarts),
     plan_refinements: number(config.plan_refinements), parallelism: number(config.parallelism),
@@ -392,6 +401,8 @@ export function normalizeProverSnapshot(value: unknown, runId: string): ProverSn
       elapsed_s: number(operation.elapsed_s), error: text(operation.error),
     })).filter((operation) => operation.id),
     metrics: {
+      agent_calls: number(metrics.agent_calls), agent_call_limit: number(metrics.agent_call_limit),
+      token_limit: number(metrics.token_limit), usage_complete: flag(metrics.usage_complete),
       api_calls: number(metrics.api_calls), input_tokens: number(metrics.input_tokens),
       output_tokens: number(metrics.output_tokens), cost_usd: number(metrics.cost_usd),
       cost_complete: flag(metrics.cost_complete),

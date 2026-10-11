@@ -65,7 +65,7 @@ export function ProverDag({ state, lifecycle, proposal, now, onOpen, onJob }: {
           <div className="muted">Recorded status <span className="mono">{node.status}</span>{node.kind ? ` · ${node.kind}` : ""}{node.original ? " · original statement" : ""}{node.attempts !== null ? ` · attempts ${node.attempts}` : ""}{node.holes ? ` · ${node.holes} hole${node.holes === 1 ? "" : "s"}` : ""}{node.candidate_count ? ` · ${node.candidate_count} retained candidate${node.candidate_count === 1 ? "" : "s"}` : ""}</div>
           {life.job && <div className="row tight">
             <button className="link mono" onClick={() => onJob(life.job!.id)}>{life.job.agent_id}</button>
-            <span className="muted">{life.job.status || "queued"} · {metric(life.job.api_calls)} / {metric(life.job.api_budget)} calls{timeline?.durationS !== null && timeline ? ` · ${seconds(timeline.durationS)}` : ""}</span>
+            <span className="muted">{life.job.status || "queued"} · {metric(life.job.api_calls)}{state.config.native_backend ? " agent calls" : ` / ${metric(life.job.api_budget)} API calls`}{timeline?.durationS !== null && timeline ? ` · ${seconds(timeline.durationS)}` : ""}</span>
           </div>}
         </div>
         {node.file && <button className="link" onClick={() => onOpen(node.file, node.line_start)}>{node.file}{node.line_start ? `:${node.line_start}` : ""}</button>}

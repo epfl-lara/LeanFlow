@@ -82,16 +82,26 @@ def requires_inspection(cell: dict[str, Any]) -> bool:
 
 
 def schedule_recovery(cell: dict[str, Any]) -> bool:
-    """Queue at most three provider reconnects while preserving the saved run lineage."""
+    """Reconnect transient failures while preserving cumulative explicit global limits."""
     attempts = int(cell.get("recovery_attempts", 0))
     metrics = cell.get("metrics", {})
     config = cell.get("config", {})
     if (
         cell.get("status") != "provider_error"
         or (cell.get("stop_reason") or {}).get("scope") == "scheduler"
-        or attempts >= 3
-        or int(metrics.get("api_calls", 0)) >= int(config.get("total_api_calls", 2000))
-        or float(metrics.get("elapsed_s", 0)) >= float(config.get("wall_time_s", 28800))
+        or (
+            config.get("agent_calls") is not None
+            and int(metrics.get("agent_calls", 0)) >= config["agent_calls"]
+        )
+        or (
+            config.get("tokens") is not None
+            and sum(int(metrics.get(key) or 0) for key in ("input_tokens", "output_tokens"))
+            >= config["tokens"]
+        )
+        or (
+            config.get("wall_time_s") is not None
+            and float(metrics.get("elapsed_s", 0)) >= config["wall_time_s"]
+        )
         or not is_transient_provider_error(str(cell.get("error") or ""))
     ):
         return False

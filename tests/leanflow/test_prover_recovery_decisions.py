@@ -40,7 +40,9 @@ def research_runtime(tmp_path: Path, **overrides: Any) -> ProverRuntime:
     (tmp_path / "lakefile.toml").write_text('name = "Demo"\n[[lean_lib]]\nname = "Main"\n')
     path = tmp_path / "Main.lean"
     path.write_text("import Std\n\ntheorem goal : True := by sorry\n")
-    config = ProverConfig(mode="research", job_api_calls=3, **overrides)
+    overrides.setdefault("max_decompositions", 32)
+    overrides.setdefault("agent_calls", 1000)
+    config = ProverConfig(mode="research", **overrides)
     return ProverRuntime(
         root=tmp_path, targets=[path], config=config, session=session, verifier=Verifier()
     )
@@ -90,22 +92,11 @@ def test_screen_reads_plausible_verdicts() -> None:
 # --- budgets -----------------------------------------------------------------
 
 
-def test_negation_has_its_own_budget_defaulting_to_sixty() -> None:
-    config = ProverConfig(model="m", job_api_calls=250, orchestrator_api_calls=100)
-    assert config.negation_api_calls == 60
-    assert job_budget(config, "prover") == 250
-    assert job_budget(config, "negation") == 60
-    assert job_budget(config, "orchestrator") == 100
-    assert job_budget(config, "research") == 100
-    env = ProverConfig.from_env(
-        {"LEANFLOW_PROVER_MODEL": "m", "LEANFLOW_PROVER_NEGATION_API_CALLS": "40"}
-    )
-    assert env.negation_api_calls == 40
-    with pytest.raises(ValueError, match="must be positive"):
-        ProverConfig(model="m", negation_api_calls=0)
-
-
-# --- the recovery loop -------------------------------------------------------
+def test_negation_reserves_one_native_invocation() -> None:
+    config = ProverConfig(job_api_calls=1000, orchestrator_api_calls=100)
+    assert job_budget(config, "negation") == 1
+    assert job_budget(config, "prover") == 1
+    assert job_budget(config, "orchestrator") == 1
 
 
 def test_retry_decision_spends_one_unit_and_reopens_the_node(tmp_path: Path, monkeypatch) -> None:
@@ -567,7 +558,7 @@ def test_screen_reads_the_runner_output_field_not_messages() -> None:
 
 def test_empirical_screen_never_raises_out_of_recovery(tmp_path: Path, monkeypatch) -> None:
     """P2: any screen failure -- bad runner shape, or a raising runner -- is inconclusive."""
-    from leanflow_cli.lean import lean_ephemeral
+    from leanflow_cli.workflows.prover import check_process
     from leanflow_cli.workflows.prover import negation as negation_mod
 
     runtime = research_runtime(tmp_path)
@@ -584,8 +575,8 @@ def test_empirical_screen_never_raises_out_of_recovery(tmp_path: Path, monkeypat
 
     # A malformed runner result (messages=None) must not raise through parse_screen.
     monkeypatch.setattr(
-        lean_ephemeral,
-        "lean_ephemeral_source_check",
+        check_process,
+        "check_scratch",
         lambda *a, **k: {"messages": None, "output": None},
     )
     assert recovery.empirical_screen(runtime, node)["found"] is None
@@ -594,7 +585,7 @@ def test_empirical_screen_never_raises_out_of_recovery(tmp_path: Path, monkeypat
     def boom(*a: Any, **k: Any):
         raise TypeError("unexpected runner failure")
 
-    monkeypatch.setattr(lean_ephemeral, "lean_ephemeral_source_check", boom)
+    monkeypatch.setattr(check_process, "check_scratch", boom)
     assert recovery.empirical_screen(runtime, node)["found"] is None
 
 

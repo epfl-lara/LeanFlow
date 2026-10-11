@@ -1,4 +1,4 @@
-"""Tests for the extracted native_utils leaf helpers + native_runner re-export (Phase 2).
+"""Tests for the extracted native_utils leaf helpers.
 
 These cover the pure, closed-under-"calls" subset of shared text / JSON / format / normalize "glue"
 helpers moved out of native_runner. The re-export-identity test pins every moved name to the same
@@ -7,15 +7,7 @@ without a back-import. The behavior tests exercise the trickiest helpers: JSON-p
 from fenced / noisy text, single-line collapsing + truncation, and message-text collection.
 """
 
-from leanflow_cli.native import native_runner
 from leanflow_cli.native import native_utils as nu
-
-
-def test_native_runner_reexports_are_identical():
-    # Every re-exported name in native_runner must be the SAME object as in native_utils, so callers
-    # still living in native_runner resolve the extracted helpers without a back-import.
-    for name in nu.__all__:
-        assert getattr(native_runner, name) is getattr(nu, name), name
 
 
 def test_extract_json_payload_from_fenced_and_noisy_text():

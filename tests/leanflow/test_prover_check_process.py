@@ -81,10 +81,15 @@ def test_linux_mounts_canonical_sources_read_only_and_network_is_explicit(
     monkeypatch: pytest.MonkeyPatch, roots: tuple[Path, Path, Path]
 ) -> None:
     project, workspace, private = roots
+    source = project / "Main.lean"
+    source.write_text("theorem target : True := by sorry")
     monkeypatch.setattr(sandbox.platform, "system", lambda: "Linux")
     monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
     args = checks._sandbox_command(["lean"], project=project, workspace=workspace, private=private)
-    assert args[args.index(str(project)) - 1] == "--ro-bind"
+    assert ["--ro-bind", str(source), str(source)] in [args[i : i + 3] for i in range(len(args))]
+    assert ["--ro-bind", str(project), str(project)] not in [
+        args[i : i + 3] for i in range(len(args))
+    ]
     assert ["--bind", str(workspace), str(workspace)] in [args[i : i + 3] for i in range(len(args))]
     assert "--unshare-pid" in args and "--unshare-net" in args
     network = checks._sandbox_command(
@@ -201,12 +206,20 @@ def test_protocol_forwards_exact_check_target_contract(roots: tuple[Path, Path, 
     target.touch()
     received: dict[str, Any] = {}
 
-    def check(**kwargs: Any) -> dict[str, Any]:
+    def check(file_path: str, **kwargs: Any) -> dict[str, Any]:
         received.update(kwargs)
+        received["file_path"] = file_path
         return {"ok": True, "axioms": [], "custom": "unchanged"}
 
     result = check_worker._check(
-        SimpleNamespace(lean_incremental_check=check),
+        SimpleNamespace(
+            _probe=lambda: SimpleNamespace(check_target=check),
+            _inline_axiom_query_for_target=lambda *args, **kwargs: SimpleNamespace(
+                source="profiled exact declaration"
+            ),
+            _attach_inline_axiom_profile=lambda result, query: result,
+            _normalize_payload=lambda result, action: result,
+        ),
         project,
         workspace,
         {
@@ -220,11 +233,11 @@ def test_protocol_forwards_exact_check_target_contract(roots: tuple[Path, Path, 
         },
     )
     assert result == {"ok": True, "axioms": [], "custom": "unchanged"}
-    assert received["action"] == "check_target"
+    assert received["file_path"] == str(target)
     assert received["theorem_id"] == "p"
-    assert received["timeout_s"] == received["timeout_ceiling_s"] == 7
-    assert received["include_axiom_profile"] is True
-    assert received["allow_placeholders_for_elaboration"] is True
+    assert received["timeout_s"] is None  # Parent supervises the complete operation.
+    assert received["replacement"] == "profiled exact declaration"
+    assert received["include_tactics"] is True
 
 
 def test_private_repl_copies_mutable_configuration_and_reuses_compiled_outputs(
@@ -320,6 +333,67 @@ print(json.dumps(out))
     assert (workspace / "own").read_text() == "allowed"
 
 
+def test_real_checker_cannot_read_controller_records_beyond_exact_grants(
+    roots: tuple[Path, Path, Path],
+) -> None:
+    _require_os_isolation()
+    project, _, _ = roots
+    controller = project / ".leanflow"
+    workspace = controller / "checks" / "current"
+    workspace.mkdir(parents=True)
+    source = project / "Main.lean"
+    source.write_text("source")
+    (workspace / "Proof.lean").write_text("own proof")
+    secret = controller / "state.json"
+    secret.write_text("private controller record")
+    sibling = controller / "checks" / "other" / "Proof.lean"
+    sibling.parent.mkdir()
+    sibling.write_text("another job proof")
+    artifact = controller / "artifacts" / "accepted.olean"
+    artifact.parent.mkdir()
+    artifact.write_text("explicit checked artifact")
+    other_artifact = artifact.parent / "other.olean"
+    other_artifact.write_text("ungranted artifact")
+    alias = project / "controller-alias"
+    alias.symlink_to(controller, target_is_directory=True)
+    script = (
+        "import pathlib,sys\n"
+        "for name in sys.argv[1:]:\n"
+        " try:print(pathlib.Path(name).read_text())\n"
+        " except (PermissionError,FileNotFoundError):print('denied')\n"
+    )
+    result = checks.isolated_command(
+        project_root=project,
+        workspace=workspace,
+        argv=[
+            sys.executable,
+            "-I",
+            "-c",
+            script,
+            str(source),
+            str(workspace / "Proof.lean"),
+            str(artifact),
+            str(secret),
+            str(sibling),
+            str(other_artifact),
+            str(alias / "state.json"),
+        ],
+        extra_readable_roots=(artifact,),
+    )
+    if result.get("error_code") == "isolation_unavailable":
+        pytest.skip(result["error"])
+    assert result["success"], result
+    assert result["stdout"].splitlines() == [
+        "source",
+        "own proof",
+        "explicit checked artifact",
+        "denied",
+        "denied",
+        "denied",
+        "denied",
+    ]
+
+
 def test_real_command_grants_only_named_build_artifact_and_bounds_output(
     monkeypatch: pytest.MonkeyPatch, roots: tuple[Path, Path, Path]
 ) -> None:
@@ -370,6 +444,49 @@ def test_real_timeout_kills_command_and_same_group_child(roots: tuple[Path, Path
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
+@pytest.mark.parametrize("outcome", ["completed", "cancelled", "timeout"])
+def test_real_command_reaps_detached_children_before_return(
+    roots: tuple[Path, Path, Path], outcome: str
+) -> None:
+    _require_os_isolation()
+    import fcntl
+
+    project, workspace, _ = roots
+    lock_file = workspace / "detached.lock"
+    ready_file = workspace / "detached.ready"
+    child = (
+        "import fcntl,pathlib,sys,time;f=open(sys.argv[1],'w');"
+        "fcntl.flock(f,fcntl.LOCK_EX);pathlib.Path(sys.argv[2]).touch();time.sleep(30)"
+    )
+    script = (
+        "import pathlib,subprocess,sys,time\n"
+        "subprocess.Popen([sys.executable,'-I','-c',sys.argv[1],sys.argv[2],sys.argv[3]],start_new_session=True)\n"
+        "while not pathlib.Path(sys.argv[3]).exists():time.sleep(.01)\n"
+        "time.sleep(.4 if sys.argv[4]=='completed' else 30)\n"
+    )
+    started = time.monotonic()
+    result = checks.isolated_command(
+        project_root=project,
+        workspace=workspace,
+        argv=[sys.executable, "-I", "-c", script, child, str(lock_file), str(ready_file), outcome],
+        timeout_s=1 if outcome == "timeout" else None,
+        cancelled=ready_file.exists if outcome == "cancelled" else None,
+    )
+    if result.get("error_code") == "isolation_unavailable":
+        pytest.skip(result["error"])
+    assert ready_file.exists(), result
+    assert time.monotonic() - started < 5
+    if outcome == "completed":
+        assert result["success"], result
+    else:
+        assert (
+            result["error_code"]
+            == {"cancelled": "check_cancelled", "timeout": "check_timeout"}[outcome]
+        )
+    with lock_file.open("w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
 @pytest.mark.skipif(
     not os.environ.get("LEANFLOW_TEST_LEAN_PROJECT"),
     reason="Set LEANFLOW_TEST_LEAN_PROJECT to a prebuilt Lean project for integration",
@@ -392,7 +509,7 @@ def test_real_lean_feedback_is_warm_and_cannot_write_canonical_source(tmp_path: 
             file=target,
             declaration="probe",
             include_axiom_profile=True,
-            timeout_s=60,
+            timeout_s=None,
         )
         assert first.get("ok") is True, first
         worker = checks._WORKERS[(project, workspace.resolve())]
@@ -402,7 +519,7 @@ def test_real_lean_feedback_is_warm_and_cannot_write_canonical_source(tmp_path: 
             file=target,
             declaration="probe",
             include_axiom_profile=True,
-            timeout_s=30,
+            timeout_s=None,
         )
         assert second.get("ok") is True, second
         assert checks._WORKERS[(project, workspace.resolve())] is worker
@@ -414,7 +531,7 @@ def test_real_lean_feedback_is_warm_and_cannot_write_canonical_source(tmp_path: 
             + "\ntheorem probe : True := by trivial\n"
         )
         denied = checks.check_scratch(
-            project_root=project, workspace=workspace, file=target, timeout_s=30
+            project_root=project, workspace=workspace, file=target, timeout_s=None
         )
         assert denied.get("ok") is not True, denied
         assert (

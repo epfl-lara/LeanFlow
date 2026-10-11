@@ -215,12 +215,9 @@ def test_render_workflow_status_panel_shows_warning_cleanup_state():
     assert "verified; attempted, verified; warnings 0" in output
 
 
-def test_list_runtime_provider_targets_includes_local_and_zai():
+def test_list_runtime_provider_targets_are_native_backends():
     names = {entry["name"] for entry in list_runtime_provider_targets()}
-
-    assert "local" in names
-    assert "zai" in names
-    assert "custom" in names
+    assert names == {"codex", "claude", "lemex"}
 
 
 def test_main_mcp_status_json(monkeypatch, capsys):
@@ -1101,26 +1098,18 @@ def test_project_command_without_args_has_polished_empty_state(monkeypatch, tmp_
     assert "No active Lean workspace is open here." in output
 
 
-def test_main_loads_leanflow_dotenv_before_provider_resolution(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    home.mkdir(parents=True)
-    (home / ".env").write_text("OPENROUTER_API_KEY=or-from-dotenv\n", encoding="utf-8")
-    monkeypatch.setenv("LEANFLOW_HOME", str(home))
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-
-    captured: dict[str, str] = {}
-
-    def _fake_render_provider_panel(console, *, resolved, requested, targets):
-        captured["api_key"] = str(resolved.get("api_key", ""))
-        captured["provider"] = str(resolved.get("provider", ""))
-
-    monkeypatch.setattr("leanflow_cli.main.render_provider_panel", _fake_render_provider_panel)
-
-    assert main(["provider", "--requested", "openrouter"]) == 0
-    assert captured["provider"] == "openrouter"
-    assert captured["api_key"] == "or-from-dotenv"
+def test_main_leaves_native_credentials_out_of_provider_summary(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEMEX_API_KEY", "native-secret")
+    monkeypatch.setenv("LEMEX_BASE_URL", "https://inference.rcp.epfl.ch/v1")
+    captured = {}
+    monkeypatch.setattr(
+        "leanflow_cli.main.render_provider_panel", lambda console, **kwargs: captured.update(kwargs)
+    )
+    assert main(["provider", "--requested", "lemex"]) == 0
+    assert captured["resolved"]["provider"] == "lemex"
+    assert captured["resolved"]["api_key"] == ""
+    assert captured["resolved"]["base_url"] == ""
 
 
 def test_provider_command_accepts_provider_alias(monkeypatch):
@@ -1139,32 +1128,7 @@ def test_provider_command_accepts_provider_alias(monkeypatch):
     assert captured["requested"] == "codex"
 
 
-def test_main_prefers_leanflow_scoped_env_names(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    home.mkdir(parents=True)
-    (home / ".env").write_text(
-        "LEANFLOW_OPENAI_BASE_URL=https://rcp.epfl.example/v1\n"
-        "LEANFLOW_OPENAI_API_KEY=leanflow-rcp-key\n"
-        "OPENAI_BASE_URL=https://api.openai.com/v1\n"
-        "OPENAI_API_KEY=global-openai-key\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("LEANFLOW_HOME", str(home))
-    monkeypatch.delenv("LEANFLOW_OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("LEANFLOW_OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    captured: dict[str, str] = {}
-
-    def _fake_render_provider_panel(console, *, resolved, requested, targets):
-        captured["api_key"] = str(resolved.get("api_key", ""))
-        captured["base_url"] = str(resolved.get("base_url", ""))
-        captured["provider"] = str(resolved.get("provider", ""))
-
-    monkeypatch.setattr("leanflow_cli.main.render_provider_panel", _fake_render_provider_panel)
-
-    assert main(["provider", "--requested", "custom"]) == 0
-    assert captured["provider"] == "custom"
-    assert captured["base_url"] == "https://rcp.epfl.example/v1"
-    assert captured["api_key"] == "leanflow-rcp-key"
+def test_main_legacy_provider_shows_migration_message(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    assert main(["provider", "--requested", "custom"]) == 1
+    assert "LEMEX_BASE_URL and LEMEX_API_KEY" in capsys.readouterr().err

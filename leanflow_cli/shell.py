@@ -17,7 +17,6 @@ from core.process_identity import PROCESS_TOKEN_ENV, process_token_sha256
 from leanflow_cli.cli.banner import (
     build_welcome_banner,
     render_help,
-    render_local_runtime_table,
     render_project_panel,
     render_provider_panel,
     render_skill_panel,
@@ -32,7 +31,6 @@ from leanflow_cli.cli.banner import (
 )
 from leanflow_cli.cli.cli_handlers import (
     _handle_config,  # noqa: F401
-    _handle_models,  # noqa: F401
     _handle_sandbox,  # noqa: F401
     _parse_config_value,
     _print_json,
@@ -62,15 +60,6 @@ from leanflow_cli.config import (
     get_leanflow_home,
     load_config,
     set_config_value,
-)
-from leanflow_cli.local_models import (
-    get_local_runtime_status,
-    list_local_runtimes,
-    read_local_runtime_logs,
-    resolve_active_local_runtime,
-    start_local_runtime,
-    stop_local_runtime,
-    use_local_runtime,
 )
 from leanflow_cli.runtime.runtime_provider import (
     format_runtime_provider_error,
@@ -184,12 +173,6 @@ class InteractiveShell:
         except Exception as exc:
             return f"unavailable ({format_runtime_provider_error(exc)})"
 
-    def _local_runtime_label(self) -> str:
-        runtime = resolve_active_local_runtime()
-        if not runtime:
-            return "(none)"
-        return f"{runtime.get('runtime', '')} {runtime.get('model', '')}".strip()
-
     def _active_skill_label(self) -> str:
         if self.active_skill:
             return self.active_skill
@@ -251,7 +234,7 @@ class InteractiveShell:
             model=self._model_label(),
             provider=self._provider_label(),
             project_label=self._project_label(),
-            local_runtime=self._local_runtime_label(),
+            local_runtime="",
         )
 
     def show_help(self) -> None:
@@ -266,7 +249,7 @@ class InteractiveShell:
             project_label=self._project_label(),
             provider=self._provider_label(),
             model=self._model_label(),
-            local_runtime=self._local_runtime_label(),
+            local_runtime="",
             home=get_leanflow_home(),
         )
         workflow_status = self._workflow_status_payload()
@@ -613,38 +596,6 @@ class InteractiveShell:
         self.console.print(f"[bold red]Unknown /project subcommand:[/] {subcmd}")
         return 1
 
-    def _run_models_command(self, argv: list[str]) -> int:
-        if not argv or argv[0] != "local":
-            self.console.print("[dim]Usage: /models local list|status|start|stop|logs|use ...[/]")
-            return 1
-        args = argv[1:]
-        if not args:
-            self.console.print("[dim]Usage: /models local list|status|start|stop|logs|use ...[/]")
-            return 1
-        subcmd = args[0]
-        if subcmd == "list":
-            render_local_runtime_table(self.console, runtimes=list_local_runtimes())
-            return 0
-        if subcmd == "status" and len(args) >= 2:
-            _print_json(get_local_runtime_status(args[1]))
-            return 0
-        if subcmd == "start" and len(args) >= 3:
-            _print_json(start_local_runtime(args[1], model=args[2]))
-            return 0
-        if subcmd == "stop" and len(args) >= 2:
-            _print_json(stop_local_runtime(args[1]))
-            return 0
-        if subcmd == "logs" and len(args) >= 2:
-            print(read_local_runtime_logs(args[1]))
-            return 0
-        if subcmd == "use" and len(args) >= 3:
-            _print_json(use_local_runtime(args[1], model=args[2]))
-            return 0
-        self.console.print(
-            "[dim]Usage: /models local list|status <runtime>|start <runtime> <model>|stop <runtime>|logs <runtime>|use <runtime> <model>[/]"
-        )
-        return 1
-
     def _run_config_command(self, argv: list[str]) -> int:
         if not argv or argv[0] == "show":
             _print_json(load_config())
@@ -672,7 +623,7 @@ class InteractiveShell:
         render_provider_panel(
             self.console,
             resolved=resolved,
-            requested=requested or "auto",
+            requested=requested or "configured default",
             targets=list_runtime_provider_targets(),
         )
         return 0
@@ -1030,14 +981,6 @@ class InteractiveShell:
                 self.console.print(f"[bold red]{exc}[/]")
                 return True
             self._run_project_command(argv)
-            return True
-        if stripped.startswith("/models"):
-            try:
-                argv = shlex.split(stripped)[1:]
-            except ValueError as exc:
-                self.console.print(f"[bold red]{exc}[/]")
-                return True
-            self._run_models_command(argv)
             return True
         if stripped.startswith("/config"):
             try:

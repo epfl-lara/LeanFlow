@@ -1,4 +1,4 @@
-"""Tests for the extracted formalization_document_runner helpers + native_runner re-export (Phase 2).
+"""Tests for the extracted formalization_document_runner helpers.
 
 These cover the cleanly-pure ``/formalize`` document-formalization helpers moved out of
 native_runner: the blueprint manifest/bullet text-parsers (bullet value extraction, the
@@ -8,15 +8,6 @@ to the same object on ``native_runner`` so existing callers resolve them without
 """
 
 from leanflow_cli.formalization import formalization_document_runner as fdr
-from leanflow_cli.native import native_runner
-
-
-def test_native_runner_reexports_are_identical():
-    # Every re-exported name in native_runner must be the SAME object as in
-    # formalization_document_runner, so callers (including the entangled formalize helpers still
-    # living in native_runner) resolve the extracted helpers without a back-import.
-    for name in fdr.__all__:
-        assert getattr(native_runner, name) is getattr(fdr, name), name
 
 
 def test_blueprint_bullet_value_extracts_labeled_field():

@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from leanflow_cli.workflows.prover import agent_session as session
 from leanflow_cli.workflows.prover import observer as observer_module
 from leanflow_cli.workflows.prover.event_preview import (
     MESSAGE_CHARS,
@@ -295,37 +293,3 @@ def test_store_mints_and_preserves_evidence_ids(tmp_path: Path) -> None:
     minted = records[0]["evidence_id"]
     assert len(minted) == 12 and seen[0][1]["evidence_id"] == minted
     assert records[1]["evidence_id"] == seen[1][1]["evidence_id"] == "shared0001ab"
-
-
-def test_session_log_and_projected_events_share_one_evidence_id(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(session, "build_transport", lambda *_: SimpleNamespace(model="test"))
-    monkeypatch.setattr(session, "close_transport", lambda *_: None)
-    monkeypatch.setattr(
-        session,
-        "request_once",
-        lambda *_a, **_k: (
-            _assistant("I cannot finish this yet."),
-            {"input_tokens": 3, "output_tokens": 2},
-        ),
-    )
-    projected: list[tuple[str, dict[str, Any]]] = []
-    session.run_session(
-        role="prover",
-        prompt="Prove it",
-        project_root=tmp_path,
-        workspace=tmp_path / "job",
-        config={"model": "test", "context_tokens": 16000},
-        api_budget=1,
-        log_path=tmp_path / "job.jsonl",
-        context={"job_id": "prover_00001", "run_id": "run-1"},
-        on_event=lambda kind, details: projected.append((kind, details)),
-    )
-    logged = [json.loads(line) for line in (tmp_path / "job.jsonl").read_text().splitlines()]
-    assert [entry["type"] for entry in logged] == [kind for kind, _ in projected]
-    for entry, (_, details) in zip(logged, projected, strict=True):
-        assert entry["evidence_id"] == details["evidence_id"]
-        assert "evidence_id" not in entry["details"]
-    response = next(entry for entry in logged if entry["type"] == "api-response")
-    assert response["details"]["assistant"]["content"] == "I cannot finish this yet."

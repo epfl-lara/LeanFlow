@@ -6,14 +6,14 @@ documents, and complete proof workflows until no `sorry` remains.
 
 Point it at a Lean file or project with `sorry` holes. Its prover works in private
 scratch files, independently verifies candidates, and saves its plan, theorem
-dependencies, logs, and spending until the requested scope is verified or a finite
-budget is reached.
+dependencies, logs, and spending until the requested scope is verified, an explicit global limit is reached, or
+an actionable blocker prevents progress.
 
 ```bash
 leanflow                          # interactive shell
 leanflow workflow prove Main.lean # or run a workflow directly
 leanflow workflow prove Main.lean --provider codex --research
-leanflow workflow prove Main.lean --provider rcp --model zai-org/GLM-5.2
+leanflow workflow prove Main.lean --provider lemex --model zai-org/GLM-5.2
 ```
 
 ## Features
@@ -21,13 +21,12 @@ leanflow workflow prove Main.lean --provider rcp --model zai-org/GLM-5.2
 - **Protected proof completion** — fills authorized `sorry` holes with independently checked proofs. Warm LeanProbe provides feedback; strict axiom checks and a final Lake build decide completion.
 - **Formalization** — turns a LaTeX/PDF source document or TeX project into a buildable, statement-verified Lean draft with source-linked declarations, then hands off to proof repair.
 - **Two proving modes** — standard uses one prover; research adds fresh planning/review sessions and a deterministic theorem-DAG scheduler with bounded concurrent provers.
-- **Resumable budgets** — admitted requests, notes, scratch proofs, and failed attempts survive restart. Context compaction and local decomposition do not reset a pass.
+- **Resumable limits** — agent invocations, active time, notes, scratch proofs, and failed attempts survive restart. Limits are optional; there is no LeanFlow per-response deadline.
 - **Grounded research** — bounded paper/web retrieval and arithmetic experiments support an informal plan; reviewed plans can add explicitly pinned Lean libraries.
 - **Live proof workspace** — the VS Code extension shows theorem dependencies, the plan, per-job logs, clickable source changes and diffs, and usage metrics.
-- **Flexible providers** — Codex OAuth, direct provider APIs,
-  OpenAI-compatible endpoints, and local runtimes (vLLM, Ollama, or llama.cpp).
+- **Three native backends** — Codex, Claude Code, and Lemex retain their own authentication, model settings, tools, retries, and context compression.
 - **Host isolation** — an optional sandbox runs the agent in a container and exports the result as a patch, never touching your working tree.
-- **Explicit concurrency** — research proving defaults to two prover jobs; standard proving uses one. Other workflows retain their existing opt-in swarm behavior.
+- **Explicit concurrency** — research proving defaults to two prover jobs; standard proving uses one. Other workflows use one native agent and an independent source reviewer where required.
 
 The scope is deliberately narrow: Lean automation, not a general chat assistant.
 
@@ -99,8 +98,8 @@ separate editing workflow.
 
 - **`prove <file>`** completes holes in that file. Definition holes require explicit `LEANFLOW_PROVER_FILL_DEFINITIONS=1` authorization.
 - **`prove`** without a file discovers eligible project source files.
-- **`prove --research`** develops an informal plan, constructs and reviews a DAG, and schedules independent prover jobs. Bottom-up completion is the default. Experimental top-down results remain untrusted candidates until dependencies close and strict checks pass.
-- **`prove --clean-room`** blocks repository installation and prohibited task/sibling-solution research while retaining general mathematical and Lean library search. Use `--clean-room-label` when the benchmark needs additional identifying spellings.
+- **`prove --research`** develops an informal plan, constructs and reviews a DAG, and schedules independent prover jobs. Top-down candidates remain untrusted until dependencies close and strict checks pass; bottom-up scheduling is also available.
+- **Clean-room / no-internet runs** fail before native launch: the current host isolation confines files but does not implement model-only network access. These modes cannot silently weaken their research restrictions.
 - **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
 
 Headless proof outcomes are explicit: `0` means verified, `3` means an authoritatively promoted
@@ -138,59 +137,68 @@ The sandbox builds a local Docker/Podman image, copies the active project into a
 and exports the final diff as `changes.patch` under `~/.leanflow/sandbox/runs/<run-id>/`. See the
 [sandbox runtime](docs/sandbox-runtime.md) doc for image options and the update flow.
 
-## Providers and local runtimes
+## Native backends
 
-Inspect the active route with `leanflow provider`. For an RCP deployment with
-model-family-specific credentials:
+LeanFlow supports exactly `codex`, `claude`, and `lemex`. Inspect the selection with
+`leanflow provider`; select a backend with `--provider` or `model.provider`.
 
-```bash
-export GLM_BASE_URL="https://inference.rcp.epfl.ch/v1"
-export GLM_API_KEY="..."
-export RCP_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
-export RCP_OPENAI_API_KEY="..."
-leanflow workflow prove Main.lean --provider rcp --model zai-org/GLM-5.2
-```
+| Backend | Authentication and settings |
+| --- | --- |
+| `codex` | Existing Codex login/subscription or standard `OPENAI_API_KEY`; native Codex configuration |
+| `claude` | Existing Claude Code login/subscription or `ANTHROPIC_API_KEY`; native Claude configuration |
+| `lemex` | Lemex configuration, including `LEMEX_BASE_URL` and `LEMEX_API_KEY` |
 
-`--model` is scoped to the workflow. Proving supports separate
-`LEANFLOW_PROVER_MODEL` and `LEANFLOW_PROVER_ORCHESTRATOR_MODEL` overrides;
-its context compaction makes no model calls. The general `custom` route
-remains available for other OpenAI-compatible endpoints through
-`LEANFLOW_OPENAI_BASE_URL` and `LEANFLOW_OPENAI_API_KEY`.
-
-To use an existing Codex CLI login (model and reasoning effort are read from `~/.codex/config.toml`
-unless `LEANFLOW_CODEX_MODEL` / `LEANFLOW_CODEX_REASONING_EFFORT` are set):
+Configure the native CLI first, then run LeanFlow. For example:
 
 ```bash
 codex login
-leanflow config set model.provider codex
+leanflow workflow prove Main.lean --provider codex
+leanflow workflow prove Main.lean --provider claude
+
+export LEMEX_BASE_URL="https://inference.rcp.epfl.ch/v1"
+export LEMEX_API_KEY="..."
+leanflow workflow prove Main.lean --provider lemex
 ```
 
-An explicit workflow provider applies its resolved model and reasoning effort
-to the foreground prover and every model-backed auxiliary lane for that launch.
-Process environment values take precedence over `~/.leanflow/.env`, so
-launch-scoped `LEANFLOW_CODEX_MODEL` and
-`LEANFLOW_CODEX_REASONING_EFFORT` overrides remain authoritative.
+Lemex owns endpoint details, model catalogs, sampling and compaction. LeanFlow does
+not translate RCP credentials, inject temperature/top-p, or choose a default model
+or effort. `--model` and explicitly configured effort are deliberate overrides.
+The same native boundary serves planning, research, proof jobs and source reviews.
 
-To run a local model server (`vllm`, `ollama`, or `llama.cpp`):
+The installer adopts an existing self-contained Lemex distribution into an
+immutable, content-hashed LeanFlow runtime. If none is available, it installs a
+pinned Lemex source revision into a private prefix; that fallback needs Lemex's
+build dependencies. It preserves the global executable and `~/.lemex` settings.
+`leanflow doctor` checks executable availability; it does not authenticate or make
+paid model requests.
+
+This is a breaking provider migration. Old direct API/provider names, local-server
+management, command-template advisors, sampling/compression settings and per-turn
+budgets are rejected with migration guidance. Keep a backup of the old LeanFlow
+config, remove retired settings, set `schema_version: 2`, and choose one backend.
+Clear `model.default` and `agent.reasoning_effort` to inherit native defaults, or
+keep intentional overrides. Native credentials stay in their native setup.
+Historical run artifacts remain inspectable; start a new native run rather than
+resuming an old provider conversation.
+
+## Optional global limits
+
+All three limits default to unset (unlimited); zero means exhausted:
 
 ```bash
-leanflow models local start vllm google/gemma-3-27b-it
-leanflow provider --requested local
+leanflow config set limits.agent_calls 100
+leanflow config set limits.tokens 1000000
+leanflow config set limits.wall_time_s 28800
 ```
 
-Override the provider for a single run without changing the saved default:
-
-```bash
-leanflow workflow --provider codex prove Main.lean
-```
-
-Run a clean-room benchmark without weakening normal research for later work:
-
-```bash
-leanflow workflow prove Benchmarks/P2.lean \
-  --provider rcp --model zai-org/GLM-5.2 --research \
-  --clean-room --clean-room-label "Benchmark Problem 2"
-```
+The corresponding environment overrides are `LEANFLOW_PROVER_AGENT_CALLS`,
+`LEANFLOW_PROVER_TOKENS`, and `LEANFLOW_PROVER_WALL_TIME_S`. These also apply to
+formalization and review workflows. One native process invocation is one agent
+call, regardless of its internal model requests or compaction. Active time is
+cumulative across resumes and includes tools and verification. Native-reported
+tokens gate future invocations; a running invocation can exceed the threshold.
+Missing usage remains unknown and prevents another token-capped invocation.
+There are no LeanFlow three-minute or twenty-minute response/check cutoffs.
 
 ## Multi-agent mode
 
@@ -203,7 +211,7 @@ leanflow workflow prove Main.lean --research --research-workers 3
 
 `--agents 3` is a compatibility spelling for the same prover concurrency. Only
 one controller owns canonical source; jobs have independent scratch workspaces.
-Other workflows retain file-lock-aware swarm delegation. Use `--prompt` for
+Other workflows run one native agent. Use `--prompt` for
 run-specific guidance:
 
 ```bash
@@ -222,11 +230,13 @@ Prover state lives in `.leanflow/workflow-state/prover/<run-id>/`, including
 `leanflow runs prover <run-id> --json` returns the selected run's snapshot.
 Resume with `LEANFLOW_PROVER_RESUME_RUN_ID=<run-id>` and the same workflow target;
 it creates a new run with lineage while retaining the saved configuration and
-request spending. Other workflows retain their existing checkpoints and logs.
+invocation spending and active time. Other native workflows store proposals,
+receipts, logs and limits in `.leanflow/native-workflows/<run-id>/`; resume with
+`LEANFLOW_NATIVE_RESUME_RUN_ID` and the same backend, scope and limits.
 
 Rejected proof submissions return feedback within the same pass. A prover can
-request one separately budgeted resource agent for a concrete question; those
-calls also count toward the campaign total.
+request a resource agent for a concrete question; its native invocation also
+counts toward the same global call limit.
 
 ## Runtime knobs
 
@@ -235,7 +245,7 @@ variables. `leanflow flags` is the catalog of them:
 
 ```bash
 leanflow flags list --ablatable        # knobs worth flipping in an experiment
-leanflow flags show LEANFLOW_PROVER_JOB_API_CALLS
+leanflow flags show LEANFLOW_PROVER_AGENT_CALLS
 leanflow flags effective --changed     # what this environment actually sets
 leanflow flags diff default research   # what --research really turns on
 ```

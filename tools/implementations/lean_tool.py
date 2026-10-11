@@ -28,14 +28,6 @@ from leanflow_cli.lean.lean_services import (
     lean_verify,
     probe_capabilities,
 )
-from tools.implementations.lean_experts import (  # noqa: E402
-    LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S,
-    LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S,
-    LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S,
-    LEAN_REASONING_HELP_MIN_TIMEOUT_S,
-    lean_decompose_helpers_tool,
-    lean_reasoning_help_tool,
-)
 from tools.implementations.lean_have_extraction import lean_extract_have_tool  # noqa: E402
 from tools.implementations.lean_patch import apply_verified_patch_tool  # noqa: E402
 from tools.registry import registry
@@ -345,7 +337,9 @@ def lean_worker_dispatch_tool(
         parent_agent=parent_agent,
         owner_id=owner_id,
     )
-    return json.dumps({"success": True, **result.to_dict()}, ensure_ascii=False)
+    return json.dumps(
+        {"success": result.mode != "native_required", **result.to_dict()}, ensure_ascii=False
+    )
 
 
 def lean_proof_context_tool(
@@ -902,113 +896,6 @@ LEAN_WORKER_DISPATCH_SCHEMA = {
     },
 }
 
-LEAN_REASONING_HELP_SCHEMA = {
-    "name": "lean_reasoning_help",
-    "description": (
-        "Ask the configured auxiliary theorem advisor for proof-strategy advice on a hard Lean theorem. "
-        "Use after repeated focused attempts or search/automation exhaustion. The advisor only gives advice; "
-        "you must still preserve the theorem statement and verify same-file queue edits with "
-        "`lean_incremental_check(check_target)`; keep `lean_verify` for final Lake sweeps or explicit canonical checks."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "theorem_id": {
-                "type": "string",
-                "description": "Assigned theorem/lemma/example identifier",
-            },
-            "file_path": {"type": "string", "description": "Lean file containing the theorem"},
-            "theorem_statement": {
-                "type": "string",
-                "description": "Exact current declaration statement, if available",
-            },
-            "current_diagnostics": {
-                "type": "string",
-                "description": "Current Lean diagnostics or blocker text",
-            },
-            "current_goals": {"type": "string", "description": "Current Lean goals, if available"},
-            "current_attempt": {
-                "type": "string",
-                "description": "Most recent proof attempt or edit idea",
-            },
-            "recent_failed_attempts": {
-                "type": "string",
-                "description": "Summary of prior failed attempts and errors",
-            },
-            "question": {
-                "type": "string",
-                "description": "Specific advice request for the auxiliary model",
-            },
-            "cwd": {"type": "string", "description": "Optional project working directory"},
-            "timeout_s": {
-                "type": "integer",
-                "description": "Advisor request timeout in seconds",
-                "default": LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S,
-                "minimum": LEAN_REASONING_HELP_MIN_TIMEOUT_S,
-            },
-        },
-        "required": ["theorem_id", "file_path"],
-    },
-}
-
-LEAN_DECOMPOSE_HELPERS_SCHEMA = {
-    "name": "lean_decompose_helpers",
-    "description": (
-        "Ask the configured auxiliary theorem advisor for a structured helper-lemma decomposition of a hard "
-        "Lean theorem. Use when the next useful step is splitting the proof into sublemmas, especially after "
-        "broad search has stopped producing progress. This tool does not edit files; it returns ordered helper "
-        "skeletons with `by sorry` as temporary planning artifacts and checks them with `lean_incremental_check` "
-        "so ready helpers at least parse/elaborate before the main agent patches anything."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "theorem_id": {
-                "type": "string",
-                "description": "Assigned theorem/lemma/example identifier",
-            },
-            "file_path": {"type": "string", "description": "Lean file containing the theorem"},
-            "theorem_statement": {
-                "type": "string",
-                "description": "Exact current target declaration statement; used to validate helper skeletons with the target closed by `by sorry`",
-            },
-            "current_diagnostics": {
-                "type": "string",
-                "description": "Current Lean diagnostics or blocker text",
-            },
-            "current_goals": {"type": "string", "description": "Current Lean goals, if available"},
-            "current_attempt": {
-                "type": "string",
-                "description": "Most recent proof attempt or edit idea",
-            },
-            "recent_failed_attempts": {
-                "type": "string",
-                "description": "Summary of prior failed attempts and errors",
-            },
-            "question": {
-                "type": "string",
-                "description": "Specific decomposition request for the auxiliary model",
-            },
-            "cwd": {"type": "string", "description": "Optional project working directory"},
-            "max_helper_count": {
-                "type": "integer",
-                "description": "Maximum number of helper lemmas to propose",
-                "default": 6,
-            },
-            "timeout_s": {
-                "type": "integer",
-                "description": (
-                    "Whole decomposition request timeout in seconds, shared by the "
-                    "advisor and every subsequent Lean skeleton validation"
-                ),
-                "default": LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S,
-                "minimum": LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S,
-            },
-        },
-        "required": ["theorem_id", "file_path"],
-    },
-}
-
 
 registry.register(
     name="lean_capabilities",
@@ -1225,42 +1112,3 @@ if LEAN_WORKER_DISPATCH_ENABLED:
         check_fn=check_lean_requirements,
         emoji="🧠",
     )
-registry.register(
-    name="lean_reasoning_help",
-    toolset="lean",
-    schema=LEAN_REASONING_HELP_SCHEMA,
-    handler=lambda args, **kw: lean_reasoning_help_tool(
-        theorem_id=args.get("theorem_id", ""),
-        file_path=args.get("file_path", ""),
-        theorem_statement=args.get("theorem_statement", ""),
-        current_diagnostics=args.get("current_diagnostics", ""),
-        current_goals=args.get("current_goals", ""),
-        current_attempt=args.get("current_attempt", ""),
-        recent_failed_attempts=args.get("recent_failed_attempts", ""),
-        question=args.get("question", ""),
-        cwd=args.get("cwd", ""),
-        timeout_s=int(args.get("timeout_s", LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S)),
-    ),
-    check_fn=check_lean_requirements,
-    emoji="💡",
-)
-registry.register(
-    name="lean_decompose_helpers",
-    toolset="lean",
-    schema=LEAN_DECOMPOSE_HELPERS_SCHEMA,
-    handler=lambda args, **kw: lean_decompose_helpers_tool(
-        theorem_id=args.get("theorem_id", ""),
-        file_path=args.get("file_path", ""),
-        theorem_statement=args.get("theorem_statement", ""),
-        current_diagnostics=args.get("current_diagnostics", ""),
-        current_goals=args.get("current_goals", ""),
-        current_attempt=args.get("current_attempt", ""),
-        recent_failed_attempts=args.get("recent_failed_attempts", ""),
-        question=args.get("question", ""),
-        cwd=args.get("cwd", ""),
-        max_helper_count=int(args.get("max_helper_count", 6) or 6),
-        timeout_s=int(args.get("timeout_s", LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S)),
-    ),
-    check_fn=check_lean_requirements,
-    emoji="🪜",
-)

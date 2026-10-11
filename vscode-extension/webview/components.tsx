@@ -27,11 +27,12 @@ export function Card(props: {
 export function Field(props: {
   label: string;
   hint?: string;
+  source?: string;
   children: ReactNode;
 }) {
   return (
     <label className="field">
-      <span className="label">{props.label}</span>
+      <span className="label">{props.label}{props.source && <span className="field-source">{props.source}</span>}</span>
       {props.children}
       {props.hint && <span className="hint">{props.hint}</span>}
     </label>

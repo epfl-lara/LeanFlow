@@ -81,7 +81,7 @@ def initialize_lake(root: Path) -> dict[str, Any]:
         project_root=root,
         workspace=workspace,
         argv=["lake", "env", "lean", "--version"],
-        timeout_s=120,
+        timeout_s=None,
         extra_writable_roots=[root / ".lake"],
         network_allowed=False,
     )
@@ -249,9 +249,6 @@ def environment(directory: Path) -> dict[str, str]:
         "LC_CTYPE",
         "ELAN_HOME",
         "CODEX_HOME",
-        # Each RCP campaign receives only its assigned virtual key at launch.
-        "RCP_API_KEY",
-        "LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",
@@ -265,7 +262,10 @@ def environment(directory: Path) -> dict[str, str]:
         "no_proxy",
         "__CF_USER_TEXT_ENCODING",
     }
-    env = {k: v for k, v in os.environ.items() if k in permitted}
+    # Native runtimes own their settings, auth, and homes. Preserve exported
+    # values verbatim; campaign snapshots never copy or reinterpret them.
+    native_prefixes = ("CODEX_", "OPENAI_", "CLAUDE_", "ANTHROPIC_", "LEMEX_")
+    env = {k: v for k, v in os.environ.items() if k in permitted or k.startswith(native_prefixes)}
     env["LEANFLOW_HOME"] = str(leanflow_home())
     env["PYTHONPATH"] = str(directory / "runtime")
     env["PYTHONDONTWRITEBYTECODE"] = "1"

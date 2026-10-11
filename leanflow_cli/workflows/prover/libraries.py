@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import re
 import tempfile
 import time
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from core.deadlines import deadline_after, remaining_seconds
 from leanflow_cli.workflows.prover.session_research import _public_connection
 from leanflow_cli.workflows.prover.source import lean_code_mask
 from tools.utilities.repository_research_policy import repository_research_disabled
@@ -26,7 +28,7 @@ _LEAN_REQUIRE = re.compile(
 
 
 def _entries(
-    entries: list[dict[str, Any]], deadline: float, *, verify_remote: bool = True
+    entries: list[dict[str, Any]], deadline: float | None, *, verify_remote: bool = True
 ) -> list[dict[str, str]]:
     """Validate immutable requests, optionally checking public network reachability.
 
@@ -58,7 +60,14 @@ def _entries(
         ):
             raise ValueError("Library repositories must use public HTTPS URLs without options")
         if verify_remote:
-            connection, _, _ = _public_connection(git, min(deadline, time.monotonic() + 10))
+            connection, _, _ = _public_connection(
+                git,
+                (
+                    min(deadline, time.monotonic() + 10)
+                    if deadline is not None
+                    else time.monotonic() + 10
+                ),
+            )
             connection.close()
         candidate = {"name": name, "git": git.rstrip("/"), "rev": rev.lower()}
         if name in normalized and normalized[name] != candidate:
@@ -239,7 +248,9 @@ def ensure_helper_library(root: Path) -> dict[str, Any]:
         return {"accepted": False, "status": "rejected", "changes": [], "error": str(exc)}
 
 
-def _run_update(root: Path, paths: list[Path], names: list[str], timeout_s: int) -> dict[str, Any]:
+def _run_update(
+    root: Path, paths: list[Path], names: list[str], timeout_s: float | None
+) -> dict[str, Any]:
     """Run Lake with protected original sources and HTTPS-only noninteractive Git."""
     from leanflow_cli.workflows.prover.check_process import isolated_command
 
@@ -268,7 +279,9 @@ def _run_update(root: Path, paths: list[Path], names: list[str], timeout_s: int)
         )
 
 
-def _install_locked(root: Path, entries: list[dict[str, str]], deadline: float) -> dict[str, Any]:
+def _install_locked(
+    root: Path, entries: list[dict[str, str]], deadline: float | None
+) -> dict[str, Any]:
     """Apply one serialized update and restore exact protected inputs on failure."""
     lakefile, original, known = _configuration(root)
     manifest, toolchain = root / "lake-manifest.json", root / "lean-toolchain"
@@ -306,7 +319,7 @@ def _install_locked(root: Path, entries: list[dict[str, str]], deadline: float) 
     result: dict[str, Any] = {}
     update_attempted = False
     try:
-        if deadline <= time.monotonic():
+        if deadline is not None and deadline <= time.monotonic():
             raise TimeoutError("Library installation deadline exceeded")
         lakefile.write_bytes(updated)
         if snapshots[manifest] is None:
@@ -321,7 +334,7 @@ def _install_locked(root: Path, entries: list[dict[str, str]], deadline: float) 
             root,
             [lakefile, manifest, toolchain, lake_dir],
             [entry["name"] for entry in entries],
-            max(1, int(deadline - time.monotonic())),
+            remaining_seconds(deadline),
         )
         if not result.get("success") or result.get("returncode", 0) != 0:
             raise ValueError(
@@ -398,7 +411,7 @@ def _install_locked(root: Path, entries: list[dict[str, str]], deadline: float) 
 
 
 def install_libraries(
-    root: Path, entries: list[dict[str, Any]], timeout_s: int = 180
+    root: Path, entries: list[dict[str, Any]], timeout_s: float | None = None
 ) -> dict[str, Any]:
     """Install requested immutable libraries or return a bounded, explicit rejection.
 
@@ -406,9 +419,21 @@ def install_libraries(
     write boundary; failure restores lakefile, manifest, and toolchain exactly.
     Downloaded package/build caches may remain and are reported as such.
     """
+    if timeout_s is not None and (
+        isinstance(timeout_s, bool)
+        or not isinstance(timeout_s, (int, float))
+        or not math.isfinite(timeout_s)
+        or timeout_s < 0
+    ):
+        return {
+            "accepted": False,
+            "status": "configuration_error",
+            "error_code": "invalid_timeout",
+            "error": "Library installation timeout must be nonnegative or unset",
+            "changes": [],
+            "libraries": [],
+        }
     try:
-        if not isinstance(timeout_s, int) or not 1 <= timeout_s <= 600:
-            raise ValueError("Library installation timeout must be between 1 and 600 seconds")
         if not isinstance(entries, list):
             raise ValueError("Library installation requires a list of explicit entries")
         if not entries:
@@ -416,7 +441,7 @@ def install_libraries(
         if repository_research_disabled():
             raise ValueError("Library Git installation is disabled by clean-room policy")
         root = root.resolve()
-        deadline = time.monotonic() + timeout_s
+        deadline = deadline_after(timeout_s)
         validated = _entries(entries, deadline)
         _validate_layout(root)
         lock_directory = root / ".leanflow"
@@ -430,7 +455,7 @@ def install_libraries(
                     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    if time.monotonic() >= deadline:
+                    if deadline is not None and time.monotonic() >= deadline:
                         raise TimeoutError("Library installation lock deadline exceeded")
                     time.sleep(0.05)
             return _install_locked(root, validated, deadline)

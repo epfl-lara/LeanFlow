@@ -9,8 +9,7 @@ file for later use.
 pages and PDFs to clean markdown with no API key required. ``JINA_API_KEY`` is attached as a
 bearer token only when set (higher rate limits). On any Jina failure we fall back to a plain
 ``requests.get`` plus a stdlib-only HTML->text reduction (no new third-party deps). Long output
-is bounded by reusing the existing summarizer ``process_content_with_llm`` from web_tools so a
-single fetch never floods the model's context.
+is bounded with deterministic truncation; the native runtime owns any summarization.
 
 ``web_download`` streams a URL to ``<cwd>/.leanflow/downloads/`` (size-capped, filename
 sanitized, destination sandboxed under the project) and returns the local path so ``read_pdf`` /
@@ -28,12 +27,7 @@ from urllib.parse import unquote, urlparse
 
 import requests
 
-from tools.implementations.web_tools import (
-    DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
-    DEFAULT_SUMMARIZER_MODEL,
-    clean_base64_images,
-    process_content_with_llm,
-)
+from tools.implementations.web_tools import clean_base64_images
 from tools.response import dumps, error
 from tools.utilities.repository_research_policy import (
     repository_url_block_reason,
@@ -44,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 JINA_READER_URL = "https://r.jina.ai/"
 WEB_FETCH_TIMEOUT_SECONDS = 30
-# Default ceiling on returned text; pages above it are summarized down to ~this size.
+# Default ceiling on returned verbatim text.
 DEFAULT_MAX_CHARS = 5000
 # Upper bound the model may request, to keep a single fetch from dominating context.
 MAX_ALLOWED_CHARS = 20000
@@ -221,7 +215,7 @@ async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
 
     Tries Jina Reader first (handles HTML and PDFs, no key needed), falling back to a direct
     ``requests.get`` plus stdlib HTML->text on Jina failure. Content longer than ``max_chars``
-    is summarized via ``process_content_with_llm`` and capped; shorter content is returned
+    is truncated deterministically; shorter content is returned
     as-is. Always returns a JSON string ``{success, url, content, backend}`` or ``{error}``.
     """
     url = (url or "").strip()
@@ -290,21 +284,9 @@ async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
         )
     _clear_fetch_failure(url)
 
-    truncated = False
-    # Reuse the (otherwise-dead) summarizer for long pages so output stays bounded.
-    if len(text) > max(DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION, bound):
-        summary = await process_content_with_llm(
-            text,
-            url=url,
-            model=DEFAULT_SUMMARIZER_MODEL,
-            min_length=DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
-        )
-        if summary:
-            text = summary
-        # Hard cap regardless of whether summarization ran (e.g. no auxiliary model).
-        if len(text) > bound:
-            text = text[:bound].rstrip() + "\n\n[... truncated for context management ...]"
-            truncated = True
+    truncated = len(text) > bound
+    if truncated:
+        text = text[:bound].rstrip() + "\n\n[... truncated for context management ...]"
 
     payload = {
         "success": True,

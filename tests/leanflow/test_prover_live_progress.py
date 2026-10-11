@@ -10,12 +10,10 @@ from typing import Any
 
 import pytest
 
-from leanflow_cli.workflows.prover import agent_session
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.job_controller import session_event
 from leanflow_cli.workflows.prover.live_progress import _snapshot
 from leanflow_cli.workflows.prover.runtime import (
-    BudgetExhausted,
     InfrastructureFailure,
     ProverRuntime,
 )
@@ -45,40 +43,6 @@ def test_committed_snapshot_preserves_source_checkpoint(tmp_path: Path) -> None:
     assert state["dag"]["nodes"][0]["status"] == "pending"
 
 
-def test_cancelled_final_event_preserves_invoke_outcome_and_usage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from types import SimpleNamespace
-
-    runtime = make_runtime(tmp_path)
-    runtime.session = agent_session.run_session
-    monkeypatch.setattr(agent_session, "build_transport", lambda *_: SimpleNamespace(model="test"))
-    monkeypatch.setattr(agent_session, "close_transport", lambda *_: None)
-    monkeypatch.setattr(
-        agent_session,
-        "request_once",
-        lambda *_: (
-            {"role": "assistant", "content": '{"proof":"trivial"}'},
-            {"input_tokens": 17, "output_tokens": 5},
-        ),
-    )
-
-    def timed_out(*_: Any) -> dict[str, Any]:
-        runtime.cancelled.set()
-        raise BudgetExhausted("campaign wall-clock budget exhausted", code="campaign_wall_time")
-
-    monkeypatch.setattr(
-        "leanflow_cli.workflows.prover.job_controller.candidate_feedback", timed_out
-    )
-    job, context = runtime._new_job("prover", node=runtime.dag.nodes[0])
-    result = runtime._invoke(job, context, "Prove the goal")
-    assert result["status"] == "timeout", result
-    assert result["stop_reason"]["code"] == "campaign_wall_time"
-    assert result["api_calls"] == 1
-    assert result["input_tokens"] == 17 and result["output_tokens"] == 5
-    assert job["input_tokens"] == 17 and job["output_tokens"] == 5
-
-
 def test_worker_reports_during_source_lock_without_publishing_tentative_source(
     tmp_path: Path,
 ) -> None:
@@ -92,7 +56,7 @@ def test_worker_reports_during_source_lock_without_publishing_tentative_source(
 
     def update() -> None:
         try:
-            session_event(runtime, job, "api-response", {"api_calls": 3, "input_tokens": 27})
+            session_event(runtime, job, "api-response", {"api_calls": 1, "input_tokens": 27})
         except BaseException as error:
             errors.append(error)
         finally:
@@ -110,9 +74,9 @@ def test_worker_reports_during_source_lock_without_publishing_tentative_source(
     assert not errors
     assert snapshot["source_checkpoint"] == before["source_checkpoint"]
     assert snapshot["dag"]["nodes"][0]["status"] == "running"
-    assert snapshot["metrics"]["api_calls"] == 3
-    assert snapshot["metrics"]["available_api_calls"] == 80
-    assert snapshot["metrics"]["remaining_reserved_api_calls"] == 17
+    assert snapshot["metrics"]["api_calls"] == 1
+    assert snapshot["metrics"]["available_api_calls"] == 99
+    assert snapshot["metrics"]["remaining_reserved_api_calls"] == 0
     assert snapshot["updated_at"] > before["updated_at"]
 
 
@@ -139,11 +103,11 @@ def test_operation_is_visible_and_never_marks_unintegrated_node_proved(tmp_path:
 def test_local_call_exhaustion_does_not_claim_total_budget_exhaustion(tmp_path: Path) -> None:
     runtime = make_runtime(tmp_path)
     job, _ = runtime._new_job("prover", node=runtime.dag.nodes[0])
-    runtime._finish_job(job, {"status": "budget_exhausted", "api_calls": 20})
+    runtime._finish_job(job, {"status": "budget_exhausted", "api_calls": 1})
     assert job["stop_reason"]["scope"] == "job"
     reason = campaign_stop_reason(runtime, "budget_exhausted")
     assert reason is not None and reason["scope"] == "scheduler"
-    assert reason["remaining_api_calls"] == 80
+    assert reason["remaining_api_calls"] == 99
     runtime.state["metrics"]["api_calls"] = 100
     reason = campaign_stop_reason(runtime, "budget_exhausted")
     assert reason is not None and reason["code"] == "campaign_api_calls"

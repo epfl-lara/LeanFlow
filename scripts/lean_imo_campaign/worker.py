@@ -16,10 +16,15 @@ def main() -> int:
     """Pin runtime settings before any provider request or controller startup."""
     from leanflow_cli.workflows.prover.config import ENV_NAMES
     from leanflow_cli.workflows.prover.entrypoint import main as prove
-    from scripts.lean_imo_campaign.provider import encode_setting, resolve_launch_provider
+    from scripts.lean_imo_campaign.provider import (
+        encode_setting,
+        require_native_campaign,
+        resolve_launch_provider,
+    )
 
     directory, cell_id = Path(sys.argv[1]).resolve(), sys.argv[2]
     manifest = json.loads((directory / "campaign.json").read_text())
+    require_native_campaign(manifest)
     cell = next(c for c in manifest["cells"] if c["id"] == cell_id)
     snapshot = runtime_directory(directory, cell)
     identity = json.loads((snapshot / "provenance.json").read_text())
@@ -33,22 +38,13 @@ def main() -> int:
             )
     root = Path(cell["project"])
     runtime = resolve_launch_provider(cell["config"])
-    expected = manifest.get(
-        "provider_identity", {"provider": "openai-codex", "api_mode": "codex_responses"}
-    )
-    if (
-        runtime["provider"] != expected["provider"]
-        or runtime["api_mode"] != expected["api_mode"]
-        or runtime["base_url"].rstrip("/") != manifest["provider_base_url"]
-    ):
+    expected = manifest["provider_identity"]
+    if runtime["provider"] != expected["provider"] or runtime["api_mode"] != "native":
         raise ValueError("Provider identity differs from the frozen comparison")
     env = {
         "LEANFLOW_PROJECT_ROOT": str(root),
         "LEANFLOW_WORKFLOW_RUN_ID": cell["run_id"],
         "LEANFLOW_NATIVE_PROVIDER": runtime["provider"],
-        "LEANFLOW_NATIVE_API_MODE": runtime["api_mode"],
-        "LEANFLOW_NATIVE_BASE_URL": runtime["base_url"],
-        "LEANFLOW_NATIVE_API_KEY": runtime["api_key"],
         "LEANFLOW_NATIVE_MODEL": cell["model"],
         "LEANFLOW_NATIVE_REASONING_EFFORT": cell["effort"],
         "LEANFLOW_NATIVE_ACTIVE_FILE": cell["problem"]["file"],
@@ -84,7 +80,6 @@ def main() -> int:
             "effort": cell["effort"],
             "provider": runtime["provider"],
             "api_mode": runtime["api_mode"],
-            "base_url": runtime["base_url"],
             "runtime_sha256": identity["runtime_sha256"],
             "config": cell["config"],
             "pid": os.getpid(),

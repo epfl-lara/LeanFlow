@@ -11,12 +11,10 @@ import pytest
 from leanflow_cli.workflows.prover import planning_controller
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.runtime import ProverRuntime
-from leanflow_cli.workflows.prover.session_assignment import compact_assignment
 
 
-@pytest.mark.parametrize("compact", [False, True])
 def test_review_and_materialization_receive_the_same_complete_helpers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, compact: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Keep PB028's missing-placeholder rejection out of the review handoff."""
     source = tmp_path / "Main.lean"
@@ -34,12 +32,6 @@ def test_review_and_materialization_receive_the_same_complete_helpers(
     def session(**kwargs: Any) -> dict[str, Any]:
         if kwargs["role"] == "review":
             context = kwargs["context"]
-            if compact:
-                assignment, artifacts = compact_assignment(
-                    kwargs["prompt"], context, workspace=tmp_path, token_budget=1
-                )
-                assert artifacts
-                context = json.loads(assignment["content"].split("Assignment context:\n", 1)[1])
             reviews.append(context)
             prompts.append(kwargs["prompt"])
             response = {"accepted": True, "critique": "Use the two helper obligations."}
@@ -74,8 +66,7 @@ def test_review_and_materialization_receive_the_same_complete_helpers(
         config=ProverConfig(mode="research"),
         session=session,
     )
-    if compact:
-        runtime.dag.by_id()[runtime.dag.roots[0]].notes = "Prior evidence. " * 1000
+    runtime.dag.by_id()[runtime.dag.roots[0]].notes = "Prior evidence. " * 1000
     assert runtime._research_plan("Construct a useful graph.")
     assert len(reviews) == 1
     reviewed = {node["id"]: node for node in reviews[0]["proposed_dag"]["nodes"]}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 from leanflow_cli.config import get_leanflow_home
 
@@ -37,11 +37,40 @@ def _native_auxiliary_targets(suffix: str) -> tuple[str, ...]:
     )
 
 
+def _runtime_owned(name: str) -> bool:
+    """Keep native configuration and removed credential routes out of LeanFlow env files."""
+    native = ("OPENAI_", "CODEX_", "ANTHROPIC_", "CLAUDE_", "LEMEX_")
+    legacy = (
+        "LEANFLOW_OPENAI_",
+        "LEANFLOW_OPENROUTER_",
+        "OPENROUTER_",
+        "RCP_",
+        "GLM_",
+        "ZAI_",
+        "Z_AI_",
+        "KIMI_",
+        "MINIMAX_",
+        "DEEPSEEK_",
+    )
+    return (
+        name.startswith(native + legacy)
+        or (
+            name.startswith(("AUXILIARY_", "LEANFLOW_NATIVE_", "LEANFLOW_PROVER_"))
+            and name.endswith(("API_KEY", "API_KEY_ENV", "BASE_URL"))
+        )
+        or name in {"ANTHROPIC_TOKEN", "LEANFLOW_CODEX_MODEL", "LEANFLOW_CODEX_REASONING_EFFORT"}
+    )
+
+
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    """Load ordinary workflow variables without importing native runtime configuration."""
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        values = dotenv_values(path, encoding="utf-8", interpolate=False)
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        values = dotenv_values(path, encoding="latin-1", interpolate=False)
+    for name, value in values.items():
+        if value is not None and not _runtime_owned(name) and (override or name not in os.environ):
+            os.environ[name] = value
 
 
 def load_leanflow_dotenv(
@@ -67,28 +96,18 @@ def load_leanflow_dotenv(
 
 
 def reassert_native_auxiliary_provider() -> str:
-    """Force every model-backed native-workflow lane onto one launch runtime.
-
-    Native foreground and dispatch-worker processes reload the user dotenv at
-    import time. Reapply this explicit per-launch override afterwards so blank
-    or independently configured ``AUXILIARY_*`` entries cannot silently route
-    a nested proving lane through another provider, endpoint, credential,
-    model, or reasoning effort.
-    """
+    """Propagate only native backend/model overrides to transitional auxiliary callers."""
     provider = str(os.getenv(NATIVE_AUXILIARY_PROVIDER_ENV, "") or "").strip()
-    if not provider:
+    if provider not in {"codex", "claude", "lemex"}:
         return ""
     for name in NATIVE_AUXILIARY_PROVIDER_TARGETS:
         os.environ[name] = provider
     for suffix, source_name in (
-        ("BASE_URL", NATIVE_AUXILIARY_BASE_URL_ENV),
-        ("API_KEY", NATIVE_AUXILIARY_API_KEY_ENV),
         ("MODEL", NATIVE_AUXILIARY_MODEL_ENV),
         ("REASONING_EFFORT", NATIVE_AUXILIARY_REASONING_EFFORT_ENV),
     ):
         value = str(os.getenv(source_name, "") or "").strip()
-        if not value:
-            continue
-        for name in _native_auxiliary_targets(suffix):
-            os.environ[name] = value
+        if value:
+            for name in _native_auxiliary_targets(suffix):
+                os.environ[name] = value
     return provider

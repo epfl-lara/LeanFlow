@@ -67,7 +67,7 @@ def test_invalid_configuration_also_publishes_terminal_state(launch, monkeypatch
     root, observed = launch
     monkeypatch.setenv("LEANFLOW_PROVER_JOB_API_CALLS", "0")
     assert entrypoint.main() == 1
-    assert "job_api_calls" in _state(root)["error"]
+    assert "LEANFLOW_PROVER_JOB_API_CALLS is retired" in _state(root)["error"]
     assert observed[-1][0] == "finish"
 
 

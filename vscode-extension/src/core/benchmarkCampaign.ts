@@ -16,6 +16,7 @@ export interface BenchmarkCell {
   phase?: string;
   verified: boolean;
   metrics: Record<string, unknown>;
+  config?: Record<string, unknown>;
   error?: string;
   runtime_sha256?: string;
   stop_reason?: { code?: string; scope?: string; message?: string };
@@ -48,11 +49,24 @@ export function benchmarkEscape(value: unknown): string {
 }
 
 /** Keep unavailable prices distinct from zero and aggregate only verified completions. */
-export function benchmarkSummary(campaign: BenchmarkCampaign): { verified: number; active: number; calls: number; tokens: number } {
+export function benchmarkSummary(campaign: BenchmarkCampaign): { verified: number; active: number; calls: number; tokens: number; usageComplete: boolean } {
   return {
     verified: campaign.cells.filter((c) => c.verified).length,
     active: campaign.cells.filter((c) => ["running", "preparing"].includes(c.status)).length,
-    calls: campaign.cells.reduce((n, c) => n + Number(c.metrics.api_calls || 0), 0),
+    calls: campaign.cells.reduce((n, c) => n + benchmarkCalls(c), 0),
+    usageComplete: campaign.cells.every((c) => c.metrics.usage_complete !== false && c.metrics.input_tokens != null && c.metrics.output_tokens != null),
     tokens: campaign.cells.reduce((n, c) => n + Number(c.metrics.input_tokens || 0) + Number(c.metrics.output_tokens || 0), 0),
   };
+}
+
+/** Prefer native invocation counts while preserving historical campaign records. */
+export function benchmarkCalls(cell: BenchmarkCell): number {
+  return Number(cell.metrics.agent_calls ?? cell.metrics.api_calls ?? 0);
+}
+
+/** Show exactly the frozen global limits, including explicit zero. */
+export function benchmarkLimits(cell: BenchmarkCell): string {
+  if (!cell.config || !("agent_calls" in cell.config)) return "Historical settings";
+  const limit = (value: unknown) => value == null ? "unlimited" : String(value);
+  return `${limit(cell.config.agent_calls)} calls · ${limit(cell.config.tokens)} tokens · ${limit(cell.config.wall_time_s)} seconds`;
 }

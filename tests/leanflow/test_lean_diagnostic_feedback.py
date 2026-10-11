@@ -1,4 +1,4 @@
-"""Tests for the extracted lean_diagnostic_feedback parsers + native_runner re-export (Phase 2).
+"""Tests for the extracted lean_diagnostic_feedback parsers.
 
 These cover the pure, closed-under-"calls" subset of diagnostic / goal text parsers moved out of
 native_runner. The re-export-identity test pins every moved name to the same object on
@@ -10,7 +10,6 @@ diagnostic feedback reason that combines structured items with text fallbacks.
 """
 
 from leanflow_cli.lean import lean_diagnostic_feedback as ldf
-from leanflow_cli.native import native_runner
 
 _REEXPORTED = (
     "_declaration_diagnostic_feedback_reason",
@@ -27,14 +26,6 @@ _REEXPORTED = (
     "_queue_diagnostic_items",
     "_queue_diagnostic_line_numbers",
 )
-
-
-def test_native_runner_reexports_are_identical():
-    # Every re-exported name in native_runner must be the SAME object as in
-    # lean_diagnostic_feedback, so callers still living in native_runner resolve the
-    # extracted helpers without a back-import.
-    for name in _REEXPORTED:
-        assert getattr(native_runner, name) is getattr(ldf, name), name
 
 
 def test_diagnostics_indicate_hard_failure_distinguishes_cleared_from_error():

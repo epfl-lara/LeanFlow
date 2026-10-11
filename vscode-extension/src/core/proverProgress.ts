@@ -97,6 +97,9 @@ export function snapshotAgeMs(snapshot: Pick<ProverSnapshot, "updated_at">, nowM
 // ---------------------------------------------------------------------- budget
 
 export interface BudgetView {
+  nativeBackend: boolean;
+  tokenLimit: number | null;
+  usageComplete: boolean | null;
   usedCalls: number | null;
   totalCalls: number | null;
   /** Calls the runtime can still allocate to new work; unknown unless it says so. */
@@ -131,8 +134,11 @@ export function proverBudget(snapshot: ProverSnapshot, nowMs: number): BudgetVie
       ? metrics.elapsed_s + Math.max(0, (nowMs - updated) / 1000)
       : metrics.elapsed_s;
   return {
-    usedCalls: metrics.api_calls,
-    totalCalls: metrics.total_api_budget ?? config.total_api_calls,
+    nativeBackend: config.native_backend,
+    tokenLimit: metrics.token_limit ?? config.tokens,
+    usageComplete: metrics.usage_complete,
+    usedCalls: config.native_backend ? metrics.agent_calls : metrics.api_calls,
+    totalCalls: config.native_backend ? metrics.agent_call_limit ?? config.agent_calls : metrics.total_api_budget ?? config.total_api_calls,
     availableCalls: metrics.available_api_calls,
     reservedCalls: metrics.reserved_api_calls,
     remainingReservedCalls: metrics.remaining_reserved_api_calls,

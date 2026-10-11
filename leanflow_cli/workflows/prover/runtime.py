@@ -115,6 +115,7 @@ class ProverRuntime:
         self.pending: dict[Future[dict[str, Any]], dict[str, Any]] = {}
         self.completions: queue.SimpleQueue[Future[dict[str, Any]]] = queue.SimpleQueue()
         self.cancelled = threading.Event()
+        self.native_bridges: dict[str, Any] = {}
         self.stopping = False
         self.scratch_before: dict[str, str] = {}
         self.resume_jobs: dict[str, dict[str, Any]] = {}
@@ -140,7 +141,7 @@ class ProverRuntime:
             if scheme not in SIGNATURE_SCHEMES:
                 raise ValueError(f"unknown signature scheme: {scheme}")
             self.state: dict[str, Any] = {
-                "version": 1,
+                "version": 2,
                 "run_id": self.run_id,
                 "mode": config.mode,
                 "phase": "inspect",
@@ -175,6 +176,7 @@ class ProverRuntime:
 
         if isinstance(self.verifier, LeanVerifier):
             self.verifier.remaining_time = self._remaining_verification_time
+            self.verifier.cancelled = self.cancelled.is_set
             self.verifier.on_operation = self.progress.call
             scheme = str(self.state.get("signature_scheme") or "legacy")
             if scheme not in SIGNATURE_SCHEMES:
@@ -182,10 +184,14 @@ class ProverRuntime:
             self.verifier.signature_scheme = scheme
             self.verifier.artifact_root = self.store.directory / "artifacts"
 
-    def _remaining_verification_time(self) -> float:
+    def _remaining_verification_time(self) -> float | None:
         """Enforce the global deadline before starting another deterministic check."""
         self._ensure_active()
-        return max(0.01, self.config.wall_time_s - self._elapsed())
+        return (
+            None
+            if self.config.wall_time_s is None
+            else max(0.0, self.config.wall_time_s - self._elapsed())
+        )
 
     def _initial_plan(self) -> str:
         lines = [
@@ -216,6 +222,10 @@ class ProverRuntime:
     def _restore(self) -> None:
         """Resume durable progress without granting interrupted jobs a fresh allocation."""
         self.state = json.loads((self.store.directory / "state.json").read_text())
+        if self.state.get("version") != 2:
+            raise ValueError(
+                "This run used the retired API engine. Its artifacts are preserved; start a new native-backend run."
+            )
         self.state["resume_phase"] = self.state.get(
             "resume_phase", self.state.get("phase", "inspect")
         )
@@ -311,16 +321,13 @@ class ProverRuntime:
                     # a fresh attempt at the current revision instead.
                     job.update(status="stale", phase="finished")
                     continue
-                if job["role"] == "prover" and job["api_calls"] < job["api_budget"]:
+                if job["role"] == "prover":
                     self.resume_jobs[job["node_id"]] = job
                     job["status"] = "resume_pending"
                 elif job["role"] == "negation" and job.get("negation_assignment"):
                     self.resume_negation_jobs[job["node_id"]] = job
                     job["status"] = "resume_pending"
-                elif (
-                    job["role"] in {"orchestrator", "review", "research"}
-                    and job["api_calls"] < job["api_budget"]
-                ):
+                elif job["role"] in {"orchestrator", "review", "research"}:
                     self.resume_role_jobs[(job["role"], job.get("purpose", ""))] = job
                     job["status"] = "resume_pending"
                 else:
@@ -344,7 +351,11 @@ class ProverRuntime:
             ):
                 node.status = (
                     "retry"
-                    if node.id in self.resume_jobs or node.attempts <= self.config.max_restarts
+                    if node.id in self.resume_jobs
+                    or (
+                        self.config.max_restarts is None
+                        or node.attempts <= self.config.max_restarts
+                    )
                     else "blocked"
                 )
         retained_nodes: set[str] = set()
@@ -416,11 +427,21 @@ class ProverRuntime:
             if not job.get("accounted") and job.get("status") == "running"
         )
         metrics["remaining_reserved_api_calls"] = max(0, self.reserved - active_spent)
-        metrics["available_api_calls"] = max(
-            0,
-            self.config.total_api_calls
-            - metrics["api_calls"]
-            - metrics["remaining_reserved_api_calls"],
+        metrics["agent_calls"] = metrics["api_calls"]
+        metrics["agent_call_limit"] = self.config.agent_calls
+        metrics["available_api_calls"] = (
+            None
+            if self.config.agent_calls is None
+            else max(
+                0,
+                self.config.agent_calls
+                - metrics["api_calls"]
+                - metrics["remaining_reserved_api_calls"],
+            )
+        )
+        metrics["token_limit"] = self.config.tokens
+        metrics["usage_complete"] = all(
+            job.get("usage_known", False) for job in jobs if job.get("api_calls")
         )
         metrics.update(
             wall_time_s=self.config.wall_time_s,
@@ -440,12 +461,38 @@ class ProverRuntime:
     def _reserve(self, requested: int) -> int:
         with self.lock:
             self._ensure_active()
-            remaining = self.config.total_api_calls - self.consumed - self.reserved
-            if remaining <= 0 or self._elapsed() >= self.config.wall_time_s:
-                raise BudgetExhausted("campaign API or wall-clock budget exhausted")
-            allocation = min(requested, remaining)
+            remaining = (
+                None
+                if self.config.agent_calls is None
+                else self.config.agent_calls - self.consumed - self.reserved
+            )
+            if remaining is not None and remaining <= 0:
+                raise BudgetExhausted("campaign agent-call budget exhausted")
+            if self.config.tokens is not None and any(
+                job.get("api_calls", 0)
+                and not job.get("usage_known", False)
+                and job.get("accounted")
+                for job in self.state.get("jobs", [])
+            ):
+                raise BudgetExhausted(
+                    "Token usage is unavailable for a completed native invocation; no further token-capped calls can be admitted.",
+                    code="campaign_tokens_unknown",
+                )
+            known_tokens = sum(
+                int(job.get("input_tokens", 0) or 0) + int(job.get("output_tokens", 0) or 0)
+                for job in self.state.get("jobs", [])
+            )
+            if self.config.tokens is not None and known_tokens >= self.config.tokens:
+                raise BudgetExhausted(
+                    "campaign reported-token budget exhausted", code="campaign_tokens"
+                )
+            allocation = requested if remaining is None else min(requested, remaining)
             self.reserved += allocation
             return allocation
+
+    def _deadline_reached(self) -> bool:
+        """Return whether the explicitly configured active-time limit is exhausted."""
+        return self.config.wall_time_s is not None and self._elapsed() >= self.config.wall_time_s
 
     def _ensure_active(self) -> None:
         """Stop new controller work immediately after cancellation or the campaign deadline."""
@@ -459,7 +506,7 @@ class ProverRuntime:
                     else self.state.get("stop_status", "interrupted")
                 ),
             )
-        if self._elapsed() >= self.config.wall_time_s:
+        if self._deadline_reached():
             self.cancelled.set()
             self.stopping = True
             self.state["stop_status"] = "timeout"
@@ -659,6 +706,7 @@ class ProverRuntime:
 
     def _accept_locked(self, node: Node, candidate: list[str], job_id: str) -> bool:
         """Verify against current source, then install only the original literal-hole replacements."""
+        self._ensure_active()
         self._assert_sources()
         document = self.documents[node.file]
         workspace = self.store.directory / "checks"
@@ -666,7 +714,8 @@ class ProverRuntime:
         check_path = workspace / f"{node.id}_{node.revision}.lean"
         source = declaration_source(document, node, candidate=candidate)
         write_source(check_path, source)
-        cached = self.submission_cache.take(node, submission_key(self, node, source))
+        before_check = submission_key(self, node, source)
+        cached = self.submission_cache.take(node, before_check)
         result = self.progress.call(
             "submission_check",
             (
@@ -680,6 +729,11 @@ class ProverRuntime:
             file=node.file,
             timeout_s=self.config.timeout_s,
         )
+        if result.get("accepted") and before_check != submission_key(self, node, source):
+            result = {
+                "accepted": False,
+                "error": "Candidate inputs or Lean dependencies changed during verification.",
+            }
         self.store.event(
             "candidate_checked",
             {
@@ -704,6 +758,7 @@ class ProverRuntime:
                 )
             node.notes += "\nParent Lean gate: " + json.dumps(result, default=str)[-10000:]
             return False
+        self._ensure_active()
         self._assert_sources()
         previous_document = SourceDocument(**document.to_dict())
         previous = dict(document.replacements)
@@ -718,6 +773,7 @@ class ProverRuntime:
 
         transaction = begin_proof(self, node, candidate, previous_document, document.render())
         try:
+            self._ensure_active()
             if read_source(path) != previous_document.render():
                 raise InfrastructureFailure(
                     f"protected source changed before proof installation: {node.file}",
@@ -920,7 +976,7 @@ class ProverRuntime:
                 "retry"
                 if job.get("status") != "response_stalled"
                 and progress
-                and node.attempts <= self.config.max_restarts
+                and (self.config.max_restarts is None or node.attempts <= self.config.max_restarts)
                 else "blocked"
             )
             self._persist()
@@ -1034,7 +1090,11 @@ class ProverRuntime:
             stage = rec.get("stage", "decide")
 
             if stage == "budget_exhausted":
-                if int(self.state["metrics"]["decompositions"]) >= self.config.max_decompositions:
+                if (
+                    self.config.max_decompositions is not None
+                    and int(self.state["metrics"]["decompositions"])
+                    >= self.config.max_decompositions
+                ):
                     return
                 rec.update(stage="decide", charged=False)
                 self._persist()
@@ -1047,7 +1107,10 @@ class ProverRuntime:
             if stage == "decide":
                 if not rec["charged"]:
                     used = int(self.state["metrics"]["decompositions"])
-                    if used >= self.config.max_decompositions:
+                    if (
+                        self.config.max_decompositions is not None
+                        and used >= self.config.max_decompositions
+                    ):
                         node.notes += (
                             f"\nCampaign recovery budget exhausted "
                             f"({used}/{self.config.max_decompositions}); recovery awaits additional capacity."
@@ -1335,7 +1398,10 @@ class ProverRuntime:
                     node.status = (
                         "retry"
                         if stalled_job(self, node) is None
-                        and node.attempts <= self.config.max_restarts
+                        and (
+                            self.config.max_restarts is None
+                            or node.attempts <= self.config.max_restarts
+                        )
                         else "blocked"
                     )
             if not promoted:
@@ -1513,9 +1579,9 @@ class ProverRuntime:
                             self._assert_sources()
                             next_source_scan = time.monotonic() + 5.0
                         self._promote_candidates()
-                        if self.stopping or self._elapsed() >= self.config.wall_time_s:
+                        if self.stopping or self._deadline_reached():
                             self.stopping = True
-                            if self._elapsed() >= self.config.wall_time_s:
+                            if self._deadline_reached():
                                 self.state["stop_status"] = "timeout"
                                 self.cancelled.set()
                         active = {job["node_id"] for job in self.pending.values()}
@@ -1599,11 +1665,12 @@ class ProverRuntime:
                     if self.state.get("disproof")
                     else self.state.get("stop_status", "budget_exhausted")
                 )
-            elif self.consumed >= self.config.total_api_calls:
+            elif self.config.agent_calls is not None and self.consumed >= self.config.agent_calls:
                 status = "budget_exhausted"
         except BudgetExhausted as error:
             status = error.status
             self.state["error"] = str(error)
+            self.state["stop_code"] = error.code
         except KeyboardInterrupt:
             self.cancelled.set()
             status = "interrupted"
@@ -1617,6 +1684,7 @@ class ProverRuntime:
             self.state["error"] = str(error)
         finally:
             self.stopping = True
+            self.cancelled.set()
             for future, job in list(self.pending.items()):
                 try:
                     completed_result = future.result()
@@ -1631,10 +1699,23 @@ class ProverRuntime:
                 cleanup_node = self.dag.by_id().get(job["node_id"])
                 if cleanup_node is not None and cleanup_node.status == "running":
                     cleanup_node.status = (
-                        "retry" if cleanup_node.attempts <= self.config.max_restarts else "blocked"
+                        "retry"
+                        if (
+                            self.config.max_restarts is None
+                            or cleanup_node.attempts <= self.config.max_restarts
+                        )
+                        else "blocked"
                     )
             self.pending.clear()
+            # Session startup may still register a bridge while futures unwind.
+            # Cancellation propagates into their operations; join the sessions
+            # before closing the now-stable registry.
+            for bridge in self.native_bridges.values():
+                bridge.close()
+            self.native_bridges.clear()
             if hasattr(self.verifier, "close"):
+                for job in self.state.get("jobs", []):
+                    self.verifier.close(self.store.directory / "checks" / job["id"])
                 self.verifier.close(self.store.directory / "checks")
             if status == "source_conflict":
                 self.state["next_step"] = (

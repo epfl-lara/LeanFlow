@@ -108,7 +108,6 @@ COMMANDS_BY_CATEGORY = {
         "/diagnostics": "Show the latest persisted Lean diagnostics from the managed workflow",
         "/proof-state": "Show the latest persisted full Lean proof-state snapshot",
         "/provider": "Show the resolved provider or check a requested provider",
-        "/models": "Manage local runtimes such as vllm, ollama, or llama.cpp",
         "/doctor": "Run local environment and provider checks",
         "/config": "Show, read, or write config values",
     },

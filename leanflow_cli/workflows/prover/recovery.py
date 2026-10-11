@@ -30,7 +30,6 @@ ACTIONS: tuple[str, ...] = ("retry", "continue", "negate", "decompose")
 FALLBACK_ACTION = "invalid"
 MAX_INSTRUCTIONS_CHARS = 12000
 #: Plausible itself is quick; elaborating a Mathlib-heavy prefix is the cost.
-SCREEN_TIMEOUT_S = 600.0
 
 
 def parse_decision(text: str) -> dict[str, Any]:
@@ -84,9 +83,10 @@ def empirical_screen(
     runtime: ProverRuntime, node: Node, *, timeout_s: float | None = None
 ) -> dict[str, Any]:
     """Ask Plausible for a counterexample to the node's closed proposition."""
-    from leanflow_cli.lean.lean_ephemeral import lean_ephemeral_source_check
+    from leanflow_cli.workflows.prover.check_process import check_scratch
+    from leanflow_cli.workflows.prover.source import write_source
 
-    limit = int(timeout_s or min(float(runtime.config.timeout_s), SCREEN_TIMEOUT_S))
+    limit = runtime._remaining_verification_time()
     try:
         context = negation_context(runtime.root, node)
         if context is None:
@@ -100,7 +100,17 @@ def empirical_screen(
             + context.goal.prop
             + " := by\n  plausible\n"
         )
-        result = lean_ephemeral_source_check(scratch, cwd=runtime.root, timeout_s=limit)
+        workspace = runtime.store.directory / "checks" / ("screen_" + node.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        file = workspace / "Screen.lean"
+        write_source(file, scratch)
+        result = check_scratch(
+            project_root=runtime.root,
+            workspace=workspace,
+            file=file,
+            timeout_s=limit,
+            cancelled=runtime.cancelled.is_set,
+        )
         screen = parse_screen(result)
     except Exception as exc:  # noqa: BLE001 - advisory: no screen failure may end recovery
         return {"found": None, "detail": f"screen failed: {exc}"[:2000]}
@@ -141,7 +151,11 @@ def recovery_decision(
         for item in runtime.state.get("recovery_decisions", [])
         if item.get("node_id") == node.id
     ]
-    remaining_recoveries = runtime.config.max_decompositions - int(metrics.get("decompositions", 0))
+    remaining_recoveries = (
+        "unlimited"
+        if runtime.config.max_decompositions is None
+        else runtime.config.max_decompositions - int(metrics.get("decompositions", 0))
+    )
     prior = (
         "\n".join(
             f"  - {item['action']}: {item.get('rationale', '')}; instructions: {item.get('instructions', '')}"
@@ -159,9 +173,9 @@ def recovery_decision(
         "when the report shows a concrete near-miss that another focused pass can finish.\n"
         "- continue: continue the saved partial proof and notes with explicit NEW instructions. "
         "Supply concrete instructions: a smaller next Lean action, corrected tool use, or a "
-        "different proof route. This starts a new bounded attempt; spent calls are not refunded.\n"
-        f"- negate: an empirical Plausible screen, then a bounded attempt "
-        f"({runtime.config.negation_api_calls} calls) to PROVE the exact negation. Choose it when "
+        "different proof route. This starts another native invocation; spent calls are not refunded.\n"
+        "- negate: an empirical Plausible screen, then a native agent invocation "
+        "to PROVE the exact negation. Choose it when "
         "you genuinely suspect the obligation is false or a witness looks reachable.\n"
         "- decompose: replan this branch -- split it into helper obligations or change direction. "
         "Choose it when a different plan is needed, including replacing an unproved generated "
@@ -179,10 +193,10 @@ def recovery_decision(
         "unproductive response cycle; every subsequent failure returns here with its history. "
         "Retry and continue both retain safe scratch work and notes. Instructions must preserve "
         "the exact theorem and verification requirements.\n\n"
-        f"Every decision spends one unit of the campaign recovery budget: {remaining_recoveries} of "
-        f"{runtime.config.max_decompositions} remain. A prover retry costs up to "
-        f"{runtime.config.job_api_calls} calls; a refutation up to "
-        f"{runtime.config.negation_api_calls}.\n\n"
+        "Each native prover, orchestrator, or refutation invocation counts as one agent call. "
+        f"Global agent-call limit: {runtime.config.agent_calls}; reported-token limit: {runtime.config.tokens}; "
+        f"active-time limit: {runtime.config.wall_time_s} seconds. Unset limits are unlimited. "
+        f"Remaining optional recovery decisions: {remaining_recoveries}.\n\n"
         f"Obligation: {node.name}\n{node.statement[:1500]}\n\n"
         f"Prover attempts so far: {node.attempts}. "
         f"Last attempt made new partial progress: {bool(report.get('progress'))}. "

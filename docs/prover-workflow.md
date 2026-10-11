@@ -1,7 +1,8 @@
 # Prover workflow
 
-`prove` and its `autoprove` alias use a dedicated bounded controller. This
-redesign does not change `formalize`, `draft`, `review`, `refactor`, or `golf`.
+`prove` and its `autoprove` alias use a deterministic Lean controller around a
+native Codex, Claude Code or Lemex session. Other workflows use the same native
+backend boundary and their own source-acceptance gates.
 The [research note](prover-redesign-research.md) explains the paper evidence and
 design choices; this page describes the implemented runtime.
 
@@ -23,9 +24,10 @@ leanflow workflow prove
 
 `--agents N` with `N > 1` is a compatibility spelling for research proving
 with that concurrency. `--no-parallel` limits proving to one job while retaining
-research planning. Provider, model, prompt, axiom, and clean-room launch options
-remain available. Use the `LEANFLOW_PROVER_*` settings below for the new runtime;
-legacy queue/advisor budgets do not control these jobs.
+research planning. Provider, model, prompt and axiom options remain available. Clean-room and
+no-internet execution currently fail before native launch because model-only
+network isolation is not implemented. Use the global limits below; legacy
+per-response and per-job settings are rejected.
 
 ## What each mode does
 
@@ -35,9 +37,9 @@ next declaration and verifies submitted replacements. The prover can write local
 `have` statements inside its assigned proof, search Lean libraries, and use warm
 LeanProbe feedback. Those local obligations share the same session and budget.
 There is no standing advisor, decomposer agent, or model-based manager loop.
-Once per prover job, the prover can request a separate resource agent for one
-specific external-source or computation question. That agent has its own bounded
-allocation, defaulting to 40 calls, charged to the campaign total. It returns
+The prover can request a separate resource agent for a specific external-source
+or computation question. Its native invocation consumes the same global call
+allowance. It returns
 evidence and artifact paths; it does not become a proof-strategy advisor.
 
 **Research** adds separate model sessions for an informal outline, DAG design,
@@ -50,13 +52,11 @@ merely rename an ancestor statement after removing irrelevant formatting. This
 textual check does not establish semantic equivalence or certify that every DAG
 edge implies its parent; the independent review and later proofs remain necessary.
 Rejected proposals receive
-bounded reconstruction attempts with the previous critique.
+reconstruction attempts with the previous critique within any configured global limits.
 
-When internet access is disabled, a plan may still list an already installed
-library: LeanFlow checks that its URL and immutable revision match the Lake lock
-and the local checkout, then treats the request as a read-only no-op. It does not
-contact the repository or run dependency updates. Missing packages and changed
-revisions remain rejected. Use `libraries: []` when no dependency installation is needed.
+Native jobs have normal network access. File isolation alone does not establish a
+clean-room guarantee; requests to disable internet or solution research are
+rejected before launch until model-only network isolation is supported.
 
 The model proposes a graph; deterministic code schedules it. Each node stores its
 statement, informal justification, dependencies, module/file, source locations,
@@ -74,18 +74,18 @@ close; it never treats an allowed `sorryAx` as completion.
 **Bottom-up DFS** remains available explicitly: prerequisites are independently
 proved before dependent jobs start.
 
-Failed jobs retain their notes and scratch work. Concrete progress can receive up
-to three additional passes. A changed report or a claimed promising direction
+Failed jobs retain their notes and scratch work. Concrete progress can receive
+additional native invocations within the configured global limits. A changed report or a claimed promising direction
 alone does not earn a restart; retain concrete edits inside the assigned scratch
 proof holes. Research recovery investigates contrary evidence or
 smaller subproblems, then replans the affected graph region. Existing proved nodes
 and original target statements remain immutable; changed helpers receive new IDs.
-Results from an obsolete node revision are rejected. Finite limits also bound
-recovery, so an unresolved run can stop with useful saved evidence.
+Results from an obsolete node revision are rejected. Optional global limits also cover recovery, so an unresolved run can stop with
+useful saved evidence.
 
 Submitting a proof does not end a pass when independent feedback rejects it.
 Malformed or invalid submissions return concrete feedback to the same prover
-session so it can repair them with its remaining calls. The controller still
+session so it can repair them within the same native conversation. The controller still
 rechecks successful submissions before committing canonical source. It captures
 the original elaborated target types before planning, compares them after import
 changes, and independently inspects the freshly compiled candidate artifact.
@@ -106,9 +106,9 @@ vacuous negation. An experiment or diagnostic report alone cannot certify dispro
 Negation candidates replace a literal `sorry` inside an existing `:= by` block:
 submit tactics without another leading `by`, or use `exact (<proof term>)`.
 The controller checks the exact rendered source and returns rejected candidates
-to the same job for repair within its remaining allocation. If checking is
+to the same native job for repair. If checking is
 interrupted, the pending candidate is retained and checked again on resume
-before another model request, even when the job has used its last call. Checker
+before another native invocation, provided the global time limit permits checking. Checker
 diagnostics are retained for subsequent recovery decisions even when no model notes were
 submitted. A failed refutation leaves the claim unresolved; it does not establish
 truth. Replanning can replace an unproved generated helper with a fresh helper
@@ -158,9 +158,9 @@ or use the appropriate editing workflow.
 
 ## Research resources and libraries
 
-Research tools issue bounded searches against existing arXiv and DuckDuckGo
-providers without extra model summarization. Repeated identical searches are
-blocked after two results without a scratch edit. Public resource downloads have
+Research tools issue bounded-result searches against arXiv and DuckDuckGo
+without extra model summarization. Repeated searches are not limited by a hidden
+two-call allowance. Public resource downloads have
 timeouts, redirect and byte limits, public-address validation, and provenance:
 original URL, final URL, retrieval time, content hashes, and local artifact paths.
 HTML is reduced deterministically; source bytes and PDFs can be retained.
@@ -186,6 +186,14 @@ A reviewed plan can request additional Lake libraries using explicit names,
 public HTTPS Git URLs, and full immutable commit hashes. The controller appends
 requirements, runs a bounded named `lake --keep-toolchain update`, and checks
 requested pins and unchanged existing locks. Configuration changes are recorded.
+Requests already satisfied by an exact locked local checkout are read-only no-ops,
+including in online and clean-room campaigns. A repository name such as `mathlib4`
+can identify the installed `mathlib` package only when its URL and revision match
+one unambiguous locked checkout. New or changed dependencies still require normal
+admission. Prefer `libraries: []` when existing dependencies suffice.
+Installation uses only the remaining optional global campaign deadline, without
+a separate 600-second ceiling. Invalid runtime configuration is an environment
+failure; it preserves the reviewed draft rather than requesting another proof plan.
 On failure it restores the exact lakefile, manifest, and toolchain bytes; downloaded
 package caches may remain and require resynchronization. Custom package layouts
 and conflicting dependency requirements are rejected for manual resolution.
@@ -198,224 +206,75 @@ limits and the proposed setup command are discussed in the research note.
 
 ## Budgets and context
 
-All settings below use the `LEANFLOW_PROVER_` prefix. They appear in
-`leanflow flags`, editor launch controls, or the full editor Knobs catalog.
+The runtime owns model requests, tool history, sampling, compaction and retries.
+LeanFlow supplies native session IDs, immutable assignments and job-bound MCP
+operations. It never overrides temperature/top-p or invents a context window.
+Default model and reasoning effort are inherited; explicit overrides are optional.
 
-| Setting suffix | Default | Meaning |
+All resource limits default to unset. Zero means exhausted, and negative,
+non-finite or boolean limits are invalid. These global settings apply to proving,
+planning, review, research, negation and continuation invocations together:
+
+| Environment setting | Default | Meaning |
 | --- | --- | --- |
-| `MODE` | `standard` | `standard` or `research` |
-| `SEARCH_ORDER` | `top-down` | `top-down` or `bottom-up` |
-| `JOB_API_CALLS` | `300` | Request ceiling for one prover pass |
-| `NEGATION_API_CALLS` | `60` | Request ceiling for one exact-negation pass |
-| `MAX_RESTARTS` | `3` | Additional passes per node |
-| `PLAN_REFINEMENTS` | `16` | Changes of informal proof direction |
-| `PARALLELISM` | `2` | Concurrent research-mode provers; standard uses one |
-| `TOTAL_API_CALLS` | `10000` | Total admitted requests across roles and passes |
-| `ORCHESTRATOR_API_CALLS` | `40` | Per planning, review, or resource-agent session, including a prover's research request |
-| `MAX_NODES` | `128` | Maximum admitted DAG nodes |
-| `MAX_DECOMPOSITIONS` | `32` | Research recovery decisions, including retry, continue, negate, decompose, and correction of invalid decisions |
-| `WALL_TIME_S` | `57600` | 16-hour campaign limit, retaining recorded elapsed time on resume |
-| `TIMEOUT_S` | `180` | Provider request and independent Lean-check deadline |
-| `MODEL` | launch model | Prover model override |
-| `ORCHESTRATOR_MODEL` | prover model | Planning, review, and research model override |
-| `PROVIDER` | native launch route | Prover and negation provider override |
-| `BASE_URL` | provider default | Explicit prover endpoint |
-| `API_KEY_ENV` | provider credentials | Environment variable name for the prover key; never the key value |
-| `ORCHESTRATOR_PROVIDER` | prover route | Planning, review, and research provider override |
-| `ORCHESTRATOR_BASE_URL` | provider default | Endpoint for an explicit planning route |
-| `ORCHESTRATOR_API_KEY_ENV` | provider credentials | Environment variable name for the planning key |
-| `CONTEXT_TOKENS` | `256000` | Prover context estimate, including output reserve |
-| `ORCHESTRATOR_CONTEXT_TOKENS` | `256000` | Planning/research context estimate |
-| `COMPRESSION` | `1` | Deterministically compact prover history |
-| `ORCHESTRATOR_COMPRESSION` | `1` | Deterministically compact planning/research history |
-| `COMPRESSION_THRESHOLD` | `0.75` | Prover/negation compression trigger as a fraction of the context cap |
-| `ORCHESTRATOR_COMPRESSION_THRESHOLD` | `0.75` | Planning/review/research compression trigger |
-| `COMPRESSION_TARGET` | `0.5` | Desired post-compression size as a fraction of the effective trigger |
-| `ORCHESTRATOR_COMPRESSION_TARGET` | `0.5` | Planning/review/research post-compression target |
-| `MODEL_CONTEXTS` | empty | JSON keyed by exact model name, overriding role context, trigger, target and output defaults |
-| `FILL_DEFINITIONS` | `0` | Authorize replacing definition holes |
-| `ALLOWED_AXIOMS` | `propext,Classical.choice,Quot.sound` | Allowed completion axioms |
+| `LEANFLOW_PROVER_AGENT_CALLS` | unset | Maximum native process invocations |
+| `LEANFLOW_PROVER_TOKENS` | unset | Reported-token threshold for admitting future invocations |
+| `LEANFLOW_PROVER_WALL_TIME_S` | unset | Cumulative active campaign time, including tools and verification |
 
-For example:
+The same defaults can be configured as `limits.agent_calls`, `limits.tokens` and
+`limits.wall_time_s` in LeanFlow configuration. There is no three-minute or
+twenty-minute response, job, command, or Lean-check wall-time cutoff.
 
-For RCP proving with Codex planning, set `PROVIDER=rcp`,
-`BASE_URL=https://inference.rcp.epfl.ch/v1`, `API_KEY_ENV=RCP_API_KEY`, and
-`ORCHESTRATOR_PROVIDER=openai-codex` alongside the respective model settings.
-These setting names use the `LEANFLOW_PROVER_` prefix; only the named credential
-variable contains a secret. Selecting an explicit planning provider clears any
-inherited prover endpoint or key name. An unset explicit key fails before a
-request instead of falling back to another provider's credentials.
+One successfully spawned native agent process is one call. Its internal requests,
+retries and compaction are owned by that runtime. Admission is reserved before
+spawn so parallel workers cannot take the same last call. Failed process creation
+is refunded; interrupted started processes retain their charge. A queued Lean
+operation does not use an extra agent call, and polling never restarts the work.
 
-The campaign presets `astra-low-glm-flash-top` and
-`astra-low-deepseek-flash-top` use Astra at low effort for planning, medium effort
-for the RCP prover, top-down search, 150 calls per prover pass, and 5,000 calls
-per problem. Each cell has one prover; two campaign lanes keep two cells active.
-RCP requests sharing a credential are bounded across processes under the shared
-LeanFlow home. The default is one in-flight request; set
-`LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS` to the key's actual allowance (for example,
-20) in every sharing process to admit more. Queued
-requests publish waiting progress and consume no calls until dispatched; waiting
-still respects cancellation and the original wall-time budget. Other providers
-and different RCP credentials remain independent. Run one campaign process per
-key and provide its assigned key
-as `RCP_API_KEY`; the campaign does not inherit `RCP_API_KEY_RESERVE`.
+Active wall time survives resume. Parallel workers share the controller clock;
+time between stopped controllers is excluded. A global deadline cancels native
+process trees and active controller operations and prevents promotion afterward.
+
+Usage comes from native structured events. Cumulative counters are normalized to
+invocation deltas. Missing usage remains unknown, never zero. A token ceiling
+stops new invocations once reported usage reaches it, and may be exceeded by an
+already running invocation. Unknown completed usage stops further token-capped
+admission. These are agent-invocation and observed-token limits, not a count of
+hidden native model requests or a hard service-side token quota.
+
+Additional configuration remains focused on Lean orchestration:
+
+| `LEANFLOW_PROVER_` suffix | Default | Meaning |
+| --- | --- | --- |
+| `MODE` | `standard` | Standard or research workflow |
+| `SEARCH_ORDER` | `top-down` | Top-down candidates or bottom-up prerequisites |
+| `PARALLELISM` | 2 in research, 1 in standard | Concurrent prover jobs |
+| `MAX_NODES` | 128 | Structural DAG bound |
+| `PROVIDER` | selected backend | `codex`, `claude` or `lemex` |
+| `ORCHESTRATOR_PROVIDER` | prover backend | Optional native planning/review backend |
+| `MODEL`, `ORCHESTRATOR_MODEL` | native defaults | Explicit model overrides |
+| `REASONING_EFFORT`, `ORCHESTRATOR_REASONING_EFFORT` | native defaults | Explicit effort overrides |
+| `FILL_DEFINITIONS` | false | Authorize filling existing definition holes |
+| `ALLOWED_AXIOMS` | propext, Classical.choice, Quot.sound | Strict completion policy |
+
+RCP is configured through Lemex itself:
 
 ```bash
-LEANFLOW_PROVER_JOB_API_CALLS=120 \
-LEANFLOW_PROVER_TOTAL_API_CALLS=1500 \
-LEANFLOW_PROVER_PLAN_REFINEMENTS=4 \
-leanflow workflow prove Main.lean --research
-
-leanflow flags show LEANFLOW_PROVER_JOB_API_CALLS
-leanflow flags effective --changed
+export LEMEX_BASE_URL="https://inference.rcp.epfl.ch/v1"
+export LEMEX_API_KEY="..."
+leanflow workflow prove Main.lean --provider lemex --research
 ```
 
-The runtime reserves campaign capacity before dispatching jobs and writes each
-job's admitted request count before sending a provider request. Failed and
-interrupted requests consume their admission. Provider retries cannot silently
-mint new calls. A local `have`, context compaction, or resumed scratch job does not
-reset its pass budget. A new restart has a new pass allocation and still consumes
-the campaign total. Routine plan notes do not consume a direction refinement;
-node, decomposition, total-request, and time limits prevent endless “only splitting.”
-Branch replans are classified as a change of direction or a structural
-decomposition. An accepted review classification controls whether a direction
-refinement is charged; a certified-refutation repair reserves its refinement
-before replanning. Direction changes require remaining refinement capacity before
-their source changes are admitted.
+Native homes and credentials remain native. Old `BASE_URL`, `API_KEY_ENV`,
+`TIMEOUT_S`, per-role API budgets, `CONTEXT_TOKENS`, `MODEL_CONTEXTS` and
+`COMPRESSION*` settings are rejected. Existing artifacts remain readable, but
+start a new native run when migrating the old provider engine.
 
-Planning, review, and resource jobs reserve their final two requests for the
-requested final report and at most one recovery, with callable tools disabled.
-A one-call job can only report. This adds no requests. Three unchanged results
-from the same read, search, fetch or computation trigger a warning; six end tool
-exploration and request the report early. Changed evidence permits fresh work.
-These limits do not restrict prover or negation proof attempts.
-Rejected graph proposals and their specific gate feedback travel together into
-the next fresh planning context, so the planner can repair the rejected graph.
-Historical reviewer critiques are fallible feedback about earlier drafts. Three
-identical proposal/gate/critique failures, or three malformed reports at one stage,
-stop with `planning_stalled`. Revised plans continue within the saved budget.
-The dedicated prover transport defers legacy MCP discovery until an explicit
-Lean service needs it, instead of initializing unused services during import.
-
-Compression makes no model calls. Before every request it counts tool schemas,
-the request budget note and history using a conservative UTF-8 size estimate.
-Provider-reported usage remains separate from this estimate. The trigger is the
-smaller of `context_tokens * compression_threshold` and 90% of the input allowance
-after reserving output. Compression aims for `trigger * compression_target`,
-rather than filling the context back up to the trigger. Exact contracts and the
-newest tool exchange take priority over this soft target; events report
-`target_tokens`, `target_met`, and remaining `headroom_tokens` explicitly.
-
-With the defaults (256,000 context, 65,536 output, threshold 0.75, target 0.5),
-the hard input limit is 190,464, the trigger is 171,417, and the target is 85,708.
-Both role settings accept fractions strictly between zero and one. Raising the
-threshold cannot remove the input safety margin. For example:
-
-```bash
-export LEANFLOW_PROVER_COMPRESSION_THRESHOLD=0.80
-export LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_THRESHOLD=0.80
-export LEANFLOW_PROVER_COMPRESSION_TARGET=0.50
-export LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_TARGET=0.50
-```
-
-In VS Code, open LeanFlow's **Knobs** tab, search for `COMPRESSION_THRESHOLD`,
-and save both values in a profile. Select that profile when starting a fresh run.
-Values are fractions: `0.80` means 80%, not `80`. A fresh run uses the new
-settings; resuming deliberately preserves the original settings and spent budget.
-
-Exact-model overrides take precedence over role defaults, for example these
-operator-selected caps (not advertised model maxima):
-
-```bash
-export LEANFLOW_PROVER_MODEL_CONTEXTS='{"gpt-5.6-luna":{"context_tokens":256000,"compression_threshold":0.75},"gpt-6-astra":{"context_tokens":256000,"compression_threshold":0.70}}'
-```
-
-Each entry supports `context_tokens`, `compression_threshold`, `compression_target`, and optional
-`max_output_tokens` (default 65536 for context windows of at least 256000 tokens;
-smaller windows cap the default at one quarter of their size). Explicit output allowances are preserved and must be smaller
-than the context window; the input budget reserves the full requested allowance.
-
-The `kimi-glm-flash-top` campaign requests high reasoning and 65536 output tokens
-for both Kimi's planning/review/research roles and GLM's prover/negation roles
-through the existing OpenAI-compatible RCP Chat Completions adapter.
-Each new problem has 16 active hours, 5,000 total calls and 150 calls per prover
-pass; two problem lanes can advance independently with four prover slots each.
-Kimi Code retains all saved assistant reasoning in outgoing conversation history.
-An empty or truncated stage report gets at most one report-only follow-up with
-tools disabled, charged to the same stage and global budgets. Reasoning effort
-and output allowance stay unchanged. If it fails again or no call remains, the
-problem stops with its evidence saved; independent queued problems still advance.
-An operations queue may reserve slots for specific still-running cells in a prior
-campaign via `reserved_campaign_cells` entries (`campaign` JSON path and `cell_id`).
-Those slots release only after the prior dispatcher records process termination;
-unreadable evidence retains the reservation. This preserves the overall parallelism
-limit while an old runtime drains.
-Reopening that failed stage cannot renew its recovery allowance. Authentication,
-quota, context and integrity failures still pause the queue for inspection.
-With a 256000-token context and 65536-token output reserve, input is limited to
-190464 tokens; the trigger is capped at 171417 even if its configured percentage
-would otherwise permit more input.
-The prover and negation roles use the worker model's entry; planning, review and
-research use the orchestrator model's entry. Unknown keys and invalid values fail
-configuration before a request. Settings are recorded in the campaign snapshot;
-resumes retain saved settings and spent budgets.
-
-For prover/negation jobs, an empty or truncated response without an actionable
-tool call or usable candidate receives at most one focused recovery request.
-Repeated identical prose without a proof action also enters this recovery path.
-Another unusable response stops that attempt with `response_stalled`, preserving
-its scratch files and spent-call accounting. In research mode the orchestrator
-receives the exact tool errors, checker hints, and saved notes and chooses `retry`,
-`continue` with explicit new instructions, `decompose`, or `negate`. Every decision spends
-one existing campaign recovery unit; its model calls and subsequent work consume
-the remaining campaign API budget. A stalled attempt is not evidence that the
-theorem is false. A `stop` reply or malformed decision returns a correction to
-the orchestrator under the same campaign limits; it cannot abandon the obligation
-or implicitly dispatch a guessed solver action. Research mode returns stranded
-unfinished obligations to recovery before idle termination. Recovery-budget
-exhaustion is reported as `budget_exhausted` with the `campaign_recoveries` counter,
-even if API calls remain.
-
-An authorized retry or continuation starts a new bounded job that retains safe
-scratch work and `PLAN_job.md`. Instructions remain pinned beside the exact
-assignment across compression and job resume. Reopening the old job does not
-renew its pending or exhausted recovery allowance. Recovery journal markers
-prevent duplicate decisions after a crash; explicitly resuming a legacy blocked
-run also reopens obsolete orchestrator `stop` decisions while preserving spent
-calls, checked proofs, and pending recovery stages. Standard
-mode has no orchestrator and keeps such failures blocked. Complete proof
-submissions still pass independent checking, and useful tool work clears the
-response-failure streak. These guards do not silently lower reasoning effort or
-raise the output limit.
-
-The compressor keeps the system contract, selected skill guidance, exact claims,
-dependencies, proof status, PLAN, durable addressed user guidance and complete
-recent tool exchanges. Oversized assignment proof bodies and long notes move to
-explicit, readable `assignment-evidence/` artifacts; statements and plans are never
-silently shortened. `PLAN_job.md` stays on disk, with a bounded in-context preview.
-Before replacing active history, the compressor saves a redacted recoverable
-checkpoint in the job's `context-history/` directory. The active handoff points
-to it and includes proof notes and recent paired tool feedback. This is deterministic
-evidence retention, not an LLM-generated semantic summary; notes never certify a
-proof. If the exact assignment plus fresh feedback cannot fit even the hard input
-limit, the runtime reports `context_limit` without sending an oversized request.
-Unchanged proposed graph nodes refer to their complete current-DAG entries;
-changed and new nodes remain explicit. If the protected contract itself exceeds
-the soft trigger, recent tool results use the remaining space below the hard
-input ceiling rather than being discarded before the model can read them.
-Large tool feedback likewise remains valid JSON with a full evidence artifact.
-
-Context size uses a conservative estimate rather than the provider's exact
-tokenizer. If pinned context still cannot fit, the session returns `context_limit`
-before charging another request. Provider-reported context rejections retain the
-same status and charge only the failed admission. Either failure stops the
-controller and cancels outstanding jobs; it is never a mathematical rejection
-and never triggers another proposal or an automatic reconnect. The pending
-review checkpoint, proofs and call accounting are preserved for explicit resume.
-Session events record effective limits and before/after compaction estimates.
-Token counts use reported usage. Missing monetary costs remain unknown, not zero;
-a sum of reported costs may be partial (`metrics.cost_complete` records whether
-all jobs supplied costs).
+The native process works in a filtered private copy. MCP `get_assignment` and
+`list_operations` recover controller facts after native compaction. Accepted
+submissions produce durable independent receipts; malformed reports and Lean
+errors return feedback within the same native conversation. Pending operations
+finish before the controller interprets a completed native response.
 
 ## Inspect progress and resume
 
@@ -455,7 +314,7 @@ LEANFLOW_PROVER_RESUME_RUN_ID=<run-id> leanflow workflow prove Main.lean
 
 Resume creates a **new run ID** with `resumed_from` / `parent_run_id` lineage.
 The prior run's records remain available. Source snapshots are reconciled; saved
-budgets and interrupted-job admission ledgers are retained. A resume uses the saved target scope; an explicitly different target is rejected. Missing interrupted-job budget evidence is treated
+global usage, active time and interrupted-job admission ledgers are retained. A resume uses the saved target scope; an explicitly different target is rejected. Missing interrupted-job budget evidence is treated
 conservatively as spent capacity.
 
 Planning and research retain bounded report context in controller-owned state,
@@ -524,21 +383,21 @@ or model success message cannot produce exit `0`.
 - Anonymous declarations need names before proving. Exact-negation certification
   deliberately supports only contexts it can reconstruct without ambiguity.
 - The direction/decomposition distinction includes semantic reviewer judgment.
-  Total requests, graph size, recovery count, and elapsed time provide independent
-  deterministic ceilings regardless of that classification.
+  Configured global calls/tokens/time and the structural graph bound remain
+  independent of that classification.
 - Multi-file helper construction and accepted-proof installation use durable
   journals. Recovery checks every recorded source image before rollback and
   refuses to overwrite outside edits. Dependency package caches from an interrupted
   external install can still require project-specific cleanup.
-- There is no standing advisor, generic shell, model-backed decomposer, or PDF
-  interpretation service in the new session tool surface. Prefer a paper's HTML
-  source when the model needs readable content.
+- There is no standing advisor or separate model-backed decomposition engine.
+  Native coding tools are available inside the private project boundary;
+  controller MCP operations provide durable long-running checks and commands.
 - Legacy native queue routing and human-review flags are not additional control
   policies for this runtime. The new runtime reports unresolved work with saved
-  evidence when it cannot progress within its finite limits.
+  evidence when it cannot progress within its configured limits.
 
 The original papers' benchmark gains have not been reproduced for LeanFlow.
-Scheduling order and default budgets are configurable choices for measurement,
+Scheduling order and optional budgets are configurable choices for measurement,
 not claims of universally optimal proof-search behavior.
 
 Validation separates scripted provider/runtime tests, actual local Lean checks,
@@ -547,10 +406,14 @@ or sustained performance on a representative set of hard research problems.
 Dependency-install transaction tests use mocked external execution; arbitrary
 third-party dependency combinations still need project-specific validation.
 
-The [validation record](prover-redesign-validation.md) reports the full quality
-gate and actual Codex/Lean smoke evidence. The live run exercises provider,
+The historical [validation record](prover-redesign-validation.md) reports checks
+for the earlier prover engine; it is not evidence for this native migration. The live run exercises provider,
 tool, and verification integration on a small fixture; hard-problem effectiveness
 and comparative efficiency require broader measurement. The later
 [independent live experiments](prover-independent-live-validation.md) record two
 completed Putnam problems, a real parallel helper DAG, and specific planning
 inefficiencies found and repaired during observation.
+
+### Repairing stage reports
+
+Planning outlines, graph proposals, and reviewer reports are checked before their session finishes. Format and graph-structure failures return precise feedback to the same conversation, preserving its draft, tool history, and remaining call budget. Rejected reports are not cached as completed; interrupted repairs restore the saved conversation. These repairs stay in the same native invocation; another process launch consumes another global agent call. A valid negative mathematical review remains a review rejection, and proof/Lean verification gates still apply.

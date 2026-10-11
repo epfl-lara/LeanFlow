@@ -494,3 +494,18 @@ test("graph validation wrapper does not double-count its protected-type check", 
     assert.ok(controllerActivity(state, Date.now()).active.every(op => op.progress !== "0/0"));
   }
 });
+
+test("native campaigns preserve unlimited and exhausted limits without legacy fallback", () => {
+  const state = snapshot({
+    config: { agent_calls: null, tokens: 0, wall_time_s: null, total_api_calls: 10000 },
+    metrics: { agent_calls: 3, api_calls: 99, agent_call_limit: null, token_limit: 0, usage_complete: false, input_tokens: null },
+  });
+  const budget = proverBudget(state, NOW);
+  assert.equal(budget.nativeBackend, true);
+  assert.equal(budget.usedCalls, 3);
+  assert.equal(budget.totalCalls, null);
+  assert.equal(budget.tokenLimit, 0);
+  assert.equal(budget.wallTimeS, null);
+  assert.equal(budget.tokens.input, null);
+  assert.equal(budget.usageComplete, false);
+});

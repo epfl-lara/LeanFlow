@@ -29,30 +29,18 @@ _OUTPUT_FENCE = "__LEANFLOW_FENCE_a9f7b3__"
 # These are loaded from ~/.leanflow/.env for LeanFlow's own LLM/provider calls
 # but can break external CLIs (e.g. codex) that also honor them.
 #
-# Built dynamically from the provider registry so new providers are
-# automatically covered without manual blocklist maintenance.
+# Historical provider variables remain blocked for generic tool subprocesses.
+# Native harnesses preserve their runtime-owned environment separately.
 _LEANFLOW_PROVIDER_ENV_FORCE_PREFIX = "_LEANFLOW_FORCE_"
 
 
 def _build_provider_env_blocklist() -> frozenset:
-    """Derive the blocklist from provider, tool, and gateway config.
+    """Return legacy provider secrets and configured tool secrets to hide from tools.
 
-    Automatically picks up api_key_env_vars and base_url_env_var from
-    every registered provider, plus tool/messaging env vars from the
-    optional config registry, so new LeanFlow-managed secrets are blocked
-    in subprocesses without having to maintain multiple static lists.
+    Keep generic terminal tools from inheriting old LeanFlow-managed secrets;
+    supported native harness launches use their own environment contract.
     """
     blocked: set[str] = set()
-
-    try:
-        from leanflow_cli.runtime.auth import PROVIDER_REGISTRY
-
-        for pconfig in PROVIDER_REGISTRY.values():
-            blocked.update(pconfig.api_key_env_vars)
-            if pconfig.base_url_env_var:
-                blocked.add(pconfig.base_url_env_var)
-    except ImportError:
-        pass
 
     try:
         from leanflow_cli.config import OPTIONAL_ENV_VARS
@@ -71,6 +59,18 @@ def _build_provider_env_blocklist() -> frozenset:
     # Vars not covered above but still LeanFlow-internal / conflict-prone.
     blocked.update(
         {
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+            "GLM_BASE_URL",
+            "KIMI_API_KEY",
+            "KIMI_BASE_URL",
+            "MINIMAX_API_KEY",
+            "MINIMAX_BASE_URL",
+            "MINIMAX_CN_API_KEY",
+            "MINIMAX_CN_BASE_URL",
+            "DEEPSEEK_BASE_URL",
+            "ANTHROPIC_API_KEY",
             "TELEGRAM_BOT_TOKEN",
             "OPENAI_BASE_URL",
             "OPENAI_API_KEY",

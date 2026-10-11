@@ -83,10 +83,10 @@ def test_cancelled_outline_never_starts_another_model_job(tmp_path: Path) -> Non
 def test_job_reconciliation_is_idempotent(tmp_path: Path) -> None:
     runtime = runtime_at(tmp_path, session=lambda **kw: {})
     job, _ = runtime._new_job("research", prompt="bounded question")
-    result = {"status": "complete", "api_calls": 2}
+    result = {"status": "complete", "api_calls": 1}
     runtime._finish_job(job, result)
     runtime._finish_job(job, result)
-    assert runtime.consumed == 2
+    assert runtime.consumed == 1
     assert runtime.reserved == 0
 
 
@@ -279,7 +279,7 @@ def test_dispatch_waits_for_unused_reservations_before_declaring_budget_exhauste
             time.sleep(0.08)
         return {
             "status": "candidate",
-            "api_calls": {"goal0": 3, "goal1": 1, "goal2": 2}[name],
+            "api_calls": 1,
             "final_response": json.dumps({"proof": "trivial"}),
         }
 
@@ -294,7 +294,7 @@ def test_dispatch_waits_for_unused_reservations_before_declaring_budget_exhauste
     runtime.state["resume_phase"] = "proving"
     result = runtime.run()
     assert result["status"] == "completed", result.get("error")
-    assert result["metrics"]["api_calls"] == 6
+    assert result["metrics"]["api_calls"] == 3
     assert result["metrics"]["reserved_api_calls"] == 0
 
 

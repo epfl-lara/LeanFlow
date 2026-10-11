@@ -1,6 +1,5 @@
 from core.toolsets import (
     _COORDINATION_TOOLS,
-    _DELEGATION_TOOLS,
     _DOCUMENT_TOOLS,
     _FILE_TOOLS,
     _LEANFLOW_CORE_TOOLS,
@@ -23,19 +22,12 @@ def test_leanflow_native_contains_exactly_core_tools():
     assert tools == expected, f"extra={tools - expected}, missing={expected - tools}"
 
 
-def test_leanflow_native_has_no_delegation_tools():
-    tools = set(resolve_toolset("leanflow-native"))
-    for t in _DELEGATION_TOOLS:
-        assert t not in tools, f"delegation tool {t!r} leaked into leanflow-native"
-
-
-def test_leanflow_native_swarm_adds_delegate_task_to_core():
+def test_leanflow_toolsets_exclude_removed_in_process_delegation():
     native = set(resolve_toolset("leanflow-native"))
     swarm = set(resolve_toolset("leanflow-native-swarm"))
-
-    assert swarm == native | set(
-        _DELEGATION_TOOLS
-    ), f"swarm should be native + delegation. extra={swarm - native - set(_DELEGATION_TOOLS)}"
+    assert "delegate_task" not in native | swarm
+    assert swarm == native
+    assert not validate_toolset("delegation")
 
 
 def test_each_group_present_in_core_tools():
@@ -56,8 +48,8 @@ def test_each_group_present_in_core_tools():
     for tool in _DOCUMENT_TOOLS:
         assert tool in core, f"document tool {tool!r} missing from core"
     assert "apply_verified_patch" in core
-    assert "lean_reasoning_help" in core
-    assert "lean_decompose_helpers" in core
+    assert "lean_reasoning_help" not in core
+    assert "lean_decompose_helpers" not in core
 
 
 def test_resolve_toolset_returns_empty_for_unknown_name():
@@ -94,8 +86,6 @@ def test_scratch_research_union_resolves_to_read_check_only_tools():
             "web_download",
             "repo_clone",
             "apply_verified_patch",
-            "lean_reasoning_help",
-            "lean_decompose_helpers",
             "write_file",
             "patch",
         }
@@ -155,8 +145,6 @@ def test_prove_worker_toolset_drops_session_and_document_noise():
         "lean_inspect",
         "lean_incremental_check",
         "lean_search",
-        "lean_decompose_helpers",
-        "lean_reasoning_help",
         "read_file",
         "patch",
         "apply_verified_patch",

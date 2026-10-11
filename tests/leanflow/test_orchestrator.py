@@ -41,12 +41,6 @@ def _ctx(**overrides) -> RouteContext:
     return RouteContext(**base)
 
 
-def test_hard_retry_limit_mirrors_native_runner_constant():
-    from leanflow_cli.native import native_runner as runner
-
-    assert HARD_RETRY_LIMIT == runner.MANAGER_HARD_RETRY_LIMIT
-
-
 def test_semantic_admission_rotates_reworded_repeat_to_distinct_family(tmp_path):
     """A renamed planning turn cannot consume another no-progress provider turn."""
     active_file = str(tmp_path / "Main.lean")

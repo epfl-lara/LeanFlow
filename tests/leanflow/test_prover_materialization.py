@@ -289,6 +289,7 @@ def test_staging_deadline_is_not_reported_as_a_rejected_plan(
         return {"status": "completed", "api_calls": 1, "final_response": json.dumps(result)}
 
     runtime = make_runtime(tmp_path, session=session)
+    runtime.config = ProverConfig(mode="research", wall_time_s=10)
 
     def expire(*args: Any, **kwargs: Any) -> None:
         runtime.started -= runtime.config.wall_time_s

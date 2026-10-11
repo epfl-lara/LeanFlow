@@ -134,6 +134,81 @@ def test_legacy_scheme_keeps_the_fixed_profile_module(
     assert modules == ["LeanFlowTypeProfileInput"]
 
 
+@pytest.mark.parametrize("retain", [False, True])
+def test_compiler_authority_cannot_mutate_frozen_artifact_or_trusted_inspector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retain: bool
+) -> None:
+    """Keep a surviving compiler's sandbox out of the next trusted write domain."""
+    import platform
+    import shutil
+    import sys
+
+    binary = {"Darwin": "sandbox-exec", "Linux": "bwrap"}.get(platform.system())
+    if not binary or not shutil.which(binary):
+        pytest.skip("OS write isolation unavailable")
+    root = tmp_path / "project"
+    root.mkdir()
+    retained = root / ".leanflow/artifacts/target.olean" if retain else None
+    compiler: dict[str, Path] = {}
+    isolated = check_process.isolated_command
+
+    def command(**kwargs: Any) -> dict[str, Any]:
+        argv = kwargs["argv"]
+        directory = Path(kwargs["workspace"])
+        if "-o" in argv:
+            compiler["directory"] = directory
+            compiler["artifact"] = Path(argv[argv.index("-o") + 1])
+            compiler["artifact"].write_bytes(b"checked artifact")
+            return {"success": True}
+        assert directory != compiler["directory"]
+        assert not directory.is_relative_to(compiler["directory"])
+        inspector = Path(argv[argv.index("--run") + 1])
+        inspector_before = inspector.read_bytes()
+        frozen = directory / "LeanFlowTypeProfileInput.olean"
+        compiler["artifact"].write_bytes(b"changed after compilation")
+        assert frozen.read_bytes() == b"checked artifact"
+        script = (
+            "import pathlib,sys\n"
+            "for name in sys.argv[1:]:\n"
+            " try:pathlib.Path(name).write_text('forged');print('allowed')\n"
+            " except PermissionError:print('denied')\n"
+        )
+        attacked = isolated(
+            project_root=root,
+            workspace=compiler["directory"],
+            argv=[
+                sys.executable,
+                "-I",
+                "-c",
+                script,
+                str(inspector),
+                str(directory / "profile.jsonl"),
+                str(frozen),
+            ],
+        )
+        if attacked.get("error_code") == "isolation_unavailable":
+            pytest.skip(attacked["error"])
+        assert attacked["success"], attacked
+        assert attacked["stdout"].splitlines() == ["denied"] * 3
+        assert inspector.read_bytes() == inspector_before
+        assert not (directory / "profile.jsonl").exists()
+        assert frozen.read_bytes() == b"checked artifact"
+        return {"success": True, "stdout": PROFILE_ROW + "\n"}
+
+    monkeypatch.setattr(check_process, "isolated_command", command)
+    result = type_profile.compiled_type_profiles(
+        root=root,
+        source="theorem target : True := by trivial\n",
+        names=["target"],
+        workspace=tmp_path / "checks",
+        timeout_s=None,
+        artifact=retained,
+    )
+    assert result["accepted"], result
+    if retained is not None:
+        assert retained.read_bytes() == b"checked artifact"
+
+
 @pytest.mark.parametrize(
     "scheme,skeleton", [("module", False), ("module", True), ("legacy", False)]
 )

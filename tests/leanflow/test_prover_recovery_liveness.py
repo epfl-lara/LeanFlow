@@ -48,7 +48,7 @@ def test_invalid_decision_returns_correction_then_dispatches_actionable_prover(
     assert state["status"] == "completed"
     assert [item["action"] for item in state["recovery_decisions"]] == ["invalid", "continue"]
     assert state["metrics"]["decompositions"] == 2
-    assert state["metrics"]["api_calls"] == 5
+    assert state["metrics"]["api_calls"] == 4
     assert not state.get("recovery_in_flight")
 
 
@@ -124,7 +124,7 @@ def test_invalid_decision_crash_replay_does_not_repeat_or_refund_calls(
         runtime._recover(node, {"job_id": job["id"]})
     monkeypatch.setattr(recovery, "recovery_decision", original_decide)
     monkeypatch.setattr(runtime, "_persist", original_persist)
-    assert runtime.consumed == 3
+    assert runtime.consumed == 2
     calls: list[str] = []
 
     def corrected(**kwargs: Any) -> dict[str, Any]:
@@ -135,7 +135,7 @@ def test_invalid_decision_crash_replay_does_not_repeat_or_refund_calls(
     reopened = resume(runtime, session=corrected)
     reopened._recover(reopened.dag.by_id()[node.id])
     assert calls == ["orchestrator"]
-    assert reopened.consumed == 4
+    assert reopened.consumed == 3
     assert reopened.state["metrics"]["decompositions"] == 2
     assert [item["action"] for item in reopened.state["recovery_decisions"]] == ["invalid", "retry"]
     assert not resume(reopened).state.get("recovery_in_flight")
@@ -169,7 +169,7 @@ def test_resume_reopens_legacy_stop_despite_response_admission_marker(
     journal = reopened.state["recovery_in_flight"][node.id]
     assert journal["stage"] == "decide" and not journal["charged"]
     assert journal["report"]["recovery_correction"]["code"] == "retired_stop_decision"
-    assert reopened.consumed == 2
+    assert reopened.consumed == 1
     reopened._recover(reopened.dag.by_id()[node.id])
     assert reopened.dag.by_id()[node.id].status == "retry"
     assert reopened.state["metrics"]["decompositions"] == 2

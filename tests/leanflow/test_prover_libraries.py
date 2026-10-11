@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from leanflow_cli.workflows.prover import libraries
+from leanflow_cli.workflows.prover.config import ProverConfig
 
 PIN = "a" * 40
 REQUEST = {"name": "physlib", "git": "https://github.com/example/physlib", "rev": PIN}
@@ -52,6 +53,72 @@ def test_toml_install_appends_only_and_returns_lock_evidence(project, monkeypatc
     assert result["libraries"][0]["rev"] == PIN
     assert len(result["manifest_sha256"]) == 64
     assert (project / "lean-toolchain").read_bytes() == b"leanprover/lean4:v4.30.0\n"
+
+
+@pytest.mark.parametrize("timeout_s", [ProverConfig().timeout_s, 3600])
+def test_installer_accepts_controller_timeout_without_shortening_it(
+    project, monkeypatch, timeout_s
+):
+    """Pass the controller's actual limit through to the isolated dependency update."""
+    observed = []
+
+    def update(root, paths, names, timeout):
+        observed.append(timeout)
+        return _success(root, paths, names, timeout)
+
+    monkeypatch.setattr(libraries, "_run_update", update)
+    result = libraries.install_libraries(project, [REQUEST], timeout_s=timeout_s)
+    assert result["accepted"], result
+    assert len(observed) == 1
+    if timeout_s is None:
+        assert observed[0] is None
+    else:
+        assert timeout_s - 10 <= observed[0] <= timeout_s
+
+
+def test_accepted_online_plan_installs_with_real_controller_defaults(project, monkeypatch):
+    """Cross the review-to-installer boundary with only the model and Lake process mocked."""
+    from leanflow_cli.workflows.prover import planning_controller
+    from leanflow_cli.workflows.prover.runtime import ProverRuntime
+
+    source = project / "Main.lean"
+    source.write_text("theorem goal : True := by sorry\n")
+    calls, timeouts = [], []
+
+    def session(**kwargs):
+        calls.append(kwargs["role"])
+        if len(calls) > 3:
+            pytest.fail("Accepted plan returned to planning instead of installing")
+        report = (
+            {"accepted": True}
+            if kwargs["role"] == "review"
+            else {"plan": "Use the pinned library", "nodes": [], "libraries": [REQUEST]}
+        )
+        return {"status": "completed", "api_calls": 1, "final_response": json.dumps(report)}
+
+    def update(root, paths, names, timeout):
+        timeouts.append(timeout)
+        return _success(root, paths, names, timeout)
+
+    monkeypatch.setattr(libraries, "_run_update", update)
+    monkeypatch.setattr(planning_controller, "materialize", lambda *_: None)
+    owner = ProverRuntime(
+        root=project, targets=[source], config=ProverConfig(mode="research"), session=session
+    )
+    assert owner._research_plan("Plan with a new dependency")
+    assert calls == ["orchestrator", "orchestrator", "review"]
+    assert timeouts == [None]
+    assert owner.state["proposal_status"] == "accepted"
+    assert owner.state["libraries"][0]["status"] == "installed"
+
+
+@pytest.mark.parametrize("timeout_s", [-1, True, "1200", float("inf"), float("nan")])
+def test_invalid_installer_timeout_is_a_configuration_error(project, monkeypatch, timeout_s):
+    monkeypatch.setattr(libraries, "_run_update", lambda *_: pytest.fail("update invoked"))
+    result = libraries.install_libraries(project, [REQUEST], timeout_s=timeout_s)
+    assert not result["accepted"]
+    assert result.get("status") == "configuration_error"
+    assert result.get("error_code") == "invalid_timeout"
 
 
 def test_same_pinned_install_is_idempotent(project, monkeypatch):

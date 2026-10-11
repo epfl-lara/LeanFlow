@@ -81,14 +81,22 @@ def test_repeated_exact_locked_dependency_is_a_readonly_noop_offline(installed):
     assert {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
 
 
-def test_offline_accepted_plan_reaches_materialization_without_another_review(
-    installed, monkeypatch
+@pytest.mark.parametrize(
+    "online,repository_name,clean_room",
+    [(False, False, False), (True, False, False), (True, True, False), (True, True, True)],
+)
+def test_accepted_plan_reaches_materialization_without_another_review(
+    installed, monkeypatch, online, repository_name, clean_room
 ):
-    """Reproduce PB026's accepted plan being discarded for its installed mathlib request."""
+    """Exercise accepted plans with the real default timeout and cached Mathlib identity."""
     from leanflow_cli.workflows.prover import planning_controller
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
 
     root, request = installed
+    if repository_name:
+        request = {**request, "name": "mathlib4"}
+    if clean_room:
+        monkeypatch.setenv("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1")
     source = root / "Main.lean"
     source.write_text("theorem goal : True ∧ True := by sorry\n")
     calls, materialized = [], []
@@ -127,7 +135,7 @@ def test_offline_accepted_plan_reaches_materialization_without_another_review(
     owner = ProverRuntime(
         root=root,
         targets=[source],
-        config=ProverConfig(mode="research", allow_internet=False),
+        config=ProverConfig(mode="research", allow_internet=online),
         session=session,
     )
     assert owner._research_plan("Decompose locally")
@@ -137,8 +145,59 @@ def test_offline_accepted_plan_reaches_materialization_without_another_review(
     assert owner.dag.by_id()["helper"].status == "pending"
 
 
+def test_installer_configuration_error_preserves_review_without_replanning(installed, monkeypatch):
+    """A controller configuration error cannot be repaired by another mathematical plan."""
+    from leanflow_cli.workflows.prover import planning_controller
+    from leanflow_cli.workflows.prover.runtime import InfrastructureFailure, ProverRuntime
+
+    root, request = installed
+    request = {**request, "name": "newlib", "git": "https://github.com/example/newlib"}
+    source = root / "Main.lean"
+    source.write_text("theorem goal : True := by sorry\n")
+    calls = []
+
+    def session(**kwargs):
+        calls.append(kwargs["role"])
+        if len(calls) > 3:
+            pytest.fail("Configuration error restarted mathematical planning")
+        response = (
+            {"accepted": True}
+            if kwargs["role"] == "review"
+            else {"plan": "Keep the argument", "nodes": [], "libraries": [request]}
+        )
+        return {"status": "completed", "api_calls": 1, "final_response": json.dumps(response)}
+
+    monkeypatch.setattr(
+        libraries,
+        "install_libraries",
+        lambda *a, **k: {
+            "accepted": False,
+            "status": "configuration_error",
+            "error_code": "invalid_timeout",
+            "error": "Library installation timeout must be a positive integer",
+            "changes": [],
+        },
+    )
+    monkeypatch.setattr(
+        planning_controller, "materialize", lambda *a: pytest.fail("materialized after failure")
+    )
+    owner = ProverRuntime(
+        root=root,
+        targets=[source],
+        config=ProverConfig(mode="research"),
+        session=session,
+    )
+    with pytest.raises(InfrastructureFailure, match="configuration") as error:
+        owner._research_plan("Build the plan")
+    assert error.value.status == "environment_error"
+    assert calls == ["orchestrator", "orchestrator", "review"]
+    assert owner.state["proposal_status"] == "validating"
+
+
 @pytest.mark.parametrize("mismatch", ["revision", "url", "name", "cache", "head", "manifest"])
 def test_offline_dependency_noop_never_accepts_missing_or_different_package(installed, mismatch):
+    from leanflow_cli.workflows.prover.installed_libraries import libraries_already_installed
+
     root, request = installed
     request = dict(request)
     if mismatch == "revision":
@@ -170,16 +229,22 @@ def test_offline_dependency_noop_never_accepts_missing_or_different_package(inst
         (root / "lake-manifest.json").unlink()
     with pytest.raises(ValueError, match="disabled"):
         install_planned_libraries(runtime(root), [request])
+    assert not libraries_already_installed(root, [request])
 
 
 def test_cached_request_does_not_hide_a_new_request_in_same_batch(installed):
+    from leanflow_cli.workflows.prover.installed_libraries import libraries_already_installed
+
     root, request = installed
     other = {**request, "name": "new-library"}
     with pytest.raises(ValueError, match="disabled"):
         install_planned_libraries(runtime(root), [request, other])
+    assert not libraries_already_installed(root, [request, other])
 
 
 def test_offline_rejects_package_cache_escape(installed, tmp_path):
+    from leanflow_cli.workflows.prover.installed_libraries import libraries_already_installed
+
     root, request = installed
     package = root / ".lake/packages/mathlib"
     outside = tmp_path.parent / (tmp_path.name + "-external")
@@ -187,3 +252,18 @@ def test_offline_rejects_package_cache_escape(installed, tmp_path):
     package.symlink_to(outside, target_is_directory=True)
     with pytest.raises(ValueError, match="disabled"):
         install_planned_libraries(runtime(root), [request])
+    assert not libraries_already_installed(root, [request])
+
+
+def test_repository_alias_requires_unique_exact_locked_identity(installed):
+    from leanflow_cli.workflows.prover.installed_libraries import libraries_already_installed
+
+    root, request = installed
+    alias = {**request, "name": "mathlib4"}
+    assert libraries_already_installed(root, [alias])
+    assert not libraries_already_installed(root, [{**alias, "rev": "b" * 40}])
+    manifest = root / "lake-manifest.json"
+    data = json.loads(manifest.read_text())
+    data["packages"].append({**data["packages"][0], "name": "otherMathlib"})
+    manifest.write_text(json.dumps(data))
+    assert not libraries_already_installed(root, [alias])

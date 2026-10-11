@@ -205,6 +205,7 @@ def planning_prompt(*, reason: str, review: bool = False) -> str:
     """Specify the report protocol and preserve the orchestrator's non-proving role."""
     common = (
         "You are the LeanFlow research orchestrator. Do not prove theorem bodies. "
+        "For your final report return only the requested JSON object, without introductory or trailing prose. "
         "Use the supplied current PLAN and DAG to make one concrete, bounded advance. "
         "Preserve user statements and all verified progress. Research source mathematics first; "
         "provers own Lean lemma search. Reuse local resources before repeat web searches. "
@@ -246,6 +247,8 @@ def planning_prompt(*, reason: str, review: bool = False) -> str:
         'Return JSON {"plan":"complete updated informal proof outline, findings, failed directions and '
         'resource paths", "change_kind":"direction"|"decomposition"|"repair", "nodes":[...], "research_jobs":[{"question":"..."}], '
         '"libraries":[{"name":"packageName", "git":"https://public-host/repository", "rev":"full immutable Git commit hash"}]}. '
+        "Use libraries: [] when existing dependencies suffice. Read lake-manifest.json before requesting a dependency; "
+        "use its Lake package name (for example mathlib, not the repository name mathlib4). "
         "Existing means present in the accepted current DAG, not just in previous_proposal "
         "or proposed_dag. A rejected draft adds no nodes to the current DAG. Resend complete "
         "declarations for its new helpers when repairing the draft. "

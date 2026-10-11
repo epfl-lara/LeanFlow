@@ -13,7 +13,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
 }) {
   const { setView } = useStore();
   const nodeName = (id: string): string => state.dag.nodes.find((node) => node.id === id)?.name ?? id;
-  return <Card title="Agents and jobs" subtitle="Each prover retains its API budget across local decomposition. Independent checks run outside these jobs and are listed under the controller.">
+  return <Card title="Agents and jobs" subtitle="Native sessions share the campaign’s global limits. Independent checks are listed under the controller.">
     {state.jobs.length === 0 && <div className="muted">No jobs launched yet.</div>}
     {state.jobs.map((job: ProverJob) => {
       const timeline = jobTimeline(job, now);
@@ -22,7 +22,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
       const artifacts = job.artifacts.slice(0, MAX_ARTIFACTS);
       return <div className="prover-job" id={`prover-job-${job.id}`} key={job.id} style={job.parent_job_id ? { marginLeft: 12, borderLeft: "2px solid var(--vscode-panel-border)", paddingLeft: 12 } : undefined}>
         <div className="row"><strong>{job.agent_id}</strong><span className={`pill ${pillTone(job.status)}`}>{job.status || "queued"}</span>{job.phase && job.phase !== job.status && <span className="tag">{job.phase}</span>}</div>
-        <div className="muted">{job.role || "prover"}{job.node_id ? <> · <span className="mono">{nodeName(job.node_id)}</span></> : null} · {metric(job.api_calls)} / {metric(job.api_budget)} calls
+        <div className="muted">{job.role || "prover"}{job.node_id ? <> · <span className="mono">{nodeName(job.node_id)}</span></> : null} · {metric(job.api_calls)}{state.config.native_backend ? " agent calls" : ` / ${metric(job.api_budget)} API calls`}
           {timeline.durationS !== null && <> · {timeline.live ? "running for" : "took"} {seconds(timeline.durationS)}</>}
           {job.started_at && <> · started {clock(job.started_at)}</>}
           {job.finished_at && <> · finished {clock(job.finished_at)}</>}
@@ -31,8 +31,8 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
         {(settings.model || settings.provider) && <div className="muted">
           {settings.provider && <>{settings.provider} · </>}<span className="mono">{settings.model || "model not reported"}</span>
           {settings.reasoning_effort && <> · effort {settings.reasoning_effort}</>}
-          {settings.context_tokens !== null && <> · {metric(settings.context_tokens)} context tokens</>}
-          {settings.compression !== null && <> · compression {settings.compression ? "on" : "off"}</>}
+          {!state.config.native_backend && settings.context_tokens !== null && <> · {metric(settings.context_tokens)} context tokens</>}
+          {!state.config.native_backend && settings.compression !== null && <> · compression {settings.compression ? "on" : "off"}</>}
           {settings.source === "shared" && <> · run-level settings</>}
         </div>}
         {job.error && <div className="prover-op-error">{job.error}</div>}

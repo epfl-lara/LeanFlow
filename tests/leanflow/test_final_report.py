@@ -7,7 +7,6 @@ from typing import Any
 
 import pytest
 
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import final_report as fr
 from leanflow_cli.workflows import negation_promotion, plan_state
 
@@ -279,15 +278,6 @@ def test_classify_disproved_requires_one_exact_current_promotion_row(state_root,
     assert fr.classify_scope_outcome(autonomy, {}, summary).kind == "report"
 
 
-def test_pause_is_not_a_scope_end(state_root, monkeypatch):
-    monkeypatch.setattr(
-        runner.final_report,
-        "generate_final_report",
-        lambda **kwargs: pytest.fail("paused must not generate a report"),
-    )
-    runner._maybe_generate_final_report("paused", {}, {})
-
-
 def test_prose_cannot_break_report_structure(state_root):
     state = _autonomy_state()
     state["failed_attempts"][0]["reason"] = "evil | pipes\nand ## headings"
@@ -299,49 +289,6 @@ def test_prose_cannot_break_report_structure(state_root):
     text = path.read_text(encoding="utf-8")
     assert "evil / pipes and ## headings" in text
     assert "evil | pipes" not in text
-
-
-def test_runner_hook_gating_and_idempotency(state_root, monkeypatch):
-    calls: list[str] = []
-    monkeypatch.setattr(
-        runner.final_report,
-        "generate_final_report",
-        lambda **kwargs: calls.append(kwargs["stop_reason"]) or (state_root / "r.md"),
-    )
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
-    state: dict[str, Any] = {}
-
-    # Verified and handoff exits are exempt.
-    runner._maybe_generate_final_report("verified", state, {})
-    runner._maybe_generate_final_report("formalization-prover-handoff-ready", state, {})
-    assert calls == []
-
-    runner._maybe_generate_final_report("stalled", state, {})
-    assert calls == ["stalled"]
-    assert state["final_report_written"] is True
-    # Idempotent: ceiling + stall interplay writes once.
-    runner._maybe_generate_final_report("blocked", state, {})
-    assert calls == ["stalled"]
-
-    # Opt-out flag.
-    fresh: dict[str, Any] = {}
-    monkeypatch.setenv("LEANFLOW_FINAL_REPORT", "0")
-    runner._maybe_generate_final_report("stalled", fresh, {})
-    assert calls == ["stalled"]
-
-
-def test_generation_failure_never_crashes_the_stop(state_root, monkeypatch):
-    monkeypatch.setattr(
-        runner.final_report,
-        "generate_final_report",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
-    state: dict[str, Any] = {}
-
-    runner._maybe_generate_final_report("stalled", state, {})
-
-    assert "final_report_written" not in state  # retryable on the next exit
 
 
 # ---------------------------------------------------------------------------

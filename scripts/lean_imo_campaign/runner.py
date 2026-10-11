@@ -24,6 +24,7 @@ from scripts.lean_imo_campaign.dispatch_policy import (
     reserved_active_count,
 )
 from scripts.lean_imo_campaign.matrix import CONDITION_SETS, cells, next_cell
+from scripts.lean_imo_campaign.provider import require_native_campaign
 from scripts.lean_imo_campaign.recovery import schedule_recovery
 from scripts.lean_imo_campaign.runtime_versions import runtime_directory
 
@@ -53,7 +54,10 @@ def report(directory: Path, campaign: dict[str, Any]) -> None:
     campaign["updated_at"] = now()
     save(directory / "campaign.json", campaign)
     keys = [
-        "api_calls",
+        "agent_calls",
+        "agent_call_limit",
+        "token_limit",
+        "usage_complete",
         "input_tokens",
         "output_tokens",
         "cost_usd",
@@ -136,10 +140,7 @@ def refresh(cell: dict[str, Any]) -> None:
         and (state.get("verification") or {}).get("accepted") is True
     )
     cell["active_jobs"] = [
-        {
-            k: j.get(k)
-            for k in ("id", "role", "kind", "node_id", "status", "api_calls", "api_budget")
-        }
+        {k: j.get(k) for k in ("id", "role", "kind", "node_id", "status", "agent_calls")}
         for j in state.get("jobs", [])
         if j.get("status") in {"running", "queued"}
     ]
@@ -194,7 +195,8 @@ def resume_source(project: Path) -> str:
         if not path.is_dir() or path.name.endswith(".superseded") or not state.is_file():
             continue
         try:
-            calls = int(json.loads(state.read_text()).get("metrics", {}).get("api_calls", 0))
+            metrics = json.loads(state.read_text()).get("metrics", {})
+            calls = int(metrics.get("agent_calls", metrics.get("api_calls", 0)))
         except (OSError, ValueError, TypeError):
             continue
         if calls > best_calls:
@@ -278,6 +280,7 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
     with (directory / "runner.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         campaign = json.loads((directory / "campaign.json").read_text())
+        require_native_campaign(campaign)
         # Lanes are a claim, not a preference: once a problem is claimed by lane
         # k every cell of it keeps lane=k for the campaign's life. The dispatch
         # loop only iterates `lanes()`, so narrowing LEANFLOW_CAMPAIGN_LANES
@@ -347,7 +350,8 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
                 # Mirror each cell's active-time limit to bound a hung process too.
                 if (
                     process.poll() is None
-                    and time.time() > cell["started_epoch"] + cell["config"]["wall_time_s"] + 120
+                    and cell["config"].get("wall_time_s") is not None
+                    and time.time() > cell["started_epoch"] + cell["config"]["wall_time_s"]
                 ):
                     os.killpg(process.pid, signal.SIGTERM)
                     try:
@@ -444,6 +448,24 @@ def main() -> None:
             "subset campaign stays comparable with a full one."
         ),
     )
+    parser.add_argument(
+        "--agent-calls",
+        type=int,
+        default=None,
+        help="Optional global native invocation limit per cell, including recovery",
+    )
+    parser.add_argument(
+        "--tokens",
+        type=int,
+        default=None,
+        help="Optional approximate token limit per cell; active calls can overshoot",
+    )
+    parser.add_argument(
+        "--wall-time-s",
+        type=float,
+        default=None,
+        help="Optional cumulative active-time limit per cell in seconds",
+    )
     args = parser.parse_args()
     directory = args.directory.resolve()
     if args.command == "run":
@@ -456,7 +478,16 @@ def main() -> None:
     fixture = repo / "testdata/workflow_projects/LeanIMOBench"
     identity = freeze(repo, fixture, directory)
     manifest = json.loads((directory / "baseline/manifest.json").read_text())
-    conditions = CONDITION_SETS[args.conditions]
+    conditions = tuple(
+        condition._replace(
+            budget=condition.budget._replace(
+                agent_calls=args.agent_calls,
+                tokens=args.tokens,
+                wall_time_s=args.wall_time_s,
+            )
+        )
+        for condition in CONDITION_SETS[args.conditions]
+    )
     provider = resolve_launch_provider(cells([{"id": "provider-preview"}], conditions)[0]["config"])
     unsolved = [p for p in manifest["problems"] if p["leap_solved"] is False]
     selected = unsolved
@@ -467,7 +498,7 @@ def main() -> None:
             raise ValueError(f"not LEAP-unsolved problem ids: {unknown}")
         selected = [p for p in unsolved if p["id"] in wanted]
     campaign = {
-        "version": 1,
+        "version": 2,
         # Lanes are a run-time scheduling choice (LEANFLOW_CAMPAIGN_LANES),
         # not part of what was frozen, so the name must not claim a count.
         "name": f"Lean-IMO-Bench · LEAP-unsolved · {args.conditions}",
@@ -476,7 +507,6 @@ def main() -> None:
         "conditions": [c._asdict() for c in conditions],
         "created_at": now(),
         "status": "prepared",
-        "provider_base_url": provider["base_url"].rstrip("/"),
         "provider_identity": {key: provider[key] for key in ("provider", "api_mode")},
         "provenance": identity,
         "cells": cells(selected, conditions),

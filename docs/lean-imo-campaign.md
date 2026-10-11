@@ -1,111 +1,87 @@
 # Lean-IMO-Bench comparison
 
-`scripts/lean_imo_campaign/` is the repository harness for the requested
-LEAP-unsolved comparison. It calls the dedicated prover entry point; it does
-not introduce a general batch workflow or use the legacy agent queue.
+`scripts/lean_imo_campaign/` runs the repository's LEAP-unsolved comparison through
+LeanFlow's native prover. The default matrix contains Astra and Terra, each with
+bottom-up and top-down search, across 18 problems. Two lanes advance independently;
+each finishes a problem's conditions before claiming another problem. Each cell has
+four prover slots. Unspecified reasoning effort uses the native runtime default.
 
-The frozen manifest selects 18 problems. Each problem receives these four
-independent research runs in order: Astra xhigh bottom-up, Astra xhigh top-down,
-Terra xhigh bottom-up, Terra xhigh top-down. Two problem lanes advance independently;
-a lane finishes all four conditions before claiming another problem. Every cell
-gets 4 prover slots, 200 calls per prover/negation pass, 50 per planning/review/
-research session, 2,000 total calls, and 8 active hours. The 20-minute request/check
-ceiling remains inside the campaign wall-time limit. New campaign context limits
-are 256,000 tokens for both provers and orchestrators, with deterministic compression
-at 192,000 tokens (75%). Existing frozen manifests retain their recorded settings.
-Other explicit limits: 3 restarts per node, 16 directional plan refinements,
-32 decompositions, and 128 DAG nodes. These limits are identical in every condition.
+Campaigns select only `codex`, `claude`, or `lemex`. Native runtimes own login, keys,
+endpoints, sampling, context management, and compression. The `kimi-glm-flash-top`
+condition uses Lemex for Kimi planning/review/research and GLM proving/negation.
+The `astra-low-glm-flash-top` and `astra-low-deepseek-flash-top` conditions use Codex
+for Astra planning and Lemex for the external prover, with one prover slot per cell.
+Configure RCP directly in Lemex before launching:
 
-`LEANFLOW_PROVER_ALLOW_INTERNET=0` removes web/download tool schemas, rejects
-their invocation, routes Lean search through local source search, and blocks
-planned dependency installations. Model API access remains enabled. Clean-room
-and repository-research restrictions are also set. Computation retains its
-filesystem/network restrictions; Lean checks retain OS isolation. No reference
-solutions, sibling problem files, or earlier attempt results enter a cell.
+```bash
+export LEMEX_BASE_URL="https://inference.rcp.epfl.ch/v1"
+export LEMEX_API_KEY="your-key"
+```
 
-The harness snapshots the latest working Python runtime and skills, clones
-the installed Python environment and pinned built Lake dependencies with APFS
-copy-on-write, and hashes the exact statement inputs. Each cell gets a fresh
-private project. Existing cell directories are never overwritten. The home
-configuration hash is checked before each launch; a change pauses dispatch
-rather than silently changing the comparison. Credentials are resolved at
-launch and never written to the launch record.
+Native environment variables and homes pass through unchanged. The campaign does
+not copy credentials, read native authentication files, or translate `RCP_API_KEY`.
+Keep native CLI versions and configuration stable during a comparison; the Python
+snapshot does not freeze those separately managed runtimes or their native homes.
+
+All resource limits are unlimited unless explicitly supplied when preparing the
+campaign. `--agent-calls` counts native CLI invocations across all roles and resumes.
+`--tokens` is an approximate cap on reported input plus output tokens; it prevents
+future calls once reached, and active calls can overshoot. `--wall-time-s` limits
+cumulative active time for the whole cell. There are no per-response deadlines,
+per-job call limits, compression overrides, or output-token caps.
 
 ```bash
 source .venv/bin/activate
 python -m scripts.lean_imo_campaign.runner prepare /absolute/path/to/new-campaign
-# The generated launcher pins imports independently of the current directory.
+# Optional limits, recorded identically for each cell:
+python -m scripts.lean_imo_campaign.runner prepare /absolute/path/to/bounded-campaign \
+  --agent-calls 100 --tokens 2000000 --wall-time-s 28800
 /absolute/path/to/new-campaign/run-campaign
 ```
 
-`campaign.json` and `metrics.csv` update every five seconds. Each cell retains
-the complete native prover state, DAG, plan, transcripts, checks, changes, and metrics.
-Cell configurations and process logs live outside model-readable projects in
-`cell-configs/` and `cell-logs/`; credential-free launch records are controller
-artifacts under each project's `.leanflow/` directory.
-Only terminal `completed` state with independent final verification accepted
-counts as verified. Missing prices remain unavailable. Report each condition
-over 18 problems; a best-of-four aggregate is a separate result. This fixture
-uses Lean/Mathlib 4.33.1, while LEAP used 4.27.0.
+`--conditions` selects a named model/effort comparison; `--problems` selects problem
+IDs from the 18 unsolved statements. `LEANFLOW_CAMPAIGN_LANES` sets concurrency
+(default two). To serialize already assigned lanes, retain their lane count and
+set `LEANFLOW_CAMPAIGN_MAX_ACTIVE=1`; lane assignments and cell configurations stay
+fixed. The dispatcher refuses to narrow the lane count below an existing claim.
 
-In VS Code, **LeanFlow: Open Benchmark Campaign** opens `campaign.json` as a
-live 72-cell overview. **Open prover dashboard** / **Inspect** selects the exact
-cell project in the existing DAG/plan/jobs/changes dashboard. The queue's pause
-button writes `PAUSE_AFTER_ACTIVE`; active work finishes normally. Transient provider
-failures can reconnect three times through the native resume path, preserving
-cumulative calls, time, proof progress and each failed execution's record.
-Automatic reconnects require recognized connection/timeout, rate-limit, HTTP
-408/429, or server-error evidence. Permanent prompt/authentication/context/quota
-errors, other HTTP client errors, unknown/internal errors, and `planning_stalled`
-are not automatically retried. Persistent provider failures, infrastructure
-errors, and scheduler dead ends with unused global budget pause new dispatch.
-Recovery and the watchdog use each cell's saved limits. Bounded, redacted error
-causes remain attached to each execution's history.
-To continue pending cells, inspect the cause,
-remove that marker if present, and run the same frozen runner. Terminal cells
-are preserved. If the dispatcher crashed with active admissions, it refuses
-automatic replacement: reconcile the recorded PIDs and native state first so
-that surviving jobs cannot be duplicated or their budgets reset.
+Preparation snapshots the working Python runtime and skills, copies the installed
+Python environment and pinned Lake dependencies, and hashes the statement inputs.
+Each cell gets a fresh private project; existing directories are never overwritten.
+A changed LeanFlow home configuration hash prevents launch. Reference solutions,
+sibling problem files, and earlier attempt results do not enter a fresh cell.
+Internet research, downloads, and planned dependency installations are disabled;
+native model access remains available. Lean checks retain OS isolation.
 
-The `astra-low-luna-high-top` condition uses Luna at high reasoning for proving
-and negation, with Astra at low reasoning for planning, review, and research.
-It keeps top-down search, four prover workers per cell, 150 calls per prover
-pass, 50 per planning pass, 5,000 total calls per problem, and an eight-hour
-wall limit. Set `LEANFLOW_CAMPAIGN_LANES=3` to run three problems concurrently;
-use `--problems` at preparation to select the remaining unverified problems.
+`campaign.json` and `metrics.csv` update every five seconds. State includes the DAG,
+plan, transcripts, checks, changes, agent calls, reported usage, and elapsed time.
+Cell configurations and process logs live in `cell-configs/` and `cell-logs/` outside
+model-readable projects. Launch records omit credentials. Missing token or price
+coverage remains marked incomplete or unavailable. Only terminal `completed` state
+with accepted independent verification counts as verified. Report each condition
+separately; best-of-four is a separate aggregate. The fixture uses Lean/Mathlib
+4.33.1, while LEAP used 4.27.0.
 
-To serialize a campaign that already has several assigned lanes, retain its
-lane count and set `LEANFLOW_CAMPAIGN_MAX_ACTIVE=1`. This runs pending cells in
-manifest order, automatically admitting the next when the current cell ends,
-without changing any proof budget or lane assignment. The default active limit
-is the lane count. Set `LEANFLOW_CAMPAIGN_CONTINUE_TRANSIENT_ERRORS=1` to advance
-past known connection/access-service failures after their bounded reconnects
-are exhausted; failed cells retain their error and saved progress. Authentication,
-quota, unknown provider errors and integrity failures still pause dispatch.
+The VS Code benchmark view opens `campaign.json` and links each cell to its prover
+dashboard. Pausing writes `PAUSE_AFTER_ACTIVE`, allowing active work to finish.
+Recognized transient connection, timeout, rate-limit, HTTP 408/429, and server
+failures can reconnect with backoff while explicit global budgets permit. Recovery
+preserves cumulative metrics and failed execution history; there is no fixed retry
+count. Permanent authentication, prompt, quota, context, unknown/internal, and
+infrastructure failures pause dispatch for inspection. The watchdog applies only
+when the cell has an explicit global time limit.
 
-## Explicit runtime upgrades
+After inspecting a paused campaign, remove its pause marker and restart the frozen
+runner. Terminal results remain recorded. A dispatcher crash with active admissions
+requires reconciliation before replacement to avoid duplicate workers. An explicit
+handoff uses `run <directory> --adopt-active`, recorded process identities, and the
+existing dispatcher lock. Adoption rejects reused PIDs and unfinished preparation;
+only terminal native verification establishes success.
 
-The `kimi-glm-flash-top` condition runs `moonshotai/Kimi-K2.7-Code` for
-planning/review/research and `zai-org/GLM-5.3-Flash` for proving/negation,
-all through RCP using `RCP_API_KEY`. It uses top-down search, four prover
-workers per problem, 150 calls per prover pass, 50 per planning stage, and
-5,000 total calls per problem. Two lanes run two problems concurrently.
-For a key allowing twenty in-flight requests, set
-`LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS=20` in the launcher; the default remains
-one. Every process sharing that key must use the same allowance. The reserve
-key is not inherited by campaign workers.
-
-An authorized runtime upgrade sets `default_runtime_directory` to a new immutable
-snapshot for unstarted cells. Every launched cell records `runtime_directory`
-and `runtime_sha256`; reconnects retain that version and their cumulative budgets.
-The CSV includes the runtime hash, stop code/scope, cost source, and number of costed calls, so comparisons spanning versions remain visible. Unstarted cells have no assigned runtime hash. Costs with incomplete coverage are labelled as partial; historical unlabelled estimates are unavailable in the UI and exported only in `legacy_unverified_cost_usd`, outside the comparable cost column.
+New campaigns use manifest version 2. Earlier direct-API campaigns keep their
+historical records and frozen runtime. The new dispatcher refuses to resume them:
+old API-request budgets do not have the same meaning as native agent invocations.
+Prepare a new campaign for native-backend comparisons. Within version 2, an explicit
+runtime upgrade can select a new immutable `default_runtime_directory` for
+unstarted cells; started cells retain their runtime hash and resume lineage.
 Never overwrite an existing snapshot.
-
-A dispatcher handoff must record each active worker's process birth time and exact
-command (`process_identity`) while the old dispatcher is stopped. Save the campaign
-backup and handoff provenance, terminate only that dispatcher, then start the new
-snapshot's dispatcher with `run <campaign-directory> --adopt-active`. Its existing
-lock prevents concurrent dispatch; adoption rejects preparation-in-progress and
-reused PIDs. Active workers continue in their own process groups. Adopted workers'
-OS exit codes are unavailable: `returncode_source=adopted_native_state` explicitly
-marks the derived result, and only terminal native acceptance counts as verified.

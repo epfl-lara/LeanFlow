@@ -11,6 +11,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from agent.runtime.harness.isolation import _carve_root
+
 
 class IsolationUnavailable(RuntimeError):
     """Refuse Lean execution when no supported kernel isolation is available."""
@@ -73,11 +75,27 @@ def _sandbox_command(
     workspace: Path,
     private: Path,
     extra_writable_roots: Sequence[Path] = (),
+    extra_readable_roots: Sequence[Path] = (),
     network_allowed: bool = False,
 ) -> list[str]:
     """Wrap a command in seatbelt or a private Bubblewrap mount/PID namespace."""
     readable = _roots(project, workspace, private)
     writable = [workspace, private]
+    denied = tuple(
+        dict.fromkeys(
+            [
+                project / ".leanflow",
+                Path(__file__).resolve().parents[3] / ".leanflow",
+            ]
+        )
+    )
+    explicit_reads = [project, workspace, private]
+    for root in extra_readable_roots:
+        target = root.resolve(strict=True)
+        if not target.is_file():
+            raise IsolationUnavailable("Additional checker read grants must name exact files.")
+        explicit_reads.append(target)
+        readable.append(target)
     for root in extra_writable_roots:
         target = root.resolve(strict=True)
         if not target.is_relative_to(project) or target == project:
@@ -86,6 +104,7 @@ def _sandbox_command(
             )
         writable.append(target)
         readable.append(target)
+        explicit_reads.append(target)
     system = platform.system()
     if system == "Darwin":
         binary = shutil.which("sandbox-exec")
@@ -97,27 +116,39 @@ def _sandbox_command(
         def rule(path: Path) -> str:
             return f"({'subpath' if path.is_dir() else 'literal'} {json.dumps(str(path))})"
 
-        profile = "\n".join(
-            [
-                "(version 1)",
-                "(deny default)",
-                "(allow file-read-metadata)",
-                '(allow file-read* (literal "/"))',
-                "(allow file-read* " + " ".join(rule(path) for path in readable) + ")",
-                '(allow file-read* (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))',
-                "(allow file-write* "
-                + " ".join(rule(path) for path in writable)
-                + ' (literal "/dev/null"))',
-                "(allow process-exec)",
-                "(allow process-fork)",
-                "(allow process-info* (target self))",
-                "(allow signal (target self))",
-                "(allow sysctl-read)",
-                '(allow mach-lookup (global-name "com.apple.system.logger") (global-name "com.apple.logd") (global-name "com.apple.system.opendirectoryd.libinfo") (global-name "com.apple.system.notification_center"))',
-                "(allow network*)" if network_allowed else "(deny network*)",
-            ]
-        )
-        return [binary, "-p", profile, *argv]
+        lines = [
+            "(version 1)",
+            "(deny default)",
+            "(allow file-read-metadata)",
+            '(allow file-read* (literal "/"))',
+            "(allow file-read* " + " ".join(rule(path) for path in readable) + ")",
+            '(allow file-read* (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))',
+            "(allow file-write* "
+            + " ".join(rule(path) for path in writable)
+            + ' (literal "/dev/null"))',
+            "(allow process-exec)",
+            "(allow process-fork)",
+            "(allow process-info* (target self))",
+            "(allow signal (target self))",
+            "(allow sysctl-read)",
+            '(allow mach-lookup (global-name "com.apple.system.logger") (global-name "com.apple.logd") (global-name "com.apple.system.opendirectoryd.libinfo") (global-name "com.apple.system.notification_center"))',
+            "(allow network*)" if network_allowed else "(deny network*)",
+        ]
+        for protected in denied:
+            exceptions = [path for path in explicit_reads if path.is_relative_to(protected)]
+            # Controller records remain private even though Lean can read the
+            # canonical source tree; only this check's explicit capabilities pass.
+            predicate = f"(subpath {json.dumps(str(protected))})"
+            if exceptions:
+                predicate = (
+                    "(require-all "
+                    + predicate
+                    + " (require-not (require-any "
+                    + " ".join(rule(path) for path in exceptions)
+                    + ")))"
+                )
+            lines.append(f"(deny file-read-data {predicate})")
+        return [binary, "-p", "\n".join(lines), *argv]
     if system == "Linux":
         binary = shutil.which("bwrap")
         if not binary:
@@ -134,9 +165,17 @@ def _sandbox_command(
         ]
         if not network_allowed:
             command.append("--unshare-net")
-        command.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
+        command.extend(
+            ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", str(project)]
+        )
         for root in sorted(readable, key=lambda path: len(path.parts)):
-            command.extend(["--ro-bind", str(root), str(root)])
+            excluded = tuple(
+                protected
+                for protected in denied
+                if root not in explicit_reads or not root.is_relative_to(protected)
+            )
+            for piece in _carve_root(root, excluded):
+                command.extend(["--ro-bind", str(piece), str(piece)])
         # Recreate the merged-/usr symlinks the resolved binds above dropped,
         # otherwise nothing in the sandbox can be executed at all.
         for usr_target, usr_link in _merged_usr_links():

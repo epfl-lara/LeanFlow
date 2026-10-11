@@ -1,4 +1,4 @@
-"""Tests for the extracted manager_verification helpers + native_runner re-export (Phase 2).
+"""Tests for the extracted manager_verification helpers.
 
 These cover the cleanly-pure, closed-under-"calls" subset of the manager-verification /
 verification-decision cluster moved out of native_runner: the last-verification record reader and
@@ -10,20 +10,11 @@ verification helpers still living there) resolve them without a back-import.
 
 import os
 
-from leanflow_cli.native import native_runner
 from leanflow_cli.workflows import manager_verification as mv
 from leanflow_cli.workflows.verification_providers import (
     AUTOFORMALIZER_VERIFICATION_TASK,
     BLUEPRINT_VERIFICATION_TASK,
 )
-
-
-def test_native_runner_reexports_are_identical():
-    # Every re-exported name in native_runner must be the SAME object as in
-    # manager_verification, so callers still living in native_runner resolve the extracted
-    # helpers without a back-import.
-    for name in mv.__all__:
-        assert getattr(native_runner, name) is getattr(mv, name), name
 
 
 def test_verification_outcome_tristate():

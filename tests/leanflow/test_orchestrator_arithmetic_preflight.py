@@ -6,7 +6,6 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import orchestrator_llm
 from leanflow_cli.workflows.orchestrator import OrchestratorRoute, RouteContext
 from leanflow_cli.workflows.orchestrator_arithmetic_preflight import (
@@ -213,47 +212,3 @@ def test_llm_route_preflights_full_observed_reason_before_bounding(monkeypatch) 
     assert route is None
     assert note.startswith(ARITHMETIC_PREFLIGHT_REJECTION_PREFIX)
     assert "168*t+1 != 168*t+7" in note
-
-
-def test_native_consult_records_evidence_and_uses_deterministic_fallback(
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("LEANFLOW_ORCHESTRATOR_ENABLED", "1")
-    monkeypatch.setenv("LEANFLOW_ORCHESTRATOR_LLM_ENABLED", "1")
-    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "0")
-    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "0")
-    response = json.dumps(
-        _decision("Every k = 7*t gives n = 168*t+1; prove 24*k+1 = 7*(24*t+1) by ring.")
-    )
-    monkeypatch.setattr(
-        orchestrator_llm,
-        "run_model_verification_review",
-        lambda **_kwargs: SimpleNamespace(response=response, status="ok"),
-    )
-    events: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    monkeypatch.setattr(
-        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
-    )
-    autonomy_state: dict[str, Any] = {
-        "current_queue_assignment": {
-            "target_symbol": "erdos_242_residual_mod_seven_eq_zero",
-            "active_file": "FormalConjectures/ErdosProblems/242.lean",
-            "slice": "private lemma erdos_242_residual_mod_seven_eq_zero : True := by sorry",
-        }
-    }
-    live_state = {
-        "workflow_kind": "prove",
-        "target_symbol": "erdos_242_residual_mod_seven_eq_zero",
-        "active_file": "FormalConjectures/ErdosProblems/242.lean",
-        "declaration_queue_total": 1,
-    }
-
-    route = runner._orchestrator_consult("scope-entry", autonomy_state, live_state)
-
-    assert route is not None
-    assert route.route == "direct-prove"
-    assert route.source == "deterministic"
-    signature = autonomy_state["failed_route_signatures"][-1]
-    assert signature.startswith(ARITHMETIC_PREFLIGHT_REJECTION_PREFIX)
-    route_events = [event for event in events if event[0][0] == "orchestrator-route"]
-    assert route_events[-1][1]["llm_note"] == signature

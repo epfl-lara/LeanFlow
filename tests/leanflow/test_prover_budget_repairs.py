@@ -25,12 +25,12 @@ def test_local_exhaustion_does_not_exhaust_campaign(tmp_path):
     runtime = make_runtime(
         tmp_path,
         config=ProverConfig(job_api_calls=2, total_api_calls=20),
-        session=lambda **kw: {"status": "budget_exhausted", "api_calls": 2},
+        session=lambda **kw: {"status": "completed", "api_calls": 1},
     )
     result = runtime.run()
     assert result["status"] == "blocked"
     assert result["stop_reason"]["scope"] == "scheduler"
-    assert result["metrics"]["api_calls"] == 2
+    assert result["metrics"]["api_calls"] == 1
 
 
 @pytest.mark.parametrize("attempts", [1, 4])
@@ -109,6 +109,7 @@ def test_missing_resume_cost_retains_known_subtotal(tmp_path):
         previous_api_calls=2,
         previous_cost_source="provider_reported",
         api_calls=3,
+        api_budget=3,
         cost_usd=1.25,
     )
     runtime._finish_job(
@@ -157,28 +158,28 @@ def test_role_reservation_failure_retains_resume_entry(tmp_path):
 
     runtime = make_runtime(tmp_path, config=ProverConfig(total_api_calls=10))
     job, _ = runtime._new_job("research", prompt="saved")
-    runtime.reserved = 9
+    runtime.reserved = 10
     runtime.resume_role_jobs[("research", "saved")] = job
     with pytest.raises(BudgetExhausted):
         runtime._new_job("research", prompt="saved")
     assert runtime.resume_role_jobs[("research", "saved")] is job
-    assert runtime.reserved == 9
+    assert runtime.reserved == 10
 
 
 def test_research_without_free_reservation_returns_control_to_prover(tmp_path):
     from leanflow_cli.workflows.prover.job_controller import research_job
 
-    runtime = make_runtime(tmp_path, config=ProverConfig(job_api_calls=5, total_api_calls=5))
+    runtime = make_runtime(tmp_path, config=ProverConfig(agent_calls=1))
     job, _ = runtime._new_job("prover", node=runtime.dag.nodes[0])
     result = research_job(runtime, job, "Check a finite computation")
     assert result["status"] == "unavailable"
     assert not runtime.cancelled.is_set()
-    assert runtime.reserved == 5
+    assert runtime.reserved == 1
     assert len(runtime.state["jobs"]) == 1
 
 
 def test_wall_clock_has_its_own_terminal_status(tmp_path, monkeypatch):
-    runtime = make_runtime(tmp_path)
+    runtime = make_runtime(tmp_path, config=ProverConfig(wall_time_s=10))
     monkeypatch.setattr(runtime, "_elapsed", lambda: runtime.config.wall_time_s + 1)
     state = runtime.run()
     assert state["status"] == "timeout"
@@ -223,7 +224,7 @@ def test_reviewed_repair_overrides_proposer_direction_label(tmp_path, monkeypatc
 
 
 def test_verification_deadline_is_not_an_environment_failure(tmp_path, monkeypatch):
-    runtime = make_runtime(tmp_path)
+    runtime = make_runtime(tmp_path, config=ProverConfig(wall_time_s=10))
     expired = False
 
     def preflight(_workspace):
@@ -243,15 +244,15 @@ def test_verification_deadline_is_not_an_environment_failure(tmp_path, monkeypat
 def test_controller_reclaims_finished_parallel_allocation_before_replanning(tmp_path):
     from concurrent.futures import Future
 
-    runtime = make_runtime(tmp_path, config=ProverConfig(job_api_calls=5, total_api_calls=5))
+    runtime = make_runtime(tmp_path, config=ProverConfig(agent_calls=1))
     job, _ = runtime._new_job("prover", node=runtime.dag.nodes[0])
     future = Future()
-    future.set_result({"status": "completed", "api_calls": 1})
+    future.set_result({"status": "completed", "api_calls": 0})
     runtime.pending[future] = job
     repair, _ = runtime._new_job("orchestrator", prompt="Repair branch")
-    assert repair["api_budget"] == 4
-    assert runtime.consumed == 1
-    assert runtime.reserved == 4
+    assert repair["api_budget"] == 1
+    assert runtime.consumed == 0
+    assert runtime.reserved == 1
     assert job["accounted"] is True
     assert future in runtime.pending  # Its mathematical result is still queued.
 
@@ -260,7 +261,7 @@ def test_unadmitted_research_does_not_spend_request_slots(tmp_path):
     from leanflow_cli.workflows.prover.job_controller import research_job
     from leanflow_cli.workflows.prover.session_tools import SessionTools
 
-    runtime = make_runtime(tmp_path, config=ProverConfig(job_api_calls=5, total_api_calls=5))
+    runtime = make_runtime(tmp_path, config=ProverConfig(agent_calls=1))
     job, context = runtime._new_job("prover", node=runtime.dag.nodes[0])
     workspace = Path(job["workspace"])
     tools = SessionTools(
@@ -284,20 +285,20 @@ def test_capacity_wait_releases_lock_for_a_running_worker(tmp_path):
     import threading
     from concurrent.futures import Future
 
-    runtime = make_runtime(tmp_path, config=ProverConfig(job_api_calls=5, total_api_calls=5))
+    runtime = make_runtime(tmp_path, config=ProverConfig(agent_calls=1))
     job, _ = runtime._new_job("prover", node=runtime.dag.nodes[0])
     future = Future()
     runtime.pending[future] = job
 
     def finish():
         with runtime.lock:
-            future.set_result({"status": "completed", "api_calls": 1})
+            future.set_result({"status": "completed", "api_calls": 0})
 
     timer = threading.Timer(0.05, finish)
     timer.start()
     try:
         repair, _ = runtime._new_job("orchestrator", prompt="Repair branch")
-        assert repair["api_budget"] == 4
+        assert repair["api_budget"] == 1
     finally:
         timer.join(timeout=1)
     assert not timer.is_alive()

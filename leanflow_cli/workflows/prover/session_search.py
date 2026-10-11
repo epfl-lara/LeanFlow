@@ -27,6 +27,7 @@ def search_sources(
     *,
     globs: tuple[str, ...] = LEAN_GLOBS,
     max_filesize: str = "1M",
+    timeout_s: float | None = None,
 ) -> dict[str, Any]:
     """Return bounded literal matches without buffering project-wide output in RAM.
 
@@ -67,7 +68,7 @@ def search_sources(
             ],
             stdout=output,
             stderr=subprocess.DEVNULL,
-            timeout=15,
+            timeout=timeout_s,
         )
         output.seek(0)
         matches = []

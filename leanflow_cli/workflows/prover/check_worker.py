@@ -97,21 +97,9 @@ def _check(module: Any, project: Path, workspace: Path, raw: Any) -> dict[str, A
     file = Path(str(raw.get("file", ""))).resolve(strict=True)
     if not file.is_file() or not (file.is_relative_to(workspace) or file.is_relative_to(project)):
         raise ValueError("Requested Lean file is outside the isolated checker read roots.")
-    declaration = str(raw.get("declaration", ""))
-    return dict(
-        module.lean_incremental_check(
-            action="check_target" if declaration else "check_file",
-            file_path=str(file),
-            theorem_id=declaration,
-            replacement=str(raw.get("replacement", "")),
-            cwd=str(project),
-            timeout_s=max(1, int(raw.get("timeout_s", 60))),
-            timeout_ceiling_s=max(1, int(raw.get("timeout_s", 60))),
-            include_axiom_profile=raw.get("include_axiom_profile") is True,
-            allow_placeholders_for_elaboration=raw.get("allow_placeholders_for_elaboration")
-            is True,
-        )
-    )
+    from leanflow_cli.workflows.prover.native_check import check
+
+    return check(module, project, file, raw)
 
 
 def main() -> int:

@@ -1,4 +1,4 @@
-"""Tests for the extracted proof_state_builder helpers + native_runner re-export (Phase 2).
+"""Tests for the extracted proof_state_builder helpers.
 
 ``_build_live_proof_state`` itself stays in native_runner (it reaches lean_inspect /
 probe_capabilities / route_workflow_step backend calls, the TheoremQueueManager, env readers,
@@ -11,14 +11,6 @@ declaration-scoped diagnostic shaping, the queue-horizon summary, and the proof-
 """
 
 from leanflow_cli import proof_state_builder as psb
-from leanflow_cli.native import native_runner
-
-
-def test_native_runner_reexports_are_identical():
-    # Every re-exported name in native_runner must be the SAME object as in proof_state_builder,
-    # so callers still living in native_runner resolve the extracted helpers without a back-import.
-    for name in psb.__all__:
-        assert getattr(native_runner, name) is getattr(psb, name), name
 
 
 def test_find_declaration_entry_and_line_membership(tmp_path):

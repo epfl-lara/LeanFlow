@@ -13,7 +13,7 @@ LEANFLOW_INSTALL_OS_TOOLS="${LEANFLOW_INSTALL_OS_TOOLS:-1}"
 INSTALL_MODE="editable"
 RECREATE_VENV=0
 STEP=0
-TOTAL_STEPS=11
+TOTAL_STEPS=12
 REQUIRED_EXTERNAL_TOOLS=(rg pdftotext pdfinfo pdfimages)
 
 banner() {
@@ -317,6 +317,10 @@ load_config()
 PY
 ok "config: $LEANFLOW_HOME/config.yaml"
 
+step "Ensuring a compatible private Lemex runtime"
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -m leanflow_cli.runtime.lemex_install
+ok "Lemex executable managed separately from its native configuration"
+
 step "Installing managed Lean MCP backends and power modes"
 LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/leanflow" mcp bootstrap lean
 ok "managed MCP bootstrap complete"
@@ -331,23 +335,12 @@ export PATH="${LEANFLOW_BIN_DIR}:\$PATH"
 exec "${LEANFLOW_VENV_DIR}/bin/leanflow" "\$@"
 EOF
 
-cat > "$LEANFLOW_BIN_DIR/leanflow-agent" <<EOF
-#!/usr/bin/env bash
-: "\${LEANFLOW_HOME:=${LEANFLOW_HOME}}"
-export OPENLEANFLOW_HOME="\${OPENLEANFLOW_HOME:-\${LEANFLOW_HOME}}"
-export LEANFLOW_HOME
-export PATH="${LEANFLOW_BIN_DIR}:\$PATH"
-exec "${LEANFLOW_VENV_DIR}/bin/leanflow-agent" "\$@"
-EOF
-
-chmod +x \
-  "$LEANFLOW_BIN_DIR/leanflow" \
-  "$LEANFLOW_BIN_DIR/leanflow-agent"
+chmod +x "$LEANFLOW_BIN_DIR/leanflow"
 ok "wrapper: $LEANFLOW_BIN_DIR/leanflow"
-ok "wrapper: $LEANFLOW_BIN_DIR/leanflow-agent"
 
 step "Cleaning legacy wrapper names"
 rm -f \
+  "$LEANFLOW_BIN_DIR/leanflow-agent" \
   "$LEANFLOW_BIN_DIR/leanflow-acp" \
   "$LEANFLOW_BIN_DIR/epflemma" \
   "$LEANFLOW_BIN_DIR/epflemma-prove" \

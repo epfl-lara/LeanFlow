@@ -56,7 +56,7 @@ def test_repeated_failure_stops_before_dispatch_and_plain_resume_spends_nothing(
     result = runtime.run()
     assert result["status"] == "planning_stalled"
     assert result["stop_reason"]["code"] == "planning_stalled"
-    assert result["stop_reason"]["remaining_api_calls"] > 0
+    assert result["stop_reason"]["remaining_api_calls"] is None
     progress = result["planning_request"]["progress"]
     assert progress["next_attempt"] == REPEATED_FAILURE_LIMIT
     assert progress["stalled"]["repeats"] == REPEATED_FAILURE_LIMIT

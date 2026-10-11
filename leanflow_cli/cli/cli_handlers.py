@@ -18,14 +18,6 @@ from leanflow_cli.config import (
     load_config,
     set_config_value,
 )
-from leanflow_cli.local_models import (
-    get_local_runtime_status,
-    list_local_runtimes,
-    read_local_runtime_logs,
-    start_local_runtime,
-    stop_local_runtime,
-    use_local_runtime,
-)
 from leanflow_cli.runtime.sandbox_runtime import (
     SandboxRuntimeError,
     build_sandbox_image,
@@ -39,7 +31,6 @@ __all__ = [
     "_print_json",
     "_print_project_power_setup",
     "_project_payload",
-    "_handle_models",
     "_handle_config",
     "_handle_sandbox",
     "_print_mcp_status",
@@ -58,7 +49,7 @@ def workflow_run_help_text(workflow: str) -> str:
         f"Run the {name} workflow in the native Lean runtime.",
         "",
         "options:",
-        "  --provider PROVIDER       Override the configured runtime provider",
+        "  --provider PROVIDER       Native backend: codex, claude, or lemex",
         "  --model MODEL             Override the model for this workflow",
         "  --no-parallel             Disable parallel prover/research execution",
     ]
@@ -126,30 +117,6 @@ def _project_payload(project: Any) -> dict[str, str]:
             ", ".join(project.blueprint_markers) if project.blueprint_markers else "[none]"
         ),
     }
-
-
-def _handle_models(args: argparse.Namespace) -> int:
-    if args.local_command == "list":
-        _print_json(list_local_runtimes())
-        return 0
-    if args.local_command == "status":
-        _print_json(get_local_runtime_status(args.runtime))
-        return 0
-    if args.local_command == "start":
-        _print_json(
-            start_local_runtime(args.runtime, model=args.model, host=args.host, port=args.port)
-        )
-        return 0
-    if args.local_command == "stop":
-        _print_json(stop_local_runtime(args.runtime))
-        return 0
-    if args.local_command == "logs":
-        print(read_local_runtime_logs(args.runtime, tail=args.tail))
-        return 0
-    if args.local_command == "use":
-        _print_json(use_local_runtime(args.runtime, model=args.model))
-        return 0
-    raise SystemExit("Unknown local models command")
 
 
 def _handle_config(args: argparse.Namespace) -> int:

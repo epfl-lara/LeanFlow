@@ -37,6 +37,7 @@ def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] 
     if status == "completed":
         return None
     metrics = runtime.state["metrics"]
+    limit: int | float | None
     used = metrics.get("api_calls", 0)
     if status not in {"budget_exhausted", "blocked", "timeout"}:
         code, scope, message, used, limit = (
@@ -46,7 +47,15 @@ def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] 
             None,
             None,
         )
-    elif runtime._elapsed() >= runtime.config.wall_time_s:
+    elif runtime.state.get("stop_code") == "campaign_tokens_unknown":
+        code, scope, message, used, limit = (
+            "campaign_tokens_unknown",
+            "campaign",
+            "Token usage is unavailable for a completed invocation; further token-capped calls require complete usage.",
+            None,
+            runtime.config.tokens,
+        )
+    elif runtime._deadline_reached():
         code, scope, message, used, limit = (
             "campaign_wall_time",
             "campaign",
@@ -54,7 +63,7 @@ def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] 
             round(runtime._elapsed(), 3),
             runtime.config.wall_time_s,
         )
-    elif used >= runtime.config.total_api_calls:
+    elif runtime.config.agent_calls is not None and used >= runtime.config.agent_calls:
         code, scope, message, limit = (
             "campaign_api_calls",
             "campaign",
@@ -62,8 +71,21 @@ def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] 
             runtime.config.total_api_calls,
         )
     elif (
+        runtime.config.tokens is not None
+        and sum(int(metrics.get(key, 0) or 0) for key in ("input_tokens", "output_tokens"))
+        >= runtime.config.tokens
+    ):
+        code, scope, message, used, limit = (
+            "campaign_tokens",
+            "campaign",
+            "Reported token usage reached the global limit; no new agent invocation will start.",
+            sum(int(metrics.get(key, 0) or 0) for key in ("input_tokens", "output_tokens")),
+            runtime.config.tokens,
+        )
+    elif (
         status == "budget_exhausted"
         and runtime.config.mode == "research"
+        and runtime.config.max_decompositions is not None
         and int(metrics.get("decompositions", 0)) >= runtime.config.max_decompositions
     ):
         code, scope, message, used, limit = (
@@ -97,7 +119,11 @@ def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] 
         "message": message,
         "used": used,
         "limit": limit,
-        "remaining_api_calls": max(0, runtime.config.total_api_calls - metrics.get("api_calls", 0)),
+        "remaining_api_calls": (
+            None
+            if runtime.config.agent_calls is None
+            else max(0, runtime.config.agent_calls - metrics.get("api_calls", 0))
+        ),
         "unresolved_nodes": [node.id for node in runtime.dag.nodes if node.status != "proved"],
         "next_step": runtime.state.get("next_step")
         or (

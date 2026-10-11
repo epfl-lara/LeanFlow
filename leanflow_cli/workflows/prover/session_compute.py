@@ -12,7 +12,9 @@ from typing import Any
 from tools.utilities import empirical_compute_runtime
 
 
-def run_computation(program: str, workspace: Path) -> dict[str, Any]:
+def run_computation(
+    program: str, workspace: Path, *, timeout_s: float | None = None
+) -> dict[str, Any]:
     """Run a bounded experiment and preserve resource failures at the agent boundary.
 
     A CPU-killed child has no JSON output. Inspect its exit before decoding so
@@ -29,15 +31,13 @@ def run_computation(program: str, workspace: Path) -> dict[str, Any]:
                 "-S",
                 "-B",
                 str(Path(empirical_compute_runtime.__file__).resolve()),
-                "--timeout-s",
-                "4",
             ],
             input=program,
             capture_output=True,
             text=True,
             cwd=workspace,
             env={"LANG": "C.UTF-8", "PYTHONIOENCODING": "utf-8"},
-            timeout=6,
+            timeout=timeout_s,
         )
     except subprocess.TimeoutExpired:
         # subprocess.run kills and reaps its child before raising.
@@ -45,7 +45,7 @@ def run_computation(program: str, workspace: Path) -> dict[str, Any]:
             "success": False,
             "status": "empirical_compute_timeout",
             "output": "",
-            "error": f"Computation exceeded the 6-second wall limit. {guidance}",
+            "error": f"Computation reached the campaign deadline. {guidance}",
         }
     killed = {-int(signal.SIGKILL), -int(signal.SIGXCPU)}
     if process.returncode in killed:

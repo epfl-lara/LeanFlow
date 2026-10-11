@@ -4,6 +4,18 @@ import { Stat } from "../components";
 import { metric, ratio, seconds } from "./proverFormat";
 
 export function ProverBudget({ budget }: { budget: BudgetView }) {
+  if (budget.nativeBackend) return <>
+    <div className="stats" aria-label="Global campaign limits">
+      <Stat label="Agent calls / limit" value={`${metric(budget.usedCalls)} / ${budget.totalCalls === null ? "Unlimited" : metric(budget.totalCalls)}`} />
+      <Stat label="Active time / limit" value={`${seconds(budget.elapsedS)} / ${budget.wallTimeS === null ? "Unlimited" : seconds(budget.wallTimeS)}`} />
+      <Stat label="Reported input tokens" value={metric(budget.tokens.input)} />
+      <Stat label="Reported output tokens" value={metric(budget.tokens.output)} />
+      <Stat label="Global token limit" value={budget.tokenLimit === null ? "Unlimited" : metric(budget.tokenLimit)} />
+      <Stat label="Token coverage" value={budget.usageComplete === true ? "Complete" : "Incomplete or unknown"} small />
+    </div>
+    <p className="muted">One native CLI invocation counts as one agent call. Token limits stop future calls; active calls can overshoot. Missing usage stays unknown. Native runtimes own sampling and context compression.</p>
+  </>;
+
   const reserved = budget.reservedCalls === null
     ? "—"
     : `${metric(budget.reservedCalls)}${budget.remainingReservedCalls !== null ? ` · ${metric(budget.remainingReservedCalls)} unspent` : ""}`;

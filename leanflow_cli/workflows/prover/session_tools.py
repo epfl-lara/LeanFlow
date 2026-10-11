@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from core.deadlines import cap_seconds, remaining_seconds
 from core.utils import atomic_json_write
 from leanflow_cli.workflows.prover.resource_handoff import shared_resource
 from leanflow_cli.workflows.prover.session_compute import run_computation
@@ -110,7 +110,7 @@ class SessionTools:
         workspace: Path,
         context: Mapping[str, Any],
         research_job: Callable[[str], dict[str, Any]] | None = None,
-        timeout_s: float = 180,
+        timeout_s: float | None = None,
         deadline: float | None = None,
         cancelled: Callable[[], bool] | None = None,
         allow_internet: bool = True,
@@ -281,16 +281,6 @@ class SessionTools:
             return {"success": False, "error": f"Tool {name} is unavailable to role {self.role}"}
         signature = json.dumps([name, args, self.revision], sort_keys=True)
         self.repeated[signature] = self.repeated.get(signature, 0) + 1
-        if self.repeated[signature] > 2 and name in {
-            "search_project",
-            "lean_search",
-            "web_search",
-            "fetch_resource",
-        }:
-            return {
-                "success": False,
-                "error": "This search already returned twice without a scratch edit. Use its evidence to try a proof step, or change the query.",
-            }
         try:
             return self._invoke(name, args)
         except Exception as exc:
@@ -308,10 +298,6 @@ class SessionTools:
             used = json.loads(path.read_text(encoding="utf-8"))["used"] if path.is_file() else 0
             if type(used) is not int or used < 0:
                 raise ValueError("Invalid research admission count; cannot launch another job")
-            if used >= 2:
-                raise ValueError(
-                    "This prover job already requested two research agents; use the returned evidence"
-                )
             path.parent.mkdir(parents=True, exist_ok=True)
             # Reserve before dispatch so interruption cannot refund an admitted job.
             atomic_json_write(path, {"used": used + 1, "question": question})
@@ -388,13 +374,12 @@ class SessionTools:
                 self._path,
                 globs=PROJECT_GLOBS,
                 max_filesize="32M",
+                timeout_s=remaining_seconds(self.deadline),
             )
         if name == "lean_check":
             from leanflow_cli.workflows.prover.check_process import check_scratch
 
-            path = self._path(
-                str(args.get("file") or self.context.get("scratch_file", "")), write=True
-            )
+            path = self._path(str(args.get("file") or self.context.get("scratch_file", "")))
             declaration = str(args.get("declaration") or "")
             return check_scratch(
                 project_root=self.project_root,
@@ -403,7 +388,7 @@ class SessionTools:
                 declaration=declaration,
                 replacement=str(args.get("replacement") or ""),
                 timeout_s=(
-                    max(0.01, min(self.timeout_s, self.deadline - time.monotonic()))
+                    cap_seconds(self.timeout_s, remaining_seconds(self.deadline))
                     if self.deadline is not None
                     else self.timeout_s
                 ),
@@ -413,7 +398,12 @@ class SessionTools:
             if not self.allow_internet:
                 from leanflow_cli.workflows.prover.session_search import search_sources
 
-                return search_sources(str(args["query"]), self.project_root, self._path)
+                return search_sources(
+                    str(args["query"]),
+                    self.project_root,
+                    self._path,
+                    timeout_s=remaining_seconds(self.deadline),
+                )
             from leanflow_cli.lean.lean_services import lean_search
             from tools.implementations.lean_tool import _filter_clean_room_lean_search_results
 
@@ -449,5 +439,7 @@ class SessionTools:
                 self.artifacts.add(str(result["path"]))
             return result
         if name == "compute":
-            return run_computation(str(args["program"]), self.workspace)
+            return run_computation(
+                str(args["program"]), self.workspace, timeout_s=remaining_seconds(self.deadline)
+            )
         raise ValueError(f"Unknown tool {name}")

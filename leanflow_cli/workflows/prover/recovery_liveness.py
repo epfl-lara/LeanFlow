@@ -69,10 +69,10 @@ def recover_idle_obligation(runtime: ProverRuntime) -> bool:
     if all(index[root].status == "proved" for root in runtime.dag.roots):
         return False
     runtime._ensure_active()
-    if runtime.consumed >= runtime.config.total_api_calls:
+    if runtime.config.agent_calls is not None and runtime.consumed >= runtime.config.agent_calls:
         raise BudgetExhausted("The campaign used its total call budget.")
     used = int(runtime.state["metrics"]["decompositions"])
-    if used >= runtime.config.max_decompositions:
+    if runtime.config.max_decompositions is not None and used >= runtime.config.max_decompositions:
         raise BudgetExhausted(
             f"Campaign recovery budget exhausted ({used}/{runtime.config.max_decompositions}).",
             code="campaign_recoveries",

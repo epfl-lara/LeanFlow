@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from leanflow_cli.workflows.prover import lean_environment
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.job_controller import candidate_feedback
 from leanflow_cli.workflows.prover.models import Node
@@ -21,6 +24,12 @@ SOURCES = {
     "Base.lean": "theorem base : True := by trivial\n",
     "Other.lean": "theorem other : True := by trivial\n",
 }
+
+
+@pytest.fixture(autouse=True)
+def local_test_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep fake verifier tests independent of the host's installed Lean versions."""
+    monkeypatch.setattr(lean_environment, "_toolchain_roots", lambda root: [])
 
 
 def project_runtime(root: Path, sources: dict[str, str] | None = None) -> ProverRuntime:
@@ -94,7 +103,11 @@ def test_reuse_requires_same_independently_checked_inputs(tmp_path: Path, change
 
     runtime.verifier = Verifier()
     report = candidate_feedback(runtime, job, json.dumps({"proof": "exact True.intro"}))
-    assert report["accepted"] and not report["conditional"]
+    if changed == "imported_during_check":
+        assert report["accepted"] is False
+        assert "changed during verification" in report["error"]
+    else:
+        assert report["accepted"] and not report["conditional"]
     if changed in {"unrelated", "imported", "transitive"}:
         rewrite(runtime, *edits[changed])
     if changed == "dependency_trust":
@@ -184,3 +197,101 @@ def test_unhandled_lean_import_syntax_never_omits_managed_dependencies(
     sources = {**SOURCES, "Main.lean": header + "theorem goal : True := by sorry\n"}
     runtime = project_runtime(tmp_path, sources)
     assert {"Helper.lean", "Base.lean"} <= set(import_closure(runtime, "Main.lean"))
+
+
+@pytest.mark.parametrize("location", ["local", "package", "unmanaged", "lean_path"])
+@pytest.mark.parametrize("during_check", [False, True])
+def test_dependency_changes_invalidate_acceptance_even_with_restored_mtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, location: str, during_check: bool
+) -> None:
+    """A dependency rebuild must invalidate proof reuse without managed source edits."""
+    root = tmp_path / "project"
+    root.mkdir()
+    runtime = project_runtime(root)
+    inputs = {
+        "local": root / ".lake/build/lib/lean/Base.olean",
+        "package": root / ".lake/packages/library/.lake/build/lib/lean/Library.olean",
+        "unmanaged": root / "Unmanaged.lean",
+        "lean_path": tmp_path / "external/Library.olean",
+    }
+    dependency = inputs[location]
+    dependency.parent.mkdir(parents=True, exist_ok=True)
+    dependency.write_bytes(b"before")
+    if location == "lean_path":
+        monkeypatch.setenv("LEAN_PATH", str(dependency.parent))
+    checks: list[Path] = []
+
+    def mutate() -> None:
+        original = dependency.stat()
+        dependency.write_bytes(b"after!")
+        os.utime(dependency, ns=(original.st_atime_ns, original.st_mtime_ns))
+
+    class Verifier:
+        def check(self, node: Any, file: Path, **kwargs: Any) -> dict[str, Any]:
+            checks.append(file)
+            if during_check and len(checks) == 1:
+                mutate()
+            return {"accepted": True, "axiom_profile_checked": True}
+
+        def compile_module(self, relative: str) -> dict[str, Any]:
+            return {"accepted": True}
+
+    runtime.verifier = Verifier()
+    node = runtime.dag.nodes[0]
+    node.status = "running"
+    job, _ = runtime._new_job("prover", node=node)
+    report = candidate_feedback(runtime, job, json.dumps({"proof": "exact True.intro"}))
+    assert report["accepted"] is not during_check
+    if not during_check:
+        mutate()
+    assert runtime._accept(node, ["exact True.intro"], job["id"])
+    assert len(checks) == 2
+
+
+def test_direct_acceptance_rejects_dependencies_changed_during_kernel_check(tmp_path: Path) -> None:
+    runtime = project_runtime(tmp_path)
+    dependency = tmp_path / ".lake/build/lib/lean/Base.olean"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_bytes(b"before")
+    before = (tmp_path / "Main.lean").read_bytes()
+
+    class Verifier:
+        def check(self, node: Any, file: Path, **kwargs: Any) -> dict[str, Any]:
+            dependency.write_bytes(b"changed")
+            return {"accepted": True}
+
+    runtime.verifier = Verifier()
+    assert not runtime._accept(runtime.dag.nodes[0], ["exact True.intro"], "job")
+    assert (tmp_path / "Main.lean").read_bytes() == before
+
+
+def test_model_changes_do_not_change_deterministic_kernel_acceptance_keys(tmp_path: Path) -> None:
+    from leanflow_cli.workflows.prover.submission_cache import submission_key
+
+    runtime = project_runtime(tmp_path)
+    node = runtime.dag.nodes[0]
+    before = submission_key(runtime, node, "exact source")
+    runtime.config = ProverConfig(provider="claude", model="another-model", reasoning_effort="high")
+    assert submission_key(runtime, node, "exact source") == before
+    runtime.config = replace(runtime.config, allowed_axioms=())
+    assert submission_key(runtime, node, "exact source") != before
+
+
+def test_resume_does_not_restore_cached_acceptance_from_saved_receipts(tmp_path: Path) -> None:
+    """Retained candidate text survives resume, while controller memory trust does not."""
+    runtime = project_runtime(tmp_path)
+    node = runtime.dag.nodes[0]
+    runtime.submission_cache.remember(node, "same", "same", {"accepted": True}, conditional=False)
+    runtime.state["saved_submission_receipt"] = {"accepted": True, "input_hash": "same"}
+    runtime._persist()
+    reopened = ProverRuntime(
+        root=tmp_path,
+        targets=[tmp_path / "Main.lean"],
+        config=runtime.config,
+        run_id=runtime.run_id,
+        resume=True,
+        verifier=object(),
+        session=lambda **_: {},
+    )
+    assert reopened.state["saved_submission_receipt"]["accepted"]
+    assert reopened.submission_cache.take(node, "same") is None

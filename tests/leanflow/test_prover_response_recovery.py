@@ -11,7 +11,6 @@ import pytest
 
 from leanflow_cli.workflows.prover import negation_job, recovery
 from leanflow_cli.workflows.prover.runtime import BudgetExhausted, ProverRuntime
-from leanflow_cli.workflows.prover.session_response_guard import ProverResponseGuard
 from tests.leanflow.test_prover_response_guard import Verifier, make_runtime, stalled_result
 
 
@@ -38,7 +37,7 @@ def decision_result(action: str, **extra: Any) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("action", ["retry", "continue"])
-def test_recovery_creates_new_attempt_preserving_spend_guard_and_partial_work(
+def test_recovery_creates_new_attempt_preserving_spend_and_partial_work(
     tmp_path: Path, action: str
 ) -> None:
     runtime = make_runtime(tmp_path)
@@ -50,12 +49,7 @@ def test_recovery_creates_new_attempt_preserving_spend_guard_and_partial_work(
     )
     plan = Path(job["workspace"]) / "PLAN_job.md"
     plan.write_text("Keep h; discharge the remaining goal with exact h.")
-    guard = ProverResponseGuard(plan.parent.parent / ".runtime" / job["id"], role="prover")
-    for used in (1, 2):
-        guard.observe(
-            {"content": "", "finish_reason": "length"}, candidate_ready=False, used=used, limit=5
-        )
-    saved_guard = guard.path.read_bytes()
+    saved_notes = plan.read_bytes()
     seen = []
 
     def session(**kwargs: Any) -> dict[str, Any]:
@@ -69,9 +63,9 @@ def test_recovery_creates_new_attempt_preserving_spend_guard_and_partial_work(
     prompt = seen[0]["prompt"]
     assert "response_stalled" in prompt and job["id"] in prompt
     assert plan.read_text() in prompt
-    assert "scope" in prompt and "Saved proof artifacts" in prompt
+    assert "scope" in prompt
     assert job["response_recovery_enqueued"] is True
-    assert runtime.consumed == 3
+    assert runtime.consumed == 2
     assert runtime.state["metrics"]["decompositions"] == 1
     assert runtime.state["recovery_decisions"][0]["source_job_id"] == job["id"]
     assert (
@@ -85,13 +79,12 @@ def test_recovery_creates_new_attempt_preserving_spend_guard_and_partial_work(
     next_job, context = reopened._new_job("prover", node=reopened.dag.by_id()[node.id])
     assert next_job["id"] != job["id"]
     assert next_job["api_calls"] == 0
-    assert next_job["api_budget"] == runtime.config.job_api_calls
+    assert next_job["api_budget"] == 1
     assert "have h : True" in Path(next_job["scratch_path"]).read_text()
     assert (Path(next_job["workspace"]) / "PLAN_job.md").read_text() == plan.read_text()
     assert context["previous_job"]["id"] == job["id"]
-    assert guard.path.read_bytes() == saved_guard
-    assert ProverResponseGuard(guard.path.parent, role="prover").stopped
-    assert reopened.consumed == 3
+    assert plan.read_bytes() == saved_notes
+    assert reopened.consumed == 2
 
 
 def test_old_terminal_blocks_migrate_once_even_without_result_file(tmp_path: Path) -> None:
@@ -109,7 +102,7 @@ def test_old_terminal_blocks_migrate_once_even_without_result_file(tmp_path: Pat
     assert journal["stage"] == "decide"
     assert journal["report"]["job_id"] == job["id"]
     assert journal["report"]["stop_reason"]["code"] == "response_stalled"
-    assert first.consumed == 2 and first.state["metrics"]["decompositions"] == 0
+    assert first.consumed == 1 and first.state["metrics"]["decompositions"] == 0
     again = resume(first)
     assert again.state["recovery_in_flight"][node.id] == journal
     again._recover(again.dag.by_id()[node.id])
@@ -118,7 +111,7 @@ def test_old_terminal_blocks_migrate_once_even_without_result_file(tmp_path: Pat
     assert stopped.dag.by_id()[node.id].status == "retry"
     assert not stopped.state.get("recovery_in_flight")
     assert len(stopped.state["recovery_decisions"]) == 1
-    assert stopped.consumed == 3
+    assert stopped.consumed == 2
 
 
 def test_legacy_migration_preserves_candidate_and_newer_revision(tmp_path: Path) -> None:
@@ -168,7 +161,7 @@ def test_decision_replay_after_crash_is_once_without_recharge(
     assert second.dag.by_id()[node.id].status == "retry"
     assert second.state["metrics"]["decompositions"] == 1
     assert len(second.state["recovery_decisions"]) == 1
-    assert second.consumed == 3
+    assert second.consumed == 2
     third = resume(second)
     assert not third.state.get("recovery_in_flight")
     assert (
@@ -188,27 +181,27 @@ def test_stalls_obey_campaign_recovery_budget_instead_of_private_node_limit(tmp_
     assert len(runtime.state["recovery_decisions"]) == 3
     assert runtime.state["metrics"]["decompositions"] == 3
     assert node.status == "blocked"
-    assert runtime.consumed == 11
+    assert runtime.consumed == 7
     assert "Campaign recovery budget exhausted (3/3)" in node.notes
     assert resume(runtime).state["recovery_in_flight"][node.id]["stage"] == "budget_exhausted"
 
 
 def test_stall_never_spends_calls_beyond_remaining_campaign_allocation(tmp_path: Path) -> None:
     runtime = make_runtime(tmp_path)
-    runtime.config = replace(runtime.config, total_api_calls=2, job_api_calls=2)
+    runtime.config = replace(runtime.config, agent_calls=1, total_api_calls=None)
     runtime.state["config"] = asdict(runtime.config)
     runtime.session = lambda **kw: pytest.fail("No campaign calls remain")
     node = runtime.dag.nodes[0]
     job, _ = runtime._new_job("prover", node=node)
     with pytest.raises(BudgetExhausted):
         runtime._handle_result(job, stalled_result())
-    assert runtime.consumed == 2
+    assert runtime.consumed == 1
     assert len(runtime.state["jobs"]) == 1
     assert runtime.state["recovery_in_flight"][node.id]["stage"] == "decide"
     reopened = resume(runtime)
     with pytest.raises(BudgetExhausted):
         reopened._recover(reopened.dag.by_id()[node.id])
-    assert reopened.consumed == 2
+    assert reopened.consumed == 1
     assert reopened.state["metrics"]["decompositions"] == 1
 
 
@@ -265,7 +258,7 @@ def test_stalled_negation_redecides_once_with_exact_failure_report(
     negation = next(j for j in runtime.state["jobs"] if j["role"] == "negation")
     assert negation["id"] in prompts[1] and '"role": "negation"' in prompts[1]
     assert runtime.state["recovery_decisions"][1]["source_job_id"] == negation["id"]
-    assert node.status == "retry" and runtime.consumed == 6
+    assert node.status == "retry" and runtime.consumed == 4
     assert not resume(runtime).state.get("recovery_in_flight")
 
 
@@ -283,5 +276,5 @@ def test_standard_mode_stall_remains_blocked_without_orchestrator(tmp_path: Path
     runtime._handle_result(job, stalled_result())
     assert node.status == "blocked"
     assert not runtime.state.get("recovery_in_flight")
-    assert runtime.consumed == 2
+    assert runtime.consumed == 1
     assert not resume(runtime).state.get("recovery_in_flight")

@@ -22,13 +22,9 @@ import { ProverSettings } from "./ProverSettings";
 /** Providers the CLI understands. Empty means "use the configured default". */
 const PROVIDERS = [
   { id: "", label: "Configured default" },
-  { id: "codex", label: "codex — Codex OAuth" },
-  { id: "custom", label: "custom — OpenAI-compatible endpoint" },
-  { id: "openrouter", label: "openrouter" },
-  { id: "anthropic", label: "anthropic" },
-  { id: "deepseek", label: "deepseek" },
-  { id: "rcp", label: "rcp — EPFL inference" },
-  { id: "local", label: "local — vLLM / Ollama / llama.cpp" },
+  { id: "codex", label: "Codex" },
+  { id: "claude", label: "Claude Code" },
+  { id: "lemex", label: "Lemex" },
 ];
 
 export function LaunchView() {
@@ -97,7 +93,7 @@ export function LaunchView() {
   const leanFileOptions = app?.leanFiles ?? [];
 
   return (
-    <>
+    <div className="launch-view">
       {!app?.cli.ok && (
         <Notice tone="error">
           <strong>LeanFlow CLI setup is required.</strong>
@@ -151,7 +147,7 @@ export function LaunchView() {
           </>
         }
       >
-        <div className="grid two">
+        <div className="launch-fields">
           <Field label="Workflow">
             <select
               value={form.kind}
@@ -175,7 +171,7 @@ export function LaunchView() {
                 : undefined
             }
           >
-            <div className="row tight">
+            <div className="launch-target">
               <input
                 type="text"
                 list="leanflow-lean-files"
@@ -198,7 +194,7 @@ export function LaunchView() {
             </datalist>
           </Field>
 
-          <Field label="Provider">
+          <Field label="Agent backend" hint="Uses the runtime’s own login, API configuration, and defaults.">
             <select
               value={form.provider}
               onChange={(event) => setForm({ provider: event.target.value })}
@@ -215,7 +211,7 @@ export function LaunchView() {
             <input
               type="text"
               maxLength={LAUNCH_FIELD_LIMITS.model}
-              placeholder="e.g. gpt-5.6-terra, moonshotai/Kimi-K2.6"
+              placeholder="Optional native model override"
               value={form.model}
               onChange={(event) => setForm({ model: event.target.value })}
             />
@@ -225,7 +221,7 @@ export function LaunchView() {
 
       <ProverSettings />
       <Card title="Workflow options">
-        <div className="grid two">
+        <div className="launch-options">
           <div>
             {!boundedProver && <Check
               label="Research mode"
@@ -320,7 +316,7 @@ export function LaunchView() {
             : "Apply a saved knob profile, then adjust individual knobs on the Knobs tab."
         }
       >
-        <div className="grid two">
+        <div className="launch-profile">
           <Field label="Profile">
             <select
               value={form.profile}
@@ -515,8 +511,8 @@ export function LaunchView() {
                 <>
                   <div className="section-heading">Dedicated prover configuration</div>
                   <div className="muted" style={{ marginBottom: 6 }}>
-                    Effective values including those inherited from the profile. Provider and reasoning effort are
-                    shared by every role; only model, context, and compression differ per role.
+                    Effective values including those inherited from the profile. Each role can set its own model,
+                    reasoning effort, context, and compression. Unset role settings use their inherited defaults.
                   </div>
                   <div className="table-wrap" style={{ maxHeight: 320 }}>
                     <table className="data">
@@ -561,6 +557,6 @@ export function LaunchView() {
           )}
         </Card>
       )}
-    </>
+    </div>
   );
 }

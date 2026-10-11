@@ -121,32 +121,6 @@ def test_parse_workflow_command_extracts_allowed_axioms():
     assert default_spec.allowed_axioms == ""
 
 
-def test_parse_workflow_command_extracts_expert_provider_options():
-    spec = parse_workflow_command(
-        "/prove Main.lean --expert-provider codex --expert-command-template 'codex exec --sandbox read-only -'"
-    )
-
-    assert spec.workflow_args == "Main.lean"
-    assert spec.expert_provider == "codex"
-    assert spec.expert_command_template == "codex exec --sandbox read-only -"
-
-
-def test_parse_workflow_command_extracts_verifier_provider_options():
-    spec = parse_workflow_command(
-        "/autoformalize docs/paper.tex "
-        "--blueprint-verifier-provider claude-code "
-        "--blueprint-verifier-command-template 'claude --print' "
-        "--autoformalizer-verifier-provider codex "
-        "--autoformalizer-verifier-command-template 'codex exec --sandbox read-only -'"
-    )
-
-    assert spec.workflow_args == "docs/paper.tex"
-    assert spec.blueprint_verifier_provider == "claude-code"
-    assert spec.blueprint_verifier_command_template == "claude --print"
-    assert spec.autoformalizer_verifier_provider == "codex"
-    assert spec.autoformalizer_verifier_command_template == "codex exec --sandbox read-only -"
-
-
 def test_parse_workflow_command_extracts_additional_skills():
     spec = parse_workflow_command(
         "/prove Demo/Main.lean --additional-skill .leanflow/skills/paper/SKILL.md --additional_skill extra-skill"
@@ -207,7 +181,7 @@ def test_resolve_workflow_request_uses_inline_provider_override(monkeypatch, tmp
     def fake_runtime(requested=None):
         captured["requested"] = requested
         return {
-            "provider": "openai-codex",
+            "provider": "codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "sk-test",
@@ -222,11 +196,12 @@ def test_resolve_workflow_request_uses_inline_provider_override(monkeypatch, tmp
     assert captured["requested"] == "codex"
     assert plan.workflow.workflow_args == "Main.lean"
     assert plan.child_env["LEANFLOW_NATIVE_REQUESTED_TARGET"] == "Main.lean"
-    assert plan.runtime["provider"] == "openai-codex"
+    assert plan.runtime["provider"] == "codex"
     assert plan.child_env["LEANFLOW_NATIVE_REASONING_EFFORT"] == "xhigh"
-    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_PROVIDER"] == "codex"
-    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_MODEL"] == "gpt-5.5"
-    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_REASONING_EFFORT"] == "xhigh"
+    assert plan.child_env["LEANFLOW_NATIVE_PROVIDER"] == "codex"
+    assert plan.child_env["LEANFLOW_NATIVE_MODEL"] == "gpt-5.5"
+    assert plan.child_env["LEANFLOW_NATIVE_REASONING_EFFORT"] == "xhigh"
+    assert not any("AUXILIARY" in key for key in plan.child_env)
 
 
 def test_whole_project_launch_seals_an_empty_requested_target(monkeypatch, tmp_path):
@@ -296,11 +271,9 @@ def test_resolve_clean_room_model_is_scoped_to_one_launch(monkeypatch, tmp_path)
     }
     assert plan.runtime["api_key"] == "glm-key"
     assert plan.child_env["LEANFLOW_NATIVE_MODEL"] == "zai-org/GLM-5.2"
-    assert plan.child_env["LEANFLOW_NATIVE_CONTEXT_COMPRESSION_MODEL"] == "zai-org/GLM-5.2"
-    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_PROVIDER"] == "custom"
-    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_BASE_URL"] == "https://rcp.example/v1"
-    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_API_KEY"] == "glm-key"
-    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_MODEL"] == "zai-org/GLM-5.2"
+    assert plan.child_env["LEANFLOW_NATIVE_MODEL"] == "zai-org/GLM-5.2"
+    assert "LEANFLOW_NATIVE_CONTEXT_COMPRESSION_MODEL" not in plan.child_env
+    assert not any("AUXILIARY" in key for key in plan.child_env)
     assert "LEANFLOW_DISABLE_REPOSITORY_RESEARCH" not in plan.child_env
     assert plan.child_env["LEANFLOW_DISABLE_SOLUTION_RESEARCH"] == "1"
     labels = plan.child_env["LEANFLOW_CLEAN_ROOM_TASK_LABELS"].split("|")
@@ -321,7 +294,7 @@ def test_resolve_research_profile_activates_complete_child_env(monkeypatch, tmp_
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "openai-codex",
+            "provider": "codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "sk-test",
@@ -370,7 +343,7 @@ def test_bounded_prover_does_not_launch_legacy_detached_loogle(
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "openai-codex",
+            "provider": "codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "sk-test",
@@ -404,7 +377,7 @@ def test_env_research_respects_parsed_no_parallel_worker_contract(monkeypatch, t
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "openai-codex",
+            "provider": "codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "sk-test",
@@ -436,7 +409,7 @@ def test_inherited_research_identity_does_not_leak_into_non_prove_workflow(monke
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "openai-codex",
+            "provider": "codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "sk-test",
@@ -472,7 +445,7 @@ def test_explicit_research_workers_override_stale_inherited_capacity(monkeypatch
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "openai-codex",
+            "provider": "codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "sk-test",
@@ -530,7 +503,7 @@ def test_bounded_research_does_not_reenable_legacy_advisory_features(
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "openai-codex",
+            "provider": "codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "sk-test",
@@ -559,7 +532,7 @@ def test_environment_research_keeps_feature_override(monkeypatch, tmp_path):
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "openai-codex",
+            "provider": "codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "sk-test",
@@ -573,10 +546,10 @@ def test_environment_research_keeps_feature_override(monkeypatch, tmp_path):
     assert plan.child_env["LEANFLOW_ORCHESTRATOR_ENABLED"] == "0"
 
 
-def test_resolve_workflow_request_passes_configured_api_step_budget(monkeypatch, tmp_path):
+def test_resolve_workflow_request_passes_configured_global_agent_calls(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("LEANFLOW_NATIVE_AGENT_MAX_TURNS", raising=False)
-    save_config({"agent": {"max_turns": 145}})
+    save_config({"limits": {"agent_calls": 145}})
     monkeypatch.setattr(
         workflow_mod,
         "discover_leanflow_project",
@@ -596,7 +569,8 @@ def test_resolve_workflow_request_passes_configured_api_step_budget(monkeypatch,
 
     plan = resolve_workflow_request("/autoprove Main.lean", active_cwd=tmp_path)
 
-    assert plan.child_env["LEANFLOW_NATIVE_AGENT_MAX_TURNS"] == "145"
+    assert plan.child_env["LEANFLOW_PROVER_AGENT_CALLS"] == "145"
+    assert "LEANFLOW_NATIVE_AGENT_MAX_TURNS" not in plan.child_env
 
 
 def test_run_workflow_handles_parent_keyboard_interrupt_after_child_exit(monkeypatch, tmp_path):
@@ -670,83 +644,6 @@ def test_run_workflow_never_terminates_child_while_native_runner_handles_interru
     assert process.wait_calls == 3
     assert process.terminated is False
     assert process.killed is False
-
-
-def test_resolve_workflow_request_exports_expert_provider_env(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        workflow_mod,
-        "discover_leanflow_project",
-        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
-    )
-    monkeypatch.setattr(
-        workflow_mod,
-        "resolve_runtime_provider",
-        lambda requested=None: {
-            "provider": "local",
-            "api_mode": "responses",
-            "base_url": "http://127.0.0.1:8000/v1",
-            "api_key": "sk-test",
-            "model": "google/gemma-3-27b-it",
-        },
-    )
-
-    plan = resolve_workflow_request(
-        "/autoprove Main.lean --expert-provider claude-code --expert-command-template 'claude -p'",
-        active_cwd=tmp_path,
-    )
-
-    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_PROVIDER"] == "claude-code"
-    assert (
-        plan.child_env["LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] == "claude -p"
-    )
-    assert describe_launch_plan(plan)["expert_provider"] == "claude-code"
-
-
-def test_resolve_workflow_request_exports_verifier_provider_env(monkeypatch, tmp_path):
-    _write_formalization_source(tmp_path)
-    monkeypatch.setattr(
-        workflow_mod,
-        "discover_leanflow_project",
-        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
-    )
-    monkeypatch.setattr(
-        workflow_mod,
-        "resolve_runtime_provider",
-        lambda requested=None: {
-            "provider": "local",
-            "api_mode": "responses",
-            "base_url": "http://127.0.0.1:8000/v1",
-            "api_key": "sk-test",
-            "model": "google/gemma-3-27b-it",
-        },
-    )
-
-    plan = resolve_workflow_request(
-        "/autoformalize docs/paper.tex "
-        "--blueprint-verifier-provider claude-code "
-        "--blueprint-verifier-command-template 'claude --print' "
-        "--autoformalizer-verifier-provider codex "
-        "--autoformalizer-verifier-command-template 'codex exec -'",
-        active_cwd=tmp_path,
-    )
-
-    assert (
-        plan.child_env["LEANFLOW_NATIVE_AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] == "claude-code"
-    )
-    assert (
-        plan.child_env["LEANFLOW_NATIVE_AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"]
-        == "claude --print"
-    )
-    assert (
-        plan.child_env["LEANFLOW_NATIVE_AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] == "codex"
-    )
-    assert (
-        plan.child_env["LEANFLOW_NATIVE_AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"]
-        == "codex exec -"
-    )
-    summary = describe_launch_plan(plan)
-    assert summary["blueprint_verifier_provider"] == "claude-code"
-    assert summary["autoformalizer_verifier_provider"] == "codex"
 
 
 def test_file_scoped_prover_accepts_explicit_research_parallelism(monkeypatch, tmp_path):
@@ -1031,9 +928,7 @@ def test_resolve_workflow_request_requires_document_for_formalize(monkeypatch, t
         resolve_workflow_request('/formalize "state Lipschitz theorem"', active_cwd=tmp_path)
 
 
-def test_resolve_workflow_request_preserves_explicit_swarm_for_document_formalize(
-    monkeypatch, tmp_path
-):
+def test_resolve_workflow_request_rejects_retired_formalization_swarm(monkeypatch, tmp_path):
     _write_formalization_source(tmp_path)
     monkeypatch.setattr(
         workflow_mod,
@@ -1052,13 +947,8 @@ def test_resolve_workflow_request_preserves_explicit_swarm_for_document_formaliz
         },
     )
 
-    plan = resolve_workflow_request("/autoformalize docs/paper.tex --agents 3", active_cwd=tmp_path)
-
-    assert plan.workflow.workflow_kind == "formalize"
-    assert plan.workflow.parallel_agents == 3
-    assert plan.active_skill == "lean-autonomous-swarm"
-    assert plan.toolset_name == "leanflow-native-swarm"
-    assert plan.child_env["LEANFLOW_NATIVE_USER_APPROVED_SWARM"] == "1"
+    with pytest.raises(ValueError, match="--agents is supported only for prove"):
+        resolve_workflow_request("/autoformalize docs/paper.tex --agents 3", active_cwd=tmp_path)
 
 
 def test_resolve_workflow_request_accepts_directory_for_autoformalize(monkeypatch, tmp_path):
@@ -1102,3 +992,19 @@ def test_all_workflow_aliases_are_covered_by_alias_map():
     forgiving_kinds = {"prove", "formalize", "draft", "review", "refactor", "golf"}
     mapped_kinds = {v[0] for v in WORKFLOW_ALIAS_MAP.values()}
     assert forgiving_kinds == mapped_kinds
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--expert-provider",
+        "--expert-command-template",
+        "--blueprint-verifier-provider",
+        "--blueprint-verifier-command-template",
+        "--autoformalizer-verifier-provider",
+        "--autoformalizer-verifier-command-template",
+    ],
+)
+def test_retired_model_lanes_require_native_backend_selection(option):
+    with pytest.raises(ValueError, match="was removed.*codex, claude, or lemex"):
+        parse_workflow_command(f"/review Main.lean {option} old-route")

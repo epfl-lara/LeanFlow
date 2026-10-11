@@ -8,18 +8,16 @@ from typing import Any
 
 
 def resolve_launch_provider(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Use the explicit RCP route for all-RCP arms; retain the legacy Codex launch route."""
-    if config.get("provider") == "rcp" and config.get("orchestrator_provider") in {None, "", "rcp"}:
-        from leanflow_cli.workflows.prover.session_provider import resolve_session_provider
-
-        return resolve_session_provider(config)
+    """Resolve the explicitly selected native backend without campaign-owned credentials."""
     from leanflow_cli.runtime.runtime_provider import resolve_runtime_provider
 
-    return resolve_runtime_provider(requested="openai-codex")
+    return resolve_runtime_provider(requested=str(config.get("provider") or "codex"))
 
 
 def encode_setting(value: Any) -> str:
-    """Preserve structured model context profiles across the worker environment."""
+    """Encode explicit native launch choices and global limits for the worker."""
+    if value is None:
+        return ""
     if isinstance(value, bool):
         return "1" if value else "0"
     if isinstance(value, dict):
@@ -27,3 +25,13 @@ def encode_setting(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return ",".join(value)
     return str(value)
+
+
+def require_native_campaign(manifest: Mapping[str, Any]) -> None:
+    """Reject resuming legacy API-budget experiments through a different runtime."""
+    if manifest.get("version") != 2:
+        raise ValueError(
+            "This campaign uses the retired direct-API runtime. Keep its frozen runtime "
+            "for historical results, or prepare a new native-backend campaign; old API "
+            "request budgets cannot be converted to native agent invocations."
+        )

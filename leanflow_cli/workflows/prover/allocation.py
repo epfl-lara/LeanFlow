@@ -31,7 +31,10 @@ def wait_for_capacity(runtime: ProverRuntime, role: str, node: Node | None, prom
     while True:
         with runtime.lock:
             runtime._ensure_active()
-            if runtime.config.total_api_calls - runtime.consumed - runtime.reserved >= minimum:
+            if (
+                runtime.config.agent_calls is None
+                or runtime.config.agent_calls - runtime.consumed - runtime.reserved >= minimum
+            ):
                 return
             outstanding = {
                 future: job for future, job in runtime.pending.items() if not job.get("accounted")

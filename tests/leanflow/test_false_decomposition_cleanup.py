@@ -9,12 +9,10 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
 from leanflow_cli.lean import negation_probe
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import (
     decomposition_provenance,
     false_decomposition_cleanup,
@@ -23,7 +21,6 @@ from leanflow_cli.workflows import (
     workflow_activity_retention,
 )
 from leanflow_cli.workflows.plan_state import Blueprint, GraphEdge, GraphNode
-from leanflow_cli.workflows.queue_manager import QueueItem, TheoremKey, TheoremQueueManager
 from leanflow_cli.workflows.workflow_json_io import update_json_file
 
 PARENT = "parent_goal"
@@ -1042,114 +1039,6 @@ def test_multiline_crlf_helper_promotion_cleans_without_becoming_terminal(
     assert plan_state.load_summary().get("final_report", {}).get("status") != "disproved"
 
 
-def test_committed_cleanup_retires_ghost_outcome_and_reopens_parent(
-    cleanup_project,
-) -> None:
-    """Queue replay cannot resurrect a deleted false helper or block later success."""
-    _root, _state_root, source = cleanup_project
-    promotion = _promotion(source)
-    _seed_current_provenance(source)
-    _seed_graph(source)
-    _seed_promotion(promotion)
-    cleaned = false_decomposition_cleanup.reconcile_false_decompositions(
-        [promotion], cwd=str(source.parent), validate_promotion=_valid
-    )
-    assert cleaned.cleaned == 1
-
-    manager = TheoremQueueManager()
-    manager.replace_queue([QueueItem(label=HELPER), QueueItem(label=PARENT)])
-    manager.assign(QueueItem(label=HELPER), active_file=str(source))
-    helper_key = manager.current.key
-    parent_key = TheoremKey.make(PARENT, str(source))
-    manager.record_attempt(cycle=2, proof_shape="exact bad_helper", reason="false")
-    manager.record_outcome(status="disproved", note="authoritative negation")
-    manager.record_outcome_for(
-        parent_key,
-        status="invalidated-by-dependency",
-        note="depended on false helper",
-    )
-    autonomy_state = manager.to_autonomy_state()
-    plan_state.save_queue_manager_state(manager.to_checkpoint_state())
-
-    reconciled = runner._reconcile_false_decomposition_queue_state(autonomy_state)
-
-    assert reconciled == (helper_key,)
-    assert "current_queue_assignment" not in autonomy_state
-    outcomes = autonomy_state["theorem_outcomes"]
-    assert helper_key.storage_key() not in outcomes
-    assert outcomes[parent_key.storage_key()]["status"] == "unresolved"
-    assert helper_key.storage_key() not in plan_state.load_queue_manager_state().get(
-        "theorem_outcomes", {}
-    )
-
-    assert runner._maybe_sync_plan_state(autonomy_state, None) is True
-    assert (
-        plan_state.load_blueprint().node_by_id(plan_state.node_id_for(HELPER, str(source))) is None
-    )
-    assert all(node.name != HELPER for node in plan_state.load_blueprint().nodes)
-
-    source.write_text(
-        source.read_text(encoding="utf-8").replace(
-            "theorem parent_goal : True := by\n  sorry",
-            "theorem parent_goal : True := by\n  trivial",
-        ),
-        encoding="utf-8",
-    )
-    runner._reconcile_false_decomposition_queue_state(autonomy_state)
-    assert parent_key.storage_key() not in autonomy_state.get("theorem_outcomes", {})
-    assert runner._has_unresolved_theorem_outcomes(autonomy_state) is False
-    runner._maybe_sync_plan_state(autonomy_state, None)
-    assert all(node.name != HELPER for node in plan_state.load_blueprint().nodes)
-
-
-def test_committed_cleanup_replay_preserves_later_parent_assignment(
-    cleanup_project,
-    monkeypatch,
-) -> None:
-    """A completed queue replay cannot clear a parent reassigned on a later run."""
-    events: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    monkeypatch.setattr(
-        runner,
-        "_record_activity",
-        lambda *args, **kwargs: events.append((args, kwargs)),
-    )
-    _root, _state_root, source = cleanup_project
-    promotion = _promotion(source)
-    _seed_current_provenance(source)
-    _seed_graph(source)
-    _seed_promotion(promotion)
-    cleaned = false_decomposition_cleanup.reconcile_false_decompositions(
-        [promotion], cwd=str(source.parent), validate_promotion=_valid
-    )
-    assert cleaned.cleaned == 1
-
-    manager = TheoremQueueManager()
-    manager.replace_queue([QueueItem(label=HELPER), QueueItem(label=PARENT)])
-    manager.assign(QueueItem(label=HELPER), active_file=str(source))
-    autonomy_state = manager.to_autonomy_state()
-    runner._flush_queue_manager(autonomy_state, manager)
-
-    runner._reconcile_false_decomposition_queue_state(autonomy_state)
-    events.clear()
-    resumed = TheoremQueueManager.from_autonomy_state(autonomy_state)
-    resumed.replace_queue([QueueItem(label=PARENT)])
-    resumed.assign(QueueItem(label=PARENT), active_file=str(source))
-    runner._flush_queue_manager(autonomy_state, resumed)
-    assert runner._maybe_sync_plan_state(autonomy_state, None) is True
-    parent_id = plan_state.node_id_for(PARENT, str(source))
-    assert plan_state.load_blueprint().node_by_id(parent_id).status == "proving"
-
-    runner._reconcile_false_decomposition_queue_state(autonomy_state)
-    assert runner._maybe_sync_plan_state(autonomy_state, None) is True
-
-    assignment = autonomy_state.get("current_queue_assignment")
-    assert isinstance(assignment, dict)
-    assert assignment["target_symbol"] == PARENT
-    assert assignment["active_file"] == str(source)
-    assert plan_state.load_blueprint().node_by_id(parent_id).status == "proving"
-    assert not any(args[0] == "false-decomposition-queue-reconciled" for args, _kwargs in events)
-
-
 @pytest.mark.parametrize(
     "crash_stage",
     ["pending-persisted", "source-persisted", "graph-persisted", "committed"],
@@ -1915,51 +1804,6 @@ def test_live_multi_evidence_cleanup_invalidates_false_dependent_obligations(
         edge.to_mapping() for edge in evidence_edges
     ]
     assert preservation[-1]["invalidated_dependent_nodes"] == [dependent_edge.source]
-
-
-def test_queue_replay_cannot_resurrect_an_invalidated_dependent(cleanup_project):
-    """Retire deleted dependent queue state before plan sync can recreate its node."""
-    root, _state_root, source = cleanup_project
-    source.write_text(_live_multi_evidence_source(), encoding="utf-8")
-    promotion = _promotion(source)
-    _seed_current_provenance(source)
-    _seed_graph(source)
-    _seed_live_multi_evidence_and_dependent_tombstone(source, promotion)
-    _seed_promotion(promotion)
-
-    cleaned = false_decomposition_cleanup.reconcile_false_decompositions(
-        [promotion], cwd=str(root), validate_promotion=_valid
-    )
-    assert cleaned.cleaned == 1
-
-    manager = TheoremQueueManager()
-    manager.replace_queue(
-        [
-            QueueItem(label=HELPER),
-            QueueItem(label="dependent_candidate"),
-            QueueItem(label=PARENT),
-        ]
-    )
-    manager.assign(QueueItem(label="dependent_candidate"), active_file=str(source))
-    dependent_key = manager.current.key
-    manager.record_attempt(cycle=7, proof_shape="exact bad_helper", reason="stale")
-    manager.record_outcome(status="solved", note="stale pre-negation verdict")
-    autonomy_state = manager.to_autonomy_state()
-    plan_state.save_queue_manager_state(manager.to_checkpoint_state())
-
-    runner._reconcile_false_decomposition_queue_state(autonomy_state)
-
-    restored = runner._queue_manager_from_state(autonomy_state)
-    assert restored.current is None
-    assert restored.outcome_for(dependent_key) is None
-    assert all(item.label != "dependent_candidate" for item in restored.queue)
-    assert runner._maybe_sync_plan_state(autonomy_state, None) is True
-    assert (
-        plan_state.load_blueprint().node_by_id(
-            plan_state.node_id_for("dependent_candidate", str(source))
-        )
-        is None
-    )
 
 
 def test_false_dependent_cleanup_replays_after_source_first_crash(monkeypatch, cleanup_project):

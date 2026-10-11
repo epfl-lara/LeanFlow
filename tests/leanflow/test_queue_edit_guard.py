@@ -1,4 +1,4 @@
-"""Tests for the extracted queue_edit_guard helpers + native_runner re-export (Phase 2).
+"""Tests for the extracted queue_edit_guard helpers.
 
 These cover the pure queue-edit-guard machinery moved out of native_runner: the protected
 declaration inventory/diff (an out-of-scope edit to a *future queue* declaration is detected,
@@ -8,7 +8,6 @@ restoration, the assigned statement signature, and the guard key.
 
 from types import SimpleNamespace
 
-from leanflow_cli.native import native_runner
 from leanflow_cli.workflows import queue_edit_guard
 
 FILE = """\
@@ -18,14 +17,6 @@ theorem assigned_thm : True := by
 theorem future_item : 1 + 1 = 2 := by
   rfl
 """
-
-
-def test_native_runner_reexports_are_identical():
-    # Every re-exported name in native_runner must be the SAME object as in queue_edit_guard,
-    # so callers (including the two guard functions still living in native_runner) resolve the
-    # extracted helpers without a back-import.
-    for name in queue_edit_guard.__all__:
-        assert getattr(native_runner, name) is getattr(queue_edit_guard, name), name
 
 
 def test_guard_key_is_target_and_resolved_file():
@@ -269,12 +260,3 @@ def test_introduced_forbidden_axioms_respects_allowlist():
     ) == ["sneaky"]
     # An axiom already present before the edit is not flagged as "introduced".
     assert queue_edit_guard._introduced_forbidden_axioms(after, after, standard) == []
-
-
-def test_native_runner_allowed_axioms_reads_env(monkeypatch):
-    monkeypatch.delenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", raising=False)
-    assert native_runner._allowed_axioms() == set(native_runner.DEFAULT_ALLOWED_AXIOMS)
-    monkeypatch.setenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", "myAx, other_ax  third.ax")
-    allowed = native_runner._allowed_axioms()
-    assert {"myAx", "other_ax", "third.ax"} <= allowed
-    assert set(native_runner.DEFAULT_ALLOWED_AXIOMS) <= allowed

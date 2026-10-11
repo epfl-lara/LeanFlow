@@ -19,7 +19,6 @@ from leanflow_cli.cli.banner import (
 )
 from leanflow_cli.cli.cli_handlers import (
     _handle_config,
-    _handle_models,
     _handle_sandbox,
     _print_json,
     _print_mcp_bootstrap,
@@ -114,7 +113,7 @@ def _load_runtime_env(*, cwd: Path | None = None) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser with all CLI subcommands and options. Constructs a hierarchical parser for version, status, config, doctor, mcp, project, workflow, sandbox, provider, and models commands, each with their own nested subparsers and flags."""
+    """Build the argument parser with all CLI subcommands and options. Constructs a hierarchical parser for version, status, config, doctor, mcp, project, workflow, sandbox and provider commands, each with their own nested subparsers and flags."""
     parser = argparse.ArgumentParser(
         prog="leanflow",
         description="Lean-first AI automation for Lean 4",
@@ -181,7 +180,8 @@ def _build_parser() -> argparse.ArgumentParser:
     workflow_parser.add_argument(
         "--provider",
         default=None,
-        help="Override the configured provider for this workflow run",
+        choices=("codex", "claude", "lemex"),
+        help="Select the native agent backend",
     )
     workflow_parser.add_argument(
         "--dry-run",
@@ -238,29 +238,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sandbox_run.add_argument("--no-network", action="store_true")
     sandbox_run.add_argument("args", nargs=argparse.REMAINDER)
 
-    provider_parser = subparsers.add_parser("provider", help="Show the resolved runtime provider")
+    provider_parser = subparsers.add_parser(
+        "provider", help="Show native agent backend configuration and setup"
+    )
     provider_parser.add_argument("--requested", "--provider", dest="requested", default=None)
-
-    model_parser = subparsers.add_parser("models", help="Manage local model runtimes")
-    model_sub = model_parser.add_subparsers(dest="models_command")
-    local_parser = model_sub.add_parser("local", help="Manage local runtimes")
-    local_sub = local_parser.add_subparsers(dest="local_command")
-    local_sub.add_parser("list", help="List local runtimes")
-    local_status = local_sub.add_parser("status", help="Show local runtime status")
-    local_status.add_argument("runtime")
-    local_start = local_sub.add_parser("start", help="Start a local runtime")
-    local_start.add_argument("runtime")
-    local_start.add_argument("model")
-    local_start.add_argument("--host", default=None)
-    local_start.add_argument("--port", type=int, default=None)
-    local_stop = local_sub.add_parser("stop", help="Stop a local runtime")
-    local_stop.add_argument("runtime")
-    local_logs = local_sub.add_parser("logs", help="Show local runtime logs")
-    local_logs.add_argument("runtime")
-    local_logs.add_argument("--tail", type=int, default=80)
-    local_use = local_sub.add_parser("use", help="Select the active local runtime/model")
-    local_use.add_argument("runtime")
-    local_use.add_argument("model")
 
     return parser
 
@@ -488,14 +469,12 @@ def main(argv: list[str] | None = None) -> int:
         return handle_flags(args)
     if args.command == "runs":
         return handle_runs(args)
-    if args.command == "models":
-        return _handle_models(args)
     if args.command == "provider":
         try:
             render_provider_panel(
                 Console(),
                 resolved=resolve_runtime_provider(requested=args.requested),
-                requested=args.requested or "auto",
+                requested=args.requested or "configured default",
                 targets=list_runtime_provider_targets(),
             )
             return 0

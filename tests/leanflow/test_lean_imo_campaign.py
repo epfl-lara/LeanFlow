@@ -24,68 +24,74 @@ def test_rcp_arms_route_workers_and_planning_separately(name, model):
     config = ProverConfig(**row["config"])
     worker = config.to_mapping("prover")
     planner = config.to_mapping("orchestrator")
-    assert worker["model"] == model and worker["provider"] == "rcp"
-    assert worker["api_key_env"] == "RCP_API_KEY"
-    assert planner["model"] == "gpt-6-astra" and planner["provider"] == "openai-codex"
-    assert planner["reasoning_effort"] == "low" and planner["api_key_env"] == ""
+    assert worker["model"] == model and worker["provider"] == "lemex"
+    assert "api_key_env" not in worker
+    assert planner["model"] == "gpt-6-astra" and planner["provider"] == "codex"
+    assert planner["reasoning_effort"] == "low"
     assert worker["search_order"] == "top-down"
-    assert (worker["parallelism"], worker["job_api_calls"], worker["total_api_calls"]) == (
-        1,
-        150,
-        5000,
-    )
+    assert worker["parallelism"] == 1
+    assert worker["agent_calls"] is None
 
 
-def test_campaign_environment_carries_only_assigned_rcp_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("RCP_API_KEY", "assigned-test-key")
-    monkeypatch.setenv("RCP_API_KEY_RESERVE", "other-test-key")
+def test_campaign_environment_preserves_native_settings(tmp_path, monkeypatch):
+    exported = {
+        "LEMEX_BASE_URL": "https://inference.rcp.epfl.ch/v1",
+        "LEMEX_API_KEY": "assigned-test-key",
+        "LEMEX_HOME": "/private/native-lemex",
+        "CODEX_HOME": "/private/native-codex",
+        "OPENAI_API_KEY": "native-openai",
+        "ANTHROPIC_API_KEY": "native-claude",
+        "CLAUDE_CONFIG_DIR": "/private/native-claude",
+    }
+    for key, value in exported.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("RCP_API_KEY", "retired-key")
     monkeypatch.setenv("LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS", "20")
     env = environment(tmp_path)
-    assert env["RCP_API_KEY"] == "assigned-test-key"
-    assert "RCP_API_KEY_RESERVE" not in env
-    assert env["LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS"] == "20"
+    assert {key: env[key] for key in exported} == exported
+    assert "RCP_API_KEY" not in env
+    assert "LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS" not in env
 
 
-def test_kimi_glm_campaign_routes_all_roles_to_one_rcp_key(monkeypatch):
+def test_kimi_glm_campaign_uses_native_lemex_configuration(monkeypatch):
     from leanflow_cli.workflows.prover.config import ProverConfig
-    from leanflow_cli.workflows.prover.context_policy import ContextBudget
     from scripts.lean_imo_campaign.provider import resolve_launch_provider
 
     row = cells([{"id": "p"}], CONDITION_SETS["kimi-glm-flash-top"])[0]
     config = ProverConfig(**row["config"])
+    retired = {
+        "api_key_env",
+        "base_url",
+        "model_contexts",
+        "context_tokens",
+        "compression",
+        "timeout_s",
+    }
     for role in ("prover", "negation", "orchestrator", "review", "research"):
         settings = config.to_mapping(role)
-        assert settings["provider"] == "rcp" and settings["api_key_env"] == "RCP_API_KEY"
+        assert settings["provider"] == "lemex"
+        assert not retired.intersection(settings)
         assert settings["model"] == (
             "zai-org/GLM-5.3-Flash"
             if role in {"prover", "negation"}
             else "moonshotai/Kimi-K2.7-Code"
         )
         assert settings["reasoning_effort"] == "high"
-        assert ContextBudget.from_config(settings) == ContextBudget(
-            context_tokens=256000,
-            output_tokens=65536,
-            input_limit=190464,
-            trigger_tokens=171417,
-            target_tokens=85708,
-        )
-    assert (config.parallelism, config.job_api_calls, config.total_api_calls) == (4, 150, 5000)
-    assert config.wall_time_s == 57600
-    assert config.search_order == "top-down"
-    monkeypatch.setenv("RCP_API_KEY", "campaign-test-key")
+    assert config.parallelism == 4
+    assert config.agent_calls is config.tokens is config.wall_time_s is None
+    monkeypatch.setenv("LEMEX_API_KEY", "campaign-test-key")
+    monkeypatch.setenv("LEMEX_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     route = resolve_launch_provider(row["config"])
-    assert route["api_key"] == "campaign-test-key"
-    assert route["api_mode"] == "chat_completions"
-    assert route["base_url"] == "https://inference.rcp.epfl.ch/v1"
+    assert route["api_key"] == route["base_url"] == ""
+    assert route["api_mode"] == "native"
 
 
-def test_worker_environment_roundtrips_model_context_profiles():
+def test_worker_environment_roundtrips_native_settings_and_global_limits():
     from leanflow_cli.workflows.prover.config import ENV_NAMES, ProverConfig
     from scripts.lean_imo_campaign.provider import encode_setting
 
     config = ProverConfig(
-        model="model",
-        model_contexts={"model": {"context_tokens": 12345, "compression_threshold": 0.65}},
+        provider="lemex", model="model", agent_calls=17, tokens=9000, wall_time_s=123.5
     )
     env = {ENV_NAMES[key]: encode_setting(value) for key, value in config.to_mapping().items()}
     assert ProverConfig.from_env(env) == config
@@ -123,15 +129,10 @@ def test_only_model_and_order_change_across_conditions() -> None:
     ]
     assert all(c == comparable[0] for c in comparable)
     config = comparable[0]
-    assert (
-        config["parallelism"],
-        config["job_api_calls"],
-        config["orchestrator_api_calls"],
-        config["total_api_calls"],
-        config["wall_time_s"],
-    ) == (4, 200, 50, 2000, 28800)
+    assert config["parallelism"] == 4
+    assert config["agent_calls"] is config["tokens"] is config["wall_time_s"] is None
     assert config["allow_internet"] is False
-    assert all(c["effort"] == "xhigh" for c in rows)
+    assert all(c["effort"] == "" for c in rows)
 
 
 def test_each_cell_starts_from_frozen_statement_only(
@@ -214,24 +215,22 @@ def test_environment_discards_old_budget_and_python_overrides(
     assert env["LEANFLOW_DISABLE_REPOSITORY_RESEARCH"] == "1"
 
 
-def test_provider_recovery_preserves_cumulative_metrics_and_is_bounded() -> None:
+def test_provider_recovery_preserves_cumulative_metrics_without_hidden_retry_cap() -> None:
     from scripts.lean_imo_campaign.recovery import schedule_recovery
 
     cell = {
         "status": "provider_error",
         "run_id": "original",
         "error": "Connection error.",
-        "metrics": {"api_calls": 132, "elapsed_s": 400},
+        "metrics": {"agent_calls": 132, "elapsed_s": 400},
     }
-    for attempt in range(1, 4):
+    for attempt in range(1, 7):
         cell["status"] = "provider_error"
         assert schedule_recovery(cell)
         assert cell["recovery_attempts"] == attempt
         assert cell["resume_run_id"] == "original"
-        assert cell["metrics"] == {"api_calls": 132, "elapsed_s": 400}
-    cell["status"] = "provider_error"
-    assert not schedule_recovery(cell)
-    assert len(cell["executions"]) == 3
+        assert cell["metrics"] == {"agent_calls": 132, "elapsed_s": 400}
+    assert len(cell["executions"]) == 6
 
 
 @pytest.mark.parametrize(
@@ -249,7 +248,13 @@ def test_recovery_never_bypasses_exhaustion_or_retries_invalid_environment(
     from scripts.lean_imo_campaign.recovery import schedule_recovery
 
     assert not schedule_recovery(
-        {"status": status, "metrics": {"api_calls": calls, "elapsed_s": elapsed}}
+        {
+            "status": status,
+            "run_id": "saved",
+            "error": "Connection error.",
+            "config": {"agent_calls": 2000, "wall_time_s": 28800},
+            "metrics": {"agent_calls": calls, "elapsed_s": elapsed},
+        }
     )
 
 
@@ -285,12 +290,12 @@ def test_recovery_obeys_custom_budget_and_copies_historical_metrics():
         "status": "provider_error",
         "run_id": "saved",
         "error": "Connection error.",
-        "config": {"total_api_calls": 10, "wall_time_s": 100},
-        "metrics": {"api_calls": 9, "elapsed_s": 99},
+        "config": {"agent_calls": 10, "wall_time_s": 100},
+        "metrics": {"agent_calls": 9, "elapsed_s": 99},
     }
     assert schedule_recovery(cell)
-    cell["metrics"]["api_calls"] = 10
-    assert cell["executions"][0]["metrics"]["api_calls"] == 9
+    cell["metrics"]["agent_calls"] = 10
+    assert cell["executions"][0]["metrics"]["agent_calls"] == 9
     cell["status"] = "provider_error"
     assert not schedule_recovery(cell)
 
@@ -350,13 +355,8 @@ def test_top_down_split_arm_pins_the_requested_comparison() -> None:
     assert config["reasoning_effort"] == "low"
     assert config["orchestrator_reasoning_effort"] == "xhigh"
     assert config["model"] == config["orchestrator_model"] == "gpt-6-astra"
-    assert (
-        config["parallelism"],
-        config["job_api_calls"],
-        config["orchestrator_api_calls"],
-        config["total_api_calls"],
-        config["wall_time_s"],
-    ) == (4, 200, 50, 2000, 28800)
+    assert config["parallelism"] == 4
+    assert config["agent_calls"] is config["tokens"] is config["wall_time_s"] is None
     assert config["allow_internet"] is False
 
 
@@ -379,14 +379,8 @@ def test_luna_arm_replicates_the_split_at_the_tighter_budget() -> None:
     assert config["reasoning_effort"] == "medium"
     assert config["orchestrator_reasoning_effort"] == "xhigh"
     assert all(row["effort"] == "xhigh" for row in rows)
-    assert (
-        config["parallelism"],
-        config["job_api_calls"],
-        config["orchestrator_api_calls"],
-        config["total_api_calls"],
-        config["wall_time_s"],
-        config["timeout_s"],
-    ) == (4, 200, 50, 2000, 28800, 1200)
+    assert config["parallelism"] == 4
+    assert config["agent_calls"] is config["tokens"] is config["wall_time_s"] is None
     assert config["search_order"] == "top-down"
     assert config["mode"] == "research"
     assert config["allow_internet"] is False
@@ -419,7 +413,7 @@ def test_planning_and_proving_can_run_on_different_models() -> None:
     assert config["reasoning_effort"] == config["orchestrator_reasoning_effort"] == "medium"
 
     # The split is only real if to_mapping routes each role to its own model;
-    # session_transport prefers config["model"] over the launch env var, so a
+    # The native stage uses config["model"] over the launch env var, so a
     # role that resolved to the wrong model would silently run the wrong one.
     resolved = ProverConfig(
         **{k: (tuple(v) if isinstance(v, list) else v) for k, v in config.items()}
@@ -475,7 +469,7 @@ def test_bottom_up_arm_changes_only_the_search_order() -> None:
     assert config["search_order"] == "bottom-up"
     assert config["model"] == "gpt-5.6-luna"
     assert config["orchestrator_model"] == "gpt-6-astra"
-    assert (config["total_api_calls"], config["job_api_calls"]) == (5000, 150)
+    assert config["agent_calls"] is config["tokens"] is config["wall_time_s"] is None
 
 
 def test_luna_high_astra_low_preserves_the_calibrated_top_down_budget() -> None:
@@ -494,27 +488,21 @@ def test_luna_high_astra_low_preserves_the_calibrated_top_down_budget() -> None:
         settings = config.to_mapping(role)
         assert (settings["model"], settings["reasoning_effort"]) == ("gpt-6-astra", "low")
     assert config.search_order == "top-down"
-    assert (config.parallelism, config.job_api_calls, config.total_api_calls) == (4, 150, 5000)
-    assert (config.orchestrator_api_calls, config.wall_time_s, config.timeout_s) == (
-        50,
-        28800,
-        1200,
-    )
+    assert config.parallelism == 4
+    assert config.agent_calls is config.tokens is config.wall_time_s is None
 
 
-def test_calibrated_budget_matches_what_the_top_down_arm_actually_ran() -> None:
-    """The four proofs were produced at 5000/150; the code must say so."""
-    from scripts.lean_imo_campaign.matrix import LUNA_CALIBRATED
+def test_native_campaign_does_not_reinterpret_historical_api_limits():
+    from scripts.lean_imo_campaign.provider import require_native_campaign
 
-    for label in ("astra-plan-luna-prove", "astra-plan-luna-prove-bottom"):
-        (condition,) = CONDITION_SETS[label]
-        assert condition.budget is LUNA_CALIBRATED
-    assert LUNA_CALIBRATED.total_api_calls == 5000
-    assert LUNA_CALIBRATED.job_api_calls == 150
-    # Untouched arms keep the original limits they were frozen under.
-    for label in ("full", "top-down-split", "luna-top-down-split"):
-        for condition in CONDITION_SETS[label]:
-            assert condition.budget is WIDE
+    with pytest.raises(ValueError, match="old API request budgets cannot be converted"):
+        require_native_campaign({"version": 1})
+    require_native_campaign({"version": 2})
+    for conditions in CONDITION_SETS.values():
+        for condition in conditions:
+            assert condition.budget.agent_calls is None
+            assert condition.budget.tokens is None
+            assert condition.budget.wall_time_s is None
 
 
 def test_every_arm_shares_one_named_budget() -> None:
@@ -531,7 +519,7 @@ def test_every_arm_shares_one_named_budget() -> None:
     ):
         assert condition.budget is WIDE
     config = cells([{"id": "p"}], CONDITION_SETS["top-down-split"])[0]["config"]
-    assert (config["job_api_calls"], config["total_api_calls"]) == (200, 2000)
+    assert config["agent_calls"] is config["tokens"] is config["wall_time_s"] is None
 
 
 def test_default_condition_set_is_unchanged_by_the_split_arm() -> None:
@@ -574,10 +562,11 @@ def test_run_refuses_to_narrow_lanes_below_a_claimed_lane(tmp_path: Path, monkey
     (tmp_path / "campaign.json").write_text(
         json.dumps(
             {
+                "version": 2,
                 "cells": [
                     {"id": "c1", "lane": 1, "status": "pending"},
                     {"id": "c3", "lane": 3, "status": "pending"},
-                ]
+                ],
             }
         )
     )
@@ -602,3 +591,42 @@ def test_three_lanes_each_hold_one_problem_at_a_time() -> None:
         if row["lane"] is not None:
             owners.setdefault(row["problem"]["id"], set()).add(row["lane"])
     assert all(len(v) == 1 for v in owners.values())
+
+
+@pytest.mark.parametrize(
+    "limits,metrics",
+    [
+        ({"agent_calls": 0}, {}),
+        ({"tokens": 100}, {"input_tokens": 70, "output_tokens": 30}),
+        ({"wall_time_s": 0}, {}),
+    ],
+)
+def test_recovery_honors_explicit_global_zero_and_token_limits(limits, metrics):
+    from scripts.lean_imo_campaign.recovery import schedule_recovery
+
+    assert not schedule_recovery(
+        {
+            "status": "provider_error",
+            "run_id": "saved",
+            "error": "Connection error.",
+            "config": limits,
+            "metrics": metrics,
+        }
+    )
+
+
+def test_global_limits_apply_to_entire_native_campaign_cell():
+    from scripts.lean_imo_campaign.matrix import Budget, configuration
+
+    config = configuration(
+        "example-model", "top-down", budget=Budget(agent_calls=5, tokens=100, wall_time_s=60)
+    )
+    assert (config["agent_calls"], config["tokens"], config["wall_time_s"]) == (5, 100, 60)
+    assert not {
+        "job_api_calls",
+        "orchestrator_api_calls",
+        "timeout_s",
+        "max_restarts",
+        "plan_refinements",
+        "max_decompositions",
+    }.intersection(config)

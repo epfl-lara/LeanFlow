@@ -518,11 +518,11 @@ class _BoundedPrinter:
         return "".join(self._parts)
 
 
-def _apply_resource_limits(timeout_s: int) -> None:
+def _apply_resource_limits(timeout_s: int | None) -> None:
     """Apply child-only CPU, memory, file, descriptor, and process ceilings."""
-    cpu_s = max(1, int(timeout_s))
+    cpu_s = None if timeout_s is None else max(1, int(timeout_s))
     for limit_name, limits in (
-        ("RLIMIT_CPU", (cpu_s, cpu_s + 1)),
+        *(([("RLIMIT_CPU", (cpu_s, cpu_s + 1))]) if cpu_s is not None else []),
         ("RLIMIT_FSIZE", (0, 0)),
         ("RLIMIT_NOFILE", (16, 16)),
         ("RLIMIT_NPROC", (0, 0)),
@@ -657,7 +657,7 @@ def capability_summary() -> str:
     )
 
 
-def execute_validated_program(program: str, *, timeout_s: int) -> dict[str, Any]:
+def execute_validated_program(program: str, *, timeout_s: int | None) -> dict[str, Any]:
     """Execute one validated program and return a structured child verdict."""
     try:
         tree = validate_empirical_program(program)
@@ -702,7 +702,7 @@ def execute_validated_program(program: str, *, timeout_s: int) -> dict[str, Any]
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--timeout-s", type=int, required=True)
+    parser.add_argument("--timeout-s", type=int, default=None)
     return parser.parse_args()
 
 
@@ -728,7 +728,7 @@ def main() -> int:
                 "error": "program must be valid UTF-8",
             }
         else:
-            result = execute_validated_program(program, timeout_s=max(1, args.timeout_s))
+            result = execute_validated_program(program, timeout_s=args.timeout_s)
     encoded = json.dumps(result, ensure_ascii=False, sort_keys=True)
     os.write(1, encoded.encode("utf-8"))
     return 0 if result.get("success") else 1

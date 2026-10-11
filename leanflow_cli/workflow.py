@@ -25,13 +25,6 @@ from leanflow_cli.formalization.formalization_documents import (
     FormalizationDocumentContext,
     prepare_formalization_document_context,
 )
-from leanflow_cli.runtime.env_loader import (
-    NATIVE_AUXILIARY_API_KEY_ENV,
-    NATIVE_AUXILIARY_BASE_URL_ENV,
-    NATIVE_AUXILIARY_MODEL_ENV,
-    NATIVE_AUXILIARY_PROVIDER_ENV,
-    NATIVE_AUXILIARY_REASONING_EFFORT_ENV,
-)
 from leanflow_cli.runtime.runtime_provider import (
     apply_runtime_model_override,
     resolve_runtime_provider,
@@ -307,12 +300,13 @@ def prover_config_preview(plan: NativeLaunchPlan) -> dict[str, Any]:
         }
     effective = config.to_mapping()
     effective["allowed_axioms"] = list(config.allowed_axioms)
-    hours = config.wall_time_s / 3600
+    calls = "unlimited" if config.agent_calls is None else str(config.agent_calls)
+    tokens = "unlimited" if config.tokens is None else str(config.tokens)
+    wall = "unlimited" if config.wall_time_s is None else f"{config.wall_time_s:g} s"
     summary = (
         f"{config.mode} · {config.search_order} · {config.parallelism} prover slot(s) · "
-        f"{config.total_api_calls} calls ({config.job_api_calls}/job, "
-        f"{config.orchestrator_api_calls}/planning stage) · {hours:g} h wall · "
-        f"{config.timeout_s} s per request/check · axioms {', '.join(config.allowed_axioms)}"
+        f"{calls} agent calls · {tokens} reported tokens · {wall} global time · "
+        f"axioms {', '.join(config.allowed_axioms)}"
     )
     return {
         "effective": effective,
@@ -651,48 +645,17 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             clean_room_labels.append(remaining[idx + 1].strip())
             idx += 2
             continue
-        if token == "--expert-provider":
-            if idx + 1 >= len(remaining):
-                raise ValueError("--expert-provider requires a value")
-            expert_provider = remaining[idx + 1].strip()
-            idx += 2
-            continue
-        if token == "--expert-command-template":
-            if idx + 1 >= len(remaining):
-                raise ValueError("--expert-command-template requires a value")
-            expert_command_template = remaining[idx + 1].strip()
-            idx += 2
-            continue
-        if token in {"--blueprint-verifier-provider", "--blueprint_verifier_provider"}:
-            if idx + 1 >= len(remaining):
-                raise ValueError(f"{token} requires a value")
-            blueprint_verifier_provider = remaining[idx + 1].strip()
-            idx += 2
-            continue
-        if token in {
+        if token.replace("_", "-") in {
+            "--expert-provider",
+            "--expert-command-template",
+            "--blueprint-verifier-provider",
             "--blueprint-verifier-command-template",
-            "--blueprint_verifier_command_template",
-        }:
-            if idx + 1 >= len(remaining):
-                raise ValueError(f"{token} requires a value")
-            blueprint_verifier_command_template = remaining[idx + 1].strip()
-            idx += 2
-            continue
-        if token in {"--autoformalizer-verifier-provider", "--autoformalizer_verifier_provider"}:
-            if idx + 1 >= len(remaining):
-                raise ValueError(f"{token} requires a value")
-            autoformalizer_verifier_provider = remaining[idx + 1].strip()
-            idx += 2
-            continue
-        if token in {
+            "--autoformalizer-verifier-provider",
             "--autoformalizer-verifier-command-template",
-            "--autoformalizer_verifier_command_template",
         }:
-            if idx + 1 >= len(remaining):
-                raise ValueError(f"{token} requires a value")
-            autoformalizer_verifier_command_template = remaining[idx + 1].strip()
-            idx += 2
-            continue
+            raise ValueError(
+                f"{token} was removed. Select codex, claude, or lemex with --provider; the native runtime owns the full agent conversation."
+            )
         if token in {"--additional-skill", "--additional_skill"}:
             if idx + 1 >= len(remaining):
                 raise ValueError(f"{token} requires a value")
@@ -715,6 +678,10 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         raise ValueError("--research is supported only for prove/autoprove workflows")
     if clean_room and workflow_kind != "prove":
         raise ValueError("--clean-room is supported only for prove/autoprove workflows")
+    if parallel_agents > 1 and workflow_kind != "prove":
+        raise ValueError(
+            "--agents is supported only for prove/autoprove; other native workflows use one agent and an independent source reviewer when required"
+        )
     if human_review and workflow_kind != "prove":
         raise ValueError("--human-review is supported only for prove/autoprove workflows")
     effective_research_workers = 0
@@ -752,7 +719,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
 
 
 def _native_runner_module() -> str:
-    return "leanflow_cli.native.native_runner"
+    return "leanflow_cli.native.harness_workflow"
 
 
 def _dedupe_skills(values: list[str]) -> tuple[str, ...]:
@@ -900,24 +867,26 @@ def resolve_workflow_request(
         toolset_name = "leanflow-prove-worker"
     else:
         toolset_name = "leanflow-native"
-    agent_max_turns = load_agent_max_turns()
 
     child_env = dict(os.environ)
+    from leanflow_cli.config import load_config
+
+    limits = load_config().get("limits", {})
+    for name in ("agent_calls", "tokens", "wall_time_s"):
+        value = limits.get(name) if isinstance(limits, Mapping) else None
+        if value is not None:
+            child_env.setdefault("LEANFLOW_PROVER_" + name.upper(), str(value))
     if workflow.workflow_kind != "prove":
         # The environment-compatible research profile has the same prove-only
         # boundary as ``--research``. Keep independently configured feature
         # flags intact, but do not let the profile identity activate research
         # runtime semantics inside review/formalization workflows.
         child_env["LEANFLOW_RESEARCH_MODE"] = "0"
-    child_env.setdefault("LEANFLOW_NATIVE_AGENT_MAX_TURNS", agent_max_turns)
     child_env.update(
         {
             "LEANFLOW_PROJECT_ROOT": str(project.root),
             "LEANFLOW_NATIVE_PROVIDER": str(runtime["provider"]),
-            "LEANFLOW_NATIVE_API_MODE": str(runtime["api_mode"]),
-            "LEANFLOW_NATIVE_BASE_URL": str(runtime["base_url"]),
-            "LEANFLOW_NATIVE_API_KEY": str(runtime.get("api_key", "")),
-            "LEANFLOW_NATIVE_MODEL": str(runtime.get("model") or load_default_model()),
+            "LEANFLOW_NATIVE_MODEL": str(runtime.get("model") or ""),
             "LEANFLOW_NATIVE_REASONING_EFFORT": str(runtime.get("reasoning_effort", "") or ""),
             "LEANFLOW_NATIVE_WORKFLOW_KIND": workflow.workflow_kind,
             "LEANFLOW_NATIVE_WORKFLOW_COMMAND": workflow.backend_command,
@@ -934,10 +903,6 @@ def resolve_workflow_request(
             "LEANFLOW_HUMAN_REVIEW_ENABLED": "1" if workflow.human_review else "0",
         }
     )
-    if workflow.model_override:
-        # A workflow-local model choice applies to every model call that would
-        # otherwise silently reuse the global compression model.
-        child_env["LEANFLOW_NATIVE_CONTEXT_COMPRESSION_MODEL"] = workflow.model_override
     if workflow.clean_room:
         labels = _clean_room_labels(
             workflow,
@@ -946,19 +911,6 @@ def resolve_workflow_request(
         workflow = replace(workflow, clean_room_labels=labels)
         child_env[DISABLE_SOLUTION_RESEARCH_ENV] = "1"
         child_env[CLEAN_ROOM_TASK_LABELS_ENV] = "|".join(labels)
-    explicit_provider = str(requested_provider or workflow.provider_override or "").strip()
-    if explicit_provider:
-        # An explicit workflow provider is an all-lanes user choice. Preserve
-        # it across dotenv reloads in foreground and dispatch-worker processes.
-        auxiliary_provider = "custom" if str(runtime["provider"]) == "custom" else explicit_provider
-        child_env[NATIVE_AUXILIARY_PROVIDER_ENV] = auxiliary_provider
-        child_env[NATIVE_AUXILIARY_MODEL_ENV] = str(runtime.get("model", ""))
-        child_env[NATIVE_AUXILIARY_REASONING_EFFORT_ENV] = str(
-            runtime.get("reasoning_effort", "") or ""
-        )
-        if str(runtime["provider"]) == "custom":
-            child_env[NATIVE_AUXILIARY_BASE_URL_ENV] = str(runtime["base_url"])
-            child_env[NATIVE_AUXILIARY_API_KEY_ENV] = str(runtime.get("api_key", ""))
     if workflow.research_mode:
         child_env["LEANFLOW_RESEARCH_MODE"] = "1"
         if workflow.workflow_kind != "prove":
@@ -996,28 +948,6 @@ def resolve_workflow_request(
                 "LEANFLOW_PLAN_SUMMARY_JSON": str(artifact_paths.summary_json),
             }
         )
-    if workflow.expert_provider:
-        child_env["LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_PROVIDER"] = workflow.expert_provider
-    if workflow.expert_command_template:
-        child_env["LEANFLOW_NATIVE_AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] = (
-            workflow.expert_command_template
-        )
-    if workflow.blueprint_verifier_provider:
-        child_env["LEANFLOW_NATIVE_AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] = (
-            workflow.blueprint_verifier_provider
-        )
-    if workflow.blueprint_verifier_command_template:
-        child_env["LEANFLOW_NATIVE_AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] = (
-            workflow.blueprint_verifier_command_template
-        )
-    if workflow.autoformalizer_verifier_provider:
-        child_env["LEANFLOW_NATIVE_AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] = (
-            workflow.autoformalizer_verifier_provider
-        )
-    if workflow.autoformalizer_verifier_command_template:
-        child_env["LEANFLOW_NATIVE_AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] = (
-            workflow.autoformalizer_verifier_command_template
-        )
     if formalization_document is not None:
         child_env.update(formalization_document.to_env())
     runner_module = (
@@ -1045,24 +975,10 @@ def load_default_model() -> str:
     config = load_config()
     model_cfg = config.get("model")
     if isinstance(model_cfg, Mapping):
-        return str(model_cfg.get("default", "moonshotai/Kimi-K2.6") or "moonshotai/Kimi-K2.6")
+        return str(model_cfg.get("default", "") or "")
     if isinstance(model_cfg, str) and model_cfg.strip():
         return model_cfg.strip()
-    return "moonshotai/Kimi-K2.6"
-
-
-def load_agent_max_turns() -> str:
-    from leanflow_cli.config import load_config
-
-    config = load_config()
-    agent_cfg = config.get("agent")
-    if isinstance(agent_cfg, Mapping):
-        try:
-            value = int(agent_cfg.get("max_turns", 200) or 200)
-        except Exception:
-            value = 200
-        return str(max(1, value))
-    return "200"
+    return ""
 
 
 def spawn_workflow(

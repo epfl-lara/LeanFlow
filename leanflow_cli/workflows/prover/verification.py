@@ -11,6 +11,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from core.deadlines import (
+    cap_seconds,
+    deadline_after,
+    operation_cancelled,
+    remaining_seconds,
+    wait_slice,
+)
 from leanflow_cli.workflows.prover.models import Dag, Node, digest, safe_relative_file
 from leanflow_cli.workflows.prover.source import (
     SourceDocument,
@@ -29,14 +36,15 @@ class LeanVerifier:
         self,
         root: Path,
         allowed_axioms: tuple[str, ...],
-        timeout_s: int = 180,
+        timeout_s: float | None = None,
         *,
         signature_scheme: str = "legacy",
     ) -> None:
         self.root = root
         self.allowed_axioms = set(allowed_axioms)
         self.configured_timeout_s = timeout_s
-        self.remaining_time: Callable[[], float] | None = None
+        self.remaining_time: Callable[[], float | None] | None = None
+        self.cancelled: Callable[[], bool] | None = None
         self.on_operation: Callable[..., Any] | None = None
         self.lock = threading.Lock()
         self.workspaces: set[Path] = set()
@@ -57,10 +65,10 @@ class LeanVerifier:
         return module_name(relative) if self.signature_scheme == "module" else None
 
     @property
-    def timeout_s(self) -> float:
+    def timeout_s(self) -> float | None:
         """Bound every new verification stage by the remaining campaign deadline."""
         return (
-            min(self.configured_timeout_s, self.remaining_time())
+            cap_seconds(self.configured_timeout_s, self.remaining_time())
             if self.remaining_time
             else self.configured_timeout_s
         )
@@ -141,6 +149,7 @@ class LeanVerifier:
                         names=[node.name for node in nodes],
                         workspace=workspace,
                         timeout_s=self.timeout_s,
+                        cancelled=self.cancelled,
                         mutable_names=mutable_names,
                         module=self.profile_module(relative),
                     ),
@@ -175,20 +184,27 @@ class LeanVerifier:
         """Queue under campaign time, then share one Lean deadline across verification stages."""
         wait_started = time.monotonic()
         queue_limit = self.remaining_time() if self.remaining_time else self.configured_timeout_s
-        queue_deadline = wait_started + queue_limit
+        queue_deadline = deadline_after(queue_limit)
         acquired = False
 
         def acquire() -> dict[str, Any]:
             """Wait for the shared verifier without charging the active Lean allowance."""
             nonlocal acquired
             while not acquired:
-                remaining = queue_deadline - time.monotonic()
+                if operation_cancelled() or (self.cancelled is not None and self.cancelled()):
+                    return {
+                        "accepted": False,
+                        "success": False,
+                        "error_code": "check_cancelled",
+                        "error": "The controller cancelled the queued independent check.",
+                    }
+                remaining = remaining_seconds(queue_deadline)
                 if self.remaining_time is not None:
-                    remaining = min(remaining, self.remaining_time())
-                if remaining <= 0:
+                    remaining = cap_seconds(remaining, self.remaining_time())
+                if remaining is not None and remaining <= 0:
                     break
                 # Observe cancellation while waiting for another proof's check.
-                acquired = self.lock.acquire(timeout=min(0.25, remaining))
+                acquired = self.lock.acquire(timeout=wait_slice(queue_deadline, 0.25))
             return {
                 "accepted": acquired,
                 "success": acquired,
@@ -225,9 +241,9 @@ class LeanVerifier:
         """Check the exact declaration and kernel type while owning the verifier slot."""
         from leanflow_cli.workflows.prover.check_process import check_scratch
 
-        deadline = time.monotonic() + self.timeout_s
+        deadline = deadline_after(self.timeout_s)
 
-        def elaborate(remaining: float) -> dict[str, Any]:
+        def elaborate(remaining: float | None) -> dict[str, Any]:
             """Register the warm worker while holding the verifier's invalidation lock."""
             self.workspaces.add(file.parent)
             return check_scratch(
@@ -238,6 +254,7 @@ class LeanVerifier:
                 include_axiom_profile=not skeleton,
                 allow_placeholders_for_elaboration=skeleton,
                 timeout_s=remaining,
+                cancelled=self.cancelled,
             )
 
         # Provers already use the warm REPL for feedback. Closed submissions are
@@ -289,6 +306,7 @@ class LeanVerifier:
                 names=[node.name],
                 workspace=file.parent,
                 timeout_s=remaining,
+                cancelled=self.cancelled,
                 mutable_names=node.signature_mutable_names or [node.name],
                 module=module,
                 artifact=artifact,
@@ -301,7 +319,7 @@ class LeanVerifier:
                     ),
                     action,
                     stage=stage,
-                    timeout_s=min(self.timeout_s, max(0, deadline - time.monotonic())),
+                    timeout_s=cap_seconds(self.timeout_s, remaining_seconds(deadline)),
                     node_id=node.id,
                     file=str(file),
                 ),
@@ -359,7 +377,7 @@ class LeanVerifier:
         }
 
     def _candidate_stage(
-        self, action: Callable[[float], dict[str, Any]], deadline: float
+        self, action: Callable[[float | None], dict[str, Any]], deadline: float | None
     ) -> dict[str, Any]:
         """Share one active candidate deadline across both Lean stages."""
         timeout = {
@@ -369,8 +387,8 @@ class LeanVerifier:
             "error_code": "check_timeout",
             "error": "Independent candidate check exhausted its active verification deadline.",
         }
-        remaining = min(self.timeout_s, deadline - time.monotonic())
-        return action(remaining) if remaining > 0 else timeout
+        remaining = cap_seconds(self.timeout_s, remaining_seconds(deadline))
+        return action(remaining) if remaining is None or remaining > 0 else timeout
 
     def compile_module(self, relative: str) -> dict[str, Any]:
         """Build one generated helper artifact so dependent scratch modules can import it."""
@@ -390,6 +408,7 @@ class LeanVerifier:
                 workspace=workspace,
                 argv=["lake", "env", "lean", "-o", str(artifact), relative],
                 timeout_s=self.timeout_s,
+                cancelled=self.cancelled,
                 extra_writable_roots=self._lake_config_cache(),
             )
             accepted = (
@@ -450,9 +469,9 @@ class LeanVerifier:
         from leanflow_cli.workflows.prover.check_process import close_check_workers
 
         output.write_bytes(content)
-        # File-content caches cannot observe a changed imported .olean.
-        # Only this verifier's workers are invalidated; prover scratch
-        # sessions remain independent and their results are rechecked here.
+        # Drop our loaded environments immediately. Per-request generation
+        # checks also catch external rebuilds and refresh independent scratch
+        # workers, whose feedback never establishes controller acceptance.
         for checked_workspace in self.workspaces:
             close_check_workers(checked_workspace)
         self.workspaces.clear()
@@ -482,6 +501,7 @@ class LeanVerifier:
                 workspace=Path(temporary),
                 argv=["lake", "build"],
                 timeout_s=self.timeout_s,
+                cancelled=self.cancelled,
                 extra_writable_roots=(*self._lake_config_cache(), build_root),
             )
         return {

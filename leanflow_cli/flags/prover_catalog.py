@@ -1,4 +1,4 @@
-"""Describe the small configuration surface of the bounded prover runtime."""
+"""Describe native-backend prover orchestration and optional global limits."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ _READER = ("leanflow_cli/workflows/prover/config.py",)
 _GROUP = "Prover workflow"
 
 
-def _integer(name: str, default: int, summary: str, minimum: int = 1) -> FlagSpec:
-    """Declare one integral job or campaign limit."""
+def _integer(name: str, default: int | None, summary: str, minimum: int = 0) -> FlagSpec:
+    """Declare a nonnegative count; an empty default leaves the limit unlimited."""
     return FlagSpec(
         name="LEANFLOW_PROVER_" + name,
         kind="tuning",
         value_type="int",
-        default=str(default),
+        default="" if default is None else str(default),
         group=_GROUP,
         summary=summary,
         read_in=_READER,
@@ -23,16 +23,66 @@ def _integer(name: str, default: int, summary: str, minimum: int = 1) -> FlagSpe
 
 
 PROVER_FLAGS: tuple[FlagSpec, ...] = (
+    *(
+        FlagSpec(
+            name="LEANFLOW_PROVER_" + suffix,
+            kind="tuning",
+            value_type="enum",
+            default="",
+            choices=("", "codex", "claude", "lemex"),
+            group=_GROUP,
+            summary=summary,
+            read_in=_READER,
+        )
+        for suffix, summary in (
+            ("PROVIDER", "Native prover backend; empty inherits the launch backend."),
+            (
+                "ORCHESTRATOR_PROVIDER",
+                "Native planning and review backend; empty inherits the prover backend.",
+            ),
+        )
+    ),
     FlagSpec(
-        name="LEANFLOW_RCP_MAX_CONCURRENT_REQUESTS",
-        kind="tuning",
-        value_type="int",
-        default="1",
+        name="LEANFLOW_PROVER_MODE",
+        kind="feature",
+        value_type="enum",
+        default="standard",
         group=_GROUP,
-        summary="Concurrent RCP requests per credential across bounded jobs; match the key's actual allowance in every sharing process.",
-        minimum=1,
-        maximum=256,
-        read_in=("leanflow_cli/workflows/prover/session_admission.py",),
+        summary="Standard uses one prover; research adds planning and parallel jobs.",
+        choices=("standard", "research"),
+        read_in=_READER,
+    ),
+    FlagSpec(
+        name="LEANFLOW_PROVER_SEARCH_ORDER",
+        kind="tuning",
+        value_type="enum",
+        default="top-down",
+        group=_GROUP,
+        summary="Schedule theorem dependencies top-down or bottom-up.",
+        choices=("top-down", "bottom-up"),
+        read_in=_READER,
+        ablatable=True,
+    ),
+    _integer("PARALLELISM", 2, "Maximum simultaneous jobs in research mode; standard uses one.", 1),
+    _integer(
+        "AGENT_CALLS",
+        None,
+        "Global native CLI invocation limit. Each resume or retry is another call; empty means unlimited.",
+    ),
+    _integer(
+        "TOKENS",
+        None,
+        "Global reported token limit. Stops future calls; active calls may overshoot and unavailable usage remains unknown. Empty means unlimited.",
+    ),
+    FlagSpec(
+        name="LEANFLOW_PROVER_WALL_TIME_S",
+        kind="tuning",
+        value_type="float",
+        default="",
+        group=_GROUP,
+        summary="Global active campaign seconds across resumes, including tools and verification. Empty means unlimited.",
+        read_in=_READER,
+        minimum=0,
     ),
     *(
         FlagSpec(
@@ -45,164 +95,23 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
             read_in=_READER,
         )
         for suffix, summary in (
-            ("PROVIDER", "Prover provider; empty inherits the native launch route."),
-            ("BASE_URL", "Explicit prover provider endpoint."),
-            ("API_KEY_ENV", "Name of the environment variable holding the prover credential."),
-            ("ORCHESTRATOR_PROVIDER", "Planning, review and research provider override."),
-            ("ORCHESTRATOR_BASE_URL", "Explicit planning provider endpoint."),
-            ("ORCHESTRATOR_API_KEY_ENV", "Name of the planning credential environment variable."),
+            (
+                "MODEL",
+                "Optional prover model override; empty preserves the launch or native runtime default.",
+            ),
+            (
+                "ORCHESTRATOR_MODEL",
+                "Optional planning model override; empty inherits the prover selection.",
+            ),
+            (
+                "REASONING_EFFORT",
+                "Optional prover reasoning effort; empty preserves the native runtime default.",
+            ),
+            (
+                "ORCHESTRATOR_REASONING_EFFORT",
+                "Optional planning reasoning effort; empty inherits the prover selection.",
+            ),
         )
-    ),
-    FlagSpec(
-        name="LEANFLOW_PROVER_MODE",
-        kind="feature",
-        value_type="enum",
-        default="standard",
-        group=_GROUP,
-        summary="Standard uses one prover; research adds a planning orchestrator and parallel jobs.",
-        choices=("standard", "research"),
-        read_in=_READER,
-    ),
-    FlagSpec(
-        name="LEANFLOW_PROVER_SEARCH_ORDER",
-        kind="tuning",
-        value_type="enum",
-        default="top-down",
-        group=_GROUP,
-        summary="DFS scheduling order. Top-down candidates remain unverified until dependencies close.",
-        choices=("top-down", "bottom-up"),
-        read_in=_READER,
-        ablatable=True,
-    ),
-    _integer(
-        "JOB_API_CALLS", 300, "Fixed request ceiling per prover pass, including failed requests."
-    ),
-    _integer(
-        "MAX_RESTARTS",
-        3,
-        "Maximum additional passes per node; each retains its predecessor's progress.",
-        0,
-    ),
-    _integer(
-        "PLAN_REFINEMENTS",
-        16,
-        "Maximum changes of informal proof direction, independent of routine plan notes.",
-        0,
-    ),
-    _integer("PARALLELISM", 2, "Maximum simultaneous jobs in research mode; standard uses one."),
-    _integer(
-        "TOTAL_API_CALLS",
-        10000,
-        "Hard total provider-request ceiling across all roles and retries.",
-    ),
-    _integer("ORCHESTRATOR_API_CALLS", 40, "Call ceiling per planning, research or review job."),
-    _integer("MAX_NODES", 128, "Maximum nodes admitted to the theorem DAG."),
-    _integer(
-        "MAX_DECOMPOSITIONS",
-        32,
-        "Campaign-wide recovery budget: every orchestrator retry, negate or decompose decision spends one.",
-        0,
-    ),
-    _integer("WALL_TIME_S", 57600, "Maximum campaign runtime in seconds (default 16 hours)."),
-    _integer("TIMEOUT_S", 180, "Maximum seconds per provider request and independent Lean check."),
-    _integer(
-        "NEGATION_API_CALLS",
-        60,
-        "Calls for one refutation attempt (Plausible screen, then a bounded proof of the exact negation).",
-    ),
-    _integer("CONTEXT_TOKENS", 256000, "Prover context cap, including space reserved for output."),
-    _integer("ORCHESTRATOR_CONTEXT_TOKENS", 256000, "Planning and research context cap."),
-    *(
-        FlagSpec(
-            name="LEANFLOW_PROVER_" + suffix,
-            kind="tuning",
-            value_type="float",
-            default="0.75",
-            group=_GROUP,
-            summary="Auto-compress at this fraction of the context cap, capped at 90% of the input allowance after output reservation. Must be strictly between 0 and 1.",
-            read_in=_READER,
-            minimum=0,
-            maximum=1,
-        )
-        for suffix in ("COMPRESSION_THRESHOLD", "ORCHESTRATOR_COMPRESSION_THRESHOLD")
-    ),
-    *(
-        FlagSpec(
-            name="LEANFLOW_PROVER_" + suffix,
-            kind="tuning",
-            value_type="float",
-            default="0.5",
-            group=_GROUP,
-            summary="After compression, aim for this fraction of the trigger (0.5 = half). Exact assignments and the newest tool exchange take priority; must be strictly between 0 and 1.",
-            read_in=_READER,
-            minimum=0,
-            maximum=1,
-        )
-        for suffix in ("COMPRESSION_TARGET", "ORCHESTRATOR_COMPRESSION_TARGET")
-    ),
-    FlagSpec(
-        name="LEANFLOW_PROVER_MODEL_CONTEXTS",
-        kind="tuning",
-        value_type="string",
-        default="",
-        group=_GROUP,
-        summary="JSON keyed by exact model name: context_tokens, compression_threshold, compression_target, optional max_output_tokens; overrides role defaults.",
-        read_in=_READER,
-    ),
-    FlagSpec(
-        name="LEANFLOW_PROVER_MODEL",
-        kind="tuning",
-        value_type="string",
-        default="",
-        group=_GROUP,
-        summary="Prover model; empty inherits the launch model.",
-        read_in=_READER,
-    ),
-    FlagSpec(
-        name="LEANFLOW_PROVER_ORCHESTRATOR_MODEL",
-        kind="tuning",
-        value_type="string",
-        default="",
-        group=_GROUP,
-        summary="Planning, review and research model; empty inherits the prover model.",
-        read_in=_READER,
-    ),
-    FlagSpec(
-        name="LEANFLOW_PROVER_REASONING_EFFORT",
-        kind="tuning",
-        value_type="string",
-        default="",
-        group=_GROUP,
-        summary="Prover and negation reasoning effort; empty inherits the launch effort.",
-        read_in=_READER,
-    ),
-    FlagSpec(
-        name="LEANFLOW_PROVER_ORCHESTRATOR_REASONING_EFFORT",
-        kind="tuning",
-        value_type="string",
-        default="",
-        group=_GROUP,
-        summary="Planning, review and research reasoning effort; empty inherits the prover effort.",
-        read_in=_READER,
-    ),
-    FlagSpec(
-        name="LEANFLOW_PROVER_COMPRESSION",
-        kind="feature",
-        value_type="bool",
-        default="1",
-        group=_GROUP,
-        summary="Compact prover history deterministically while keeping its contract and durable notes.",
-        read_in=_READER,
-        ablatable=True,
-    ),
-    FlagSpec(
-        name="LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION",
-        kind="feature",
-        value_type="bool",
-        default="1",
-        group=_GROUP,
-        summary="Compact planning and research history deterministically; stages always start with fresh context.",
-        read_in=_READER,
     ),
     FlagSpec(
         name="LEANFLOW_PROVER_ALLOW_INTERNET",
@@ -210,8 +119,9 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
         value_type="bool",
         default="1",
         group=_GROUP,
-        summary="Allow web research, downloads and remote Lean search. Off retains local source search and computation; model API access is unaffected.",
+        summary="Allow web research, downloads and remote Lean search.",
         read_in=_READER,
+        ablatable=True,
     ),
     FlagSpec(
         name="LEANFLOW_PROVER_FILL_DEFINITIONS",
@@ -238,7 +148,7 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
         value_type="string",
         default="",
         group=_GROUP,
-        summary="Resume an existing prover run with its original budgets and saved work.",
+        summary="Resume a compatible native-backend run with its original global limits and saved work.",
         read_in=_READER,
         sensitive=True,
     ),

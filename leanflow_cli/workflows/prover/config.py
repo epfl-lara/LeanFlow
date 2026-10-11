@@ -1,205 +1,184 @@
-"""Resolve the bounded prover configuration without legacy research profiles."""
+"""Resolve native backend selection, Lean policy, and optional campaign-wide limits."""
 
 from __future__ import annotations
 
-import json
+import math
 import os
-import re
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
-from leanflow_cli.workflows.prover.context_policy import (
-    validate_context_settings,
-    validate_model_contexts,
-)
-
-#: Reasoning levels the native runtime recognises. An unknown value is
-#: silently ignored downstream (`_parse_managed_reasoning_config` returns
-#: None), which would quietly run a comparison at the default effort, so the
-#: config rejects it here instead. Empty means "inherit the launch effort"
-#: (LEANFLOW_NATIVE_REASONING_EFFORT).
-REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 ENV_NAMES = {
     "mode": "LEANFLOW_PROVER_MODE",
     "search_order": "LEANFLOW_PROVER_SEARCH_ORDER",
-    "job_api_calls": "LEANFLOW_PROVER_JOB_API_CALLS",
-    "max_restarts": "LEANFLOW_PROVER_MAX_RESTARTS",
-    "plan_refinements": "LEANFLOW_PROVER_PLAN_REFINEMENTS",
     "parallelism": "LEANFLOW_PROVER_PARALLELISM",
-    "total_api_calls": "LEANFLOW_PROVER_TOTAL_API_CALLS",
-    "orchestrator_api_calls": "LEANFLOW_PROVER_ORCHESTRATOR_API_CALLS",
-    "negation_api_calls": "LEANFLOW_PROVER_NEGATION_API_CALLS",
+    "agent_calls": "LEANFLOW_PROVER_AGENT_CALLS",
+    "tokens": "LEANFLOW_PROVER_TOKENS",
     "max_nodes": "LEANFLOW_PROVER_MAX_NODES",
-    "max_decompositions": "LEANFLOW_PROVER_MAX_DECOMPOSITIONS",
     "wall_time_s": "LEANFLOW_PROVER_WALL_TIME_S",
-    "timeout_s": "LEANFLOW_PROVER_TIMEOUT_S",
     "model": "LEANFLOW_PROVER_MODEL",
     "orchestrator_model": "LEANFLOW_PROVER_ORCHESTRATOR_MODEL",
     "provider": "LEANFLOW_PROVER_PROVIDER",
-    "base_url": "LEANFLOW_PROVER_BASE_URL",
-    "api_key_env": "LEANFLOW_PROVER_API_KEY_ENV",
     "orchestrator_provider": "LEANFLOW_PROVER_ORCHESTRATOR_PROVIDER",
-    "orchestrator_base_url": "LEANFLOW_PROVER_ORCHESTRATOR_BASE_URL",
-    "orchestrator_api_key_env": "LEANFLOW_PROVER_ORCHESTRATOR_API_KEY_ENV",
     "reasoning_effort": "LEANFLOW_PROVER_REASONING_EFFORT",
     "orchestrator_reasoning_effort": "LEANFLOW_PROVER_ORCHESTRATOR_REASONING_EFFORT",
-    "context_tokens": "LEANFLOW_PROVER_CONTEXT_TOKENS",
-    "orchestrator_context_tokens": "LEANFLOW_PROVER_ORCHESTRATOR_CONTEXT_TOKENS",
-    "compression": "LEANFLOW_PROVER_COMPRESSION",
-    "orchestrator_compression": "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION",
-    "compression_threshold": "LEANFLOW_PROVER_COMPRESSION_THRESHOLD",
-    "orchestrator_compression_threshold": "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_THRESHOLD",
-    "compression_target": "LEANFLOW_PROVER_COMPRESSION_TARGET",
-    "orchestrator_compression_target": "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_TARGET",
-    "model_contexts": "LEANFLOW_PROVER_MODEL_CONTEXTS",
     "fill_definitions": "LEANFLOW_PROVER_FILL_DEFINITIONS",
     "allow_internet": "LEANFLOW_PROVER_ALLOW_INTERNET",
     "allowed_axioms": "LEANFLOW_PROVER_ALLOWED_AXIOMS",
 }
+_RETIRED_SETTINGS = (
+    "BASE_URL",
+    "API_KEY_ENV",
+    "TIMEOUT_S",
+    "CONTEXT_TOKENS",
+    "COMPRESSION",
+    "COMPRESSION_THRESHOLD",
+    "COMPRESSION_TARGET",
+    "MODEL_CONTEXTS",
+    "JOB_API_CALLS",
+    "TOTAL_API_CALLS",
+    "ORCHESTRATOR_API_CALLS",
+    "NEGATION_API_CALLS",
+)
 
 
 @dataclass(frozen=True)
 class ProverConfig:
-    """Keep all campaign limits explicit and independent of conversation resets."""
+    """Keep native settings explicit and global resource limits unlimited when unset."""
 
     mode: str = "standard"
     search_order: str = "top-down"
-    job_api_calls: int = 300
-    #: Standard mode only: automatic progress-gated retries before a node blocks.
-    #: In research mode the orchestrator decides every retry instead.
-    max_restarts: int = 3
-    plan_refinements: int = 16
     parallelism: int = 2
-    total_api_calls: int = 10000
-    orchestrator_api_calls: int = 40
-    #: Calls for one refutation attempt: a bounded proof of the exact negation,
-    #: run after an empirical Plausible screen. Deliberately much smaller than a
-    #: prover job -- a true theorem should not cost a full job budget to not-refute.
-    negation_api_calls: int = 60
+    agent_calls: int | None = None
+    tokens: int | None = None
+    wall_time_s: float | None = None
     max_nodes: int = 128
-    #: The campaign-wide recovery budget. Every orchestrator recovery decision --
-    #: retry, negate, or decompose -- spends one unit; there is no per-node cap.
-    max_decompositions: int = 32
-    wall_time_s: int = 57600
-    timeout_s: int = 180
     model: str = ""
     orchestrator_model: str = ""
-    #: Credentials stay in the process environment; snapshots retain only names.
     provider: str = ""
-    base_url: str = ""
-    api_key_env: str = ""
     orchestrator_provider: str = ""
-    orchestrator_base_url: str = ""
-    orchestrator_api_key_env: str = ""
     reasoning_effort: str = ""
     orchestrator_reasoning_effort: str = ""
-    context_tokens: int = 256000
-    orchestrator_context_tokens: int = 256000
-    compression: bool = True
-    orchestrator_compression: bool = True
-    compression_threshold: float = 0.75
-    orchestrator_compression_threshold: float = 0.75
-    compression_target: float = 0.5
-    orchestrator_compression_target: float = 0.5
-    model_contexts: dict[str, dict[str, Any]] = field(default_factory=dict)
     fill_definitions: bool = False
     allow_internet: bool = True
     allowed_axioms: tuple[str, ...] = ("propext", "Classical.choice", "Quot.sound")
+    # Internal controller compatibility; these are not public launch settings.
+    # Native invocations always reserve one call, regardless of these old role values.
+    total_api_calls: int | None = None
+    job_api_calls: int = 1
+    orchestrator_api_calls: int = 1
+    negation_api_calls: int = 1
+    max_restarts: int | None = None
+    plan_refinements: int | None = None
+    max_decompositions: int | None = None
 
     def __post_init__(self) -> None:
-        validate_model_contexts(self.model_contexts)
-        for prefix in ("", "orchestrator_"):
-            validate_context_settings(
-                {
-                    "context_tokens": getattr(self, prefix + "context_tokens"),
-                    "compression_threshold": getattr(self, prefix + "compression_threshold"),
-                    "compression_target": getattr(self, prefix + "compression_target"),
-                }
-            )
-        for prefix in ("", "orchestrator_"):
-            provider = getattr(self, prefix + "provider")
-            key_env = getattr(self, prefix + "api_key_env")
-            if key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_env):
-                raise ValueError(prefix + "api_key_env must name an environment variable")
-            if (key_env or getattr(self, prefix + "base_url")) and not provider:
-                raise ValueError(prefix + "provider is required for an explicit provider route")
+        """Reject ambiguous limits and unsupported backend names before allocating work."""
+        if (
+            self.agent_calls is not None
+            and self.total_api_calls is not None
+            and self.agent_calls != self.total_api_calls
+        ):
+            raise ValueError("agent_calls and total_api_calls disagree")
+        calls = self.agent_calls if self.agent_calls is not None else self.total_api_calls
+        object.__setattr__(self, "agent_calls", calls)
+        object.__setattr__(self, "total_api_calls", calls)
         if self.mode not in {"standard", "research"}:
             raise ValueError("prover mode must be standard or research")
         if self.search_order not in {"bottom-up", "top-down"}:
             raise ValueError("search order must be bottom-up or top-down")
-        for key in (
-            "job_api_calls",
-            "parallelism",
-            "total_api_calls",
-            "orchestrator_api_calls",
-            "negation_api_calls",
-            "max_nodes",
-            "wall_time_s",
-            "timeout_s",
-            "context_tokens",
-            "orchestrator_context_tokens",
-        ):
-            if getattr(self, key) < 1:
-                raise ValueError(f"{key} must be positive")
-        for key in ("max_restarts", "plan_refinements", "max_decompositions"):
-            if getattr(self, key) < 0:
-                raise ValueError(f"{key} must be non-negative")
-        for key in ("reasoning_effort", "orchestrator_reasoning_effort"):
+        for key in ("parallelism", "max_nodes"):
             value = getattr(self, key)
-            if value and value not in REASONING_EFFORTS:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{key} must be a positive integer")
+        for key in (
+            "agent_calls",
+            "tokens",
+            "wall_time_s",
+            "max_restarts",
+            "plan_refinements",
+            "max_decompositions",
+        ):
+            value = getattr(self, key)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(f"{key} must be a finite non-negative number or unset")
+            if key != "wall_time_s" and value is not None and not isinstance(value, int):
+                raise ValueError(f"{key} must be an integer or unset")
+        for key in ("provider", "orchestrator_provider"):
+            if getattr(self, key) not in {"", "codex", "claude", "lemex"}:
                 raise ValueError(
-                    f"{key} must be empty or one of {', '.join(REASONING_EFFORTS)}; got {value!r}"
+                    f"{key} must select codex, claude, or lemex; configure credentials and endpoints in that runtime"
                 )
         if "sorryAx" in self.allowed_axioms:
             raise ValueError("sorryAx cannot be an allowed completion axiom")
 
+    @property
+    def timeout_s(self) -> None:
+        """Keep old deterministic helper call sites unlimited until given remaining campaign time."""
+        return None
+
     def to_mapping(self, role: str | None = None) -> dict[str, Any]:
-        """Return a resumable snapshot, or resolve settings for an explicit job role."""
+        """Serialize public settings and explicit controller recovery constraints."""
         values = asdict(self)
-        if role is None:
-            return values
+        for key in (
+            "total_api_calls",
+            "job_api_calls",
+            "orchestrator_api_calls",
+            "negation_api_calls",
+        ):
+            values.pop(key)
+        for key in ("max_restarts", "plan_refinements", "max_decompositions"):
+            if values[key] is None:
+                values.pop(key)
         if role in {"orchestrator", "review", "research"}:
-            values["model"] = self.orchestrator_model or self.model
-            values["context_tokens"] = self.orchestrator_context_tokens
-            values["compression"] = self.orchestrator_compression
-            values["compression_threshold"] = self.orchestrator_compression_threshold
-            values["compression_target"] = self.orchestrator_compression_target
-            values["reasoning_effort"] = self.orchestrator_reasoning_effort or self.reasoning_effort
-            if self.orchestrator_provider:
-                # An explicit planning route must not inherit the worker's key.
-                values["provider"] = self.orchestrator_provider
-                values["base_url"] = self.orchestrator_base_url
-                values["api_key_env"] = self.orchestrator_api_key_env
-        values.update(self.model_contexts.get(values["model"], {}))
+            prover_provider = self.provider or os.getenv("LEANFLOW_NATIVE_PROVIDER") or "codex"
+            same_backend = (self.orchestrator_provider or prover_provider) == prover_provider
+            values["model"] = self.orchestrator_model or (self.model if same_backend else "")
+            values["reasoning_effort"] = self.orchestrator_reasoning_effort or (
+                self.reasoning_effort if same_backend else ""
+            )
+            values["provider"] = self.orchestrator_provider or self.provider
         return values
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> ProverConfig:
-        """Read only explicit prover settings and shared provider defaults."""
+        """Read explicit LeanFlow launch choices while leaving native environment untouched."""
         source = os.environ if env is None else env
+        for suffix in _RETIRED_SETTINGS:
+            for prefix in ("LEANFLOW_PROVER_", "LEANFLOW_PROVER_ORCHESTRATOR_"):
+                if source.get(prefix + suffix, "").strip():
+                    raise ValueError(
+                        f"{prefix + suffix} is retired. Use native runtime configuration and global agent_calls, tokens, or wall_time_s limits."
+                    )
         values: dict[str, Any] = {}
-        defaults = cls()
-        for name, default in asdict(defaults).items():
-            raw = source.get(ENV_NAMES[name], "").strip()
+        defaults = asdict(cls())
+        for name, env_name in ENV_NAMES.items():
+            raw = source.get(env_name, "").strip()
             if not raw:
                 continue
-            if isinstance(default, bool):
+            default = defaults[name]
+            if default is None:
+                values[name] = float(raw) if name == "wall_time_s" else int(raw)
+            elif isinstance(default, bool):
                 if raw.lower() not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
                     raise ValueError(f"{name} must be a boolean")
                 values[name] = raw.lower() in {"1", "true", "yes", "on"}
             elif isinstance(default, int):
                 values[name] = int(raw)
-            elif isinstance(default, float):
-                values[name] = float(raw)
-            elif name == "model_contexts":
-                values[name] = json.loads(raw)
             elif name == "allowed_axioms":
                 values[name] = tuple(part.strip() for part in raw.split(",") if part.strip())
             else:
                 values[name] = raw
         values.setdefault("model", source.get("LEANFLOW_NATIVE_MODEL", ""))
+        values.setdefault("provider", source.get("LEANFLOW_NATIVE_PROVIDER", "") or "codex")
+        values.setdefault("reasoning_effort", source.get("LEANFLOW_NATIVE_REASONING_EFFORT", ""))
         if "allowed_axioms" not in values and source.get("LEANFLOW_NATIVE_ALLOWED_AXIOMS"):
             values["allowed_axioms"] = tuple(
                 part.strip()

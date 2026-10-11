@@ -29,7 +29,10 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 OPTIONAL_ENV_VARS: dict[str, dict[str, Any]] = {}
 
 
+NATIVE_CONFIG_VERSION = 2
+
 DEFAULT_CONFIG: dict[str, Any] = {
+    "schema_version": NATIVE_CONFIG_VERSION,
     "leanflow": {
         "project": {
             "template_source": "",
@@ -49,97 +52,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "bootstrap_mcp": True,
         },
     },
-    "model": {
-        "default": "moonshotai/Kimi-K2.7-Code",
-        "provider": "auto",
-        "base_url": "",
-        "api_key": "",
-        # Optional light tier for dispatched prover jobs; empty uses the
-        # run's main model.
-        "prover_light": "",
-    },
+    "model": {"provider": "codex", "default": ""},
     "auxiliary": {
-        "lean_reasoning": {
-            "provider": "main",
-            "model": "moonshotai/Kimi-K2.6-int4",
-            "reasoning_effort": "high",
-            "base_url": "",
-            "api_key": "",
-            "command_template": "",
-            "codex_command_template": "",
-            "claude_code_command_template": "",
-        },
-        "lean_decompose_helpers": {
-            "provider": "",
-            "model": "",
-            "reasoning_effort": "",
-            "base_url": "",
-            "api_key": "",
-            "command_template": "",
-            "codex_command_template": "",
-            "claude_code_command_template": "",
-        },
-        "manager_nudge": {
-            "provider": "auto",
-            "model": "",
-            "reasoning_effort": "low",
-            "base_url": "",
-            "api_key": "",
-            "command_template": "",
-            "codex_command_template": "",
-            "claude_code_command_template": "",
-        },
-        "orchestration": {
-            "provider": "main",
-            "model": "",
-            "reasoning_effort": "off",
-            "base_url": "",
-            "api_key": "",
-            "command_template": "",
-            "codex_command_template": "",
-            "claude_code_command_template": "",
-        },
-        "planner_synthesis": {
-            "provider": "",
-            "model": "",
-            "reasoning_effort": "",
-            "base_url": "",
-            "api_key": "",
-            "command_template": "",
-            "codex_command_template": "",
-            "claude_code_command_template": "",
-        },
-        "blueprint_verification": {
-            "provider": "main",
-            "model": "",
-            "reasoning_effort": "",
-            "base_url": "",
-            "api_key": "",
-            "command_template": "",
-            "codex_command_template": "",
-            "claude_code_command_template": "",
-        },
-        "autoformalizer_verification": {
-            "provider": "local",
-            "model": "",
-            "reasoning_effort": "",
-            "base_url": "",
-            "api_key": "",
-            "command_template": "",
-            "codex_command_template": "",
-            "claude_code_command_template": "",
-        },
+        task: {"provider": "", "model": "", "reasoning_effort": ""}
+        for task in (
+            "lean_reasoning",
+            "lean_decompose_helpers",
+            "manager_nudge",
+            "orchestration",
+            "planner_synthesis",
+            "blueprint_verification",
+            "autoformalizer_verification",
+        )
     },
     "toolsets": ["leanflow-cli"],
-    "agent": {
-        "max_turns": 200,
-        "reasoning_effort": "auto",
-        "seed": 42,
-        "temperature": 0.3,
-        "top_p": None,
-        "top_k": None,
-        "min_p": None,
-    },
+    "agent": {"reasoning_effort": ""},
+    "limits": {"agent_calls": None, "tokens": None, "wall_time_s": None},
     "logging": {
         "preview_lines": 8,
         "preview_chars": 1600,
@@ -147,218 +75,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "tool_output_tail_lines": 12,
         "activity_preview_chars": 420,
     },
-    "compression": {
-        "enabled": True,
-        "threshold": 0.75,
-        "summary_model": "moonshotai/Kimi-K2.6",
-        "reserved_output_tokens": 20000,
-        "prune_tool_output": True,
-        "prune_keep_recent_user_turns": 2,
-    },
-    "local_models": {
-        "default_runtime": "vllm",
-        "active_runtime": "",
-        "active_model": "",
-        "runtimes": {
-            "vllm": {
-                "host": "127.0.0.1",
-                "port": 8000,
-                "extra_args": [],
-            },
-            "ollama": {
-                "host": "127.0.0.1",
-                "port": 11434,
-                "extra_args": [],
-            },
-            "llama_cpp": {
-                "host": "127.0.0.1",
-                "port": 8080,
-                "extra_args": [],
-            },
-        },
-    },
-    "custom_providers": [],
 }
 
 DEFAULT_CONFIG_HEADER = """# LeanFlow configuration
 #
-# Main workflow model:
-#   model.default is the primary agent model used for prove/autoprove/formalize.
-#   The installation default is moonshotai/Kimi-K2.7-Code.
-#
-# Auxiliary theorem advisor:
-#   auxiliary.lean_reasoning is used by the lean_reasoning_help tool when the
-#   primary model is stuck on a hard theorem. By default it uses the same
-#   endpoint/API key as the main model (`provider: main`) but asks
-#   moonshotai/Kimi-K2.6-int4 with high reasoning effort when the endpoint
-#   supports explicit reasoning controls.
-#
-# Auxiliary helper decomposer:
-#   auxiliary.lean_decompose_helpers is used by the lean_decompose_helpers tool
-#   when the useful next step is splitting a hard theorem into helper lemmas.
-#   Empty values inherit auxiliary.lean_reasoning, so you can leave this blank
-#   until you want a separate decomposition-planner model/provider.
-#
-# Persistence coach:
-#   auxiliary.manager_nudge supplies the short encouragement message after a
-#   rejected prover turn. The default auto route selects an available auxiliary
-#   provider, while low reasoning effort keeps this message-only call fast.
-#
-# Orchestrator routing turn:
-#   auxiliary.orchestration is used by the LLM routing layer over the
-#   deterministic orchestrator floor. The default (`provider: main`, empty
-#   model) means the strong main-agent model decides routing; set
-#   auxiliary.orchestration.model to pin a different one. Its strict JSON turn
-#   disables hidden RCP reasoning by default so a thinking model cannot spend
-#   its output budget before replying; set reasoning_effort to low/medium/high
-#   to opt back in.
-#   auxiliary.planner_synthesis is the planner synthesizer turn. Empty values
-#   inherit auxiliary.orchestration — i.e. the strong main-agent model by default.
-#   Its strict JSON turn also defaults to non-thinking mode; set a planner-
-#   specific or orchestration reasoning_effort to opt back in.
-#
-# Formalization verifiers:
-#   auxiliary.blueprint_verification controls the independent statement/source
-#   review pass for document formalization blueprints. `main` keeps the existing
-#   managed reviewer-agent behavior; codex / claude-code run command reviewers;
-#   other auxiliary model providers produce advisory review reports.
-#   auxiliary.autoformalizer_verification controls advisory review around the
-#   autoformalization handoff verifier. Its default `local` setting uses the
-#   deterministic local blueprint/Lean checks only. Non-local providers can
-#   review or propose corrections, but cannot override Lean/local verification.
-#
-# Common model changes:
-#   - Change the primary model: model.default
-#   - Change the primary provider: model.provider
-#   - Use your Codex CLI login as the primary provider:
-#     model.provider=codex, with optional LEANFLOW_CODEX_MODEL override
-#   - Change a custom OpenAI-compatible endpoint: model.base_url or
-#     LEANFLOW_OPENAI_BASE_URL in ~/.leanflow/.env
-#   - Override a model context window when provider metadata is missing or
-#     wrong: model.context_lengths.<model-id>
-#   - Change the theorem advisor model: auxiliary.lean_reasoning.model
-#   - Change the theorem advisor reasoning budget:
-#     auxiliary.lean_reasoning.reasoning_effort
-#   - Use a separate helper-decomposition planner:
-#     auxiliary.lean_decompose_helpers.model and
-#     auxiliary.lean_decompose_helpers.reasoning_effort
-#   - Use a separate persistence coach model:
-#     auxiliary.manager_nudge.model and auxiliary.manager_nudge.reasoning_effort
-#   - Use separate formalization verifiers:
-#     auxiliary.blueprint_verification.provider and
-#     auxiliary.autoformalizer_verification.provider
-#   - Use a separate theorem advisor endpoint: set
-#     auxiliary.lean_reasoning.base_url and auxiliary.lean_reasoning.api_key,
-#     or AUXILIARY_LEAN_REASONING_BASE_URL / AUXILIARY_LEAN_REASONING_API_KEY
-#     in ~/.leanflow/.env
-#   - Use an opt-in command advisor: pass --expert-provider codex or
-#     --expert-provider claude-code on a workflow, or set
-#     auxiliary.lean_reasoning.provider to codex / claude-code. Override the
-#     command with auxiliary.lean_reasoning.command_template or
-#     AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE. Commands receive the full
-#     advisor prompt on stdin and run without a shell.
-#
-# Workflow/runtime tuning:
-#   - agent.max_turns controls the managed workflow API-step budget.
-#   - logging.preview_lines and logging.preview_chars control how much
-#     prompt, assistant, and reasoning context appears in run logs.
-#   - leanflow.sandbox controls the optional container sandbox runtime.
-#
+# Native backends: codex, claude, lemex. Each CLI owns its login, API credentials,
+# endpoint, sampling, context compression, and session history.
+# model.default and agent.reasoning_effort are optional explicit overrides.
+# Empty values preserve the native CLI's configured defaults.
+# Auxiliary role values are optional overrides; empty values inherit the launch.
+# limits are global across a campaign: null means unlimited, 0 means exhausted.
+# One native CLI invocation is one agent call. Reported token usage can stop
+# subsequent calls; an active call can overshoot the token limit.
 """
 
 DEFAULT_ENV_TEMPLATE = """# LeanFlow environment overrides
-#
-# Leave values empty until you want to configure a provider. Values in this
-# file are loaded by the LeanFlow CLI and can be overridden by process env vars.
-
-# OpenAI-compatible primary endpoint, including EPFL RCP-style endpoints.
-LEANFLOW_OPENAI_BASE_URL=
-LEANFLOW_OPENAI_API_KEY=
-
-# OpenRouter fallback/primary endpoint.
-OPENROUTER_API_KEY=
-
-# Direct provider keys.
-KIMI_API_KEY=
-GLM_API_KEY=
-ZAI_API_KEY=
-ANTHROPIC_API_KEY=
-DEEPSEEK_API_KEY=
-MINIMAX_API_KEY=
-
-# Optional Codex primary overrides. With model.provider=codex, LeanFlow reads
-# the existing Codex CLI login and model settings from ~/.codex.
-LEANFLOW_CODEX_MODEL=
-LEANFLOW_CODEX_REASONING_EFFORT=
-
-# Optional per-task theorem-advisor overrides for lean_reasoning_help.
-AUXILIARY_LEAN_REASONING_PROVIDER=
-AUXILIARY_LEAN_REASONING_MODEL=
-AUXILIARY_LEAN_REASONING_REASONING_EFFORT=
-AUXILIARY_LEAN_REASONING_BASE_URL=
-AUXILIARY_LEAN_REASONING_API_KEY=
-AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE=
-
-# Optional per-task overrides for lean_decompose_helpers. Leave empty to
-# inherit auxiliary.lean_reasoning / AUXILIARY_LEAN_REASONING_*.
-AUXILIARY_LEAN_DECOMPOSE_HELPERS_PROVIDER=
-AUXILIARY_LEAN_DECOMPOSE_HELPERS_MODEL=
-AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT=
-AUXILIARY_LEAN_DECOMPOSE_HELPERS_BASE_URL=
-AUXILIARY_LEAN_DECOMPOSE_HELPERS_API_KEY=
-AUXILIARY_LEAN_DECOMPOSE_HELPERS_COMMAND_TEMPLATE=
-
-# Optional persistence-coach overrides. The default provider is auto and the
-# default reasoning effort is low.
-AUXILIARY_MANAGER_NUDGE_PROVIDER=
-AUXILIARY_MANAGER_NUDGE_MODEL=
-AUXILIARY_MANAGER_NUDGE_REASONING_EFFORT=
-AUXILIARY_MANAGER_NUDGE_BASE_URL=
-AUXILIARY_MANAGER_NUDGE_API_KEY=
-AUXILIARY_MANAGER_NUDGE_COMMAND_TEMPLATE=
-
-# Optional orchestrator routing overrides. Reasoning defaults to off because
-# this turn returns a small strict JSON decision. The advisory turn defaults
-# to 75 seconds outside research mode. Research mode uses a target-scoped
-# 12,000-character digest and caps the isolated foreground consult at 20
-# seconds; LEANFLOW_ORCHESTRATOR_LLM_TIMEOUT_S may lower that ceiling.
-AUXILIARY_ORCHESTRATION_PROVIDER=
-AUXILIARY_ORCHESTRATION_MODEL=
-AUXILIARY_ORCHESTRATION_REASONING_EFFORT=
-AUXILIARY_ORCHESTRATION_BASE_URL=
-AUXILIARY_ORCHESTRATION_API_KEY=
-AUXILIARY_ORCHESTRATION_COMMAND_TEMPLATE=
-LEANFLOW_ORCHESTRATOR_LLM_TIMEOUT_S=
-
-# Optional formalization verifier overrides. Providers use the same names as
-# expert help: main/auto/openrouter/custom for model-backed review, codex or
-# claude-code for command review, and local for deterministic local checks.
-AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER=
-AUXILIARY_BLUEPRINT_VERIFICATION_MODEL=
-AUXILIARY_BLUEPRINT_VERIFICATION_REASONING_EFFORT=
-AUXILIARY_BLUEPRINT_VERIFICATION_BASE_URL=
-AUXILIARY_BLUEPRINT_VERIFICATION_API_KEY=
-AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE=
-
-AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER=
-AUXILIARY_AUTOFORMALIZER_VERIFICATION_MODEL=
-AUXILIARY_AUTOFORMALIZER_VERIFICATION_REASONING_EFFORT=
-AUXILIARY_AUTOFORMALIZER_VERIFICATION_BASE_URL=
-AUXILIARY_AUTOFORMALIZER_VERIFICATION_API_KEY=
-AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE=
-
-LEANFLOW_EXPERT_CODEX_COMMAND_TEMPLATE=
-LEANFLOW_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE=
-
-# Escape hatch for intentional Lean statement refactors. Keep empty by default.
+# Native runtime configuration stays with its CLI and is inherited unchanged.
+# Configure OPENAI_API_KEY, ANTHROPIC_API_KEY, or LEMEX_BASE_URL / LEMEX_API_KEY
+# in your shell or the corresponding runtime's native setup, not this file.
+LEANFLOW_INFERENCE_PROVIDER=
 LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS=
-
-# Prefix-cache prompt optimization. On autonomous continuation cycles, stop
-# re-sending the static skill contract (it stays available via the system-prompt
-# skills catalog and skill_view). Reduces per-cycle input tokens ~8-12% on both
-# RCP and codex routes with no measured quality regression. Enabled by default;
-# set to 0 to disable.
-LEANFLOW_RCP_PREFIX_CACHE=1
 """
 
 DEFAULT_SOUL_MD = """# LeanFlow
@@ -416,18 +152,8 @@ def _ensure_default_config_file(home: Path) -> None:
         _secure_file(config_path)
         return
 
-    try:
-        payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        _secure_file(config_path)
-        return
-    if not isinstance(payload, Mapping):
-        _secure_file(config_path)
-        return
-
-    merged = _deep_merge(DEFAULT_CONFIG, payload)
-    if merged != payload:
-        config_path.write_text(default_config_yaml(merged), encoding="utf-8")
+    # Existing configuration is user-owned, including retired settings. A load
+    # can explain migration, but must never silently rewrite keys or choices.
     _secure_file(config_path)
 
 
@@ -478,12 +204,62 @@ def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, 
     return result
 
 
+def native_config_migration_required(config: Mapping[str, Any]) -> bool:
+    """Detect retired routing/defaults without guessing which model was intentional."""
+    if config.get("schema_version", NATIVE_CONFIG_VERSION) != NATIVE_CONFIG_VERSION:
+        return True
+    if any(key in config for key in ("custom_providers", "local_models", "compression")):
+        return True
+    model = config.get("model")
+    if isinstance(model, str) and model.strip():
+        return True
+    if isinstance(model, Mapping) and str(model.get("provider", "") or "").strip().lower() not in {
+        "",
+        "codex",
+        "claude",
+        "lemex",
+    }:
+        return True
+    if isinstance(model, Mapping) and any(
+        key in model for key in ("base_url", "api_key", "context_lengths", "prover_light")
+    ):
+        return True
+    agent = config.get("agent")
+    if isinstance(agent, Mapping) and any(
+        key in agent for key in ("max_turns", "temperature", "seed", "top_p", "top_k", "min_p")
+    ):
+        return True
+    auxiliary = config.get("auxiliary")
+    return isinstance(auxiliary, Mapping) and any(
+        isinstance(role, Mapping)
+        and any(
+            key in role
+            for key in (
+                "base_url",
+                "api_key",
+                "command_template",
+                "codex_command_template",
+                "claude_code_command_template",
+            )
+        )
+        for role in auxiliary.values()
+    )
+
+
+def _merge_config_defaults(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge current defaults in memory and retain an explicit legacy schema marker."""
+    merged = _deep_merge(DEFAULT_CONFIG, payload)
+    if native_config_migration_required(payload):
+        merged["schema_version"] = 1
+    return merged
+
+
 def ensure_leanflow_home() -> Path:
     home = get_leanflow_home()
     ensure_directory(home)
     _secure_dir(home)
     _ensure_default_soul_md(home)
-    for subdir in ("sessions", "logs", "memories", "workflow-state", "local-models"):
+    for subdir in ("sessions", "logs", "memories", "workflow-state"):
         target = ensure_directory(home / subdir)
         _secure_dir(target)
     _ensure_default_config_file(home)
@@ -534,7 +310,7 @@ def load_config() -> dict[str, Any]:
         return deepcopy(DEFAULT_CONFIG)  # transient read/parse error: do not cache
     if not isinstance(payload, Mapping):
         return deepcopy(DEFAULT_CONFIG)  # malformed config: do not cache
-    merged = _deep_merge(DEFAULT_CONFIG, payload)
+    merged = _merge_config_defaults(payload)
     _CONFIG_CACHE = merged
     _CONFIG_CACHE_KEY = cache_key
     return deepcopy(merged)

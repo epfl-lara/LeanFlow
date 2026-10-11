@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
-from leanflow_cli.workflows.prover.models import Node
+from leanflow_cli.workflows.prover.models import Node, digest
 from leanflow_cli.workflows.prover.negation import NegationTask
-from leanflow_cli.workflows.prover.session_context import tool_result_message
 from leanflow_cli.workflows.prover.source import SourceDocument, write_source
 
 if TYPE_CHECKING:
@@ -82,6 +81,8 @@ def candidate_feedback(
             return {**result, "submission_format": SUBMISSION_CONTRACT}
         runtime._assert_sources()
         source = render_submission(task, candidate[0])
+        revision = node.revision
+        source_hash = digest(source)
         # This belongs to the still-running job, not the terminal proof cache.
         # Persist before checking so a final-call JSON candidate can be rechecked
         # after an interrupted verifier without buying another model allocation.
@@ -116,6 +117,12 @@ def candidate_feedback(
         )
     with runtime.lock:
         runtime._assert_sources()
+        current = runtime.dag.by_id().get(job["node_id"])
+        if current is None or current.revision != revision:
+            return {
+                "accepted": False,
+                "error": "The assignment changed during negation verification.",
+            }
         job["negation_submission_feedback"] = result
         if result.get("accepted") is not True:
             job.pop("negation_pending_submission", None)
@@ -124,12 +131,10 @@ def candidate_feedback(
             {"job_id": job["id"], "node_id": node.id, "result": result},
         )
         runtime._persist()
-    feedback, artifact = tool_result_message(result, Path(job["workspace"]))
-    if artifact is not None:
-        job.setdefault("artifacts", []).append(str(artifact))
     return {
         "accepted": result.get("accepted") is True,
-        "feedback": feedback,
+        "feedback": json.dumps(result, ensure_ascii=False, default=str),
+        "receipt": {"node_id": job["node_id"], "revision": revision, "source_hash": source_hash},
         "evidence_path": str(file),
         "submission_format": SUBMISSION_CONTRACT,
     }

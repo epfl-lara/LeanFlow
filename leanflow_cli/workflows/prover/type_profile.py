@@ -8,9 +8,11 @@ import os
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
+from core.deadlines import deadline_after, remaining_seconds
 from leanflow_cli.workflows.prover.models import digest
 
 _MODULE = "LeanFlowTypeProfileInput"
@@ -111,10 +113,11 @@ def compiled_type_profiles(
     source: str,
     names: list[str],
     workspace: Path,
-    timeout_s: float,
+    timeout_s: float | None,
     mutable_names: list[str] | None = None,
     module: str | None = None,
     artifact: Path | None = None,
+    cancelled: Callable[[], bool] | None = None,
     on_stage: Callable[[str, Callable[[], dict[str, Any]]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Compile untouched source before importing trusted introspection support.
@@ -132,7 +135,7 @@ def compiled_type_profiles(
     """
     from leanflow_cli.workflows.prover.check_process import isolated_command
 
-    deadline = time.monotonic() + timeout_s
+    deadline = deadline_after(timeout_s)
     compiled_module = module or _MODULE
     timing: dict[str, float] = {}
 
@@ -147,8 +150,10 @@ def compiled_type_profiles(
     workspace.mkdir(parents=True, exist_ok=True)
     # Transient symlinks must not enter the durable resume tree: a hard kill
     # cannot run cleanup, and resume deliberately refuses symlinked evidence.
-    with tempfile.TemporaryDirectory(prefix="leanflow-type-profile-") as temporary:
-        directory = Path(temporary).resolve()
+    with ExitStack() as cleanup:
+        directory = Path(
+            cleanup.enter_context(tempfile.TemporaryDirectory(prefix="leanflow-profile-compile-"))
+        ).resolve()
         input_file = directory.joinpath(*compiled_module.split(".")).with_suffix(".lean")
         input_file.parent.mkdir(parents=True, exist_ok=True)
         compiled_artifact = input_file.with_suffix(".olean")
@@ -168,7 +173,8 @@ def compiled_type_profiles(
                     str(compiled_artifact),
                     str(input_file),
                 ],
-                timeout_s=max(0.01, deadline - time.monotonic()),
+                timeout_s=remaining_seconds(deadline),
+                cancelled=cancelled,
             ),
         )
         if not compiled.get("success") or not compiled_artifact.is_file():
@@ -178,20 +184,26 @@ def compiled_type_profiles(
                 "compile": compiled,
                 "timing": timing,
             }
+        content = compiled_artifact.read_bytes()
+        # A compiler child can outlive an ancestry scan on some operating
+        # systems. Give trusted inspection a fresh write domain that no source
+        # compiler ever held, and freeze only the completed artifact across it.
+        directory = Path(
+            cleanup.enter_context(tempfile.TemporaryDirectory(prefix="leanflow-profile-inspect-"))
+        ).resolve()
+        compiled_artifact = directory.joinpath(*compiled_module.split(".")).with_suffix(".olean")
+        compiled_artifact.parent.mkdir(parents=True, exist_ok=True)
         retained: dict[str, Any] = {}
         if artifact is not None:
-            # Copy immediately after the candidate compiler has been reaped, then
-            # inspect exactly the retained bytes so publication never trusts more
-            # than the kernel inspection did.
-            content = compiled_artifact.read_bytes()
             artifact.parent.mkdir(parents=True, exist_ok=True)
             artifact.write_bytes(content)
-            compiled_artifact.unlink()
             os.symlink(artifact, compiled_artifact)
             retained = {
                 "artifact": str(artifact),
                 "artifact_sha256": hashlib.sha256(content).hexdigest(),
             }
+        else:
+            compiled_artifact.write_bytes(content)
         if module is not None:
             package = compiled_module.split(".")[0]
             _shadow_package_root(
@@ -202,8 +214,6 @@ def compiled_type_profiles(
             )
             if published_root.is_file() and not (directory / f"{package}.olean").exists():
                 os.symlink(published_root, directory / f"{package}.olean")
-        # Create trusted inspector bytes only after all candidate compile processes
-        # have been reaped. The inspector loads the artifact dynamically at run time.
         inspector = directory / "Inspect.lean"
         inspector.write_text(_INSPECTOR)
         inspected = run_stage(
@@ -223,7 +233,9 @@ def compiled_type_profiles(
                     "--",
                     *(mutable_names or []),
                 ],
-                timeout_s=max(0.01, deadline - time.monotonic()),
+                timeout_s=remaining_seconds(deadline),
+                cancelled=cancelled,
+                extra_readable_roots=(artifact,) if artifact is not None else (),
             ),
         )
         if not inspected.get("success"):

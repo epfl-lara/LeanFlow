@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import research_mode
 
 
@@ -32,13 +31,6 @@ def test_job_multipliers_raise_but_epoch_cycles_stay_bounded(research_on):
     assert research_mode.scaled_max_cycles(120) == 120
     assert research_mode.scaled_prover_job_turns(40) == 80
     assert research_mode.scaled_lane_iterations(24) == 48
-
-
-def test_runner_ceiling_scales(research_on, monkeypatch):
-    monkeypatch.delenv("LEANFLOW_NATIVE_AUTONOMOUS_MAX_CYCLES", raising=False)
-    assert runner._autonomous_max_cycles() == 120
-    monkeypatch.delenv("LEANFLOW_RESEARCH_MODE", raising=False)
-    assert runner._autonomous_max_cycles() == 120
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +78,7 @@ def test_profile_env_enables_all_research_surfaces():
     assert env["LEANFLOW_NEGATION_PROBE"] == "1"
     assert env["LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK"] == "1"
     assert env["LEANFLOW_MANAGER_LLM_MODE"] == "live"
-    assert env["LEANFLOW_ORCHESTRATOR_CADENCE_CYCLES"] == "4"
+    assert "LEANFLOW_ORCHESTRATOR_CADENCE_CYCLES" not in env
     assert env["LEANFLOW_DISPATCH_MAX_CONCURRENT"] == "2"
     assert env["LEANFLOW_BACKGROUND_PROVIDER_CAPACITY"] == "2"
     assert env["LEANFLOW_PROJECT_LEAN_ADMISSION"] == "1"
@@ -144,38 +136,6 @@ def test_planner_parallelism_shares_research_worker_capacity(research_on, monkey
     assert research_mode.planner_lane_parallelism(3) == 2
     monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "0")
     assert research_mode.planner_lane_parallelism(3) == 1
-
-
-# ---------------------------------------------------------------------------
-# Budget-pressure message (run_agent branch): text only, math unchanged
-# ---------------------------------------------------------------------------
-
-
-def _agent_stub() -> Any:
-    from types import SimpleNamespace
-
-    return SimpleNamespace(
-        _budget_pressure_enabled=True,
-        max_iterations=10,
-        _budget_warning_threshold=0.9,
-        _budget_caution_threshold=0.7,
-    )
-
-
-def test_budget_warning_research_branch(monkeypatch, research_on):
-    from run_agent import AIAgent
-
-    stub = _agent_stub()
-    warning = AIAgent._get_budget_warning(stub, 9)
-    assert "decision packet" in warning and "route request" in warning
-    assert "Iteration 9/10" in warning  # the math is untouched
-    caution = AIAgent._get_budget_warning(stub, 7)
-    assert "decision packet" in caution
-
-    monkeypatch.delenv("LEANFLOW_RESEARCH_MODE", raising=False)
-    classic = AIAgent._get_budget_warning(stub, 9)
-    assert "Provide your final response NOW" in classic
-    assert AIAgent._get_budget_warning(stub, 1) is None
 
 
 # ---------------------------------------------------------------------------

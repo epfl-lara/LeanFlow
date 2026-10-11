@@ -1,4 +1,4 @@
-"""Manage fixed-budget job workspaces, session accounting, and durable handoffs."""
+"""Manage isolated jobs, native invocation accounting, and verified handoffs."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -33,11 +34,7 @@ if TYPE_CHECKING:
 
 def job_budget(config: ProverConfig, role: str) -> int:
     """Calls one job of this role may spend. Negation has its own, smaller budget."""
-    if role == "prover":
-        return config.job_api_calls
-    if role == "negation":
-        return config.negation_api_calls
-    return config.orchestrator_api_calls
+    return 1
 
 
 def new_job(
@@ -49,7 +46,8 @@ def new_job(
         and (role, prompt) in runtime.resume_role_jobs
     ):
         job = runtime.resume_role_jobs[(role, prompt)]
-        remaining = job["api_budget"] - job["api_calls"]
+        remaining = 1
+        job["api_budget"] = job["api_calls"] + 1
         job["reserved_calls"] = runtime._reserve(remaining)
         if job["reserved_calls"] != remaining:
             runtime.reserved -= job["reserved_calls"]
@@ -75,7 +73,8 @@ def new_job(
     resumed_jobs = runtime.resume_negation_jobs if role == "negation" else runtime.resume_jobs
     if role in {"prover", "negation"} and node is not None and node.id in resumed_jobs:
         job = resumed_jobs[node.id]
-        remaining = job["api_budget"] - job["api_calls"]
+        remaining = 1
+        job["api_budget"] = job["api_calls"] + 1
         runtime._ensure_active()
         job["reserved_calls"] = runtime._reserve(remaining) if remaining else 0
         if job["reserved_calls"] != remaining:
@@ -157,10 +156,6 @@ def new_job(
                 or os.getenv("LEANFLOW_NATIVE_REASONING_EFFORT", "")
             ),
             "model": role_settings["model"],
-            "context_tokens": role_settings["context_tokens"],
-            "compression": role_settings["compression"],
-            "compression_threshold": role_settings["compression_threshold"],
-            "compression_target": role_settings["compression_target"],
         }
         if node:
             scratch = workspace / "Scratch.lean"
@@ -363,23 +358,43 @@ def invoke(
             )
         }
         settings["_cancelled"] = runtime.cancelled.is_set
+        settings["_bridge_registry"] = runtime.native_bridges
         if job["role"] == "prover":
             settings["_research_job"] = lambda question: research_job(runtime, job, question)
-            settings["_candidate_feedback"] = lambda response: candidate_feedback(
-                runtime, job, response
-            )
+            submission_lock = threading.Lock()
+
+            def submit(response: str) -> dict[str, Any]:
+                with submission_lock:
+                    return candidate_feedback(runtime, job, response)
+
+            settings["_candidate_feedback"] = submit
         elif job["role"] == "negation":
             from leanflow_cli.workflows.prover.negation_submission import (
                 candidate_feedback as negation_candidate_feedback,
             )
 
-            settings["_candidate_feedback"] = lambda response: negation_candidate_feedback(
-                runtime, job, response
-            )
+            submission_lock = threading.Lock()
+
+            def submit_negation(response: str) -> dict[str, Any]:
+                with submission_lock:
+                    return negation_candidate_feedback(runtime, job, response)
+
+            settings["_candidate_feedback"] = submit_negation
             pending_submission = job.get("negation_pending_submission")
             if job.get("resumed") and isinstance(pending_submission, dict):
                 settings["_pending_submission_response"] = json.dumps(pending_submission)
-        settings["wall_time_s"] = max(1.0, runtime.config.wall_time_s - runtime._elapsed())
+        if context.get("planning_stage") in {"outline", "proposal", "review"}:
+            from leanflow_cli.workflows.prover.planning_feedback import report_feedback
+
+            affected = context.get("planning_affected")
+            settings["_report_feedback"] = lambda response: report_feedback(
+                response,
+                stage=context["planning_stage"],
+                dag=runtime.dag,
+                max_nodes=runtime.config.max_nodes,
+                affected=set(affected) if affected is not None else None,
+            )
+        settings["wall_time_s"] = runtime._remaining_verification_time()
         return runtime.session(
             role=job["role"],
             prompt=prompt,
@@ -392,19 +407,24 @@ def invoke(
             on_event=lambda kind, details: runtime._session_event(job, kind, details),
         )
     except Exception as error:
+        from agent.runtime.harness import BackendError
+        from agent.runtime.harness.isolation import IsolationUnavailable
+
         return {
             "status": (
                 error.status
                 if isinstance(error, (InfrastructureFailure, SessionInterrupted))
-                else ("source_conflict" if "protected source changed" in str(error) else "error")
+                else (
+                    "environment_error"
+                    if isinstance(error, (BackendError, IsolationUnavailable))
+                    else (
+                        "source_conflict" if "protected source changed" in str(error) else "error"
+                    )
+                )
             ),
             "final_response": str(error),
             "api_calls": job.get("api_calls", 0),
         }
-
-    finally:
-        if hasattr(runtime.verifier, "close"):
-            runtime.verifier.close(runtime.store.directory / "checks" / job["id"])
 
 
 def candidate_feedback(
@@ -455,10 +475,23 @@ def candidate_feedback(
         )
     with runtime.lock:
         runtime._assert_sources()
+        current_node = runtime.dag.by_id().get(checked_node.id)
+        current_key = (
+            submission_key(runtime, current_node, source) if current_node is not None else ""
+        )
+        if (
+            current_node is None
+            or current_node.revision != checked_node.revision
+            or current_key != checked_inputs
+        ):
+            return {
+                "accepted": False,
+                "error": "The assignment or its dependencies changed during verification; submit against the current assignment.",
+            }
         runtime.submission_cache.remember(
-            node,
+            current_node,
             checked_inputs,
-            submission_key(runtime, node, source),
+            current_key,
             result,
             conditional=bool(unresolved),
         )
@@ -472,15 +505,15 @@ def candidate_feedback(
                 "result": result,
             },
         )
-    from leanflow_cli.workflows.prover.session_context import tool_result_message
-
-    feedback, artifact = tool_result_message(result, Path(job["workspace"]))
-    if artifact is not None:
-        job.setdefault("artifacts", []).append(str(artifact))
     return {
         "accepted": result.get("accepted") is True,
         "conditional": bool(unresolved),
-        "feedback": feedback,
+        "receipt": {
+            "node_id": checked_node.id,
+            "revision": checked_node.revision,
+            "input_hash": checked_inputs,
+        },
+        "feedback": json.dumps(result, ensure_ascii=False, default=str),
     }
 
 
@@ -511,6 +544,8 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
             runtime.stopping = True
             runtime.state["stop_status"] = "interrupted"
         merge_usage(job, result)
+        job["usage_known"] = result.get("usage_known", False)
+        job["session_id"] = result.get("session_id", "")
         for field in ("report_path", "artifacts"):
             if field in result:
                 job[field] = result[field]
@@ -622,7 +657,7 @@ def research_job(runtime: ProverRuntime, parent: dict[str, Any], question: str) 
 
 def prover_prompt(runtime: ProverRuntime, node: Node) -> str:
     return (
-        "Prove the assigned Lean declaration. Work persistently within this fixed API allocation; "
+        "Prove the assigned Lean declaration. Work persistently in this native agent session; "
         "continue concrete proof attempts rather than repeating search or requesting advice. "
         "Write your informal approach and failed attempts to the supplied private plan_path. "
         "Use scratch_file for LeanProbe experiments. Original source, PLAN and DAG are read-only. "
@@ -636,6 +671,6 @@ def prover_prompt(runtime: ProverRuntime, node: Node) -> str:
         "Alternatively write candidate_path (one-hole proof) or edit only the assigned scratch holes. "
         "Replace the literal sorry, not the complete declaration. In a tactic block use tactics; "
         "in a term position use an appropriate term or by-block. A local decomposition stays within "
-        "this same budget; it does not launch a new advisory session. If unsolved, return honest "
+        "this same conversation; it does not launch a new advisory session. If unsolved, return honest "
         "notes, preserved partial work, and whether a specific additional attempt is promising."
     )

@@ -72,32 +72,3 @@ def test_offline_config_survives_role_projection() -> None:
     config = ProverConfig.from_env({"LEANFLOW_PROVER_ALLOW_INTERNET": "0"})
     for role in ("prover", "negation", "orchestrator", "review", "research"):
         assert config.to_mapping(role)["allow_internet"] is False
-
-
-def test_codex_rotation_reads_local_store_without_a_model_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from leanflow_cli.runtime import auth
-    from leanflow_cli.workflows.prover.session_transport import refresh_stored_credentials
-
-    refreshed = []
-    agent = SimpleNamespace(
-        provider="openai-codex",
-        api_key="old",
-        base_url="https://example.org",
-        _try_refresh_codex_client_credentials=lambda **kwargs: refreshed.append(kwargs) or True,
-    )
-    monkeypatch.setattr(
-        auth,
-        "resolve_codex_runtime_credentials",
-        lambda **_: {"api_key": "new", "base_url": "https://example.org"},
-    )
-    refresh_stored_credentials(agent)
-    assert refreshed == [{"force": False}]
-    monkeypatch.setattr(
-        auth,
-        "resolve_codex_runtime_credentials",
-        lambda **_: {"api_key": "old", "base_url": "https://example.org"},
-    )
-    refresh_stored_credentials(agent)
-    assert len(refreshed) == 1

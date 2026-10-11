@@ -161,7 +161,7 @@ def test_prove_preview_reports_effective_prover_configuration(monkeypatch, tmp_p
         {
             "LEANFLOW_PROVER_MODE": "research",
             "LEANFLOW_PROVER_PARALLELISM": "4",
-            "LEANFLOW_PROVER_TOTAL_API_CALLS": "2000",
+            "LEANFLOW_PROVER_AGENT_CALLS": "2000",
             "LEANFLOW_PROVER_WALL_TIME_S": "28800",
             "LEANFLOW_NATIVE_MODEL": "gpt-6-astra",
             "LEANFLOW_NATIVE_ALLOWED_AXIOMS": "propext,Classical.choice",
@@ -174,7 +174,7 @@ def test_prove_preview_reports_effective_prover_configuration(monkeypatch, tmp_p
     assert prover["error"] == ""
     assert prover["effective"]["mode"] == "research"
     assert prover["effective"]["parallelism"] == 4
-    assert prover["effective"]["total_api_calls"] == 2000
+    assert prover["effective"]["agent_calls"] == 2000
     assert prover["effective"]["model"] == "gpt-6-astra"
     assert prover["effective"]["allowed_axioms"] == ["propext", "Classical.choice"]
     assert prover["sources"]["mode"] == "environment"
@@ -185,8 +185,8 @@ def test_prove_preview_reports_effective_prover_configuration(monkeypatch, tmp_p
     assert prover["env_names"]["parallelism"] == "LEANFLOW_PROVER_PARALLELISM"
     assert any("run id" in item for item in payload["deferred"])
     summary = describe_launch_plan(plan)["prover_config"]
-    assert summary.startswith("research · top-down · 4 prover slot(s) · 2000 calls")
-    assert "8 h wall" in summary
+    assert summary.startswith("research · top-down · 4 prover slot(s) · 2000 agent calls")
+    assert "28800 s global time" in summary
     assert payload["summary"]["prover_config"] == summary
 
 

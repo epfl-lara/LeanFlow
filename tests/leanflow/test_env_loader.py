@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 
-from agent.providers.auxiliary_client import _resolve_task_provider_model
 from leanflow_cli.runtime.env_loader import (
     NATIVE_AUXILIARY_API_KEY_ENV,
     NATIVE_AUXILIARY_BASE_URL_ENV,
@@ -110,44 +109,48 @@ def test_load_leanflow_dotenv_accepts_explicit_home_kwarg(monkeypatch, tmp_path)
     assert os.environ["EXPLICIT_ONLY_KEY"] == "yes"
 
 
-def test_reassert_native_auxiliary_provider_wins_after_dotenv_reload(monkeypatch, tmp_path):
+def test_leanflow_env_files_cannot_replace_native_runtime_setup(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    (home / ".env").write_text(
-        "AUXILIARY_ORCHESTRATION_PROVIDER=auto\n" "AUXILIARY_LEAN_REASONING_PROVIDER=\n",
-        encoding="utf-8",
+    names = (
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "CODEX_HOME",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "LEMEX_HOME",
+        "LEMEX_API_KEY",
+        "LEMEX_BASE_URL",
+        "LEANFLOW_OPENAI_API_KEY",
+        "LEANFLOW_NATIVE_API_KEY",
+        "LEANFLOW_NATIVE_BASE_URL",
     )
-    monkeypatch.setenv(NATIVE_AUXILIARY_PROVIDER_ENV, "custom")
-    monkeypatch.setenv(NATIVE_AUXILIARY_BASE_URL_ENV, "https://rcp.example/v1")
-    monkeypatch.setenv(NATIVE_AUXILIARY_API_KEY_ENV, "rcp-key")
-    monkeypatch.setenv(NATIVE_AUXILIARY_MODEL_ENV, "zai-org/GLM-5.2")
-    monkeypatch.setenv(NATIVE_AUXILIARY_REASONING_EFFORT_ENV, "xhigh")
-    for suffix in ("BASE_URL", "API_KEY", "MODEL", "REASONING_EFFORT"):
-        for name in _native_auxiliary_targets(suffix):
-            monkeypatch.setenv(name, "stale")
-    for name in NATIVE_AUXILIARY_PROVIDER_TARGETS:
-        monkeypatch.setenv(name, "stale")
-
+    (home / ".env").write_text("".join(f"{name}=stale-file-value\n" for name in names))
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LEMEX_API_KEY", "exported-native-key")
+    monkeypatch.setenv("LEMEX_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     load_leanflow_dotenv(leanflow_home=home)
-    provider = reassert_native_auxiliary_provider()
+    for name in names:
+        if name not in {"LEMEX_API_KEY", "LEMEX_BASE_URL"}:
+            assert name not in os.environ
+    assert os.environ["LEMEX_API_KEY"] == "exported-native-key"
+    assert os.environ["LEMEX_BASE_URL"] == "https://inference.rcp.epfl.ch/v1"
 
-    assert provider == "custom"
-    for name in NATIVE_AUXILIARY_PROVIDER_TARGETS:
-        assert os.environ[name] == "custom"
-    for name in _native_auxiliary_targets("BASE_URL"):
-        assert os.environ[name] == "https://rcp.example/v1"
+
+def test_auxiliary_override_does_not_relabel_native_credentials(monkeypatch):
+    monkeypatch.setenv(NATIVE_AUXILIARY_PROVIDER_ENV, "lemex")
+    monkeypatch.setenv(NATIVE_AUXILIARY_API_KEY_ENV, "obsolete-secret")
+    monkeypatch.setenv(NATIVE_AUXILIARY_BASE_URL_ENV, "https://obsolete.example")
+    monkeypatch.setenv(NATIVE_AUXILIARY_MODEL_ENV, "chosen-model")
+    monkeypatch.setenv(NATIVE_AUXILIARY_REASONING_EFFORT_ENV, "high")
     for name in _native_auxiliary_targets("API_KEY"):
-        assert os.environ[name] == "rcp-key"
-    for name in _native_auxiliary_targets("MODEL"):
-        assert os.environ[name] == "zai-org/GLM-5.2"
-    for name in _native_auxiliary_targets("REASONING_EFFORT"):
-        assert os.environ[name] == "xhigh"
-    assert _resolve_task_provider_model("planner_synthesis") == (
-        "custom",
-        "zai-org/GLM-5.2",
-        "https://rcp.example/v1",
-        "rcp-key",
-    )
+        monkeypatch.delenv(name, raising=False)
+    assert reassert_native_auxiliary_provider() == "lemex"
+    for name in NATIVE_AUXILIARY_PROVIDER_TARGETS:
+        assert os.environ[name] == "lemex"
+    for name in _native_auxiliary_targets("API_KEY"):
+        assert name not in os.environ
 
 
 def test_reassert_native_auxiliary_provider_is_noop_without_override(monkeypatch):
@@ -158,3 +161,10 @@ def test_reassert_native_auxiliary_provider_is_noop_without_override(monkeypatch
 
     assert provider == ""
     assert os.environ["AUXILIARY_ORCHESTRATION_PROVIDER"] == "custom"
+
+
+def test_workflow_tool_credentials_are_not_native_provider_configuration(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text("BRAVE_API_KEY=tool-secret\n")
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    load_leanflow_dotenv(leanflow_home=tmp_path)
+    assert os.environ["BRAVE_API_KEY"] == "tool-secret"

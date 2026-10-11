@@ -1,11 +1,8 @@
 """Verify request-level cost coverage and durable resume telemetry."""
 
-import json
-
 import pytest
 
 from leanflow_cli.workflows.prover.usage import CostLedger, aggregate_cost, merge_usage
-from tests.leanflow.test_prover_sessions import run_fake
 
 
 @pytest.mark.parametrize(
@@ -64,26 +61,3 @@ def test_live_and_final_resume_totals_are_not_added_twice():
     assert job["costed_api_calls"] == 3
     assert job["input_tokens"] == 17
     assert job["cost_complete"] is True
-
-
-def test_response_usage_is_durable_before_observer_notification(tmp_path, monkeypatch):
-    def request(*_args):
-        return {"role": "assistant", "content": '{"proof":"trivial"}'}, {
-            "cost_usd": 0.25,
-            "input_tokens": 100,
-            "output_tokens": 10,
-        }
-
-    def event(kind, details):
-        if kind == "api-response":
-            saved = json.loads((tmp_path / ".runtime/job/request-count.json").read_text())
-            assert saved["usage"]["input_tokens"] == 100
-            assert saved["usage"]["cost_usd"] == 0.25
-            assert saved["usage"]["costed_api_calls"] == 1
-
-    run_fake(tmp_path, monkeypatch, request, on_event=event)
-    run_fake(tmp_path, monkeypatch, request)
-    saved = json.loads((tmp_path / ".runtime/job/request-count.json").read_text())
-    assert saved["used"] == 2
-    assert saved["usage"]["input_tokens"] == 200
-    assert saved["usage"]["cost_usd"] == 0.5

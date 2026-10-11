@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agent.providers.isolated_auxiliary import sanitize_auxiliary_error
+from core.error_redaction import sanitize_auxiliary_error
 from core.provider_availability import normalize_provider_retry_after
 from leanflow_cli.workflows import (
     campaign_epoch,

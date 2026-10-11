@@ -1,4 +1,4 @@
-"""Preserve safe SDK causes without exposing request credentials or payloads."""
+"""Preserve safe transport causes without exposing request credentials or payloads."""
 
 from __future__ import annotations
 
@@ -6,33 +6,33 @@ import json
 from types import SimpleNamespace
 
 import httpx
-import openai
 import pytest
 
 from leanflow_cli.workflows.prover.session_errors import request_error_details
 
 
-def test_real_sdk_timeout_retains_transport_cause():
+def test_timeout_retains_transport_cause():
     request = httpx.Request("POST", "https://provider.invalid/v1/chat/completions")
-    error = openai.APITimeoutError(request=request)
+    error = TimeoutError("Native bridge timed out.")
     error.__cause__ = httpx.ReadTimeout("The read operation timed out", request=request)
     details = request_error_details(error)
-    assert details["exception_type"] == "APITimeoutError"
-    assert details["message"] == "Request timed out."
+    assert details["exception_type"] == "TimeoutError"
+    assert details["message"] == "Native bridge timed out."
     assert details["causes"] == [
         {"exception_type": "ReadTimeout", "message": "The read operation timed out"}
     ]
 
 
-def test_real_sdk_status_error_keeps_safe_identifiers():
+def test_transport_status_error_keeps_safe_identifiers():
     response = httpx.Response(
         429,
         request=httpx.Request("POST", "https://provider.invalid"),
         headers={"x-request-id": "req-safe-123", "authorization": "Bearer ignored-secret"},
     )
-    error = openai.RateLimitError(
-        "Too many requests", response=response, body={"code": "rate_limit_exceeded"}
-    )
+    error = httpx.HTTPStatusError("Too many requests", request=response.request, response=response)
+    error.status_code = response.status_code
+    error.code = "rate_limit_exceeded"
+    error.request_id = "req-safe-123"
     details = request_error_details(error)
     assert details["status_code"] == 429
     assert details["code"] == "rate_limit_exceeded"

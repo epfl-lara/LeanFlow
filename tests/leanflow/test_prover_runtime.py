@@ -192,7 +192,7 @@ def test_global_budget_caps_all_retry_jobs(tmp_path: Path) -> None:
     )
     result = runtime.run()
     assert result["status"] == "budget_exhausted"
-    assert [job["api_budget"] for job in result["jobs"]] == [2, 1]
+    assert [job["api_budget"] for job in result["jobs"]] == [1, 1, 1]
     assert result["metrics"]["api_calls"] == 3
     assert path.read_text().endswith("by sorry\n")
 
@@ -385,7 +385,7 @@ def test_interrupted_job_resumes_same_admission_ledger_and_scratch(tmp_path: Pat
 
     def resumed_session(**kwargs: Any) -> dict[str, Any]:
         assert kwargs["workspace"] == workspace
-        assert kwargs["api_budget"] == 3
+        assert kwargs["api_budget"] == 2
         assert kwargs["context"]["original_file"] == "Main.lean"
         assert kwargs["context"]["scratch_holes"] == [0]
         return {
@@ -482,7 +482,7 @@ def test_a_stale_finish_never_leaves_its_node_stranded_as_running(tmp_path: Path
     node.status, node.attempts = "running", 1
     node.revision += 1
     runtime._handle_result(
-        job, {"status": "budget_exhausted", "api_calls": 3, "final_response": "{}"}
+        job, {"status": "budget_exhausted", "api_calls": 1, "final_response": "{}"}
     )
     assert job["status"] == "stale"
     assert node.status == "retry"
@@ -580,7 +580,7 @@ def test_rejected_submission_feedback_stays_inside_same_job(tmp_path: Path) -> N
         assert path.read_bytes() == before
         return {
             "status": "candidate",
-            "api_calls": 2,
+            "api_calls": 1,
             "final_response": json.dumps({"proof": "trivial"}),
         }
 
@@ -593,7 +593,7 @@ def test_rejected_submission_feedback_stays_inside_same_job(tmp_path: Path) -> N
     ).run()
     assert state["status"] == "completed"
     assert len(state["jobs"]) == 1
-    assert state["metrics"]["api_calls"] == 2
+    assert state["metrics"]["api_calls"] == 1
 
 
 @pytest.mark.parametrize("research_count", [1, 2])
@@ -613,7 +613,7 @@ def test_standard_prover_child_research_has_separate_bounded_accounting(
             return session(**kwargs)
         assert kwargs["role"] == "research"
         assert "_research_job" not in kwargs["config"]
-        assert kwargs["api_budget"] == 2
+        assert kwargs["api_budget"] == 1
         return {"status": "complete", "api_calls": 1, "final_response": "Recorded parity table."}
 
     state = ProverRuntime(
@@ -861,7 +861,7 @@ def test_negation_provider_failure_resumes_same_job_and_decomposition_allowance(
         nonlocal attempts
         attempts += 1
         assert kwargs["role"] == "negation"
-        assert kwargs["api_budget"] == 3
+        assert kwargs["api_budget"] == attempts
         assert kwargs["context"]["assignment"]["name"] == "negative"
         workspace = Path(kwargs["workspace"])
         if attempts == 1:
@@ -874,7 +874,7 @@ def test_negation_provider_failure_resumes_same_job_and_decomposition_allowance(
         assert "have partial" in Path(kwargs["context"]["scratch_file"]).read_text()
         return {
             "status": "budget_exhausted",
-            "api_calls": 3,
+            "api_calls": 2,
             "final_response": json.dumps({"notes": "no counterexample"}),
         }
 
@@ -925,7 +925,7 @@ def test_negation_provider_failure_resumes_same_job_and_decomposition_allowance(
     assert state["stop_reason"]["code"] == "campaign_recoveries"
     assert len(state["jobs"]) == 1
     assert state["jobs"][0]["resumed"] is True
-    assert state["metrics"]["api_calls"] == 3
+    assert state["metrics"]["api_calls"] == 2
     # This stub answers "decompose" every time and rejects every proposal, the
     # worst case for the hand-back. It must terminate on the CAMPAIGN recovery
     # budget rather than on the first refusal: one unit for the original negate
@@ -956,12 +956,10 @@ def test_orchestrator_reasoning_effort_inherits_the_prover_effort_when_unset() -
     assert ProverConfig(model="m").to_mapping("orchestrator")["reasoning_effort"] == ""
 
 
-def test_unknown_reasoning_effort_is_rejected_rather_than_silently_ignored() -> None:
-    """An unknown level is a no-op downstream, which would silently run at the
-    default effort and invalidate a comparison, so it must fail at config time."""
+def test_native_runtime_owns_reasoning_effort_validation() -> None:
+    """Keep explicit native values intact without a stale LeanFlow vocabulary."""
     for field in ("reasoning_effort", "orchestrator_reasoning_effort"):
-        with pytest.raises(ValueError, match="must be empty or one of"):
-            ProverConfig(model="m", **{field: "light"})
+        assert getattr(ProverConfig(model="m", **{field: "light"}), field) == "light"
 
 
 def test_reasoning_effort_round_trips_through_the_environment() -> None:
@@ -993,4 +991,4 @@ def test_recovery_is_bounded_only_by_the_campaign_wide_budget() -> None:
     # The exhausted budget must be recorded on the node, not returned silently.
     assert "Campaign recovery budget exhausted" in source
     assert not hasattr(ProverConfig(model="m"), "max_node_decompositions")
-    assert ProverConfig(model="m").max_decompositions == 32
+    assert ProverConfig(model="m").max_decompositions is None

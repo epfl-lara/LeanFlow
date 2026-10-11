@@ -1,6 +1,6 @@
 ---
 name: lean-bounded-prover
-description: Complete an assigned Lean sorry in a private scratch job under a fixed provider-call budget.
+description: Complete an assigned Lean sorry in a private scratch job inside a native agent session with optional global limits.
 ---
 
 # Bounded prover
@@ -31,5 +31,8 @@ the complete allowed-axiom profile.
 
 Persist failed approaches and current useful progress in the proof notes.
 Context compaction preserves those notes and the original contract; it does
-not grant calls. Keep trying concrete approaches while budget remains. At
-exhaustion, the runtime writes a report without an additional model call.
+not grant invocations or reset global usage. Use get_assignment and list_operations
+to recover controller facts. Use submit_candidate and poll_operation for an
+independent receipt; continue within this conversation after rejection. The native
+runtime owns context compression. There is no LeanFlow per-response deadline.
+Stop after accepted evidence, explicit global exhaustion or an honest blocker.

@@ -5,6 +5,13 @@ import pytest
 from leanflow_cli.cli.doctor import DOCTOR_MODES, _web_search_payload, run_doctor
 
 
+@pytest.fixture(autouse=True)
+def native_executable_available(monkeypatch):
+    monkeypatch.setattr(
+        "leanflow_cli.cli.doctor.resolve_backend_executable", lambda backend: "/native/" + backend
+    )
+
+
 def test_run_doctor_json_is_structured_in_degraded_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(

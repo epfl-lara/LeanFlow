@@ -7,6 +7,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
+from leanflow_cli.workflows.prover.lean_environment import lean_environment_generation
 from leanflow_cli.workflows.prover.models import Node, digest
 from leanflow_cli.workflows.prover.source import lean_code_mask
 
@@ -44,9 +45,8 @@ def imported_modules(source: str) -> list[str]:
 def import_closure(runtime: ProverRuntime, file: str) -> dict[str, str]:
     """Fingerprint every managed source this file imports, directly or transitively.
 
-    Only these renders determine the compiled environment a candidate was
-    checked against, so publishing an unrelated helper cannot change the
-    verdict. The file itself is excluded: the exact checked source carries it.
+    Compiled and unmanaged dependencies are independently generation-keyed.
+    The file itself is excluded: the exact checked source carries it.
     An unparseable header fails closed to fingerprinting every managed source.
     """
     by_module = {path[:-5].replace("/", "."): path for path in runtime.documents}
@@ -116,6 +116,10 @@ def submission_key(runtime: ProverRuntime, node: Node, source: str) -> str:
                     )
                 },
                 "imports": import_closure(runtime, node.file),
+                "dependency_generation": lean_environment_generation(
+                    runtime.root,
+                    excluded_sources=(runtime.root / path for path in runtime.documents),
+                ),
             },
             sort_keys=True,
         )

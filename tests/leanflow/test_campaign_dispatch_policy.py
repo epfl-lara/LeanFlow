@@ -50,10 +50,11 @@ def test_serial_runner_automatically_advances_without_reassigning_saved_lanes(
     from scripts.lean_imo_campaign import runner
 
     rows = cells([{"id": str(i)} for i in range(3)], CONDITION_SETS["astra-low-luna-high-top"])
-    rows[0].update(lane=3, recovery_attempts=3)
+    rows[0].update(lane=3)
+    rows[0]["config"]["agent_calls"] = 0
     rows[1]["lane"] = 1
     original_configs = json.loads(json.dumps([row["config"] for row in rows]))
-    (tmp_path / "campaign.json").write_text(json.dumps({"cells": rows}))
+    (tmp_path / "campaign.json").write_text(json.dumps({"version": 2, "cells": rows}))
     monkeypatch.setenv("LEANFLOW_CAMPAIGN_LANES", "3")
     monkeypatch.setenv("LEANFLOW_CAMPAIGN_MAX_ACTIVE", "1")
     monkeypatch.setenv("LEANFLOW_CAMPAIGN_CONTINUE_TRANSIENT_ERRORS", "1")
@@ -96,12 +97,16 @@ def test_serial_runner_automatically_advances_without_reassigning_saved_lanes(
 
 def test_truncated_report_does_not_strand_queue_or_interrupt_active_peer(tmp_path, monkeypatch):
     """Replay one report failure while another problem stays active through new admission."""
-    from leanflow_cli.workflows.prover.session_finalization import REPORT_FAILURE
     from scripts.lean_imo_campaign import runner
+
+    report_failure = (
+        "Empty or truncated stage response; the single report-only recovery allowance "
+        "is unavailable or already admitted. No further stage requests will be sent."
+    )
 
     rows = cells([{"id": str(i)} for i in range(3)], CONDITION_SETS["kimi-glm-flash-top"])
     original_configs = json.loads(json.dumps([r["config"] for r in rows]))
-    (tmp_path / "campaign.json").write_text(json.dumps({"cells": rows}))
+    (tmp_path / "campaign.json").write_text(json.dumps({"version": 2, "cells": rows}))
     monkeypatch.setenv("LEANFLOW_CAMPAIGN_LANES", "2")
     monkeypatch.setenv("LEANFLOW_CAMPAIGN_MAX_ACTIVE", "2")
     monkeypatch.delenv("LEANFLOW_CAMPAIGN_CONTINUE_TRANSIENT_ERRORS", raising=False)
@@ -127,7 +132,7 @@ def test_truncated_report_does_not_strand_queue_or_interrupt_active_peer(tmp_pat
             controller_status="provider_error" if failed else "completed", verified=not failed
         )
         if failed:
-            cell["error"] = REPORT_FAILURE
+            cell["error"] = report_failure
 
     monkeypatch.setattr(runner, "launch", launch)
     monkeypatch.setattr(runner, "refresh", refresh)
@@ -158,7 +163,7 @@ def test_replacement_queue_reserves_a_draining_peer_then_releases_its_slot(tmp_p
     previous.write_text(json.dumps({"cells": [{"id": "survivor", "status": "running"}]}))
     rows = cells([{"id": str(i)} for i in range(3)], CONDITION_SETS["kimi-glm-flash-top"])
     (tmp_path / "campaign.json").write_text(
-        json.dumps({"cells": rows, "reserved_campaign_cells": reservations})
+        json.dumps({"version": 2, "cells": rows, "reserved_campaign_cells": reservations})
     )
     monkeypatch.setenv("LEANFLOW_CAMPAIGN_LANES", "2")
     monkeypatch.setenv("LEANFLOW_CAMPAIGN_MAX_ACTIVE", "2")

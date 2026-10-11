@@ -1,279 +1,220 @@
-# LeanFlow Architecture
+# LeanFlow architecture
 
-This document is the maintainer map for LeanFlow's current runtime. It records
-the package boundaries, principal execution paths, compatibility surfaces, and
-invariants that must survive implementation changes. User-facing behavior is
-documented in `README.md` and `docs/product-reference.md`.
+LeanFlow is a Lean-first orchestration and verification kernel around three
+native agent runtimes: Codex, Claude Code and Lemex. Native runtimes own model
+requests, tools, authentication, retries, sampling, history and compression.
+LeanFlow owns workflow scheduling, global accounting, job isolation, independent
+Lean acceptance, canonical source transactions and persistent evidence.
 
-## Design Boundaries
+## Layering and entry points
 
-LeanFlow is a Lean-first automation kernel. Its dependency direction is:
+`core/` depends on no higher layer. `agent/` and `tools/` build on core;
+`leanflow_cli/` composes those pieces into workflows. Add cohesive leaf modules
+rather than expanding legacy monoliths.
+
+- `leanflow` → `leanflow_cli.main:main` and `workflow.py`.
+- `prove` / `autoprove` → `leanflow_cli.workflows.prover.runtime`.
+- `formalize`, `draft`, `review`, `refactor`, `golf` →
+  `leanflow_cli.native.harness_workflow`.
+- `leanflow-agent`, direct `run_agent` CLI use and old auxiliary request entry
+  points return migration errors. The in-process `AIAgent` / `native_runner`
+  engines, direct SDK adapters, credential readers, model routing, and custom
+  compression are removed. Their independent Lean/state helpers remain in leaf
+  modules with direct tests. Generic delegation no longer registers a tool; the
+  selected native runtime owns its own agent execution.
+
+Web retrieval and historical session search return bounded verbatim excerpts.
+There are no hidden summarizer, skill-audit or smart-approval model calls.
+The direct auxiliary theorem-advisor tools are removed from tool discovery.
+
+## Native runtime boundary
+
+`agent/runtime/harness/` owns typed requests/results, native command construction,
+structured output parsing, cumulative-usage normalization, session resume,
+process-tree cleanup and OS isolation. A complete native process invocation is
+one LeanFlow agent call. Internal model requests and compaction are opaque.
+
+`leanflow_cli/runtime/runtime_provider.py` selects exactly `codex`, `claude` or
+`lemex`. It does not read/copy credentials or translate external endpoint names.
+`env_loader.py` preserves exported native variables and refuses to import legacy
+provider credentials from LeanFlow dotenv. `config.py` detects old schema settings
+and requires explicit migration without rewriting them.
+
+`runtime/lemex_install.py` adopts an installed self-contained Lemex distribution
+into a content-hashed immutable runtime, or installs a pinned source revision in
+a private prefix. It preserves the global executable and native home. The native
+resolver and doctor share that executable lookup.
+
+Native tools run only in filtered project snapshots under macOS seatbelt or Linux
+Bubblewrap; unsupported isolation fails closed. The outer OS sandbox is the
+filesystem authority. On macOS the inner Codex/Lemex sandbox is disabled inside
+that already enforced boundary because nested seatbelt creation is unsupported.
+No unconstrained fallback is permitted. Native home/session/auth state remains
+native; runtime configuration is protected from tool writes. Unrelated MCP,
+hooks, plugins and project-local runtime settings cannot import extra authority.
+General runs permit network access. Clean-room/no-internet launches fail before
+agent admission until model-only network isolation is implemented.
+
+## Core primitives
+
+- `core/home.py`: sole `LEANFLOW_HOME` authority.
+- `core/campaign_limits.py`: optional global invocation, reported-token and active
+  time ledger for non-prover workflows; reserves calls atomically, retains
+  interrupted charges and refuses unknown token usage under a token cap.
+- `core/deadlines.py`: optional monotonic deadlines, remaining time and
+  operation-local cancellation. `None` is unlimited; zero is exhausted.
+- `core/error_redaction.py`: deterministic error sanitation without provider code.
+- `core/state.py`: historical session storage.
+- `core/model_tools.py`, `toolsets.py`, registry and top-level compatibility shims:
+  deterministic tool discovery and registration.
+- Process identity, filesystem, resource admission, verified-edit authority,
+  runtime flags and atomic utility modules remain dependency-light leaves.
+
+## Prover execution
 
 ```text
-core
-├── agent
-├── tools
-└── leanflow_cli
+workflow resolution
+  → prover.runtime: discovery or native-version resume
+  → research: fresh outline → graph construction → independent review
+  → deterministic theorem-DAG scheduler
+  → agent_session: private snapshot + job-bound MCP + one native invocation
+  → independent LeanProbe feedback and strict compiled kernel inspection
+  → controller source transaction
+  → requested-scope placeholder check + project Lake build
 ```
 
-- `core/` owns dependency-light runtime primitives and must not import from the
-  higher layers.
-- `agent/` owns provider conversations, prompt assembly, context management,
-  tool execution, and accounting.
-- `tools/` owns model-callable capabilities and deterministic safety guards.
-- `leanflow_cli/` composes the agent and tools into Lean workflows, persistent
-  project state, provider routing, and shell commands.
+Only the controller changes canonical sources and PLAN/DAG state. Top-down
+candidates remain untrusted until prerequisites close and strict acceptance
+passes. Bottom-up scheduling checks prerequisites first. Model reports never
+establish proof or disproof.
 
-New behavior belongs in the smallest cohesive leaf module. Do not add new
-responsibilities to `run_agent.py` or
-`leanflow_cli/native/native_runner.py` when a focused collaborator can own
-them.
-
-## Entry Points
-
-- `leanflow` → `leanflow_cli.main:main`
-- `leanflow-agent` → `leanflow_agent:main`
-- `run_agent.AIAgent` → the provider conversation loop used by managed
-  workflows
-- `leanflow_cli.workflows.prover.runtime` → the dedicated standard/research
-  `prove` / `autoprove` controller
-- `leanflow_cli.native.native_runner` → existing formalization, drafting,
-  review, and editing workflows
-
-The shell resolves a shared provider environment and launches a managed child
-process. Proving composes `AIAgent`'s provider adapters without entering its legacy
-conversation loop; `agent_session.py` owns a separate admitted-request loop.
-Other workflows retain `native_runner`, its queue compatibility modules, existing
-verification guards, and checkpoint behavior.
-
-## Repository Layout
-
-```text
-LeanFlow/
-├── core/                 # shared runtime kernel and compatibility authorities
-├── agent/                # model conversation collaborators
-├── tools/                # model-callable tools and deterministic guards
-├── leanflow_cli/         # CLI, Lean services, workflows, runtimes, persistence
-├── leanflow_skills/      # packaged prompt-time Lean guidance
-├── leanflow_specs/       # packaged workflow and worker contracts
-├── evals/                # frozen evaluation harness and adversarial fixtures
-├── vscode-extension/     # editor front end over the CLI's JSON surfaces
-├── testdata/             # deterministic Lean workflow fixtures
-├── tests/                # unit, integration, installer, and contract tests
-├── run_agent.py          # AIAgent compatibility surface and core loop
-├── leanflow_agent.py     # leanflow-agent entry shim
-└── README.md             # product overview and quick start
-```
-
-Local campaigns and their logs belong under ignored project state or an
-external results repository, never in this source tree. The repository-level
-`artifacts/` directory is ignored for this reason.
-
-## Core
-
-`core/` contains primitives that are shared across the agent, tool, and CLI
-layers:
-
-- `home.py` is the only authority for `LEANFLOW_HOME` and `~/.leanflow`.
-- `state.py` owns the SQLite conversation/session store.
-- `model_tools.py` and `toolsets.py` expose tool discovery and toolset
-  selection.
-- `process_identity.py` provides token-backed process, process-group, and
-  session ownership checks.
-- `provider_availability.py` and `provider_capacity.py` coordinate provider
-  recovery and bounded background actors.
-- `project_resource_admission.py` coordinates resource-heavy Lean work.
-- `runtime_modes.py` centralizes process-scoped runtime flags.
-- `verified_edit_authority.py` carries single-use, hash-bound authorization
-  between managed orchestration and atomic patch tools when prior Lean evidence
-  proves one exact source transition.
-- `filesystem.py`, `time.py`, `constants.py`, and `utils.py` provide shared
-  dependency-light utilities.
-
-The top-level `model_tools.py`, `toolsets.py`, and `utils.py` modules are
-compatibility shims over `core.*`.
-
-## Agent Runtime
-
-`run_agent.AIAgent` retains the public conversation-loop surface. Its
-collaborators are grouped by responsibility:
-
-- `agent/providers/` — primary and auxiliary provider routing, Codex Responses,
-  Anthropic adaptation, isolated auxiliary calls, retries, and model metadata
-- `agent/prompting/` — system prompts, prompt caching, reasoning normalization,
-  and provider-response normalization
-- `agent/compression/` — conversation persistence, context compression, and
-  provider-aware summary handoff
-- `agent/execution/` — tool batches, interrupts, command safety, skill
-  commands, resource handoff, and model-facing projection of successful tool
-  payloads while the manager and audit log retain the complete raw result
-- `agent/accounting/` — token/cost accounting, redaction, and error logging
-- `agent/display/` — terminal rendering and structured log formatting
-- `agent/runtime/` — managed-run contracts, trajectory capture, and workflow
-  events
-
-`agent/execution/collaborator_resolvers.py` preserves lazy construction and
-test patch points for these collaborators. Changes to a collaborator must
-retain the corresponding `AIAgent` wrapper or compatibility property unless
-the public surface is intentionally migrated.
-
-## Tool Runtime
-
-Tools self-register through `tools/registry.py`. Their schemas and normalized
-results flow through `core.model_tools` and `tools/response.py`.
-
-- `tools/implementations/` contains model-callable Lean, file, terminal,
-  document, web, repository, delegation, memory, skill, and empirical tools.
-  `lean_have_extraction.py` owns the transactional local-`have` promotion tool;
-  its source parser lives in `leanflow_cli/lean/lean_have_extraction.py`.
-- `tools/utilities/` contains deterministic guards and reusable implementation
-  support, including process ownership, transcript protection, repository
-  research policy, scratch-terminal policy, verified patch parsing, helper
-  admission, daemon-backed wall-clock boundaries for blocking backends, and
-  bounded authoritative source context for Lean advisors.
-- `tools/mcp/` contains MCP configuration, schema shaping, transport, sampling,
-  and managed-server lifecycle behavior.
-- `tools/environments/` contains the local, SSH, Singularity, Daytona, and
-  persistent-shell execution backends.
-
-Tool discovery depends on import-time registration. Adding a tool requires
-updating every applicable discovery list and toolset, plus tests that prove the
-tool is reachable through the public registry.
-
-## CLI and Workflow Runtime
-
-`leanflow_cli/` is organized by responsibility:
-
-- `main.py` and `cli/` own argument parsing, shell commands, status rendering,
-  doctor checks, MCP bootstrap, and expert-help configuration.
-  `cli/flags_command.py` and `cli/runs_command.py` are stable JSON surfaces for
-  external observers; the only mutating run operation is `runs stop`, which
-  delegates to verified process-identity interruption. `cli/run_metrics.py` is
-  the stable metrics facade. `cli/run_stream.py` verifies hot/retained streams
-  and aggregates usage; `cli/run_snapshot.py` seals launch and post-quiescence
-  result artifacts plus a separate corruption-detection digest; and
-  `cli/run_history.py` reconstructs list summaries across hot, final, and
-  retained evidence. They never combine a selected stream with project-global
-  latest state. `cli/run_provenance.py` assembles identities from focused
-  project/source (`run_source_identity.py`), Lean/Lake build configuration
-  (`run_build_identity.py`), runtime/config/skill
-  (`run_runtime_identity.py`), interpreter/import/provider-package identity
-  (`run_python_identity.py`), terminal and ambient-process controls
-  (`run_terminal_identity.py`), digest-only persistent prompt inputs
-  (`run_prompt_identity.py`), and canonical validation
-  (`run_evidence_validation.py`) leaves. Exact metrics
-  require a terminal run stream, matching immutable stream hash/count and exit
-  evidence, a canonical redacted launch-environment digest, and complete
-  content-addressed source, ignored project configuration/guidance, selected
-  skill, LeanFlow/Python runtime, behavior-config, toolchain, and dependency
-  provenance. The digest detects accidental edits but is not a hostile-owner
-  signature. Retained streams go through the strict archive audit; `runs list`
-  also binds hot/final integrity and result-limit truncation, and any missing
-  coverage fails closed. A catalog-free state is complete-empty only when no
-  retained archive, shard, or temporary evidence exists.
-  `runs_command.py` remains the argparse/JSON/terminal facade and scopes and
-  restores any `LEANFLOW_PROJECT_ROOT` it sets for an explicit
-  `--project`, because the module outlives one command inside a test session or
-  a shell.
-- `flags/` declares the `LEANFLOW_*` knob catalog: name, type, default, group,
-  provenance, and whether a knob is worth an ablation. It is descriptive only —
-  no runtime reads it to decide behavior. The `research` profile is derived from
-  `workflows/research_mode.py` rather than restated, and
-  `tests/leanflow/test_flag_catalog.py` fails on a catalogued name no runtime
-  module reads.
-- `workflow.py` resolves workflow requests, providers, toolsets, and the
-  `LEANFLOW_NATIVE_*` child-process environment contract. `preview=True`
-  resolves the same plan without provisioning side effects (local Loogle warmup,
-  formalization document intake) so `--dry-run` and editor forms can resolve a
-  plan repeatedly; `launch_plan_payload` serializes it with credentials redacted.
-- `runtime/` owns provider credentials/routing, file locks, sandbox execution,
-  branding, environment loading, and built-in skill discovery.
-- `lean/` owns diagnostics, goals, declaration inspection, incremental checks,
-  automation, proof context, premise search, axiom checks, ephemeral
-  validation, target-owning verification-path resolution, and the typed
-  `LeanBackend` facade. Tactic-hole portfolios route
-  through `lean_attempt_screening.py`, which prepares the target environment
-  once and exact-checks bounded candidates with LeanProbe before any positional
-  LSP fallback. `lean_check_outcomes.py` distinguishes deterministic Lean
-  heartbeat exhaustion from process deadlines, including older reports whose
-  timeout flag was inferred from a heartbeat diagnostic.
-- `formalization/` owns source-document extraction, TeX discovery, generated
-  Lean shaping, and the statement-review handoff.
-- `workflows/prover/` owns the active bounded proof workflow; see its leaf map
-  below. Other modules in `workflows/` retain native queues, compatibility
-  planning/research helpers, verification transactions, and persistence.
-- `native/` owns the existing non-prover managed workflow process,
-  startup/resume reconciliation, source transactions, checkpoints, and shutdown.
-  Its former proof-queue and advisory modules remain compatibility code; they
-  are not the new prover's scheduler or budget authority.
-
-### Bounded prover leaf map
-
-| Module | Responsibility |
+| Prover leaf | Responsibility |
 | --- | --- |
-| `workflows/prover/config.py` | Per-role settings and exact-model context overrides, finite campaign/pass limits, and the optional no-internet boundary (local source search and computation remain available) |
-| `workflows/prover/context_policy.py` | Validated context caps, output reservations, proactive triggers and lower post-compression targets, shared by every bounded job role |
-| `workflows/prover/models.py` | Typed nodes, prerequisite DAG validation, revisions and fingerprints |
-| `workflows/prover/source.py` | Comment-aware hole discovery, frozen source, scratch projection, exact replacements and typed source-consistency failures |
-| `workflows/prover/source_transaction.py` | Proof and multi-file materialization journals, exact before/after images, and conflict-preserving recovery |
-| `workflows/prover/scheduler.py` | Deterministic DFS selection, concurrency leases and shared-dependency deduplication |
-| `workflows/prover/planning.py` | Structured plan proposals, metadata-only updates to existing nodes, immutable statements with node-specific repair feedback, and generated helper placement |
-| `workflows/prover/runtime.py` | Sole source/plan/DAG authority, job admission, completion handling, recovery and resume lineage |
-| `workflows/prover/entrypoint.py` | CLI startup, controller locking, terminal startup-failure publication and new-run resume cloning |
-| `workflows/prover/resume_candidates.py` | Recover older submissions hidden by empty retries after an infrastructure failure; retain budgets and require fresh independent verification |
-| `workflows/prover/job_controller.py` | Job workspaces, durable handoffs, request reservation, submission feedback, and separately accounted resource jobs |
-| `workflows/prover/planning_controller.py` | Fresh planning/review stages with exact submitted declarations for `new_helper_ids` in the review graph while stored DAG nodes retain signatures; helper-materialization transactions with removable dependency imports, source-conflict recovery without mathematical replanning, and concurrent resource batches |
-| `workflows/prover/planning_progress.py` | Atomic rejected-attempt cursors, conservative legacy checkpoint migration, and persistent stops after three unchanged planning failures |
-| `workflows/prover/installed_libraries.py` | Read-only offline admission of requests already satisfied by an exact locked local checkout, without network validation or installation |
-| `workflows/prover/materialization_imports.py` | Dependency-ordered recompilation of changed or missing helper artifacts before signature checks; journaled restoration of previous artifacts on rollback |
-| `workflows/prover/store.py` | Atomic snapshots, PLAN/DAG publication, baselines, events and guidance inbox |
-| `workflows/prover/live_progress.py` | Independent progress lock, bounded operation lifecycle, two-second heartbeat and metadata snapshots that retain the last committed source checkpoint |
-| `workflows/prover/stop_reason.py` | Separate job, scheduler and campaign stop reasons with remaining capacity and unresolved obligations |
-| `workflows/prover/submission_cache.py` | Single-use, in-memory reuse of parent-verified closed submissions only when the exact candidate, every transitively imported managed source, dependency trust, protected type and axiom policy remain unchanged; publishing an unrelated helper does not invalidate it, and conditional (skeleton) checks are never reused |
-| `workflows/prover/check_failures.py` | Nested check-result classification that preserves accepted plans when compilation or kernel inspection fails for infrastructure reasons |
-| `workflows/prover/observer.py` | Existing CLI activity/live-status bridge and terminal exit mapping |
-| `workflows/prover/agent_session.py` | One scratch job, durable request admission and response usage, persistence encouragement and structured result |
-| `workflows/prover/session_finalization.py` | Reserve the last two stage calls for reporting and one recovery; persist successful reports and prevent restart from renewing recovery |
-| `workflows/prover/session_progress.py` | Persist bounded repeated-evidence hashes; warn after three unchanged observations and require a report after six, without judging mathematical validity or restricting proof attempts |
-| `workflows/prover/session_report_context.py` | Retain bounded, paired report evidence across interruption under controller-owned state, behind fresh system and assignment messages |
-| `workflows/prover/allocation.py` | Wait outside the controller lock for parallel allocations; reconcile usage without dequeuing proof results or making a worker wait on itself |
-| `workflows/prover/usage.py` | Exact-model cost estimates, provider cost provenance, request coverage, and cumulative resume telemetry independent of observer flush timing |
-| `workflows/prover/session_transport.py` | Shared provider adapters, one request per admission, no hidden retry/recovery loop |
-| `workflows/prover/session_admission.py` | Configurable cross-process RCP credential capacity before durable request admission; cancellable waiting preserves call budgets and other providers' concurrency |
-| `workflows/prover/session_errors.py` | Bounded, redacted exception causes and safe provider identifiers; typed controller interruptions remain distinct from transport errors |
-| `workflows/prover/session_provider.py` | Per-role endpoint and credential-variable resolution without changing shared process credentials; legacy jobs retain the native route |
-| `workflows/prover/session_context.py` | Deterministic compaction with lower target, recoverable history checkpoints, exact contract and fresh tool-feedback preservation |
-| `workflows/prover/session_response_guard.py` | Stop an unusable prover attempt after one in-session recovery; keep its request ledger closed across resume |
-| `workflows/prover/response_recovery.py` | Hand stalled attempts to the research orchestrator once, migrate legacy blocked attempts, preserve failure evidence and revision-scoped next-attempt instructions |
-| `workflows/prover/recovery_liveness.py` | Reopen retired stop decisions on explicit resume and return stranded research obligations to the orchestrator before idle termination |
-| `workflows/prover/session_assignment.py` | Bounded assignment projection with full proof/notes artifacts and lossless references for unchanged proposed nodes; exact claims, dependencies, status and plans stay pinned |
-| `workflows/prover/session_guidance.py` | Selected skill contracts and durable addressed inbox delivery between requests |
-| `workflows/prover/session_tools.py` | Role-specific read/scratch/Lean/research tools; no generic source-write or terminal authority |
-| `workflows/prover/session_compute.py` | Bounded research computation execution; distinguish resource kills, wall timeouts and invalid child results before handing feedback to the agent |
-| `workflows/prover/session_search.py` | Bounded project search and clean-room result filtering |
-| `workflows/prover/session_research.py` | Direct bounded web/resource retrieval with provenance, relevance ranking, balanced provider merging, explicit degradation and no hidden model summaries |
-| `workflows/prover/resource_handoff.py` | Bounded downloaded-resource catalogs and exact read grants across private job stages |
-| `workflows/prover/check_process.py` | OS-isolated warm worker RPC and controller-owned restricted commands |
-| `workflows/prover/check_sandbox.py` | Platform sandbox profiles, permitted runtime paths and restricted process environment |
-| `workflows/prover/check_worker.py` | LeanProbe feedback inside the protected process |
-| `workflows/prover/verification.py` | Independent candidate/type/axiom acceptance from fresh exact-source compilation and trusted inspection (without a duplicate controller REPL pass for closed proofs); skeletons retain LeanProbe diagnostics; publication of the checked artifact or importable module recompilation, per-run signature scheme, and final Lake gate |
-| `workflows/prover/type_profile.py` | Isolated exact-source compilation and trusted inspection of kernel types and local definition dependencies, with separate live stages and timings under one deadline; scans the compiled module's declarations instead of copying the entire import environment; under the `module` scheme compilation retains the checked bytes for publication through a shadow package root beside already published siblings |
-| `workflows/prover/negation.py` | Exact negated-target construction and certificate support |
-| `workflows/prover/negation_job.py` | Separate bounded negation pass and independent certificate acceptance |
-| `workflows/prover/negation_submission.py` | Explicit tactic-slot contract, exact-source feedback within the negation job, and durable pending candidates rechecked before model requests on resume |
-| `workflows/prover/recovery.py` | Budgeted retry, instructed continuation, decomposition and refutation decisions; invalid decisions require orchestrator correction within existing limits and failed refutations never establish truth |
-| `workflows/prover/recovery_reports.py` | Bounded exact tool diagnostics for recovery and neutral checker findings retained across unsuccessful negation attempts |
-| `workflows/prover/libraries.py` | Additive helper-library registration and pinned Lake dependency installation with rollback |
-| `flags/prover_catalog.py` | Public prover setting descriptions and defaults |
-| `cli/prover_status.py` | Exact-run snapshot reads and durable guidance submission |
+| `config.py` | Three native backends, optional global limits and Lean policy |
+| `runtime.py`, `controller.py` | Campaign lifecycle, shared progress and scheduling |
+| `allocation.py`, `usage.py`, `live_progress.py` | Durable invocation admission, usage and active elapsed time |
+| `agent_session.py` | Native invocation and same-session submission feedback |
+| `native_snapshot.py` | Independent filtered copies, no escaping symlinks or shared inodes |
+| `native_bridge.py`, `mcp_relay.py` | Authenticated job capability; durable start/poll/cancel operations and acceptance receipts |
+| `native_command.py` | Long commands confined to the snapshot with cancellation and process-tree cleanup |
+| `session_tools.py`, `session_search.py`, `session_research.py`, `session_compute.py` | Deterministic role-scoped tools without model routing |
+| `source.py`, source transaction modules | Exact hole replacement, protected bytes, journal recovery and conflict detection |
+| `planning_controller.py`, proposal/review modules | Plan validation, helper materialization and branch repair |
+| `check_process.py`, `check_worker.py`, `native_check.py` | Isolated warm LeanProbe with the sole global execution deadline |
+| `lean_environment.py`, `submission_cache.py` | Local dependency freshness and controller-owned exact-input acceptance reuse |
+| `verification.py`, `type_profile.py` | Independent exact-source compilation, complete axiom profiles and protected kernel types |
+| `negation.py`, `negation_job.py`, `negation_submission.py` | Exact negation construction, feedback and independent certificate checks |
+| `recovery.py`, `recovery_reports.py` | Evidence-preserving continuation and reconstruction under global limits |
+| `libraries.py` | Pinned additive Lake dependency updates with rollback |
 
-New prover leaf modules are in the mypy gate. The shared
-`core/toolsets.py` registry entry `leanflow-prover-session` is empty deliberately:
-only the role-specific schemas supplied by the session runtime are exposed.
+Submission operations belong to the controller, not the native process. Native
+process completion drains pending operations before final response handling;
+controller shutdown cancels and joins them. A disconnected MCP client does not
+cancel its check. Receipts bind exact source hashes and job revisions.
 
-The larger coordination modules remain intentionally coupled where tests patch
-their module attributes. Extracting behavior from them requires
-characterization tests and an explicit dependency seam first.
+Original proof source is immutable outside authorized holes. The controller
+captures kernel target types before planning and compares them after proposed
+imports. Local fixed definitions are included in dependency fingerprints.
+Explicit missing-definition authorization permits only those holes. Compiler output is copied into a separate inspector workspace before trusted
+inspection code is created; compiler descendants never receive write authority
+over that workspace. Checker reads exclude private controller state, with exact
+capabilities for the current scratch and retained artifact. Checked
+compiled artifacts are retained for publication; source transactions hold the
+controller lock until state commits. Concurrent external edits fail closed.
+
+## Other native workflows
+
+- `native/harness_context.py` loads selected skills and copies prepared source
+  context into native job authority.
+- `native/harness_workflow.py` owns resumable native execution, optional global
+  limits, MCP submission, source review and final promotion.
+- `native/harness_observer.py` publishes native process ownership, heartbeats,
+  global accounting and bounded MCP activity through the existing status API.
+- `native/harness_artifacts.py` freezes proposed Lean/blueprint bytes in a second
+  copy built from canonical dependencies, independently builds and inspects
+  declarations, preserves original types and non-proof definitions, and promotes
+  only an accepted receipt after rechecking canonical identity and cancellation.
+- `native/harness_formalization.py` runs a fresh native session for mathematical
+  source fidelity, validates a strict PASS/BLOCK schema and stores review evidence
+  bound to source/proposal hashes. It shares the campaign ledger.
+- `formalization/` retains TeX/PDF intake, source extraction and blueprint setup.
+
+Formalization permits literal theorem proof holes only. Construction placeholders
+block acceptance. The independent reviewer checks complete source coverage and
+meaning; the controller checks elaboration and allowed axioms. Approved drafts
+return `draft_ready`; proof completion requires a separately started `prove` run.
+Review workflows publish findings only.
+
+## Cache ownership and freshness
+
+Native runtimes own prompt caching, session history and compaction. LeanFlow
+resumes the explicit native session and preserves its home; it does not inject
+cache keys or ephemeral sessions. The job MCP namespace persists across controller
+restarts, and tool schemas/configuration are ordered consistently. Reported cache
+reads, writes and reasoning subtotals survive normalization without being counted
+twice. Claude accounting uses its complete cumulative `modelUsage` totals rather
+than the partial main-loop `usage` field. Missing totals or resume baselines remain
+unknown.
+
+Lean acceptance reuse is separate: only the controller can populate it, and only
+with an independently accepted result. Keys bind candidate bytes, protected types,
+axiom policy, managed import closure and the canonical Lean environment. A matching
+result is consumed once; disk receipts cannot restore this in-memory cache.
+Dependency changes invalidate reuse and restart affected warm Lean workers.
+Generic workflow receipts also bind the canonical environment before verification
+and recheck it before publication.
+
+The environment generation covers unmanaged Lean sources, compiled dependencies,
+toolchain and loader configuration. It uses local filesystem identity, size and
+nanosecond modification/change timestamps rather than rereading large library
+binaries. This assumes filesystem changes are visible through normal local stat
+metadata. Dependency writers must serialize updates with publication; changed
+source libraries still require their normal Lake rebuild. Independent final
+verification remains the completion gate.
+
+## Accounting and persistence
+
+There is no default per-response, per-job or Lean-check timeout. Unset global
+calls/tokens/time are unlimited; zero is exhausted. Process creation reserves a
+call before dispatch and refunds only a proven non-start. Native-reported token
+usage is normalized; absent usage is unknown. A token ceiling prevents later
+admission and can overshoot during a running invocation.
+
+Active elapsed time includes queues, tools and verification, survives resumes and
+is shared across parallel jobs. Heartbeats persist it during silent native work.
+Offline time is excluded. Cancellation/deadlines terminate owned process trees,
+stop controller operations and prevent source promotion.
+
+Prover state remains `.leanflow/workflow-state/prover/<run-id>/`: plan, graph,
+protected baselines/checkpoints, jobs, transaction journals, events, receipts and
+addressed guidance. Runtime-private ledgers and accepted evidence stay outside
+agent write authority. Version-2 resume retains spent limits; legacy direct API
+conversations require a new native run.
+
+Other workflows hold an exclusive controller lock under
+`.leanflow/native-workflows/<run-id>/` with native session
+identity, `state.json`, `limits.json`, proposal checks, accepted source and source
+review receipts. Canonical conflicts reject resume/publication. All durable JSON
+uses atomic replacement.
+
+## CLI, Lean services and tool modules
+
+`cli/` owns command handling, doctor, flags and exact-run observer APIs. `workflow.py`
+resolves scope, skills, backend and the `LEANFLOW_NATIVE_*` environment. Preview
+performs no provisioning or paid launch. `flags/` describes supported controls;
+editor profiles cannot inject unlisted environment settings.
+
+`lean/` owns diagnostics, goals, declaration inspection, search, LeanProbe/LSP
+integration and backend compatibility. `tools/implementations`, `tools/utilities`,
+`tools/mcp` and `tools/environments` retain deterministic tool and transport
+services. The native job's MCP schemas are explicitly selected; registry breadth
+does not grant extra job authority. Existing Lean command defaults in standalone
+editor utilities are separate from the native campaign execution deadline.
+
+`run_metrics`, `run_stream`, `run_snapshot`, `run_history` and provenance leaves
+bind observations to exact run IDs. Immutable evidence and terminal exit identity
+are required for complete metrics; missing usage remains unscored. A digest
+supports corruption detection, not protection against the filesystem owner.
 
 ## VS Code Extension
 
@@ -304,7 +245,8 @@ does not read or reinterpret LeanFlow's persistence files directly:
   zoom, search, keyboard selection, and a status legend; geometry stays stable
   when proof statuses change. `webview/views/ProverWorkspace.tsx` shows the plan, dependencies,
   jobs, usage, file links/diffs, and queued guidance; `ProverSettings.tsx` exposes
-  catalogued launch controls. The host uses `runs prover` / `prover-message` / `runs event`,
+  catalogued launch controls, grouped by role with independent model and reasoning
+  effort selectors and optional global limit settings. The host uses `runs prover` / `prover-message` / `runs event`,
   validates ownership and paths, and does not substitute another run's artifacts.
   `proverProgress.ts` and `proverOperations.ts` derive budget, capacity, operation,
   proposal and stop-reason views from the same snapshot. `proverCache.ts` and
@@ -337,242 +279,22 @@ webview bundle may import host types but not host runtime code. Workspace Trust
 and virtual-workspace declarations fail closed because LeanFlow executes the
 workspace's local toolchain and requires a real filesystem checkout.
 
-## Runtime Contracts
+## Runtime contracts and development
 
-The packaged Markdown under `leanflow_skills/` and `leanflow_specs/` is runtime
-input, not supplementary prose:
+Skills and workflow specs are packaged runtime guidance. Native jobs receive the
+selected skill and equivalent MCP/native tool names. Deterministic source and
+verification gates take precedence over model assertions.
 
-- skills select concise prompt-time behavior for the active workflow
-- workflow specs define tool order, verification gates, route actions, and stop
-  conditions
-- worker and phase specs define specialist responsibilities
+Retired module entrypoints return actionable migration errors; shared helpers are
+tested directly in their owning modules. New features use the native harness boundary. Public native backend names,
+result/session/usage contracts, job-bound receipts, the single state-home
+authority and exact source acceptance are load-bearing interfaces.
 
-These files ship in the wheel. A change to a workflow contract must update its
-spec, the routing skill when applicable, and the relevant deterministic tests.
+Add characterization tests before changing coupled code, keep new leaf modules
+in the mypy gate, and run Black, Ruff, mypy and the full suite. See `AGENTS.md`.
 
-## Principal Execution Paths
-
-### Proving
-
-```text
-leanflow workflow prove
-  → workflow/provider resolution and lean-bounded-prover identity
-  → prover.runtime: frozen source discovery or lineage-preserving resume
-  → research only: fresh outline → graph construction → review → skeleton gate
-  → deterministic prerequisite DAG scheduler
-  → private agent_session with admitted request ledger and role-specific tools
-  → OS-isolated warm LeanProbe feedback
-  → controller-owned independent axiom/source check and exact hole replacement
-  → requested-scope placeholder check and project Lake build
-```
-
-Only the controller commits canonical source and shared PLAN/DAG state. Default
-bottom-up jobs use completed prerequisites. Experimental top-down output remains
-an untrusted candidate until every planned dependency closes and strict checking
-accepts it. Model success messages never change trusted proof status.
-
-Source transactions retain the controller lock across independent Lean acceptance.
-Worker usage and operation publication take a separate progress lock and serialize
-the last committed DAG/source checkpoint, never in-flight source documents. Live
-`verifying`/`integrating` overlays affect display only; the scheduler marks a node
-proved after the canonical transaction commits. Snapshot sequence numbers increase
-for both controller commits and metadata updates. Proposed graphs and staged diffs
-remain labelled as pending until compilation and protected-type checks pass.
-Scratch checks inherit the configured verification timeout capped by the job's
-remaining deadline; queueing, cold startup, imports and elaboration share that cap.
-
-### Formalization
-
-```text
-leanflow workflow formalize
-  → source extraction and TeX/PDF preflight
-  → declaration blueprint
-  → buildable Lean statement draft
-  → source-fidelity review
-  → explicit handoff to prove
-```
-
-Formalization intentionally leaves theorem bodies as `sorry` after statement
-approval. The subsequent `prove` workflow owns proof completion.
-
-### Research Mode
-
-Research mode separates informal planning, graph construction, semantic review,
-resource questions, and proving into fresh sessions. The orchestrator can use
-bounded paper/web retrieval, exact arithmetic experiments, and reviewed immutable
-library requests; Lean search belongs to provers. The scheduler runs bounded
-concurrent prover jobs and resource-question batches. Recovery replans affected
-nodes without rewriting original claims or proved nodes; queued proof results
-wait for the active controller planning phase to return before acceptance.
-
-There is no standing advisor, model-based manager, generic terminal tool, or
-budget-refreshing local decomposition loop. Per-pass and total admitted requests,
-restarts, direction changes, structural recoveries, node count, context, and time
-have separate finite settings. See `docs/prover-workflow.md` for current limits.
-Up to two persisted `research_job` admissions per prover workspace can launch
-separately bounded resource agents, with the same cap across resumes. Admissions
-are reserved before dispatch, and each allocation consumes campaign capacity
-without resetting the parent pass. Controller-derived resource grants retain
-evidence from both children within the existing bounded catalog. Rejected
-submissions receive independent feedback inside their existing session. The
-accepted reviewer classification distinguishes direction
-refinements from decomposition; deterministic campaign limits remain independent.
-
-Rejected attempts advance a durable cursor. Three identical proposal/gate/critique
-failures (or three malformed reports at one stage) stop with `planning_stalled`;
-plain resume cannot renew the loop. Revised proposals retain their existing
-campaign allowance. Historical reviewer critiques remain fallible feedback.
-A recorded materialization transaction ID links committed helper source and graph
-to their acceptance bookkeeping, so a crash cannot turn accepted new helpers into
-an invalid repeated proposal or charge the same refinement twice.
-
-Planning, review and research reserve their final two calls for a report and at
-most one recovery; a one-call stage can only report. Repeated unchanged read,
-search, fetch or computation evidence warns on the third observation and disables
-further tools on the sixth, including within a batch. Protected bounded report
-history retains completed tool pairs across interruptions. These safeguards never
-mark a helper proved or declare a mathematical plan false.
-
-## Persistence and Resumability
-
-User-level state resolves through `LEANFLOW_HOME` (normally `~/.leanflow`).
-Prover runs use `.leanflow/workflow-state/prover/<run-id>/`:
-
-- `PLAN.md`, `DAG.json`, and `state.json` describe current plan, graph and jobs.
-- `source.json`, immutable `source-checkpoints/`, and `baselines/` preserve protected source and reviewable diffs. State points to one coherent source generation.
-- `source-transaction.json` journals accepted proof installation and multi-file
-  helper/import/configuration materialization until state commits. Resume retains
-  interrupted candidates for rechecking and recovers only recorded source images;
-  outside edits produce a source conflict. Unchanged source, DAG and PLAN payloads
-  are not rewritten during metric updates or idle polling.
-- Controller `events.jsonl` is separate from each `jobs/<job-id>/events.jsonl`.
-- Jobs keep `Scratch.lean`, `PLAN_job.md`, candidate/report files, and resources.
-- Admission ledgers and scratch baselines live outside job write access under
-  `jobs/.runtime/<job-id>/`.
-- `inbox.jsonl` stores user guidance for controller and addressed job request
-  boundaries; per-job delivery offsets and bounded addressed guidance survive resume
-  and remain pinned across context compaction.
-
-State JSON uses atomic replacement. A resume launch copies durable artifacts to a
-new run ID with `resumed_from` / `parent_run_id`; the old execution remains
-inspectable. Saved configuration and spent request admissions survive. Source
-reconciliation precedes accepting more work. Other native workflows retain their
-existing checkpoint, journal, activity-retention and live-process ownership stores.
-
-## Verification and Trust Boundaries
-
-- A model response is never proof of completion.
-- `prove` succeeds only after the assigned declaration and requested project
-  scope pass deterministic placeholder, diagnostic, kernel, and final build
-  gates.
-- `formalize` succeeds when the statement draft builds and passes source
-  review; intentional theorem holes are then handed to `prove`.
-- Axiom checks use elaborated declarations, not source-text heuristics alone.
-- Promoted negations and helper proofs pass the same trust checks as main proof
-  edits.
-- Prover sessions route feedback through `check_process.py` workers using warm
-  LeanProbe. macOS sandbox-exec or Linux Bubblewrap limits writes and disables
-  worker networking; unsupported isolation fails closed. Controller commands
-  explicitly grant only required build/configuration outputs.
-- `session_transport.py` sends one provider request per durable admission.
-  Interrupted/failed requests count; compaction makes no model calls.
-- The original source snapshot and request ledger are outside job write
-  authority. Lean metaprogram IO is also subject to the OS boundary.
-- In retained native compatibility paths, repeated target timeouts can mechanically promote a large local `have` to a
-  private lemma: Mathlib supplies the exact context signature, LeanProbe checks
-  the helper and replacement site, and the verified patch transaction commits
-  only the authenticated source image.
-- `lean/lean_interact_compat.py` installs a version-guarded linear response
-  reader when the installed LeanInteract still uses quadratic REPL output
-  concatenation; unfamiliar future implementations remain untouched.
-  `lean/lean_probe_deadline.py` independently bounds every LeanProbe call and
-  terminates owned REPL sessions when IPC stalls.
-- Incremental results label the probe session as `warm`, `cold_initial`, or
-  `cold_rebuild`. Their `leanflow_timing` separates LeanProbe's reported
-  command time from unattributed probe wall time so dependency-side startup
-  omissions remain visible without being mislabeled as theorem checking.
-- Verified graph state is derived from Lean evidence and reconciled after
-  source changes.
-- File locks serialize supported writes during user-approved swarm runs.
-- Process termination requires exact token, PID, process-group, and session
-  identity; stale PID-only records fail closed.
-- Managed agents cannot read raw live workflow transcripts through ordinary
-  file tools. Bounded, generated summaries are the model-facing interface.
-- Clean-room policy is enforced across web, repository, terminal, and file
-  surfaces, including canonical-path and symlink checks.
-- The optional clean-room numeric terminal routes audited inline Python only
-  through the active LeanFlow interpreter; ordinary terminal commands retain
-  their normal executable resolution.
-- Empirical computation runs in a restricted child process with bounded
-  resources and no filesystem, process, or network capability.
-
-## Compatibility Surfaces
-
-The following interfaces are load-bearing:
-
-- `from run_agent import AIAgent`
-- top-level `model_tools`, `toolsets`, and `utils` imports
-- `AIAgent.run_conversation()` result keys:
-  `final_response`, `last_reasoning`, `messages`, `api_calls`, `usage`,
-  `completed`, `exit_reason`, `partial`, `interrupted`, and
-  `response_previewed`, `wall_timed_out`, with conditional interruption/error
-  fields
-- tool names and import-time self-registration
-- module attributes intentionally used as monkeypatch targets in tests,
-  especially in `native_runner.py`, `run_agent.py`, and terminal tooling
-- the `LEANFLOW_`-only native child-process environment contract
-- `core.home.leanflow_home()` as the single state-home authority
-
-Compatibility imports that exist solely as public re-exports or patch targets
-must carry an explicit `# noqa: F401` and a test or real call site that proves
-the reference is intentional.
-
-## Change Discipline
-
-Before changing a coupled boundary:
-
-1. Add characterization tests for current behavior.
-2. Extract one cohesive responsibility without changing semantics.
-3. Preserve public imports and monkeypatch seams or migrate them explicitly.
-4. Add the cleaned module to the mypy gate.
-5. Run Black, Ruff, mypy, and the full test suite.
-6. Update this map when ownership or a public surface changes.
-
-The complete contribution and quality-gate requirements are in `AGENTS.md` and
-`CONTRIBUTING.md`.
-
-### Managed tools and launch compatibility
-
-- `cli/loogle_index_compat.py` classifies Loogle's index dialect, patches the
-  managed client to negotiate flags, and records compatibility without starting
-  an index during status reads. `loogle_local.py` owns build/lock/lifecycle;
-  `leanflow mcp repair` reapplies managed patches offline.
-- `workflow.prover_config_preview` resolves dedicated prover settings from the
-  actual child environment. `flags.resolve.profile_launch_surfaces` reports
-  terminal/extension compatibility without bypassing the extension allowlist.
-- `workflows/project.resolve_repl_revision` checks available REPL tags before
-  selecting a compatible source revision and reports unresolved/offline states.
-- `tools/utilities/empirical_compute_runtime.py` remains a standalone isolated
-  child: its capability contract drives both AST checks and the research tool
-  description. Expanded exact arithmetic has no filesystem/network authority.
-
-### Lean-IMO comparison harness
-
-`scripts/lean_imo_campaign/` is repository experiment tooling, outside the product
-workflow layer: `matrix.py` owns problem-lane scheduling, `artifacts.py` freezes
-the runtime and prepares private offline Lake projects, `worker.py` invokes the
-dedicated prover, `provider.py` selects the all-RCP or legacy launch route and
-encodes structured model settings, `recovery.py` bounds provider reconnects without budget resets
-and admits only recognized transient connection, timeout, rate-limit and server errors,
-`dispatch_policy.py` limits active cells independently of persistent lane claims,
-reserves slots for recorded draining workers, isolates exhausted report failures,
-and optionally advances past exhausted transient transport failures,
-using the same transient classifier; unknown/internal errors and stalled planning
-pause dispatch. Safe exception causes survive job, run and recovery history,
-`runtime_versions.py` pins each cell to an immutable runtime, `adoption.py`
-reattaches a replacement dispatcher to recorded worker identities, and
-`runner.py` persists the two-lane queue and metrics (including runtime hashes). It introduces no generic
-batch workflow. `vscode-extension/src/core/benchmarkCampaign.ts` owns presentation
-types and navigation confinement; `panels/benchmarkPanel.ts` reads the durable
-manifest and links cells into the existing prover dashboard. See
-`docs/lean-imo-campaign.md` for the explicit experiment contract and controls.
+The repository experiment tooling in `scripts/lean_imo_campaign/` uses native
+Codex/Lemex conditions, immutable runtime snapshots and explicit optional global
+limits. Version-2 manifests reject legacy API-budget experiments. Its dispatch,
+recovery and immutable evidence remain separate from product workflow scheduling;
+see `docs/lean-imo-campaign.md`.

@@ -1,10 +1,12 @@
 """Keep authoritative candidate checks single-pass, bounded, and observable."""
 
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from core.deadlines import operation_cancellation
 from leanflow_cli.workflows.prover import check_process, type_profile
 from leanflow_cli.workflows.prover.models import Node
 from leanflow_cli.workflows.prover.verification import LeanVerifier
@@ -71,3 +73,38 @@ def test_profile_stages_report_timing_and_share_one_deadline(
     assert budgets == [10, 6]
     assert stages == ["compile", "inspect"]
     assert result["timing"] == {"compile_s": 4, "inspect_s": 6}
+
+
+@pytest.mark.parametrize("per_operation", [False, True])
+def test_queued_verification_cancels_without_waiting_for_other_jobs(
+    tmp_path: Path, per_operation: bool
+) -> None:
+    """Unlimited campaigns must still cancel operations waiting for the verifier."""
+    verifier = LeanVerifier(tmp_path, ())
+    cancelled = threading.Event()
+    started = threading.Event()
+    result: list[dict[str, Any]] = []
+    if not per_operation:
+        verifier.cancelled = cancelled.is_set
+    node = Node(
+        id="n", name="goal", statement="theorem goal : True", file="Main.lean", module="Main"
+    )
+
+    def check() -> None:
+        with operation_cancellation(cancelled.is_set if per_operation else lambda: False):
+            started.set()
+            result.append(verifier.check(node, tmp_path / "unused.lean"))
+
+    verifier.lock.acquire()
+    thread = threading.Thread(target=check)
+    thread.start()
+    try:
+        assert started.wait(1)
+        cancelled.set()
+        thread.join(1)
+        assert not thread.is_alive()
+        assert result[0]["error_code"] == "check_cancelled"
+        assert result[0]["accepted"] is False
+    finally:
+        verifier.lock.release()
+        thread.join(1)

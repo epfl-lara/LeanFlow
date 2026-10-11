@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { benchmarkCost, benchmarkProject, benchmarkEscape, benchmarkSummary } from "../dist/test/benchmarkCampaign.mjs";
+import { benchmarkCalls, benchmarkLimits, benchmarkCost, benchmarkProject, benchmarkEscape, benchmarkSummary } from "../dist/test/benchmarkCampaign.mjs";
 
 test("benchmark navigation is confined to the exact private cell", () => {
   assert.equal(benchmarkProject("/campaign", {id:"p-astra",project:"/campaign/cells/p-astra"}), "/campaign/cells/p-astra");
@@ -18,7 +18,7 @@ test("summary distinguishes active cells from verified results", () => {
     {status:"completed",verified:true,metrics:{api_calls:4,input_tokens:200,output_tokens:30}},
     {status:"completed",verified:false,metrics:{}},
   ]});
-  assert.deepEqual(summary,{verified:1,active:1,calls:7,tokens:350});
+  assert.deepEqual(summary,{verified:1,active:1,calls:7,tokens:350,usageComplete:false});
 });
 
 
@@ -27,4 +27,13 @@ test("costs require provenance and retain partial coverage labels", () => {
   assert.equal(benchmarkCost({cost_usd:0.5,cost_source:"provider_reported",cost_complete:false}), "$0.500 · reported · partial");
   assert.equal(benchmarkCost({cost_usd:0,cost_source:"provider_reported",cost_complete:true}), "$0.000 · reported");
   assert.equal(benchmarkCost({cost_usd:1,cost_source:"estimated",cost_complete:true}), "$1.000 · estimated");
+});
+
+
+test("native campaign counts invocations and shows explicit global limits", () => {
+  const cell = {metrics:{agent_calls:2,api_calls:17,input_tokens:10,output_tokens:2,usage_complete:true},config:{agent_calls:0,tokens:null,wall_time_s:null}};
+  assert.equal(benchmarkCalls(cell), 2);
+  assert.equal(benchmarkLimits(cell), "0 calls · unlimited tokens · unlimited seconds");
+  assert.equal(benchmarkSummary({cells:[cell]}).usageComplete, true);
+  assert.equal(benchmarkLimits({metrics:{}}), "Historical settings");
 });

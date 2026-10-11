@@ -186,11 +186,16 @@ local provenance paths, so inspect an export before sharing it publicly.
 
 ## Where profiles live
 
-In **Knobs**, search for `COMPRESSION_THRESHOLD` to configure automatic compression
-for the prover and orchestrator separately. Values are fractions: `0.80` means 80%.
-LeanFlow defaults to 256,000 context tokens per role and a 75% compression trigger
-(192,000 tokens), including Codex providers. Save a profile and select it when
-starting a fresh run; resumed runs retain their recorded configuration.
+The agent backend selector supports **Codex**, **Claude Code**, and **Lemex**.
+Each CLI keeps its own login, API configuration, model defaults, sampling, and
+context compression. Leave the model and effort overrides empty to preserve
+those defaults. Lemex inherits `LEMEX_BASE_URL` and `LEMEX_API_KEY` unchanged.
+
+In **Prover setup**, optional global limits cover agent calls, reported tokens,
+and active campaign seconds across resumes. Empty means unlimited; zero means
+exhausted. One CLI invocation, including a retry or resume, counts as one call.
+Token limits stop subsequent calls; an active invocation may overshoot and
+missing usage remains unknown. There are no LeanFlow per-response deadlines.
 
 Saved knob profiles are JSON files under `<project>/.leanflow/flag-profiles/`,
 readable by the CLI too (`leanflow flags profiles`). Note that `.leanflow/` is
@@ -213,18 +218,11 @@ completed while the theorem still reads `running` is "Pending verification";
 in progress; a failed prover never implies a proof. The header reads, for
 example, `Solved 0 · Active 2 · Pending 2 · Awaiting verification 1`.
 
-The workspace also shows the complete campaign budget (calls used of total,
-calls available for new work as the runtime reports them, outstanding
-reservations, elapsed time against the wall-clock limit, plan-refinement,
-decomposition, theorem and restart allowances), the controller's current work
-(skeleton compiles, signature checks, submission checks, proof integration and
-the final build with progress, duration and timeout, plus the planning stages
-of the current request), one orchestrator versus the prover slots in use and
-the reason idle slots wait, the shared provider and reasoning effort with the
-per-role model and context, staged file changes marked pending validation, and
-the exact stop reason with its scope when a run ends. A proposed graph under
-review or validation can be inspected in a separately labelled view while the
-canonical graph stays authoritative.
+The workspace shows global campaign usage and limits, controller checks and
+builds, planning stages, agent capacity, staged changes awaiting verification,
+and the exact stop reason. Native runs show agent invocations; historical runs
+retain their original API-call accounting. A proposed graph under review stays
+separate from the canonical graph.
 
 Arrows run from each goal to its prerequisites. Shared lemmas appear once, with
 all incoming dependencies retained. The legend distinguishes solved, active,
@@ -243,12 +241,14 @@ expands into the model output it summarizes. **Send guidance**
 queues a message for the orchestrator or a prover at its next decision boundary.
 It cannot edit the plan or bypass verification.
 
-The **Prover design** launch card provides standard/research mode, dependency
-order, per-pass API limits, restart and plan-refinement limits, parallelism,
-separate prover/orchestrator models and context sizes, and compression. These
-controls come from the installed CLI's `LEANFLOW_PROVER_*` flag catalog, so an
-older CLI keeps its existing launch controls. Usage shows unavailable values as
-`—`; plan refinements are tracked separately from token and API totals.
+The **Prover setup** launch card provides standard/research mode, dependency
+order, parallelism, and separate **Prover** and **Orchestrator** sections with
+aligned model and reasoning-effort selectors. Reasoning can use minimal, low,
+medium, high, or extra high effort, restore a saved profile, or inherit the
+launch/prover default. Compact badges identify profile values and overrides.
+The **Global limits** section contains optional campaign-wide calls, reported
+tokens, and active-time limits. Controls come from the installed CLI’s catalog;
+unknown usage remains `—` and unset global limits display as `Unlimited`.
 
 The editor reads `leanflow runs prover RUN_ID --json`, which returns
 `{version: 1, found, prover}` for that exact run. It submits guidance through

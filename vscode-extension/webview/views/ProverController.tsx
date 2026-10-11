@@ -65,7 +65,7 @@ export function ProverController({ state, controller, capacity, now, onJob }: {
           {stage.job ? <>
             <button className="link mono" onClick={() => onJob(stage.job!.id)}>{stage.job.agent_id}</button>
             <span className={`pill ${pillTone(stage.job.status)}`}>{stage.job.status || "queued"}</span>
-            <span className="muted">{metric(stage.job.api_calls)} / {metric(stage.job.api_budget)} calls{timeline?.durationS !== null && timeline ? ` · ${seconds(timeline.durationS)}` : ""}</span>
+            <span className="muted">{metric(stage.job.api_calls)}{state.config.native_backend ? " agent calls" : ` / ${metric(stage.job.api_budget)} API calls`}{timeline?.durationS !== null && timeline ? ` · ${seconds(timeline.durationS)}` : ""}</span>
             <button className="btn ghost" onClick={() => setView({ tab: "logs", logAgent: stage.job!.agent_id, logRaw: false, logFilter: [] })}>Events</button>
           </> : <span className="muted">not started</span>}
         </div>;
@@ -82,21 +82,21 @@ export function ProverController({ state, controller, capacity, now, onJob }: {
       </details>}
     </Notice>}
     <div className="prover-roles">
-      <span className="label">Models and context</span>
+      <span className="label">Backend and models</span>
       <div className="muted">
-        Provider <span className="mono">{state.provider || "not reported by this runtime version"}</span> · reasoning effort{" "}
-        <span className="mono">{state.reasoning_effort || "not reported"}</span>. One provider and one effort setting are shared by
-        every role; only the model, context size, and compression differ per role.
+        Agent backend <span className="mono">{state.provider || "not reported by this runtime version"}</span> · default reasoning effort{" "}
+        <span className="mono">{state.reasoning_effort || (state.config.native_backend ? "native runtime default" : "not reported")}</span>. Roles may override these defaults;
+        each job shows its recorded settings.
       </div>
       <div className="table-wrap">
         <table className="data">
-          <thead><tr><th>Role</th><th>Model</th><th>Context tokens</th><th>Compression</th><th>Call allowance</th></tr></thead>
+          <thead><tr><th>Role</th><th>Model</th>{!state.config.native_backend && <><th>Context tokens</th><th>Compression</th><th>Call allowance</th></>}</tr></thead>
           <tbody>{roles.map((role) => <tr key={role.role}>
             <td>{role.label}</td>
             <td className="mono">{role.model || "—"}</td>
-            <td>{metric(role.contextTokens)}</td>
+            {!state.config.native_backend && <><td>{metric(role.contextTokens)}</td>
             <td>{role.compression === null ? "—" : role.compression ? "on" : "off"}</td>
-            <td>{metric(role.callsPerStage)} <span className="muted">{role.stageLabel}</span></td>
+            <td>{metric(role.callsPerStage)} <span className="muted">{role.stageLabel}</span></td></>}
           </tr>)}</tbody>
         </table>
       </div>

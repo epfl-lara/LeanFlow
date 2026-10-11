@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import queue
 import re
@@ -137,7 +138,7 @@ def research_plan(
     # Changed drafts can continue within the campaign allowance; unchanged
     # failures have their own checkpointed guard. Resume skips rejected attempts
     # rather than replaying their journal entries or failed Lean materialization.
-    for attempt in range(int(progress.get("next_attempt", 0)), runtime.config.total_api_calls):
+    for attempt in itertools.count(int(progress.get("next_attempt", 0))):
         runtime._ensure_active()
         runtime._assert_sources()
         result = _planning_call(
@@ -228,6 +229,7 @@ def research_plan(
         )
         if (
             changed_direction
+            and runtime.config.plan_refinements is not None
             and runtime.state["metrics"]["plan_refinements"] >= runtime.config.plan_refinements
         ):
             # The reviewer accepted this direction, but the controller drops it. Label the
@@ -340,6 +342,8 @@ def _planning_call(
     job, context = runtime._new_job(role, prompt=prompt)
     checkpoint["steps"][step] = job["id"]
     context.update(context_extra or {})
+    context["planning_stage"] = step.split("-", 1)[0]
+    context["planning_affected"] = checkpoint.get("affected")
     runtime._persist()
     result = runtime._invoke(job, context, prompt)
     runtime._finish_job(job, result)
@@ -358,16 +362,29 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
         return
     if not isinstance(entries, list):
         raise ValueError("planning libraries must be a list")
+    from leanflow_cli.workflows.prover.installed_libraries import libraries_already_installed
     from leanflow_cli.workflows.prover.libraries import install_libraries
 
+    if libraries_already_installed(runtime.root, entries):
+        return
     before = {
         name: (runtime.root / name).read_bytes()
         for name in ("lakefile.toml", "lakefile.lean", "lake-manifest.json", "lean-toolchain")
         if (runtime.root / name).is_file()
     }
-    result = install_libraries(runtime.root, entries, timeout_s=runtime.config.timeout_s)
+    result = install_libraries(
+        runtime.root, entries, timeout_s=runtime._remaining_verification_time()
+    )
     runtime.store.event("libraries_installed", result)
     if result.get("accepted") is not True:
+        if result.get("status") == "configuration_error":
+            from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
+
+            raise InfrastructureFailure(
+                "Library installation configuration error: " + str(result.get("error", result)),
+                status="environment_error",
+                error_details=result,
+            )
         if result.get("dependency_cache_may_have_changed"):
             from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
 

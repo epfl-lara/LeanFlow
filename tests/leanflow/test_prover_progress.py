@@ -60,7 +60,7 @@ def finish(
         job,
         {
             "status": "budget_exhausted",
-            "api_calls": 2,
+            "api_calls": 1,
             "final_response": json.dumps(report),
         },
     )
@@ -74,7 +74,7 @@ def finish(
 def test_report_alone_does_not_renew(runtime: ProverRuntime, notes: str, promising: bool) -> None:
     finish(runtime, notes=notes, promising=promising)
     assert runtime.dag.nodes[0].status == "blocked"
-    assert runtime.consumed == 2
+    assert runtime.consumed == 1
 
 
 def test_partial_hole_work_renews_without_promising_claim(runtime: ProverRuntime) -> None:

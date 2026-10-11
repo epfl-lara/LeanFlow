@@ -61,7 +61,7 @@ def _build_metric_strip(
     strip.add_row(
         f"[bold {BRAND_COLORS['primary_soft']}]Model[/] [{BRAND_COLORS['text']}]{_shorten_middle(model, 28)}[/]",
         f"[bold {BRAND_COLORS['primary_soft']}]Route[/] [{BRAND_COLORS['text']}]{_shorten_middle(provider, 44)}[/]",
-        f"[bold {BRAND_COLORS['primary_soft']}]Runtime[/] [{BRAND_COLORS['text']}]{_shorten_middle(local_runtime, 24)}[/]",
+        f"[bold {BRAND_COLORS['primary_soft']}]Setup[/] [{BRAND_COLORS['text']}]Native CLI[/]",
     )
     return strip
 
@@ -178,7 +178,7 @@ def render_help(console: Console) -> None:
         "[dim]Tip: add `--agents N` to `prove` or `formalize` only when you explicitly want user-approved swarm mode.[/]"
     )
     console.print(
-        "[dim]Tip: use `/provider local`, `/provider zai`, or `/provider custom` to inspect how a request will resolve before launching a workflow.[/]"
+        "[dim]Tip: use `/provider codex`, `/provider claude`, or `/provider lemex` to inspect how a request will resolve before launching a workflow.[/]"
     )
     console.print(
         "[dim]Tip: use `/workflow activity` for structured managed steps and `/workflow log 120` for the full saved runner log.[/]"
@@ -332,7 +332,6 @@ def render_status_panel(
     table.add_row("Project", project_label or "(none)")
     table.add_row("Provider", provider)
     table.add_row("Model", model)
-    table.add_row("Local runtime", local_runtime)
     console.print(
         Panel(
             table,
@@ -351,14 +350,12 @@ def render_provider_panel(
     current = Table.grid(padding=(0, 1))
     current.add_column(style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
     current.add_column(style=BRAND_COLORS["text"])
-    current.add_row("Requested", requested or "auto")
+    current.add_row("Requested", requested or "configured default")
     current.add_row("Resolved provider", str(resolved.get("provider", "")))
-    current.add_row("API mode", str(resolved.get("api_mode", "")))
-    current.add_row("Base URL", str(resolved.get("base_url", "")))
-    current.add_row("Model", str(resolved.get("model", "")))
+    current.add_row("Model override", str(resolved.get("model", "") or "native runtime default"))
     if resolved.get("reasoning_effort"):
         current.add_row("Reasoning", str(resolved.get("reasoning_effort", "")))
-    current.add_row("Source", str(resolved.get("source", "")))
+    current.add_row("Setup", "Use the selected CLI’s own login or API configuration")
 
     table = Table(box=box.SIMPLE_HEAD, pad_edge=False)
     table.add_column("Target", style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
@@ -374,7 +371,7 @@ def render_provider_panel(
     console.print(
         Panel(
             current,
-            title=f"[bold {BRAND_COLORS['primary']}]Resolved Provider[/]",
+            title=f"[bold {BRAND_COLORS['primary']}]Native Agent Backend[/]",
             subtitle="[dim]current route[/]",
             border_style=BRAND_COLORS["panel"],
             box=box.SQUARE,
@@ -400,23 +397,6 @@ def render_project_panel(console: Console, *, project_summary: dict[str, str]) -
             box=box.SQUARE,
         )
     )
-
-
-def render_local_runtime_table(console: Console, *, runtimes: list[dict[str, object]]) -> None:
-    table = Table(box=box.SIMPLE_HEAD, pad_edge=False)
-    table.add_column("Runtime", style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
-    table.add_column("Endpoint", style=BRAND_COLORS["primary_dim"], no_wrap=True)
-    table.add_column("Model", style=BRAND_COLORS["text"])
-    table.add_column("Active", style=BRAND_COLORS["text"], no_wrap=True)
-    for runtime in runtimes:
-        endpoint = f"{runtime.get('host', '')}:{runtime.get('port', '')}".strip(":")
-        table.add_row(
-            str(runtime.get("runtime", "")),
-            endpoint,
-            str(runtime.get("model", "") or "[configured later]"),
-            "yes" if runtime.get("active") else "",
-        )
-    console.print(table)
 
 
 def render_workflow_launch(console: Console, *, launch_summary: dict[str, str]) -> None:

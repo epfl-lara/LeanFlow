@@ -10,11 +10,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import workflow_activity_retention as retention
 from leanflow_cli.workflows import workflow_state
 from leanflow_cli.workflows.workflow_activity_reader import iter_jsonl_dicts
@@ -1188,29 +1186,6 @@ def test_migration_streams_oversized_records_and_preserves_raw_evidence(
         assert handle.read() == source_bytes
 
 
-def test_native_startup_retention_hook_is_best_effort(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = 0
-
-    def compact():
-        nonlocal calls
-        calls += 1
-        return SimpleNamespace(
-            archived_runs=("old",),
-            archived_agent_streams=("agent",),
-            reclaimed_bytes=42,
-        )
-
-    monkeypatch.setattr(runner, "compact_closed_workflow_activity", compact)
-    runner._compact_closed_activity_on_startup()
-    assert calls == 1
-
-    def fail():
-        raise RuntimeError("simulated retention failure")
-
-    monkeypatch.setattr(runner, "compact_closed_workflow_activity", fail)
-    runner._compact_closed_activity_on_startup()
-
-
 @pytest.mark.parametrize(
     "catalog_text",
     [
@@ -1268,112 +1243,3 @@ def test_status_fails_open_to_hot_streams_when_catalog_is_unreadable(
     assert summaries[0]["agent_id"] == "hot-agent"
     assert recent[-1]["run_id"] == "hot-run"
     assert "Ignoring unreadable workflow activity retention catalog" in caplog.text
-
-
-def test_main_publishes_restored_assignment_before_retention(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    active_file = tmp_path / "Main.lean"
-    active_file.write_text("theorem restored_target : True := by trivial\n", encoding="utf-8")
-    order: list[tuple[str, str, str]] = []
-    verified_state = {
-        "active_file": str(active_file),
-        "declaration_scope": "file",
-        "target_symbol": "restored_target",
-        "sorry_count": 0,
-        "project_sorry_count": 0,
-        "verification_ok": True,
-        "last_verification": {"ok": True, "scope": "file", "tool": "lean_verify"},
-    }
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setattr(runner, "install_native_termination_handlers", lambda: {})
-    monkeypatch.setattr(runner, "restore_native_termination_handlers", lambda _handlers: None)
-    monkeypatch.setattr(runner, "restore_sigint", lambda _handler: None)
-    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
-    monkeypatch.setattr(
-        runner,
-        "_persist_startup_live_status",
-        lambda phase, live_state=None: order.append(
-            ("startup", phase, str((live_state or {}).get("target_symbol", "")))
-        ),
-    )
-    monkeypatch.setattr(runner, "_reconcile_stale_workflow_file_locks", lambda: 0)
-    monkeypatch.setattr(runner.campaign_epoch, "ensure_campaign", lambda _state: {})
-    monkeypatch.setattr(runner, "_cleanup_scratch_artifacts_on_startup", lambda _state: {})
-    monkeypatch.setattr(runner.environment_memory, "hydrate", lambda _state: {})
-    monkeypatch.setattr(runner, "_migrate_negation_promotions_on_startup", lambda: {})
-    monkeypatch.setattr(runner.research_findings, "hydrate_delivery_markers", lambda _state: None)
-
-    def restore_assignment(state):
-        state["current_queue_assignment"] = {
-            "active_file": str(active_file),
-            "target_symbol": "restored_target",
-        }
-        return True
-
-    monkeypatch.setattr(runner, "_restore_queue_manager_state", restore_assignment)
-    monkeypatch.setattr(
-        runner,
-        "_restored_queue_assignment_live_state",
-        lambda _state: dict(verified_state),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_reconcile_negation_promotions_on_startup",
-        lambda _state: SimpleNamespace(terminal_disproof=False),
-    )
-    monkeypatch.setattr(runner, "_journal_status", lambda: {})
-    monkeypatch.setattr(runner, "_plan_state_resume_block", lambda _state: "")
-    monkeypatch.setattr(
-        runner,
-        "_verified_startup_preflight",
-        lambda _history, _checkpoint, _autonomy: dict(verified_state),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_persist_live_status",
-        lambda *args, phase="", **_kwargs: order.append(
-            ("persist", str(phase), str(args[3].get("target_symbol", "")))
-        ),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_print_header",
-        lambda: order.append(("header", "", "")),
-    )
-
-    def compact_after_ready() -> None:
-        assert ("persist", "ready", "restored_target") in order
-        order.append(("retention", "", "restored_target"))
-
-    monkeypatch.setattr(runner, "_compact_closed_activity_on_startup", compact_after_ready)
-    monkeypatch.setattr(
-        runner,
-        "_verified_workflow_should_exit_without_prompt",
-        lambda _state: True,
-    )
-    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(runner, "_maybe_record_learnings", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
-    monkeypatch.setattr(
-        runner,
-        "_revalidate_verified_scope_after_quiescence",
-        lambda *_args, **_kwargs: dict(verified_state),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_terminal_authority_snapshot_is_current",
-        lambda *_args, **_kwargs: True,
-    )
-    monkeypatch.setattr(runner, "_record_agent_activity", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda _agent: None)
-    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *_args, **_kwargs: code)
-
-    assert runner.main() == 0
-    assert order.index(("persist", "ready", "restored_target")) < order.index(
-        ("retention", "", "restored_target")
-    )
-    assert order.index(("header", "", "")) < order.index(("retention", "", "restored_target"))

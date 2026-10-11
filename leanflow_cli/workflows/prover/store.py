@@ -69,7 +69,7 @@ class RunStore:
                 self._source_checkpoint = str(source_checkpoint)
             dag_snapshot = dag.to_dict()
             state.update(
-                version=1,
+                version=state.get("version", 2),
                 run_id=self.run_id,
                 updated_at=now(),
                 dag=dag_snapshot,

@@ -29,18 +29,6 @@ Example config::
         headers:
           Authorization: "Bearer sk-..."
         timeout: 180
-      analysis:
-        command: "npx"
-        args: ["-y", "analysis-server"]
-        sampling:                    # server-initiated LLM requests
-          enabled: true              # default: true
-          model: "gemini-3-flash"    # override model (optional)
-          max_tokens_cap: 4096       # max tokens per request
-          timeout: 30                # LLM call timeout (seconds)
-          max_rpm: 10                # max requests per minute
-          allowed_models: []         # model whitelist (empty = all)
-          max_tool_rounds: 5         # tool loop limit (0 = disable)
-          log_level: "info"          # audit verbosity
 
 Features:
     - Stdio transport (command + args) and HTTP/StreamableHTTP transport (url)
@@ -49,8 +37,7 @@ Features:
     - Credential stripping in error messages returned to the LLM
     - Configurable per-server timeouts for tool calls and connections
     - Thread-safe architecture with dedicated background event loop
-    - Sampling support: MCP servers can request LLM completions via
-      sampling/createMessage (text and tool-use responses)
+    - Deterministic tool transport only; model requests belong to native runtimes
 
 Architecture:
     A dedicated background event loop (_mcp_loop) runs in a daemon thread.
@@ -70,6 +57,7 @@ Thread safety:
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -85,7 +73,6 @@ logger = logging.getLogger(__name__)
 
 _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
-_MCP_SAMPLING_TYPES = False
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -97,21 +84,6 @@ try:
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
-    # Sampling types -- separated so older SDK versions don't break MCP support. This import is an
-    # availability probe: it only sets _MCP_SAMPLING_TYPES (mcp_sampling imports + uses these names
-    # itself), so the names are unused here on purpose -- hence the per-line noqa.
-    try:
-        from mcp.types import (
-            CreateMessageResult,  # noqa: F401
-            CreateMessageResultWithTools,  # noqa: F401
-            ErrorData,  # noqa: F401
-            TextContent,  # noqa: F401
-            ToolUseContent,  # noqa: F401
-        )
-
-        _MCP_SAMPLING_TYPES = True
-    except ImportError:
-        logger.debug("MCP sampling types not available -- sampling disabled")
 except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
@@ -205,20 +177,6 @@ class _MCPServerRecycleFailed(_MCPServerRecyclePending):
 
 
 # ---------------------------------------------------------------------------
-# Sampling -- server-initiated LLM requests (MCP sampling/createMessage).
-# The SamplingHandler callback plus its numeric/audit-path helpers live in
-# tools/mcp_sampling.py and are re-exported here so callers/tests that resolve
-# tools.mcp.mcp_tool.<name> keep working.  mcp_sampling does NOT import mcp_tool, so
-# this introduces no import cycle.  MCPServerTask.run() (below) instantiates
-# SamplingHandler via this re-export.
-# ---------------------------------------------------------------------------
-import contextlib
-
-from tools.mcp.mcp_sampling import (  # noqa: E402
-    SamplingHandler,
-)
-
-# ---------------------------------------------------------------------------
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
@@ -243,7 +201,6 @@ class MCPServerTask:
         "_tools",
         "_error",
         "_config",
-        "_sampling",
         "_registered_tool_names",
         "_accepting_requests",
         "_active_requests",
@@ -265,7 +222,6 @@ class MCPServerTask:
         self._tools: list = []
         self._error: Exception | None = None
         self._config: dict = {}
-        self._sampling: SamplingHandler | None = None
         self._registered_tool_names: list[str] = []
         self._accepting_requests = True
         self._active_requests = 0
@@ -303,7 +259,6 @@ class MCPServerTask:
             cwd=cwd,
         )
 
-        sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         # Route noisy managed-Lean server stderr to a log file instead of the workflow
         # console (see open_mcp_stderr_log). None -> inherit sys.stderr as before.
         errlog = open_mcp_stderr_log(self.name, cwd)
@@ -314,7 +269,7 @@ class MCPServerTask:
         )
         try:
             async with stdio_ctx as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     self.session = session
                     await self._discover_tools()
@@ -340,13 +295,12 @@ class MCPServerTask:
         headers = config.get("headers")
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
 
-        sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         async with streamablehttp_client(
             url,
             headers=headers,
             timeout=float(connect_timeout),
         ) as (read_stream, write_stream, _get_session_id):
-            async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+            async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 self.session = session
                 await self._discover_tools()
@@ -368,13 +322,6 @@ class MCPServerTask:
         """
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
-
-        # Set up sampling handler if enabled and SDK types are available
-        sampling_config = config.get("sampling", {})
-        if sampling_config.get("enabled", True) and _MCP_SAMPLING_TYPES:
-            self._sampling = SamplingHandler(self.name, sampling_config)
-        else:
-            self._sampling = None
 
         # Validate: warn if both url and command are present
         if "url" in config and "command" in config:
@@ -483,7 +430,6 @@ class MCPServerTask:
         # replacement. Drop completed transport state so those harmless stale
         # closures cannot retain the retired connection's object graph.
         self._task = None
-        self._sampling = None
         self._tools.clear()
         self._config.clear()
 
@@ -1629,8 +1575,6 @@ def get_mcp_status() -> list[dict]:
                 ),
                 "connected": True,
             }
-            if server._sampling:
-                entry["sampling"] = dict(server._sampling.metrics)
         else:
             entry = {
                 "name": name,

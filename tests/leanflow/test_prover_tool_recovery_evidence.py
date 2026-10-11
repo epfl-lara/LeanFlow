@@ -77,7 +77,7 @@ def test_exact_checker_errors_reach_the_orchestrator_request(tmp_path: Path) -> 
         assert text in prompt
     assert "PRIVATE_THOUGHTS" not in prompt
     assert node.status == "retry"
-    assert runtime.consumed == 3
+    assert runtime.consumed == 2
 
 
 def test_evidence_is_bounded_and_ignores_damaged_and_non_tool_events(tmp_path: Path) -> None:

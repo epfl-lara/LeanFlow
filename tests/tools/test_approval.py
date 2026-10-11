@@ -1,6 +1,5 @@
 """Tests for the dangerous command approval module."""
 
-from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import tools.utilities.approval as approval_module
@@ -77,18 +76,10 @@ class TestSafeCommand:
 
 
 class TestSmartApproval:
-    def test_routes_provider_call_through_instrumented_auxiliary_helper(self):
-        response = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
-        )
-        with mock_patch(
-            "agent.providers.auxiliary_client.call_llm", return_value=response
-        ) as call_llm:
-            assert approval_module._smart_approve("python -c 'print(1)'", "script") == "approve"
-
-        call_llm.assert_called_once()
-        assert call_llm.call_args.kwargs["task"] == "approval"
-        assert call_llm.call_args.kwargs["max_tokens"] == 16
+    def test_smart_mode_uses_existing_approval_flow_without_model_calls(self):
+        with mock_patch("agent.providers.auxiliary_client.call_llm") as call_llm:
+            assert approval_module._smart_approve("python -c 'print(1)'", "script") == "escalate"
+        call_llm.assert_not_called()
 
     def test_git_is_safe(self):
         is_dangerous, key, desc = detect_dangerous_command("git status")

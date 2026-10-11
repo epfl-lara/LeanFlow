@@ -7,7 +7,7 @@ import queue
 import shlex
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -78,60 +78,8 @@ class TestInterruptModule:
 # ---------------------------------------------------------------------------
 
 
-class TestPreToolCheck:
-    """Verify that _execute_tool_calls skips all tools when interrupted."""
-
-    def test_all_tools_skipped_when_interrupted(self):
-        """Mock an interrupted agent and verify no tools execute."""
-        # Build a fake assistant_message with 3 tool calls
-        tc1 = MagicMock()
-        tc1.id = "tc_1"
-        tc1.function.name = "terminal"
-        tc1.function.arguments = '{"command": "rm -rf /"}'
-
-        tc2 = MagicMock()
-        tc2.id = "tc_2"
-        tc2.function.name = "terminal"
-        tc2.function.arguments = '{"command": "echo hello"}'
-
-        tc3 = MagicMock()
-        tc3.id = "tc_3"
-        tc3.function.name = "web_search"
-        tc3.function.arguments = '{"query": "test"}'
-
-        assistant_msg = MagicMock()
-        assistant_msg.tool_calls = [tc1, tc2, tc3]
-
-        messages = []
-
-        # Create a minimal mock agent with _interrupt_requested = True
-        agent = MagicMock()
-        agent._interrupt_requested = True
-        agent.log_prefix = ""
-        agent._persist_session = MagicMock()
-
-        # Import and call the method
-        import types
-
-        from run_agent import AIAgent
-
-        # Bind the real methods to our mock so dispatch works correctly
-        agent._execute_tool_calls_sequential = types.MethodType(
-            AIAgent._execute_tool_calls_sequential, agent
-        )
-        agent._execute_tool_calls_concurrent = types.MethodType(
-            AIAgent._execute_tool_calls_concurrent, agent
-        )
-        AIAgent._execute_tool_calls(agent, assistant_msg, messages, "default")
-
-        # All 3 should be skipped
-        assert len(messages) == 3
-        for msg in messages:
-            assert msg["role"] == "tool"
-            assert "cancelled" in msg["content"].lower() or "interrupted" in msg["content"].lower()
-
-        # No actual tool handlers should have been called
-        # (handle_function_call should NOT have been invoked)
+# No actual tool handlers should have been called
+# (handle_function_call should NOT have been invoked)
 
 
 # ---------------------------------------------------------------------------

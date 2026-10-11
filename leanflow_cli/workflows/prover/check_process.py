@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import os
 import selectors
@@ -18,21 +19,28 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from agent.runtime.harness.processes import ProcessTree
+from core.deadlines import deadline_after, operation_cancelled, remaining_seconds, wait_slice
 from leanflow_cli.workflows.prover.check_sandbox import (
     IsolationUnavailable,
     _environment,
     _sandbox_command,
     _validated_paths,
 )
+from leanflow_cli.workflows.prover.lean_environment import lean_environment_generation
 
 _MAX_MESSAGE = 4 * 1024 * 1024
 _MAX_ERROR = 16 * 1024
 _WORKERS: dict[tuple[Path, Path], _CheckWorker] = {}
+_WORKSPACE_LOCKS: dict[tuple[Path, Path], threading.Lock] = {}
 _LOCK = threading.RLock()
 
 
-def _kill(process: subprocess.Popen[bytes]) -> None:
-    """Kill the owned process group, then reap its direct process."""
+def _kill(process: subprocess.Popen[bytes], tree: ProcessTree | None = None) -> None:
+    """Kill the owned group and tracked detached descendants, then reap the leader."""
+    if tree is not None:
+        tree.refresh()
+        tree.signal(signal.SIGKILL)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -65,9 +73,10 @@ class _CheckWorker:
     def __init__(self, project: Path, workspace: Path) -> None:
         self.project = project
         self.workspace = workspace
-        self.lock = threading.Lock()
+        self.environment_generation = ""
         self.private = Path(tempfile.mkdtemp(prefix="leanflow-check-")).resolve()
         self.process: subprocess.Popen[bytes] | None = None
+        self.tree: ProcessTree | None = None
         self.buffer = bytearray()
         self.errors = bytearray()
         self.closed = False
@@ -100,6 +109,7 @@ class _CheckWorker:
                 stderr=subprocess.PIPE,
                 start_new_session=True,
             )
+            self.tree = ProcessTree(self.process.pid)
             assert self.process.stdout is not None and self.process.stderr is not None
             os.set_blocking(self.process.stdout.fileno(), False)
             os.set_blocking(self.process.stderr.fileno(), False)
@@ -108,12 +118,12 @@ class _CheckWorker:
             raise
 
     def close(self) -> None:
-        """Stop all same-group descendants and remove only private checker caches."""
+        """Stop checker descendants and remove only private checker caches."""
         if self.closed:
             return
         self.closed = True
         if self.process is not None:
-            _kill(self.process)
+            _kill(self.process, self.tree)
             for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
                 if stream is not None:
                     stream.close()
@@ -122,7 +132,7 @@ class _CheckWorker:
     def request(
         self,
         request: dict[str, Any],
-        timeout_s: float,
+        timeout_s: float | None,
         *,
         cancelled: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
@@ -133,7 +143,7 @@ class _CheckWorker:
         payload = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
         if len(payload) > _MAX_MESSAGE:
             return _failure("check_request_too_large", "Lean checker request exceeds 4 MiB.")
-        deadline = time.monotonic() + timeout_s
+        deadline = deadline_after(timeout_s)
         try:
             # The worker's input is bounded; selectors handle backpressure as well as results.
             os.set_blocking(process.stdin.fileno(), False)
@@ -144,7 +154,9 @@ class _CheckWorker:
                 selector.register(process.stdout, selectors.EVENT_READ, "output")
                 selector.register(process.stderr, selectors.EVENT_READ, "error")
                 while True:
-                    if cancelled is not None and cancelled():
+                    if self.tree is not None:
+                        self.tree.refresh()
+                    if operation_cancelled() or (cancelled is not None and cancelled()):
                         self.close()
                         return _failure(
                             "check_cancelled", "The controller cancelled this Lean check."
@@ -160,12 +172,18 @@ class _CheckWorker:
                         ):
                             raise ValueError("Lean checker returned a mismatched response.")
                         return dict(result["result"])
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
+                    remaining = remaining_seconds(deadline)
+                    if remaining is not None and remaining <= 0:
                         raise TimeoutError("Protected Lean check exceeded its wall-clock deadline.")
-                    for key, _ in selector.select(min(remaining, 0.2)):
+                    for key, _ in selector.select(wait_slice(deadline)):
                         if key.data == "input":
-                            offset += os.write(key.fd, payload[offset:])
+                            try:
+                                offset += os.write(key.fd, payload[offset:])
+                            except BrokenPipeError:
+                                # A failed startup can close stdin before its
+                                # diagnostic streams are drained.
+                                selector.unregister(process.stdin)
+                                continue
                             if offset == len(payload):
                                 selector.unregister(process.stdin)
                         else:
@@ -210,14 +228,14 @@ def check_scratch(
     file: Path,
     declaration: str = "",
     replacement: str = "",
-    timeout_s: float = 60,
+    timeout_s: float | None = None,
     cancelled: Callable[[], bool] | None = None,
     include_axiom_profile: bool = False,
     allow_placeholders_for_elaboration: bool = False,
 ) -> dict[str, Any]:
     """Check one target/file in a warm process that cannot modify canonical sources."""
     started = time.monotonic()
-    deadline = started + max(0, timeout_s)
+    deadline = deadline_after(timeout_s)
     try:
         project, work = _validated_paths(project_root, workspace)
         target = file.resolve(strict=True)
@@ -225,24 +243,45 @@ def check_scratch(
             raise ValueError("Lean check file must belong to the project or checker workspace.")
         key = (project, work)
         with _LOCK:
-            worker = _WORKERS.get(key)
-            if worker is None or worker.closed:
-                worker = _CheckWorker(project, work)
-                _WORKERS[key] = worker
-        while not worker.lock.acquire(timeout=min(0.2, max(0, deadline - time.monotonic()))):
-            if cancelled is not None and cancelled():
+            # The slot lock outlives workers so queued callers cannot race a
+            # stale worker replacement and execute two checks in one workspace.
+            slot = _WORKSPACE_LOCKS.setdefault(key, threading.Lock())
+        while not slot.acquire(timeout=wait_slice(deadline)):
+            if operation_cancelled() or (cancelled is not None and cancelled()):
                 return _failure(
                     "check_cancelled", "The controller cancelled the queued Lean check."
                 )
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 return _failure(
                     "check_busy",
                     "A prior check still owns this workspace's Lean worker.",
                     timed_out=True,
                 )
         try:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            generation = lean_environment_generation(project, excluded_sources=(target,))
+            source_hash = hashlib.sha256(target.read_bytes()).digest()
+            remaining = remaining_seconds(deadline)
+            stopped = operation_cancelled() or (cancelled is not None and cancelled())
+            if stopped or (remaining is not None and remaining <= 0):
+                with _LOCK:
+                    if key in _WORKERS:
+                        _WORKERS[key].close()
+                return _failure(
+                    "check_cancelled" if stopped else "check_timeout",
+                    "The controller stopped this check before Lean execution.",
+                    timed_out=not stopped,
+                )
+            with _LOCK:
+                worker = _WORKERS.get(key)
+                if worker is not None and worker.environment_generation != generation:
+                    worker.close()
+                if worker is None or worker.closed:
+                    worker = _CheckWorker(project, work)
+                    worker.environment_generation = generation
+                    _WORKERS[key] = worker
+            remaining = remaining_seconds(deadline)
+            if remaining is not None and remaining <= 0:
+                worker.close()
                 return _failure(
                     "check_timeout", "Lean startup consumed the check deadline.", timed_out=True
                 )
@@ -253,13 +292,22 @@ def check_scratch(
                     "file": str(target),
                     "declaration": declaration,
                     "replacement": replacement,
-                    "timeout_s": max(1, int(timeout_s)),
+                    "timeout_s": remaining,
                     "include_axiom_profile": include_axiom_profile,
                     "allow_placeholders_for_elaboration": allow_placeholders_for_elaboration,
                 },
                 remaining,
                 **({"cancelled": cancelled} if cancelled is not None else {}),
             )
+            if (
+                generation != lean_environment_generation(project, excluded_sources=(target,))
+                or source_hash != hashlib.sha256(target.read_bytes()).digest()
+            ):
+                worker.close()
+                result = _failure(
+                    "check_environment_changed",
+                    "Lean source or dependencies changed during this check; run it again.",
+                )
             worker.has_checked = True
             return {
                 **result,
@@ -269,7 +317,7 @@ def check_scratch(
                 "timing_scope": "worker queue, startup, imports and elaboration",
             }
         finally:
-            worker.lock.release()
+            slot.release()
     except IsolationUnavailable as exc:
         return _failure("isolation_unavailable", str(exc))
     except (OSError, ValueError) as exc:
@@ -285,7 +333,7 @@ def close_check_workers(workspace: Path) -> None:
 
 
 def preflight_check(
-    *, project_root: Path, workspace: Path, timeout_s: float = 60
+    *, project_root: Path, workspace: Path, timeout_s: float | None = None
 ) -> dict[str, Any]:
     """Verify the OS sandbox and Lean REPL before spending the first model request."""
     path: Path | None = None
@@ -316,14 +364,21 @@ def isolated_command(
     project_root: Path,
     workspace: Path,
     argv: Sequence[str],
-    timeout_s: float = 60,
+    timeout_s: float | None = None,
     extra_writable_roots: Sequence[Path] = (),
+    extra_readable_roots: Sequence[Path] = (),
     network_allowed: bool = False,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Run a controller-owned command with only deliberately granted build outputs writable."""
     private: Path | None = None
     process: subprocess.Popen[bytes] | None = None
+    tree: ProcessTree | None = None
     try:
+        if timeout_s is not None and timeout_s <= 0:
+            return _failure(
+                "check_timeout", "Campaign deadline expired before command launch.", timed_out=True
+            )
         project, work = _validated_paths(project_root, workspace)
         if not argv or any(not isinstance(value, str) or "\0" in value for value in argv):
             raise ValueError("An isolated command requires a valid argument array.")
@@ -334,6 +389,7 @@ def isolated_command(
             workspace=work,
             private=private,
             extra_writable_roots=extra_writable_roots,
+            extra_readable_roots=extra_readable_roots,
             network_allowed=network_allowed,
         )
         process = subprocess.Popen(
@@ -345,7 +401,10 @@ def isolated_command(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        stdout, stderr, truncated = _capture_command(process, max(0.01, timeout_s))
+        tree = ProcessTree(process.pid)
+        stdout, stderr, truncated = _capture_command(
+            process, timeout_s, cancelled=cancelled, tree=tree
+        )
         diagnostic = stderr.decode("utf-8", errors="replace")
         if process.returncode and diagnostic.lstrip().startswith(("bwrap:", "sandbox-exec:")):
             return {
@@ -365,13 +424,20 @@ def isolated_command(
         }
     except subprocess.TimeoutExpired:
         if process is not None:
-            _kill(process)
+            _kill(process, tree)
         return {
             **_failure(
                 "check_timeout",
                 "Isolated command exceeded its wall-clock deadline.",
                 timed_out=True,
             ),
+            "returncode": None,
+            "stdout": "",
+            "stderr": "",
+        }
+    except InterruptedError as exc:
+        return {
+            **_failure("check_cancelled", str(exc)),
             "returncode": None,
             "stdout": "",
             "stderr": "",
@@ -392,7 +458,7 @@ def isolated_command(
         }
     finally:
         if process is not None:
-            _kill(process)
+            _kill(process, tree)
             for stream in (process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
@@ -401,7 +467,11 @@ def isolated_command(
 
 
 def _capture_command(
-    process: subprocess.Popen[bytes], timeout_s: float
+    process: subprocess.Popen[bytes],
+    timeout_s: float | None,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    tree: ProcessTree | None = None,
 ) -> tuple[bytes, bytes, dict[str, bool]]:
     """Drain both output streams into bounded tails until exit or a hard deadline.
 
@@ -411,7 +481,7 @@ def _capture_command(
     process that exits 0 looks entirely successful either way.
     """
     assert process.stdout is not None and process.stderr is not None
-    deadline = time.monotonic() + timeout_s
+    deadline = deadline_after(timeout_s)
     tails: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
     truncated: dict[str, bool] = {"stdout": False, "stderr": False}
     with selectors.DefaultSelector() as selector:
@@ -419,10 +489,19 @@ def _capture_command(
             os.set_blocking(stream.fileno(), False)
             selector.register(stream, selectors.EVENT_READ, name)
         while selector.get_map():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if tree is not None:
+                tree.refresh()
+                if process.poll() is not None:
+                    # A background child may retain our pipes after the compiler
+                    # exits. End its authority before trusting produced artifacts.
+                    _kill(process, tree)
+            if operation_cancelled() or (cancelled is not None and cancelled()):
+                raise InterruptedError("The controller cancelled this operation")
+            remaining = remaining_seconds(deadline)
+            if remaining is not None and remaining <= 0:
+                assert timeout_s is not None
                 raise subprocess.TimeoutExpired(process.args, timeout_s)
-            for key, _ in selector.select(min(remaining, 0.2)):
+            for key, _ in selector.select(wait_slice(deadline)):
                 chunk = os.read(key.fd, 65536)
                 if not chunk:
                     selector.unregister(key.fileobj)
@@ -433,8 +512,8 @@ def _capture_command(
                 if len(tail) > limit:
                     truncated[key.data] = True
                     del tail[:-limit]
-    remaining = deadline - time.monotonic()
-    process.wait(timeout=max(0.001, remaining))
+    remaining = remaining_seconds(deadline)
+    process.wait(timeout=remaining)
     return bytes(tails["stdout"]), bytes(tails["stderr"]), truncated
 
 

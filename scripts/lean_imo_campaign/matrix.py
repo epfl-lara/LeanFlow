@@ -6,48 +6,19 @@ from typing import Any, NamedTuple
 
 
 class Budget(NamedTuple):
-    """One arm's spending limits, stated in full so no arm inherits a default."""
+    """Set optional global limits for one complete cell, including resumed calls."""
 
-    job_api_calls: int
-    orchestrator_api_calls: int
-    total_api_calls: int
-    parallelism: int
-    wall_time_s: int
-    timeout_s: int
+    parallelism: int = 4
+    agent_calls: int | None = None
+    tokens: int | None = None
+    wall_time_s: float | None = None
 
 
-#: The limits every arm runs under. Named and shared rather than hardcoded in
-#: configuration(), so an arm that needs different ceilings states them instead
-#: of silently rewriting everyone else's.
-WIDE = Budget(
-    job_api_calls=200,
-    orchestrator_api_calls=50,
-    total_api_calls=2000,
-    parallelism=4,
-    wall_time_s=28800,
-    timeout_s=1200,
-)
-
-
-#: Calibrated for luna's provers by the first astra-planned run rather than
-#: chosen. Across 87 observed prover passes no successful one ever exceeded 164
-#: calls (p50 34, p90 111), while 37% ground to the old 200 cap and consumed 65%
-#: of all prover spend, so 150 keeps essentially every productive pass and
-#: returns the rest to replanning. The four proofs that arm produced needed
-#: 687-3162 calls, so the original 2000 ceiling was well short of what luna needs
-#: to finish a problem astra closes in ~175.
-LUNA_CALIBRATED = Budget(
-    job_api_calls=150,
-    orchestrator_api_calls=50,
-    total_api_calls=5000,
-    parallelism=4,
-    wall_time_s=28800,
-    timeout_s=1200,
-)
+WIDE = Budget()
 
 
 class Condition(NamedTuple):
-    """One comparison arm. Empty efforts inherit the launch reasoning effort."""
+    """Define explicit model and effort comparisons; empty efforts use native defaults."""
 
     label: str
     model: str
@@ -58,12 +29,8 @@ class Condition(NamedTuple):
     #: planning and proving on different models.
     orchestrator_model: str = ""
     budget: Budget = WIDE
-    provider: str = ""
-    base_url: str = ""
-    api_key_env: str = ""
+    provider: str = "codex"
     orchestrator_provider: str = ""
-    orchestrator_max_output_tokens: int | None = None
-    prover_max_output_tokens: int | None = None
 
 
 #: The original four-arm comparison: two models x two search orders, every role
@@ -103,7 +70,7 @@ ASTRA_PLAN_LUNA_PROVE = (
         prover_effort="medium",
         orchestrator_effort="medium",
         orchestrator_model="gpt-6-astra",
-        budget=LUNA_CALIBRATED,
+        budget=WIDE,
     ),
 )
 
@@ -117,7 +84,7 @@ ASTRA_PLAN_LUNA_PROVE_BOTTOM_UP = (
         prover_effort="medium",
         orchestrator_effort="medium",
         orchestrator_model="gpt-6-astra",
-        budget=LUNA_CALIBRATED,
+        budget=WIDE,
     ),
 )
 
@@ -129,11 +96,11 @@ ASTRA_LOW_LUNA_HIGH_TOP = (
     ),
 )
 
-RCP_FLASH_BUDGET = LUNA_CALIBRATED._replace(parallelism=1)
+RCP_FLASH_BUDGET = WIDE._replace(parallelism=1)
 
 
 def rcp_flash_condition(label: str, model: str) -> tuple[Condition, ...]:
-    """Keep one RCP prover per cell so two lanes use at most two key requests."""
+    """Run external models through Lemex with one prover invocation per cell at a time."""
     return (
         Condition(
             label=label,
@@ -143,10 +110,8 @@ def rcp_flash_condition(label: str, model: str) -> tuple[Condition, ...]:
             orchestrator_effort="low",
             orchestrator_model="gpt-6-astra",
             budget=RCP_FLASH_BUDGET,
-            provider="rcp",
-            base_url="https://inference.rcp.epfl.ch/v1",
-            api_key_env="RCP_API_KEY",
-            orchestrator_provider="openai-codex",
+            provider="lemex",
+            orchestrator_provider="codex",
         ),
     )
 
@@ -160,12 +125,8 @@ CONDITION_SETS = {
             prover_effort="high",
             orchestrator_effort="high",
             orchestrator_model="moonshotai/Kimi-K2.7-Code",
-            budget=LUNA_CALIBRATED._replace(wall_time_s=57600),
-            provider="rcp",
-            base_url="https://inference.rcp.epfl.ch/v1",
-            api_key_env="RCP_API_KEY",
-            orchestrator_max_output_tokens=65536,
-            prover_max_output_tokens=65536,
+            budget=WIDE,
+            provider="lemex",
         ),
     ),
     "full": CONDITIONS,
@@ -190,12 +151,8 @@ def configuration(
     orchestrator_effort: str = "",
     budget: Budget = WIDE,
     orchestrator_model: str = "",
-    provider: str = "",
-    base_url: str = "",
-    api_key_env: str = "",
+    provider: str = "codex",
     orchestrator_provider: str = "",
-    orchestrator_max_output_tokens: int | None = None,
-    prover_max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Return every prover setting explicitly, avoiding mutable home profile defaults."""
     from leanflow_cli.workflows.prover.config import ProverConfig
@@ -206,28 +163,10 @@ def configuration(
         model=model,
         orchestrator_model=orchestrator_model or model,
         provider=provider,
-        base_url=base_url,
-        api_key_env=api_key_env,
         orchestrator_provider=orchestrator_provider,
         reasoning_effort=prover_effort,
         orchestrator_reasoning_effort=orchestrator_effort,
         **budget._asdict(),
-        context_tokens=256000,
-        orchestrator_context_tokens=256000,
-        model_contexts={
-            name: {"max_output_tokens": output_tokens}
-            for name, output_tokens in (
-                (model, prover_max_output_tokens),
-                (orchestrator_model or model, orchestrator_max_output_tokens),
-            )
-            if output_tokens is not None
-        },
-        max_restarts=3,
-        plan_refinements=16,
-        max_nodes=128,
-        max_decompositions=32,
-        compression=True,
-        orchestrator_compression=True,
         fill_definitions=False,
         allow_internet=False,
     ).to_mapping()
@@ -248,7 +187,7 @@ def cells(
             "order": condition.order,
             # The launch effort the native runtime starts at. Per-role efforts
             # live in "config" and win over this wherever both apply.
-            "effort": condition.orchestrator_effort or "xhigh",
+            "effort": condition.orchestrator_effort,
             "config": configuration(
                 condition.model,
                 condition.order,
@@ -257,11 +196,7 @@ def cells(
                 condition.budget,
                 condition.orchestrator_model,
                 condition.provider,
-                condition.base_url,
-                condition.api_key_env,
                 condition.orchestrator_provider,
-                condition.orchestrator_max_output_tokens,
-                condition.prover_max_output_tokens,
             ),
             "status": "pending",
             "lane": None,

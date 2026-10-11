@@ -30,9 +30,9 @@ python -m pytest -q
 
 - `leanflow_cli/` for shell UX, workflow orchestration, provider routing, local runtimes, locks, and workflow state
 - `leanflow_skills/` for the curated Lean-first skill core
-- `agent/` for prompt assembly, compression, display, and shared agent internals
+- `agent/runtime/harness/` for native CLI execution, session accounting, and isolation
 - `tools/` for the Lean-kernel tool surface
-- `run_agent.py` for the core conversation loop
+- `leanflow_cli/workflows/prover/` and `leanflow_cli/native/harness_*` for Lean orchestration and independent acceptance
 - `core/` for the shared kernel — session store, clock, constants, tool discovery (`model_tools`)
   and toolsets. Top-level `model_tools` / `toolsets` / `utils` are re-export shims for `core.*`.
 

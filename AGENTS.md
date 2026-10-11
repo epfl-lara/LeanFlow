@@ -53,9 +53,9 @@ python -m pytest -q    # full suite
 `core/` (depends on nothing above it) → `agent/` and `tools/` → `leanflow_cli/`. Never import "up" the
 stack (e.g. `core/` must not import `leanflow_cli`). When a file grows past a few hundred lines or starts
 mixing concerns, **extract a cohesive leaf module** (a sibling in the same subpackage) instead of growing
-it. `run_agent.py` and `leanflow_cli/native/native_runner.py` are legacy monoliths — put new logic in a
-focused module and call it; do not pile onto them. Group new modules into the existing subpackages
-(`agent/{accounting,execution,prompting,providers,compression,display,runtime}/`,
+it. The old `run_agent.py` and `leanflow_cli/native/native_runner.py` entry points contain only
+migration errors; do not reintroduce model loops or SDK routing. Group new modules into the existing
+subpackages (`agent/{accounting,execution,prompting,providers,runtime}/`,
 `tools/{implementations,utilities,mcp,environments}/`,
 `leanflow_cli/{lean,native,formalization,workflows,cli,runtime}/`) and update `ARCHITECTURE.md` when you move/add modules.
 
@@ -66,26 +66,25 @@ behavior, side effects, or the non-obvious "why". Match the terse, technical hou
 *what*, and only where the logic is non-obvious. Type-hint signatures.
 
 **Write tests.** New behavior ships with tests. **Before refactoring coupled code, write characterization
-tests that pin the current behavior first** (see `tests/test_golden_cores.py`, `tests/agent/test_managed_run.py`).
+tests that pin the current behavior first** (see `tests/agent/test_native_harness.py` and
+`tests/leanflow/test_retained_native_helpers.py`).
 Keep the full suite green.
 
 ### Anti-patterns we already paid for — do NOT repeat
 
 - **`F401` is enforced, but a few imports are deliberate re-exports / dynamic-access points** reached
-  via module-attribute access ruff cannot see — `run_agent.OpenAI`, `…terminal_tool._interrupt_event`, and
-  `run_agent`'s lazy-import surface (e.g. `run_agent._get_tool_emoji`). Those carry an explicit
-  `# noqa: F401`. When you add a `# noqa: F401`, it must be a *genuine* re-export/patch target — confirm a
-  real `module.NAME` / `from module import NAME` reference exists elsewhere. Do not use it to paper over a
-  truly dead import; remove that instead.
-- **`native_runner.py` is coupled to its tests by design.** `tests/leanflow/test_native_runner.py`
-  monkeypatches internals via `setattr(runner, NAME, …)`. A function moved into a sibling module that calls
-  those helpers by bare name binds to *its own* import and silently bypasses the patch. Do not extract from
-  `native_runner` until those tests move off `setattr`-monkeypatching.
+  through module attributes, such as `terminal_tool._interrupt_event`. An explicit `# noqa: F401`
+  must identify a genuine public re-export or patch target. Confirm an actual caller exists;
+  remove truly dead imports.
+- **Move tests with extracted helpers.** Patch names where the tested function resolves them.
+  Patching a former re-export does not patch a sibling module's bound import. The obsolete runner
+  tests have been retired; retained deterministic helpers are tested directly in their leaf modules.
 - **One home authority.** All home/state paths resolve through `core.home.leanflow_home()`
   (`$LEANFLOW_HOME` or `~/.leanflow`).
   Don't add per-module home resolvers.
-- **The native-workflow env contract is `LEANFLOW_`-only.** `leanflow_cli/workflow.py` sets
-  `LEANFLOW_NATIVE_*` / `LEANFLOW_PROJECT_ROOT`; `native_config` reads them.
+- **LeanFlow orchestration uses `LEANFLOW_*`.** The launcher sets `LEANFLOW_NATIVE_*` and
+  `LEANFLOW_PROJECT_ROOT`. Codex, Claude and Lemex retain their own native homes, authentication
+  and environment names; do not translate credentials or copy native authentication into LeanFlow.
 
 ## Documentation map
 
@@ -94,7 +93,7 @@ When you want to understand or change something, this is where it is written dow
 - **`README.md`** — product overview: what LeanFlow is, install, the core workflows.
 - **`AGENTS.md`** (this file) — how to work in the repo: standards, the quality gate, layout, anti-patterns.
 - **`ARCHITECTURE.md`** — the authoritative current module map, package boundaries, execution paths,
-  and load-bearing invariants (public imports, the `run_conversation` result schema, and tool
+  and load-bearing invariants (native harness contracts, independent acceptance, and tool
   self-registration). **Update it whenever module ownership or the public surface changes.**
 - **`CONTRIBUTING.md`** — contribution basics and the skill-vs-tool decision.
 - **In-code docstrings** — the per-module / per-function reference (the primary source of truth for behavior).
@@ -106,11 +105,11 @@ When you want to understand or change something, this is where it is written dow
 LeanFlow/
 ├── leanflow_cli/        # Shell UX, workflow orchestration, providers, local runtimes, locks, workflow state, Lean services
 ├── leanflow_skills/     # Curated Lean-first skills
-├── agent/                # Prompt assembly, compression, display, auxiliary clients, AIAgent collaborators
+├── agent/              # Native harness adapters, accounting, shared prompt utilities
 ├── tools/                # Lean-kernel tools
 ├── core/                 # Lowest layer: home authority (home.py) + session store (state.py) +
 │                         #   clock/constants + model_tools/toolsets/utils kernel
-├── run_agent.py          # Core conversation loop (AIAgent)
+├── run_agent.py        # Migration error for the removed SDK engine
 └── README.md             # Main product documentation
 ```
 
@@ -119,16 +118,15 @@ The shared kernel (session store, clock, constants, tool registry API, toolsets,
 `from model_tools import …` etc. working.
 
 The runtime is organized into single-responsibility leaf modules under
-`agent/{accounting,compression,display,execution,prompting,providers,runtime}/`,
+`agent/{accounting,execution,prompting,providers,runtime}/`,
 `leanflow_cli/{cli,formalization,lean,native,runtime,workflows}/`, and
 `tools/{environments,implementations,mcp,utilities}/`. Entry points and compatibility shims remain
 stable; see `ARCHITECTURE.md` for the current map and invariants. The key structures are:
 
-- `agent/` holds `AIAgent` collaborators. For example, accounting is under
-  `agent/accounting/`, context management under `agent/compression/`, tool execution under
-  `agent/execution/`, prompt shaping under `agent/prompting/`, and provider routing under
-  `agent/providers/`. `AIAgent` delegates through thin wrappers, properties, and lazy accessors in
-  `agent/execution/collaborator_resolvers.py`, preserving public imports and patch targets.
+- `agent/runtime/harness/` launches exactly Codex, Claude Code and Lemex. Native runtimes own
+  authentication, model calls, retries, sampling and compression. Shared redaction and pricing
+  utilities remain under `agent/accounting/`; `agent/providers/` contains only migration errors
+  for removed direct-API entry points.
 - `leanflow_cli/` separates CLI handling, source formalization, Lean services, native process
   lifecycle, provider/sandbox runtime, and persistent workflow coordination into their named
   subpackages.
@@ -140,14 +138,15 @@ When adding behavior, prefer the smaller extracted module over growing the origi
 ## Current Architecture
 
 - `leanflow_cli/main.py` is the active `leanflow` CLI entrypoint (CLI handlers in `cli/cli_handlers.py`; slash-command routing in `cli/commands.py`)
-- `leanflow_cli/native/native_runner.py` is the managed Lean workflow runtime (its leaf helpers live in sibling `leanflow_cli/native/` modules)
+- `leanflow_cli/workflows/prover/runtime.py` orchestrates proving through native agent sessions.
+- `leanflow_cli/native/harness_workflow.py` runs the other supported native workflows.
 - `leanflow_cli/lean/lean_services.py` is the Lean services hub (diagnostics/declarations/search/automation/sorry-stats split into sibling `leanflow_cli/lean/lean_*` modules)
 - `leanflow_cli/workflow.py` resolves workflow requests and toolset selection
 - `leanflow_cli/workflows/workflow_state.py` persists activity, checkpoints, logs, and status (status shaping in `workflows/activity_preview.py`)
 - `leanflow_cli/runtime/file_locks.py` handles cross-agent file reservations
 - `leanflow_cli/runtime/skill_core.py` resolves builtin, user, and project skill overlays
 - `agent/prompting/prompt_builder.py` injects skill guidance into the agent prompt
-- `run_agent.py` hosts `AIAgent`; its responsibilities are delegated to the `agent/` collaborators listed above (the `run_conversation` loop itself is not yet extracted)
+- `agent/runtime/harness/` owns native process protocols, isolation, cleanup and reported usage.
 
 ## Contribution Priorities
 
@@ -188,7 +187,7 @@ Preferred verification commands:
 ```bash
 source .venv/bin/activate
 python -m pytest tests/leanflow -q -n 0
-python -m pytest tests/leanflow tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
+python -m pytest tests/leanflow tests/agent/test_prompt_builder.py tests/agent/test_native_harness.py -q -n 0
 python -m leanflow_cli.main --help
 ./scripts/install-internal.sh
 ```

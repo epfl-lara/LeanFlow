@@ -1,8 +1,7 @@
 """Persist, replay, and roll back native workflow checkpoints.
 
 The helpers maintain the workflow-state journal, checkpoint index, and current
-pointer. ``AIAgent`` is imported only while type checking so persistence remains
-provider- and MCP-independent.
+pointer without depending on a particular native runtime or model client.
 """
 
 from __future__ import annotations
@@ -10,7 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from core.utils import atomic_json_write
 from leanflow_cli.native.native_config import (
@@ -21,9 +20,6 @@ from leanflow_cli.native.native_config import (
 )
 from leanflow_cli.native.native_utils import _message_text
 from leanflow_cli.workflows.workflow_json_io import read_json_file
-
-if TYPE_CHECKING:
-    from run_agent import AIAgent
 
 logger = logging.getLogger(__name__)
 
@@ -175,9 +171,7 @@ def _checkpoint_replay_history(entry: Mapping[str, Any]) -> list[dict[str, Any]]
     return [_workflow_replay_message(summary_text)]
 
 
-def _latest_filesystem_checkpoint_hash(
-    agent: AIAgent, *, reason: str = "", force: bool = False
-) -> str:
+def _latest_filesystem_checkpoint_hash(agent: Any, *, reason: str = "", force: bool = False) -> str:
     """Return the latest source snapshot hash, forcing current state when requested."""
     checkpoint_mgr = getattr(agent, "_checkpoint_mgr", None)
     if checkpoint_mgr is None or not getattr(checkpoint_mgr, "enabled", False):

@@ -83,18 +83,13 @@ const CATALOG = {
 };
 const ALLOWED = allowedKnobNames(CATALOG);
 
-test("compression percentages reject boundary and whole-percent values before launch", () => {
-  for (const name of ["LEANFLOW_PROVER_COMPRESSION_THRESHOLD", "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION_THRESHOLD"]) {
-    const flag = { name, value_type: "float", minimum: 0, maximum: 1 };
-    for (const invalid of ["0", "1", "75", "-0.1", "NaN"]) {
-      assert.notEqual(extensionKnobValueProblem(flag, invalid), null);
-    }
-    for (const valid of ["0.60", "0.75", "0.80", "0.99"]) {
-      assert.equal(extensionKnobValueProblem(flag, valid), null);
-    }
-    assert.equal(extensionKnobValueProblem(flag, "", true), null);
-  }
+test("global time limits accept zero and reject negative or nonfinite values", () => {
+  const flag = {name:"LEANFLOW_PROVER_WALL_TIME_S",value_type:"float",minimum:0};
+  for (const invalid of ["-1", "NaN", "Infinity"]) assert.notEqual(extensionKnobValueProblem(flag, invalid), null);
+  for (const valid of ["0", "0.5", "28800"]) assert.equal(extensionKnobValueProblem(flag, valid), null);
+  assert.equal(extensionKnobValueProblem(flag, "", true), null);
 });
+
 
 function form(overrides = {}) {
   return {

@@ -26,6 +26,27 @@ from leanflow_cli.flags.spec import FlagProfile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+
+def test_prover_exposes_only_optional_global_limits() -> None:
+    """Keep native sampling, compression, and per-response budgets out of LeanFlow."""
+    for name in ("AGENT_CALLS", "TOKENS", "WALL_TIME_S"):
+        spec = lookup_flag("LEANFLOW_PROVER_" + name)
+        assert spec is not None
+        assert spec.default == ""
+        assert spec.minimum == 0
+    for name in (
+        "TIMEOUT_S",
+        "JOB_API_CALLS",
+        "ORCHESTRATOR_API_CALLS",
+        "TOTAL_API_CALLS",
+        "CONTEXT_TOKENS",
+        "COMPRESSION",
+        "BASE_URL",
+        "API_KEY_ENV",
+    ):
+        assert lookup_flag("LEANFLOW_PROVER_" + name) is None
+
+
 #: Directories holding runtime code the catalog documents.
 _SOURCE_DIRS = ("core", "agent", "tools", "leanflow_cli")
 
@@ -113,13 +134,10 @@ def test_catalog_names_are_unique() -> None:
     assert not duplicates, f"duplicate catalog entries: {duplicates}"
 
 
-def test_codex_catalog_accepts_the_runtime_default_reasoning_effort() -> None:
-    """Keep the extension from rejecting the provider's own default effort."""
-    from leanflow_cli.runtime.auth import CODEX_MAIN_DEFAULT_REASONING_EFFORT
-
-    spec = lookup_flag("LEANFLOW_CODEX_REASONING_EFFORT")
+def test_backend_catalog_offers_only_native_backends() -> None:
+    spec = lookup_flag("LEANFLOW_INFERENCE_PROVIDER")
     assert spec is not None
-    assert CODEX_MAIN_DEFAULT_REASONING_EFFORT in spec.choices
+    assert spec.choices == ("", "codex", "claude", "lemex")
 
 
 def test_every_catalogued_knob_is_read_by_the_runtime(runtime_source: str) -> None:
@@ -194,8 +212,6 @@ def test_sensitive_knobs_are_terminal_only() -> None:
         "LEANFLOW_PLAN_STATE_DIR",
         "LEANFLOW_CLEAN_ROOM_TASK_LABELS",
         "LEANFLOW_REDACT_SECRETS",
-        "LEANFLOW_DUMP_REQUESTS",
-        "LEANFLOW_DUMP_REQUEST_STDOUT",
         "LEANFLOW_YOLO_MODE",
         "LEANFLOW_HOME",
         "LEANFLOW_SANDBOX_BASE_IMAGE",

@@ -11,6 +11,7 @@ from leanflow_cli.lean.lean_services import probe_capabilities
 from leanflow_cli.runtime.branding import get_cli_command_name, get_product_name
 from leanflow_cli.runtime.runtime_provider import (
     format_runtime_provider_error,
+    resolve_backend_executable,
     resolve_runtime_provider,
 )
 from tools.mcp.mcp_tool import get_mcp_status
@@ -37,8 +38,11 @@ def _provider_payload() -> tuple[dict[str, Any], list[str]]:
     issues: list[str] = []
     try:
         runtime = resolve_runtime_provider()
+        executable = resolve_backend_executable(str(runtime["provider"]))
         return {
             "available": True,
+            "executable": executable,
+            "authentication": "owned by native CLI; not inspected",
             "provider": str(runtime.get("provider", "") or ""),
             "base_url": str(runtime.get("base_url", "") or ""),
             "api_mode": str(runtime.get("api_mode", "") or ""),
@@ -326,9 +330,9 @@ def _format_doctor_report(payload: dict[str, Any]) -> str:
                 "",
                 "Runtime provider:",
                 f"- provider: {provider.get('provider') or '[unset]'}",
-                f"- base URL: {provider.get('base_url') or '[unset]'}",
+                "- setup: native CLI login or API configuration",
                 f"- API mode: {provider.get('api_mode') or '[unset]'}",
-                f"- model: {provider.get('model') or '[unset]'}",
+                f"- model override: {provider.get('model') or 'native runtime default'}",
             ]
         )
     else:

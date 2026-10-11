@@ -166,7 +166,7 @@ def test_adopted_terminal_run_is_scored_without_relaunch(
         "verified": False,
     }
     (tmp_path / "campaign.json").write_text(
-        json.dumps({"cells": [cell], "provenance": {"runtime_sha256": "original"}})
+        json.dumps({"version": 2, "cells": [cell], "provenance": {"runtime_sha256": "original"}})
     )
     monkeypatch.setattr(adoption, "process_identity", lambda _: "")
     monkeypatch.setattr(runner, "next_cell", lambda *args: None)
