@@ -192,7 +192,16 @@ def _tool_call_summaries(assistant: Mapping[str, Any]) -> tuple[list[dict[str, s
 def preview_details(kind: str, details: Mapping[str, Any]) -> dict[str, Any]:
     """Return bounded, redacted preview fields for one prover event."""
     preview: dict[str, Any] = {}
-    if kind == "api-response":
+    if kind.startswith("agent-"):
+        preview.update(
+            content_preview=_clip(details.get("text"), PREVIEW_CHARS),
+            content_chars=len(_text(details.get("text"))),
+            arguments_preview=_clip(details.get("arguments"), ARGUMENT_CHARS),
+            result_preview=_clip(details.get("result"), PREVIEW_CHARS),
+            backend=str(details.get("backend") or ""),
+            item_id=str(details.get("item_id") or ""),
+        )
+    elif kind == "api-response":
         assistant = details.get("assistant")
         assistant = assistant if isinstance(assistant, Mapping) else {}
         content = _text(assistant.get("content"))
@@ -275,6 +284,19 @@ def _tool_call_message(calls: list[dict[str, str]], total: int) -> str:
 
 def event_message(kind: str, details: Mapping[str, Any], preview: Mapping[str, Any]) -> str:
     """Return a one-line message that says what happened, not only which kind."""
+    if kind.startswith("agent-"):
+        text = str(preview.get("content_preview") or "")
+        label = {
+            "agent-output": "Agent",
+            "agent-reasoning": "Reasoning",
+            "agent-plan": "Plan",
+            "agent-tool-start": "Tool started",
+            "agent-tool-end": "Tool finished",
+        }.get(kind, "Agent status")
+        return _line(
+            f"{label}: {text or details.get('tool') or details.get('status') or 'Updated'}",
+            MESSAGE_CHARS,
+        )
     job = str(details.get("job_id") or "")
     calls = details.get("api_calls")
     budget = details.get("api_budget")

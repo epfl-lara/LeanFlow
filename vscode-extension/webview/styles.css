@@ -1552,3 +1552,15 @@ body.vscode-high-contrast-light {
 .prover-artifacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .prover-node-detail details > summary { cursor: pointer; font-size: 12px; color: var(--lf-muted); margin: 8px 0 4px; }
 .prover-job details > summary { cursor: pointer; font-size: 12px; color: var(--lf-muted); margin: 6px 0 2px; }
+
+/* Per-agent observations share the editor's colors and stay bounded on long runs. */
+.providers-view { display: grid; gap: 16px; }
+.agent-activity { margin: 10px 0; }
+.agent-latest { white-space: pre-wrap; overflow-wrap: anywhere; border-left: 2px solid var(--vscode-focusBorder); padding-left: 10px; }
+.agent-activity-feed { max-height: 520px; overflow-y: auto; margin: 8px 0; }
+.agent-activity-entry { border-bottom: 1px solid var(--vscode-panel-border); }
+.agent-activity-entry.reasoning { border-left: 2px solid var(--vscode-textLink-foreground); }
+.agent-activity-toggle { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; padding: 8px; background: transparent; color: inherit; border: 0; text-align: left; cursor: pointer; }
+.agent-activity-toggle:hover { background: var(--vscode-list-hoverBackground); }
+.agent-activity-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+.agent-activity-preview { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

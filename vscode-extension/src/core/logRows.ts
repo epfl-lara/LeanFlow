@@ -40,6 +40,12 @@ const SESSION_END = new Set([
 
 /** Wire event types rendered as something a reader can scan. */
 const EVENT_LABELS: Record<string, string> = {
+  "agent-output": "Agent output",
+  "agent-reasoning": "Reported reasoning",
+  "agent-tool-start": "Native tool started",
+  "agent-tool-end": "Native tool finished",
+  "agent-plan": "Agent plan",
+  "agent-status": "Agent status",
   "api-request": "Request",
   "api-response": "Response",
   "api-error": "Provider error",

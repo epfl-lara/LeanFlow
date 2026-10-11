@@ -27,6 +27,10 @@ import { EventDetailPanel } from "./EventDetail";
 
 /** Events that tell the story of a run, across the legacy runner and the bounded prover. */
 const NARRATIVE_TYPES = new Set([
+  "agent-output",
+  "agent-reasoning",
+  "agent-plan",
+  "agent-status",
   "assistant-response",
   "api-response",
   "api-error",
@@ -74,7 +78,7 @@ const PRESETS: { id: string; label: string; match: (type: string) => boolean }[]
   {
     id: "tools",
     label: "Tool calls",
-    match: (type) => type.startsWith("tool-"),
+    match: (type) => type.startsWith("tool-") || type.startsWith("agent-tool-"),
   },
   {
     id: "lean",
@@ -84,7 +88,7 @@ const PRESETS: { id: string; label: string; match: (type: string) => boolean }[]
   {
     id: "provider",
     label: "Provider",
-    match: (type) => type.startsWith("api-") || type.startsWith("provider-"),
+    match: (type) => type.startsWith("api-") || type.startsWith("provider-") || type.startsWith("agent-"),
   },
   {
     id: "research",

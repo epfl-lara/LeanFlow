@@ -22,6 +22,7 @@ from .events import EventState, usage_delta
 from .isolation import IsolationUnavailable, sandbox_command
 from .models import BackendError, HarnessRequest, HarnessResult
 from .processes import ProcessTree, cleanup_group
+from .redaction import environment_secrets, redact_native_value
 
 
 def _stop_reason(request: HarnessRequest) -> str:
@@ -37,8 +38,10 @@ def _record(
     stream: TextIO | None,
     payload: dict[str, Any],
     on_event: Callable[[dict[str, Any]], None] | None,
+    secrets: tuple[str, ...] = (),
 ) -> None:
     """Persist observations before notifying the controller on the reader thread."""
+    payload = redact_native_value(payload, secrets)
     if stream is not None:
         stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
         stream.flush()
@@ -61,6 +64,7 @@ def run_harness(
         raise BackendError("The campaign deadline must be a finite monotonic timestamp or None.")
     command = build_command(request)
     environment = child_environment(request)
+    secrets = environment_secrets(environment)
     executable = shutil.which(command[0], path=environment.get("PATH"))
     if executable is None:
         return HarnessResult(
@@ -147,7 +151,7 @@ def run_harness(
             decoded = line.decode("utf-8", errors="replace")
             if channel == "stderr":
                 if decoded:
-                    _record(log, {"type": "harness.stderr", "text": decoded}, on_event)
+                    _record(log, {"type": "harness.stderr", "text": decoded}, on_event, secrets)
                 return
             if not decoded.strip():
                 return
@@ -158,10 +162,10 @@ def run_harness(
             except (ValueError, TypeError) as exc:
                 malformed = True
                 state.diagnostics.append(f"Malformed native JSON output: {exc}")
-                _record(log, {"type": "harness.invalid_output", "text": decoded}, on_event)
+                _record(log, {"type": "harness.invalid_output", "text": decoded}, on_event, secrets)
                 return
             state.consume(event)
-            _record(log, event, on_event)
+            _record(log, event, on_event, secrets)
 
         cleaned = False
         drain_deadline: float | None = None

@@ -1,6 +1,7 @@
 /** Extension entry point: wire services, surfaces, and commands. */
 import * as vscode from "vscode";
 
+import { BACKEND_IDS, isBackend } from "./core/providerCredentials";
 import { CliError, runCli } from "./core/cli";
 import { relativeTarget } from "./core/project";
 import { redactSensitiveText } from "./core/runPrivacy";
@@ -89,6 +90,17 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("leanflow.openBenchmark", (uri?: vscode.Uri) =>
       openBenchmarkPanel(context.extensionUri, services, uri),
     ),
+
+    vscode.commands.registerCommand("leanflow.configureProvider", async () => {
+      const backend = await vscode.window.showQuickPick(BACKEND_IDS, { title: "Set up a LeanFlow provider" });
+      if (!isBackend(backend)) return;
+      const options = [{ label: "Save API key", action: "apiKey" as const }, { label: "Remove saved key", action: "removeKey" as const }, { label: "Open native configuration", action: "config" as const }];
+      const picked = await vscode.window.showQuickPick([...options, ...(backend === "lemex" ? [{ label: "Set endpoint", action: "endpoint" as const }] : [{ label: "Sign in with native CLI", action: "login" as const }])], { title: `${backend} setup` });
+      if (picked) {
+        try { await services.providers.act(backend, picked.action); }
+        catch (error) { await showCommandError(error); }
+      }
+    }),
 
     vscode.commands.registerCommand("leanflow.refresh", async () => {
       await services.reload();

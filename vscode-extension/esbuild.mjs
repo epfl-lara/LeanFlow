@@ -53,6 +53,8 @@ if (tests) {
     external: ["vscode"],
     entryPoints: {
       launch: "src/core/launch.ts",
+      providerCredentials: "src/core/providerCredentials.ts",
+      agentActivity: "src/core/agentActivity.ts",
       launchPaths: "src/core/launchPaths.ts",
       projectDiscovery: "src/core/projectDiscovery.ts",
       eventBuffer: "src/core/eventBuffer.ts",

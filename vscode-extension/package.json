@@ -124,6 +124,10 @@
       {
         "command": "leanflow.openBenchmark",
         "title": "LeanFlow: Open Benchmark Campaign"
+      },
+      {
+        "command": "leanflow.configureProvider",
+        "title": "LeanFlow: Configure Provider"
       }
     ],
     "menus": {

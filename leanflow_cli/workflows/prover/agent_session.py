@@ -101,11 +101,15 @@ def run_session(
         previous.pop("usage_total", None)
     previous["backend"] = backend
     previous_calls = int(previous.get("used", 0))
+    from agent.runtime.harness.redaction import environment_secrets, redact_native_value
+
+    secrets = environment_secrets(os.environ)
     event_lock = threading.RLock()
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def emit(kind: str, details: dict[str, Any]) -> None:
         """Retain authoritative controller evidence separately from native observations."""
+        details = redact_native_value(details, secrets)
         evidence_id = uuid.uuid4().hex[:12]
         event = {
             "type": kind,
@@ -123,7 +127,11 @@ def run_session(
             on_event(kind, {**details, "evidence_id": evidence_id})
 
     def native_event(event: dict[str, Any]) -> None:
-        """Checkpoint native session identity as soon as it is emitted."""
+        """Checkpoint native identity and publish observational output separately."""
+        from agent.runtime.harness.observations import native_observations
+
+        for kind, details in native_observations(backend, event):
+            emit(kind, details)
         session_id = (
             event.get("thread_id")
             if event.get("type") == "thread.started"

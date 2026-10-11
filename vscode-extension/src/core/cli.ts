@@ -67,7 +67,7 @@ export function cliPath(): string {
  */
 export async function runCli(
   args: string[],
-  options: { cwd?: string; timeoutMs?: number } = {},
+  options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
 ): Promise<string> {
   const bin = cliPath();
   try {
@@ -75,7 +75,7 @@ export async function runCli(
       cwd: options.cwd,
       timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env },
+      env: { ...process.env, ...options.env },
     });
     return stdout;
   } catch (error) {
@@ -411,10 +411,11 @@ export function spawnWorkflow(
   projectRoot: string,
   argv: string[],
   env: LaunchEnv,
+  nativeEnv: NodeJS.ProcessEnv = {},
 ): { pid: number | null; kill: () => boolean; onExit: Promise<number | null> } {
   const child = spawn(cliPath(), ["workflow", ...argv], {
     cwd: projectRoot,
-    env: childEnv(env),
+    env: { ...childEnv(env), ...nativeEnv },
     detached: true,
     stdio: "ignore",
   });

@@ -13,6 +13,7 @@ import {
 } from "./icons";
 import { useStore, type TabId } from "./store";
 import { KnobsView } from "./views/KnobsView";
+import { ProvidersView } from "./views/ProvidersView";
 import { LaunchView } from "./views/LaunchView";
 import { LiveView } from "./views/LiveView";
 import { LogsView } from "./views/LogsView";
@@ -22,6 +23,7 @@ import { mode, post } from "./vscodeApi";
 
 const TABS: { id: TabId; label: string; Icon: typeof PlayIcon }[] = [
   { id: "launch", label: "Launch", Icon: PlayIcon },
+  { id: "providers", label: "Providers", Icon: KnobsIcon },
   { id: "live", label: "Live", Icon: PulseIcon },
   { id: "logs", label: "Logs", Icon: LogsIcon },
   { id: "knobs", label: "Knobs", Icon: KnobsIcon },
@@ -99,6 +101,8 @@ export function App() {
 
   const body = () => {
     switch (view.tab) {
+      case "providers":
+        return <ProvidersView />;
       case "launch":
         return <LaunchView />;
       case "live":

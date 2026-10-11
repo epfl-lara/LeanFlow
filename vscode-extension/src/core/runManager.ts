@@ -111,6 +111,7 @@ export class RunManager implements vscode.Disposable {
   constructor(
     private readonly context: vscode.ExtensionContext,
     project: ProjectInfo,
+    private readonly nativeEnvironment: () => Promise<NodeJS.ProcessEnv> = async () => ({}),
   ) {
     this.project = project;
     this.restore();
@@ -343,7 +344,10 @@ export class RunManager implements vscode.Disposable {
     this.changed.fire();
 
     try {
-      const child = spawnWorkflow(projectRoot, argv, env);
+      // Secrets cross only the process boundary, never tracked/persisted overrides.
+      // Include all configured native backends because planner and prover can differ.
+      const nativeEnv = await this.nativeEnvironment();
+      const child = spawnWorkflow(projectRoot, argv, env, nativeEnv);
       run.pid = child.pid;
       run.status = "running";
       this.handles.set(id, { kill: child.kill });

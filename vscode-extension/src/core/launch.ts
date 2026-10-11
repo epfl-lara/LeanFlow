@@ -5,6 +5,7 @@
  * determine a run, so both are recorded with every tracked run and every
  * experiment cell. Nothing else may reach the child process.
  */
+import { isBackend } from "./providerCredentials";
 import type {
   FlagCatalog,
   FlagProfile,
@@ -421,7 +422,7 @@ function overlongFieldProblems(request: LaunchRequest): string[] {
   };
   check("The target", request.target, LAUNCH_FIELD_LIMITS.target);
   check("The provider", request.provider, LAUNCH_FIELD_LIMITS.provider);
-  if (request.provider.trim() && !["codex", "claude", "lemex"].includes(request.provider.trim())) {
+  if (request.provider.trim() && !isBackend(request.provider.trim())) {
     problems.push("Select a supported agent backend: codex, claude, or lemex.");
   }
   check("The model", request.model, LAUNCH_FIELD_LIMITS.model);

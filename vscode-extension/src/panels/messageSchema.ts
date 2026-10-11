@@ -7,6 +7,7 @@
  * checked here before the handler sees it. A rejected message is dropped with a
  * reason rather than being partially applied.
  */
+import { isBackend } from "../core/providerCredentials";
 import type { LaunchRequest, WebviewMessage, WorkflowKind } from "../core/types";
 import {
   MAX_EXPERIMENT_AXIS,
@@ -210,7 +211,17 @@ export function parseWebviewMessage(
     case "refresh":
     case "openDashboard":
     case "openCliSettings":
+    case "refreshProviders":
       return { ok: true, message: { type } as WebviewMessage };
+
+    case "providerAction": {
+      const backend = raw.backend;
+      const action = raw.action;
+      if (!isBackend(backend)) return reject("backend");
+      if (action !== "apiKey" && action !== "removeKey" && action !== "endpoint" && action !== "login" && action !== "config") return reject("action");
+      if ((action === "endpoint" && backend !== "lemex") || (action === "login" && backend === "lemex")) return reject("action for backend");
+      return { ok: true, message: { type, backend, action } };
+    }
 
     case "launch":
     case "preview": {

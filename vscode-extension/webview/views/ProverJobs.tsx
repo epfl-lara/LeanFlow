@@ -1,4 +1,7 @@
 /** Agent jobs with their lifecycle, budget, timing, settings, and the files they left behind. */
+import { useEffect } from "react";
+import { AgentActivity } from "./AgentActivity";
+import { post } from "../vscodeApi";
 import type { ProverJob, ProverSnapshot } from "../../src/core/prover";
 import { isRunningOperation, operationLabel, operationProgress } from "../../src/core/proverOperations";
 import { jobSettings, jobTimeline, stopUsage } from "../../src/core/proverProgress";
@@ -12,6 +15,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
   state: ProverSnapshot; now: number; onOpen: (path: string) => void; onJob: (jobId: string) => void;
 }) {
   const { setView } = useStore();
+  useEffect(() => { post({ type: "loadEvents", runId: state.run_id }); }, [state.run_id]);
   const nodeName = (id: string): string => state.dag.nodes.find((node) => node.id === id)?.name ?? id;
   return <Card title="Agents and jobs" subtitle="Native sessions share the campaign’s global limits. Independent checks are listed under the controller.">
     {state.jobs.length === 0 && <div className="muted">No jobs launched yet.</div>}
@@ -35,6 +39,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
           {!state.config.native_backend && settings.compression !== null && <> · compression {settings.compression ? "on" : "off"}</>}
           {settings.source === "shared" && <> · run-level settings</>}
         </div>}
+        <AgentActivity runId={state.run_id} jobId={job.id} />
         {job.error && <div className="prover-op-error">{job.error}</div>}
         {job.stop_reason && <div className="prover-job-stop">
           <strong>Allocation ended:</strong> {job.stop_reason.message || job.stop_reason.code}

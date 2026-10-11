@@ -520,7 +520,13 @@ export function eventOutputSections(
   };
   const type = event.type;
 
-  if (type === "api-response") {
+  if (type.startsWith("agent-")) {
+    const text = first(full.text, details.content_preview);
+    add(section("native-text", type === "agent-reasoning" ? "Reported reasoning" : "Agent output", text));
+    add(section("native-arguments", "Tool arguments", first(full.arguments, details.arguments_preview)));
+    add(section("native-result", type === "agent-plan" ? "Agent plan" : "Tool output", first(full.result, details.result_preview)));
+    add(section("native-error", "Backend error", first(full.error, details.error), { tone: "err" }));
+  } else if (type === "api-response") {
     const assistant = record(full.assistant);
     add(section("content", "Model output", first(assistant.content, details.content_preview)));
     add(
@@ -637,6 +643,8 @@ export function eventFacts(
     }
   };
   add("agent", event.agent_id);
+  add("backend", str(details.backend));
+  add("native item", str(details.item_id));
   const job = str(details.job_id);
   if (job && job !== event.agent_id) {
     add("job", job);

@@ -6,6 +6,38 @@ The extension does not reimplement any part of LeanFlow. It drives the `leanflow
 CLI and reads run-scoped state through `leanflow runs`, so the editor, shell,
 evaluation harness, and exported results use the same evidence boundary.
 
+## Provider setup
+
+Open **Providers** in the dashboard, use the setup link beside **Agent backend**,
+or run **LeanFlow: Configure Provider** from the command palette.
+
+- **Codex:** sign in through `codex login`, or add a standard OpenAI API key.
+- **Claude Code:** sign in through `claude auth login`, or add an Anthropic API key.
+- **Lemex:** add a key and, if needed, an endpoint such as
+  `https://inference.rcp.epfl.ch/v1`. The LeanFlow installer supplies a managed
+  Lemex runtime when needed.
+
+Keys are entered through VS Code's password prompt and stored in SecretStorage,
+scoped to the local or remote extension host. They never pass through the webview,
+workspace settings, profiles, command arguments or saved run records. At launch,
+the extension supplies `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LEMEX_API_KEY` and
+`LEMEX_BASE_URL` to the native runtimes using their standard environment names.
+Planner and prover roles may use different backends, so all explicitly saved
+backend keys are available to the workflow process.
+
+Saved values override inherited environment values for **new extension-launched
+runs**. Remove a saved key, or clear the Lemex endpoint, to restore the inherited
+setup. Existing runs and independent terminal sessions keep their current settings.
+Native auth files, native homes, model defaults and sampling settings remain owned
+by each CLI. **Open native config** opens that CLI's configuration in the editor.
+
+**Refresh setup** checks executable discovery/version and native login status
+without making an inference request. A saved or exported key is shown as present,
+not as validated API access. Complete any login in its terminal and refresh again.
+For Remote SSH, install and configure the native runtimes on the displayed remote
+host. This page requires the matching LeanFlow CLI with `provider --json --check`;
+an older CLI shows an update message.
+
 ## What it gives you
 
 **Launch** — a form over the whole `leanflow workflow` surface: workflow kind,
@@ -17,6 +49,16 @@ environment the child process would receive, with credentials redacted and
 prompt/command-template contents represented by fingerprints. An
 actual run seals its launch configuration and source identity separately from
 its final source and outcome, so later edits cannot rewrite what it claims.
+
+**Live → Agents and jobs** includes each job's latest output and an expandable
+feed of messages, native tool calls/results, plans and reported reasoning. Codex
+and Lemex public reasoning items and Claude's emitted thinking blocks are shown
+when available; missing or encrypted thinking is never reconstructed. Messages
+appear when the native CLI emits completed blocks, not necessarily token by token.
+The feed shows the latest 30 matching events from the bounded run buffer. Expand
+an entry to read its full recorded text; **Open agent log** opens the filtered run
+log. Older runs retain their existing final reports and cannot gain missing traces.
+Native tool claims remain separate from independent Lean acceptance.
 
 **Live** — phase, target declaration, active file, sorry counts here and across
 the project, provider and model, skill, agent capacity, held locks, the

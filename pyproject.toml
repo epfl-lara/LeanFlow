@@ -127,6 +127,7 @@ files = [
   "leanflow_cli/native/harness_formalization.py",
   "leanflow_cli/runtime/lemex_install.py",
   "leanflow_cli/runtime/runtime_provider.py",
+  "leanflow_cli/runtime/provider_setup.py",
   "scripts/lean_imo_campaign",
   "leanflow_cli/workflows/prover",
   "leanflow_cli/flags/prover_catalog.py",

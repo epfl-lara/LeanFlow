@@ -578,9 +578,9 @@ export interface ExperimentBaseline {
 
 /** Canonical provider runtime resolved before the first paid sweep cell. */
 export interface ExperimentRuntimeIdentity {
-  /** Normalized selector passed by the experiment, such as `codex` or `rcp`. */
+  /** Requested selector retained in the historical experiment contract. */
   requestedProvider: string;
-  /** Provider identity the managed child records, such as `openai-codex` or `custom`. */
+  /** Recorded provider identity; legacy runs retain their original names. */
   provider: string;
   model: string;
   /** Credential-free endpoint identity; noncredential query settings are retained, fragments are not. */
@@ -753,6 +753,7 @@ export interface ProjectInfo {
 }
 
 export interface AppState {
+  providers: import("./providerCredentials").ProviderSetupState;
   project: ProjectInfo;
   cli: CliStatus;
   catalog: FlagCatalog | null;
@@ -788,6 +789,8 @@ export type HostMessage =
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
 export type WebviewMessage =
+  | { type: "refreshProviders" }
+  | { type: "providerAction"; backend: import("./providerCredentials").BackendId; action: import("./providerCredentials").ProviderAction }
   | { type: "ready" }
   | { type: "refresh" }
   | { type: "launch"; request: LaunchRequest }

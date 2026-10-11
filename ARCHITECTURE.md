@@ -32,7 +32,13 @@ The direct auxiliary theorem-advisor tools are removed from tool discovery.
 `agent/runtime/harness/` owns typed requests/results, native command construction,
 structured output parsing, cumulative-usage normalization, session resume,
 process-tree cleanup and OS isolation. A complete native process invocation is
-one LeanFlow agent call. Internal model requests and compaction are opaque.
+one LeanFlow agent call. Internal model requests and compaction remain native.
+`observations.py` projects emitted message/reasoning blocks, plans and native tool
+starts/results into separate `agent-*` observations, never independent acceptance
+or additional call accounting. `redaction.py` removes exact environment credentials
+and recognizable secrets before transcripts reach log files or callbacks. Prover
+jobs persist complete observations under stable evidence IDs; the shared stream
+carries bounded previews for `runs event` to expand on demand.
 
 `leanflow_cli/runtime/runtime_provider.py` selects exactly `codex`, `claude` or
 `lemex`. It does not read/copy credentials or translate external endpoint names.
@@ -223,7 +229,20 @@ does not read or reinterpret LeanFlow's persistence files directly:
 
 - `src/core/cli.ts` owns JSON command execution, strict output parsing, and the
   detached workflow spawn boundary. The host passes only catalogued
-  `LEANFLOW_*` overrides and a minted run id.
+  `LEANFLOW_*` overrides and a minted run id. Native credentials are injected
+  separately immediately before spawn, never included in persisted overrides.
+- `src/core/providerCredentials.ts` stores explicit native keys and the Lemex
+  endpoint in VS Code SecretStorage, scoped by extension host authority; a missing
+  override preserves the native environment and login. `providerSetup.ts` owns
+  password prompts, native login terminals, and credential-free status checks via
+  `leanflow provider --json --check` (`runtime/provider_setup.py`). Native homes
+  and auth files are neither copied nor modified. `ProvidersView.tsx` exposes the
+  setup actions without handling secret values; remote setup executes on the
+  workspace host. Presence checks do not validate paid API access.
+- `src/core/agentActivity.ts` selects a bounded narrative for an exact run/job.
+  `webview/views/AgentActivity.tsx` shows it beside each prover job, with emitted
+  reasoning optionally visible and complete output expanded through the existing
+  per-event evidence cache. Missing reasoning is labelled as unreported.
 - `src/core/runManager.ts` persists a run record before spawn, binds it to its
   project root and process identity, and reconciles restored runs only from an
   exact run-id status or immutable terminal result. A restored run is stopped

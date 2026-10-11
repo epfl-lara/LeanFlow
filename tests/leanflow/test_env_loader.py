@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 
 from leanflow_cli.runtime.env_loader import (
-    NATIVE_AUXILIARY_API_KEY_ENV,
-    NATIVE_AUXILIARY_BASE_URL_ENV,
     NATIVE_AUXILIARY_MODEL_ENV,
     NATIVE_AUXILIARY_PROVIDER_ENV,
     NATIVE_AUXILIARY_PROVIDER_TARGETS,
@@ -140,8 +138,8 @@ def test_leanflow_env_files_cannot_replace_native_runtime_setup(monkeypatch, tmp
 
 def test_auxiliary_override_does_not_relabel_native_credentials(monkeypatch):
     monkeypatch.setenv(NATIVE_AUXILIARY_PROVIDER_ENV, "lemex")
-    monkeypatch.setenv(NATIVE_AUXILIARY_API_KEY_ENV, "obsolete-secret")
-    monkeypatch.setenv(NATIVE_AUXILIARY_BASE_URL_ENV, "https://obsolete.example")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AUXILIARY_API_KEY", "obsolete-secret")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AUXILIARY_BASE_URL", "https://obsolete.example")
     monkeypatch.setenv(NATIVE_AUXILIARY_MODEL_ENV, "chosen-model")
     monkeypatch.setenv(NATIVE_AUXILIARY_REASONING_EFFORT_ENV, "high")
     for name in _native_auxiliary_targets("API_KEY"):

@@ -179,6 +179,14 @@ export class WebviewHost implements vscode.Disposable {
         await services.reload();
         return;
       }
+      case "refreshProviders": {
+        await services.providers.refresh();
+        return;
+      }
+      case "providerAction": {
+        await services.providers.act(message.backend, message.action);
+        return;
+      }
       case "launch": {
         const problems = validateLaunch(message.request);
         if (problems.length > 0) {

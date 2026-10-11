@@ -15,6 +15,7 @@ import {
   listLeanFiles,
   NO_PROJECT,
 } from "./project";
+import { ProviderSetup } from "./providerSetup";
 import { ProverService } from "./proverService";
 import { RunManager } from "./runManager";
 import { trackedRunForLiveStatus } from "./runSelection";
@@ -34,6 +35,7 @@ export class LeanFlowServices implements vscode.Disposable {
   selectedRunId: string | null = null;
   busy = false;
 
+  readonly providers: ProviderSetup;
   readonly runs: RunManager;
   readonly experiments: ExperimentEngine;
   /** Cached, change-gated reads of exact-run prover state. */
@@ -46,11 +48,14 @@ export class LeanFlowServices implements vscode.Disposable {
 
   constructor(context: vscode.ExtensionContext) {
     this.project = discoverProject();
-    this.runs = new RunManager(context, this.project);
+    this.providers = new ProviderSetup(context);
+    this.runs = new RunManager(context, this.project, () => this.providers.credentials.environment());
     this.prover = new ProverService(this.runs);
     this.experiments = new ExperimentEngine(context, this.runs, () => this.profiles, () => this.catalog);
 
     this.disposables.push(
+      this.providers,
+      this.providers.onDidChange(() => this.changed.fire()),
       this.runs,
       this.experiments,
       this.runs.onDidChange(() => this.changed.fire()),
@@ -80,6 +85,7 @@ export class LeanFlowServices implements vscode.Disposable {
       ? this.runs.liveStatusForRun(focusedRun.id)
       : null;
     return {
+      providers: this.providers.state(),
       project: this.project,
       cli: { ...this.cli, error: redactSensitiveText(this.cli.error) },
       catalog: flagCatalogForDisplay(this.catalog),
@@ -133,6 +139,7 @@ export class LeanFlowServices implements vscode.Disposable {
       );
 
       this.cli = await checkCli();
+      void this.providers.refresh();
       if (this.cli.ok) {
         const cwd = this.project.found ? this.project.root : undefined;
         const [catalog, profiles] = await Promise.all([

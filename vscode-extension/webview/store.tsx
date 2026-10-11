@@ -33,7 +33,7 @@ import { emptyLaunchRequest } from "../src/core/types";
 import type { ProverSnapshot } from "../src/core/prover";
 import { loadViewState, post, saveViewState } from "./vscodeApi";
 
-export type TabId = "launch" | "live" | "logs" | "knobs" | "sweeps";
+export type TabId = "providers" | "launch" | "live" | "logs" | "knobs" | "sweeps";
 
 export interface ViewState {
   tab: TabId;

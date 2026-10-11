@@ -242,6 +242,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "provider", help="Show native agent backend configuration and setup"
     )
     provider_parser.add_argument("--requested", "--provider", dest="requested", default=None)
+    provider_parser.add_argument(
+        "--json", action="store_true", help="Show credential-free setup metadata"
+    )
+    provider_parser.add_argument(
+        "--check", action="store_true", help="Check native installation and login without inference"
+    )
 
     return parser
 
@@ -471,6 +477,11 @@ def main(argv: list[str] | None = None) -> int:
         return handle_runs(args)
     if args.command == "provider":
         try:
+            if args.json:
+                from leanflow_cli.runtime.provider_setup import provider_setup
+
+                _print_json(provider_setup(requested=args.requested, check=args.check))
+                return 0
             render_provider_panel(
                 Console(),
                 resolved=resolve_runtime_provider(requested=args.requested),

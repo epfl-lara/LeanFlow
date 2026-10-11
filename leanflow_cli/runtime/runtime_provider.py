@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from agent.runtime.harness.commands import BACKENDS
 from leanflow_cli.config import load_config, native_config_migration_required
 
-NATIVE_BACKENDS = ("codex", "claude", "lemex")
+NATIVE_BACKENDS = BACKENDS
 PROVIDER_DESCRIPTIONS: dict[str, str] = {
     "codex": "Codex CLI with its existing login or standard OpenAI API key.",
     "claude": "Claude Code with its existing login or Anthropic API key.",

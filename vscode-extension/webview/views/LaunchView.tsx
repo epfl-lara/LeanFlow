@@ -12,6 +12,7 @@ import {
   profileLaunchSurfaces,
   proverConfigurationRows,
 } from "../../src/core/profileSurfaces";
+import { BACKEND_IDS, BACKEND_LABELS } from "../../src/core/providerCredentials";
 import { LAUNCH_FIELD_LIMITS, WORKFLOW_KINDS } from "../../src/core/types";
 import { Card, Check, Field, Notice } from "../components";
 import { PlayIcon } from "../icons";
@@ -22,13 +23,11 @@ import { ProverSettings } from "./ProverSettings";
 /** Providers the CLI understands. Empty means "use the configured default". */
 const PROVIDERS = [
   { id: "", label: "Configured default" },
-  { id: "codex", label: "Codex" },
-  { id: "claude", label: "Claude Code" },
-  { id: "lemex", label: "Lemex" },
+  ...BACKEND_IDS.map(id => ({ id, label: BACKEND_LABELS[id] })),
 ];
 
 export function LaunchView() {
-  const { app, view, setForm, preview, requestPreview } = useStore();
+  const { app, view, setView, setForm, preview, requestPreview } = useStore();
   const form = view.form;
   const [showPlan, setShowPlan] = useState(false);
 
@@ -195,6 +194,7 @@ export function LaunchView() {
           </Field>
 
           <Field label="Agent backend" hint="Uses the runtime’s own login, API configuration, and defaults.">
+            <button className="link" onClick={() => setView({ tab: "providers" })}>Set up login, API key, or endpoint</button>
             <select
               value={form.provider}
               onChange={(event) => setForm({ provider: event.target.value })}
