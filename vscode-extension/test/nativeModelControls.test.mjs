@@ -163,16 +163,25 @@ test("resolved native aliases remain valid for canonical saved model IDs", () =>
   } finally { ui.dispose(); }
 });
 
-test("saved clean-room selection is explained and can be turned off before launch", () => {
+test("clean room can be selected for native proof runs and preserves the choice", () => {
   const ui = prepare();
   try {
-    ui.update(f => { f.view.form.cleanRoom = true; });
-    assert.equal(ui.button("Start run").props.disabled, true);
-    assert.match(textOf(ui.root()), /Clean room is unavailable with native agents/);
-    const checkbox = ui.root().findAllByType("label").find(node => textOf(node).startsWith("Clean room (unavailable)")).findByType("input");
-    assert.equal(checkbox.props.disabled, false);
-    ui.change(checkbox, false);
+    const checkbox = () => ui.root().findAllByType("label").find(node => textOf(node).startsWith("Clean room")).findByType("input");
+    assert.equal(checkbox().props.disabled, false);
+    ui.change(checkbox(), true);
+    assert.equal(ui.view.form.cleanRoom, true);
+    assert.equal(ui.button("Start run").props.disabled, false);
+    assert.match(textOf(ui.root()), /Block external research/);
+    assert.match(textOf(ui.root()), /Existing online sessions cannot be reused/);
+    ui.change(checkbox(), false);
     assert.equal(ui.view.form.cleanRoom, false);
+    assert.equal(ui.button("Start run").props.disabled, false);
+    ui.update(f => { f.view.form.kind = "golf"; });
+    assert.equal(checkbox().props.disabled, true);
+    ui.update(f => { f.view.form.cleanRoom = true; });
+    assert.equal(checkbox().props.disabled, false);
+    assert.equal(ui.button("Start run").props.disabled, true);
+    ui.change(checkbox(), false);
     assert.equal(ui.button("Start run").props.disabled, false);
   } finally { ui.dispose(); }
 });

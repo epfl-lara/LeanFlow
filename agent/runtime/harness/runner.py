@@ -17,12 +17,14 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from .commands import build_command, child_environment
+from .context_policy import validate_restricted_native_context
 from .discovery import discover_mcp_servers
 from .events import EventState, usage_delta
 from .isolation import IsolationUnavailable, sandbox_command
 from .models import BackendError, HarnessRequest, HarnessResult
 from .processes import ProcessTree, cleanup_group
 from .redaction import environment_secrets, redact_native_value
+from .restricted import restricted_isolation
 
 
 def _stop_reason(request: HarnessRequest) -> str:
@@ -64,6 +66,7 @@ def run_harness(
         raise BackendError("The campaign deadline must be a finite monotonic timestamp or None.")
     command = build_command(request)
     environment = child_environment(request)
+    validate_restricted_native_context(request, environment)
     secrets = environment_secrets(environment)
     executable = shutil.which(command[0], path=environment.get("PATH"))
     if executable is None:
@@ -80,11 +83,26 @@ def run_harness(
             request.isolation,
             readable_roots=(*request.isolation.readable_roots, Path(executable).resolve()),
         )
+        if request.restricted_tools:
+            home_key = (
+                "CLAUDE_CONFIG_DIR"
+                if request.backend == "claude"
+                else f"{request.backend.upper()}_HOME"
+            )
+            native_home = Path(
+                environment.get(
+                    home_key,
+                    str(Path(environment.get("HOME", str(Path.home()))) / f".{request.backend}"),
+                )
+            ).resolve()
+            policy = restricted_isolation(policy, native_home)
         # macOS forbids nesting seatbelt. The validated outer policy, inherited by
         # every tool descendant, is the filesystem authority for the full session.
         command = build_command(request, externally_isolated=True)
         command[0] = executable
-        command = sandbox_command(command, policy, writable=request.tools)
+        command = sandbox_command(
+            command, policy, writable=request.tools and not request.restricted_tools
+        )
     except (IsolationUnavailable, OSError, ValueError) as exc:
         raise BackendError(str(exc)) from exc
     if request.isolation.temp_root is not None:
@@ -114,7 +132,9 @@ def run_harness(
         disabled = discover_mcp_servers(request, discovery_command, environment)
         command = build_command(request, native_mcp_servers=disabled, externally_isolated=True)
         command[0] = executable
-        command = sandbox_command(command, policy, writable=request.tools)
+        command = sandbox_command(
+            command, policy, writable=request.tools and not request.restricted_tools
+        )
     stop = _stop_reason(request)
     if stop:
         return HarnessResult(stop, session_id=request.session_id)
@@ -238,7 +258,7 @@ def run_harness(
     usage = usage_delta(
         state.usage_total,
         request.previous_usage,
-        resumed=bool(request.session_id),
+        resumed=bool(request.session_id) and not request.restricted_tools,
         cumulative=True,
     )
     return HarnessResult(

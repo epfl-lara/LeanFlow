@@ -378,6 +378,7 @@ class NativeBridge:
                 directory=self.toolset.workspace / ".command-home",
                 deadline=self.toolset.deadline,
                 cancelled=self.toolset.cancelled,
+                network_allowed=self.toolset.allow_internet,
             )
         elif name in self.callbacks:
             response = str(arguments["response"])

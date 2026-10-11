@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .models import BackendError, HarnessRequest
+from .restricted import codex_restrictions
 
 BACKENDS = ("codex", "claude", "lemex")
 
@@ -19,6 +20,9 @@ def child_environment(request: HarnessRequest) -> dict[str, str]:
         env.update(request.env)
     if request.backend == "codex" and env.get("OPENAI_API_KEY"):
         env["CODEX_API_KEY"] = env["OPENAI_API_KEY"]
+    if request.backend == "claude" and request.restricted_tools:
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
     return env
 
 
@@ -86,6 +90,11 @@ def build_command(
                 {
                     "disableAllHooks": True,
                     **(
+                        {"autoMemoryEnabled": False, "claudeMdExcludes": ["**"]}
+                        if request.restricted_tools
+                        else {}
+                    ),
+                    **(
                         {"sandbox": {"enabled": False}}
                         if externally_isolated and request.tools
                         else {}
@@ -93,18 +102,23 @@ def build_command(
                 }
             ),
         ]
-        if request.tools:
+        if request.tools and not request.restricted_tools:
             # The outer OS sandbox constrains all tools, including native file tools.
             allowed = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
             allowed.extend(f"mcp__{name}__*" for name in sorted(_mcp_servers(request)))
             command.extend(["--allowedTools", ",".join(allowed)])
         else:
             command.extend(["--tools", ""])
+            allowed = [f"mcp__{name}__*" for name in sorted(_mcp_servers(request))]
+            if allowed:
+                command.extend(["--allowedTools", ",".join(allowed)])
+        if request.restricted_tools:
+            command.extend(["--disable-slash-commands", "--no-session-persistence", "--no-chrome"])
         if request.model:
             command.extend(["--model", request.model])
         if request.effort:
             command.extend(["--effort", request.effort])
-        if request.session_id:
+        if request.session_id and not request.restricted_tools:
             command.extend(["--resume", request.session_id])
         if request.mcp_config:
             command.extend(["--mcp-config", str(request.mcp_config)])
@@ -140,7 +154,10 @@ def build_command(
         for feature in ("shell_tool", "apply_patch_freeform", "js_repl"):
             command.extend(["-c", f"features.{feature}=false"])
         command.extend(["-c", 'web_search="disabled"'])
-    if request.session_id:
+    if request.restricted_tools:
+        temporary = request.isolation.temp_root if request.isolation else None
+        command.extend(codex_restrictions(temporary or request.cwd / ".leanflow-runtime" / "tmp"))
+    if request.session_id and not request.restricted_tools:
         command.extend(["resume", request.session_id])
     command.append("-")
     return command

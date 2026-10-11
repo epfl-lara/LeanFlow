@@ -31,6 +31,7 @@ class HarnessRequest:
     log_path: Path | None = None
     previous_usage: Mapping[str, Any] | None = None
     tools: bool = True
+    restricted_tools: bool = False
     executable: str = ""
     isolation: IsolationPolicy | None = None
     on_started: Callable[[], None] | None = None

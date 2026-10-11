@@ -30,6 +30,7 @@ def test_native_resume_identity_requires_matching_backend_without_resetting_spen
     ledger.parent.mkdir(parents=True)
     prior = {
         "used": 5,
+        "research_policy": "online-v1",
         "session_id": "old-session",
         "usage_total": {"input_tokens": 100, "output_tokens": 20},
     }

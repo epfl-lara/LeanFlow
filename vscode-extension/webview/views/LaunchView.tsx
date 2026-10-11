@@ -247,12 +247,13 @@ export function LaunchView() {
               </div>
             )}
             <Check
-              label="Clean room (unavailable)"
-              hint="Clean room is unavailable with native agents. Turn it off to start a run."
+              label="Clean room"
+              hint="Block external research. Use only this project and installed libraries; model connections remain available."
               checked={form.cleanRoom}
-              disabled={!form.cleanRoom}
+              disabled={form.kind !== "prove" && !form.cleanRoom}
               onChange={(cleanRoom) => setForm({ cleanRoom })}
             />
+            {form.cleanRoom && <p className="muted">Existing online sessions cannot be reused. Clean-room checkpoints can resume.</p>}
           </div>
 
           <div>

@@ -73,8 +73,11 @@ def runtime(root: Path):
     return SimpleNamespace(config=ProverConfig(allow_internet=False), root=root)
 
 
-def test_repeated_exact_locked_dependency_is_a_readonly_noop_offline(installed):
+@pytest.mark.parametrize("repository_name", [False, True])
+def test_repeated_exact_locked_dependency_is_a_readonly_noop_offline(installed, repository_name):
     root, request = installed
+    if repository_name:
+        request = {**request, "name": "mathlib4"}
     before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     for _ in range(2):
         install_planned_libraries(runtime(root), [request])
@@ -83,7 +86,13 @@ def test_repeated_exact_locked_dependency_is_a_readonly_noop_offline(installed):
 
 @pytest.mark.parametrize(
     "online,repository_name,clean_room",
-    [(False, False, False), (True, False, False), (True, True, False), (True, True, True)],
+    [
+        (False, False, False),
+        (False, True, False),
+        (True, False, False),
+        (True, True, False),
+        (True, True, True),
+    ],
 )
 def test_accepted_plan_reaches_materialization_without_another_review(
     installed, monkeypatch, online, repository_name, clean_room
@@ -261,9 +270,14 @@ def test_repository_alias_requires_unique_exact_locked_identity(installed):
     root, request = installed
     alias = {**request, "name": "mathlib4"}
     assert libraries_already_installed(root, [alias])
+    install_planned_libraries(runtime(root), [alias])
     assert not libraries_already_installed(root, [{**alias, "rev": "b" * 40}])
+    with pytest.raises(ValueError, match="disabled"):
+        install_planned_libraries(runtime(root), [{**alias, "rev": "b" * 40}])
     manifest = root / "lake-manifest.json"
     data = json.loads(manifest.read_text())
     data["packages"].append({**data["packages"][0], "name": "otherMathlib"})
     manifest.write_text(json.dumps(data))
     assert not libraries_already_installed(root, [alias])
+    with pytest.raises(ValueError, match="disabled"):
+        install_planned_libraries(runtime(root), [alias])

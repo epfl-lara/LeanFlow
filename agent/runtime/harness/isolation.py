@@ -27,6 +27,7 @@ class IsolationPolicy:
     denied_roots: tuple[Path, ...] = ()
     temp_root: Path | None = None
     readonly_roots: tuple[Path, ...] = ()
+    network_allowed: bool = True
 
 
 def build_runtime_isolation(
@@ -216,11 +217,12 @@ def sandbox_command(
             "(allow process-info* (target self))",
             "(allow signal (target self))",
             "(allow sysctl-read)",
-            "(allow network*)",
             "(allow mach-lookup)",
             '(allow user-preference-read user-preference-write (preference-domain "com.openai.codex"))',
             '(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center") (ipc-posix-name-prefix "apple.cfprefs."))',
         ]
+        if policy.network_allowed:
+            lines.append("(allow network*)")
         for operation, allowed_exceptions in (
             ("file-read-data", exceptions),
             ("file-write*", write_exceptions),
@@ -262,6 +264,8 @@ def sandbox_command(
             "--tmpfs",
             "/tmp",
         ]
+        if not policy.network_allowed:
+            command.append("--unshare-net")
         for paths, option in ((reads, "--ro-bind"), (writes, "--bind")):
             for path in sorted(paths, key=lambda p: len(p.parts)):
                 allowed_exceptions = exceptions if option == "--ro-bind" else write_exceptions

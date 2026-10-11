@@ -72,28 +72,26 @@ def test_invalid_configuration_also_publishes_terminal_state(launch, monkeypatch
 
 
 @pytest.mark.parametrize(
-    "setting,value,action",
+    "setting,value",
     [
-        ("LEANFLOW_DISABLE_SOLUTION_RESEARCH", "true", "turn off Clean room"),
-        ("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1", "clear LEANFLOW_DISABLE_REPOSITORY_RESEARCH"),
-        ("LEANFLOW_PROVER_ALLOW_INTERNET", "false", "enable Allow internet"),
+        ("LEANFLOW_DISABLE_SOLUTION_RESEARCH", "true"),
+        ("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1"),
+        ("LEANFLOW_PROVER_ALLOW_INTERNET", "false"),
     ],
 )
-def test_network_restrictions_fail_before_controller_or_lean_initialization(
-    launch, monkeypatch, capsys, setting, value, action
-):
-    root, observed = launch
+def test_restricted_research_reaches_controller(launch, monkeypatch, setting, value):
+    root, _ = launch
     monkeypatch.setenv(setting, value)
-    monkeypatch.setattr(
-        runtime, "ProverRuntime", lambda **kwargs: pytest.fail("Controller must not initialize")
-    )
-    assert entrypoint.main() == 1
-    state = _state(root)
-    assert state["startup_failed"] and state["terminal"]
-    assert state["jobs"] == [] and state["metrics"]["api_calls"] == 0
-    assert setting in state["error"] and action in state["error"]
-    assert state["error"] in capsys.readouterr().out
-    assert observed[-1][0] == "finish"
+    reached = []
+
+    def run(instance):
+        reached.append(instance.targets)
+        return {"status": "completed", "metrics": {}}
+
+    monkeypatch.setattr(runtime.ProverRuntime, "run", run)
+    assert entrypoint.main() == 0
+    assert reached == [[root / "Main.lean"]]
+    assert not _state(root).get("startup_failed")
 
 
 @pytest.mark.parametrize(

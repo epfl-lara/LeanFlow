@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.runtime.harness import HarnessRequest, build_runtime_isolation, run_harness
-from agent.runtime.harness.network_policy import network_policy_error
+from agent.runtime.harness.network_policy import restricted_research
 from core.campaign_limits import CampaignLimits, LimitReached
 from core.utils import atomic_json_write
 from leanflow_cli.native.harness_artifacts import promote, source_files, verify_proposal
@@ -31,9 +31,6 @@ def run_workflow(env: dict[str, str] | None = None) -> dict[str, Any]:
     root = Path(environment.get("LEANFLOW_PROJECT_ROOT", os.getcwd())).resolve()
     kind = environment.get("LEANFLOW_NATIVE_WORKFLOW_KIND", "review")
     backend = environment.get("LEANFLOW_NATIVE_PROVIDER", "codex")
-    policy_error = network_policy_error(environment)
-    if policy_error:
-        raise ValueError(policy_error)
     resume = environment.get("LEANFLOW_NATIVE_RESUME_RUN_ID", "")
     run_id = resume or environment.get("LEANFLOW_WORKFLOW_RUN_ID") or uuid.uuid4().hex[:16]
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", run_id):
@@ -62,9 +59,11 @@ def _run_controller(
     observe: bool,
 ) -> dict[str, Any]:
     """Hold exclusive campaign ownership through native execution and final cleanup."""
+    restricted = restricted_research(environment)
     state_path = directory / "state.json"
     if resume:
         state = json.loads(state_path.read_text())
+        restricted = restricted or state.get("research_policy") == "restricted-v1"
         if (
             state.get("version") != 2
             or state.get("backend") != backend
@@ -72,6 +71,10 @@ def _run_controller(
         ):
             raise ValueError(
                 "Start a new native run when changing backends or migrating legacy runs"
+            )
+        if restricted and state.get("research_policy") != "restricted-v1":
+            raise ValueError(
+                "Start a new run for clean-room testing; this run contains earlier online or unclassified context."
             )
         baseline = {path: bytes.fromhex(data) for path, data in state["baseline"].items()}
         if source_files(root) != baseline:
@@ -90,7 +93,13 @@ def _run_controller(
             "baseline": {path: data.hex() for path, data in baseline.items()},
             "status": "running",
         }
-    state.update(status="running", terminal=False)
+    state.update(
+        status="running",
+        terminal=False,
+        research_policy="restricted-v1" if restricted else "online-v1",
+    )
+    if restricted:
+        environment = {**environment, "LEANFLOW_PROVER_ALLOW_INTERNET": "false"}
     atomic_json_write(state_path, state)
     budget = CampaignLimits(
         directory / "limits.json",
@@ -145,6 +154,7 @@ def _run_controller(
         context, prompt, source_context = prepare_context(
             root=root, snapshot=snapshot, scratch=scratch, environment=environment, allowed=allowed
         )
+        initial_prompt = prompt
         receipt: dict[str, Any] = {}
         validation_lock = threading.Lock()
         last_validation: dict[str, Any] = {}
@@ -189,6 +199,7 @@ def _run_controller(
             timeout_s=None,
             deadline=deadline,
             cancelled=cancelled.is_set,
+            allow_internet=not restricted,
         )
         with NativeBridge(
             toolset=tools,
@@ -244,12 +255,24 @@ def _run_controller(
                     result = run_harness(
                         HarnessRequest(
                             backend=backend,
-                            prompt=prompt,
+                            restricted_tools=restricted,
+                            prompt=(
+                                "External research is disabled. Use only the LeanFlow bridge tools. "
+                                "Call get_assignment to recover the full task. Use start_command and "
+                                "poll_operation for local commands and changes; native file edits are read-only.\n"
+                                if restricted
+                                else ""
+                            )
+                            + (
+                                initial_prompt + "\n\nCONTROLLER FEEDBACK\n" + prompt
+                                if restricted and prompt != initial_prompt
+                                else prompt
+                            ),
                             cwd=snapshot,
                             model=environment.get("LEANFLOW_NATIVE_MODEL", ""),
                             effort=environment.get("LEANFLOW_NATIVE_REASONING_EFFORT", ""),
-                            session_id=str(state.get("session_id", "")),
-                            previous_usage=state.get("usage_total"),
+                            session_id="" if restricted else str(state.get("session_id", "")),
+                            previous_usage=None if restricted else state.get("usage_total"),
                             env=environment,
                             deadline=deadline,
                             cancelled=cancelled.is_set,

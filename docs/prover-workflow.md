@@ -20,13 +20,16 @@ leanflow workflow prove Main.lean --research --research-workers 3
 
 # Apply the same workflow to discovered project source files.
 leanflow workflow prove
+
+# Keep research local to the supplied project and installed libraries.
+leanflow workflow prove Main.lean --clean-room
 ```
 
 `--agents N` with `N > 1` is a compatibility spelling for research proving
 with that concurrency. `--no-parallel` limits proving to one job while retaining
-research planning. Provider, model, prompt and axiom options remain available. Clean-room and
-no-internet execution currently fail before native launch because model-only
-network isolation is not implemented. Use the global limits below; legacy
+research planning. Provider, model, prompt and axiom options remain available.
+Clean-room and no-internet execution support Codex, Claude Code and Lemex through
+local controller tools while preserving native model connections. Use the global limits below; legacy
 per-response and per-job settings are rejected.
 
 ## What each mode does
@@ -54,9 +57,12 @@ edge implies its parent; the independent review and later proofs remain necessar
 Rejected proposals receive
 reconstruction attempts with the previous critique within any configured global limits.
 
-Native jobs have normal network access. File isolation alone does not establish a
-clean-room guarantee; requests to disable internet or solution research are
-rejected before launch until model-only network isolation is supported.
+Normal jobs have native tools and network access. Clean-room and no-internet jobs
+disable native research tools and use only the controller's local tool surface.
+Bridge commands run inside an OS sandbox that denies network access. Local Lean
+search, project reads, installed libraries and proof checks remain available;
+external web research and remote Lean search do not. The model connection remains
+available so each runtime can authenticate and generate responses normally.
 
 The model proposes a graph; deterministic code schedules it. Each node stores its
 statement, informal justification, dependencies, module/file, source locations,
@@ -198,17 +204,22 @@ On failure it restores the exact lakefile, manifest, and toolchain bytes; downlo
 package caches may remain and require resynchronization. Custom package layouts
 and conflicting dependency requirements are rejected for manual resolution.
 
-`--clean-room` retains general mathematical research while blocking repository
-installation and prohibited task/sibling-solution retrieval through the research
-and source-search policy. Optional labels help identify the benchmark. Firecrawl
-was evaluated but is not installed or enabled by this runtime. Its keyless service
-limits and the proposed setup command are discussed in the research note.
+`--clean-room` restricts research to the supplied project and installed libraries,
+including general mathematical research. It blocks external web access, repository
+installation and remote Lean search. Optional labels add task/sibling-solution
+path filtering. Each native invocation is ephemeral and excludes previous native
+sessions, memories and automatic context. LeanFlow can resume its own clean-room
+checkpoint without importing an old native conversation. Online campaigns and
+legacy checkpoints with unknown research provenance cannot be resumed as
+clean-room tests. Firecrawl is not installed or enabled by this runtime.
 
 ## Budgets and context
 
 The runtime owns model requests, tool history, sampling, compaction and retries.
-LeanFlow supplies native session IDs, immutable assignments and job-bound MCP
-operations. It never overrides temperature/top-p or invents a context window.
+LeanFlow supplies immutable assignments and job-bound MCP operations, using native
+session IDs for normal online continuation. Restricted invocations start fresh;
+native compaction still operates within each invocation. LeanFlow never overrides
+temperature/top-p or invents a context window.
 Default model and reasoning effort are inherited; explicit overrides are optional.
 
 All resource limits default to unset. Zero means exhausted, and negative,

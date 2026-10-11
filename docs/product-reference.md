@@ -112,9 +112,19 @@ self-reports are not acceptance evidence.
 Host isolation requires macOS seatbelt or Linux Bubblewrap/user namespaces and
 fails closed when unavailable. Native configuration, auth and session homes stay
 native. Job launches disable unrelated MCP servers/hooks/plugins so they cannot
-carry authority into the job. Current clean-room and no-internet modes fail
-before launch because model-only network isolation is not implemented. General
-native runs retain network access.
+carry authority into the job. Clean-room and no-internet jobs use only the
+controller's local tools: project and installed-library reads, local Lean search,
+checks, and commands whose OS sandbox denies network access. External web research,
+remote Lean search, and new repository installations are unavailable. Native model
+connections remain available; authentication, model defaults, sampling and
+in-invocation compaction remain the runtime's responsibility.
+
+Restricted invocations start with fresh, ephemeral native histories and exclude
+saved sessions, memories and automatic native context. LeanFlow retains its own
+checkpoint and proof state, so an existing clean-room campaign can resume with the
+same restriction. A campaign created online, or with unknown legacy provenance,
+cannot be resumed as a clean-room test. General native runs retain their native
+tools and network access.
 
 ## Limits and accounting
 

@@ -13,17 +13,18 @@ from pathlib import Path
 from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
-from agent.runtime.harness.network_policy import network_policy_error
+from agent.runtime.harness.network_policy import restricted_research
 from core.utils import atomic_json_write
 from leanflow_cli.workflows.prover.native_bridge import NativeBridge
 from leanflow_cli.workflows.prover.native_snapshot import create_snapshot, remap_project_text
+from leanflow_cli.workflows.prover.research_policy import ONLINE_POLICY, RESTRICTED_POLICY
 from leanflow_cli.workflows.prover.session_guidance import GuidanceInbox, skill_guidance
 from leanflow_cli.workflows.prover.session_tools import SessionTools
 from leanflow_cli.workflows.prover.store import now
 
 EventCallback = Callable[[str, dict[str, Any]], None]
 
-_CONTRACT = """You are working in a private LeanFlow project copy with native coding tools.
+_CONTRACT = """You are working in a private LeanFlow project copy.
 Your runtime owns model settings, tool use, conversation history and compaction.
 Use the LeanFlow bridge get_assignment tool to recover the immutable assignment after compaction.
 Check get_guidance for new user instructions; operation polls also return addressed guidance.
@@ -39,6 +40,13 @@ builds, and commands. Polling never cancels
 an operation, and there is no LeanFlow per-response or per-tool time budget.
 Stop when the task is accepted, an actual blocker requires user input, or the global
 controller cancels the job. Return the requested final JSON report.
+"""
+
+_RESTRICTED_CONTRACT = """This is a local-only research session. Use only the supplied
+LeanFlow bridge tools; direct native tools and external research are disabled.
+The bridge's commands cannot access the network, including local services.
+Use installed Lean libraries and the supplied problem files to develop the proof.
+Do not look up this problem's solution or attempt to bypass these restrictions.
 """
 
 
@@ -70,16 +78,8 @@ def run_session(
     """Invoke one CLI process with job-bound tools and independent proof acceptance."""
     from agent.runtime.harness import HarnessRequest, build_runtime_isolation, run_harness
 
-    error = network_policy_error(allow_internet=config.get("allow_internet"))
-    if error:
-        return {
-            "status": "environment_error",
-            "final_response": error,
-            "error": error,
-            "api_calls": 0,
-            "agent_calls": 0,
-            "usage_known": False,
-        }
+    restricted = restricted_research(allow_internet=config.get("allow_internet"))
+    research_policy = RESTRICTED_POLICY if restricted else ONLINE_POLICY
     runtime_dir = workspace.parent / ".runtime" / workspace.name
     runtime_dir.mkdir(parents=True, exist_ok=True)
     ledger_path = runtime_dir / "request-count.json"
@@ -87,12 +87,37 @@ def run_session(
         json.loads(ledger_path.read_text()) if ledger_path.exists() else {"used": 0}
     )
     backend = str(config.get("provider") or os.getenv("LEANFLOW_NATIVE_PROVIDER") or "codex")
-    if previous.get("backend") != backend:
+    policy_changed = previous.get("research_policy") != research_policy
+    registry = config.get("_bridge_registry")
+    bridge = registry.get(str(workspace)) if isinstance(registry, dict) else None
+    if isinstance(registry, dict) and bridge is not None and policy_changed:
+        bridge.close()
+        registry.pop(str(workspace), None)
+        bridge = None
+    snapshot = workspace / "project"
+    if restricted and policy_changed and snapshot.exists():
+        # A fresh conversation cannot forget research already saved in the project copy.
+        error = (
+            "This job's existing files were created under a different or unknown research "
+            "policy. Start a new run to use clean room or offline mode; the previous "
+            "workspace was preserved and no agent was started."
+        )
+        return {
+            "status": "environment_error",
+            "final_response": error,
+            "error": error,
+            "api_calls": int(previous.get("used", 0)),
+            "agent_calls": int(previous.get("used", 0)),
+            "usage_known": False,
+        }
+    if previous.get("backend") != backend or policy_changed:
         # Native session IDs and cumulative token baselines belong to one CLI.
-        # Legacy ledgers have no provable owner; retain spending but start fresh.
+        # Legacy ledgers have no provable policy; retain spending but start fresh.
         previous.pop("session_id", None)
         previous.pop("usage_total", None)
-    previous["backend"] = backend
+    previous.update(backend=backend, research_policy=research_policy)
+    # Mark provenance before creating files so a failed native launch can retry safely.
+    atomic_json_write(ledger_path, previous)
     previous_calls = int(previous.get("used", 0))
     from agent.runtime.harness.redaction import environment_secrets, redact_native_value
 
@@ -135,7 +160,6 @@ def run_session(
                 previous["session_id"] = session_id
                 atomic_json_write(ledger_path, previous)
 
-    snapshot = workspace / "project"
     if not snapshot.exists():
         create_snapshot(project_root, snapshot)
     scratch = snapshot / ".leanflow-job"
@@ -166,7 +190,7 @@ def run_session(
         timeout_s=None,
         deadline=deadline,
         cancelled=cancelled,
-        allow_internet=bool(config.get("allow_internet", True)),
+        allow_internet=not restricted,
         research_job=config.get("_research_job") if callable(config.get("_research_job")) else None,
     )
     callbacks = {
@@ -219,8 +243,6 @@ def run_session(
             },
         )
 
-    registry = config.get("_bridge_registry")
-    bridge = registry.get(str(workspace)) if isinstance(registry, dict) else None
     if bridge is None:
         bridge = NativeBridge(
             toolset=toolset,
@@ -247,6 +269,7 @@ def run_session(
                 backend=backend,
                 prompt=_CONTRACT
                 + "\n"
+                + (_RESTRICTED_CONTRACT if restricted else "")
                 + skill_guidance(project_root, role)
                 + "\n"
                 + _map_paths(prompt, project_root, workspace, snapshot)
@@ -255,13 +278,14 @@ def run_session(
                 cwd=snapshot,
                 model=str(config.get("model") or ""),
                 effort=str(config.get("reasoning_effort") or ""),
-                session_id=str(previous.get("session_id") or ""),
+                session_id="" if restricted else str(previous.get("session_id") or ""),
                 deadline=deadline,
                 cancelled=cancelled,
                 mcp_config=mcp_path,
                 log_path=runtime_dir / "harness.jsonl",
-                previous_usage=previous.get("usage_total"),
+                previous_usage=None if restricted else previous.get("usage_total"),
                 isolation=policy,
+                restricted_tools=restricted,
                 on_admitting=admitting,
                 on_started=admitted,
                 executable=executable,
@@ -301,6 +325,7 @@ def run_session(
             "limit": None,
             "used": calls,
             "backend": backend,
+            "research_policy": research_policy,
             "session_id": result.session_id or previous.get("session_id", ""),
             "usage_total": (
                 result.usage_total

@@ -47,11 +47,12 @@ reloads the catalog after native configuration or account changes. When a runtim
 cannot report its catalog or reasoning capabilities, the UI explains what is
 unknown instead of inventing choices. Listing a model does not verify paid access.
 
-Native runtimes currently cannot enforce **Clean room** or offline research.
-A saved Clean room selection remains visible and blocks launch with an explanation;
-turn it off for an online run. To prove a file, select the file containing the
-`sorry` goals, rather than an import-only module, or leave Target empty to scan
-the project.
+**Clean room** is available for prove with Codex, Claude Code, and Lemex. It blocks
+external research and restricts tools to the project and installed libraries;
+the runtime can still connect to its model. Clean-room checkpoints can resume;
+existing online or legacy sessions cannot be reused. This does not remove knowledge learned during
+model training. To prove a file, select the file containing the `sorry` goals,
+rather than an import-only module, or leave Target empty to scan the project.
 
 ## What it gives you
 
@@ -248,9 +249,11 @@ Each CLI keeps its own login, API configuration, model defaults, sampling, and
 context compression. Leave the model and effort overrides empty to preserve
 those defaults. Lemex inherits `LEMEX_BASE_URL` and `LEMEX_API_KEY` unchanged.
 
-In **Prover setup**, optional global limits cover agent calls, reported tokens,
-and active campaign seconds across resumes. Empty means unlimited; zero means
-exhausted. One CLI invocation, including a retry or resume, counts as one call.
+The always-visible **Global limits** launch card covers agent calls, reported
+tokens, and active campaign time across resumes. Enter time in minutes; LeanFlow
+converts it to seconds. Empty means unlimited; zero means exhausted. Clearing a
+profile limit makes this launch unlimited; **Use profile limit** restores it.
+One CLI invocation, including a retry or resume, counts as one call.
 Token limits stop subsequent calls; an active invocation may overshoot and
 missing usage remains unknown. There are no LeanFlow per-response deadlines.
 
@@ -303,8 +306,8 @@ order, parallelism, and separate **Prover** and **Orchestrator** sections with
 aligned model and reasoning-effort selectors. Reasoning can use minimal, low,
 medium, high, or extra high effort, restore a saved profile, or inherit the
 launch/prover default. Compact badges identify profile values and overrides.
-The **Global limits** section contains optional campaign-wide calls, reported
-tokens, and active-time limits. Controls come from the installed CLI’s catalog;
+The **Global limits** card appears above Prover setup with optional campaign-wide
+calls, reported tokens, and active-time limits. Controls come from the installed CLI’s catalog;
 unknown usage remains `—` and unset global limits display as `Unlimited`.
 
 The editor reads `leanflow runs prover RUN_ID --json`, which returns

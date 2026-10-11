@@ -39,6 +39,9 @@ const flags = [
   ["ORCHESTRATOR_MODEL", "string", ""],
   ["REASONING_EFFORT", "string", ""],
   ["ORCHESTRATOR_REASONING_EFFORT", "string", ""],
+  ["AGENT_CALLS", "int", ""],
+  ["TOKENS", "int", ""],
+  ["WALL_TIME_S", "float", ""],
 ].map(([suffix, value_type, fallback, choices]) => ({
   name: prefix + suffix, value_type, default: fallback, choices, summary: suffix,
   editable: true, extension_editable: true, sensitive: false,
@@ -132,4 +135,53 @@ test("reasoning defaults do not force a level, and unknown saved values stay vis
   const future = fixture({}, { [prefix + "REASONING_EFFORT"]: "future-level" });
   assert.equal(future.control("REASONING_EFFORT").props.value, "future-level");
   assert.ok(elements(future.control("REASONING_EFFORT")).some((item) => item.type === "option" && item.props.value === "future-level"));
+});
+
+test("global limits are immediately visible and explicitly show Unlimited", () => {
+  const ui = fixture();
+  const rendered = elements(ProverSettings());
+  assert.ok(rendered.some(item => item.props?.className === "card-title" && item.props.children === "Global limits"));
+  assert.equal(rendered.filter(item => item.type === "details").length, 0);
+  for (const suffix of ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"]) {
+    assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
+    assert.equal(ui.control(suffix).props.value, "");
+  }
+  assert.deepEqual(ui.environment().env, { set: {}, unset: [] });
+});
+
+test("global limit edits reach the runtime and convert minutes to seconds", () => {
+  const ui = fixture();
+  ui.control("WALL_TIME_S").props.onChange({ target: { value: "2.5" } });
+  ui.control("AGENT_CALLS").props.onChange({ target: { value: "12" } });
+  ui.control("TOKENS").props.onChange({ target: { value: "50000" } });
+  assert.equal(ui.control("WALL_TIME_S").props.value, "2.5");
+  assert.deepEqual(ui.environment().rejected, []);
+  assert.deepEqual(ui.environment().env.set, {
+    [prefix + "WALL_TIME_S"]: "150",
+    [prefix + "AGENT_CALLS"]: "12",
+    [prefix + "TOKENS"]: "50000",
+  });
+});
+
+test("clearing an inherited limit makes it Unlimited and profile reset restores it", () => {
+  const ui = fixture({}, { [prefix + "AGENT_CALLS"]: "7", [prefix + "WALL_TIME_S"]: "90" });
+  assert.equal(ui.control("WALL_TIME_S").props.value, "1.5");
+  assert.equal(ui.control("AGENT_CALLS").props.value, "7");
+  ui.control("AGENT_CALLS").props.onChange({ target: { value: "" } });
+  assert.equal(ui.control("AGENT_CALLS").props.value, "");
+  assert.equal(ui.environment().env.set[prefix + "AGENT_CALLS"], undefined);
+  assert.deepEqual(ui.environment().env.unset, [prefix + "AGENT_CALLS"]);
+  const reset = elements(ProverSettings()).find(item => item.props?.["aria-label"] === "Restore profile agent calls");
+  assert.ok(reset);
+  reset.props.onClick();
+  assert.equal(ui.control("AGENT_CALLS").props.value, "7");
+  assert.equal(ui.environment().env.set[prefix + "AGENT_CALLS"], "7");
+});
+
+test("zero stays an explicit exhausted limit instead of becoming Unlimited", () => {
+  const ui = fixture({ overrides: { [prefix + "AGENT_CALLS"]: "0", [prefix + "TOKENS"]: "0", [prefix + "WALL_TIME_S"]: "0" } });
+  for (const suffix of ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"]) {
+    assert.equal(ui.control(suffix).props.value, "0");
+    assert.equal(ui.environment().env.set[prefix + suffix], "0");
+  }
 });

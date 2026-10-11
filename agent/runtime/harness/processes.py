@@ -69,12 +69,35 @@ class ProcessTree:
                 pass
 
 
+def _group_has_live_processes(group: int) -> bool:
+    """Check whether a group still has signalable members after a macOS EPERM race."""
+    result = subprocess.run(
+        ["/bin/ps", "-axo", "pgid=,stat="],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=2,
+    )
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 2 or not fields[0].isdigit():
+            return True  # An unverified process table cannot establish completed cleanup.
+        if int(fields[0]) == group and not fields[1].startswith("Z"):
+            return True
+    return False
+
+
 def signal_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
     """Signal the invocation group, including children after its leader exits."""
     try:
         os.killpg(process.pid, sig)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # Darwin can return EPERM rather than ESRCH once only reaping remains.
+        # Never hide an actual permission failure against a live process group.
+        if process.poll() is None or _group_has_live_processes(process.pid):
+            raise
 
 
 def cleanup_group(process: subprocess.Popen[bytes], tree: ProcessTree | None = None) -> None:

@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
-from agent.runtime.harness.network_policy import network_policy_error
 from core.utils import atomic_json_write
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.observer import RunObserver, exit_code
@@ -164,9 +163,6 @@ def main() -> int:
             run_id = uuid.uuid4().hex[:16]
             raise ValueError("execution run ID already exists; previous evidence was preserved")
         config = ProverConfig.from_env()
-        policy_error = network_policy_error(allow_internet=config.allow_internet)
-        if policy_error:
-            raise ValueError(policy_error)
         active = os.environ.get("LEANFLOW_NATIVE_ACTIVE_FILE", "").strip()
         targets = [root / active] if active else project_sources(root)
         lock_path = project_path(root, ".leanflow/workflow-state/prover/controller.lock")

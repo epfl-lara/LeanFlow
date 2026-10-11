@@ -58,9 +58,14 @@ that already enforced boundary because nested seatbelt creation is unsupported.
 No unconstrained fallback is permitted. Native home/session/auth state remains
 native; runtime configuration is protected from tool writes. Unrelated MCP,
 hooks, plugins and project-local runtime settings cannot import extra authority.
-General runs permit network access. `harness/network_policy.py` explains unsupported
-clean-room/no-internet settings at startup, before Lean initialization or agent
-admission, until model-only network isolation is implemented. An explicit import-only prover
+General runs permit network access. `harness/network_policy.py` resolves clean-room
+and offline settings into local-only research. `harness/restricted.py` disables
+native research tools and prior native context; restricted invocations are ephemeral.
+The model connection retains native authentication and defaults, while controller
+bridge commands run with OS-enforced network denial. `harness/context_policy.py`
+checks automatic context boundaries. Saved controller research provenance permits
+clean-room checkpoint resumes and rejects online or legacy context reuse.
+An explicit import-only prover
 target reports how to select the actual source file
 or the whole project; imported files are never silently added to its proof scope.
 
@@ -100,6 +105,7 @@ establish proof or disproof.
 | Prover leaf | Responsibility |
 | --- | --- |
 | `config.py` | Three native backends, optional global limits and Lean policy |
+| `research_policy.py` | Persist local-only policy and reject reuse of online or unclassified campaign history |
 | `runtime.py`, `controller.py` | Campaign lifecycle, shared progress and scheduling |
 | `allocation.py`, `usage.py`, `live_progress.py` | Durable invocation admission, usage and active elapsed time |
 | `agent_session.py` | Native invocation and same-session submission feedback |
@@ -280,7 +286,10 @@ does not read or reinterpret LeanFlow's persistence files directly:
   when proof statuses change. `webview/views/ProverWorkspace.tsx` shows the plan, dependencies,
   jobs, usage, file links/diffs, and queued guidance; `ProverSettings.tsx` exposes
   catalogued launch controls, grouped by role with independent model and reasoning
-  effort selectors and optional global limit settings. The host uses `runs prover` / `prover-message` / `runs event`,
+  effort selectors. `GlobalLimits.tsx` keeps global calls, reported tokens, and
+  active time visible above role settings, converts entered minutes to seconds,
+  and preserves explicit Unlimited overrides and profile restoration.
+  The host uses `runs prover` / `prover-message` / `runs event`,
   validates ownership and paths, and does not substitute another run's artifacts.
   `proverProgress.ts` and `proverOperations.ts` derive budget, capacity, operation,
   proposal and stop-reason views from the same snapshot. `proverCache.ts` and

@@ -34,21 +34,19 @@ def require_installed_libraries(root: Path, entries: list[dict[str, Any]]) -> No
 
 
 def libraries_already_installed(root: Path, entries: list[dict[str, Any]]) -> bool:
-    """Recognize an entirely satisfied online request, including exact repository-name aliases.
+    """Recognize an entirely satisfied request, including exact repository-name aliases.
 
     Missing, ambiguous, or changed identities return false so normal dependency
     admission still applies. Reuse never enables downloads in a clean-room run.
     """
     try:
-        _require_installed_libraries(root, entries, allow_repository_names=True)
+        _require_installed_libraries(root, entries)
         return True
     except (ValueError, OSError, subprocess.SubprocessError):
         return False
 
 
-def _require_installed_libraries(
-    root: Path, entries: list[dict[str, Any]], *, allow_repository_names: bool = False
-) -> None:
+def _require_installed_libraries(root: Path, entries: list[dict[str, Any]]) -> None:
     """Check every requested identity against the lock and its confined local Git checkout."""
     validated = _entries(entries, time.monotonic() + 10, verify_remote=False)
     root = root.resolve()
@@ -60,7 +58,7 @@ def _require_installed_libraries(
     locked = _lock_packages(manifest.read_bytes())
     for entry in validated:
         name = entry["name"]
-        if allow_repository_names and name not in locked:
+        if name not in locked:
             repository_name = urlsplit(entry["git"]).path.rsplit("/", 1)[-1].removesuffix(".git")
             matches = [
                 key

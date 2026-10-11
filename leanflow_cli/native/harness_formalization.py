@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.runtime.harness import BackendError, HarnessRequest, build_runtime_isolation, run_harness
+from agent.runtime.harness.network_policy import restricted_research
 from core.campaign_limits import CampaignLimits, LimitReached
 from core.utils import atomic_json_write
 
@@ -178,6 +179,7 @@ def review_formalization(
                 deadline=deadline,
                 cancelled=cancelled,
                 tools=False,
+                restricted_tools=restricted_research(environment),
                 isolation=policy,
                 executable=executable,
                 on_started=on_started,

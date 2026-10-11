@@ -10,6 +10,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -237,6 +238,72 @@ def test_cancellation_terminates_process_group(fake_backend, tmp_path: Path, det
 def test_no_isolation_is_rejected(fake_backend):
     with pytest.raises(BackendError, match="isolated workspace"):
         run_harness(replace(fake_backend("pass"), isolation=None))
+
+
+@pytest.mark.parametrize("members", ["900 S\n", "412 Z\n900 S\n"])
+def test_group_cleanup_accepts_eperm_only_for_exited_or_zombie_group(monkeypatch, members):
+    from agent.runtime.harness import processes
+
+    def denied(*args):
+        raise PermissionError("macOS group has no signalable processes")
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(
+        processes.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=members),
+    )
+    processes.signal_group(SimpleNamespace(pid=412, poll=lambda: -15), signal.SIGKILL)
+
+
+@pytest.mark.parametrize("members", ["412 S\n", "412 T\n", "unrecognized process table\n"])
+def test_group_cleanup_does_not_hide_permission_failure_with_live_or_unknown_members(
+    monkeypatch, members
+):
+    from agent.runtime.harness import processes
+
+    def denied(*args):
+        raise PermissionError("real permission failure")
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(
+        processes.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=members),
+    )
+    with pytest.raises(PermissionError, match="real permission failure"):
+        processes.signal_group(SimpleNamespace(pid=412, poll=lambda: -15), signal.SIGKILL)
+
+
+def test_group_cleanup_does_not_hide_permission_failure_for_running_leader(monkeypatch):
+    from agent.runtime.harness import processes
+
+    def denied(*args):
+        raise PermissionError("running native process")
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(
+        processes,
+        "_group_has_live_processes",
+        lambda *args: pytest.fail("A live leader already establishes unfinished cleanup"),
+    )
+    with pytest.raises(PermissionError, match="running native process"):
+        processes.signal_group(SimpleNamespace(pid=412, poll=lambda: None), signal.SIGKILL)
+
+
+def test_group_cleanup_fails_closed_when_empty_group_cannot_be_verified(monkeypatch):
+    from agent.runtime.harness import processes
+
+    def denied(*args):
+        raise PermissionError("unverified native process group")
+
+    def unavailable(*args, **kwargs):
+        raise subprocess.TimeoutExpired("ps", 2)
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(processes.subprocess, "run", unavailable)
+    with pytest.raises(subprocess.TimeoutExpired):
+        processes.signal_group(SimpleNamespace(pid=412, poll=lambda: -15), signal.SIGKILL)
 
 
 def test_process_inspection_failure_still_stops_native_group(monkeypatch: pytest.MonkeyPatch):

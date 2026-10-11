@@ -116,6 +116,25 @@ test("launch override removal and compatible profile copy preserve allowed setti
   } finally { ui.dispose(); }
 });
 
+test("global limits restore a saved profile after making the launch unlimited", () => {
+  const ui = mount();
+  try {
+    ui.update(f => {
+      f.app.catalog.groups[0].flags.push({ name: "LEANFLOW_PROVER_AGENT_CALLS", value_type: "int", default: "", minimum: 0, editable: true, extension_editable: true, sensitive: false });
+      f.app.profiles.profiles[1].overrides.LEANFLOW_PROVER_AGENT_CALLS = "8";
+      f.view.form.profile = "custom";
+    });
+    const input = () => ui.input("LEANFLOW_PROVER_AGENT_CALLS");
+    assert.equal(input().props.value, "8");
+    ui.change(input(), "");
+    assert.equal(input().props.value, "");
+    assert.equal(ui.view.form.overrides.LEANFLOW_PROVER_AGENT_CALLS, "");
+    ui.click("Use profile limit");
+    assert.equal(input().props.value, "8");
+    assert.equal(ui.view.form.overrides.LEANFLOW_PROVER_AGENT_CALLS, undefined);
+  } finally { ui.dispose(); }
+});
+
 test("knob filtering, group expansion, profile save/delete/diff and resets work", () => {
   const ui = mount("knobs");
   try {

@@ -116,11 +116,14 @@ test("a bare prove run passes only the workflow kind", () => {
   assert.deepEqual(buildWorkflowArgs(form()), ["prove"]);
 });
 
-test("clean-room native runs are rejected before starting, without silently clearing the choice", () => {
-  const request = form({ cleanRoom: true });
-  assert.match(validateLaunch(request).join(" "), /Clean room is unavailable with native agents/);
-  assert.equal(request.cleanRoom, true);
-  assert.deepEqual(validateLaunch(form()), []);
+test("clean-room proof runs are supported with every native backend", () => {
+  for (const provider of ["codex", "claude", "lemex"]) {
+    const request = form({ provider, cleanRoom: true });
+    assert.deepEqual(validateLaunch(request), []);
+    assert.equal(request.cleanRoom, true);
+    assert.ok(buildWorkflowArgs(request).includes("--clean-room"));
+  }
+  assert.match(validateLaunch(form({ kind: "golf", cleanRoom: true })).join(" "), /only supported for prove/);
 });
 
 test("a file-scoped run passes the target positionally", () => {

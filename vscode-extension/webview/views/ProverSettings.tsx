@@ -5,10 +5,9 @@ import { changeNativeSelection, nativeSelections, ROLE_PREFIXES } from "../../sr
 import { PROVER_KNOB_LABELS } from "../../src/core/profileSurfaces";
 import { Card, Field } from "../components";
 import { useStore } from "../store";
+import { GlobalLimits } from "./GlobalLimits";
 import { KnobControl } from "./KnobsView";
 import { NativeEffortControl, NativeModelControl } from "./NativeModelControls";
-
-const BUDGETS = ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"];
 
 export function ProverSettings() {
   const { app, view, setForm } = useStore();
@@ -80,7 +79,7 @@ export function ProverSettings() {
     </Field>;
   }
 
-  return <Card title="Prover setup" subtitle="Choose how LeanFlow plans and proves. Set the model and reasoning effort separately for each role.">
+  return <><GlobalLimits /><Card title="Prover setup" subtitle="Choose how LeanFlow plans and proves. Set the model and reasoning effort separately for each role.">
     {profile && <div className="prover-profile-note">Profile <strong>{profile.name}</strong><span>Changes here apply to this launch.</span></div>}
     <div className="launch-fields">
       {control("MODE", "Mode", "Research plans and schedules a theorem graph.")}
@@ -105,11 +104,5 @@ export function ProverSettings() {
     <div className="launch-fields">
       {control("PARALLELISM", "Concurrent prover jobs", "Maximum proof jobs running at the same time.")}
     </div>
-    <details className="launch-details">
-      <summary>Global limits (optional)</summary>
-      <p className="muted">Empty means unlimited. One CLI invocation counts as one agent call. Token limits stop future calls; an active call may overshoot.</p>
-      <div className="launch-fields">{BUDGETS.map((suffix) => control(suffix))}</div>
-    </details>
-
-  </Card>;
+  </Card></>;
 }

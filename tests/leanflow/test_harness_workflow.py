@@ -1,6 +1,7 @@
 """Keep native workflow publication tied to verified, unchanged source snapshots."""
 
 import hashlib
+import json
 
 import pytest
 
@@ -73,6 +74,7 @@ def test_review_uses_selected_native_runtime_with_unlimited_defaults(tmp_path, m
     )
     assert result["status"] == "completed"
     assert len(seen) == 1 and seen[0].backend == "claude"
+    assert not seen[0].restricted_tools
     assert seen[0].deadline is None and seen[0].model == seen[0].effort == ""
     assert seen[0].cwd != tmp_path
 
@@ -261,8 +263,6 @@ def test_publication_conflict_never_rolls_back_a_concurrent_user_edit(tmp_path, 
 
 
 def test_native_session_is_persisted_before_the_invocation_returns(tmp_path, monkeypatch):
-    import json
-
     (tmp_path / "Main.lean").write_text("theorem p : True := by trivial\n")
 
     def invoke(request, on_event=None):
@@ -287,9 +287,107 @@ def test_native_session_is_persisted_before_the_invocation_returns(tmp_path, mon
         ("LEANFLOW_PROVER_ALLOW_INTERNET", "false"),
     ],
 )
-def test_unavailable_network_restriction_fails_before_native_launch(tmp_path, setting, value):
-    with pytest.raises(ValueError, match="model-only network isolation"):
-        runner.run_workflow({"LEANFLOW_PROJECT_ROOT": str(tmp_path), setting: value})
+@pytest.mark.parametrize("backend", ["codex", "claude", "lemex"])
+def test_restrictions_route_native_workflows_through_local_tools(
+    tmp_path, monkeypatch, setting, value, backend
+):
+    (tmp_path / "Main.lean").write_text("theorem p : True := by trivial\n")
+    seen = []
+    toolsets = []
+    tool_factory = runner.SessionTools
+
+    def tools(**kwargs):
+        toolset = tool_factory(**kwargs)
+        toolsets.append(toolset)
+        return toolset
+
+    def invoke(request, on_event=None):
+        seen.append(request)
+        request.on_started()
+        return HarnessResult(status="completed", final_response="Reviewed.")
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    monkeypatch.setattr(runner, "SessionTools", tools)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
+    monkeypatch.setattr("leanflow_cli.native.harness_context.load_skill", lambda *a, **kw: None)
+    monkeypatch.setattr("leanflow_cli.runtime.lemex_install.resolve_lemex_executable", lambda: None)
+    monkeypatch.setattr(
+        "leanflow_cli.runtime.lemex_install.managed_distribution_root", lambda: None
+    )
+    result = runner.run_workflow(
+        {
+            "LEANFLOW_PROJECT_ROOT": str(tmp_path),
+            "LEANFLOW_NATIVE_WORKFLOW_KIND": "review",
+            "LEANFLOW_NATIVE_PROVIDER": backend,
+            setting: value,
+        }
+    )
+    assert result["status"] == "completed"
+    assert result["research_policy"] == "restricted-v1"
+    assert len(seen) == 1 and seen[0].backend == backend
+    assert seen[0].restricted_tools
+    assert seen[0].deadline is None and seen[0].model == seen[0].effort == ""
+    assert seen[0].mcp_config.is_file()
+    assert len(toolsets) == 1 and not toolsets[0].allow_internet
+    assert not {"web_search", "fetch_resource"}.intersection(
+        tool["function"]["name"] for tool in toolsets[0].schemas()
+    )
+
+
+@pytest.mark.parametrize("saved_policy", ["online-v1", None, "legacy-filtered"])
+def test_clean_room_rejects_online_or_unclassified_checkpoints_before_launch(
+    tmp_path, monkeypatch, saved_policy
+):
+    directory = tmp_path / ".leanflow/native-workflows/old-run"
+    directory.mkdir(parents=True)
+    state = {"version": 2, "backend": "codex", "workflow": "review", "baseline": {}}
+    if saved_policy is not None:
+        state["research_policy"] = saved_policy
+    path = directory / "state.json"
+    path.write_text(json.dumps(state))
+    before = path.read_bytes()
+    monkeypatch.setattr(runner, "run_harness", lambda *a, **kw: pytest.fail("Unsafe native launch"))
+    with pytest.raises(ValueError, match="earlier online or unclassified context"):
+        runner.run_workflow(
+            {
+                "LEANFLOW_PROJECT_ROOT": str(tmp_path),
+                "LEANFLOW_NATIVE_RESUME_RUN_ID": "old-run",
+                "LEANFLOW_DISABLE_SOLUTION_RESEARCH": "1",
+            }
+        )
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("repeat_restriction", [False, True])
+def test_clean_room_checkpoint_resume_preserves_local_tools(
+    tmp_path, monkeypatch, repeat_restriction
+):
+    (tmp_path / "Main.lean").write_text("theorem p : True := by trivial\n")
+    calls = []
+
+    def invoke(request, on_event=None):
+        calls.append(request)
+        request.on_started()
+        return HarnessResult(status="completed", final_response="Reviewed.")
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
+    monkeypatch.setattr("leanflow_cli.native.harness_context.load_skill", lambda *a, **kw: None)
+    environment = {
+        "LEANFLOW_PROJECT_ROOT": str(tmp_path),
+        "LEANFLOW_WORKFLOW_RUN_ID": "clean-run",
+        "LEANFLOW_DISABLE_SOLUTION_RESEARCH": "1",
+    }
+    first = runner.run_workflow(environment)
+    assert first["status"] == "completed"
+    if not repeat_restriction:
+        environment.pop("LEANFLOW_DISABLE_SOLUTION_RESEARCH")
+    resumed = runner.run_workflow({**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "clean-run"})
+    assert resumed["status"] == "completed"
+    assert resumed["research_policy"] == "restricted-v1"
+    assert len(calls) == 2 and all(call.restricted_tools for call in calls)
+    limits = json.loads((tmp_path / ".leanflow/native-workflows/clean-run/limits.json").read_text())
+    assert len(limits["invocations"]) == 2
 
 
 def test_concurrent_resume_cannot_double_spend_one_campaign(tmp_path):

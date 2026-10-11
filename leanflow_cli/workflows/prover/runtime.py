@@ -22,6 +22,12 @@ from leanflow_cli.workflows.prover.live_progress import LiveProgress
 from leanflow_cli.workflows.prover.models import Dag, Node, digest
 from leanflow_cli.workflows.prover.planning import json_report
 from leanflow_cli.workflows.prover.recovery_reports import inconclusive_finding, negation_report
+from leanflow_cli.workflows.prover.research_policy import (
+    ONLINE_POLICY,
+    RESTRICTED_POLICY,
+    restore_research_config,
+    restrict_config,
+)
 from leanflow_cli.workflows.prover.response_recovery import (
     record_recovery_guidance,
     response_failure_report,
@@ -93,6 +99,7 @@ class ProverRuntime:
         self.root = root.resolve()
         project_path(self.root, ".leanflow")
         self.targets = [path.resolve() for path in targets]
+        config = restrict_config(config)
         self.config = config
         self.run_id = run_id or uuid.uuid4().hex[:16]
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", self.run_id):
@@ -149,6 +156,7 @@ class ProverRuntime:
                 "started_at": now(),
                 "goal": goal,
                 "config": config.to_mapping(),
+                "research_policy": ONLINE_POLICY if config.allow_internet else RESTRICTED_POLICY,
                 # Kernel fingerprints are only comparable within one scheme, so a
                 # run keeps the scheme it started with across every resume.
                 "signature_scheme": scheme,
@@ -226,14 +234,16 @@ class ProverRuntime:
             raise ValueError(
                 "This run used the retired API engine. Its artifacts are preserved; start a new native-backend run."
             )
+        self.config = restore_research_config(self.config, self.state)
+        self.state["config"] = self.config.to_mapping()
+        self.state["research_policy"] = (
+            ONLINE_POLICY if self.config.allow_internet else RESTRICTED_POLICY
+        )
         self.state["resume_phase"] = self.state.get(
             "resume_phase", self.state.get("phase", "inspect")
         )
         self.elapsed_before = float(self.state.get("metrics", {}).get("elapsed_s", 0))
         self.store.inbox_offset = int(self.state.get("inbox_offset", 0))
-        saved = dict(self.state["config"])
-        saved["allowed_axioms"] = tuple(saved["allowed_axioms"])
-        self.config = ProverConfig(**saved)
         saved_dag = self.state["dag"]
         for saved_node in saved_dag.get("nodes", []):
             saved_node["status"] = saved_node.pop("scheduler_status", saved_node["status"])

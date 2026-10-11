@@ -555,6 +555,16 @@ button:focus-visible {
   background: var(--lf-base);
 }
 
+.global-limit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.global-limit > button.link {
+  align-self: flex-start;
+}
+
 .prover-role-heading {
   display: flex;
   flex-wrap: wrap;
@@ -566,27 +576,6 @@ button:focus-visible {
 .prover-role-heading > span {
   font-size: 11px;
   color: var(--lf-muted);
-}
-
-.launch-details {
-  margin-top: 18px;
-  border-top: 1px solid var(--lf-border);
-}
-
-.launch-details > summary {
-  padding-block: 14px 4px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.launch-details[open] > summary {
-  padding-bottom: 16px;
-}
-
-.launch-details > summary:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: 3px;
 }
 
 .launch-options > div {

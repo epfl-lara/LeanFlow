@@ -350,27 +350,6 @@ def test_bridge_drain_preserves_pending_submission_and_close_rejects_new_work(
         bridge.call("submit_report", {"response": "late"})
 
 
-def test_offline_native_launch_fails_before_agent_admission(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        "agent.runtime.harness.run_harness",
-        lambda *args, **kwargs: pytest.fail("Unisolated offline launch"),
-    )
-    result = run_session(
-        role="prover",
-        prompt="prove",
-        project_root=tmp_path,
-        workspace=tmp_path / "workspace",
-        config={"allow_internet": False},
-        api_budget=1,
-        log_path=tmp_path / "events.jsonl",
-        context={},
-    )
-    assert result["status"] == "environment_error"
-    assert result["agent_calls"] == 0
-
-
 def test_unknown_usage_stops_further_token_capped_admission(tmp_path: Path) -> None:
     path = project(tmp_path)
     runtime = ProverRuntime(

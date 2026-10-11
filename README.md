@@ -99,7 +99,7 @@ separate editing workflow.
 - **`prove <file>`** completes holes in that file. Definition holes require explicit `LEANFLOW_PROVER_FILL_DEFINITIONS=1` authorization.
 - **`prove`** without a file discovers eligible project source files.
 - **`prove --research`** develops an informal plan, constructs and reviews a DAG, and schedules independent prover jobs. Top-down candidates remain untrusted until dependencies close and strict checks pass; bottom-up scheduling is also available.
-- **Clean-room / no-internet runs** fail before native launch: the current host isolation confines files but does not implement model-only network access. These modes cannot silently weaken their research restrictions.
+- **`prove --clean-room`** works with Codex, Claude Code and Lemex using only project files and installed libraries. External web/repository research and remote Lean search are disabled; bridge commands run without network access. Native model connections remain available. Clean-room checkpoints can resume, but online or legacy runs cannot be converted into clean-room tests.
 - **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
 
 Headless proof outcomes are explicit: `0` means verified, `3` means an authoritatively promoted

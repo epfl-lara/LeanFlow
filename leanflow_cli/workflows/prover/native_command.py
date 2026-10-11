@@ -25,6 +25,7 @@ def run_command(
     directory: Path,
     deadline: float | None = None,
     cancelled: Callable[[], bool] | None = None,
+    network_allowed: bool = True,
 ) -> dict[str, Any]:
     """Start a process group and stop its descendants only on explicit cancellation/deadline."""
     if not argv or any(not isinstance(arg, str) or "\0" in arg for arg in argv):
@@ -57,7 +58,11 @@ def run_command(
         if path.exists()
     )
     policy = IsolationPolicy(
-        snapshot.resolve(), writable_roots=(temporary,), readable_roots=reads, temp_root=temporary
+        snapshot.resolve(),
+        writable_roots=(temporary,),
+        readable_roots=reads,
+        temp_root=temporary,
+        network_allowed=network_allowed,
     )
     command = sandbox_command(argv, policy)
     environment = {
