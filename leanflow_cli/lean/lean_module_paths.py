@@ -21,15 +21,17 @@ from leanflow_cli.native.native_config import _project_root
 
 
 def _lean_imports_from_text(text: str) -> list[str]:
+    """Read every module named by plain or public import commands."""
     imports: list[str] = []
+    module = r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*"
     for match in re.finditer(
-        r"^\s*import\s+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)\b",
+        rf"^[ \t]*(?:public[ \t]+)?import[ \t]+({module}(?:[ \t]+{module})*)\b",
         _strip_lean_comments_and_strings(str(text or "")),
         flags=re.MULTILINE,
     ):
-        module = match.group(1).strip()
-        if module and module not in imports:
-            imports.append(module)
+        for name in match.group(1).split():
+            if name not in imports:
+                imports.append(name)
     return imports
 
 

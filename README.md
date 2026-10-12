@@ -108,6 +108,10 @@ outside authorized proof holes stays protected; reviewed helper modules,
 imports, and library requirements are recorded as additional changes.
 Definition holes require explicit authorization.
 
+Before each prover or negation session starts, LeanFlow checks LeanProbe in that
+job's actual private project and OS sandbox, including its assigned imports.
+A setup failure stops model launch and saves the checker diagnostics.
+
 A successful `prove` run requires no `sorry` in the requested source files and
 a final project `lake build`. A file target limits the proof assignment to that
 file; omitting the target discovers eligible project source files. A blocked or

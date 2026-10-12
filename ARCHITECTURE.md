@@ -67,6 +67,11 @@ preserving controller progress and consumed calls.
 
 `agent/runtime/harness/preflight.py` checks host sandbox permissions without
 starting a model; `doctor` reports this separately from runtime installation.
+`workflows/prover/session_setup.py` checks LeanProbe and the assigned imports in
+each actual private prover/negation workspace before native model admission. It
+uses the job's `check_process.py` sandbox and retains accepted warm workers plus
+run-bound setup diagnostics. Dependency snapshots preserve private Git metadata
+for Lake while applying source filtering independently of metadata retention.
 `runtime/mcp_protocol.py` guards the MCP v1 API required by managed Lean servers
 and job bridges; installers constrain dependencies and probe existing environments.
 

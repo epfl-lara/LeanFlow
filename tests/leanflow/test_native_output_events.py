@@ -58,6 +58,10 @@ def test_native_output_is_joined_by_exact_evidence_and_never_marks_a_proof_accep
         return HarnessResult("completed", final_response="A candidate", session_id="native-session")
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", native)
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.check_process.preflight_check",
+        lambda **_: {"success": True, "ok": True},
+    )
     run_session(
         role="prover",
         prompt="prove",

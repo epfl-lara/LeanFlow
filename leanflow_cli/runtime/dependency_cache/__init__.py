@@ -113,11 +113,13 @@ def materialize_dependencies(
     *,
     include_git: bool = True,
     seed: bool = True,
+    filter_sources: bool = False,
 ) -> bool:
     """Publish a writable private dependency view without downloads or shared inodes.
 
     Set seed=False during project setup to reuse only an already verified cache.
-    Snapshot callers omit Git metadata; canonical projects retain private metadata.
+    Snapshot callers filter private sources but retain Git metadata so Lake can
+    recognize the installed package URLs and revisions without replacing them.
     An existing destination is never replaced implicitly.
     """
     root = _canonical_root(project_root)
@@ -144,7 +146,11 @@ def materialize_dependencies(
             ) as temporary:
                 staged = Path(temporary) / "packages"
                 _copy_packages(
-                    entry / "packages", staged, include_git=include_git, policy_root=root
+                    entry / "packages",
+                    staged,
+                    include_git=include_git,
+                    policy_root=root,
+                    filter_sources=filter_sources,
                 )
                 staged.rename(destination_packages)
     return True

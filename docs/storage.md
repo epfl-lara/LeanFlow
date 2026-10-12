@@ -13,6 +13,12 @@ change the store or another project. APFS and Linux filesystems supporting refli
 share physical blocks until a write. Other filesystems use ordinary private copies
 with free-space checks. Existing prepared project directories are retained.
 
+Private dependency views retain independent Git metadata as well as compiled
+artifacts. Lake uses the recorded package URLs and revisions to recognize existing
+installations; dropping this metadata would trigger package replacement. Native
+views still exclude private agent settings and controller files. Both fresh and
+restored prover workspaces pass a sandboxed LeanProbe check before model launch.
+
 Compatibility includes the exact Lean compiler/toolchain, platform, architecture,
 locked dependency revisions and build settings. TOML package names and the root
 project's own targets do not prevent reuse. Lean DSL configurations use conservative

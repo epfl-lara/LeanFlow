@@ -199,6 +199,35 @@ def run_session(
         allow_internet=not restricted,
         research_job=config.get("_research_job") if callable(config.get("_research_job")) else None,
     )
+    if role in {"prover", "negation"}:
+        from leanflow_cli.workflows.prover.check_process import close_check_workers
+        from leanflow_cli.workflows.prover.session_setup import check_session_setup
+
+        setup = check_session_setup(toolset, runtime_dir, emit)
+        if not setup["accepted"]:
+            error = "Isolated prover workspace failed its LeanProbe setup check: " + str(
+                setup.get("error") or setup.get("error_code") or setup
+            )
+            setup_output = {
+                "status": (
+                    "interrupted"
+                    if setup.get("error_code") == "check_cancelled"
+                    else "timeout" if setup.get("timed_out") is True else "environment_error"
+                ),
+                "error": error,
+                "final_response": error,
+                "api_calls": previous_calls,
+                "agent_calls": previous_calls,
+                "usage_known": False,
+                "setup_check": setup,
+            }
+            emit("job-session-end", setup_output)
+            close_check_workers(scratch)
+            try:
+                release_snapshot_dependencies(snapshot)
+            except (OSError, ValueError) as exc:
+                emit("job-cache-cleanup-error", {"error": str(exc)})
+            return setup_output
     callbacks = {
         public: config[private]
         for public, private in (

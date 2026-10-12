@@ -333,17 +333,28 @@ def close_check_workers(workspace: Path) -> None:
 
 
 def preflight_check(
-    *, project_root: Path, workspace: Path, timeout_s: float | None = None
+    *,
+    project_root: Path,
+    workspace: Path,
+    timeout_s: float | None = None,
+    source_file: Path | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Verify the OS sandbox and Lean REPL before spending the first model request."""
+    """Verify sandboxed LeanProbe and assigned imports before spending a model request."""
     path: Path | None = None
     try:
         _, work = _validated_paths(project_root, workspace)
+        from leanflow_cli.lean.lean_module_paths import _lean_imports_from_text
+
+        imports = ["Lean"]
+        if source_file is not None:
+            imports += _lean_imports_from_text(source_file.read_text(encoding="utf-8"))
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".lean", prefix="Preflight_", dir=work, delete=False
         ) as source:
             path = Path(source.name)
-            source.write("import Lean\ntheorem leanflowPreflight : True := by trivial\n")
+            source.write("".join(f"import {module}\n" for module in dict.fromkeys(imports)))
+            source.write("theorem leanflowPreflight : True := by trivial\n")
         return check_scratch(
             project_root=project_root,
             workspace=workspace,
@@ -351,6 +362,7 @@ def preflight_check(
             declaration="leanflowPreflight",
             timeout_s=timeout_s,
             include_axiom_profile=True,
+            cancelled=cancelled,
         )
     except (OSError, ValueError) as exc:
         return _failure("check_setup_failed", str(exc))

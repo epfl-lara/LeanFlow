@@ -403,3 +403,31 @@ def test_existing_cache_does_not_hide_locally_modified_dependency_source(project
     snapshot = create_snapshot(project, project.parent / "snapshot")
     assert (snapshot / ".lake/packages/Lib/Lib.lean").read_bytes() == source.read_bytes()
     assert (entry / "packages/Lib/Lib.lean").read_bytes() != source.read_bytes()
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_native_snapshot_preserves_private_lake_checkout_metadata(
+    project: Path, edited: bool
+) -> None:
+    """Lake must recognize both cached and edited private dependency checkouts."""
+    from leanflow_cli.workflows.prover.native_snapshot import create_snapshot
+
+    package = project / ".lake/packages/Lib"
+    _git(package, "remote", "add", "origin", "https://example.invalid/Lib")
+    if edited:
+        (package / "Lib.lean").write_text("theorem local_edit : True := by trivial\n")
+    (package / ".codex").mkdir()
+    (package / ".codex/config.toml").write_text("private native settings")
+    with (package / ".git/info/exclude").open("a") as stream:
+        stream.write("\n.codex/\n")
+    snapshot = create_snapshot(project, project.parent / "snapshot")
+    private = snapshot / ".lake/packages/Lib"
+    assert _git(private, "rev-parse", "HEAD") == _git(package, "rev-parse", "HEAD")
+    assert _git(private, "config", "--get", "remote.origin.url") == "https://example.invalid/Lib"
+    assert (private / "Lib.lean").read_bytes() == (package / "Lib.lean").read_bytes()
+    assert not (private / ".codex").exists()
+    assert not (snapshot / ".git").exists()
+    metadata = private / ".git/config"
+    assert metadata.stat().st_ino != (package / ".git/config").stat().st_ino
+    metadata.write_text("private change")
+    assert "private change" not in (package / ".git/config").read_text()

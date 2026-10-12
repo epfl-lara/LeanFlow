@@ -29,6 +29,10 @@ def native_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for backend in ("codex", "lemex", "claude"):
         key = "CLAUDE_CONFIG_DIR" if backend == "claude" else f"{backend.upper()}_HOME"
         monkeypatch.setenv(key, str(tmp_path / f"native-{backend}"))
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.check_process.preflight_check",
+        lambda **_: {"success": True, "ok": True},
+    )
 
 
 def test_native_defaults_leave_global_limits_and_model_settings_unset() -> None:
@@ -260,6 +264,8 @@ def test_one_native_invocation_owns_the_full_conversation_without_default_overri
     assert result["usage_known"] is True
     assert result["session_id"] == "native-session"
     assert [kind for kind, _ in events] == [
+        "job-setup-start",
+        "job-setup-result",
         "api-request",
         *(["agent-output"] * 5),
         "job-session-end",

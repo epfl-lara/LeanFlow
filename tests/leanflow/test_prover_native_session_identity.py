@@ -19,6 +19,10 @@ def native_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for backend in ("codex", "lemex", "claude"):
         key = "CLAUDE_CONFIG_DIR" if backend == "claude" else f"{backend.upper()}_HOME"
         monkeypatch.setenv(key, str(tmp_path / f"native-{backend}"))
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.check_process.preflight_check",
+        lambda **_: {"success": True, "ok": True},
+    )
 
 
 @pytest.mark.parametrize("previous_backend", [None, "codex", "claude", "lemex"])

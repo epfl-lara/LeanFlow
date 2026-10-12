@@ -13,6 +13,7 @@ from pathlib import Path
 from core.file_copy import copy_file
 from core.utils import atomic_json_write
 from leanflow_cli.runtime.dependency_cache import materialize_dependencies
+from leanflow_cli.runtime.dependency_cache.checkout import _copy_packages
 from leanflow_cli.runtime.storage import (
     ensure_storage_capacity,
     forget_workspace,
@@ -175,11 +176,20 @@ def _validate_destination(destination: Path) -> None:
 def _shared_dependencies(project_root: Path, destination: Path) -> bool:
     """Reuse compatible sealed dependencies while keeping edited installations private."""
     try:
-        return materialize_dependencies(project_root, destination, include_git=False)
+        if materialize_dependencies(project_root, destination, filter_sources=True):
+            return True
     except ValueError:
         # Canonical dependency edits and unsupported layouts retain the established
         # filtered private-copy path; they must never be silently replaced by a cache.
+        pass
+    source = project_root / ".lake/packages"
+    if not source.is_dir() or source.is_symlink():
         return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _copy_packages(
+        source, destination, include_git=True, filter_sources=True, policy_root=project_root
+    )
+    return True
 
 
 def release_snapshot_dependencies(snapshot: Path) -> None:

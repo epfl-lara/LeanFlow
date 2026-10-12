@@ -49,7 +49,7 @@ def test_release_retains_proofs_scratch_and_local_build_sources(project) -> None
     assert (build / "Scratch.lean").is_file()
 
 
-def test_resume_restores_only_pinned_libraries_without_checkout_metadata(project) -> None:
+def test_resume_restores_pinned_libraries_with_private_checkout_metadata(project) -> None:
     root, snapshot = project
     (snapshot / "Main.lean").write_text("private proof progress")
     release_snapshot_dependencies(snapshot)
@@ -57,7 +57,7 @@ def test_resume_restores_only_pinned_libraries_without_checkout_metadata(project
     cached = snapshot / ".lake/packages/lib/.lake/build/Lib.olean"
     assert cached.read_bytes() == b"compiled library"
     assert cached.stat().st_ino != (root / ".lake/packages/lib/.lake/build/Lib.olean").stat().st_ino
-    assert not (snapshot / ".lake/packages/lib/.git").exists()
+    assert (snapshot / ".lake/packages/lib/.git/config").read_text() == "private checkout metadata"
     assert (snapshot / "Main.lean").read_text() == "private proof progress"
     assert not (snapshot / ".leanflow-dependencies-released").exists()
 

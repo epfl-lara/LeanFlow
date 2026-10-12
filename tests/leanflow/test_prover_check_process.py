@@ -272,6 +272,34 @@ def test_preflight_checks_lean_before_model_work_and_removes_test_source(
     assert len(files) == 1 and not files[0].exists()
 
 
+def test_preflight_checks_assigned_imports_without_requiring_finished_proofs(
+    monkeypatch: pytest.MonkeyPatch, roots: tuple[Path, Path, Path]
+) -> None:
+    project, workspace, _ = roots
+    target = workspace / "Scratch.lean"
+    target.write_text(
+        "-- import Missing.Comment\nimport Mathlib.Data.List.Basic\n"
+        "public import Mathlib.Computability.DFA Mathlib.Data.Nat.Basic\n"
+        "theorem unfinished : False := by sorry\n"
+    )
+    cancelled = lambda: False
+
+    def check(**kwargs: Any) -> dict[str, Any]:
+        source = kwargs["file"].read_text()
+        assert (
+            "import Lean\nimport Mathlib.Data.List.Basic\nimport Mathlib.Computability.DFA\nimport Mathlib.Data.Nat.Basic\n"
+            in source
+        )
+        assert "unfinished" not in source and "Missing.Comment" not in source
+        assert kwargs["cancelled"] is cancelled
+        return {"success": True, "ok": True}
+
+    monkeypatch.setattr(checks, "check_scratch", check)
+    assert checks.preflight_check(
+        project_root=project, workspace=workspace, source_file=target, cancelled=cancelled
+    )["ok"]
+
+
 def test_worker_startup_failure_is_not_a_proof_rejection(
     monkeypatch: pytest.MonkeyPatch, roots: tuple[Path, Path, Path]
 ) -> None:

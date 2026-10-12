@@ -112,10 +112,16 @@ def _relative_link(path: Path, checkout: Path) -> str:
 
 
 def _copy_packages(
-    source: Path, destination: Path, *, include_git: bool, policy_root: Path | None = None
+    source: Path,
+    destination: Path,
+    *,
+    include_git: bool,
+    policy_root: Path | None = None,
+    filter_sources: bool = False,
 ) -> None:
     """Clone independent inodes while preserving reserve and native source filtering."""
     destination.mkdir()
+    filtered = filter_sources or not include_git
     minimum = storage_policy().min_free_bytes
     for directory, names, files in os.walk(source, followlinks=False):
         current = Path(directory)
@@ -126,12 +132,12 @@ def _copy_packages(
         permitted = []
         for name in names:
             path = current / name
-            if not include_git and (name in _EXCLUDED or name == ".git"):
+            if (filtered and name in _EXCLUDED) or (not include_git and name == ".git"):
                 continue
             logical = (
                 policy_root / ".lake/packages" / path.relative_to(source) if policy_root else path
             )
-            if not include_git and (
+            if filtered and (
                 path.is_symlink() or clean_room_path_block_reason(logical, cwd=policy_root)
             ):
                 continue
@@ -144,15 +150,19 @@ def _copy_packages(
         names[:] = permitted
         for name in files:
             item = current / name
-            if not include_git and (name in _EXCLUDED or name == ".git"):
+            if (filtered and name in _EXCLUDED) or (not include_git and name == ".git"):
                 continue
             logical = (
                 policy_root / ".lake/packages" / item.relative_to(source) if policy_root else item
             )
-            if not include_git and (
+            if filtered and (
                 item.is_symlink() or clean_room_path_block_reason(logical, cwd=policy_root)
             ):
                 continue
+            if include_git and name == ".git":
+                raise ValueError(
+                    "Private dependencies cannot retain external Git worktree pointers"
+                )
             copied = output / name
             if item.is_symlink():
                 copied.symlink_to(_relative_link(item, checkout))

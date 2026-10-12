@@ -77,6 +77,14 @@ namespaces. Unsupported isolation fails before model work. Controller state and
 canonical source remain outside agent write authority. This boundary is separate
 from the optional [whole-workflow container sandbox](sandbox-runtime.md).
 
+Each prover and negation session checks LeanProbe again after creating or restoring
+its private project. This check uses the same sandbox and warm worker as the job's
+`lean_check` tool and loads the assigned scratch imports without requiring finished
+proofs. Failed setup stops before model admission and consumes no new agent call.
+Cancellation and global deadlines retain their interrupted or timeout outcomes.
+Job activity records setup start and result; full diagnostics are retained in
+`jobs/.runtime/<job-id>/lean-setup.json`. A successful check keeps the worker warm.
+
 Independent acceptance checks the exact compiled candidate and its complete axiom
 profile. Default allowed axioms are `propext`, `Classical.choice`, and `Quot.sound`.
 A custom policy is supported; `sorryAx` is always rejected for completion.
