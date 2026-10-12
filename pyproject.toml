@@ -23,8 +23,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0", "black>=24", "ruff>=0.6", "mypy>=1.11"]
-mcp = ["mcp>=1.2.0"]
+dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0,<2", "black>=24", "ruff>=0.6", "mypy>=1.11"]
+mcp = ["mcp>=1.2.0,<2"]
 pty = [
   "ptyprocess>=0.7.0; sys_platform != 'win32'",
   "pywinpty>=2.0.0; sys_platform == 'win32'",
@@ -120,6 +120,7 @@ files = [
   "leanflow_cli/runtime/storage",
   "leanflow_cli/runtime/dependency_cache",
   "leanflow_cli/runtime/runtime_install.py",
+  "leanflow_cli/runtime/mcp_protocol.py",
   "leanflow_cli/cli/storage_command.py",
   "agent/runtime/harness",
   "core/campaign_limits.py",

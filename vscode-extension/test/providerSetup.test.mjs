@@ -8,9 +8,12 @@ const bundle = await build({
   bundle: true, write: false, format: "esm", platform: "node",
   plugins: [{ name: "provider-test-host", setup(builder) {
     builder.onResolve({ filter: /^vscode$/ }, () => ({ path: "vscode", namespace: "fixture" }));
+    builder.onResolve({ filter: /^node:os$/ }, () => ({ path: "node:os", namespace: "host-os" }));
+    builder.onLoad({ filter: /^node:os$/, namespace: "host-os" }, () => ({ contents: 'export const hostname=()=>globalThis.providerFixture.hostname;' }));
     builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: `
       export class EventEmitter { event = () => ({ dispose() {} }); fire() {} dispose() {} }
-      export const workspace = { isTrusted: true, workspaceFolders: [{uri: {authority: "ssh-remote+test", fsPath: "/fixture/project"}}], openTextDocument: async uri => { if (globalThis.providerFixture.missingConfig) throw new Error('Missing file'); return uri; } };
+      export const env = { get remoteName(){return globalThis.providerFixture.remoteName;} };
+      export const workspace = { isTrusted: true, get workspaceFolders(){return [{uri:{authority:globalThis.providerFixture.authority,fsPath:"/fixture/project"}}];}, openTextDocument: async uri => { if (globalThis.providerFixture.missingConfig) throw new Error('Missing file'); return uri; } };
       export const Uri = { file: value => value };
       export const window = {
         showInputBox: async options => { globalThis.providerFixture.prompts.push(options); return globalThis.providerFixture.input; },
@@ -24,13 +27,26 @@ const bundle = await build({
 });
 const { ProviderSetup } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`);
 
-function fixture() {
+function fixture(host = {}) {
   const values = new Map();
-  const f = globalThis.providerFixture = { input: undefined, prompts: [], calls: [], terminals: [], documents: [], metadata: { selected: "codex", backends: ["codex", "claude", "lemex"].map(id => ({ id, installed: true, executable: `/bin/${id}`, auth: "native_login", version: "1.2.3", key_env: "NATIVE_API_KEY", config_path: `/home/.${id}/config.toml`, endpoint: "", checked: true, accidental_key: "never-copy-extra-fields" })) } };
+  const f = globalThis.providerFixture = { authority: "ssh-remote+test", remoteName: undefined, hostname: "test-host", ...host, input: undefined, prompts: [], calls: [], terminals: [], documents: [], metadata: { selected: "codex", backends: ["codex", "claude", "lemex"].map(id => ({ id, installed: true, executable: `/bin/${id}`, auth: "native_login", version: "1.2.3", key_env: "NATIVE_API_KEY", config_path: `/home/.${id}/config.toml`, endpoint: "", checked: true, accidental_key: "never-copy-extra-fields" })) } };
   const secrets = { get: async key => values.get(key), store: async (key, value) => values.set(key, value), delete: async key => values.delete(key), onDidChange: () => ({ dispose() {} }) };
   const setup = new ProviderSetup({ secrets });
   return { ...f, f, setup, values, secrets };
 }
+
+test("host-local Remote SSH URIs keep secrets separate from local and other remote hosts", async () => {
+  const one=fixture({authority:"",remoteName:"ssh-remote",hostname:"host-one"});
+  one.values.set("native-provider:local:OPENAI_API_KEY","local-only-key");
+  assert.equal(one.setup.state().host,"ssh-remote+host-one");
+  assert.deepEqual(await one.setup.credentials.environment("codex"),{});
+  await one.setup.credentials.saveKey("codex","host-one-key");
+  const two=fixture({authority:"",remoteName:"ssh-remote",hostname:"host-two"});
+  const sharedVault=new ProviderSetup({secrets:one.secrets});
+  assert.equal(sharedVault.state().host,"ssh-remote+host-two");
+  assert.deepEqual(await sharedVault.credentials.environment("codex"),{});
+  one.setup.dispose();two.setup.dispose();sharedVault.dispose();
+});
 
 test("API entry is masked and setup checks use env only, with no secret in public state", async () => {
   const { f, setup, values } = fixture();

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.home import leanflow_home
+from leanflow_cli.runtime.mcp_protocol import mcp_protocol_ready
 
 _MARKER = ".leanflow-storage.json"
 _SOURCE_DIRS = (
@@ -270,7 +271,10 @@ def ensure_backends() -> None:
     from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp, managed_mcp_server_status
 
     status = managed_mcp_server_status()
-    if status and all(item.get("healthy") for item in status.values()):
+    if status and all(
+        item.get("healthy") and mcp_protocol_ready(Path(str(item["venv_dir"])))
+        for item in status.values()
+    ):
         return
     managed = str(leanflow_home().resolve() / "mcp" / "venvs")
     if any(managed in command for command in active_runtime_paths()):

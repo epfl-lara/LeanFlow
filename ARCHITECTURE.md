@@ -61,6 +61,8 @@ extra authority.
 
 `agent/runtime/harness/preflight.py` checks host sandbox permissions without
 starting a model; `doctor` reports this separately from runtime installation.
+`runtime/mcp_protocol.py` guards the MCP v1 API required by managed Lean servers
+and job bridges; installers constrain dependencies and probe existing environments.
 
 Normal sessions permit network research. Restricted sessions exclude prior native
 context and automatic memories, and disable native research tools. Controller

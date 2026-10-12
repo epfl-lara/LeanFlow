@@ -109,9 +109,11 @@ def test_interrupt_workflow_process_rejects_reused_identity_before_signal():
     env = dict(os.environ)
     env[PROCESS_TOKEN_ENV] = token
     process = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
+        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"],
         env=env,
         start_new_session=True,
+        stdout=subprocess.PIPE,
+        text=True,
     )
     identity = {
         "process_id": process.pid,
@@ -120,6 +122,9 @@ def test_interrupt_workflow_process_rejects_reused_identity_before_signal():
         "process_token_sha256": process_token_sha256(token),
     }
     try:
+        # SIGINT during interpreter initialization can be consumed by an import
+        # callback. This test exercises identity checks on a running workflow.
+        assert process.stdout is not None and process.stdout.readline() == "ready\n"
         mismatched = dict(identity, process_token_sha256=process_token_sha256("reused-pid"))
         rejected = workflow_state.interrupt_workflow_process(mismatched)
 

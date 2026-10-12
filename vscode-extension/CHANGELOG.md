@@ -3,6 +3,11 @@
 User-visible changes to the LeanFlow VS Code extension. Entries before 0.1.20
 include features and settings from the former direct-provider runtime.
 
+## 0.1.34
+
+- Keep saved provider settings separate for each Remote SSH host, including
+  hosts that expose workspace files through local file URIs.
+
 ## 0.1.33
 
 - Recognize host-local file paths in Remote SSH workspaces so project discovery

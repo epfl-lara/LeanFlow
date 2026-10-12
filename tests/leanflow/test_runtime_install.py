@@ -240,8 +240,11 @@ def test_healthy_mcp_backends_reused_without_install(source: Path, monkeypatch: 
     from leanflow_cli.cli import mcp_bootstrap
 
     monkeypatch.setattr(
-        mcp_bootstrap, "managed_mcp_server_status", lambda: {"lean": {"healthy": True}}
+        mcp_bootstrap,
+        "managed_mcp_server_status",
+        lambda: {"lean": {"healthy": True, "venv_dir": "/fixture/lean"}},
     )
+    monkeypatch.setattr(installer, "mcp_protocol_ready", lambda _: True)
 
     def unexpected() -> None:
         raise AssertionError("must not upgrade an existing backend")
@@ -265,6 +268,23 @@ def test_unhealthy_active_mcp_backend_is_not_modified(
     )
     with pytest.raises(RuntimeError, match="backends are in use"):
         installer.ensure_backends()
+
+
+def test_present_backend_with_incompatible_protocol_is_repaired(source: Path, monkeypatch) -> None:
+    """Do not treat an existing executable as proof that its server API imports."""
+    from leanflow_cli.cli import mcp_bootstrap
+
+    monkeypatch.setattr(
+        mcp_bootstrap,
+        "managed_mcp_server_status",
+        lambda: {"lean": {"healthy": True, "venv_dir": "/fixture/lean"}},
+    )
+    monkeypatch.setattr(installer, "mcp_protocol_ready", lambda _: False)
+    monkeypatch.setattr(installer, "active_runtime_paths", lambda: ())
+    repaired = []
+    monkeypatch.setattr(mcp_bootstrap, "bootstrap_lean_mcp", lambda: repaired.append(True))
+    installer.ensure_backends()
+    assert repaired == [True]
 
 
 def test_failed_shell_install_never_switches_existing_commands(

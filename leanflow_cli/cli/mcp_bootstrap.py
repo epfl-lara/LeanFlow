@@ -28,6 +28,7 @@ from leanflow_cli.config import (
     get_leanflow_home,
     invalidate_config_cache,
 )
+from leanflow_cli.runtime.mcp_protocol import MCP_REQUIREMENT
 
 
 @dataclass(frozen=True)
@@ -416,11 +417,21 @@ def _install_into_managed_venv(
         ],
         check=True,
     )
-    for spec in (install_spec, *extra_install_specs):
-        subprocess.run(
-            [str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", spec],
-            check=True,
-        )
+    subprocess.run(
+        [
+            str(python_path),
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--quiet",
+            "--upgrade",
+            install_spec,
+            *extra_install_specs,
+            MCP_REQUIREMENT,
+        ],
+        check=True,
+    )
 
 
 def _patch_lean_lsp_loogle_project_paths(venv_dir: Path) -> bool:

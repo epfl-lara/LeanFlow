@@ -153,6 +153,7 @@ def lean_environment_generation(project: Path, *, excluded_sources: Iterable[Pat
             seen.add(path)
             info = path.lstat()
             symlink = stat.S_ISLNK(info.st_mode)
+            hash_content = not symlink and info.st_size <= _CONTENT_FINGERPRINT_LIMIT
             version = (
                 str(path),
                 info.st_dev,
@@ -166,6 +167,9 @@ def lean_environment_generation(project: Path, *, excluded_sources: Iterable[Pat
             fingerprint.update(b"\0")
             if symlink:
                 target = path.stat()
+                hash_content = (
+                    stat.S_ISREG(target.st_mode) and target.st_size <= _CONTENT_FINGERPRINT_LIMIT
+                )
                 fingerprint.update(
                     repr(
                         (
@@ -178,11 +182,7 @@ def lean_environment_generation(project: Path, *, excluded_sources: Iterable[Pat
                     ).encode()
                 )
                 fingerprint.update(b"\0")
-            if (
-                path.name in _CONFIG
-                or path.name == "settings.toml"
-                or (not symlink and info.st_size <= _CONTENT_FINGERPRINT_LIMIT)
-            ):
+            if path.name in _CONFIG or path.name == "settings.toml" or hash_content:
                 fingerprint.update(path.read_bytes())
                 fingerprint.update(b"\0")
     return fingerprint.hexdigest()

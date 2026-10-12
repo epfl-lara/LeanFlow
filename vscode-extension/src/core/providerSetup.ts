@@ -1,5 +1,6 @@
 /** Coordinate native setup commands and secure prompts on the extension host. */
 import * as vscode from "vscode";
+import { hostname } from "node:os";
 import { runCli } from "./cli";
 import { BACKEND_IDS, ProviderCredentials, validateApiKey, validateEndpoint, type BackendId, type BackendSetup, type ProviderAction, type ProviderSetupState } from "./providerCredentials";
 import { redactSensitiveText } from "./runPrivacy";
@@ -18,7 +19,8 @@ export class ProviderSetup implements vscode.Disposable {
     context: vscode.ExtensionContext,
     private readonly projectRoot: () => string | undefined = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
   ) {
-    const host = vscode.workspace.workspaceFolders?.[0]?.uri.authority || "local";
+    const host = vscode.workspace.workspaceFolders?.[0]?.uri.authority
+      || (vscode.env.remoteName ? `${vscode.env.remoteName}+${hostname()}` : "local");
     this.credentials = new ProviderCredentials(context.secrets, host);
     this.snapshot = { selected: "", backends: [], checking: false, error: "", host };
     this.secretsChanged = context.secrets.onDidChange(() => { void this.refresh(); });
