@@ -67,9 +67,9 @@ async function fixture() {
 test("navigation, clipboard and provider actions reach native editor services", async () => {
   const ui = await fixture();
   try {
-    for (const type of ["ready", "refresh", "refreshProviders", "openDashboard", "openCliSettings", "setupProject", "retryProjectSetup", "cancelProjectSetup", "showProjectSetupLog", "configureProvider"]) await ui.send({ type });
+    for (const type of ["ready", "refresh", "refreshProviders", "openDashboard", "openCliSettings", "setupProject", "retryProjectSetup", "repairProjectSetup", "cancelProjectSetup", "showProjectSetupLog", "configureProvider"]) await ui.send({ type });
     assert.equal(ui.last("state").state.project.root, ui.root);
-    assert.deepEqual(ui.calls.filter(row => row[0] === "setup"), [["setup"], ["setup", true]]);
+    assert.deepEqual(ui.calls.filter(row => row[0] === "setup"), [["setup"], ["setup", true], ["setup", false, true]]);
     assert.ok(ui.calls.some(row => row[0] === "cancelSetup"));
     assert.ok(ui.calls.some(row => row[0] === "setupLog"));
     assert.ok(ui.calls.some(row => row[0] === "command" && row[1] === "leanflow.configureProvider"));

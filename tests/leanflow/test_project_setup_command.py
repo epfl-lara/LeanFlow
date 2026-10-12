@@ -19,7 +19,8 @@ def isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("alias", ["setup", "init", "create"])
-def test_project_aliases_stream_shared_pipeline(alias, monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("repair", [False, True])
+def test_project_aliases_stream_shared_pipeline(alias, repair, monkeypatch, tmp_path, capsys):
     calls = []
     root = tmp_path / "project with spaces"
 
@@ -32,12 +33,13 @@ def test_project_aliases_stream_shared_pipeline(alias, monkeypatch, tmp_path, ca
 
     monkeypatch.setattr(project_command, "prepare_project", prepare)
     monkeypatch.setattr(project_command, "resolve_template_source", lambda *_: "")
-    assert main(["project", alias, str(root), "--json"]) == 0
+    assert main(["project", alias, str(root), "--json", *(["--repair"] if repair else [])]) == 0
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [event["type"] for event in events] == ["progress", "result"]
     assert events[-1]["status"] == "ready"
     assert calls[0][0] == str(root)
     assert calls[0][1]["preset"] == "mathlib"
+    assert calls[0][1]["repair"] is repair
     assert not calls[0][1]["cancel"].is_set()
 
 

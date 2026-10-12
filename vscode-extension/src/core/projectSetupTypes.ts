@@ -1,9 +1,10 @@
 /** Shared project preparation state and the CLI's structured setup protocol. */
-export type SetupStatus = "idle" | "running" | "ready" | "failed" | "cancelled";
+export type SetupStatus = "idle" | "detected" | "running" | "ready" | "failed" | "cancelled";
 
 export interface ProjectSetupTarget {
   root: string;
   sourceFile?: string;
+  repair?: boolean;
   openFolder?: boolean;
 }
 
@@ -31,15 +32,17 @@ export interface ProjectSetupState {
   activeRun: boolean;
   canRetry: boolean;
   sourceDiagnostics: string[];
+  recentOutput: string[];
 }
 
 export const EMPTY_PROJECT_SETUP: ProjectSetupState = {
   status: "idle", root: "", phase: "", message: "", code: "",
-  remediation: "", logPath: "", activeRun: false, canRetry: false, sourceDiagnostics: [],
+  remediation: "", logPath: "", activeRun: false, canRetry: false, sourceDiagnostics: [], recentOutput: [],
 };
 
 export type ProjectSetupEvent = ProjectSetupResult | {
   type: "progress" | "output";
+  log_path?: string;
   phase: string;
   message: string;
 };

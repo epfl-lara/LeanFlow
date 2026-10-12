@@ -179,6 +179,10 @@ export class WebviewHost implements vscode.Disposable {
         await services.setup.start();
         return;
       }
+      case "repairProjectSetup": {
+        await services.setup.start(false, true);
+        return;
+      }
       case "retryProjectSetup": {
         await services.setup.start(true);
         return;

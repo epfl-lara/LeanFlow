@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
 from leanflow_cli.runtime.project_operations import ProjectBusyError, project_setup
-from leanflow_cli.workflows.project import LeanFlowProjectError, initialize_leanflow_project
+from leanflow_cli.workflows.project import (
+    LeanFlowProjectError,
+    initialize_leanflow_project,
+    load_leanflow_project,
+)
 from leanflow_cli.workflows.project_setup.process import (
     Progress,
     SetupCancelled,
@@ -19,15 +22,24 @@ from leanflow_cli.workflows.project_setup.process import (
     run_command,
     safe_text,
 )
+from leanflow_cli.workflows.project_setup.readiness import (
+    installed_environment,
+    mathlib_cache_present,
+    source_diagnostics,
+)
 from leanflow_cli.workflows.project_setup.scaffold import (
     project_root,
     read_toolchain,
     scaffold,
-    source_paths,
     validate_lakefile,
     validate_mutable_paths,
 )
-from leanflow_cli.workflows.project_setup.state import fingerprint, state_directory
+from leanflow_cli.workflows.project_setup.state import (
+    fingerprint,
+    inspect_project,
+    save_result,
+    state_directory,
+)
 from leanflow_cli.workflows.project_setup.verification import (
     configure_repl,
     dependency_names,
@@ -43,6 +55,7 @@ def prepare_project(
     preset: str = "mathlib",
     source_file: str | Path | None = None,
     template_source: str | None = None,
+    repair: bool = False,
     progress: Progress | None = None,
     cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
@@ -54,6 +67,7 @@ def prepare_project(
             preset=preset,
             source_file=source_file,
             template_source=template_source,
+            repair=repair,
             progress=progress,
             cancel=cancel,
         )
@@ -83,6 +97,7 @@ def _prepare_project(
     preset: str = "mathlib",
     source_file: str | Path | None = None,
     template_source: str | None = None,
+    repair: bool = False,
     progress: Progress | None = None,
     cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
@@ -117,7 +132,14 @@ def _prepare_project(
             log.write(message + "\n")
             log.flush()
             if progress:
-                progress({"type": "progress", "phase": value, "message": message})
+                progress(
+                    {
+                        "type": "progress",
+                        "phase": value,
+                        "message": message,
+                        "log_path": str(log_path),
+                    }
+                )
 
         def run(
             command: list[str],
@@ -148,6 +170,37 @@ def _prepare_project(
         try:
             with project_setup(root):
                 phase("checking", "Checking project and required tools")
+                previous_setup = inspect_project(root)
+                if (
+                    previous_setup["ready"]
+                    and previous_setup["configured"]
+                    and not repair
+                    and not name
+                    and not source_file
+                    and not template_source
+                ):
+                    load_leanflow_project(root)
+                    message = "Already set up. Existing dependencies and verification results were reused."
+                    phase("ready", message)
+                    result = {
+                        **result,
+                        "status": "ready",
+                        "phase": "ready",
+                        "code": "ready",
+                        "message": message,
+                        "capabilities": {
+                            **previous_setup["capabilities"],
+                            "source_diagnostics": source_diagnostics(root),
+                        },
+                        "fingerprint": fingerprint(root),
+                    }
+                    save_result(root, result)
+                    return result
+                reuse_installed = (
+                    not repair
+                    and installed_environment(root)
+                    and previous_setup.get("code") != "readiness_stale"
+                )
                 if root.exists() and not root.is_dir():
                     raise SetupFailure(
                         "invalid_directory",
@@ -253,22 +306,34 @@ def _prepare_project(
                     if previous != (manifest.read_bytes() if manifest.is_file() else None):
                         changed.append("lake-manifest.json")
                 mathlib = "mathlib" in dependency_names(root)
-                if mathlib:
-                    phase("cache", "Downloading cached Mathlib builds")
+                if mathlib and (repair or not reuse_installed or not mathlib_cache_present(root)):
+                    phase(
+                        "cache",
+                        "Downloading missing Mathlib builds; completed downloads are reused",
+                    )
                     run(
                         ["lake", "exe", "cache", "get"],
                         code="mathlib_cache_failed",
                         remedy="Check network access and free disk space, then retry to reuse completed downloads.",
                     )
-                phase("verification", "Building Lean verification tools")
-                run(
-                    ["lake", "build", "repl"],
-                    code="repl_build_failed",
-                    remedy="Review the build log and confirm the REPL revision matches Lean, then retry. Completed build steps are reused.",
+                if not reuse_installed:
+                    phase("verification", "Building Lean verification tools")
+                    run(
+                        ["lake", "build", "repl"],
+                        code="repl_build_failed",
+                        remedy="Review the build log and confirm the REPL revision matches Lean, then retry. Completed build steps are reused.",
+                    )
+                else:
+                    phase(
+                        "verification",
+                        "Existing dependencies and verification tools found; no downloads or builds needed",
+                    )
+                phase(
+                    "checking_readiness",
+                    "Testing Lean with a small library import; your proofs are not compiled",
                 )
-                phase("checking_readiness", "Checking the Lean verification protocol")
                 binary = protocol_check(root, run, mathlib=mathlib)
-                diagnostics = _source_diagnostics(root, run, binary)
+                diagnostics = source_diagnostics(root)
                 initialize_leanflow_project(root, name=name)
                 result.update(
                     status="ready",
@@ -314,50 +379,5 @@ def _prepare_project(
         log.flush()
     # A rejected attempt must not invalidate the readiness receipt of the active run.
     if result["code"] != "project_busy":
-        result.setdefault("fingerprint", fingerprint(root))
-        pending = state / f"{uuid.uuid4().hex}.json"
-        pending.write_text(json.dumps(result, indent=2), encoding="utf-8")
-        pending.replace(state / "result.json")
+        save_result(root, result)
     return result
-
-
-def _source_diagnostics(root: Path, run: Any, binary: Path) -> list[str]:
-    """Report unavailable custom imports separately from installation readiness."""
-    import re
-
-    imports: set[str] = set()
-    diagnostics: list[str] = []
-    for path in source_paths(root):
-        try:
-            source = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            diagnostics.append(
-                f"Cannot inspect imports in {path.relative_to(root)}: {safe_text(str(exc))}"
-            )
-            continue
-        for match in re.finditer(r"^\s*import\s+([^\n]+)", source, re.MULTILINE):
-            imports.update(
-                name
-                for name in match.group(1).split("--", 1)[0].split()
-                if re.fullmatch(r"[\w.]+", name)
-                and name.split(".")[0] not in {"Mathlib", "Init", "Lean", "Std", "Lake"}
-            )
-    if not imports:
-        return diagnostics
-    try:
-        output = run(
-            ["lake", "env", str(binary)],
-            input_text=json.dumps({"cmd": "\n".join("import " + name for name in sorted(imports))})
-            + "\n\n",
-            stdout_only=True,
-            code="source_imports_unavailable",
-            remedy="Check custom project imports.",
-        )
-        response = json.loads(output)
-        return diagnostics + [
-            safe_text(str(item.get("data", item)))
-            for item in response.get("messages", [])
-            if isinstance(item, dict) and item.get("severity") == "error"
-        ]
-    except (SetupFailure, ValueError, AttributeError, TypeError) as exc:
-        return diagnostics + [safe_text(str(exc))]

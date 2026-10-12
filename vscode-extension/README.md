@@ -15,8 +15,15 @@ preserving its versions and dependency pins. A loose file prompts for a project
 folder. Multi-root workspaces use a folder picker; SSH setup runs on the remote
 workspace host.
 
-Progress shows the current step and output. Failures include a reason, remedy,
-**Retry** and **Show log**; **Cancel** stops only this setup. Retrying reuses
+An existing Lean project is recognized automatically. **Check setup** reuses
+unchanged verified readiness without downloads, builds or Lean processes; an
+installation without a receipt receives a small protocol check. **Repair options
+→ Repair dependencies** explicitly rechecks downloads and rebuilds verification
+tools when needed.
+
+Progress shows the current step. **Show setup log** expands a live, redacted log
+inside the card, including saved output after reloading. Failures include a reason,
+remedy and **Retry**; **Cancel** stops only this setup. Retrying reuses
 completed downloads and builds. **Ready to prove** requires a real Lean/REPL
 check, while incomplete proofs and `sorry`s remain valid starting points.
 Provider login is separate. Setup cannot change a project with an active run.

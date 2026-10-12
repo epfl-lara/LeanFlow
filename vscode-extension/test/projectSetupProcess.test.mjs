@@ -70,3 +70,14 @@ test("parser discards malformed protocol and launch gating preserves uninspected
   assert.equal(projectSetupBlocksLaunch({ status: "failed", root: "/project" }, "/project"), true);
   assert.equal(projectSetupBlocksLaunch({ status: "running", root: "/other" }, "/project"), false);
 });
+
+
+test("explicit repair reaches the CLI and progress carries the live log path", async () => {
+  const f = await fakeCli(`send({type:'progress',phase:'verification',message:JSON.stringify(process.argv.slice(2)),log_path:'/tmp/live-setup.log'}); send({type:'result',status:'ready',root:process.argv[4]});`);
+  try {
+    const events = [];
+    await startProjectSetup(f.bin, {root:f.root,repair:true}, event=>events.push(event)).result;
+    assert.equal(events[0].log_path, "/tmp/live-setup.log");
+    assert.deepEqual(JSON.parse(events[0].message), ["project","setup",f.root,"--preset","mathlib","--json","--repair"]);
+  } finally { await f.dispose(); }
+});

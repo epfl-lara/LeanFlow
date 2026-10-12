@@ -167,7 +167,9 @@ Review workflows publish findings only.
   `verification.py` prepares compatible REPL dependencies and checks the real
   verification protocol; `process.py` streams owned, cancellable subprocesses;
   `service.py` drives phases and preserves source/version boundaries; `state.py`
-  stores home-owned receipts and invalidates stale readiness.
+  stores home-owned receipts and invalidates stale readiness. `readiness.py` checks
+  installed artifacts and source import locations without starting Lean; unchanged
+  verified setups reuse the receipt, while explicit repair bypasses that cache.
 - `workflows/project.py` owns project discovery and registration. Retired clone and
   power-mode setup helpers are removed; CLI aliases use the shared pipeline.
 - `cli/project_command.py` routes setup/init/create through that pipeline, emits
@@ -181,7 +183,8 @@ Review workflows publish findings only.
   `projectSetup.ts` define the receipt contract, streaming process boundary and
   workspace-scoped service. `workspaceUris.ts` selects supported local or remote
   filesystem URIs. `ProjectSetupCard.tsx` presents the same setup state in sidebar
-  and dashboard, with retry, cancellation and log access. Registration is distinct
+  and dashboard, with retry, cancellation, bounded inline live logs and separate
+  dependency repair. Registration is distinct
   from readiness; provider authentication remains under its native setup service.
 
 ## Cache ownership and freshness

@@ -330,11 +330,16 @@ test("proposal, controller, parent-job and disproof buttons preserve their exact
 test("project setup buttons expose progress, retry, readiness and provider setup", () => {
   const ui = mount();
   try {
-    ui.click("Check / repair setup"); assert.ok(message(ui, "setupProject"));
-    ui.update(f => { f.app.projectSetup = { status: "running", root: "/fixture", phase: "dependencies", message: "Downloading Mathlib", canRetry: false }; });
+    ui.click("Check setup"); assert.ok(message(ui, "setupProject"));
+    ui.update(f => { f.app.projectSetup = { status: "running", root: "/fixture", phase: "dependencies", message: "Downloading Mathlib", recentOutput: ["Reusing existing downloads"], canRetry: false }; });
     assert.equal(ui.button("Start run").props.disabled, true);
     ui.click("Cancel setup"); assert.ok(message(ui, "cancelProjectSetup"));
     ui.click("Show setup log"); assert.ok(message(ui, "showProjectSetupLog"));
+    assert.match(textOf(ui.root().findByProps({"aria-label":"Project setup log"})), /Reusing existing downloads/);
+    ui.update(f => { f.app.projectSetup.recentOutput.push("Cache ready"); });
+    assert.match(textOf(ui.root().findByProps({"aria-label":"Project setup log"})), /Cache ready/);
+    ui.click("Hide setup log");
+    assert.equal(ui.root().findAllByProps({"aria-label":"Project setup log"}).length, 0);
     ui.update(f => { f.app.projectSetup = { ...f.app.projectSetup, status: "failed", message: "Download failed", remediation: "Check your network and retry.", canRetry: true }; });
     assert.match(textOf(ui.root()), /Step: dependencies/);
     assert.match(textOf(ui.root()), /Check your network and retry/);
@@ -346,8 +351,10 @@ test("project setup buttons expose progress, retry, readiness and provider setup
     assert.match(textOf(ui.root()), /Source files need attention \(1\)/);
     assert.match(textOf(ui.root()), /unknown module PrivateLibrary/);
     assert.equal(ui.button("Start run").props.disabled, false);
+    ui.click("Repair dependencies"); assert.ok(message(ui, "repairProjectSetup"));
     ui.update(f => { f.app.projectSetup.activeRun = true; });
-    assert.equal(ui.button("Check / repair setup").props.disabled, true);
+    assert.equal(ui.button("Repair dependencies").props.disabled, true);
+    assert.equal(ui.button("Check setup").props.disabled, true);
     ui.click("Set up provider"); assert.equal(ui.view.tab, "providers");
   } finally { ui.dispose(); }
 });

@@ -1653,3 +1653,7 @@ body.vscode-high-contrast-light {
 .setup-source-diagnostics { margin-top: 16px; overflow-wrap: anywhere; }
 .setup-source-diagnostics summary { color: var(--vscode-editorWarning-foreground); cursor: pointer; }
 .setup-source-diagnostics li { margin-top: 8px; white-space: pre-wrap; }
+
+.setup-live-log { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; margin-top: 16px; background: var(--vscode-textCodeBlock-background); border-radius: 4px; font-size: 12px; }
+.setup-troubleshooting { margin-top: 16px; }
+.setup-troubleshooting > p { margin: 12px 0; }

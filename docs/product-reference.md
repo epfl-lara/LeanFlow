@@ -309,7 +309,7 @@ Use `/skills` to see what the agent can currently load and where each skill came
 
 Use **Set up project** in VS Code or the shared CLI flow:
 
-- `leanflow project setup [path] [--name NAME] [--preset mathlib|lean]`
+- `leanflow project setup [path] [--name NAME] [--preset mathlib|lean] [--repair]`
 - `leanflow project setup <folder> --source-file <file.lean>` copies a loose file without replacing an existing different file.
 - `leanflow project init [path]` is a compatibility alias for setup.
 - `leanflow project create <path> [--template-source SOURCE]` uses the same preparation pipeline after optional template cloning.
@@ -326,8 +326,9 @@ host; missing prerequisites produce a specific installation remedy.
 
 Setup prepares dependencies and cached Mathlib builds, builds the compatible
 REPL, and verifies a known theorem through its real protocol. It does not require
-user proofs to be complete. Custom source-import diagnostics are separate from
-environment readiness. Setup adds a missing REPL requirement to TOML and ordinary
+user proofs to be complete. The protocol check imports one small Mathlib module;
+source import locations are inspected without compiling project files. These
+warnings are separate from environment readiness. Setup adds a missing REPL requirement to TOML and ordinary
 Lake DSL configurations; custom executable configurations receive precise manual
 dependency instructions.
 
@@ -336,7 +337,12 @@ events followed by one `result`. A result records status, failed phase, error
 code, message, remediation, log path, changed files and verified capabilities.
 Exit status is 0 for ready, 1 for failure and 130 for cancellation. Setup receipts
 and logs live under LeanFlow home; configuration changes invalidate readiness.
-Retry reuses dependency downloads and completed builds. There is no fixed build
+An unchanged verified project reuses its receipt without starting subprocesses.
+Existing installations without a receipt are detected and receive a lightweight
+protocol check, skipping downloads and builds. Missing artifacts or changed
+configuration invalidate the receipt. `--repair` explicitly rechecks downloads
+and rebuilds verification tools. Retry reuses completed downloads and builds.
+There is no fixed build
 deadline; cancellation terminates only processes started by that setup.
 
 Setup holds exclusive project ownership; active workflows hold shared ownership.
@@ -347,7 +353,10 @@ without altering the active project.
 Registration creates `.leanflow/project.yaml`, `.leanflow/runtime/`,
 `.leanflow/cache/` and `.leanflow/workflows/`. Registration alone does not certify
 readiness. The VS Code dashboard and sidebar share setup state, progress,
-**Retry**, **Cancel** and **Show log** actions. Multi-root workspaces select a
+**Retry**, **Cancel** and **Show setup log** actions. Logs expand inside the setup
+card and stream a bounded, redacted tail while work runs. **Check setup** reuses
+verified readiness; **Repair options → Repair dependencies** requests the heavier
+repair explicitly. Multi-root workspaces select a
 specific folder, and SSH setup runs on the workspace host. Native provider login
 and API credentials remain a separate Providers step.
 

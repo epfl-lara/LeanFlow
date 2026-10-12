@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
 from core.home import leanflow_home
+from leanflow_cli.workflows.project_setup.readiness import installed_environment
 from leanflow_cli.workflows.project_setup.scaffold import project_root, source_paths
 from leanflow_cli.workflows.project_setup.verification import repl_binary
 
@@ -65,7 +67,8 @@ def inspect_project(path: str | Path) -> dict[str, Any]:
         valid = receipt.get("fingerprint") == fingerprint(root)
     except OSError:
         valid = False
-    if receipt and not valid:
+    installed = installed_environment(root)
+    if receipt and (not valid or (receipt.get("status") == "ready" and not installed)):
         receipt.update(
             status="failed",
             phase="checking_readiness",
@@ -73,17 +76,33 @@ def inspect_project(path: str | Path) -> dict[str, Any]:
             message="Project configuration or verification artifacts changed since setup.",
             remediation="Run project setup again to check and repair the environment.",
         )
-    ready = bool(valid and receipt.get("status") == "ready" and repl_binary(root))
+    ready = bool(valid and receipt.get("status") == "ready" and installed)
     return {
         "root": str(root),
         "kind": kind,
         "ready": ready,
         "configured": (root / ".leanflow/project.yaml").is_file(),
-        "setup_status": receipt.get("status", "unknown"),
+        "setup_status": receipt.get("status", "detected" if installed else "unknown"),
         "phase": receipt.get("phase", ""),
         "code": receipt.get("code", ""),
-        "message": receipt.get("message", ""),
+        "message": receipt.get(
+            "message",
+            (
+                "Existing Lean project and verification tools detected. You can start a run or check setup."
+                if installed
+                else ""
+            ),
+        ),
         "remediation": receipt.get("remediation", ""),
         "log_path": receipt.get("log_path", ""),
         "capabilities": receipt.get("capabilities", {}) if ready else {},
     }
+
+
+def save_result(root: Path, result: dict[str, Any]) -> None:
+    """Atomically persist the latest setup outcome without changing project files."""
+    state = state_directory(root)
+    result.setdefault("fingerprint", fingerprint(root))
+    pending = state / f"{uuid.uuid4().hex}.json"
+    pending.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    pending.replace(state / "result.json")

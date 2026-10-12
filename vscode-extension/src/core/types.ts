@@ -793,6 +793,7 @@ export type WebviewMessage =
   | { type: "configureProvider" }
   | { type: "setupProject" }
   | { type: "retryProjectSetup" }
+  | { type: "repairProjectSetup" }
   | { type: "cancelProjectSetup" }
   | { type: "showProjectSetupLog" }
   | { type: "copyText"; text: string }

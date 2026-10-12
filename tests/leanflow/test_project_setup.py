@@ -33,6 +33,12 @@ def fake_tools(monkeypatch, tmp_path):
             if not any(item["name"] == "repl" for item in manifest["packages"]):
                 manifest["packages"].append({"name": "repl", "rev": "repl-pin"})
             path.write_text(json.dumps(manifest))
+        if command == ["lake", "exe", "cache", "get"]:
+            library = cwd / ".lake/packages/mathlib/.lake/build/lib/lean"
+            for name in ("Mathlib.olean", "Mathlib/Data/Nat/Basic.olean"):
+                artifact = library / name
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_bytes(b"cached")
         if command == ["lake", "build", "repl"]:
             binary = cwd / ".lake/packages/repl/.lake/build/bin/repl"
             binary.parent.mkdir(parents=True, exist_ok=True)
@@ -215,7 +221,9 @@ def test_unknown_custom_import_is_source_diagnostic_not_install_failure(tmp_path
     (root / "Problem.lean").write_text("import Missing.Library\ntheorem foo : True := by sorry\n")
     result = prepare_project(root)
     assert result["status"] == "ready"
-    assert result["capabilities"]["source_diagnostics"] == ["Missing library"]
+    assert (
+        "Could not locate import Missing.Library" in result["capabilities"]["source_diagnostics"][0]
+    )
 
 
 def test_executable_lakefile_requires_explicit_safe_dependency(tmp_path, fake_tools):
@@ -427,7 +435,7 @@ def test_unwritable_home_returns_structured_error(tmp_path, fake_tools, monkeypa
     assert not (tmp_path / "destination").exists()
 
 
-def test_readiness_and_source_import_queries_request_clean_stdout(
+def test_only_lightweight_readiness_query_starts_a_lean_environment(
     tmp_path, fake_tools, monkeypatch
 ):
     root = tmp_path / "protocol-streams"
@@ -439,8 +447,82 @@ def test_readiness_and_source_import_queries_request_clean_stdout(
     def check_streams(command, **kwargs):
         if command[:2] == ["lake", "env"]:
             requests.append(kwargs.get("stdout_only"))
+            assert "import Mathlib\n" not in kwargs["input_text"]
         return original(command, **kwargs)
 
     monkeypatch.setattr(service, "run_command", check_streams)
     assert prepare_project(root)["status"] == "ready"
-    assert requests == [True, True]
+    assert requests == [True]
+
+
+def test_unchanged_verified_setup_starts_no_processes(tmp_path, fake_tools):
+    root = tmp_path / "already-ready"
+    assert prepare_project(root)["status"] == "ready"
+    before = (root / "lake-manifest.json").read_bytes()
+    fake_tools[0].clear()
+    result = prepare_project(root)
+    assert result["status"] == "ready"
+    assert result["changed_files"] == []
+    assert fake_tools[0] == []
+    assert "Already set up" in result["message"]
+    assert inspect_project(root)["log_path"] == result["log_path"]
+    assert (root / "lake-manifest.json").read_bytes() == before
+
+
+def test_legacy_installed_project_uses_lightweight_check_without_downloads_or_builds(
+    tmp_path, fake_tools
+):
+    from leanflow_cli.workflows.project_setup.state import state_directory
+
+    root = tmp_path / "legacy"
+    assert prepare_project(root)["status"] == "ready"
+    (state_directory(root.resolve()) / "result.json").unlink()
+    report = inspect_project(root)
+    assert report["setup_status"] == "detected"
+    assert not report["ready"]
+    fake_tools[0].clear()
+    assert prepare_project(root)["status"] == "ready"
+    assert ["lake", "exe", "cache", "get"] not in fake_tools[0]
+    assert ["lake", "build", "repl"] not in fake_tools[0]
+    assert len([cmd for cmd in fake_tools[0] if cmd[:2] == ["lake", "env"]]) == 1
+
+
+def test_explicit_repair_bypasses_cached_readiness(tmp_path, fake_tools):
+    root = tmp_path / "repair"
+    assert prepare_project(root)["status"] == "ready"
+    fake_tools[0].clear()
+    assert prepare_project(root, repair=True)["status"] == "ready"
+    assert ["lake", "exe", "cache", "get"] in fake_tools[0]
+    assert ["lake", "build", "repl"] in fake_tools[0]
+
+
+def test_missing_small_mathlib_artifact_invalidates_ready_cache(tmp_path, fake_tools):
+    root = tmp_path / "missing-artifact"
+    assert prepare_project(root)["status"] == "ready"
+    (root / ".lake/packages/mathlib/.lake/build/lib/lean/Mathlib/Data/Nat/Basic.olean").unlink()
+    assert inspect_project(root)["code"] == "readiness_stale"
+    fake_tools[0].clear()
+    assert prepare_project(root)["status"] == "ready"
+    assert ["lake", "exe", "cache", "get"] in fake_tools[0]
+
+
+def test_cached_setup_still_checks_registration_and_active_owner(tmp_path, fake_tools):
+    from leanflow_cli.runtime.project_operations import project_activity
+
+    root = tmp_path / "guarded"
+    assert prepare_project(root)["status"] == "ready"
+    fake_tools[0].clear()
+    with project_activity(root):
+        assert prepare_project(root)["code"] == "project_busy"
+    (root / ".leanflow/project.yaml").write_text("bad: registration")
+    assert prepare_project(root)["code"] == "registration_failed"
+    assert fake_tools[0] == []
+
+
+def test_progress_reports_live_log_path(tmp_path, fake_tools):
+    events = []
+    result = prepare_project(tmp_path / "live-log", progress=events.append)
+    assert events
+    assert all(
+        event["log_path"] == result["log_path"] for event in events if event["type"] == "progress"
+    )

@@ -163,7 +163,7 @@ def protocol_check(root: Path, run: Run, *, mathlib: bool) -> Path:
             "The REPL build finished without an executable.",
             "Review the build log and the repl dependency, then retry setup.",
         )
-    code = ("import Mathlib\n" if mathlib else "") + "example : True := by trivial\n"
+    code = ("import Mathlib.Data.Nat.Basic\n" if mathlib else "") + "example : True := by trivial\n"
     output = run(
         ["lake", "env", str(binary)],
         input_text=json.dumps({"cmd": code}) + "\n\n",

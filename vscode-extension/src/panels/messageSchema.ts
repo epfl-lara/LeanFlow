@@ -214,6 +214,7 @@ export function parseWebviewMessage(
     case "configureProvider":
     case "setupProject":
     case "retryProjectSetup":
+    case "repairProjectSetup":
     case "cancelProjectSetup":
     case "showProjectSetupLog":
     case "ready":

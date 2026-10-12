@@ -1,5 +1,6 @@
 /** Coordinate one-click project preparation, retry, cancellation, and setup logs. */
 import * as path from "node:path";
+import { open } from "node:fs/promises";
 import * as vscode from "vscode";
 import { cliPath, runCli } from "./cli";
 import { startProjectSetup, type SetupProcess } from "./projectSetupProcess";
@@ -69,6 +70,7 @@ export class ProjectSetup implements vscode.Disposable {
   private process: SetupProcess | null = null;
   private preparing = false;
   private inspection = 0;
+  private outputUpdate: NodeJS.Timeout | undefined;
   private readonly log = vscode.window.createOutputChannel("LeanFlow Project Setup");
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changed.event;
@@ -77,6 +79,7 @@ export class ProjectSetup implements vscode.Disposable {
 
   dispose(): void {
     this.process?.cancel();
+    if (this.outputUpdate) clearTimeout(this.outputUpdate);
     this.log.dispose();
     this.changed.dispose();
   }
@@ -107,12 +110,13 @@ export class ProjectSetup implements vscode.Disposable {
       if (generation !== this.inspection || this.preparing || !parsed || typeof parsed !== "object") return;
       const value = parsed as Record<string, unknown>;
       const read = (key: string) => typeof value[key] === "string" ? redactSensitiveText((value[key] as string).slice(0, 32_768)) : "";
-      const status = ["ready", "failed", "cancelled"].includes(String(value.setup_status)) ? value.setup_status as "ready" | "failed" | "cancelled" : "idle";
+      const status = ["detected", "ready", "failed", "cancelled"].includes(String(value.setup_status)) ? value.setup_status as "detected" | "ready" | "failed" | "cancelled" : "idle";
       this.snapshot = {
         ...EMPTY_PROJECT_SETUP, root: read("root") || root, status,
         phase: read("phase"), code: read("code"), message: read("message"),
         remediation: read("remediation"), logPath: read("log_path"), canRetry: status === "failed" || status === "cancelled",
         sourceDiagnostics: sourceDiagnostics(value.capabilities),
+        recentOutput: this.snapshot.root === (read("root") || root) ? this.snapshot.recentOutput : [],
       };
       if (this.target?.root !== this.snapshot.root) this.target = { root: this.snapshot.root };
       this.changed.fire();
@@ -127,12 +131,13 @@ export class ProjectSetup implements vscode.Disposable {
   }
 
   /** Prepare the selected folder, retaining its exact request for Retry. */
-  async start(retry = false): Promise<void> {
+  async start(retry = false, repair = false): Promise<void> {
     if (this.preparing) return;
     this.preparing = true;
     ++this.inspection;
     try {
-      const target = retry && this.target ? this.target : await chooseSetupTarget(this.context.projectRoot());
+      const chosen = retry && this.target ? this.target : await chooseSetupTarget(this.context.projectRoot());
+      const target = chosen && (repair ? { ...chosen, repair: true } : chosen);
       if (!target) return;
       this.target = target;
       if (this.context.activeRun(target.root)) {
@@ -140,12 +145,13 @@ export class ProjectSetup implements vscode.Disposable {
       }
       this.snapshot = { ...EMPTY_PROJECT_SETUP, status: "running", root: target.root, phase: "checking_tools", message: "Checking project tools…" };
       this.log.clear();
-      this.log.appendLine(`Setting up ${target.root} with Mathlib by default.`);
+      this.appendOutput(target.repair ? "Repairing project dependencies and verification tools…" : "Checking existing project setup; installing only what is missing…");
       this.changed.fire();
       await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "LeanFlow project setup", cancellable: true }, async (progress, token) => {
         const owned = startProjectSetup(cliPath(), target, event => {
           const message = redactSensitiveText(event.message);
-          this.log.appendLine(`[${event.phase || "setup"}] ${message}`);
+          this.appendOutput(`[${event.phase || "setup"}] ${message}`);
+          if (event.log_path && path.isAbsolute(event.log_path)) this.snapshot.logPath = event.log_path;
           if (event.type === "progress") {
             this.snapshot = { ...this.snapshot, phase: event.phase, message };
             progress.report({ message });
@@ -164,9 +170,10 @@ export class ProjectSetup implements vscode.Disposable {
             remediation: redactSensitiveText(result.remediation), logPath: result.log_path,
             activeRun: false, canRetry: result.status !== "ready",
             sourceDiagnostics: sourceDiagnostics(result.capabilities),
+            recentOutput: this.snapshot.recentOutput,
           };
-          this.log.appendLine(`${result.status}: ${this.snapshot.message}`);
-          if (this.snapshot.remediation) this.log.appendLine(this.snapshot.remediation);
+          this.appendOutput(`${result.status}: ${this.snapshot.message}`);
+          if (this.snapshot.remediation) this.appendOutput(this.snapshot.remediation);
           this.changed.fire();
         } finally { cancellation.dispose(); this.process = null; }
       });
@@ -187,15 +194,40 @@ export class ProjectSetup implements vscode.Disposable {
     this.process.cancel();
   }
 
-  /** Show captured progress and failures, or the persisted log after a reload. */
+  /** Publish a bounded live tail without broadcasting a full app state for every line. */
+  private appendOutput(message: string): void {
+    const safe = redactSensitiveText(message).slice(-4_000);
+    this.log.appendLine(safe);
+    this.snapshot = { ...this.snapshot, recentOutput: [...this.snapshot.recentOutput, safe].slice(-40) };
+    if (!this.outputUpdate) this.outputUpdate = setTimeout(() => {
+      this.outputUpdate = undefined;
+      this.changed.fire();
+    }, 100);
+  }
+
+  /** Load a bounded saved tail into the card; live output is already streamed there. */
   async showLog(): Promise<void> {
-    if (this.snapshot.logPath && path.isAbsolute(this.snapshot.logPath)) {
+    if (this.process || this.preparing) { this.changed.fire(); return; }
+    const { root, logPath } = this.snapshot;
+    const generation = this.inspection;
+    const current = () => generation === this.inspection && root === this.snapshot.root && logPath === this.snapshot.logPath;
+    if (logPath && path.isAbsolute(logPath)) {
       try {
-        const document = await vscode.workspace.openTextDocument(hostFileUri(this.snapshot.logPath));
-        await vscode.window.showTextDocument(document, { preview: true });
-        return;
-      } catch { /* Captured output remains available if the saved log moved. */ }
+        const handle = await open(logPath, "r");
+        let text: string;
+        try {
+          const size = (await handle.stat()).size;
+          const buffer = Buffer.alloc(Math.min(size, 32_768));
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, Math.max(0, size - buffer.length));
+          text = buffer.subarray(0, bytesRead).toString("utf8");
+        } finally { await handle.close(); }
+        if (!current()) return;
+        this.snapshot = { ...this.snapshot, recentOutput: redactSensitiveText(text, [], 32_768).split("\n").slice(-80) };
+      } catch (error) {
+        if (!current()) return;
+        this.appendOutput(`Could not read the saved setup log: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
-    this.log.show(true);
+    this.changed.fire();
   }
 }

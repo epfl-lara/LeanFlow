@@ -384,7 +384,7 @@ test("mode changes hide the appropriate panels and preserve all research choices
     const shared = { ...ui.view.form.overrides };
     const panels = () => ui.root().findAllByType("section").filter(node => ["Prover settings", "Orchestrator settings", "Research and recovery limits"].includes(node.props["aria-label"]));
     assert.equal(panels().length, 3);
-    const help = ui.root().findByType("summary");
+    const help = ui.root().findByProps({ "aria-label": "About Research and Standard modes" });
     assert.equal(help.props["aria-label"], "About Research and Standard modes");
     assert.equal(help.parent.type, "details");
     assert.equal(help.parent.props.open, undefined);

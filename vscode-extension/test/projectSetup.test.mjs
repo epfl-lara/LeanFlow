@@ -1,6 +1,9 @@
 /** Exercise setup requests and retry state without touching a user project. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { build } from "esbuild";
 
 const bundle = await build({
@@ -34,7 +37,7 @@ const bundle = await build({
       export async function runCli(args) { globalThis.setupFixture.inspectArgs=args; if(globalThis.setupFixture.inspectError)throw new Error('older CLI'); return JSON.stringify(globalThis.setupFixture.inspection); }
     ` }));
     builder.onLoad({ filter: /src\/core\/projectSetupProcess\.ts$/ }, () => ({ contents: `
-      export function startProjectSetup(bin,target,onEvent) {const f=globalThis.setupFixture; f.requests.push({bin,target}); const item=f.results.shift(); onEvent({type:'progress',phase:'dependencies',message:'Downloading'}); return { result: item instanceof Promise ? item : Promise.resolve(item), cancel() {f.cancelled++; f.resolve?.({type:'result',status:'cancelled',root:target.root,phase:'dependencies',code:'cancelled',message:'Cancelled',remediation:'Retry',log_path:''});} };}
+      export function startProjectSetup(bin,target,onEvent) {const f=globalThis.setupFixture; f.requests.push({bin,target}); f.onEvent=onEvent; const item=f.results.shift(); onEvent({type:'progress',phase:'dependencies',message:'Downloading'}); return { result: item instanceof Promise ? item : Promise.resolve(item), cancel() {f.cancelled++; f.resolve?.({type:'result',status:'cancelled',root:target.root,phase:'dependencies',code:'cancelled',message:'Cancelled',remediation:'Retry',log_path:''});} };}
     ` }));
   } }],
 });
@@ -75,7 +78,8 @@ test("failure retains exact request for retry and durable log; known failure blo
     assert.equal(f.setup.state().canRetry,true);
     assert.throws(()=>f.setup.assertLaunchReady("/project"),/Retry/);
     f.setup.assertLaunchReady("/other");
-    await f.setup.showLog(); assert.equal(f.opened[0].fsPath,"/logs/setup.log");
+    await f.setup.showLog();
+    assert.match(f.setup.state().recentOutput.at(-1), /Could not read the saved setup log/);
     f.folders=[f.folder("/other")];
     await f.setup.start(true);
     assert.equal(f.requests[1].target.root,"/project");
@@ -189,4 +193,54 @@ test("ready results and persisted inspection retain bounded redacted source diag
     await f.setup.refresh(true);
     assert.deepEqual(f.setup.state().sourceDiagnostics, []);
   } finally { f.setup.dispose(); }
+});
+
+
+test("repair and retry retain the explicit heavy operation", async () => {
+  const f = fixture();
+  try {
+    f.folders = [f.folder("/project")]; f.results.push(f.result("failed"), f.result("ready"));
+    await f.setup.start(false, true);
+    await f.setup.start(true);
+    assert.deepEqual(f.requests.map(item => item.target), [{root:"/project",repair:true}, {root:"/project",repair:true}]);
+    assert.match(f.logs[0], /Repairing/);
+  } finally { f.setup.dispose(); }
+});
+
+test("live setup logs are bounded, redacted and available before completion", async () => {
+  const f = fixture();
+  try {
+    f.folders = [f.folder("/project")];
+    f.results.push(new Promise(resolve => { f.resolve = resolve; }));
+    const running = f.setup.start();
+    await new Promise(resolve => setImmediate(resolve));
+    for (let i = 0; i < 100; i++) f.onEvent({type:"output",phase:"cache",message:`line ${i} token=sk-test-private-setup-token`,log_path:"/logs/current.log"});
+    await f.setup.showLog();
+    const state = f.setup.state();
+    assert.equal(state.status, "running");
+    assert.equal(state.logPath, "/logs/current.log");
+    assert.equal(state.recentOutput.length, 40);
+    assert.match(state.recentOutput.at(-1), /line 99/);
+    assert.ok(!JSON.stringify(state).includes("sk-test-private-setup-token"));
+    assert.deepEqual(f.opened, []);
+    f.resolve(f.result("ready")); await running;
+  } finally { f.setup.dispose(); }
+});
+
+test("saved setup log loads inline after reload without opening another editor", async () => {
+  const f = fixture();
+  const root = await mkdtemp(path.join(tmpdir(), "leanflow-setup-log-"));
+  try {
+    const log = path.join(root, "setup.log");
+    await writeFile(log, "x".repeat(40000) + "\n" + Array.from({length:100}, (_,i)=>`step ${i}`).join("\n") + "\ntoken=sk-test-private-saved-token");
+    f.projectRoot = root;
+    f.inspection = {root, setup_status:"ready", log_path:log};
+    await f.setup.refresh(true);
+    await f.setup.showLog();
+    const output = f.setup.state().recentOutput;
+    assert.equal(output.length, 80);
+    assert.ok(output.includes("step 99"));
+    assert.ok(!output.join("\n").includes("sk-test-private-saved-token"));
+    assert.deepEqual(f.opened, []);
+  } finally { f.setup.dispose(); await rm(root, {recursive:true,force:true}); }
 });

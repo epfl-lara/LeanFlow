@@ -13,7 +13,7 @@ export function parseSetupEvent(line: string): ProjectSetupEvent | null {
   } catch { return null; }
   const text = (key: string) => typeof value[key] === "string" ? (value[key] as string).slice(0, 32_768) : "";
   if (value.type === "progress" || value.type === "output") {
-    return { type: value.type, phase: text("phase"), message: text("message") };
+    return { type: value.type, phase: text("phase"), message: text("message"), log_path: text("log_path") };
   }
   if (value.type !== "result" || !["ready", "failed", "cancelled"].includes(String(value.status))) return null;
   return {
@@ -37,6 +37,7 @@ export function startProjectSetup(
   onEvent: (event: ProjectSetupEvent) => void,
 ): SetupProcess {
   const args = ["project", "setup", target.root, "--preset", "mathlib", "--json"];
+  if (target.repair) args.push("--repair");
   if (target.sourceFile) args.push("--source-file", target.sourceFile);
   const child = spawn(executable, args, {
     stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32",

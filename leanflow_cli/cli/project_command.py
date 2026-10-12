@@ -39,6 +39,11 @@ def register_project_parser(subparsers: Any) -> None:
             child.add_argument("--template-source", default="")
         else:
             child.add_argument("path", nargs="?", default=".")
+        child.add_argument(
+            "--repair",
+            action="store_true",
+            help="Recheck dependencies and rebuild verification tools, bypassing cached readiness",
+        )
         child.add_argument("--name", default="")
         child.add_argument("--preset", choices=("mathlib", "lean"), default="mathlib")
         child.add_argument("--source-file", default="", help="Copy a Lean file into a new project")
@@ -93,6 +98,7 @@ def execute_setup(
             args.path,
             name=args.name or None,
             preset=args.preset,
+            repair=args.repair,
             source_file=args.source_file or None,
             template_source=template or None,
             progress=emit,

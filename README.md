@@ -91,8 +91,11 @@ an actionable error. Elan obtains the project's pinned Lean toolchain as needed.
 New Mathlib projects pin Lean 4.33.1 and matching dependency revisions.
 
 Setup checks the real Lean REPL protocol before reporting **Ready to prove**.
-Unfinished proofs and `sorry`s do not block setup; custom import errors are reported
-separately. Ordinary Lake files receive the missing REPL requirement automatically;
+An unchanged, verified project reuses its setup result without downloads, builds
+or Lean processes. Existing installations receive a small protocol check. Use
+`project setup --repair` to recheck downloads and rebuild verification tools.
+Unfinished proofs and `sorry`s do not block setup; unresolved import locations are
+reported separately without compiling project sources. Ordinary Lake files receive the missing REPL requirement automatically;
 custom executable configurations receive the precise dependency line to add. Setup refuses to change a
 project with an active workflow, and cancellation stops only its owned processes.
 
