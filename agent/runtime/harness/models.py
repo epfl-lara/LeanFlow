@@ -50,3 +50,4 @@ class HarnessResult:
     returncode: int | None = None
     error: str = ""
     diagnostics: tuple[str, ...] = field(default_factory=tuple)
+    model_settings: tuple[dict[str, Any], ...] = field(default_factory=tuple)

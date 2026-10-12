@@ -23,6 +23,9 @@ def child_environment(request: HarnessRequest) -> dict[str, str]:
     if request.backend == "claude" and request.restricted_tools:
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
+    if request.backend in {"codex", "lemex"}:
+        # Only the exec bootstrap diagnostic is needed, not verbose model/tool logs.
+        env["RUST_LOG"] = (env.get("RUST_LOG") or "error") + ",codex_exec=info"
     return env
 
 
@@ -78,6 +81,8 @@ def build_command(
             executable,
             "-p",
             "--output-format",
+            "stream-json",
+            "--input-format",
             "stream-json",
             "--verbose",
             "--permission-mode",

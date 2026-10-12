@@ -31,7 +31,13 @@ The direct auxiliary theorem-advisor tools are removed from tool discovery.
 
 `agent/runtime/harness/` owns typed requests/results, native command construction,
 structured output parsing, cumulative-usage normalization, session resume,
-process-tree cleanup and OS isolation. A complete native process invocation is
+process-tree cleanup and OS isolation. `settings.py` records per-invocation model
+and reasoning metadata from Codex/Lemex startup diagnostics and Claude control/response
+envelopes, keeping requested overrides separate. `metadata.py` owns bounded read-only
+stdio metadata transport (`runtime/provider_protocol.py` preserves its editor imports);
+`model_defaults.py` queries native model/list only for an unreported session effort,
+labelled distinctly as a model default. No metadata query starts a model turn.
+A complete native process invocation is
 one LeanFlow agent call. Internal model requests and compaction remain native.
 `observations.py` projects emitted message/reasoning blocks, plans and native tool
 starts/results into separate `agent-*` observations, never independent acceptance
@@ -373,8 +379,9 @@ does not read or reinterpret LeanFlow's persistence files directly:
   validates ownership and paths, and does not substitute another run's artifacts.
   `proverProgress.ts` and `proverOperations.ts` derive budget, capacity, operation,
   proposal and stop-reason views from the same snapshot. `proverModelSettings.ts`
-  resolves saved role inheritance and job settings without substituting current
-  provider defaults for missing historical model names. `proverCache.ts` and
+  resolves saved role inheritance and per-invocation evidence without substituting
+  current provider defaults for missing historical model names. `ProverModelHistory`
+  displays confirmed values, evidence sources and settings changes across resumes. `proverCache.ts` and
   `proverService.ts` cache exact-run CLI reads with file-stat change detection;
   `idleDiscovery.ts` detects external owners even when no run is selected.
   `profileSurfaces.ts` checks profile compatibility before launch.

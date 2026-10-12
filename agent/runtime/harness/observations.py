@@ -15,6 +15,8 @@ def native_observations(backend: str, event: dict[str, Any]) -> list[Observation
     never decoded or presented as readable text.
     """
     kind = event.get("type")
+    if kind == "harness.settings":
+        return [("agent-settings", {key: value for key, value in event.items() if key != "type"})]
     common = {"backend": backend, "native_event": kind}
     if backend == "claude":
         message = event.get("message")

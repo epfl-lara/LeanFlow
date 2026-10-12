@@ -107,6 +107,26 @@ def test_native_observer_keeps_only_receipt_scalars_and_redacts_secrets(observer
     assert "[REDACTED]" in encoded
 
 
+def test_native_observer_publishes_model_metadata_without_private_config(observer):
+    observer.start({"status": "running"})
+    observer.event(
+        "agent-settings",
+        {
+            "invocation_id": "call-1",
+            "model": "actual-model",
+            "reasoning_effort": "high",
+            "model_source": "native_session",
+            "reasoning_source": "native_session",
+            "configuration": {"API_KEY": "arbitrary-opaque-secret-value"},
+        },
+    )
+    event = _events(observer)[-1]
+    assert event["type"] == "agent-settings"
+    assert event["details"]["model"] == "actual-model"
+    assert event["details"]["reasoning_effort"] == "high"
+    assert "configuration" not in event["details"]
+
+
 @pytest.mark.parametrize(
     "status,code", [("draft_ready", 0), ("completed", 0), ("blocked", 1), ("cancelled", 130)]
 )

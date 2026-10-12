@@ -316,6 +316,7 @@ def run_session(
         "api_calls": calls,
         "agent_calls": calls,
         "session_id": result.session_id or previous.get("session_id", ""),
+        "model_settings": list(result.model_settings),
         "usage_known": result.usage is not None,
         "input_tokens": usage.get("input_tokens"),
         "output_tokens": usage.get("output_tokens"),
@@ -337,6 +338,7 @@ def run_session(
             ),
             "usage": usage,
             "unit": "agent_invocations",
+            "model_settings": list(result.model_settings),
         },
     )
     emit("job-session-end", output)

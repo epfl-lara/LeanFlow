@@ -145,6 +145,27 @@ class NativeObserver:
         with self._lock:
             if not self._started or self._finished:
                 return
+            if kind == "agent-settings":
+                self._activity(
+                    kind,
+                    "Native agent reported model settings",
+                    **{
+                        key: self._text(detail[key])
+                        for key in (
+                            "invocation_id",
+                            "session_id",
+                            "observed_at",
+                            "model",
+                            "model_source",
+                            "reasoning_effort",
+                            "reasoning_source",
+                            "requested_model",
+                            "requested_reasoning_effort",
+                        )
+                        if isinstance(detail.get(key), str)
+                    },
+                )
+                return
             receipt = detail.get("result")
             summary = dict(receipt) if isinstance(receipt, Mapping) else {}
             summary.update(detail)

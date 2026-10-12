@@ -328,15 +328,40 @@ test("live model settings explain native defaults without borrowing today's prov
         jobs: [{ ...state.jobs[0], provider: "lemex", model: "" }],
       }, "run-1");
     });
-    const table = ui.root().findAllByType("table").find(node => /Model selection/.test(textOf(node)));
+    const table = ui.root().findAllByType("table").find(node => /Role \/ agent/.test(textOf(node)));
     assert.ok(table);
-    assert.match(textOf(table), /ProverLemexNative defaultNative default/);
-    assert.match(textOf(table), /Orchestrator, review, and researchClaude CodeNative defaulthigh/);
+    assert.match(textOf(table), /Proverprover-1LemexNot recorded by this run versionRequested: Native defaultRequested: Native default/);
+    assert.match(textOf(table), /Orchestrator, review, and researchClaude CodeNot startedRequested: Native defaultRequested: high/);
     assert.doesNotMatch(textOf(table), /—|fixture-model/);
-    assert.match(textOf(ui.root()), /exact model name was not recorded/);
     assert.match(textOf(ui.root()), /lemex · Native default · model name not recorded/);
-    assert.match(textOf(ui.help("Run model settings")), /not whether an agent has started/);
+    assert.match(textOf(ui.help("Run model settings")), /Older jobs cannot be reconstructed/);
     ui.help("Run model settings", false);
+  } finally { ui.dispose(); }
+});
+
+test("live agents show actual runtime metadata and retain previous calls in model history", () => {
+  const ui = mount("live");
+  try {
+    ui.update(f => {
+      const state = f.proverStates["run-1"].snapshot;
+      f.proverStates["run-1"].snapshot = normalizeProverSnapshot({ ...state,
+        config: { agent_calls: null, provider: "lemex" },
+        jobs: ["codex", "claude", "lemex"].map((backend, index) => ({
+          ...state.jobs[0], id: `job-${index}`, agent_id: `agent-${index}`, provider: backend,
+          model_settings: ["previous", "current"].map((invocation_id, index) => ({
+            invocation_id, backend, model: `${backend}-${invocation_id}`, model_source: "native_session",
+            reasoning_effort: index ? "high" : "low", reasoning_source: "native_settings",
+            requested_model: "alias", observed_at: "2026-10-12T10:00:00Z",
+          })),
+        })),
+      }, "run-1");
+    });
+    const table = ui.root().findAllByType("table").find(node => /Role \/ agent/.test(textOf(node)));
+    for (const backend of ["codex", "claude", "lemex"]) assert.match(textOf(table), new RegExp(`${backend}-currentRuntime sessionhighRuntime settings`));
+    assert.match(textOf(ui.root()), /Model history \(2 agent calls\)/);
+    assert.match(textOf(ui.root()), /lemex-previous/);
+    assert.match(textOf(ui.root()), /Requested: alias/);
+    assert.doesNotMatch(textOf(table), /fixture-model|alias/);
   } finally { ui.dispose(); }
 });
 

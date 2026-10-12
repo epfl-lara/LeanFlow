@@ -5,6 +5,8 @@ import { post } from "../vscodeApi";
 import type { ProverJob, ProverSnapshot } from "../../src/core/prover";
 import { isRunningOperation, operationLabel, operationProgress } from "../../src/core/proverOperations";
 import { jobSettings, jobTimeline, modelSelection, stopUsage } from "../../src/core/proverProgress";
+import { reportedSettings } from "../../src/core/proverModelSettings";
+import { ProverModelHistory, ReportedSetting } from "./ProverModelHistory";
 import { Card } from "../components";
 import { InfoHelp } from "../InfoHelp";
 import { HELP } from "../help";
@@ -24,6 +26,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
     {state.jobs.map((job: ProverJob) => {
       const timeline = jobTimeline(job, now);
       const settings = jobSettings(job, state);
+      const reported = reportedSettings(job);
       const awaiting = state.operations.find((operation) => isRunningOperation(operation) && operation.job_id === job.id);
       const artifacts = job.artifacts.slice(0, MAX_ARTIFACTS);
       return <div className="prover-job" id={`prover-job-${job.id}`} key={job.id} style={job.parent_job_id ? { marginLeft: 12, borderLeft: "2px solid var(--vscode-panel-border)", paddingLeft: 12 } : undefined}>
@@ -35,7 +38,13 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
           {job.finished_at && <> · finished {clock(job.finished_at)}</>}
         </div>
         {awaiting && <div className="muted">Awaiting {operationLabel(awaiting).toLowerCase()}{operationProgress(awaiting) ? ` ${operationProgress(awaiting)}` : ""} inside this job's allocation.</div>}
-        {(settings.model || settings.provider) && <div className="muted">
+        {reported ? <div className="prover-model-report">
+          <div className="row tight"><strong>{reported.backend}</strong><span>Runtime-reported settings</span></div>
+          <div className="table-wrap"><table className="data"><thead><tr><th>Model</th><th>Reasoning effort</th></tr></thead>
+            <tbody><tr><td><ReportedSetting settings={reported} /></td><td><ReportedSetting settings={reported} effort /></td></tr></tbody>
+          </table></div>
+          <div className="muted">Requested: {reported.requested_model || "native model default"} · effort {reported.requested_reasoning_effort || "native default"}</div>
+        </div> : (settings.model || settings.provider) && <div className="muted">
           {settings.provider && <>{settings.provider} · </>}<span className="mono">{modelSelection(settings.model, state.config.native_backend)}</span>
           {state.config.native_backend && !settings.model && <> · model name not recorded</>}
           {(settings.reasoning_effort || state.config.native_backend) && <> · effort {settings.reasoning_effort || "native default"}</>}
@@ -43,6 +52,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
           {!state.config.native_backend && settings.compression !== null && <> · compression {settings.compression ? "on" : "off"}</>}
           {settings.source === "shared" && <> · run-level settings</>}
         </div>}
+        <ProverModelHistory job={job} />
         <AgentActivity runId={state.run_id} jobId={job.id} agentId={job.agent_id} />
         {job.error && <div className="prover-op-error">{job.error}</div>}
         {job.stop_reason && <div className="prover-job-stop">

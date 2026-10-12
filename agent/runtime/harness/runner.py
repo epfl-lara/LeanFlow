@@ -21,10 +21,12 @@ from .context_policy import validate_restricted_native_context
 from .discovery import discover_mcp_servers
 from .events import EventState, usage_delta
 from .isolation import IsolationUnavailable, sandbox_command
+from .model_defaults import reasoning_default
 from .models import BackendError, HarnessRequest, HarnessResult
 from .processes import ProcessTree, cleanup_group
 from .redaction import environment_secrets, redact_native_value
 from .restricted import restricted_isolation
+from .settings import SettingsRecorder, native_input, private_control_response, startup_settings
 
 
 def _stop_reason(request: HarnessRequest) -> str:
@@ -139,6 +141,7 @@ def run_harness(
     if stop:
         return HarnessResult(stop, session_id=request.session_id)
     state = EventState(request.backend, session_id=request.session_id)
+    settings = SettingsRecorder(request, secrets)
     malformed = False
     process: subprocess.Popen[bytes] | None = None
     if request.log_path is not None:
@@ -147,7 +150,7 @@ def run_harness(
         request.log_path.open("a", encoding="utf-8") if request.log_path else nullcontext(None)
     )
     with tempfile.TemporaryFile() as prompt, log_context as log:
-        prompt.write(request.prompt.encode())
+        prompt.write(native_input(request))
         prompt.seek(0)
         if request.on_admitting is not None:
             request.on_admitting()
@@ -170,6 +173,19 @@ def run_harness(
             nonlocal malformed
             decoded = line.decode("utf-8", errors="replace")
             if channel == "stderr":
+                metadata = startup_settings(request.backend, decoded)
+                if metadata is not None:
+                    if not metadata.get("reasoning_effort"):
+                        effort = reasoning_default(
+                            request, executable, environment, policy, metadata["model"]
+                        )
+                        if effort:
+                            metadata.update(
+                                reasoning_effort=effort, reasoning_source="native_model_default"
+                            )
+                    if change := settings.update(metadata):
+                        _record(log, change, on_event, secrets)
+                    return
                 if decoded:
                     _record(log, {"type": "harness.stderr", "text": decoded}, on_event, secrets)
                 return
@@ -185,6 +201,10 @@ def run_harness(
                 _record(log, {"type": "harness.invalid_output", "text": decoded}, on_event, secrets)
                 return
             state.consume(event)
+            if change := settings.consume(event):
+                _record(log, change, on_event, secrets)
+            if private_control_response(event):
+                return
             _record(log, event, on_event, secrets)
 
         cleaned = False
@@ -194,6 +214,8 @@ def run_harness(
         try:
             if request.on_started is not None:
                 request.on_started()
+            if initial := settings.update({}):
+                _record(log, initial, on_event, secrets)
             with selectors.DefaultSelector() as selector:
                 assert process.stdout is not None and process.stderr is not None
                 for channel, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
@@ -270,4 +292,5 @@ def run_harness(
         code,
         state.error,
         tuple(state.diagnostics),
+        tuple(settings.history),
     )

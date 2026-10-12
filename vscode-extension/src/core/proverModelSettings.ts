@@ -1,5 +1,31 @@
 /** Describe saved role selections and job settings without consulting today's provider configuration. */
-import type { ProverJob, ProverSnapshot } from "./prover";
+import type { NativeModelSettings, ProverJob, ProverSnapshot } from "./prover";
+
+/** Read the newest invocation even when it has not reported its settings yet. */
+export function reportedSettings(job: ProverJob): NativeModelSettings | null {
+  return job.model_settings.at(-1) ?? null;
+}
+
+/** Show independently recorded agents; never combine settings from different jobs. */
+export function roleModelReports(snapshot: ProverSnapshot, role: RoleSetting["role"]): ProverJob[] {
+  const roles = role === "prover" ? ["prover", "negation"] : ["orchestrator", "review", "research"];
+  return snapshot.jobs.filter((job) => roles.includes(job.role));
+}
+
+/** Label metadata evidence rather than implying that an override was confirmed. */
+export function modelSettingsSource(source: string): string {
+  return ({ native_session: "Runtime session", native_settings: "Runtime settings", native_response: "Model response", native_model_default: "Runtime model default" } as Record<string, string>)[source] ?? "Not reported";
+}
+
+/** Retain model changes while omitting identity-only duplicates from the display. */
+export function modelSettingsHistory(job: ProverJob): NativeModelSettings[] {
+  return job.model_settings.filter((row, index, all) => {
+    const previous = all[index - 1];
+    return !previous || row.invocation_id !== previous.invocation_id || row.model !== previous.model
+      || row.reasoning_effort !== previous.reasoning_effort || row.model_source !== previous.model_source
+      || row.reasoning_source !== previous.reasoning_source;
+  });
+}
 
 export interface RoleSetting {
   role: "prover" | "orchestrator";

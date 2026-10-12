@@ -255,6 +255,12 @@ def _run_controller(
 
                 def capture(event: dict[str, Any]) -> None:
                     """Persist native session identity before a crash can lose continuation."""
+                    if event.get("type") == "harness.settings":
+                        settings = {key: value for key, value in event.items() if key != "type"}
+                        state.setdefault("model_settings", []).append(settings)
+                        atomic_json_write(state_path, state)
+                        if observer is not None:
+                            observer.event("agent-settings", settings)
                     session = (
                         event.get("session_id")
                         if backend == "claude"

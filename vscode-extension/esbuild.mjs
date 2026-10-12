@@ -81,6 +81,7 @@ if (tests) {
       prover: "src/core/prover.ts",
       proverGraph: "src/core/proverGraph.ts",
       proverProgress: "src/core/proverProgress.ts",
+      proverModelSettings: "src/core/proverModelSettings.ts",
       proverCache: "src/core/proverCache.ts",
       idleDiscovery: "src/core/idleDiscovery.ts",
       profileSurfaces: "src/core/profileSurfaces.ts",

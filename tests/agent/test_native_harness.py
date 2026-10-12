@@ -186,15 +186,30 @@ def test_stream_errors_can_recover(fake_backend):
     assert result.diagnostics == ("reconnecting",)
 
 
-def test_silent_session_has_no_response_timeout(fake_backend, monkeypatch: pytest.MonkeyPatch):
+def test_silent_session_has_no_response_timeout(
+    fake_backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     from agent.runtime.harness import runner
 
-    clock = iter([0.0, 10_000.0, 20_000.0, 30_000.0])
-    monkeypatch.setattr(runner.time, "monotonic", lambda: next(clock, 30_000.0))
+    silent = tmp_path / "silent"
+    observed_jumps = []
+
+    def clock():
+        # Jump while the child is silent, then keep real time for output cleanup.
+        # Call-count clocks can jump across the drain deadline under CPU load.
+        jump = 10_000.0 if silent.exists() else 0.0
+        observed_jumps.append(jump)
+        return time.monotonic() + jump
+
+    monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=clock))
     result = run_harness(
-        fake_backend('import time\ntime.sleep(0.15)\nprint(\'{"type":"turn.completed"}\')')
+        fake_backend(
+            'import time\nfrom pathlib import Path\nPath("silent").touch()\n'
+            'time.sleep(0.15)\nprint(\'{"type":"turn.completed"}\')'
+        )
     )
-    assert result.status == "completed"
+    assert 10_000.0 in observed_jumps
+    assert result.status == "completed", result
 
 
 def test_deadline_and_cancel_before_launch_do_not_charge(fake_backend):

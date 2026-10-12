@@ -1637,6 +1637,8 @@ body.vscode-high-contrast-light {
 .prover-plan-code { font-family: var(--vscode-editor-font-family), monospace; background: var(--vscode-textCodeBlock-background); padding: 1px 10px; white-space: pre-wrap; }
 .prover-plan-break { height: 5px; }
 .prover-job { padding: 12px 0; border-bottom: 1px solid var(--vscode-panel-border); }
+.prover-model-report, .prover-model-history { margin-top: 12px; }
+.prover-model-report .table-wrap { margin: 6px 0; }
 .prover-job:last-child { border-bottom: 0; }
 .prover-job .row { margin-top: 6px; }
 .prover-panels { align-items: start; }

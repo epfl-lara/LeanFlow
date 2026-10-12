@@ -1,7 +1,9 @@
 /** What the controller is doing now: checks, builds, planning stages, capacity, and role settings. */
 import type { ProverSnapshot } from "../../src/core/prover";
-import { jobTimeline, modelSelection, roleSettings, type CapacityView, type ControllerView, type OperationView } from "../../src/core/proverProgress";
+import { jobSettings, jobTimeline, modelSelection, roleSettings, type CapacityView, type ControllerView, type OperationView } from "../../src/core/proverProgress";
 import { BACKEND_LABELS, isBackend } from "../../src/core/providerCredentials";
+import { reportedSettings, roleModelReports } from "../../src/core/proverModelSettings";
+import { ReportedSetting } from "./ProverModelHistory";
 import { Card, Notice, Stat } from "../components";
 import { InfoHelp } from "../InfoHelp";
 import { HELP } from "../help";
@@ -85,25 +87,33 @@ export function ProverController({ state, controller, capacity, now, onJob }: {
       </details>}
     </Notice>}
     <div className="prover-roles">
-      <span className="label">Agents and model selection <InfoHelp label="Run model settings">{HELP.runModels}</InfoHelp></span>
-      <div className="muted">Saved settings for this run. Each agent job below shows its own recorded settings.</div>
+      <span className="label">Agents and models <InfoHelp label="Run model settings">{HELP.reportedModels}</InfoHelp></span>
+      <div className="muted">Reported by each agent’s native runtime. Each job’s model history keeps changes and resumes.</div>
       <div className="table-wrap">
         <table className="data">
-          <thead><tr><th>Role</th><th>Backend</th><th>Model selection</th><th>Reasoning effort</th>{!state.config.native_backend && <><th>Context tokens</th><th>Compression</th><th>Call allowance</th></>}</tr></thead>
-          <tbody>{roles.map((role) => <tr key={role.role}>
-            <td>{role.label}</td>
-            <td>{isBackend(role.provider) ? BACKEND_LABELS[role.provider] : role.provider || "Not recorded"}</td>
-            <td className="mono">{modelSelection(role.model, state.config.native_backend)}</td>
-            <td>{role.reasoning_effort || (state.config.native_backend ? "Native default" : "Not recorded")}</td>
+          <thead><tr><th>Role / agent</th><th>Backend</th><th>Model</th><th>Reasoning effort</th>{!state.config.native_backend && <><th>Context tokens</th><th>Compression</th><th>Call allowance</th></>}</tr></thead>
+          <tbody>{roles.flatMap((role) => {
+            const jobs = roleModelReports(state, role.role);
+            return (jobs.length ? jobs : [null]).map((job) => {
+              const report = job ? reportedSettings(job) : null;
+              const requested = job ? jobSettings(job, state) : role;
+              const provider = report?.backend || job?.provider || role.provider;
+              return <tr key={job?.id || role.role}>
+            <td>{role.label}{job && <div className="mono muted">{job.agent_id}</div>}</td>
+            <td>{isBackend(provider) ? BACKEND_LABELS[provider] : provider || "Not recorded"}</td>
+            <td>{report ? <ReportedSetting settings={report} /> : <>
+              <span>{job ? "Not recorded by this run version" : "Not started"}</span>
+              <div className="muted">Requested: {modelSelection(requested.model, state.config.native_backend)}</div>
+            </>}</td>
+            <td>{report ? <ReportedSetting settings={report} effort /> : <span className="muted">Requested: {requested.reasoning_effort || "Native default"}</span>}</td>
             {!state.config.native_backend && <><td>{metric(role.contextTokens)}</td>
             <td>{role.compression === null ? "—" : role.compression ? "on" : "off"}</td>
             <td>{metric(role.callsPerStage)} <span className="muted">{role.stageLabel}</span></td></>}
-          </tr>)}</tbody>
+          </tr>;
+            });
+          })}</tbody>
         </table>
       </div>
-      {state.config.native_backend && roles.some((role) => !role.model) && <p className="muted">
-        Native default lets the backend choose the model. The exact model name was not recorded for these defaults.
-      </p>}
     </div>
   </Card>;
 }

@@ -284,6 +284,10 @@ def session_event(
         merge_usage(job, details)
         runtime.store.event(kind, {"job_id": job["id"], "node_id": job["node_id"], **details})
         job["updated_at"] = now()
+        if kind == "agent-settings":
+            # Each native process has a distinct ID, including resumes of a job.
+            # Keep earlier observations intact when the runtime changes models.
+            job.setdefault("model_settings", []).append(dict(details))
         if kind == "api-request":
             for field in ("model", "provider", "reasoning_effort"):
                 if isinstance(details.get(field), str) and details[field]:

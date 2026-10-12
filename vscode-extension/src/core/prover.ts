@@ -30,6 +30,19 @@ export interface ProverNode {
   candidate_count: number;
 }
 
+export interface NativeModelSettings {
+  invocation_id: string;
+  backend: string;
+  session_id: string;
+  observed_at: string;
+  requested_model: string;
+  requested_reasoning_effort: string;
+  model: string;
+  reasoning_effort: string;
+  model_source: string;
+  reasoning_source: string;
+}
+
 export interface ProverJob {
   id: string;
   agent_id: string;
@@ -57,6 +70,7 @@ export interface ProverJob {
   provider: string;
   model: string;
   reasoning_effort: string;
+  model_settings: NativeModelSettings[];
   context_tokens: number | null;
   compression: boolean | null;
   node_revision: number | null;
@@ -332,6 +346,20 @@ function normalizeConfig(value: unknown): ProverConfig {
   };
 }
 
+/** Keep invocation telemetry separate from configured overrides in old snapshots. */
+function normalizeModelSettings(value: unknown): NativeModelSettings[] {
+  const sources = new Set(["native_session", "native_settings", "native_response", "native_model_default"]);
+  return records(value).map((row) => ({
+    invocation_id: text(row.invocation_id), backend: text(row.backend), session_id: text(row.session_id),
+    observed_at: text(row.observed_at), requested_model: text(row.requested_model),
+    requested_reasoning_effort: text(row.requested_reasoning_effort),
+    model: sources.has(text(row.model_source)) ? text(row.model) : "",
+    reasoning_effort: sources.has(text(row.reasoning_source)) ? text(row.reasoning_effort) : "",
+    model_source: sources.has(text(row.model_source)) ? text(row.model_source) : "unreported",
+    reasoning_source: sources.has(text(row.reasoning_source)) ? text(row.reasoning_source) : "unreported",
+  })).filter((row) => row.invocation_id);
+}
+
 function normalizeStopReason(value: unknown): ProverStopReason | null {
   const reason = record(value);
   if (Object.keys(reason).length === 0) {
@@ -396,6 +424,7 @@ export function normalizeProverSnapshot(value: unknown, runId: string): ProverSn
       report_path: text(job.report_path), artifacts: strings(job.artifacts),
       started_at: text(job.started_at), updated_at: text(job.updated_at), finished_at: text(job.finished_at),
       provider: text(job.provider), model: text(job.model), reasoning_effort: text(job.reasoning_effort),
+      model_settings: normalizeModelSettings(job.model_settings),
       context_tokens: number(job.context_tokens), compression: flag(job.compression),
       node_revision: number(job.node_revision), error: text(job.error),
       stop_reason: normalizeStopReason(job.stop_reason),

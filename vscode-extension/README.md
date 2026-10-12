@@ -409,8 +409,16 @@ and `leanflow workflow --dry-run --json` — are covered by
 `tests/leanflow/test_flag_catalog.py`, `tests/leanflow/test_runs_command.py`, and
 `tests/leanflow/test_extension_launch_contract.py` in the main repository.
 
-The live **Agents and model selection** table shows the saved backend, model
-selection and reasoning effort for each role. **Native default** means that no
-model override was passed to the native agent. If the run did not record its
-resolved model name, the dashboard says so explicitly; current provider settings
-are never substituted for historical job settings.
+The live **Agents and models** table shows each agent's runtime-reported model
+and reasoning effort. Codex and Lemex report their resolved session settings;
+Claude reports applied settings and response model names. When a Codex-compatible
+session leaves effort unset, the native model catalog's default is labelled
+**Runtime model default**. An absent value stays **Not reported**. These settings
+are separate from requested aliases and overrides; inference services may still
+apply internal routing or adaptive effort that they do not expose.
+
+Each job's **Model history** retains timestamps, backend, evidence sources and
+changes across agent calls, including resumes. Settings are saved as they arrive
+and remain available in past jobs and logs. Existing runs made before this
+recorder cannot be filled from today's provider configuration. Metadata inspection
+never changes sampling, compression, credentials or agent-call accounting.
