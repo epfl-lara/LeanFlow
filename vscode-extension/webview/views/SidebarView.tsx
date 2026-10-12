@@ -137,7 +137,7 @@ export function SidebarView() {
                 </span>
                 <span className="muted">{relativeTime(run.updatedAt)}</span>
               </button>
-              {run.active && run.tracked && <button className="link job-stop" onClick={() => post({ type: "stopRun", id: run.id })}>stop</button>}
+              {run.active && <button className="link job-stop" onClick={() => post({ type: "stopRun", id: run.id })}>stop</button>}
             </section>)}
           </div>
         </div>

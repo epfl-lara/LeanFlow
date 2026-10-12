@@ -1,6 +1,7 @@
 /** Decide whether durable workflow state still advertises a live owner. */
 import * as path from "node:path";
 import { terminalTrackedRunStatus } from "./runStatus";
+import { isActiveLiveStatus } from "./runSelection";
 export { terminalTrackedRunStatus } from "./runStatus";
 
 import type { LiveStatus, RunSummary, TrackedRun, TrackedRunStatus } from "./types";
@@ -22,6 +23,26 @@ export type RestoredRunResolution =
   | { kind: "adopt"; processId: number }
   | { kind: "terminal"; status: TrackedRunStatus }
   | { kind: "abandoned"; error: string };
+
+/** Resolve a stop request from a tracked launch or the project's exact live owner. */
+export function resolveRunStopTarget(
+  runs: Iterable<TrackedRun>,
+  id: string,
+  live: LiveStatus | null,
+  projectRoot: string,
+): { id: string; runId: string; projectRoot: string } | null {
+  for (const run of runs) {
+    if ((run.id === id || run.runId === id) && run.runId && run.projectRoot) {
+      return { id: run.id, runId: run.runId, projectRoot: run.projectRoot };
+    }
+  }
+  // Historical pids are never signal authority. The CLI rechecks this live
+  // owner's token and process identity immediately before sending an interrupt.
+  if (id && projectRoot && live?.run_id === id && isActiveLiveStatus(live)) {
+    return { id, runId: id, projectRoot };
+  }
+  return null;
+}
 
 /** Compare project roots without depending on their display spelling. */
 export function sameProjectRoot(left: string, right: string): boolean {

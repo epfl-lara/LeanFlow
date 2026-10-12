@@ -7,6 +7,25 @@ import { mount, textOf, act, SidebarView, clickedButtons, normalizeProverSnapsho
 
 function message(ui, type) { return ui.messages.filter(row => row.type === type).at(-1); }
 
+test("external live jobs expose Stop in the dashboard and sidebar, but stale history does not", () => {
+  for (const component of [undefined, SidebarView]) {
+    const ui = mount("live", {}, component);
+    try {
+      ui.update(f => {
+        f.app.runs = [];
+        f.app.selectedRunId = "external-live";
+        f.app.liveStatus = {run_id:"external-live",process_id:42,phase:"planning",workflow_kind:"prove"};
+        f.app.history = [{run_id:"external-live",workflow_kind:"prove",updated_at:new Date().toISOString()}];
+      });
+      const label = component ? "stop" : "Stop";
+      ui.click(label);
+      assert.deepEqual(message(ui,"stopRun"),{type:"stopRun",id:"external-live"});
+      ui.update(f => { f.app.liveStatus.stale_snapshot = true; });
+      assert.ok(!ui.buttons().some(node => textOf(node) === label));
+    } finally {ui.dispose();}
+  }
+});
+
 test("storage buttons inspect and collect only through fixed host actions", () => {
   const ui = mount("providers");
   try {

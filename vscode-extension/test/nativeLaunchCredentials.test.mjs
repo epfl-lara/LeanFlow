@@ -20,7 +20,10 @@ const bundle = await build({
       export async function fetchEventTypes() { return []; }
       export async function fetchEvents(root, runId) { (globalThis.launchCredentialFixture.followed ??= []).push(runId); return { events: [], cursor: "", runId }; }
       export async function fetchRunLog() { return ""; }
-      export async function stopWorkflow() { return { stopped: true }; }
+      export async function stopWorkflow(root, runId) {
+        (globalThis.launchCredentialFixture.stopped ??= []).push([root, runId]);
+        return globalThis.launchCredentialFixture.stopOutcome ?? { stopped: true };
+      }
       export function spawnWorkflow(project, argv, env, nativeEnv) {
         globalThis.launchCredentialFixture.spawned.push({ project, argv, env, nativeEnv });
         return { pid: 1234, kill: () => true, onExit: new Promise(() => {}) };
@@ -80,6 +83,38 @@ function observedManager() {
   manager.stopPolling = () => {};
   return {f,manager};
 }
+
+test("Stop controls the exact external live owner without requiring an editor launch", async () => {
+  const {f, manager} = observedManager();
+  try {
+    f.status = {run_id:"external-live",process_id:42,phase:"planning"};
+    await manager.refresh();
+    assert.equal((await manager.stop("external-live")).stopped,true);
+    assert.deepEqual(f.stopped,[["/tmp/isolated-run-discovery","external-live"]]);
+    await manager.stop("external-live");
+    assert.equal(f.stopped.length,1);
+  } finally {manager.dispose();}
+});
+
+test("Stop refuses stale, historical and unrelated external jobs and reports runtime refusals", async () => {
+  const {f, manager} = observedManager();
+  try {
+    f.history = [{run_id:"historical",process_id:42}];
+    f.status = {run_id:"external-live",process_id:42,stale_snapshot:true};
+    await manager.refresh();
+    for (const id of ["historical","external-live","unrelated"]) {
+      assert.equal((await manager.stop(id)).stopped,false);
+    }
+    assert.equal(f.stopped,undefined);
+    f.status = {run_id:"external-live",process_id:42};
+    f.stopOutcome = {stopped:false,reason:"Process identity changed."};
+    await manager.refresh();
+    assert.deepEqual(await manager.stop("external-live"),f.stopOutcome);
+    f.stopOutcome = {stopped:true};
+    assert.equal((await manager.stop("external-live")).stopped,true);
+    assert.equal(f.stopped.length,2);
+  } finally {manager.dispose();}
+});
 
 test("external live jobs are followed by exact id even when a newer worker stream exists",async()=>{
   const {f,manager}=observedManager();

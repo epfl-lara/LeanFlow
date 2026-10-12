@@ -153,8 +153,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.commands.registerCommand("leanflow.stopRun", async (node?: { run?: { id: string } }) => {
-      const id = node?.run?.id ?? services.state().selectedRunId;
+    vscode.commands.registerCommand("leanflow.stopRun", async (node?: { run?: { id: string }; summary?: { run_id: string } }) => {
+      const id = node?.run?.id ?? node?.summary?.run_id ?? services.state().selectedRunId;
       if (!id) {
         void vscode.window.showWarningMessage("No run selected.");
         return;

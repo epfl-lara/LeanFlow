@@ -32,6 +32,7 @@ import {
   durableOwnerDescription,
   researchConflictDescription,
   resolveRestoredRun,
+  resolveRunStopTarget,
   sameProjectRoot,
   terminalTrackedRunStatus,
   trackedOwnerDescription,
@@ -400,7 +401,7 @@ export class RunManager implements vscode.Disposable {
   }
 
   /**
-   * Stop a run, including one adopted after a window reload.
+   * Stop a tracked or externally discovered live run, including after a reload.
    *
    * A restored run has no in-memory handle, so its durable id is sent to the
    * CLI. The runtime revalidates the recorded launch token and process-group
@@ -409,25 +410,24 @@ export class RunManager implements vscode.Disposable {
    */
   async stop(id: string): Promise<{ stopped: boolean; reason: string }> {
     const run = this.runs.get(id);
-    if (!run) {
-      return { stopped: false, reason: "Unknown run." };
+    const target = resolveRunStopTarget(this.runs.values(), id, this.liveStatus, this.project.root);
+    if (!target) {
+      return {
+        stopped: false,
+        reason: run
+          ? "This restored run has no durable run id, so LeanFlow cannot safely identify its process."
+          : "The requested run is not a known launch or the project's live owner.",
+      };
     }
 
-    if (this.stopRequested.has(id)) {
+    if (this.stopRequested.has(target.id)) {
       return { stopped: true, reason: "An interrupt has already been sent." };
     }
 
-    if (!run.runId) {
-      return {
-        stopped: false,
-        reason:
-          "This restored run has no durable run id, so LeanFlow cannot safely identify its process.",
-      };
-    }
     try {
-      const outcome = await stopWorkflow(run.projectRoot, run.runId);
+      const outcome = await stopWorkflow(target.projectRoot, target.runId);
       if (outcome.stopped) {
-        this.stopRequested.add(id);
+        this.stopRequested.add(target.id);
         this.startPolling();
       }
       return outcome;

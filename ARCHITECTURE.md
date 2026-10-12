@@ -237,6 +237,9 @@ Model settings retain evidence sources and call history. Missing historical
 settings are not inferred from current defaults. Contextual help stays inside
 the viewport. CLI retries retain navigation and known settings. Source and job
 artifacts remain bound to the selected run; proposals are never solved states.
+Stop is available for tracked launches and the project's exact externally
+discovered live owner. Historical process ids cannot authorize an interrupt;
+the CLI revalidates the live owner's identity immediately before signalling.
 
 Sweeps freeze a clean Git baseline and profiles, randomize order, and use private
 sequential cell clones. Scoring requires complete exact-run final evidence;

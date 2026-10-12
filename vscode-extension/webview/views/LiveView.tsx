@@ -92,11 +92,13 @@ export function LiveView() {
         </Card>
       )}
 
-      {!run && status && !stale && (
-        <Notice tone="info">
-          Observing <span className="mono">{String(status.run_id || "a run")}</span> started outside this window. It was
-          discovered from the project's live status; Stop is available from the terminal that owns it.
-        </Notice>
+      {!run && choice?.active && status && !stale && (
+        <Card title={choice.label} actions={<>
+          <StatusPill status="running" />
+          <button className="btn secondary" onClick={() => post({ type: "stopRun", id: choice.id })}>Stop</button>
+        </>}>
+          Started outside this window. <span className="mono">{choice.runId}</span>
+        </Card>
       )}
 
       {stale && !proverLoading && !proverSnapshot?.terminal && (

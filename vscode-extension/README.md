@@ -96,9 +96,10 @@ through closing VS Code or disconnecting; **Open terminal** reattaches without
 starting another job. Closing that terminal detaches. Without tmux, a regular
 integrated terminal is used and must remain open. Host shutdown still ends work.
 
-Stopping an extension-owned job goes through `leanflow runs stop RUN_ID`, which
-revalidates process identity. Externally started jobs remain observable and are
-controlled from their owning terminal. Incomplete history is marked unknown.
+Every live job exposes **Stop** in the dashboard, sidebar, and Runs tree,
+including jobs started from a terminal. Stopping goes through
+`leanflow runs stop RUN_ID`, which revalidates the exact run's process identity
+before signalling. Incomplete history is marked unknown.
 
 The proof workspace shows the theorem graph or tree, statements, dependencies,
 plan, jobs, usage, controller checks, stop reasons, and recorded source changes.

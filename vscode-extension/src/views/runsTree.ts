@@ -27,7 +27,7 @@ export class RunsTreeProvider implements vscode.TreeDataProvider<Node> {
     item.iconPath = new vscode.ThemeIcon(choice.active ? "loading~spin" : choice.status === "failed" ? "error" : "history");
     item.description = choice.status;
     item.tooltip = [choice.label, `Status: ${choice.status}`, `Run id: ${choice.runId}`, choice.tracked?.launchNotice, choice.tracked?.error].filter(Boolean).join("\n");
-    item.contextValue = choice.active && choice.tracked ? "leanflow.run.active" : "leanflow.run.recorded";
+    item.contextValue = choice.active ? "leanflow.run.active" : "leanflow.run.recorded";
     item.command = { command: "leanflow.selectRun", title: "Open job", arguments: [choice.id] };
     return item;
   }
