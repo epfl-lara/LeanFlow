@@ -9,6 +9,7 @@ from typing import Any
 from core.deadlines import remaining_seconds
 from core.utils import atomic_json_write
 from leanflow_cli.workflows.prover import check_process
+from leanflow_cli.workflows.prover.session_build import build_session_imports
 from leanflow_cli.workflows.prover.session_tools import SessionTools
 
 
@@ -17,7 +18,7 @@ def check_session_setup(
     runtime_dir: Path,
     emit: Callable[[str, dict[str, Any]], None],
 ) -> dict[str, Any]:
-    """Check the real worker sandbox, retain diagnostics, and leave a successful REPL warm."""
+    """Check the real sandbox, retain diagnostics, and keep the checker worker ready."""
     scratch_file = toolset.workspace / "Scratch.lean"
     details = {
         "project_root": str(toolset.project_root),
@@ -25,16 +26,27 @@ def check_session_setup(
         "checker": "LeanProbe",
     }
     emit("job-setup-start", details)
-    result = check_process.preflight_check(
+    source_file = scratch_file if scratch_file.is_file() else None
+    prerequisites = build_session_imports(
         project_root=toolset.project_root,
         workspace=toolset.workspace,
-        source_file=scratch_file if scratch_file.is_file() else None,
-        timeout_s=remaining_seconds(toolset.deadline),
+        source_file=source_file,
+        deadline=toolset.deadline,
         cancelled=toolset.cancelled,
     )
+    result = prerequisites
+    if prerequisites.get("success") is True:
+        result = check_process.preflight_check(
+            project_root=toolset.project_root,
+            workspace=toolset.workspace,
+            source_file=source_file,
+            timeout_s=remaining_seconds(toolset.deadline),
+            cancelled=toolset.cancelled,
+        )
     evidence = {
         **result,
         **details,
+        "prerequisite_build": prerequisites,
         "accepted": result.get("success") is True and result.get("ok") is True,
     }
     atomic_json_write(runtime_dir / "lean-setup.json", evidence)

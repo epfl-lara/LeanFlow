@@ -109,6 +109,51 @@ def test_setup_requires_lean_acceptance_and_preserves_stop_outcomes(
     assert result["agent_calls"] == 0
 
 
+@pytest.mark.parametrize(
+    "build_result,status",
+    [
+        (
+            {"success": False, "returncode": 1, "stderr": "local module is invalid"},
+            "environment_error",
+        ),
+        ({"success": False, "error_code": "check_cancelled"}, "interrupted"),
+        ({"success": False, "timed_out": True}, "timeout"),
+    ],
+)
+def test_local_prerequisite_failure_stops_before_leanprobe_and_model_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    build_result: dict[str, Any],
+    status: str,
+) -> None:
+    project(tmp_path)
+    workspace = tmp_path / "jobs/prover"
+    workspace.mkdir(parents=True)
+    (workspace / "Scratch.lean").write_text("import Main\ntheorem target : True := by sorry\n")
+    monkeypatch.setattr(check_process, "isolated_command", lambda **_: build_result)
+    monkeypatch.setattr(
+        check_process, "preflight_check", lambda **_: pytest.fail("LeanProbe launch")
+    )
+    monkeypatch.setattr(
+        "agent.runtime.harness.run_harness", lambda *a, **k: pytest.fail("model launch")
+    )
+    result = run_session(
+        role="prover",
+        prompt="prove",
+        project_root=tmp_path,
+        workspace=workspace,
+        config={"provider": "codex"},
+        api_budget=1,
+        log_path=workspace / "events.jsonl",
+        context={},
+    )
+    assert result["status"] == status
+    assert result["agent_calls"] == result["api_calls"] == 0
+    evidence = json.loads((workspace.parent / ".runtime/prover/lean-setup.json").read_text())
+    assert evidence["accepted"] is False
+    assert evidence["prerequisite_build"]["modules"] == ["Main"]
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(
     not os.environ.get("LEANFLOW_TEST_LEAN_PROJECT"), reason="Requires a prebuilt Lean project"
@@ -120,10 +165,11 @@ def test_real_private_workspace_setup_and_warm_leanprobe(
     # Cloning a fresh Mathlib cache exceeds the suite's 30-second unit-test limit.
     signal.alarm(300)
     canonical = Path(os.environ["LEANFLOW_TEST_LEAN_PROJECT"]).resolve()
+    local_import = os.environ.get("LEANFLOW_TEST_LEAN_IMPORT", "")
     workspace = tmp_path / "jobs/prover_00001"
     workspace.mkdir(parents=True)
     (workspace / "Scratch.lean").write_text(
-        "import Mathlib.Data.List.Basic\n"
+        (f"import {local_import}\n" if local_import else "") + "import Mathlib.Data.List.Basic\n"
         "theorem privateProbe (xs : List Nat) : xs ++ [] = xs := by simp\n"
     )
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
@@ -137,6 +183,13 @@ def test_real_private_workspace_setup_and_warm_leanprobe(
         )
         assert evidence["accepted"] is True, evidence
         assert evidence["cold_start"] is True
+        if local_import:
+            assert local_import in evidence["prerequisite_build"]["modules"]
+            assert (
+                request.cwd
+                / ".lake/build/lib/lean"
+                / Path(*local_import.split(".")).with_suffix(".olean")
+            ).is_file()
         private_repl = request.cwd / ".lake/packages/repl"
         assert (private_repl / ".git").is_dir()
         assert (private_repl / ".lake/build/bin/repl").is_file()

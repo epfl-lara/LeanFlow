@@ -78,9 +78,12 @@ canonical source remain outside agent write authority. This boundary is separate
 from the optional [whole-workflow container sandbox](sandbox-runtime.md).
 
 Each prover and negation session checks LeanProbe again after creating or restoring
-its private project. This check uses the same sandbox and warm worker as the job's
-`lean_check` tool and loads the assigned scratch imports without requiring finished
-proofs. Failed setup stops before model admission and consumes no new agent call.
+its private project. Local modules imported by the assignment are first rebuilt
+from the private sources, with output confined to the private build cache.
+Canonical build artifacts are excluded from these workspaces. This check uses the
+same sandbox and worker as the job's `lean_check` tool and loads the assigned
+scratch imports without requiring finished proofs. Failed setup stops before
+model admission and consumes no new agent call.
 Cancellation and global deadlines retain their interrupted or timeout outcomes.
 Job activity records setup start and result; full diagnostics are retained in
 `jobs/.runtime/<job-id>/lean-setup.json`. A successful check keeps the worker warm.

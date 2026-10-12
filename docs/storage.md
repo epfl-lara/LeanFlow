@@ -18,6 +18,8 @@ artifacts. Lake uses the recorded package URLs and revisions to recognize existi
 installations; dropping this metadata would trigger package replacement. Native
 views still exclude private agent settings and controller files. Both fresh and
 restored prover workspaces pass a sandboxed LeanProbe check before model launch.
+The project's own compiled modules are rebuilt from private sources when required
+by an assignment; canonical proof artifacts are excluded from agent snapshots.
 
 Compatibility includes the exact Lean compiler/toolchain, platform, architecture,
 locked dependency revisions and build settings. TOML package names and the root

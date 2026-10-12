@@ -70,7 +70,10 @@ starting a model; `doctor` reports this separately from runtime installation.
 `workflows/prover/session_setup.py` checks LeanProbe and the assigned imports in
 each actual private prover/negation workspace before native model admission. It
 uses the job's `check_process.py` sandbox and retains accepted warm workers plus
-run-bound setup diagnostics. Dependency snapshots preserve private Git metadata
+run-bound setup diagnostics. `workflows/prover/session_build.py` rebuilds local
+assignment imports from filtered private sources, granting writes only to private
+build artifacts while canonical sources and dependencies remain read-only.
+Dependency snapshots preserve private Git metadata
 for Lake while applying source filtering independently of metadata retention.
 `runtime/mcp_protocol.py` guards the MCP v1 API required by managed Lean servers
 and job bridges; installers constrain dependencies and probe existing environments.
