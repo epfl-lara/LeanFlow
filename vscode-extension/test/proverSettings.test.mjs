@@ -18,6 +18,12 @@ const bundle = await build({
   plugins: [{
     name: "isolated-launch-store",
     setup(builder) {
+      // This control-only walker invokes stateless components directly. Help
+      // interactions are exercised below through the real React fixture.
+      builder.onLoad({ filter: /webview\/InfoHelp\.tsx$/ }, () => ({ contents: `
+        import { jsx } from 'react/jsx-runtime';
+        export const InfoHelp = ({label,children}) => jsx('details', {children:[jsx('summary', {'aria-label':'About '+label}),children]});
+      ` }));
       builder.onLoad({ filter: /webview\/store\.tsx$/ }, () => ({
         contents: "let fixture; export const setFixture = value => fixture = value; export const useStore = () => fixture;",
       }));
@@ -390,10 +396,12 @@ test("mode changes hide the appropriate panels and preserve all research choices
     assert.equal(help.props["aria-label"], "About Research and Standard modes");
     assert.equal(help.parent.type, "details");
     assert.equal(help.parent.props.open, undefined);
+    ui.help("Research and Standard modes");
     assert.match(textOf(help.parent), /parallel provers/);
     assert.match(textOf(help.parent), /one prover at a time/);
     // Native summary semantics provide click, Enter, and Space toggling without a hover-only handler.
     assert.equal(help.props.tabIndex, undefined);
+    ui.help("Research and Standard modes", false);
     ui.change(ui.input(prefix + "MODE"), "standard");
     assert.equal(panels().length, 0);
     assert.equal(ui.root().findAll(node => node.props["aria-label"] === prefix + "PARALLELISM").length, 0);
@@ -443,8 +451,11 @@ test("unfamiliar launch terms have accessible help outside the input labels", ()
       assert.equal(summary.parent.type, "details");
       assert.equal(summary.parent.props.open, undefined);
       for (let ancestor = summary.parent; ancestor; ancestor = ancestor.parent) assert.notEqual(ancestor.type, "label");
+      ui.help(term);
       assert.ok(textOf(summary.parent).length > 30);
+      ui.help(term, false);
     }
+    ui.help("Agent calls");
     const calls = textOf(ui.root().findByProps({"aria-label":"About Agent calls"}).parent);
     for (const command of ["codex exec", "claude -p", "lemex exec"]) assert.ok(calls.includes(command));
     assert.match(calls, /many model requests/);

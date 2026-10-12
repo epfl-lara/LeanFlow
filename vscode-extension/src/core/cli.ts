@@ -49,6 +49,7 @@ export class CliError extends Error {
     readonly stderr: string = "",
     readonly exitCode: number | null = null,
     readonly stdout: string = "",
+    readonly kind: NonNullable<CliStatus["issue"]> = "failed",
   ) {
     super(message);
     this.name = "CliError";
@@ -85,12 +86,20 @@ export async function runCli(
       stderr?: string;
       stdout?: string;
       code?: number | string;
+      killed?: boolean;
+      signal?: string;
     };
     if (err.code === "ENOENT") {
       throw new CliError(
         `LeanFlow CLI was not found at "${bin}". Install LeanFlow, then reload this ` +
-          `window, or set LeanFlow: CLI Path to the executable in Settings.`,
+          `window, or set LeanFlow: CLI Path to the executable in Settings.`, "", null, "", "missing",
       );
+    }
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      throw new CliError(`LeanFlow cannot execute "${bin}". Check the executable's permissions or choose another CLI path.`, "", null, "", "permission");
+    }
+    if (err.killed && err.signal) {
+      throw new CliError(`LeanFlow did not answer the ${args[0] || "CLI"} check within ${(options.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000} seconds. This does not stop an existing job.`, "", null, "", "timeout");
     }
     const stderr = (err.stderr ?? "").toString().trim();
     const stdout = (err.stdout ?? "").toString().trim();
@@ -135,6 +144,7 @@ export async function checkCli(): Promise<CliStatus> {
       path,
       version: "",
       error: error instanceof Error ? error.message : String(error),
+      issue: error instanceof CliError ? error.kind : "failed",
     };
   }
 }

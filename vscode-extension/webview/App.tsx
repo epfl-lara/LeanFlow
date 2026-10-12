@@ -138,7 +138,9 @@ export function App() {
         {app?.cli.ok ? (
           <span className="tag">{app.cli.version}</span>
         ) : (
-          <Pill tone="bad">CLI unavailable</Pill>
+          <Pill tone={app?.cli.health === "retrying" || app?.cli.health === "checking" ? "warn" : "bad"}>
+            {app?.cli.health === "retrying" ? "CLI retrying" : app?.cli.health === "checking" ? "Checking CLI" : "CLI unavailable"}
+          </Pill>
         )}
         <button className="btn ghost" onClick={() => post({ type: "refresh" })} title="Refresh">
           <RefreshIcon size={13} />

@@ -638,12 +638,11 @@ button:focus-visible {
 }
 
 .info-help-body {
-  position: absolute;
-  top: 24px;
-  right: 0;
-  z-index: 8;
-  width: min(320px, 70vw);
-  max-height: 50vh;
+  position: fixed;
+  z-index: 1000;
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
   overflow: auto;
   padding: 12px;
   border: 1px solid var(--lf-border);
@@ -657,12 +656,6 @@ button:focus-visible {
   text-align: left;
   text-transform: none;
   letter-spacing: normal;
-}
-
-.card-title > .info-help .info-help-body,
-.prover-role-heading > .info-help .info-help-body {
-  left: 0;
-  right: auto;
 }
 
 .stat > .k {

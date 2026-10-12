@@ -12,6 +12,7 @@ import { useStore } from "../store";
 import { ProjectSetupCard } from "./ProjectSetupCard";
 import { projectSetupBlocksLaunch } from "../../src/core/projectSetupTypes";
 import { post } from "../vscodeApi";
+import { CliNotice } from "../CliNotice";
 
 export function SidebarView() {
   const { app, view, setForm } = useStore();
@@ -21,35 +22,11 @@ export function SidebarView() {
     return <div className="sidebar muted">Loading…</div>;
   }
 
-  if (!app.cli.ok) {
-    return (
-      <div className="sidebar">
-        <Notice tone="error">
-          <strong>LeanFlow CLI setup is required</strong>
-          <div style={{ marginTop: 4 }}>{app.cli.error}</div>
-          <div className="row tight" style={{ marginTop: 8 }}>
-            <button
-              className="btn"
-              onClick={() => post({ type: "openExternalDoc", topic: "install" })}
-            >
-              Install guide
-            </button>
-            <button
-              className="btn ghost"
-              onClick={() => post({ type: "openCliSettings" })}
-            >
-              CLI path
-            </button>
-          </div>
-        </Notice>
-      </div>
-    );
-  }
-
   if (!app.project.found) {
     return (
       <div className="sidebar">
-        <ProjectSetupCard sidebar />
+        <CliNotice cli={app.cli} compact />
+        {app.cli.ok && <ProjectSetupCard sidebar />}
       </div>
     );
   }
@@ -75,9 +52,10 @@ export function SidebarView() {
         </button>
       </div>
 
-      <ProjectSetupCard sidebar />
+      <CliNotice cli={app.cli} compact />
+      {app.cli.ok && <ProjectSetupCard sidebar />}
       {app.runDiscoveryError && <Notice tone="warn">{app.runDiscoveryError}</Notice>}
-      <section className="card" style={{ margin: 0 }}>
+      {app.cli.ok && <section className="card" style={{ margin: 0 }}>
         <div className="card-title">Quick launch</div>
         <label className="field" style={{ marginBottom: 8 }}>
           <span className="label">Target</span>
@@ -118,7 +96,7 @@ export function SidebarView() {
             Dashboard
           </button>
         </div>
-      </section>
+      </section>}
 
       {status && active.length > 0 && (
         <section className="card" style={{ margin: 0 }}>

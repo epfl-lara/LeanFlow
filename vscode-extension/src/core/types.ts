@@ -748,6 +748,8 @@ export interface CliStatus {
   path: string;
   version: string;
   error: string;
+  health?: "checking" | "ready" | "retrying" | "unavailable";
+  issue?: "missing" | "permission" | "timeout" | "failed";
 }
 
 export interface ProjectInfo {

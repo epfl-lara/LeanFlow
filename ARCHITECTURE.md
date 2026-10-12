@@ -301,6 +301,10 @@ does not read or reinterpret LeanFlow's persistence files directly:
   workflow launch boundary. The host passes only catalogued
   `LEANFLOW_*` overrides and a minted run id. Native credentials are injected
   separately immediately before spawn, never included in persisted overrides.
+- `src/core/cliHealth.ts` distinguishes installation failures from temporary CLI
+  failures, coalesces checks and retries with bounded backoff. `services.ts`
+  serializes full refreshes and retains catalogs and readiness during transient
+  failures; `webview/CliNotice.tsx` keeps job navigation available while reconnecting.
 - `src/core/providerCredentials.ts` stores explicit native keys and the Lemex
   endpoint in VS Code SecretStorage, scoped by extension host authority; a missing
   override preserves the native environment and login. `providerSetup.ts` owns
@@ -360,7 +364,8 @@ does not read or reinterpret LeanFlow's persistence files directly:
   effort selectors. `GlobalLimits.tsx` keeps global calls, reported tokens, and
   active time visible above role settings, converts entered minutes to seconds,
   and preserves explicit unbounded overrides and profile restoration.
-  `webview/InfoHelp.tsx` supplies accessible native disclosure controls; `help.ts`
+  `webview/InfoHelp.tsx` supplies accessible disclosure controls with help rendered
+  outside scrolling panels; `helpPosition.ts` clamps it to the viewport. `help.ts`
   shares term definitions across launch and live views. `src/core/limitDisplay.ts`
   identifies optional limits for consistent ∞ displays, preserving zero and unknown
   usage. Agent-call counters count native processes; activity events remain distinct.

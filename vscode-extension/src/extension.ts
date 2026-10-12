@@ -50,9 +50,10 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     if (!state.cli.ok) {
-      statusBar.text = "$(warning) LeanFlow: CLI setup needed";
+      const transient = state.cli.health === "retrying" || state.cli.health === "checking";
+      statusBar.text = transient ? "$(sync~spin) LeanFlow: reconnecting" : "$(warning) LeanFlow: CLI setup needed";
       statusBar.tooltip =
-        `${redactSensitiveText(state.cli.error)}\nOpen the dashboard for setup guidance.`;
+        `${redactSensitiveText(state.cli.error)}\n${transient ? "Checking automatically. Open the dashboard for jobs and logs." : "Open the dashboard for setup guidance."}`;
       statusBar.show();
       return;
     }

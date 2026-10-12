@@ -20,6 +20,7 @@ import { PlayIcon } from "../icons";
 import { HELP } from "../help";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
+import { CliNotice } from "../CliNotice";
 import { GlobalLimits } from "./GlobalLimits";
 import { NativeModelControl } from "./NativeModelControls";
 import { ProjectSetupCard } from "./ProjectSetupCard";
@@ -99,30 +100,8 @@ export function LaunchView() {
 
   return (
     <div className="launch-view">
-      {!app?.cli.ok && (
-        <Notice tone="error">
-          <strong>LeanFlow CLI setup is required.</strong>
-          <div style={{ marginTop: 4 }}>{app?.cli.error}</div>
-          <div className="row tight" style={{ marginTop: 8 }}>
-            <button
-              className="btn"
-              onClick={() => post({ type: "openExternalDoc", topic: "install" })}
-            >
-              Open install guide
-            </button>
-            <button
-              className="btn ghost"
-              onClick={() => post({ type: "openCliSettings" })}
-            >
-              Configure CLI path
-            </button>
-            <button className="btn ghost" onClick={() => post({ type: "refresh" })}>
-              Check again
-            </button>
-          </div>
-        </Notice>
-      )}
-      <ProjectSetupCard />
+      <CliNotice cli={app?.cli} />
+      {app?.cli.ok && <ProjectSetupCard />}
 
       <Card
         title="Workflow"

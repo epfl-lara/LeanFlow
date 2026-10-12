@@ -11,8 +11,12 @@ const output = path.resolve("dist/test/webviewFixture.mjs");
 const bundle = await build({
   stdin: { contents: `export { App } from './webview/App'; export { SidebarView } from './webview/views/SidebarView'; export { emptyLaunchRequest } from './src/core/types'; export { normalizeProverSnapshot } from './src/core/prover'; export { parseWebviewMessage } from './src/panels/messageSchema';`, resolveDir: process.cwd(), loader: "tsx" },
   bundle: true, write: false, format: "esm", platform: "node", jsx: "automatic", jsxDev: true,
-  external: ["react"],
+  external: ["react", "react-dom"],
   plugins: [{ name: "inert-webview-host", setup(builder) {
+    builder.onResolve({ filter: /^react-dom$/ }, () => ({ path: "react-dom", namespace: "portal-fixture" }));
+    // React's test renderer has no DOM. Preserve portal children in its logical
+    // tree; the real browser audit checks the detached DOM placement.
+    builder.onLoad({ filter: /.*/, namespace: "portal-fixture" }, () => ({ contents: "export const createPortal = children => children;" }));
     builder.onLoad({ filter: /webview\/store\.tsx$/ }, () => ({ contents: `
       export const useStore = () => globalThis.webviewFixture;
       export const useSelectedRun = () => globalThis.webviewFixture.app.runs.find(run => run.id === globalThis.webviewFixture.app.selectedRunId) ?? null;
@@ -39,8 +43,10 @@ export function textOf(node) {
 export function mount(tab = "launch", patch = {}, component = App) {
   const listener = new EventTarget();
   globalThis.window = listener;
+  listener.innerWidth = 800;
+  listener.innerHeight = 600;
   const effects = [];
-  const node = { clientWidth: 800, scrollHeight: 900, scrollTop: 0, scrollTo: (...args) => effects.push(["scroll", ...args]), scrollIntoView: () => effects.push(["focus"]) };
+  const node = { style: {}, getBoundingClientRect: () => ({ left: 30, top: 40, bottom: 60, height: 120 }), contains: () => false, querySelector: () => ({ focus() {} }), clientWidth: 800, scrollHeight: 900, scrollTop: 0, scrollTo: (...args) => effects.push(["scroll", ...args]), scrollIntoView: () => effects.push(["focus"]) };
   globalThis.document = { getElementById: () => node };
   globalThis.ResizeObserver = class { observe() {} disconnect() {} };
   const now = new Date().toISOString();
@@ -113,6 +119,11 @@ export function mount(tab = "launch", patch = {}, component = App) {
     act(() => button.props.onClick());
   };
   fixture.change = (element, value) => act(() => element.props.onChange({ target: { value, checked: Boolean(value) } }));
+  fixture.help = (label, open = true) => {
+    const summary = fixture.root().findByProps({ "aria-label": `About ${label}` });
+    act(() => summary.parent.props.onToggle({ currentTarget: { open } }));
+    return summary.parent;
+  };
   fixture.input = (placeholder) => renderer.root.find(node => node.props.placeholder === placeholder || node.props["aria-label"] === placeholder);
   fixture.update = (fn) => act(() => { fn(fixture); fixture.refresh(); });
   fixture.dispose = () => act(() => renderer.unmount());

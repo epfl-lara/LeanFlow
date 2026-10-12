@@ -234,6 +234,10 @@ before the run ends is therefore not reported as changed.
 
 If the CLI is missing, the sidebar and Launch view show the failing path and
 offer direct actions for the install guide, CLI setting, and a fresh check.
+Temporary failures retry automatically after 5, 15, then 30 seconds. They keep
+known project settings and job navigation available instead of asking for a new
+installation. Concurrent refresh requests are serialized. Contextual help stays
+inside the viewport and closes with Escape, an outside click, or panel scrolling.
 Install LeanFlow, set the path if necessary, then reload the window.
 
 ## Settings

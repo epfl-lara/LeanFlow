@@ -7,7 +7,8 @@
  */
 import * as vscode from "vscode";
 
-import { checkCli, fetchFlagCatalog, fetchProfiles } from "./cli";
+import { checkCli, cliPath, fetchFlagCatalog, fetchProfiles } from "./cli";
+import { CliHealth } from "./cliHealth";
 import { ExperimentEngine } from "./experiments";
 import {
   discoverProject,
@@ -30,7 +31,7 @@ import type { AppState, CliStatus, FlagCatalog, ProfileCatalog, ProjectInfo } fr
 
 export class LeanFlowServices implements vscode.Disposable {
   project: ProjectInfo = NO_PROJECT;
-  cli: CliStatus = { ok: false, path: "leanflow", version: "", error: "not checked yet" };
+  get cli(): CliStatus { return this.cliHealth.state; }
   catalog: FlagCatalog | null = null;
   profiles: ProfileCatalog | null = null;
   leanFiles: string[] = [];
@@ -48,6 +49,10 @@ export class LeanFlowServices implements vscode.Disposable {
 
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changed.event;
+  private readonly cliHealth = new CliHealth(checkCli, () => this.changed.fire(), () => void this.reload());
+  private reloading: Promise<void> | undefined;
+  private reloadAgain = false;
+  private disposed = false;
 
   private readonly disposables: vscode.Disposable[] = [];
   private preparedProjectRoot = "";
@@ -69,6 +74,7 @@ export class LeanFlowServices implements vscode.Disposable {
     this.experiments = new ExperimentEngine(context, this.runs, () => this.profiles, () => this.catalog);
 
     this.disposables.push(
+      this.cliHealth,
       this.setup,
       this.setup.onDidChange(() => this.changed.fire()),
       this.providers,
@@ -91,6 +97,7 @@ export class LeanFlowServices implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.disposed = true;
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -150,7 +157,7 @@ export class LeanFlowServices implements vscode.Disposable {
   private async rediscoverProject(): Promise<void> {
     const next = await discoverProjectIncludingNested(this.preparedProjectRoot);
     if (next.root === this.project.root) {
-      await this.setup.refresh(this.cli.ok);
+      if (this.cli.ok || this.cli.health === "unavailable") await this.setup.refresh(this.cli.ok);
       return;
     }
     this.selectedRunId = null;
@@ -160,7 +167,24 @@ export class LeanFlowServices implements vscode.Disposable {
   }
 
   /** Re-read everything that can change outside a run: CLI, catalog, files. */
-  async reload(): Promise<void> {
+  reload(): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    if (this.reloading) {
+      this.reloadAgain = true;
+      return this.reloading;
+    }
+    this.reloading = this.reloadState().finally(() => {
+      this.reloading = undefined;
+      if (this.reloadAgain && !this.disposed) {
+        this.reloadAgain = false;
+        void this.reload();
+      }
+    });
+    return this.reloading;
+  }
+
+  /** Refresh one snapshot at a time so concurrent UI requests cannot race. */
+  private async reloadState(): Promise<void> {
     this.busy = true;
     this.changed.fire();
     // An explicit refresh must re-read prover state even if its file signature
@@ -175,19 +199,20 @@ export class LeanFlowServices implements vscode.Disposable {
         this.project.found,
       );
 
-      this.cli = await checkCli();
-      await this.setup.refresh(this.cli.ok);
+      const previousPath = this.cli.path;
+      await this.cliHealth.check(cliPath());
+      if (this.cli.ok || this.cli.health === "unavailable") await this.setup.refresh(this.cli.ok);
       void this.providers.refresh();
       if (this.cli.ok) {
         void this.storage.refresh();
         const cwd = this.project.found ? this.project.root : undefined;
         const [catalog, profiles] = await Promise.all([
-          fetchFlagCatalog(cwd).catch(() => null),
-          fetchProfiles(cwd).catch(() => null),
+          fetchFlagCatalog(cwd).catch(() => previousPath === this.cli.path ? this.catalog : null),
+          fetchProfiles(cwd).catch(() => previousPath === this.cli.path ? this.profiles : null),
         ]);
         this.catalog = catalog;
         this.profiles = profiles;
-      } else {
+      } else if (this.cli.health === "unavailable" || previousPath !== this.cli.path) {
         // Do not leave stale controls visible after a configured CLI moves or
         // becomes unavailable. The UI can now show setup guidance honestly.
         this.catalog = null;

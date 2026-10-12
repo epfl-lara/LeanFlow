@@ -410,8 +410,23 @@ test("job menus and clickable sidebar cards navigate exact live and past jobs", 
   } finally { sidebar.dispose(); }
 });
 
+test("transient CLI failures retain job navigation and offer retry without installation advice", () => {
+  const ui = mount("launch",{},SidebarView);
+  try {
+    ui.update(f => { f.app.cli = { ok:false, health:"retrying", issue:"timeout", error:"Version check timed out" }; });
+    assert.match(textOf(ui.root()), /connection interrupted/);
+    assert.doesNotMatch(textOf(ui.root()), /setup is required|Install guide/);
+    ui.click("Check again"); assert.ok(message(ui,"refresh"));
+    ui.click(ui.buttons().find(button=>button.props.className === "job-card-open"));
+    assert.equal(message(ui,"openRun").id,"tracked-1");
+    ui.update(f => { f.app.cli = { ok:true, health:"ready", version:"0.3.0" }; });
+    assert.doesNotMatch(textOf(ui.root()), /connection interrupted/);
+    assert.ok(ui.button("Prove"));
+  } finally { ui.dispose(); }
+});
+
 after(() => {
-  const files = ["webview/App.tsx", ...readdirSync("webview/views").filter(name => name.endsWith(".tsx")).map(name => `webview/views/${name}`)];
+  const files = ["webview/App.tsx", "webview/CliNotice.tsx", ...readdirSync("webview/views").filter(name => name.endsWith(".tsx")).map(name => `webview/views/${name}`)];
   const buttons = [];
   for (const file of files) {
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
