@@ -75,6 +75,8 @@ def run_harness(
         return HarnessResult(
             "startup_error", error=f"Native backend executable is unavailable: {command[0]}"
         )
+    # Linux mounts the granted target file; a PATH symlink may live outside it.
+    executable = str(Path(executable).resolve())
     command[0] = executable
     if request.isolation is None:
         raise BackendError("A native harness requires an explicit isolated workspace policy.")

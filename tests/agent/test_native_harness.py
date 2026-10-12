@@ -162,6 +162,48 @@ for event in [{'type':'thread.started','thread_id':'thread-1'},
     )
 
 
+def test_native_executable_symlink_works_with_real_isolation(tmp_path: Path, kernel_sandbox):
+    """Launch a symlinked CLI without granting its unrelated PATH directory."""
+    from agent.runtime.harness import build_runtime_isolation
+
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    executable = tmp_path / "native-cli"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        "if sys.argv[1:3] == ['mcp', 'list']:\n"
+        "    print('[]')\n"
+        "    sys.exit(0)\n"
+        "assert sys.stdin.read() == 'a complete task'\n"
+        "print(json.dumps({'type':'thread.started','thread_id':'symlink-session'}))\n"
+        "print(json.dumps({'type':'item.completed','item':"
+        "{'type':'agent_message','text':'isolated invocation'}}))\n"
+        "print(json.dumps({'type':'turn.completed','usage':"
+        "{'input_tokens':1,'output_tokens':1}}))\n"
+    )
+    executable.chmod(0o700)
+    aliases = tmp_path / "bin"
+    aliases.mkdir()
+    alias = aliases / "codex"
+    alias.symlink_to(executable)
+    env = {"HOME": str(tmp_path / "home"), "CODEX_HOME": str(tmp_path / "native-home")}
+    request = HarnessRequest(
+        "codex",
+        "a complete task",
+        snapshot,
+        env=env,
+        executable=str(alias),
+        isolation=build_runtime_isolation("codex", snapshot, env=env),
+    )
+    starts = []
+    result = run_harness(replace(request, on_started=lambda: starts.append(True)))
+    assert result.status == "completed", result
+    assert result.session_id == "symlink-session"
+    assert result.final_response == "isolated invocation"
+    assert starts == [True]
+
+
 @pytest.mark.parametrize(
     "payload,status",
     [

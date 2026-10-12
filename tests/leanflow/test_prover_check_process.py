@@ -304,7 +304,7 @@ def test_real_kernel_denies_direct_symlink_and_hardlink_source_writes(
     project, workspace, _ = roots
     source = project / "Main.lean"
     source.write_text("protected")
-    script = """import json,os,sys
+    script = """import errno,json,os,sys
 from pathlib import Path
 source,scratch=map(Path,sys.argv[1:])
 (scratch/'own').write_text('allowed')
@@ -317,7 +317,9 @@ for action in ('direct','symlink','hardlink'):
         else:
             alias=scratch/'hardlink';os.link(source,alias);alias.write_text('bad')
         out.append(action+':allowed')
-    except PermissionError: out.append(action+':denied')
+    except OSError as error:
+        assert error.errno in (errno.EACCES,errno.EPERM,errno.EROFS,errno.EXDEV)
+        out.append(action+':denied')
 print(json.dumps(out))
 """
     result = checks.isolated_command(

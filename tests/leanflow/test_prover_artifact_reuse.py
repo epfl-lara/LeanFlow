@@ -168,10 +168,12 @@ def test_compiler_authority_cannot_mutate_frozen_artifact_or_trusted_inspector(
         compiler["artifact"].write_bytes(b"changed after compilation")
         assert frozen.read_bytes() == b"checked artifact"
         script = (
-            "import pathlib,sys\n"
+            "import errno,pathlib,sys\n"
             "for name in sys.argv[1:]:\n"
             " try:pathlib.Path(name).write_text('forged');print('allowed')\n"
-            " except PermissionError:print('denied')\n"
+            " except OSError as error:\n"
+            "  assert error.errno in (errno.EACCES,errno.EPERM,errno.EROFS,errno.ENOENT)\n"
+            "  print('denied')\n"
         )
         attacked = isolated(
             project_root=root,
