@@ -9,9 +9,15 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
+
+from scripts.lean_imo_campaign.storage import (
+    copy_dependencies,
+    freeze_dependencies,
+    frozen_python,
+    register_cell,
+)
 
 
 def digest(path: Path) -> str:
@@ -25,50 +31,6 @@ def save(path: Path, value: Any) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
     temporary.replace(path)
-
-
-def _clone_commands(source: str, destination: str) -> tuple[list[str], ...]:
-    """Copy strategies, cheapest first. Every one yields an independent tree.
-
-    `-R` copies a symlink as a symlink rather than dereferencing it, so no
-    strategy can leave the frozen evidence pointing back at a live path.
-    """
-    if sys.platform == "darwin":
-        # APFS copy-on-write: no shared writable blocks, near-zero disk.
-        cheap = ["/bin/cp", "-c", "-R", source, destination]
-    else:
-        # GNU cp: reflink on btrfs/XFS, a full copy on ext4 and elsewhere.
-        cheap = ["cp", "--reflink=auto", "-R", source, destination]
-    return (cheap, ["cp", "-R", source, destination])
-
-
-def clone(source: Path, destination: Path) -> None:
-    """Copy a tree independently, using copy-on-write where the platform offers it."""
-    if destination.exists():
-        raise ValueError(f"Refusing to replace existing evidence: {destination}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    failures: list[str] = []
-    for argv in _clone_commands(str(source), str(destination)):
-        result = subprocess.run(argv, capture_output=True, text=True)
-        if result.returncode == 0:
-            return
-        failures.append(f"{' '.join(argv)}: {result.stderr.strip() or result.returncode}")
-        # A partial tree would be mistaken for frozen evidence, and a dirty
-        # destination would make the next `cp -R` copy INTO it rather than
-        # produce an independent copy. Remove it; if cleanup itself fails, stop
-        # loudly rather than retry against a dirty path or leave a partial behind.
-        if destination.is_symlink() or destination.exists():
-            try:
-                if destination.is_dir() and not destination.is_symlink():
-                    shutil.rmtree(destination)
-                else:
-                    destination.unlink()
-            except OSError as exc:
-                failures.append(f"cleanup of partial {destination} failed: {exc}")
-                raise ValueError(
-                    f"Could not clone {source} to {destination}: {'; '.join(failures)}"
-                ) from exc
-    raise ValueError(f"Could not clone {source} to {destination}: {'; '.join(failures)}")
 
 
 def initialize_lake(root: Path) -> dict[str, Any]:
@@ -95,7 +57,7 @@ def write_launcher(directory: Path, name: str, module: str, arguments: list[str]
     """Pin module resolution ahead of editable installs even when launched from the source repo."""
     bootstrap = f"import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module({module!r},run_name='__main__')"
     argv = [
-        str(directory / "python-env/bin/python"),
+        str(frozen_python(directory)),
         "-I",
         "-B",
         "-u",
@@ -109,8 +71,10 @@ def write_launcher(directory: Path, name: str, module: str, arguments: list[str]
     path.chmod(0o755)
 
 
-def freeze(repo: Path, benchmark: Path, directory: Path) -> dict[str, Any]:
-    """Snapshot the current working runtime, Python packages and statement-only fixture."""
+def _freeze(
+    repo: Path, benchmark: Path, directory: Path, python_runtime: dict[str, Any]
+) -> dict[str, Any]:
+    """Capture source and statements while the selected immutable Python runtime is leased."""
     from leanflow_cli.config import get_config_path
 
     initial_commit = subprocess.check_output(
@@ -142,7 +106,6 @@ def freeze(repo: Path, benchmark: Path, directory: Path) -> dict[str, Any]:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         identities[str(relative)] = digest(target)
-    clone(repo / ".leanflow-venv", directory / "python-env")
     fixture = directory / "baseline"
     fixture.mkdir()
     for name in ("manifest.json", "lakefile.toml", "lake-manifest.json", "lean-toolchain"):
@@ -164,7 +127,7 @@ def freeze(repo: Path, benchmark: Path, directory: Path) -> dict[str, Any]:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         source_hashes[problem["file"]] = digest(target)
-    clone(benchmark / ".lake/packages", fixture / ".lake/packages")
+    dependencies = freeze_dependencies(benchmark)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     branch = subprocess.check_output(
         ["git", "branch", "--show-current"], cwd=repo, text=True
@@ -187,7 +150,8 @@ def freeze(repo: Path, benchmark: Path, directory: Path) -> dict[str, Any]:
         "statement_files": source_hashes,
         "toolchain": (fixture / "lean-toolchain").read_text().strip(),
         "lake_manifest_sha256": digest(fixture / "lake-manifest.json"),
-        "python": str(directory / "python-env/bin/python"),
+        **python_runtime,
+        "dependency_cache_key": dependencies,
         "external_inputs": {str(get_config_path()): digest(get_config_path())},
         "comparison_note": "LEAP used Lean/Mathlib 4.27.0; these unchanged statements were retargeted to 4.33.1. Report each condition separately; best-of-four is a separate aggregate.",
     }
@@ -213,7 +177,7 @@ def prepare(directory: Path, cell: dict[str, Any]) -> Path:
     identity = json.loads((directory / "provenance.json").read_text())
     if digest(target) != identity["statement_files"][relative]:
         raise ValueError("Frozen benchmark statement hash changed")
-    clone(baseline / ".lake/packages", root / ".lake/packages")
+    copy_dependencies(baseline, root / ".lake/packages", seed=False)
     flow = root / ".leanflow"
     flow.mkdir()
     (flow / "project.yaml").write_text(
@@ -228,6 +192,7 @@ def prepare(directory: Path, cell: dict[str, Any]) -> Path:
         shutil.copy2(source, target_skill)
     save(directory / "cell-configs" / f"{cell['id']}.json", cell)
     initialize_lake(root)
+    register_cell(root)
     return root
 
 
@@ -275,3 +240,11 @@ def environment(directory: Path) -> dict[str, str]:
     env["LEANFLOW_RESEARCH_LOCAL_LOOGLE"] = "0"
     env["LEANFLOW_DISPATCH_LOCAL_LOOGLE"] = "0"
     return env
+
+
+def freeze(repo: Path, benchmark: Path, directory: Path) -> dict[str, Any]:
+    """Freeze exact source inputs using one shared immutable installed Python runtime."""
+    from scripts.lean_imo_campaign.storage import installed_runtime
+
+    with installed_runtime(repo) as python_runtime:
+        return _freeze(repo, benchmark, directory, python_runtime)

@@ -7,8 +7,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 def atomic_json_write(
     path: str | Path,
@@ -80,6 +78,9 @@ def atomic_yaml_write(
         extra_content: Optional string to append after the YAML dump
             (e.g. commented-out sections for user reference).
     """
+    # JSON persistence is also used before installer dependencies are present.
+    import yaml
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,12 @@ from scripts.lean_imo_campaign.matrix import CONDITION_SETS, cells, next_cell
 from scripts.lean_imo_campaign.provider import require_native_campaign
 from scripts.lean_imo_campaign.recovery import schedule_recovery
 from scripts.lean_imo_campaign.runtime_versions import runtime_directory
+from scripts.lean_imo_campaign.storage import (
+    frozen_python,
+    lease_frozen_runtime,
+    release_cell_dependencies,
+    restore_cell_dependencies,
+)
 
 
 def lanes() -> tuple[int, ...]:
@@ -234,6 +241,8 @@ def launch(
     )
     report(directory, campaign)
     root = Path(cell["project"]) if cell.get("resume_run_id") else prepare(directory, cell)
+    if cell.get("resume_run_id"):
+        restore_cell_dependencies(directory, root)
     cell.pop("controller_status", None)
     cell.pop("error", None)
     cell.pop("error_details", None)
@@ -243,7 +252,7 @@ def launch(
     report(directory, campaign)
     bootstrap = "import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module('scripts.lean_imo_campaign.worker',run_name='__main__')"
     argv = [
-        str(snapshot / "python-env/bin/python"),
+        str(frozen_python(snapshot)),
         "-I",
         "-B",
         "-u",
@@ -256,7 +265,7 @@ def launch(
     log_directory = directory / "cell-logs"
     log_directory.mkdir(exist_ok=True)
     cell["log"] = str(log_directory / f"{cell['run_id']}.log")
-    with Path(cell["log"]).open("wb") as output:
+    with lease_frozen_runtime(snapshot), Path(cell["log"]).open("wb") as output:
         process = subprocess.Popen(
             argv,
             cwd=root,
@@ -277,7 +286,7 @@ def launch(
 
 def run(directory: Path, *, adopt_active: bool = False) -> None:
     """Advance completed lanes; pause dispatch on infrastructure errors without resetting cells."""
-    with (directory / "runner.lock").open("a") as lock:
+    with ExitStack() as input_leases, (directory / "runner.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         campaign = json.loads((directory / "campaign.json").read_text())
         require_native_campaign(campaign)
@@ -310,6 +319,7 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
             raise ValueError(
                 "Existing active admissions require reconciliation; no cell was restarted"
             )
+        leased_inputs: set[Path] = set()
         active: dict[int, tuple[dict[str, Any], subprocess.Popen[bytes] | AdoptedProcess]] = {}
         if adopt_active:
             for cell in campaign["cells"]:
@@ -382,6 +392,7 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
                     )
                 del active[lane]
                 report(directory, campaign)
+                release_cell_dependencies(directory, cell)
             if not paused:
                 reserved = reserved_active_count(campaign.get("reserved_campaign_cells", []))
                 campaign["reserved_active_count"] = reserved
@@ -395,6 +406,18 @@ def run(directory: Path, *, adopt_active: bool = False) -> None:
                         if time.time() < candidate.get("not_before", 0):
                             continue
                         try:
+                            snapshot = (
+                                runtime_directory(directory, candidate)
+                                if candidate.get("runtime_directory")
+                                else Path(
+                                    campaign.get("default_runtime_directory", directory)
+                                ).resolve()
+                            )
+                            if snapshot not in leased_inputs:
+                                # Existing workers/results remain observable after
+                                # cache eviction. Only new dispatch needs replay inputs.
+                                input_leases.enter_context(lease_frozen_runtime(snapshot))
+                                leased_inputs.add(snapshot)
                             active[lane] = (candidate, launch(directory, campaign, candidate))
                         except Exception as exc:
                             candidate.update(

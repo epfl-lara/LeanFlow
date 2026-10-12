@@ -3,6 +3,7 @@ import { changeNativeSelection } from "../../src/core/providerModels";
 import { Card, Notice } from "../components";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
+import { StorageCard } from "./StorageCard";
 import { BACKEND_LABELS as NAMES, type BackendSetup, type ProviderAction } from "../../src/core/providerCredentials";
 
 
@@ -43,5 +44,6 @@ export function ProvidersView() {
         <details className="provider-native-details"><summary>Native paths and environment</summary><p className="mono">{row.executable || "Executable not found"}</p><p className="mono">{row.config_path}</p><p className="mono">{row.key_env}{row.id === "lemex" ? " · LEMEX_BASE_URL · LEMEX_HOME" : row.id === "codex" ? " · CODEX_HOME" : " · CLAUDE_CONFIG_DIR"}</p></details>
       </Card>;
     })}
+    <StorageCard />
   </div>;
 }

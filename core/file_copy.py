@@ -8,6 +8,8 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Callable, Iterable
+from functools import partial
 from pathlib import Path
 
 _UNSUPPORTED = {errno.EXDEV, errno.EINVAL, errno.ENOSYS, errno.ENOTTY, errno.EOPNOTSUPP}
@@ -44,7 +46,12 @@ def _clone_file(source: Path, destination: Path) -> bool:
     raise OSError(error, os.strerror(error or errno.EIO), str(destination))
 
 
-def copy_file(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> str:
+def copy_file(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    reserve_bytes: int = _FREE_RESERVE,
+) -> str:
     """Copy bytes and metadata without shared inodes, preferring copy-on-write storage.
 
     Unsupported filesystems use an exclusive ordinary copy. That fallback reserves
@@ -52,6 +59,8 @@ def copy_file(source: str | os.PathLike[str], destination: str | os.PathLike[str
     Permission errors and exhausted clone operations never trigger a full-copy retry.
     """
     original, copied = Path(source), Path(destination)
+    if isinstance(reserve_bytes, bool) or reserve_bytes < 0:
+        raise ValueError("Copy reserve must be nonnegative bytes")
     if original.is_symlink():
         raise ValueError("Isolated file copies cannot follow symlinks")
     if copied.exists() or copied.is_symlink():
@@ -61,7 +70,7 @@ def copy_file(source: str | os.PathLike[str], destination: str | os.PathLike[str
         if _clone_file(original, copied):
             created = True
         else:
-            required = original.stat().st_size + _FREE_RESERVE
+            required = original.stat().st_size + reserve_bytes
             if shutil.disk_usage(copied.parent).free < required:
                 raise OSError(
                     errno.ENOSPC,
@@ -80,14 +89,23 @@ def copy_file(source: str | os.PathLike[str], destination: str | os.PathLike[str
     return str(copied)
 
 
-def copy_tree(source: Path, destination: Path) -> Path:
+def copy_tree(
+    source: Path,
+    destination: Path,
+    *,
+    ignore: Callable[[str, list[str]], Iterable[str]] | None = None,
+    reserve_bytes: int | None = None,
+) -> Path:
     """Publish a complete isolated directory copy and remove failed staging trees."""
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(str(destination))
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".copy-", dir=destination.parent) as temporary:
         staged = Path(temporary) / "tree"
-        shutil.copytree(source, staged, copy_function=copy_file, symlinks=True)
+        copier = (
+            copy_file if reserve_bytes is None else partial(copy_file, reserve_bytes=reserve_bytes)
+        )
+        shutil.copytree(source, staged, copy_function=copier, symlinks=True, ignore=ignore)
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(str(destination))
         staged.rename(destination)

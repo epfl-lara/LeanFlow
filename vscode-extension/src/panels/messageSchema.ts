@@ -222,6 +222,8 @@ export function parseWebviewMessage(
     case "openDashboard":
     case "openCliSettings":
     case "refreshProviders":
+    case "refreshStorage":
+    case "cleanStorage":
       return { ok: true, message: { type } as WebviewMessage };
 
     case "providerAction": {

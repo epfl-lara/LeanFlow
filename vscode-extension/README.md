@@ -31,6 +31,14 @@ The command palette exposes the same flow as **LeanFlow: Set Up Project**.
 
 ## Provider setup
 
+The Providers page also shows shared dependency storage, active protections and
+free disk space. **Refresh storage** inspects it; **Clean unused storage** removes
+only owned, unused caches and obsolete runtimes. Automatic cleanup defaults to a
+20 GiB target and a 10 GiB free-space reserve. Proofs, results, checkpoints and
+logs are retained. Change the global defaults through `leanflow config set
+storage.cache_target_gib 20` and `leanflow config set storage.min_free_gib 10`.
+See [shared dependencies and cleanup](../docs/storage.md).
+
 Open **Providers** in the dashboard, use the setup link beside **Agent backend**,
 or run **LeanFlow: Configure Provider** from the command palette.
 

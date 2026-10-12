@@ -16,6 +16,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.runtime.storage import StoragePressure
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.live_progress import LiveProgress
@@ -48,6 +49,7 @@ from leanflow_cli.workflows.prover.source import (
     validate_hole_replacement,
     write_source,
 )
+from leanflow_cli.workflows.prover.storage_admission import StorageAdmission
 from leanflow_cli.workflows.prover.store import RunStore, now
 from leanflow_cli.workflows.prover.submission_cache import SubmissionCache, submission_key
 from leanflow_cli.workflows.prover.verification import SIGNATURE_SCHEMES, LeanVerifier
@@ -118,6 +120,7 @@ class ProverRuntime:
         self.reserved = 0
         self.consumed = 0
         self.started = time.monotonic()
+        self.storage_admission = StorageAdmission(self.root)
         self.elapsed_before = 0.0
         self.pending: dict[Future[dict[str, Any]], dict[str, Any]] = {}
         self.completions: queue.SimpleQueue[Future[dict[str, Any]]] = queue.SimpleQueue()
@@ -474,6 +477,7 @@ class ProverRuntime:
     def _reserve(self, requested: int) -> int:
         with self.lock:
             self._ensure_active()
+            self._check_storage(force=True)
             remaining = (
                 None
                 if self.config.agent_calls is None
@@ -524,6 +528,22 @@ class ProverRuntime:
             self.stopping = True
             self.state["stop_status"] = "timeout"
             raise BudgetExhausted("campaign wall-clock budget exhausted", code="campaign_wall_time")
+        self._check_storage()
+
+    def _check_storage(self, *, force: bool = False) -> None:
+        """Stop with resumable state when cleanup cannot restore the free-space reserve."""
+        try:
+            self.storage_admission.check(force=force)
+        except StoragePressure as error:
+            self.state["stop_status"] = "storage_pressure"
+            self.state["stop_code"] = "storage_pressure"
+            self.state["next_step"] = (
+                "Free disk space or adjust storage.min_free_gib, then resume this run. "
+                "Verified proofs, checkpoints and consumed calls are preserved."
+            )
+            self.cancelled.set()
+            self.stopping = True
+            raise InfrastructureFailure(str(error), status="storage_pressure") from error
 
     def _context(self, node: Node | None = None) -> dict[str, Any]:
         from leanflow_cli.workflows.prover.resource_handoff import resource_inventory
@@ -1586,6 +1606,7 @@ class ProverRuntime:
                     next_source_scan = 0.0
                     while True:
                         self._messages()
+                        self._check_storage()
                         if self.cancelled.is_set():
                             self._ensure_active()
                         # Acceptance and materialization always recheck exact bytes.
@@ -1761,9 +1782,11 @@ class ProverRuntime:
 
 def main() -> int:
     """Keep the established module launch path through the dedicated entrypoint."""
+    from leanflow_cli.runtime.runtime_install import running_runtime_lease
     from leanflow_cli.workflows.prover.entrypoint import main as launch
 
-    return launch()
+    with running_runtime_lease():
+        return launch()
 
 
 def clone_resume_run(root: Path, previous: str, current: str) -> None:

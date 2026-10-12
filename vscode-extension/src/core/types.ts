@@ -758,6 +758,7 @@ export interface ProjectInfo {
 }
 
 export interface AppState {
+  storage?: import("./storageState").StorageState | null;
   projectSetup?: import("./projectSetupTypes").ProjectSetupState;
   providers: import("./providerCredentials").ProviderSetupState;
   project: ProjectInfo;
@@ -798,6 +799,8 @@ export type HostMessage =
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
 export type WebviewMessage =
+  | { type: "refreshStorage" }
+  | { type: "cleanStorage" }
   | { type: "configureProvider" }
   | { type: "setupProject" }
   | { type: "retryProjectSetup" }

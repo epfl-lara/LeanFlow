@@ -120,3 +120,29 @@ def test_successful_tree_is_independent_and_complete(tmp_path: Path) -> None:
     assert (destination / "state.json").read_bytes() == (original / "state.json").read_bytes()
     (destination / "state.json").write_text("changed")
     assert (original / "state.json").read_text() == '{"run":"saved"}'
+
+
+def test_filtered_tree_preserves_explicit_reserve_on_copy_fallback(tmp_path, monkeypatch) -> None:
+    original = tmp_path / "source"
+    original.mkdir()
+    (original / "proof.txt").write_text("proof")
+    (original / "cache.bin").write_text("ignored")
+    monkeypatch.setattr(file_copy, "_clone_file", lambda *_: False)
+    monkeypatch.setattr(file_copy.shutil, "disk_usage", lambda _: SimpleNamespace(free=10))
+    with pytest.raises(OSError, match="checkpoint reserve"):
+        file_copy.copy_tree(
+            original,
+            tmp_path / "copy",
+            ignore=lambda _, names: {"cache.bin"},
+            reserve_bytes=10,
+        )
+    assert not (tmp_path / "copy").exists()
+    monkeypatch.setattr(file_copy.shutil, "disk_usage", lambda _: SimpleNamespace(free=100))
+    result = file_copy.copy_tree(
+        original,
+        tmp_path / "copy",
+        ignore=lambda _, names: {"cache.bin"},
+        reserve_bytes=10,
+    )
+    assert (result / "proof.txt").read_text() == "proof"
+    assert not (result / "cache.bin").exists()

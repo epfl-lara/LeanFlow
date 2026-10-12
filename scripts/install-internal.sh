@@ -6,7 +6,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LEANFLOW_HOME="${LEANFLOW_HOME:-$HOME/.leanflow}"
 LEANFLOW_BIN_DIR="${LEANFLOW_BIN_DIR:-$HOME/.local/bin}"
-LEANFLOW_VENV_DIR="${LEANFLOW_VENV_DIR:-$REPO_ROOT/.leanflow-venv}"
+LEANFLOW_VENV_DIR="${LEANFLOW_VENV_DIR:-}"
+INSTALL_PYTHON_EXPLICIT=0
+if [[ -n "${LEANFLOW_INSTALL_PYTHON:-}" ]]; then
+  INSTALL_PYTHON_EXPLICIT=1
+fi
 LEANFLOW_INSTALL_PYTHON="${LEANFLOW_INSTALL_PYTHON:-python3}"
 LEANFLOW_FETCH_LEANEXPLORE_DATA="${LEANFLOW_FETCH_LEANEXPLORE_DATA:-1}"
 LEANFLOW_INSTALL_OS_TOOLS="${LEANFLOW_INSTALL_OS_TOOLS:-1}"
@@ -36,6 +40,42 @@ ok() {
 
 warn() {
   printf '  [warn] %s\n' "$1"
+}
+
+python_supported() {
+  # Probe with syntax supported by old Python before importing repository code.
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
+    >/dev/null 2>&1
+}
+
+select_install_python() {
+  local candidate
+  if [[ "$INSTALL_PYTHON_EXPLICIT" == "1" ]]; then
+    if python_supported "$LEANFLOW_INSTALL_PYTHON"; then
+      return 0
+    fi
+    printf 'LeanFlow requires Python 3.11 or newer; the explicitly selected interpreter is unsupported or unavailable: %s\n' \
+      "$LEANFLOW_INSTALL_PYTHON" >&2
+    return 1
+  fi
+  for candidate in \
+    python3 python3.13 python3.12 python3.11 python3.14 python \
+    "$HOME/miniforge3/bin/python" \
+    "$HOME/miniconda3/bin/python" \
+    "$HOME/mambaforge/bin/python" \
+    /opt/homebrew/bin/python3 \
+    /opt/homebrew/bin/python3.13 \
+    /opt/homebrew/bin/python3.12 \
+    /opt/homebrew/bin/python3.11 \
+    /usr/local/bin/python3 \
+    "$REPO_ROOT/.venv/bin/python"; do
+    if python_supported "$candidate"; then
+      LEANFLOW_INSTALL_PYTHON="$candidate"
+      return 0
+    fi
+  done
+  printf 'LeanFlow requires Python 3.11 or newer. Install a supported Python or select it with --python PATH.\n' >&2
+  return 1
 }
 
 tool_version_ok() {
@@ -198,9 +238,9 @@ Usage:
 Options:
   --leanflow-home PATH  LeanFlow state directory (default: ~/.leanflow)
   --bin-dir PATH         Directory for LeanFlow wrappers (default: ~/.local/bin)
-  --venv-dir PATH        Virtualenv path (default: ./.leanflow-venv)
-  --python BIN           Python interpreter to use (default: python3)
-  --recreate-venv        Remove and recreate the virtualenv
+  --venv-dir PATH        Fresh virtualenv path (default: versioned runtime in ~/.leanflow)
+  --python BIN           Python 3.11+ interpreter (default: detect a supported local Python)
+  --recreate-venv        Build a fresh runtime; never remove an existing environment
   --skip-leanexplore-data
                         Skip local LeanExplore index fetch
   --skip-os-tools       Do not install or wire external CLI tools
@@ -208,7 +248,8 @@ Options:
   -h, --help             Show this help
 
 Behavior:
-  This installer creates separate LeanFlow binaries and state under ~/.leanflow.
+  Installs use separate versioned runtimes; running jobs keep their original runtime.
+  Existing environments are never upgraded or deleted. Wrappers switch after validation.
 TXT
 }
 
@@ -228,6 +269,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --python)
       LEANFLOW_INSTALL_PYTHON="$2"
+      INSTALL_PYTHON_EXPLICIT=1
       shift 2
       ;;
     --recreate-venv)
@@ -258,40 +300,53 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+select_install_python
 banner
 step "Preparing install directories"
 mkdir -p "$LEANFLOW_HOME" "$LEANFLOW_BIN_DIR"
 export PATH="$LEANFLOW_BIN_DIR:$PATH"
 ok "home: $LEANFLOW_HOME"
 ok "bin : $LEANFLOW_BIN_DIR"
+ok "Python: $LEANFLOW_INSTALL_PYTHON"
 
-if [[ "$RECREATE_VENV" == "1" && -e "$LEANFLOW_VENV_DIR" ]]; then
-  warn "recreating virtualenv: $LEANFLOW_VENV_DIR"
-  rm -rf "$LEANFLOW_VENV_DIR"
+INSTALL_ARGS=(prepare --source "$REPO_ROOT" --mode "$INSTALL_MODE" --installer-pid "$$")
+if [[ -n "$LEANFLOW_VENV_DIR" ]]; then
+  INSTALL_ARGS+=(--venv-dir "$LEANFLOW_VENV_DIR")
 fi
+if [[ "$RECREATE_VENV" == "1" ]]; then
+  INSTALL_ARGS+=(--recreate)
+fi
+INSTALL_PLAN="$(LEANFLOW_HOME="$LEANFLOW_HOME" PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$LEANFLOW_INSTALL_PYTHON" \
+  -m leanflow_cli.runtime.runtime_install "${INSTALL_ARGS[@]}")"
+INSTALL_REUSE="${INSTALL_PLAN%%$'\n'*}"
+LEANFLOW_VENV_DIR="${INSTALL_PLAN#*$'\n'}"
 
 step "Checking external CLI tools"
 ensure_external_cli_tools
 
 step "Preparing Python environment"
-if [[ ! -x "$LEANFLOW_VENV_DIR/bin/python" ]]; then
+if [[ "$INSTALL_REUSE" != "reuse" ]]; then
   "$LEANFLOW_INSTALL_PYTHON" -m venv "$LEANFLOW_VENV_DIR"
   ok "created virtualenv: $LEANFLOW_VENV_DIR"
 else
-  ok "using existing virtualenv: $LEANFLOW_VENV_DIR"
+  ok "using validated immutable runtime: $LEANFLOW_VENV_DIR"
 fi
 
 # shellcheck disable=SC1090
 source "$LEANFLOW_VENV_DIR/bin/activate"
 
 step "Installing LeanFlow package"
-python -m pip install --quiet --quiet --upgrade pip "setuptools<82" wheel
-if [[ "$INSTALL_MODE" == "editable" ]]; then
-  python -m pip install --quiet --quiet -e "$REPO_ROOT[mcp,lean-explore]"
-  ok "installed editable package"
+if [[ "$INSTALL_REUSE" == "reuse" ]]; then
+  ok "retained installed package without modifying its environment"
 else
-  python -m pip install --quiet --quiet "$REPO_ROOT[mcp,lean-explore]"
-  ok "installed package wheel"
+  python -m pip install --quiet --quiet --upgrade pip "setuptools<82" wheel
+  if [[ "$INSTALL_MODE" == "editable" ]]; then
+    python -m pip install --quiet --quiet -e "$REPO_ROOT[mcp,lean-explore]"
+    ok "installed editable package"
+  else
+    python -m pip install --quiet --quiet "$REPO_ROOT[mcp,lean-explore]"
+    ok "installed package wheel"
+  fi
 fi
 
 step "Fetching local LeanExplore data"
@@ -322,20 +377,18 @@ LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -m leanflow_cli.r
 ok "Lemex executable managed separately from its native configuration"
 
 step "Installing managed Lean MCP backends and power modes"
-LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/leanflow" mcp bootstrap lean
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" \
+  -m leanflow_cli.runtime.runtime_install ensure-backends
 ok "managed MCP bootstrap complete"
 
-step "Writing command wrappers"
-cat > "$LEANFLOW_BIN_DIR/leanflow" <<EOF
-#!/usr/bin/env bash
-: "\${LEANFLOW_HOME:=${LEANFLOW_HOME}}"
-export OPENLEANFLOW_HOME="\${OPENLEANFLOW_HOME:-\${LEANFLOW_HOME}}"
-export LEANFLOW_HOME
-export PATH="${LEANFLOW_BIN_DIR}:\$PATH"
-exec "${LEANFLOW_VENV_DIR}/bin/leanflow" "\$@"
-EOF
+step "Validating the new runtime before switching commands"
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/leanflow" --help >/dev/null
+ok "leanflow --help"
 
-chmod +x "$LEANFLOW_BIN_DIR/leanflow"
+step "Writing command wrappers"
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" \
+  -m leanflow_cli.runtime.runtime_install finalize \
+  --source "$REPO_ROOT" --venv-dir "$LEANFLOW_VENV_DIR" --bin-dir "$LEANFLOW_BIN_DIR"
 ok "wrapper: $LEANFLOW_BIN_DIR/leanflow"
 
 step "Cleaning legacy wrapper names"
@@ -348,17 +401,7 @@ rm -f \
 ok "legacy wrappers removed if present"
 
 step "Recording install metadata"
-cat > "${LEANFLOW_HOME}/install-root" <<EOF
-repo_root=${REPO_ROOT}
-venv_dir=${LEANFLOW_VENV_DIR}
-bin_dir=${LEANFLOW_BIN_DIR}
-installed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-EOF
 ok "metadata: ${LEANFLOW_HOME}/install-root"
-
-step "Final smoke check"
-LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/leanflow" --help >/dev/null
-ok "leanflow --help"
 
 printf '\nLeanFlow installed.\n'
 printf '  repo: %s\n' "$REPO_ROOT"

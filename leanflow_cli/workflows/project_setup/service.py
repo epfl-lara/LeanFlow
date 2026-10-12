@@ -7,7 +7,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.runtime.dependency_cache import (
+    ensure_dependency_entry,
+    restore_project_dependencies,
+)
 from leanflow_cli.runtime.project_operations import ProjectBusyError, project_setup
+from leanflow_cli.runtime.storage import StoragePressure, ensure_storage_capacity
 from leanflow_cli.workflows.project import (
     LeanFlowProjectError,
     initialize_leanflow_project,
@@ -128,6 +133,7 @@ def _prepare_project(
 
         def phase(value: str, message: str) -> None:
             check_cancel(cancel)
+            ensure_storage_capacity(root if root.exists() else root.parent)
             result["phase"] = value
             log.write(message + "\n")
             log.flush()
@@ -180,6 +186,7 @@ def _prepare_project(
                     and not template_source
                 ):
                     load_leanflow_project(root)
+                    _share_dependencies(root, log)
                     message = "Already set up. Existing dependencies and verification results were reused."
                     phase("ready", message)
                     result = {
@@ -269,6 +276,7 @@ def _prepare_project(
                 pins = manifest_revisions(previous)
                 phase("dependencies", "Preparing pinned project dependencies")
                 added = configure_repl(root, run, changed)
+                shared = _restore_dependencies(root, log)
                 if (
                     added
                     or not manifest.is_file()
@@ -305,6 +313,10 @@ def _prepare_project(
                         raise
                     if previous != (manifest.read_bytes() if manifest.is_file() else None):
                         changed.append("lake-manifest.json")
+                    shared = _restore_dependencies(root, log) or shared
+                if shared:
+                    reuse_installed = installed_environment(root)
+                    phase("dependencies", "Reusing private copies of shared pinned dependencies")
                 mathlib = "mathlib" in dependency_names(root)
                 if mathlib and (repair or not reuse_installed or not mathlib_cache_present(root)):
                     phase(
@@ -333,6 +345,7 @@ def _prepare_project(
                     "Testing Lean with a small library import; your proofs are not compiled",
                 )
                 binary = protocol_check(root, run, mathlib=mathlib)
+                _share_dependencies(root, log)
                 diagnostics = source_diagnostics(root)
                 initialize_leanflow_project(root, name=name)
                 result.update(
@@ -363,6 +376,12 @@ def _prepare_project(
             )
         except SetupFailure as exc:
             result.update(code=exc.code, message=safe_text(str(exc)), remediation=exc.remediation)
+        except StoragePressure as exc:
+            result.update(
+                code="storage_pressure",
+                message=str(exc),
+                remediation="Free disk space or adjust storage.min_free_gib, then retry. Existing source and checkpoints were retained.",
+            )
         except LeanFlowProjectError as exc:
             result.update(
                 code="registration_failed",
@@ -381,3 +400,22 @@ def _prepare_project(
     if result["code"] != "project_busy":
         save_result(root, result)
     return result
+
+
+def _share_dependencies(root: Path, log: Any) -> None:
+    """Publish verified dependencies when their configuration supports safe sharing."""
+    try:
+        if ensure_dependency_entry(root) is not None:
+            log.write("Pinned dependencies are available in the shared cache.\n")
+    except ValueError as exc:
+        # Unsupported or locally edited dependencies remain private to the project.
+        log.write(f"Dependency sharing skipped: {safe_text(str(exc))}\n")
+
+
+def _restore_dependencies(root: Path, log: Any) -> bool:
+    """Reuse a compatible cache without replacing existing builds or edited sources."""
+    try:
+        return restore_project_dependencies(root)
+    except ValueError as exc:
+        log.write(f"Shared dependency reuse skipped: {safe_text(str(exc))}\n")
+        return False

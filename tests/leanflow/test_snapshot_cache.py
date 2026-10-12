@@ -96,3 +96,54 @@ def test_cleanup_never_follows_a_link_to_canonical_dependencies(project) -> None
     release_snapshot_dependencies(snapshot)
     assert (root / ".lake/packages/lib/.lake/build/Lib.olean").read_bytes() == b"compiled library"
     assert not (snapshot / ".lake").exists()
+
+
+def test_snapshot_rejects_linked_parent_before_any_external_write(tmp_path) -> None:
+    root = tmp_path / "canonical"
+    root.mkdir()
+    (root / "Main.lean").write_text("theorem t : True := by sorry")
+    external = tmp_path / "external"
+    external.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="linked destination"):
+        create_snapshot(root, linked / "private")
+    with pytest.raises(ValueError, match="linked destination"):
+        prepare_snapshot(root, linked / "private")
+    assert list(external.iterdir()) == []
+    broken = tmp_path / "broken"
+    broken.symlink_to(tmp_path / "missing")
+    with pytest.raises(ValueError, match="linked destination"):
+        create_snapshot(root, broken)
+
+
+def test_restored_snapshot_refreshes_workspace_storage_size(project) -> None:
+    from leanflow_cli.runtime.storage import storage_status
+
+    root, snapshot = project
+    release_snapshot_dependencies(snapshot)
+    prepare_snapshot(root, snapshot)
+    status = storage_status()
+    assert status["workspace_bytes"] > 0
+    assert status["workspace_pinned_bytes"] == status["workspace_bytes"]
+
+
+def test_session_release_defers_dependency_pruning_for_live_background_child(
+    project, monkeypatch
+) -> None:
+    from leanflow_cli.runtime.storage.process_views import ProcessViews
+
+    _, snapshot = project
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.native_snapshot.process_views",
+        lambda: ProcessViews((str(snapshot),), (), True),
+    )
+    release_snapshot_dependencies(snapshot)
+    assert (snapshot / ".lake/packages/lib/.lake/build/Lib.olean").is_file()
+    assert not (snapshot / ".leanflow-dependencies-released").exists()
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.native_snapshot.process_views",
+        lambda: ProcessViews((), (), True),
+    )
+    release_snapshot_dependencies(snapshot)
+    assert not (snapshot / ".lake/packages").exists()

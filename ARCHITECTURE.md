@@ -191,6 +191,38 @@ Review workflows publish findings only.
 
 ## Cache ownership and freshness
 
+`runtime/dependency_cache/{identity,checkout}.py` and its public facade own exact
+dependency compatibility, trusted canonical publication and private writable CoW
+materialization. Shared entries are sealed; no writable shared symlink or hardlink
+is exposed to projects. Root proof artifacts never enter this store. Project
+setup publishes only after readiness, and snapshots keep their existing clean-room
+source filter. Missing compiled artifacts are never published as a ready entry.
+
+`runtime/storage/{policy,leases,entries,maintenance,workspaces,process_views}.py`
+owns managed entry limits, cross-process leases/transactions, safe LRU eviction,
+orphan process protection and abandoned view recovery. Only marked managed entries
+or exactly registered dependency views are collectible; proofs/checkpoints remain
+outside the deletion scope. Defaults are a 20 GiB soft target and 10 GiB reserve.
+`prover/storage_admission.py` guards dispatch and quiet controller polling;
+storage pressure takes the existing durable cancellation/checkpoint path.
+`cli/storage_command.py` exposes inspection, cleanup and explicit publication.
+
+`runtime/runtime_install.py` hashes source inputs, claims a fresh versioned Python
+environment and atomically switches the validated wrapper/install metadata.
+CLI and detached controller entrypoints lease their interpreter/source for their
+lifetime. The installer never upgrades a live environment or healthy MCP backend
+in place. Old unmarked installations are preserved conservatively.
+
+`vscode-extension/src/core/{storage,storageState}.ts` owns host-side storage actions
+and metric validation; `webview/views/StorageCard.tsx` presents the shared policy
+and cleanup action through the existing typed message boundary.
+
+`scripts/lean_imo_campaign/storage.py` keeps campaigns on the exact installed
+interpreter under active PID leases, records global dependency identity in
+source-only baselines, restores private cell views and releases them only after
+durable result evidence. Historical replay validates retained or reconstructed
+inputs before dispatch; no private Python environment is cloned per campaign.
+
 Native runtimes own prompt caching, session history and compaction. LeanFlow
 resumes the explicit native session and preserves its home; it does not inject
 cache keys or ephemeral sessions. The job MCP namespace persists across controller

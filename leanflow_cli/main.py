@@ -33,6 +33,7 @@ from leanflow_cli.cli.flags_command import handle_flags, register_flags_parser
 from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp, repair_managed_mcp_patches
 from leanflow_cli.cli.project_command import handle_project, register_project_parser
 from leanflow_cli.cli.runs_command import handle_runs, register_runs_parser
+from leanflow_cli.cli.storage_command import handle_storage, register_storage_parser
 from leanflow_cli.config import (
     ensure_leanflow_home,
     get_leanflow_home,
@@ -153,6 +154,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_repair.add_argument("--json", action="store_true", dest="json_output")
 
     register_project_parser(subparsers)
+    register_storage_parser(subparsers)
 
     workflow_parser = subparsers.add_parser(
         "workflow", help="Run a Lean workflow in the native runtime"
@@ -302,6 +304,14 @@ from leanflow_cli.shell import InteractiveShell  # noqa: F401
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Pin the installed runtime for this command and all workflow launches it owns."""
+    from leanflow_cli.runtime.runtime_install import running_runtime_lease
+
+    with running_runtime_lease():
+        return _main(argv)
+
+
+def _main(argv: list[str] | None = None) -> int:
     # Invariant: env (LEANFLOW_HOME/etc) is seeded here BEFORE any handler runs. tools.mcp.mcp_tool
     # is imported at module load but only reads env at call time, so the order is safe — keep
     # it that way (do not add module-load-time env reads to the MCP import chain). (B2)
@@ -330,6 +340,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if not issues else 1
     if args.command == "project":
         return _handle_project(args)
+    if args.command == "storage":
+        return handle_storage(args)
     if args.command == "sandbox":
         return _handle_sandbox(args)
     if args.command == "workflow":

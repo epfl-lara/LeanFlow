@@ -21,9 +21,14 @@ from leanflow_cli.native.harness_artifacts import promote, source_files, verify_
 from leanflow_cli.native.harness_context import prepare_context
 from leanflow_cli.native.harness_observer import NativeObserver
 from leanflow_cli.runtime.project_operations import project_activity
+from leanflow_cli.runtime.storage import StoragePressure
 from leanflow_cli.workflows.prover.native_bridge import NativeBridge
-from leanflow_cli.workflows.prover.native_snapshot import create_snapshot
+from leanflow_cli.workflows.prover.native_snapshot import (
+    prepare_snapshot,
+    release_snapshot_dependencies,
+)
 from leanflow_cli.workflows.prover.session_tools import SessionTools
+from leanflow_cli.workflows.prover.storage_admission import StorageAdmission
 
 
 def run_workflow(env: dict[str, str] | None = None) -> dict[str, Any]:
@@ -111,6 +116,8 @@ def _run_controller(
         },
     )
     cancelled = threading.Event()
+    storage_admission = StorageAdmission(root)
+    storage_error = ""
     finished = threading.Event()
     observing = threading.Event()
     observer = NativeObserver(root, run_id, kind, backend) if observe else None
@@ -120,6 +127,7 @@ def _run_controller(
             previous_signals[signum] = signal.signal(signum, lambda *_: cancelled.set())
 
     def heartbeat() -> None:
+        nonlocal storage_error
         while not finished.wait(1):
             budget.persist()
             if observer is not None and observing.is_set():
@@ -131,6 +139,12 @@ def _run_controller(
             remaining = budget.remaining()
             if remaining is not None and remaining <= 0:
                 cancelled.set()
+            try:
+                storage_admission.check()
+            except StoragePressure as error:
+                storage_error = str(error)
+                cancelled.set()
+                return
 
     ticker = threading.Thread(target=heartbeat, daemon=True)
     ticker.start()
@@ -139,8 +153,8 @@ def _run_controller(
         if observer is not None:
             observer.start(state)
             observing.set()
-        if not snapshot.exists():
-            create_snapshot(root, snapshot)
+        storage_admission.check(force=True)
+        prepare_snapshot(root, snapshot)
         scratch = snapshot / ".leanflow-job"
         scratch.mkdir(exist_ok=True)
         active = environment.get("LEANFLOW_NATIVE_ACTIVE_FILE", "")
@@ -228,6 +242,7 @@ def _run_controller(
                 backend, snapshot, env=environment, readable_roots=reads, denied_roots=(root,)
             )
             while not cancelled.is_set():
+                storage_admission.check(force=True)
                 if observer is not None:
                     observer.publish(state, budget, phase="agent")
                 invocation = budget.reserve()
@@ -391,6 +406,9 @@ def _run_controller(
     except LimitReached as error:
         state.update(status="limit_reached", error=str(error))
         return state
+    except StoragePressure as error:
+        storage_error = str(error)
+        return state
     except Exception as error:
         state.update(status="error", error=str(error))
         return state
@@ -398,10 +416,22 @@ def _run_controller(
         cancelled.set()
         finished.set()
         ticker.join()
+        if storage_error:
+            state.update(
+                status="storage_pressure",
+                error=storage_error,
+                next_step="Free disk space or adjust storage.min_free_gib, then resume. Proofs, checkpoints and consumed calls are preserved.",
+            )
         try:
             budget.persist()
             state["terminal"] = True
             atomic_json_write(state_path, state)
+            # Retain continuation files; only rebuildable dependency views expire.
+            try:
+                release_snapshot_dependencies(snapshot)
+            except (OSError, ValueError) as error:
+                state["cache_cleanup_error"] = str(error)
+                atomic_json_write(state_path, state)
             if observer is not None and observing.is_set():
                 observer.publish(state, budget)
                 observer.finish(state)
@@ -412,6 +442,14 @@ def _run_controller(
 
 
 def main() -> int:
+    """Pin managed runtime files throughout the detached native controller."""
+    from leanflow_cli.runtime.runtime_install import running_runtime_lease
+
+    with running_runtime_lease():
+        return _main()
+
+
+def _main() -> int:
     """Report an authoritative native workflow outcome to the shell and status history."""
     from leanflow_cli.workflows.workflow_state import append_workflow_outcome
 

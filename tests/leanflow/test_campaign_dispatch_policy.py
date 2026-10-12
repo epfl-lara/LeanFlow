@@ -201,3 +201,13 @@ def test_replacement_queue_reserves_a_draining_peer_then_releases_its_slot(tmp_p
         for s in snapshots
     )
     assert any(sum(c["status"] == "running" for c in s["cells"]) == 2 for s in snapshots)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_dispatch_runtime(monkeypatch):
+    """Keep scheduling unit fixtures independent of real installed runtime artifacts."""
+    from contextlib import nullcontext
+
+    from scripts.lean_imo_campaign import runner
+
+    monkeypatch.setattr(runner, "lease_frozen_runtime", lambda _: nullcontext())

@@ -68,6 +68,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "toolsets": ["leanflow-cli"],
     "agent": {"reasoning_effort": ""},
     "limits": {"agent_calls": None, "tokens": None, "wall_time_s": None},
+    "storage": {"cache_target_gib": 20, "min_free_gib": 10, "automatic_cleanup": True},
     "logging": {
         "preview_lines": 8,
         "preview_chars": 1600,
@@ -87,6 +88,8 @@ DEFAULT_CONFIG_HEADER = """# LeanFlow configuration
 # limits are global across a campaign: null means unlimited, 0 means exhausted.
 # One native CLI invocation is one agent call. Reported token usage can stop
 # subsequent calls; an active call can overshoot the token limit.
+# storage bounds rebuildable managed caches; proofs and checkpoints are retained.
+# The cache target is 20 GiB; new work requires 10 GiB of free disk space.
 """
 
 DEFAULT_ENV_TEMPLATE = """# LeanFlow environment overrides

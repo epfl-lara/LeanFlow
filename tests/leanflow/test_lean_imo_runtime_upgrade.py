@@ -43,9 +43,21 @@ def test_pid_reuse_is_never_adopted_or_signalled(monkeypatch: pytest.MonkeyPatch
         process.poll()
 
 
+def _stub_dispatch_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep runtime-selection unit tests independent of installed replay artifacts."""
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(
+        runner, "frozen_python", lambda directory: directory / "python-env/bin/python"
+    )
+    monkeypatch.setattr(runner, "lease_frozen_runtime", lambda _: nullcontext())
+    monkeypatch.setattr(runner, "restore_cell_dependencies", lambda *_: None)
+
+
 def test_launch_pins_new_runtime_but_resume_keeps_old(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _stub_dispatch_inputs(monkeypatch)
     old = tmp_path / "old"
     new = tmp_path / "new"
     for path, identity in ((old, "old-hash"), (new, "new-hash")):
@@ -89,6 +101,7 @@ def test_launch_resumes_the_run_with_the_most_consumed_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A stale resume_run_id would roll proved work back; the tip is what continues."""
+    _stub_dispatch_inputs(monkeypatch)
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "provenance.json").write_text(json.dumps({"runtime_sha256": "h"}))
@@ -170,6 +183,11 @@ def test_adopted_terminal_run_is_scored_without_relaunch(
     )
     monkeypatch.setattr(adoption, "process_identity", lambda _: "")
     monkeypatch.setattr(runner, "next_cell", lambda *args: None)
+    monkeypatch.setattr(
+        runner,
+        "lease_frozen_runtime",
+        lambda _: pytest.fail("Terminal scoring cannot require evicted replay inputs"),
+    )
     runner.run(tmp_path, adopt_active=True)
     result = json.loads((tmp_path / "campaign.json").read_text())
     assert result["status"] == "completed"

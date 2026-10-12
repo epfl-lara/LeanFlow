@@ -7,6 +7,23 @@ import { mount, textOf, act, SidebarView, clickedButtons, normalizeProverSnapsho
 
 function message(ui, type) { return ui.messages.filter(row => row.type === type).at(-1); }
 
+test("storage buttons inspect and collect only through fixed host actions", () => {
+  const ui = mount("providers");
+  try {
+    assert.equal(ui.button("Clean unused storage").props.disabled, true);
+    ui.click("Refresh storage");
+    assert.deepEqual(message(ui, "refreshStorage"), { type: "refreshStorage" });
+    ui.update(f => { f.app.storage = { checking: false, error: "", managedBytes: 1024 ** 3, pinnedBytes: 0, workspaceBytes: 0, freeBytes: 100 * 1024 ** 3, cacheTargetBytes: 20 * 1024 ** 3, minFreeBytes: 10 * 1024 ** 3, automaticCleanup: true }; });
+    assert.match(textOf(ui.root()), /Cache target: 20.0 GiB/);
+    assert.match(textOf(ui.root()), /Free-space reserve: 10.0 GiB/);
+    ui.click("Clean unused storage");
+    assert.deepEqual(message(ui, "cleanStorage"), { type: "cleanStorage" });
+    ui.update(f => { f.app.storage.checking = true; });
+    assert.equal(ui.button("Clean unused storage").props.disabled, true);
+    assert.equal(ui.button("Refresh storage").props.disabled, true);
+  } finally { ui.dispose(); }
+});
+
 test("launch names the inherited provider and keeps setup outside the control label", () => {
   const ui = mount();
   try {

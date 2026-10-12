@@ -16,8 +16,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from core.file_copy import copy_tree
 from core.filesystem import ensure_directory
 from leanflow_cli.config import get_leanflow_home, load_config
+from leanflow_cli.runtime.storage import ensure_storage_capacity, storage_policy
 from leanflow_cli.workflows.project import LeanFlowProject, discover_leanflow_project
 from tools.utilities.repository_research_policy import (
     CLEAN_ROOM_TASK_LABELS_ENV,
@@ -238,11 +240,12 @@ def copy_project_tree(project_root: Path, destination: Path) -> None:
     if destination.exists():
         raise SandboxRuntimeError(f"Sandbox worktree already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
+    ensure_storage_capacity(destination.parent)
+    copy_tree(
         project_root,
         destination,
         ignore=lambda src, names: _should_ignore(Path(src), project_root, names),
-        symlinks=True,
+        reserve_bytes=storage_policy().min_free_bytes,
     )
 
 
@@ -374,14 +377,15 @@ def _prepare_sandbox_package_overlay(package: Path, cache_root: Path) -> Path:
     if destination.is_dir():
         return destination
     temporary = cache_root / f".{package.name}.{uuid.uuid4().hex}.tmp"
-    shutil.copytree(
+    ensure_storage_capacity(cache_root)
+    copy_tree(
         package,
         temporary,
-        symlinks=True,
         # Lake uses the dependency repository metadata to verify that the
         # manifest URL/revision still matches. Retain the small package-local
         # `.git`; clean-room policy still denies model Git commands.
         ignore=shutil.ignore_patterns(".lake", "__pycache__"),
+        reserve_bytes=storage_policy().min_free_bytes,
     )
     try:
         temporary.rename(destination)

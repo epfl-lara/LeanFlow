@@ -49,6 +49,7 @@ async function fixture() {
     onDidChange: () => disposable, state: () => ({ project: { found: true, root } }), reload: record("refresh"), reloadProfiles: record("profiles"), selectRun: record("select"), openRun: record("openRun"),
     setup: { start: record("setup"), cancel: record("cancelSetup"), showLog: record("setupLog"), assertLaunchReady: () => { if (f.setupBlocked) throw new Error("Project setup is incomplete. Retry setup."); } },
     providers: { refresh: record("providers"), act: record("providerAction"), state: () => f.providerState },
+    storage: { refresh: record("storage"), clean: record("cleanStorage") },
     runs: { openTerminal: record("terminal"), onDidAppendEvents: () => disposable, projectRootForRun: id => id === "run-1" ? root : null,
       launch: async (...args) => { f.calls.push(["launch", ...args]); return { id: "tracked-1", runId: "run-1", label: "Test run" }; },
       stop: async id => { f.calls.push(["stop", id]); return { stopped: true }; }, loadEvents: async () => [], runLog: async () => "test log",
@@ -67,7 +68,9 @@ async function fixture() {
 test("navigation, clipboard and provider actions reach native editor services", async () => {
   const ui = await fixture();
   try {
-    for (const type of ["ready", "refresh", "refreshProviders", "openDashboard", "openCliSettings", "setupProject", "retryProjectSetup", "repairProjectSetup", "cancelProjectSetup", "showProjectSetupLog", "configureProvider"]) await ui.send({ type });
+    for (const type of ["ready", "refresh", "refreshProviders", "refreshStorage", "cleanStorage", "openDashboard", "openCliSettings", "setupProject", "retryProjectSetup", "repairProjectSetup", "cancelProjectSetup", "showProjectSetupLog", "configureProvider"]) await ui.send({ type });
+    assert.ok(ui.calls.some(row => row[0] === "storage"));
+    assert.ok(ui.calls.some(row => row[0] === "cleanStorage"));
     assert.equal(ui.last("state").state.project.root, ui.root);
     assert.deepEqual(ui.calls.filter(row => row[0] === "setup"), [["setup"], ["setup", true], ["setup", false, true]]);
     assert.ok(ui.calls.some(row => row[0] === "cancelSetup"));

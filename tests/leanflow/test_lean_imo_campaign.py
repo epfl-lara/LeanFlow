@@ -161,7 +161,12 @@ def test_each_cell_starts_from_frozen_statement_only(
         tmp_path / "provenance.json",
         {"statement_files": {"LeanIMOBench/Test.lean": digest(source)}},
     )
-    monkeypatch.setattr(artifacts, "clone", shutil.copytree)
+    monkeypatch.setattr(
+        artifacts,
+        "copy_dependencies",
+        lambda source, destination, **_: shutil.copytree(source / ".lake/packages", destination),
+    )
+    monkeypatch.setattr(artifacts, "register_cell", lambda _: None)
     monkeypatch.setattr(artifacts, "initialize_lake", lambda _: {})
     rows = cells([{"id": "p", "file": "LeanIMOBench/Test.lean"}])
     a = prepare(tmp_path, rows[0])

@@ -115,6 +115,10 @@ no_site_packages = true
 # Incremental gate: ONLY these files are type-checked. The list grows each phase as
 # modules are extracted/cleaned. mypy needs explicit targets — overrides alone do not select.
 files = [
+  "leanflow_cli/runtime/storage",
+  "leanflow_cli/runtime/dependency_cache",
+  "leanflow_cli/runtime/runtime_install.py",
+  "leanflow_cli/cli/storage_command.py",
   "agent/runtime/harness",
   "core/campaign_limits.py",
   "core/error_redaction.py",

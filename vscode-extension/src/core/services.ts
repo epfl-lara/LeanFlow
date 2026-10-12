@@ -17,6 +17,7 @@ import {
 } from "./project";
 import { ProjectSetup } from "./projectSetup";
 import { ProviderSetup } from "./providerSetup";
+import { StorageService } from "./storage";
 import { ProverService } from "./proverService";
 import { RunManager } from "./runManager";
 import { runChoices, selectedRunChoice } from "./runCatalog";
@@ -39,6 +40,7 @@ export class LeanFlowServices implements vscode.Disposable {
 
   readonly setup: ProjectSetup;
   readonly providers: ProviderSetup;
+  readonly storage: StorageService;
   readonly runs: RunManager;
   readonly experiments: ExperimentEngine;
   /** Cached, change-gated reads of exact-run prover state. */
@@ -53,6 +55,7 @@ export class LeanFlowServices implements vscode.Disposable {
   constructor(context: vscode.ExtensionContext) {
     this.project = discoverProject();
     this.providers = new ProviderSetup(context, () => this.project.root || undefined);
+    this.storage = new StorageService();
     this.runs = new RunManager(context, this.project, () => this.providers.credentials.environment(), root => this.setup.assertLaunchReady(root));
     this.prover = new ProverService(this.runs);
     this.setup = new ProjectSetup({
@@ -70,6 +73,8 @@ export class LeanFlowServices implements vscode.Disposable {
       this.setup.onDidChange(() => this.changed.fire()),
       this.providers,
       this.providers.onDidChange(() => this.changed.fire()),
+      this.storage,
+      this.storage.onDidChange(() => this.changed.fire()),
       this.runs,
       this.experiments,
       this.runs.onDidChange(() => this.changed.fire()),
@@ -100,6 +105,7 @@ export class LeanFlowServices implements vscode.Disposable {
       : choice?.runId === snapshot.liveStatus?.run_id ? snapshot.liveStatus : null;
     return {
       providers: this.providers.state(),
+      storage: this.storage.state(),
       projectSetup: this.setup.state(),
       project: this.project,
       cli: { ...this.cli, error: redactSensitiveText(this.cli.error) },
@@ -173,6 +179,7 @@ export class LeanFlowServices implements vscode.Disposable {
       await this.setup.refresh(this.cli.ok);
       void this.providers.refresh();
       if (this.cli.ok) {
+        void this.storage.refresh();
         const cwd = this.project.found ? this.project.root : undefined;
         const [catalog, profiles] = await Promise.all([
           fetchFlagCatalog(cwd).catch(() => null),

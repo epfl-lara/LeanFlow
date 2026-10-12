@@ -27,7 +27,17 @@ limits:
   agent_calls: null
   tokens: null
   wall_time_s: null
+storage:
+  cache_target_gib: 20
+  min_free_gib: 10
+  automatic_cleanup: true
 ```
+
+Compatible projects reuse sealed dependencies through private writable filesystem
+clones. `leanflow storage status` reports usage; `leanflow storage clean` removes
+unused managed caches and obsolete runtimes. Active processes, proofs, results,
+checkpoints and logs are protected. Low disk space stops further work with a
+resumable `storage_pressure` outcome. See [storage and cleanup](storage.md).
 
 Empty model/effort values inherit the selected runtime's defaults. LeanFlow
 never sets temperature, top-p, a context window, output-token limits or a

@@ -48,6 +48,13 @@ leanflow doctor          # checks the Lean toolchain, MCP backends, and external
 `doctor` also checks the external CLIs the workflows use: `rg` for local search and Poppler's
 `pdftotext` / `pdfinfo` / `pdfimages` for reading PDF sources.
 
+The installer prepares a versioned runtime and switches future commands after
+validation, preserving active runs. Compatible projects share sealed dependency
+caches through private writable filesystem clones. Automatic cleanup targets
+20 GiB of managed storage and keeps a 10 GiB free-space reserve while retaining
+proofs and checkpoints. Inspect it with `leanflow storage status`, or use the
+storage card on VS Code's Providers page. See [storage and cleanup](docs/storage.md).
+
 ## Quick start
 
 In VS Code, open a folder and click **Set up project** in the LeanFlow sidebar or

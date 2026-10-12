@@ -71,6 +71,7 @@ if (tests) {
       experimentValidity: "src/core/experimentValidity.ts",
       stats: "webview/stats.ts",
       storageSecurity: "src/core/storageSecurity.ts",
+      storageState: "src/core/storageState.ts",
       runOwnership: "src/core/runOwnership.ts",
       runCatalog: "src/core/runCatalog.ts",
       runSelection: "src/core/runSelection.ts",

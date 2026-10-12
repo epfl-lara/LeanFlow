@@ -214,6 +214,15 @@ export class WebviewHost implements vscode.Disposable {
         await services.providers.refresh();
         return;
       }
+      case "refreshStorage": {
+        await services.storage.refresh();
+        return;
+      }
+      case "cleanStorage": {
+        await services.storage.clean();
+        this.notify("info", "Unused managed storage cleaned. Proofs and checkpoints were retained.");
+        return;
+      }
       case "providerAction": {
         await services.providers.act(message.backend, message.action);
         return;
