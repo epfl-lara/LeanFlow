@@ -66,6 +66,17 @@ def test_prepare_leaves_legacy_runtime_and_pointers_untouched(source: Path) -> N
     assert marker["ready"] is False
 
 
+def test_optional_search_has_its_own_reusable_runtime(source: Path) -> None:
+    """Do not reuse a minimal environment when local ML dependencies are requested."""
+    minimal = installer.prepare_install(source)
+    _complete(minimal, source, source.parent / "bin")
+    search = installer.prepare_install(source, local_search=True)
+    assert search.venv_dir != minimal.venv_dir
+    _complete(search, source, source.parent / "bin")
+    assert installer.prepare_install(source, local_search=True).reuse
+    assert installer.prepare_install(source).identity == minimal.identity
+
+
 def test_completed_same_source_runtime_reused_without_mutation(source: Path) -> None:
     first = installer.prepare_install(source)
     _complete(first, source, source.parent / "bin")

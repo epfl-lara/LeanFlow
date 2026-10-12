@@ -33,7 +33,7 @@ def _wait_for_independent_python_child(marker: str) -> int:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         completed = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,pgid=,command="],
+            ["ps", "-ww", "-axo", "pid=,ppid=,pgid=,command="],
             check=False,
             capture_output=True,
             text=True,

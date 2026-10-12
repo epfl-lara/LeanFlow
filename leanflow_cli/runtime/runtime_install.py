@@ -136,6 +136,7 @@ def prepare_install(
     recreate: bool = False,
     mode: str = "editable",
     installer_pid: int | None = None,
+    local_search: bool = False,
 ) -> InstallPlan:
     """Claim a fresh permanent runtime without changing an existing environment."""
     from leanflow_cli.runtime.storage import (
@@ -147,7 +148,7 @@ def prepare_install(
 
     source = source.resolve()
     home = leanflow_home().resolve()
-    identity = source_identity(source, mode=mode)
+    identity = source_identity(source, mode=f"{mode}:local-search" if local_search else mode)
     managed = explicit_venv is None
     runtime = home / "runtimes" / identity
     venv = explicit_venv.expanduser().absolute() if explicit_venv else runtime / "venv"
@@ -308,6 +309,7 @@ def main() -> None:
     prepare.add_argument("--recreate", action="store_true")
     prepare.add_argument("--mode", choices=("editable", "wheel"), default="editable")
     prepare.add_argument("--installer-pid", type=int)
+    prepare.add_argument("--local-search", action="store_true")
     finalize = subparsers.add_parser("finalize")
     finalize.add_argument("--source", type=Path, required=True)
     finalize.add_argument("--venv-dir", type=Path, required=True)
@@ -322,6 +324,7 @@ def main() -> None:
                 recreate=arguments.recreate,
                 mode=arguments.mode,
                 installer_pid=arguments.installer_pid,
+                local_search=arguments.local_search,
             )
             print("reuse" if plan.reuse else "new")
             print(plan.venv_dir)

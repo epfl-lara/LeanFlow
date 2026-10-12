@@ -3,6 +3,11 @@
 User-visible changes to the LeanFlow VS Code extension. Entries before 0.1.20
 include features and settings from the former direct-provider runtime.
 
+## 0.1.33
+
+- Recognize host-local file paths in Remote SSH workspaces so project discovery
+  and one-click setup work on the remote machine.
+
 ## 0.1.32
 
 - Record native model and reasoning settings for every agent call, including

@@ -86,6 +86,29 @@ def test_empty_folder_defaults_to_pinned_mathlib_and_real_protocol(tmp_path, fak
     assert events[-1]["phase"] == "checking_readiness"
 
 
+def test_quoted_scoped_requirements_prepare_mathlib(tmp_path, fake_tools):
+    """Download library builds for Lake's quoted scope/name syntax."""
+    root = existing_project(tmp_path / "quoted", lean_file=True)
+    with (root / "lakefile.lean").open("a") as stream:
+        stream.write(
+            '\nrequire "leanprover-community" / "mathlib" from git "https://example.org/mathlib"\n'
+        )
+        stream.write('/- require "ignored" / "comment" -/\n')
+        stream.write('def note := "\nrequire fake\n"\n')
+    # The executable custom command needs its own REPL requirement; setup may
+    # inspect dependencies without guessing how to extend that custom DSL.
+    from leanflow_cli.workflows.project_setup.verification import dependency_names
+
+    assert dependency_names(root) == {"mathlib"}
+    (root / "lakefile.lean").write_text(
+        'import Lake\nopen Lake DSL\npackage demo\nrequire "leanprover-community" / "mathlib" from git "https://example.org/mathlib"\n'
+    )
+    result = prepare_project(root)
+    assert result["status"] == "ready"
+    assert result["capabilities"]["mathlib"] is True
+    assert ["lake", "exe", "cache", "get"] in fake_tools[0]
+
+
 def test_standalone_file_is_preserved_byte_for_byte(tmp_path, fake_tools):
     root = tmp_path / "standalone"
     root.mkdir()

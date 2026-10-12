@@ -500,3 +500,20 @@ def test_macos_inventory_accepts_mandatory_cwd_field(monkeypatch) -> None:
     views = process_inventory._posix_views()
     assert views.complete
     assert views.working_directories == ("/tmp/project",)
+
+
+def test_linux_login_helper_requires_privileged_service_parent(tmp_path: Path) -> None:
+    """Do not let unreadable login daemons block all storage cleanup on SSH hosts."""
+    helper, parent = tmp_path / "123", tmp_path / "122"
+    helper.mkdir()
+    parent.mkdir()
+    (helper / "status").write_text("PPid:\t122\n")
+    (helper / "comm").write_text("sshd\n")
+    (parent / "comm").write_text("sshd\n")
+    (parent / "status").write_text("Uid:\t0\t0\t0\t0\n")
+    assert process_inventory._system_session_helper(helper)
+    (parent / "status").write_text("Uid:\t1000\t1000\t1000\t1000\n")
+    assert not process_inventory._system_session_helper(helper)
+    (helper / "comm").write_text("python\n")
+    (parent / "status").write_text("Uid:\t0\t0\t0\t0\n")
+    assert not process_inventory._system_session_helper(helper)

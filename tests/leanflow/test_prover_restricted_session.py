@@ -266,7 +266,9 @@ def test_bridge_forwards_network_policy_to_commands(
     assert received == [allow_internet]
 
 
-def test_restricted_command_can_work_locally_but_cannot_reach_network(tmp_path: Path) -> None:
+def test_restricted_command_can_work_locally_but_cannot_reach_network(
+    tmp_path: Path, kernel_sandbox
+) -> None:
     if sys.platform == "darwin" and not shutil.which("sandbox-exec"):
         pytest.skip("macOS sandbox-exec unavailable")
     if sys.platform == "linux" and not shutil.which("bwrap"):

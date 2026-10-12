@@ -33,6 +33,38 @@ class ProcessViews:
         )
 
 
+def _system_session_helper(process: Path) -> bool:
+    """Recognize privileged login helpers that cannot own native workspaces.
+
+    SSH and PAM deliberately hide cwd even from their login user. Require their
+    real service parent, rather than trusting a process name alone, so they do
+    not make every remote-host cleanup permanently unavailable.
+    """
+    try:
+        status = dict(
+            line.split(":", 1)
+            for line in (process / "status").read_text().splitlines()
+            if ":" in line
+        )
+        parent = process.parent / status["PPid"].strip()
+        name = (process / "comm").read_text().strip()
+        if name == "sshd" and (parent / "comm").read_text().strip() == "sshd":
+            parent_status = (parent / "status").read_text()
+            uid = next(
+                line.split()[1:3] for line in parent_status.splitlines() if line.startswith("Uid:")
+            )
+            return uid == ["0", "0"]
+        if name == "(sd-pam)":
+            executable = (parent / "exe").resolve(strict=True)
+            return (
+                str(executable) in {"/usr/lib/systemd/systemd", "/lib/systemd/systemd"}
+                and executable.stat().st_uid == 0
+            )
+    except (OSError, KeyError, ValueError, StopIteration):
+        pass
+    return False
+
+
 def _linux_views() -> ProcessViews:
     """Inspect current-user procfs cwd and command lines without reading environments."""
     directories: list[str] = []
@@ -57,6 +89,9 @@ def _linux_views() -> ProcessViews:
             commands.append(
                 (process / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
             )
+        except PermissionError:
+            if process.exists() and not _system_session_helper(process):
+                complete = False
         except (OSError, IndexError):
             if process.exists():
                 complete = False

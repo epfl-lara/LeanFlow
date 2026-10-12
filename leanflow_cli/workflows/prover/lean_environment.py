@@ -14,6 +14,7 @@ from pathlib import Path
 _SKIP = {".git", ".leanflow", ".leanflow-job", ".venv", "node_modules", "__pycache__"}
 _CONFIG = {"lean-toolchain", "lakefile.lean", "lakefile.toml", "lake-manifest.json"}
 _ENV = ("PATH", "ELAN_HOME", "ELAN_TOOLCHAIN", "LEAN_PATH")
+_CONTENT_FINGERPRINT_LIMIT = 64 * 1024
 
 
 def _toolchain_roots(project: Path) -> list[Path]:
@@ -100,7 +101,8 @@ def lean_environment_generation(project: Path, *, excluded_sources: Iterable[Pat
     Exclude managed source paths only when the caller separately keys their
     relevant import closure. Native snapshots use their own absolute root/key.
 
-    Large library bytes are not reread: device/inode, size and nanosecond change
+    Small inputs are content-hashed because local filesystems can coalesce
+    consecutive write timestamps. Large library bytes are not reread: device/inode, size and nanosecond change
     and modification times identify versions on a normal local filesystem.
     This is controller-memory reuse, not a portable or persistent proof digest;
     filesystems that conceal mutations from stat are outside this contract.
@@ -176,7 +178,11 @@ def lean_environment_generation(project: Path, *, excluded_sources: Iterable[Pat
                     ).encode()
                 )
                 fingerprint.update(b"\0")
-            if path.name in _CONFIG or path.name == "settings.toml":
+            if (
+                path.name in _CONFIG
+                or path.name == "settings.toml"
+                or (not symlink and info.st_size <= _CONTENT_FINGERPRINT_LIMIT)
+            ):
                 fingerprint.update(path.read_bytes())
                 fingerprint.update(b"\0")
     return fingerprint.hexdigest()

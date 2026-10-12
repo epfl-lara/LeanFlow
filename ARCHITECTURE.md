@@ -49,7 +49,7 @@ independent Lean acceptance.
 `env_loader.py` preserves native environment variables and excludes legacy
 provider credentials from LeanFlow dotenv. `config.py` rejects obsolete schema
 settings with migration guidance. `runtime/lemex_install.py` adopts or installs a
-pinned self-contained Lemex distribution without replacing its global executable
+pinned self-contained npm or native-source Lemex bundle, including companion files, without replacing its global executable
 or copying native authentication.
 
 Native tools run in filtered private project snapshots under macOS seatbelt or
@@ -58,6 +58,9 @@ filesystem permissions; nested Codex/Lemex seatbelt is disabled on macOS inside
 that boundary. Runtime configuration is protected from tool writes. Unrelated
 MCP servers, hooks, plugins, and project-local native settings cannot introduce
 extra authority.
+
+`agent/runtime/harness/preflight.py` checks host sandbox permissions without
+starting a model; `doctor` reports this separately from runtime installation.
 
 Normal sessions permit network research. Restricted sessions exclude prior native
 context and automatic memories, and disable native research tools. Controller
@@ -158,6 +161,8 @@ symlinks or hardlinks are exposed. Root proof artifacts never enter the store.
 `runtime/storage/` owns policy, leases, marked entries, LRU cleanup, process-view
 protection, and abandoned-view recovery. Only managed entries or registered
 views are collectible; proofs and checkpoints remain outside deletion scope.
+Linux inventories exclude unreadable SSH/PAM login helpers only after validating
+their service parent; unknown unreadable processes still protect all entries.
 Defaults are a 20 GiB soft target and 10 GiB reserve. `prover/storage_admission.py`
 guards dispatch and quiet polling; storage pressure checkpoints owned work.
 `cli/storage_command.py` exposes inspection, cleanup, and explicit publication.

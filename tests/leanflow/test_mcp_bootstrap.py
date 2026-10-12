@@ -46,7 +46,7 @@ def test_write_managed_mcp_config_preserves_comments_and_unrelated_keys(tmp_path
     assert "- mcp" in rendered
     assert "- serve" in rendered
     assert "- --backend" in rendered
-    assert "- local" in rendered
+    assert "- api" in rendered
     assert "LEAN_REPL: 'true'" in rendered or "LEAN_REPL: true" in rendered
     assert "LEAN_REPL_TIMEOUT: '60'" in rendered or "LEAN_REPL_TIMEOUT: 60" in rendered
     assert "LEAN_REPL_MEM_MB: '8192'" in rendered or "LEAN_REPL_MEM_MB: 8192" in rendered
@@ -54,7 +54,7 @@ def test_write_managed_mcp_config_preserves_comments_and_unrelated_keys(tmp_path
     assert "LEAN_MCP_INSTRUCTIONS:" in rendered
 
 
-def test_write_managed_mcp_config_migrates_leanexplore_to_local_enabled(tmp_path):
+def test_write_managed_mcp_config_preserves_disabled_semantic_search(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     config_path = home / "config.yaml"
@@ -74,8 +74,8 @@ def test_write_managed_mcp_config_migrates_leanexplore_to_local_enabled(tmp_path
     write_managed_mcp_config(home)
 
     rendered = config_path.read_text(encoding="utf-8")
-    assert "- local" in rendered
-    assert "enabled: true" in rendered
+    assert "- api" in rendered
+    assert "enabled: false" in rendered
 
 
 def test_managed_mcp_server_status_marks_missing_servers_for_bootstrap(tmp_path):

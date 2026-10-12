@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from leanflow_cli.lean.lean_parsing import _strip_lean_comments_and_strings
+from leanflow_cli.lean.lean_statement_guard import _strip_lean_comments
 from leanflow_cli.workflows.project_setup.process import SetupFailure
 from leanflow_cli.workflows.project_setup.scaffold import (
     DEFAULT_TOOLCHAIN,
@@ -59,10 +60,22 @@ def dependency_names(root: Path) -> set[str]:
             if isinstance(item, dict)
         }
     path = root / "lakefile.lean"
-    text = (
-        _strip_lean_comments_and_strings(path.read_text(encoding="utf-8")) if path.is_file() else ""
+    text = _strip_lean_comments(path.read_text(encoding="utf-8")) if path.is_file() else ""
+    # Lake supports both identifiers and quoted scope/name requirements.
+    masked = re.sub(
+        r'"(?:\\.|[^"\\])*"',
+        lambda match: re.sub(r"[^\n]", " ", match.group()),
+        text,
     )
-    return set(re.findall(r"^\s*require\s+([A-Za-z_][A-Za-z0-9_]*)\b", text, re.MULTILINE))
+    names: set[str] = set()
+    for command in re.finditer(r"^\s*require\b", masked, re.MULTILINE):
+        match = re.match(
+            r'\s+(?:"[^"\n]+"\s*/\s*)?(?:"([^"\n]+)"|([A-Za-z_][A-Za-z0-9_]*))',
+            text[command.end() :],
+        )
+        if match:
+            names.add(match[1] or match[2])
+    return names
 
 
 def repl_binary(root: Path) -> Path | None:

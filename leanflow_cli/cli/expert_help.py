@@ -363,7 +363,7 @@ def _snapshot_tagged_expert_processes(
         return []
     try:
         completed = subprocess.run(
-            ["ps", "e", "-ww", "-axo", "pid=,ppid=,pgid=,command="],
+            ["ps", "axeww", "-o", "pid=,ppid=,pgid=,command="],
             check=False,
             capture_output=True,
             text=True,

@@ -12,13 +12,16 @@ if [[ -n "${LEANFLOW_INSTALL_PYTHON:-}" ]]; then
   INSTALL_PYTHON_EXPLICIT=1
 fi
 LEANFLOW_INSTALL_PYTHON="${LEANFLOW_INSTALL_PYTHON:-python3}"
-LEANFLOW_FETCH_LEANEXPLORE_DATA="${LEANFLOW_FETCH_LEANEXPLORE_DATA:-1}"
+LEANFLOW_FETCH_LEANEXPLORE_DATA="${LEANFLOW_FETCH_LEANEXPLORE_DATA:-0}"
 LEANFLOW_INSTALL_OS_TOOLS="${LEANFLOW_INSTALL_OS_TOOLS:-1}"
 INSTALL_MODE="editable"
 RECREATE_VENV=0
 STEP=0
 TOTAL_STEPS=12
 REQUIRED_EXTERNAL_TOOLS=(rg pdftotext pdfinfo pdfimages)
+if [[ "$(uname -s)" == "Linux" ]]; then
+  REQUIRED_EXTERNAL_TOOLS+=(bwrap)
+fi
 
 banner() {
   printf '\n'
@@ -166,6 +169,7 @@ install_external_tools_with_apt_sudo() {
   sudo -n true >/dev/null 2>&1 || return 1
   local packages=()
   tool_version_ok rg || packages+=(ripgrep)
+  tool_version_ok bwrap || packages+=(bubblewrap)
   if ! tool_version_ok pdftotext || ! tool_version_ok pdfinfo || ! tool_version_ok pdfimages; then
     packages+=(poppler-utils)
   fi
@@ -175,8 +179,10 @@ install_external_tools_with_apt_sudo() {
   sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
 }
 
-install_user_local_ripgrep_with_apt_download() {
-  tool_version_ok rg && return 0
+install_user_local_tool_with_apt_download() {
+  local binary="$1"
+  local package="$2"
+  tool_version_ok "$binary" && return 0
   command -v apt-get >/dev/null 2>&1 || return 1
   command -v dpkg-deb >/dev/null 2>&1 || return 1
   local tmp_dir
@@ -184,17 +190,17 @@ install_user_local_ripgrep_with_apt_download() {
   tmp_dir="$(mktemp -d)"
   if (
     cd "$tmp_dir"
-    apt-get download ripgrep >/dev/null
+    apt-get download "$package" >/dev/null
   ); then
-    deb="$(find "$tmp_dir" -name 'ripgrep_*.deb' -print -quit)"
+    deb="$(find "$tmp_dir" -name "${package}_*.deb" -print -quit)"
     if [[ -n "$deb" ]]; then
       mkdir -p "$LEANFLOW_HOME/vendor/os-tools"
       dpkg-deb -x "$deb" "$LEANFLOW_HOME/vendor/os-tools"
-      ln -sf "$LEANFLOW_HOME/vendor/os-tools/usr/bin/rg" "$LEANFLOW_BIN_DIR/rg"
+      ln -sf "$LEANFLOW_HOME/vendor/os-tools/usr/bin/$binary" "$LEANFLOW_BIN_DIR/$binary"
     fi
   fi
   rm -rf "$tmp_dir"
-  tool_version_ok rg
+  tool_version_ok "$binary"
 }
 
 ensure_external_cli_tools() {
@@ -215,7 +221,8 @@ ensure_external_cli_tools() {
       ;;
     Linux)
       install_external_tools_with_apt_sudo || true
-      install_user_local_ripgrep_with_apt_download || true
+      install_user_local_tool_with_apt_download rg ripgrep || true
+      install_user_local_tool_with_apt_download bwrap bubblewrap || true
       ;;
   esac
 
@@ -225,6 +232,12 @@ ensure_external_cli_tools() {
   else
     warn "missing external CLI tools after install attempt: $(missing_external_tools_text)"
     warn "PDF extraction needs poppler-utils/poppler; local search needs ripgrep"
+  fi
+  if [[ "$(uname -s)" == "Linux" ]] && tool_version_ok bwrap; then
+    if ! bwrap --ro-bind / / --unshare-user --unshare-pid --proc /proc --dev /dev /bin/true >/dev/null 2>&1; then
+      warn "Bubblewrap cannot create the required sandbox. Native proving is unavailable until the host permits its user namespaces."
+      warn "On Ubuntu, ask an administrator to install bubblewrap and enable its AppArmor profile. Do not disable host security protections."
+    fi
   fi
 }
 
@@ -241,8 +254,8 @@ Options:
   --venv-dir PATH        Fresh virtualenv path (default: versioned runtime in ~/.leanflow)
   --python BIN           Python 3.12+ interpreter (default: detect a supported local Python)
   --recreate-venv        Build a fresh runtime; never remove an existing environment
-  --skip-leanexplore-data
-                        Skip local LeanExplore index fetch
+  --skip-leanexplore-data Skip local LeanExplore installation and index fetch
+  --local-leanexplore    Install optional local semantic search and fetch its data
   --skip-os-tools       Do not install or wire external CLI tools
   --no-editable          Install a wheel instead of editable mode
   -h, --help             Show this help
@@ -281,6 +294,10 @@ while [[ $# -gt 0 ]]; do
       LEANFLOW_FETCH_LEANEXPLORE_DATA=0
       shift
       ;;
+    --local-leanexplore)
+      LEANFLOW_FETCH_LEANEXPLORE_DATA=1
+      shift
+      ;;
     --skip-os-tools)
       LEANFLOW_INSTALL_OS_TOOLS=0
       shift
@@ -311,6 +328,9 @@ ok "bin : $LEANFLOW_BIN_DIR"
 ok "Python: $LEANFLOW_INSTALL_PYTHON"
 
 INSTALL_ARGS=(prepare --source "$REPO_ROOT" --mode "$INSTALL_MODE" --installer-pid "$$")
+if [[ "$LEANFLOW_FETCH_LEANEXPLORE_DATA" == "1" ]]; then
+  INSTALL_ARGS+=(--local-search)
+fi
 if [[ -n "$LEANFLOW_VENV_DIR" ]]; then
   INSTALL_ARGS+=(--venv-dir "$LEANFLOW_VENV_DIR")
 fi
@@ -340,12 +360,16 @@ step "Installing LeanFlow package"
 if [[ "$INSTALL_REUSE" == "reuse" ]]; then
   ok "retained installed package without modifying its environment"
 else
+  PACKAGE_EXTRAS="mcp"
+  if [[ "$LEANFLOW_FETCH_LEANEXPLORE_DATA" == "1" ]]; then
+    PACKAGE_EXTRAS="mcp,lean-explore"
+  fi
   python -m pip install --quiet --quiet --upgrade pip "setuptools<82" wheel
   if [[ "$INSTALL_MODE" == "editable" ]]; then
-    python -m pip install --quiet --quiet -e "$REPO_ROOT[mcp,lean-explore]"
+    python -m pip install --quiet --quiet -e "$REPO_ROOT[$PACKAGE_EXTRAS]"
     ok "installed editable package"
   else
-    python -m pip install --quiet --quiet "$REPO_ROOT[mcp,lean-explore]"
+    python -m pip install --quiet --quiet "$REPO_ROOT[$PACKAGE_EXTRAS]"
     ok "installed package wheel"
   fi
 fi

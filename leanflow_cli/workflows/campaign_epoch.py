@@ -1509,7 +1509,7 @@ def record_route_decision(
         route_record["target"] = normalized_target
     if semantic_identity.proof_shapes:
         route_record["semantic_proof_shapes"] = list(semantic_identity.proof_shapes)
-    semantic_record = {
+    semantic_record: dict[str, Any] = {
         key: route_record[key]
         for key in (
             "route",

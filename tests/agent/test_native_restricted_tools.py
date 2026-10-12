@@ -110,7 +110,7 @@ def test_restricted_commands_preserve_explicit_native_model_and_effort(
 
 @pytest.mark.parametrize("backend", ["codex", "claude", "lemex"])
 def test_kernel_restricts_native_workspace_and_history_but_keeps_model_network(
-    tmp_path: Path, backend: str
+    tmp_path: Path, backend: str, kernel_sandbox
 ) -> None:
     system = platform.system()
     if system not in {"Darwin", "Linux"}:

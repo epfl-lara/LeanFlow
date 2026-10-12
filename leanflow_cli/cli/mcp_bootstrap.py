@@ -69,9 +69,9 @@ MANAGED_LEAN_MCP_SPECS: dict[str, ManagedMCPServerSpec] = {
         name="lean-explore",
         role="semantic-declaration-search",
         venv_name="lean-explore",
-        install_spec="lean-explore[local]",
+        install_spec="lean-explore",
         console_script="lean-explore",
-        args=("mcp", "serve", "--backend", "local"),
+        args=("mcp", "serve", "--backend", "api"),
         min_python=(3, 12),
     ),
 }
@@ -229,8 +229,6 @@ def _write_bootstrap_document(path: Path, yaml: YAML, payload: CommentedMap) -> 
 def _ensure_managed_server_entry(
     entry: CommentedMap, *, spec: ManagedMCPServerSpec, home: Path
 ) -> None:
-    previous_args = list(entry.get("args") or []) if isinstance(entry.get("args"), list) else []
-    previous_enabled = entry.get("enabled")
     entry["command"] = str(managed_mcp_command_path(spec.name, home))
     entry["args"] = list(spec.args)
     env_defaults = dict(spec.env)
@@ -259,11 +257,7 @@ def _ensure_managed_server_entry(
                 env["LEAN_LOOGLE_CACHE_DIR"] = generic
     entry["role"] = spec.role
     entry["managed"] = True
-    if "enabled" not in entry or (
-        spec.name == "lean-explore"
-        and previous_enabled is False
-        and previous_args == ["mcp", "serve", "--backend", "api"]
-    ):
+    if "enabled" not in entry:
         entry["enabled"] = spec.default_enabled
     if "timeout" not in entry:
         entry["timeout"] = spec.timeout

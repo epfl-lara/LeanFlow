@@ -82,11 +82,11 @@ def test_generation_ignores_private_receipts_and_excluded_managed_source(project
     assert lean_environment_generation(project) != before
 
 
-def test_generation_never_reads_compiled_library_bytes(
+def test_generation_never_reads_large_compiled_library_bytes(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     artifact = project / "Big.olean"
-    artifact.write_bytes(b"library")
+    artifact.write_bytes(b"library" * (128 * 1024))
     original = Path.read_bytes
 
     def read(path: Path) -> bytes:
@@ -96,6 +96,24 @@ def test_generation_never_reads_compiled_library_bytes(
     monkeypatch.setattr(Path, "read_bytes", read)
     before = lean_environment_generation(project)
     assert lean_environment_generation(project) == before
+
+
+def test_small_same_size_library_changes_invalidate_even_with_coarse_stat(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Detect fast library writes whose size and filesystem timestamps coincide."""
+    artifact = project / "Small.olean"
+    artifact.write_bytes(b"before")
+    previous = artifact.lstat()
+    original = Path.lstat
+
+    def coalesced(path: Path, *args, **kwargs):
+        return previous if path == artifact else original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", coalesced)
+    before = lean_environment_generation(project)
+    artifact.write_bytes(b"after!")
+    assert lean_environment_generation(project) != before
 
 
 @pytest.mark.parametrize("changed", ["artifact", "source", "config"])

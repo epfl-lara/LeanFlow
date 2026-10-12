@@ -162,10 +162,22 @@ test("remote folders stay on the current extension host and foreign authorities 
     f.remoteName="ssh-remote"; f.folders=[f.folder("/remote/project","vscode-remote","ssh-remote+host")];
     f.active=f.uri("/remote/project/Problem.lean","vscode-remote","ssh-remote+host");
     assert.deepEqual(await chooseSetupTarget(""),{root:"/remote/project"});
-    assert.equal(isHostFileUri(f.uri("/tmp/file","file")),false);
+    assert.equal(isHostFileUri(f.uri("/tmp/file","file")),true);
     assert.equal(isHostFileUri(f.uri("/tmp/file","vscode-remote","ssh-remote+other")),false);
     const opened=hostFileUri("/remote/log.txt");
     assert.equal(opened.scheme,"vscode-remote"); assert.equal(opened.authority,"ssh-remote+host");
+  } finally {f.setup.dispose();}
+});
+
+test("Remote SSH host-local file URIs use the workspace without opening a folder dialog", async () => {
+  const f=fixture();
+  try {
+    f.remoteName="ssh-remote";
+    f.folders=[f.folder("/remote/project")];
+    f.active=f.uri("/remote/project/Problem.lean");
+    assert.deepEqual(await chooseSetupTarget(""),{root:"/remote/project"});
+    assert.equal(f.dialog,undefined);
+    assert.equal(hostFileUri("/remote/log.txt").fsPath,"/remote/log.txt");
   } finally {f.setup.dispose();}
 });
 

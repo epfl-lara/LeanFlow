@@ -13,6 +13,8 @@ import pytest
 from core.home import leanflow_home
 from leanflow_cli.runtime.runtime_install import source_identity
 from leanflow_cli.runtime.storage import StoragePolicy, cleanup_storage, register_entry
+from leanflow_cli.runtime.storage import process_views as process_inventory
+from leanflow_cli.runtime.storage.process_views import ProcessViews
 from scripts.lean_imo_campaign import artifacts, runner, storage
 from scripts.lean_imo_campaign.matrix import cells
 
@@ -46,6 +48,10 @@ def campaign_inputs(
     monkeypatch.setenv("LEANFLOW_HOME", str(home))
     monkeypatch.setenv("ELAN_HOME", str(tmp_path / "elan"))
     monkeypatch.delenv("ELAN_TOOLCHAIN", raising=False)
+    # These fake processes never start. Real-user process inventory can be
+    # transiently incomplete on busy hosts; its fail-closed behavior is tested
+    # separately with real children in test_storage.py.
+    monkeypatch.setattr(process_inventory, "process_views", lambda: ProcessViews((), (), True))
     home.mkdir()
     (home / "config.yaml").write_text("schema_version: 2\n")
     repo = tmp_path / "repo"

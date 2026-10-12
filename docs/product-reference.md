@@ -43,6 +43,14 @@ It can adopt an existing self-contained Lemex package without changing its globa
 executable or native configuration. Codex and Claude Code use their own
 installations. Local search uses `rg`; PDF inspection uses Poppler's `pdftotext`,
 `pdfinfo`, and `pdfimages`. Missing optional capabilities are reported.
+Linux and WSL also require Bubblewrap with usable user namespaces for native
+proving. The installer attempts to prepare it and checks whether its sandbox can
+start. On restricted Ubuntu hosts, an administrator may need to install the
+system `bubblewrap` package and enable its AppArmor profile.
+
+Local LeanExplore semantic search is optional. Use `--local-leanexplore` to
+install its machine-learning dependencies and fetch its data. The default
+installation uses local text search and available hosted/MCP search providers.
 
 ```bash
 ./scripts/install-internal.sh --help

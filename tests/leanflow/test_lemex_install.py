@@ -67,6 +67,28 @@ def test_damaged_companion_is_detected_on_installer_verification(installed_packa
         installer.ensure_lemex(build=False)
 
 
+def test_native_source_bundle_is_adopted_with_companions(installed_package, monkeypatch):
+    """Keep an existing native installation usable without rebuilding or copying auth."""
+    package, executable, native_home = installed_package
+    (package / "package.json").unlink()
+    (package / "lemex-install.json").write_text(json.dumps({"source_commit": "a" * 40}))
+    (package / "codex-package.json").write_text('{"version":"0.0.0"}')
+    (package / "codex-path").mkdir()
+    (package / "codex-path/rg").write_bytes(b"search companion")
+    executable.write_bytes(b"\x7fELFtest-native-executable")
+    monkeypatch.setattr(installer, "probe_lemex", lambda path: "lemex 0.0.0")
+    before = (native_home / "auth.json").read_bytes()
+    result = installer.ensure_lemex(build=False)
+    assert result["source"] == "adopted-content-pin"
+    assert result["source_commit"] is None
+    assert (
+        Path(result["distribution_root"]).joinpath("codex-path/rg").read_bytes()
+        == b"search companion"
+    )
+    assert Path(result["executable"]).read_bytes() == executable.read_bytes()
+    assert (native_home / "auth.json").read_bytes() == before
+
+
 def test_failed_compatibility_check_does_not_publish_a_pointer(installed_package):
     _package, executable, _native_home = installed_package
     executable.write_text("#!/bin/sh\necho incompatible\n")

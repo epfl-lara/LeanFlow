@@ -14,6 +14,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+@pytest.fixture
+def kernel_sandbox():
+    """Require real kernel isolation for integration tests, including host permissions."""
+    from agent.runtime.harness.preflight import kernel_sandbox_status
+
+    status = kernel_sandbox_status()
+    if not status["available"]:
+        pytest.skip(str(status["error"]))
+
+
 @pytest.fixture(autouse=True)
 def _isolate_leanflow_home(tmp_path, monkeypatch):
     """Redirect the LeanFlow home so tests never write to real user state."""

@@ -57,3 +57,11 @@ test("remote manifest discovery uses the extension host's filesystem and authori
     assert.equal(discoverProject().root,project);
   }finally{await f.dispose();}
 });
+
+test("Remote SSH host-local file URIs discover the existing project",async()=>{
+  const f=await fixture();try{
+    const project=await f.project("remote-local-uri");f.remoteName="ssh-remote";
+    f.active=f.uri(path.join(project,"Main.lean"));
+    assert.equal(discoverProject().root,project);
+  }finally{await f.dispose();}
+});

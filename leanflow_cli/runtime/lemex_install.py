@@ -1,6 +1,6 @@
 """Install an immutable Lemex distribution while leaving its native home untouched.
 
-Existing npm distributions are copied and pinned by content. Fresh installations
+Existing packaged distributions are copied and pinned by content. Fresh installations
 use Lemex's own installer at an exact source commit, with a private npm prefix.
 No release binary is assumed to exist, and no runtime credentials are inspected.
 """
@@ -141,18 +141,38 @@ def managed_distribution_root() -> Path | None:
 
 
 def _package_root(executable: Path) -> Path:
-    """Find the self-contained Lemex npm package behind its executable symlink."""
+    """Find an npm or native source bundle, including its companion executables."""
     resolved = executable.resolve(strict=True)
     package = resolved.parent.parent
     metadata = package / "package.json"
     try:
-        if (
-            resolved.name not in {"lemex.js", "lemex"}
-            or json.loads(metadata.read_text())["name"] != "lemex"
-        ):
+        if resolved.name not in {"lemex.js", "lemex"}:
             raise ValueError("not a packaged Lemex executable")
-        if not (package / "vendor").is_dir():
-            raise ValueError("platform companion files are not bundled")
+        if metadata.is_file():
+            if json.loads(metadata.read_text())["name"] != "lemex":
+                raise ValueError("not a Lemex package")
+            if not (package / "vendor").is_dir():
+                raise ValueError("platform companion files are not bundled")
+        else:
+            marker = json.loads((package / "lemex-install.json").read_text())
+            commit = marker.get("source_commit", "") if isinstance(marker, dict) else ""
+            with resolved.open("rb") as stream:
+                magic = stream.read(4)
+            native_magic = {
+                b"\x7fELF",
+                b"\xcf\xfa\xed\xfe",
+                b"\xfe\xed\xfa\xcf",
+                b"\xca\xfe\xba\xbe",
+            }
+            if (
+                not isinstance(commit, str)
+                or len(commit) != 40
+                or any(c not in "0123456789abcdef" for c in commit)
+                or magic not in native_magic
+                or not (package / "codex-package.json").is_file()
+                or not (package / "codex-path").is_dir()
+            ):
+                raise ValueError("not a complete native source bundle")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise LemexInstallError(
             "Existing Lemex is not a self-contained distribution; build the pinned source instead."

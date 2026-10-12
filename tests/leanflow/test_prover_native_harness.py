@@ -493,7 +493,9 @@ def test_native_rejected_candidate_repairs_in_same_process_and_receipt_is_bound(
     assert all(event["evidence_id"] for event in events)
 
 
-def test_long_command_bridge_runs_with_no_timeout_and_cancels_process_tree(tmp_path: Path) -> None:
+def test_long_command_bridge_runs_with_no_timeout_and_cancels_process_tree(
+    tmp_path: Path, kernel_sandbox
+) -> None:
     import shutil
     import sys
 

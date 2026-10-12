@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from agent.runtime.harness.preflight import kernel_sandbox_status
 from leanflow_cli.config import ensure_leanflow_home, get_leanflow_home, load_config
 from leanflow_cli.lean.lean_services import probe_capabilities
 from leanflow_cli.runtime.branding import get_cli_command_name, get_product_name
@@ -39,10 +40,14 @@ def _provider_payload() -> tuple[dict[str, Any], list[str]]:
     try:
         runtime = resolve_runtime_provider()
         executable = resolve_backend_executable(str(runtime["provider"]))
+        isolation = kernel_sandbox_status()
+        if not isolation["available"]:
+            issues.append(str(isolation["error"]))
         return {
             "available": True,
             "executable": executable,
             "authentication": "owned by native CLI; not inspected",
+            "isolation": isolation,
             "provider": str(runtime.get("provider", "") or ""),
             "base_url": str(runtime.get("base_url", "") or ""),
             "api_mode": str(runtime.get("api_mode", "") or ""),

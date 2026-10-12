@@ -17,6 +17,7 @@ plan, progress, logs, and usage so you can inspect or resume a run.
 Use Linux, macOS, or WSL with Git and Python 3.12 or newer. Lean workflows also
 require the project's Lean toolchain and Lake, normally managed by `elan`.
 Codex, Claude Code, or Lemex provides the native agent runtime.
+On Linux and WSL, native proving requires Bubblewrap and usable user namespaces.
 
 ```bash
 git clone https://github.com/epfl-lara/LeanFlow.git
@@ -47,6 +48,8 @@ is selected for future commands; active processes retain their environment.
 The default installation is editable: keep its source checkout stable while
 jobs run, or use `--no-editable` to install a wheel independent of checkout edits.
 See [storage and cleanup](docs/storage.md) for runtime and dependency retention.
+Local semantic search is optional: `--local-leanexplore` installs its additional
+machine-learning dependencies and downloads its search data.
 
 ## Quick start
 
