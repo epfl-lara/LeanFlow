@@ -165,6 +165,33 @@ def test_snapshot_has_independent_files_and_no_private_or_compiled_target_bytes(
     assert "sorry" in (original / "Main.lean").read_text()
 
 
+def test_snapshot_copy_failure_never_publishes_a_partial_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from leanflow_cli.workflows.prover import native_snapshot
+
+    original = tmp_path / "canonical"
+    original.mkdir()
+    (original / "Main.lean").write_text("theorem t : True := by sorry\n")
+
+    def fail(*_: object) -> str:
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(native_snapshot, "copy_file", fail)
+    with pytest.raises(OSError, match="No space left"):
+        create_snapshot(original, tmp_path / "snapshot")
+    assert not (tmp_path / "snapshot").exists()
+    assert not list(tmp_path.glob(".snapshot-*"))
+
+
+def test_snapshot_nested_in_project_excludes_its_own_staging_tree(tmp_path: Path) -> None:
+    (tmp_path / "Main.lean").write_text("theorem t : True := by sorry\n")
+    snapshot = create_snapshot(tmp_path, tmp_path / "private")
+    assert (snapshot / "Main.lean").is_file()
+    assert not (snapshot / "private").exists()
+    assert not list(snapshot.glob(".snapshot-*"))
+
+
 def test_one_native_invocation_owns_the_full_conversation_without_default_overrides(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

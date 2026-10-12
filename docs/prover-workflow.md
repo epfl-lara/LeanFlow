@@ -72,6 +72,17 @@ revision, attempts, and status. New helper declarations use separate modules und
 proof source. Each job receives a separate workspace and a snapshot of the plan
 and DAG. Planning, construction, and review start with fresh model histories.
 
+Private project snapshots and resumed run copies use copy-on-write cloning on
+APFS and supporting Linux filesystems. They share unchanged disk blocks while
+retaining separate inodes and independent writes; they never hardlink canonical
+proof files. Copies publish only after completion, and a failed copy removes its
+staging files. On filesystems without cloning, ordinary copies require enough
+free space to retain 256 MiB for checkpoints.
+After each prover, planning, or review session, its copied library dependencies
+are released. Proof sources, scratch files, results, and checkpoints remain.
+Resuming restores the pinned dependencies with independent copy-on-write files;
+changed dependency revisions require explicit repair rather than silent replacement.
+
 The default scheduling order is **bottom-up**, proving prerequisites before
 dependent goals. **Top-down DFS** remains selectable. Research mode can work on
 separate root trajectories concurrently and deduplicates shared dependencies.

@@ -78,6 +78,8 @@ or the whole project; imported files are never silently added to its proof scope
 - `core/deadlines.py`: optional monotonic deadlines, remaining time and
   operation-local cancellation. `None` is unlimited; zero is exhausted.
 - `core/error_redaction.py`: deterministic error sanitation without provider code.
+- `core/file_copy.py`: isolated copy-on-write files and atomic directory publication;
+  unsupported filesystems retain checkpoint space before ordinary copies.
 - `core/state.py`: historical session storage.
 - `core/model_tools.py`, `toolsets.py`, registry and top-level compatibility shims:
   deterministic tool discovery and registration.
@@ -109,7 +111,7 @@ establish proof or disproof.
 | `runtime.py`, `controller.py` | Campaign lifecycle, shared progress and scheduling |
 | `allocation.py`, `role_limits.py`, `usage.py`, `live_progress.py` | Durable invocation admission, campaign session limits per role, usage and active elapsed time |
 | `agent_session.py` | Native invocation and same-session submission feedback |
-| `native_snapshot.py` | Independent filtered copies, no escaping symlinks or shared inodes |
+| `native_snapshot.py` | Atomic filtered copy-on-write snapshots; release finished-session dependency caches and restore pinned revisions on resume; no escaping symlinks or shared inodes |
 | `native_bridge.py`, `mcp_relay.py` | Authenticated job capability; durable start/poll/cancel operations and acceptance receipts |
 | `native_command.py` | Long commands confined to the snapshot with cancellation and process-tree cleanup |
 | `session_tools.py`, `session_search.py`, `session_research.py`, `session_compute.py` | Deterministic role-scoped tools without model routing |
