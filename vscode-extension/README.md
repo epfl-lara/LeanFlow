@@ -176,3 +176,7 @@ npm run package
 Press F5 in VS Code for an Extension Development Host. CLI contracts and host
 message validation have tests in the main repository and extension test suite.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the repository quality gate.
+
+Keep `@types/vscode` aligned with the minimum version in `engines.vscode`.
+Major React and TypeScript upgrades require a separate migration and must pass
+the full button audit and extension packaging checks.
