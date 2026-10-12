@@ -61,6 +61,10 @@ authorized literal `sorry` spans. It checks protected bytes, original elaborated
 target types, and referenced fixed definitions before integration. Reviewed
 helper modules, imports, and additive Lake requirements are recorded separately.
 Concurrent outside edits cause a source conflict rather than being overwritten.
+Provers can request additional installed modules with an `imports` list in their
+submission JSON or scratch header. The controller checks that these imports
+preserve protected kernel types and installs them only with an accepted proof.
+Saved import-dependent candidates are rechecked on resume before new model work.
 
 Definition holes require `LEANFLOW_PROVER_FILL_DEFINITIONS=1`. This authorizes
 only their missing values; surrounding definitions remain protected. Arbitrary
@@ -135,6 +139,10 @@ Internal model requests, retries, and compaction remain inside it. A new process
 for recovery or continuation consumes another call. Admission is reserved before
 spawn; an interrupted started process retains its charge. Lean checks and
 operation polling do not consume extra agent calls.
+Rejected submissions return feedback to the existing native conversation. An
+orchestrator-selected retry or continuation preserves partial proof work, notes,
+and the previous report. Role-cap exhaustion prevents new sessions in that role;
+independent active provers finish before the controller reports exhaustion.
 
 Active time survives resume and is shared across parallel jobs. Time between
 stopped controllers is excluded. A global deadline cancels owned process trees

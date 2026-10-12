@@ -22,7 +22,8 @@ from tools.utilities.repository_research_policy import repository_research_disab
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,79}\Z")
 _REV = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 _LEAN_REQUIRE = re.compile(
-    r"require\s+(?P<name>[A-Za-z][A-Za-z0-9_]*|«[^»]+»)(?:\s+from\s+git\s+"
+    r'require\s+(?:"(?:[^"\\]|\\.)*"\s*/\s*)?'
+    r'(?P<name>[A-Za-z][A-Za-z0-9_]*|«[^»]+»|"(?:[^"\\]|\\.)*")(?:\s+from\s+git\s+'
     r'(?P<git>"(?:[^"\\]|\\.)*")\s*@\s*(?P<rev>"(?:[^"\\]|\\.)*"))?'
 )
 
@@ -133,7 +134,11 @@ def _configuration(root: Path) -> tuple[Path, bytes, dict[str, dict[str, Any]]]:
             )
             if match is None:
                 raise ValueError("Unsupported existing Lean require syntax; install manually")
-            name = match["name"].strip("«»")
+            name = (
+                json.loads(match["name"])
+                if match["name"].startswith('"')
+                else match["name"].strip("«»")
+            )
             if name in known:
                 raise ValueError("Duplicate existing Lake dependency names")
             known[name] = {

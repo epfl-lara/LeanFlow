@@ -9,6 +9,26 @@ if TYPE_CHECKING:
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
 
 
+def recover_with_role_capacity(runtime: ProverRuntime, node: Node, report: Any = None) -> None:
+    """Defer exhausted recovery roles while independent authorized provers finish."""
+    from leanflow_cli.workflows.prover.runtime import BudgetExhausted
+
+    try:
+        runtime._recover_loop(node, report)
+    except BudgetExhausted as error:
+        if not runtime.pending or error.code not in {
+            "orchestrator_sessions",
+            "prover_sessions",
+            "negation_sessions",
+        }:
+            raise
+        runtime.store.event(
+            "recovery_waiting_for_capacity",
+            {"node_id": node.id, "code": error.code, "reason": str(error)},
+        )
+        runtime._persist()
+
+
 def restore_legacy_stops(runtime: ProverRuntime) -> None:
     """Reopen retired stop decisions on explicit resume without replaying valid actions."""
     if runtime.config.mode != "research":

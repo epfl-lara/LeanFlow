@@ -45,6 +45,7 @@ class Node:
     decompositions: int = 0
     revision: int = 0
     candidate: list[str] = field(default_factory=list)
+    candidate_imports: list[str] = field(default_factory=list)
     notes: str = ""
     proof_sha256: str = ""
     signature_sha256: str = ""

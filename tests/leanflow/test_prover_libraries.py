@@ -16,6 +16,25 @@ PIN = "a" * 40
 REQUEST = {"name": "physlib", "git": "https://github.com/example/physlib", "rev": PIN}
 
 
+def test_configuration_preserves_scoped_multiline_lake_dependencies(tmp_path):
+    source = (
+        "import Lake\nopen Lake DSL\npackage demo\n"
+        'require "leanprover-community" / "mathlib"\n'
+        '  from git "https://github.com/leanprover-community/mathlib4.git" @ "' + PIN + '"\n'
+        'require repl from git "https://github.com/leanprover-community/repl" @ "v4.35.0-rc1"\n'
+    )
+    path = tmp_path / "lakefile.lean"
+    path.write_text(source)
+    parsed, original, known = libraries._configuration(tmp_path)
+    assert parsed == path and original == source.encode()
+    assert known["mathlib"] == {
+        "name": "mathlib",
+        "git": "https://github.com/leanprover-community/mathlib4.git",
+        "rev": PIN,
+    }
+    assert known["repl"]["rev"] == "v4.35.0-rc1"
+
+
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     (tmp_path / "lakefile.toml").write_bytes(b'name = "demo"\r\n# user comment\r\n')

@@ -198,6 +198,10 @@ an invocation at an exact service-side count.
 Active time includes queues, tools, and checks, survives resume, and excludes
 time between stopped controllers. There is no default response/check deadline.
 Cancellation stops owned process trees and operations and prevents later promotion.
+Role allowance exhaustion defers recovery until independent active provers finish.
+`prover/submission_imports.py` stages explicit or scratch-header import requests,
+checks protected kernel types, and retains them across candidate checks and resume.
+Proof imports are journaled with proof installation and preserved across replans.
 
 Prover evidence remains under `.leanflow/workflow-state/prover/<run-id>/`.
 Other workflows use `.leanflow/native-workflows/<run-id>/`. Private ledgers and

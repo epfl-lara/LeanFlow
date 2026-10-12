@@ -707,6 +707,13 @@ class ProverRuntime:
         except ValueError as error:
             report["notes"] = "Rejected proof replacement: " + str(error)
             return [], report
+        from leanflow_cli.workflows.prover.submission_imports import remember_imports
+
+        try:
+            remember_imports(self, node, job, report)
+        except ValueError as error:
+            report["notes"] = "Rejected import request: " + str(error)
+            return [], report
         return candidate, report
 
     def _retain_candidate(self, job: dict[str, Any], result: dict[str, Any]) -> None:
@@ -747,7 +754,17 @@ class ProverRuntime:
         workspace = self.store.directory / "checks"
         workspace.mkdir(exist_ok=True)
         check_path = workspace / f"{node.id}_{node.revision}.lean"
-        source = declaration_source(document, node, candidate=candidate)
+        from leanflow_cli.workflows.prover.submission_imports import (
+            candidate_document,
+            check_import_types,
+        )
+
+        staged = candidate_document(self, node)
+        import_check = check_import_types(self, node, staged, workspace / "imports")
+        if not import_check.get("accepted"):
+            node.notes += "\nImport gate: " + json.dumps(import_check, default=str)[-10000:]
+            return False
+        source = declaration_source(staged, node, candidate=candidate)
         write_source(check_path, source)
         before_check = submission_key(self, node, source)
         cached = self.submission_cache.take(node, before_check)
@@ -797,6 +814,7 @@ class ProverRuntime:
         self._assert_sources()
         previous_document = SourceDocument(**document.to_dict())
         previous = dict(document.replacements)
+        document.proof_imports = list(staged.proof_imports)
         for hole, proof in zip(node.holes, candidate, strict=True):
             document.replacements[str(hole)] = proof
         path = self.root / node.file
@@ -858,6 +876,7 @@ class ProverRuntime:
             ) from error
         node.status = "proved"
         node.candidate = []
+        node.candidate_imports = []
         node.conditional_dependencies = []
         node.proof_sha256 = digest(document.render())
         self._change(document, job_id)
@@ -1092,6 +1111,12 @@ class ProverRuntime:
             self._persist()
 
     def _recover(self, node: Node, report: Mapping[str, Any] | None = None) -> None:
+        """Recover an obligation without cancelling independently authorized work."""
+        from leanflow_cli.workflows.prover.recovery_liveness import recover_with_role_capacity
+
+        recover_with_role_capacity(self, node, report)
+
+    def _recover_loop(self, node: Node, report: Mapping[str, Any] | None = None) -> None:
         """Recover a blocked node as an explicit, resumable state machine.
 
         Stages, each advanced by ONE atomic persist that carries all of that
@@ -1493,7 +1518,10 @@ class ProverRuntime:
                 node.original and not node.signature_sha256 for node in self.dag.nodes
             ):
                 if any(
-                    document.imports or document.replacements or document.generated
+                    document.imports
+                    or document.proof_imports
+                    or document.replacements
+                    or document.generated
                     for document in self.documents.values()
                 ):
                     raise InfrastructureFailure(
@@ -1524,6 +1552,12 @@ class ProverRuntime:
             # it pops such a checkpoint.
             if self.config.mode == "research" and self.state.get("planning_request"):
                 self._research_plan("Resume the pending planning checkpoint.")
+            if resuming:
+                from leanflow_cli.workflows.prover.submission_imports import (
+                    recover_saved_import_candidates,
+                )
+
+                recover_saved_import_candidates(self)
             # Resume interrupted recovery BEFORE the top-level design plan below.
             # research_plan resumes from its persisted planning_request checkpoint
             # (using the checkpointed reason), so a recovery-owned decompose must

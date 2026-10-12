@@ -471,6 +471,17 @@ def candidate_feedback(
                 "accepted": False,
                 "error": "The assigned DAG node changed; preserve progress and stop this stale assignment.",
             }
+        from leanflow_cli.workflows.prover.planning import json_report
+        from leanflow_cli.workflows.prover.submission_imports import (
+            candidate_document,
+            check_import_types,
+            remember_imports,
+        )
+
+        try:
+            remember_imports(runtime, node, job, json_report(response))
+        except ValueError as error:
+            return {"accepted": False, "error": str(error)}
         candidate, _ = runtime._candidate(job, {"final_response": response}, node)
         if not candidate:
             return {
@@ -482,7 +493,17 @@ def candidate_feedback(
         unresolved = [
             dep for dep in node.dependencies if runtime.dag.by_id()[dep].status != "proved"
         ]
-        source = declaration_source(runtime.documents[node.file], node, candidate=candidate)
+        staged = candidate_document(runtime, node)
+        import_check = check_import_types(
+            runtime, node, staged, runtime.store.directory / "checks" / job["id"] / "imports"
+        )
+        if not import_check.get("accepted"):
+            return {
+                "accepted": False,
+                "error": "Requested imports failed protected-type verification: "
+                + str(import_check),
+            }
+        source = declaration_source(staged, node, candidate=candidate)
         checked_inputs = submission_key(runtime, node, source)
     workspace = runtime.store.directory / "checks" / job["id"]
     workspace.mkdir(parents=True, exist_ok=True)

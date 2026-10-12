@@ -42,7 +42,9 @@ def imported_modules(source: str) -> list[str]:
     return modules
 
 
-def import_closure(runtime: ProverRuntime, file: str) -> dict[str, str]:
+def import_closure(
+    runtime: ProverRuntime, file: str, *, source: str | None = None
+) -> dict[str, str]:
     """Fingerprint every managed source this file imports, directly or transitively.
 
     Compiled and unmanaged dependencies are independently generation-keyed.
@@ -58,7 +60,7 @@ def import_closure(runtime: ProverRuntime, file: str) -> dict[str, str]:
         document = runtime.documents.get(path)
         if document is None:
             continue
-        rendered = document.render()
+        rendered = source if path == file and source is not None else document.render()
         if path != file:
             closure[path] = digest(rendered)
         try:
@@ -115,7 +117,7 @@ def submission_key(runtime: ProverRuntime, node: Node, source: str) -> str:
                         "lake-manifest.json",
                     )
                 },
-                "imports": import_closure(runtime, node.file),
+                "imports": import_closure(runtime, node.file, source=source),
                 "dependency_generation": lean_environment_generation(
                     runtime.root,
                     excluded_sources=(runtime.root / path for path in runtime.documents),

@@ -198,9 +198,16 @@ def test_legacy_stop_migration_preserves_checked_and_superseded_outcomes(
     assert not resume(runtime).state.get("recovery_in_flight")
 
 
-def test_recovery_exhaustion_does_not_cancel_independent_active_prover(tmp_path: Path) -> None:
+@pytest.mark.parametrize("exhausted", ["recoveries", "orchestrator"])
+def test_recovery_exhaustion_does_not_cancel_independent_active_prover(
+    tmp_path: Path, exhausted: str
+) -> None:
     runtime = make_runtime(tmp_path)
-    runtime.config = replace(runtime.config, max_decompositions=1)
+    runtime.config = replace(
+        runtime.config,
+        max_decompositions=1 if exhausted == "recoveries" else None,
+        orchestrator_sessions=0 if exhausted == "orchestrator" else None,
+    )
     runtime.state["config"] = asdict(runtime.config)
     healthy_started = threading.Event()
     recovery_finished = threading.Event()
@@ -226,7 +233,9 @@ def test_recovery_exhaustion_does_not_cancel_independent_active_prover(tmp_path:
     runtime._handle_result = handle  # type: ignore[method-assign]
     state = runtime.run()
     assert state["status"] == "budget_exhausted"
-    assert state["stop_reason"]["code"] == "campaign_recoveries"
+    assert state["stop_reason"]["code"] == (
+        "campaign_recoveries" if exhausted == "recoveries" else "orchestrator_sessions"
+    )
     assert {node.name: node.status for node in runtime.dag.nodes} == {
         "stalled": "blocked",
         "healthy": "proved",

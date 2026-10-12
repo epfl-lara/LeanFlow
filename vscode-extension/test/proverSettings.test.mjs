@@ -290,7 +290,7 @@ for (const kind of ["prove", "formalize", "review", "refactor", "golf", "draft"]
 
 
 test("role session limits are independent, inherited, and explicitly clearable", () => {
-  for (const [suffix, label] of [["PROVER_SESSIONS", "prover calls"], ["ORCHESTRATOR_SESSIONS", "orchestrator calls"], ["NEGATION_SESSIONS", "refutation calls"]]) {
+  for (const [suffix, label] of [["PROVER_SESSIONS", "total prover calls"], ["ORCHESTRATOR_SESSIONS", "total orchestrator calls"], ["NEGATION_SESSIONS", "refutation calls"]]) {
     const ui = fixture({ overrides: { [prefix + "AGENT_CALLS"]: "20" } }, { [prefix + suffix]: "7" });
     assert.equal(ui.control(suffix).props.value, "7");
     ui.control(suffix).props.onChange({ target: { value: "0" } });
@@ -445,7 +445,7 @@ test("unfamiliar launch terms have accessible help outside the input labels", ()
   const ui = mount();
   try {
     ui.update(state => { state.app.catalog.groups[0].flags = flags; });
-    for (const term of ["Global limits", "Agent calls", "Dependency order", "Concurrent prover jobs", "Prover calls", "Orchestrator calls", "Refutation calls", "Recovery decisions", "Maximum graph nodes", "Clean room", "Profile", "Agent backend"]) {
+    for (const term of ["Global limits", "Agent calls", "Dependency order", "Concurrent prover jobs", "Total prover calls", "Total orchestrator calls", "Refutation calls", "Recovery decisions", "Maximum graph nodes", "Clean room", "Profile", "Agent backend"]) {
       const summary = ui.root().findByProps({"aria-label":`About ${term}`});
       assert.equal(summary.type, "summary");
       assert.equal(summary.parent.type, "details");

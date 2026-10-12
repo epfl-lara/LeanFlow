@@ -160,10 +160,13 @@ leanflow config set limits.wall_time_s 28800
 ```
 
 One native CLI invocation is one agent call, including a new retry or resume
-process. Its internal model requests and compaction share that call. Research
+process. Its internal model requests and compaction share that call. Rejected
+submissions return feedback within that session; a new attempt carries forward
+the saved partial proof, notes, and report. Research
 also defaults to 15 prover calls and 5 orchestrator calls across the run; clear
 a role cap to make it unlimited. Token limits gate later invocations and may be
-exceeded by an active call. Limits and spending survive resume.
+exceeded by an active call. These are whole-job limits, rather than per-agent
+model-request budgets. Limits and spending survive resume.
 
 User configuration lives in `~/.leanflow/config.yaml`; project registration and
 workflow state live under `.leanflow/`. Set `LEANFLOW_HOME` to choose another

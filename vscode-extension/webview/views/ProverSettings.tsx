@@ -126,7 +126,7 @@ export function ProverSettings() {
         {roleControl("prover", "PROVIDER")}
         {roleControl("prover", "MODEL")}
         {roleControl("prover", "REASONING_EFFORT")}
-        {limitControl("PROVER_SESSIONS", "Prover calls", "Shared across all prover jobs in the run. Clear for ∞; 0 starts none.")}
+        {limitControl("PROVER_SESSIONS", "Total prover calls", "Whole-job cap across goals, retries, and resumes. One native invocation is one call. Clear for ∞; 0 starts none.")}
       </div>
     </section>
     <section className="prover-role" aria-label="Orchestrator settings">
@@ -135,7 +135,7 @@ export function ProverSettings() {
         {roleControl("orchestrator", "PROVIDER")}
         {roleControl("orchestrator", "MODEL")}
         {roleControl("orchestrator", "REASONING_EFFORT")}
-        {limitControl("ORCHESTRATOR_SESSIONS", "Orchestrator calls", "Shared by planning, review and research jobs. Clear for ∞; 0 starts none.")}
+        {limitControl("ORCHESTRATOR_SESSIONS", "Total orchestrator calls", "Whole-job cap shared by planning, review, research, and recovery. Clear for ∞; 0 starts none.")}
       </div>
     </section>
     <p className="muted">One process = one agent call, even with many model replies or tool steps. Global limits apply across all roles.</p>

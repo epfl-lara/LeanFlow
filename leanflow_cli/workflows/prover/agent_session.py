@@ -39,6 +39,9 @@ Use the LeanFlow bridge submit_candidate tool with JSON proof/proofs replacement
 with the requested report JSON. These return operation IDs: poll_operation retrieves
 independent controller feedback. A rejected submission is feedback to continue this
 same conversation. Acceptance is established only by an accepted controller receipt.
+If the proof needs an additional installed Lean module, include an imports list
+in the submission JSON. The controller checks protected declaration types before
+adding these imports with an accepted proof; scratch imports are also retained.
 Use start_lean_check and start_command with poll_operation for long Lean checks,
 builds, and commands. Polling never cancels
 an operation, and there is no LeanFlow per-response or per-tool time budget.

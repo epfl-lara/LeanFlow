@@ -139,6 +139,7 @@ class SourceDocument:
     replacements: dict[str, str] = field(default_factory=dict)
     imports: list[str] = field(default_factory=list)
     generated: bool = False
+    proof_imports: list[str] = field(default_factory=list)
 
     def render(self, overrides: dict[int, str] | None = None) -> str:
         replacements = {int(key): value for key, value in self.replacements.items()}
@@ -153,8 +154,9 @@ class SourceDocument:
             start, end = spans[index]
             if index in replacements:
                 text = text[:start] + replacements[index] + text[end:]
-        if self.imports:
-            imports = "\n".join(f"import {module}" for module in self.imports) + "\n"
+        modules = list(dict.fromkeys([*self.imports, *self.proof_imports]))
+        if modules:
+            imports = "\n".join(f"import {module}" for module in modules) + "\n"
             # Lean's optional prelude command must precede every import.
             match = re.match(r"(\s*prelude[^\n]*\n)", text)
             position = match.end() if match else 0
