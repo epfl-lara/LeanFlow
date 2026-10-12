@@ -45,8 +45,16 @@ installations. Local search uses `rg`; PDF inspection uses Poppler's `pdftotext`
 `pdfinfo`, and `pdfimages`. Missing optional capabilities are reported.
 Linux and WSL also require Bubblewrap with usable user namespaces for native
 proving. The installer attempts to prepare it and checks whether its sandbox can
-start. On restricted Ubuntu hosts, an administrator may need to install the
-system `bubblewrap` package and enable its AppArmor profile.
+start, including when all prerequisite executables are already installed.
+The installer prefers the system `/usr/bin/bwrap` over a user-local copy so
+host AppArmor rules apply to the intended executable.
+
+On restricted Ubuntu hosts, installing `bubblewrap` alone may not provide the
+AppArmor policy required to create a sandbox. Ask an administrator to review
+and load the [Bubblewrap profile recommended by Ubuntu](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007),
+using a version compatible with the host's AppArmor package. Run `leanflow doctor`
+afterwards to check that the sandbox actually starts. The application profile
+permits Bubblewrap's namespaces while retaining the host's global restrictions.
 
 Local LeanExplore semantic search is optional. Use `--local-leanexplore` to
 install its machine-learning dependencies and fetch its data. The default

@@ -43,6 +43,6 @@ def kernel_sandbox_status() -> dict[str, Any]:
         return {
             "available": False,
             "error": "Native isolation is blocked by this host: " + result.stderr.strip()[-1000:],
-            "remediation": "Ask the host administrator to enable the required sandbox. On Ubuntu, install system Bubblewrap and permit its user namespaces through an AppArmor profile.",
+            "remediation": "Ask the host administrator to enable the required sandbox. On restricted Ubuntu hosts, installing Bubblewrap alone may not suffice: load an AppArmor profile permitting user namespaces for /usr/bin/bwrap. See docs/product-reference.md.",
         }
     return {"available": True, "executable": binary}

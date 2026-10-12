@@ -122,6 +122,13 @@ link_external_tool_candidates() {
   local candidate
   local resolved
   for binary in "${REQUIRED_EXTERNAL_TOOLS[@]}"; do
+    # Ubuntu AppArmor attaches to the system executable, not an extracted copy.
+    if [[ "$binary" == "bwrap" && "$(uname -s)" == "Linux" && -x /usr/bin/bwrap ]]; then
+      if /usr/bin/bwrap --version >/dev/null 2>&1; then
+        ln -sf /usr/bin/bwrap "$LEANFLOW_BIN_DIR/bwrap"
+        continue
+      fi
+    fi
     if tool_version_ok "$binary"; then
       resolved="$(command -v "$binary" 2>/dev/null || true)"
       if [[ -n "$resolved" && "$resolved" != "$LEANFLOW_BIN_DIR/$binary" ]]; then
@@ -212,31 +219,30 @@ ensure_external_cli_tools() {
   link_external_tool_candidates
   if external_tools_ready; then
     ok "external tools wired into PATH: ${REQUIRED_EXTERNAL_TOOLS[*]}"
-    return 0
-  fi
-
-  case "$(uname -s 2>/dev/null || true)" in
-    Darwin)
-      install_external_tools_with_brew || true
-      ;;
-    Linux)
-      install_external_tools_with_apt_sudo || true
-      install_user_local_tool_with_apt_download rg ripgrep || true
-      install_user_local_tool_with_apt_download bwrap bubblewrap || true
-      ;;
-  esac
-
-  link_external_tool_candidates
-  if external_tools_ready; then
-    ok "external tools ready: ${REQUIRED_EXTERNAL_TOOLS[*]}"
   else
-    warn "missing external CLI tools after install attempt: $(missing_external_tools_text)"
-    warn "PDF extraction needs poppler-utils/poppler; local search needs ripgrep"
+    case "$(uname -s 2>/dev/null || true)" in
+      Darwin)
+        install_external_tools_with_brew || true
+        ;;
+      Linux)
+        install_external_tools_with_apt_sudo || true
+        install_user_local_tool_with_apt_download rg ripgrep || true
+        install_user_local_tool_with_apt_download bwrap bubblewrap || true
+        ;;
+    esac
+
+    link_external_tool_candidates
+    if external_tools_ready; then
+      ok "external tools ready: ${REQUIRED_EXTERNAL_TOOLS[*]}"
+    else
+      warn "missing external CLI tools after install attempt: $(missing_external_tools_text)"
+      warn "PDF extraction needs poppler-utils/poppler; local search needs ripgrep"
+    fi
   fi
   if [[ "$(uname -s)" == "Linux" ]] && tool_version_ok bwrap; then
-    if ! bwrap --ro-bind / / --unshare-user --unshare-pid --proc /proc --dev /dev /bin/true >/dev/null 2>&1; then
+    if ! bwrap --ro-bind / / --unshare-user --unshare-pid --unshare-net --proc /proc --dev /dev /bin/true >/dev/null 2>&1; then
       warn "Bubblewrap cannot create the required sandbox. Native proving is unavailable until the host permits its user namespaces."
-      warn "On Ubuntu, ask an administrator to install bubblewrap and enable its AppArmor profile. Do not disable host security protections."
+      warn "On restricted Ubuntu hosts, installing bubblewrap alone may not suffice. Ask an administrator to load an AppArmor profile for /usr/bin/bwrap; see docs/product-reference.md."
     fi
   fi
 }
