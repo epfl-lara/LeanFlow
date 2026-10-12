@@ -41,6 +41,8 @@ def research_runtime(tmp_path: Path, **overrides: Any) -> ProverRuntime:
     path.write_text("import Std\n\ntheorem goal : True := by sorry\n")
     overrides.setdefault("max_decompositions", 32)
     overrides.setdefault("agent_calls", 1000)
+    # Keep the recovery-decision allowance as the binding budget in these scenarios.
+    overrides.setdefault("orchestrator_sessions", 50)
     config = ProverConfig(mode="research", **overrides)
     return ProverRuntime(
         root=tmp_path, targets=[path], config=config, session=session, verifier=Verifier()

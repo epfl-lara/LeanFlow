@@ -12,12 +12,13 @@ const bundle = await build({
       export class EventEmitter { event = () => ({ dispose() {} }); fire() {} dispose() {} }
       export const workspace = { getConfiguration: () => ({ get: (_, fallback) => fallback }) };
     ` }));
+    builder.onLoad({ filter: /src\/core\/workflowTerminal\.ts$/ }, () => ({ contents: `export async function inspectWorkflowTerminal() { return globalThis.launchCredentialFixture.pane ?? {state:"unknown"}; } export async function releaseWorkflowTerminal(id) { (globalThis.launchCredentialFixture.released ??= []).push(id); return true; } export async function showWorkflowTerminal() {}` }));
     builder.onLoad({ filter: /src\/core\/launchPaths\.ts$/ }, () => ({ contents: `export async function validateLaunchProjectInputs() {}` }));
     builder.onLoad({ filter: /src\/core\/cli\.ts$/ }, () => ({ contents: `
-      export async function fetchLiveStatus() { return null; }
-      export async function fetchRuns() { return []; }
+      export async function fetchLiveStatus() { if (globalThis.launchCredentialFixture.unreadable) throw new Error("temporarily unavailable"); return globalThis.launchCredentialFixture.status ?? null; }
+      export async function fetchRuns() { if (globalThis.launchCredentialFixture.unreadable) throw new Error("temporarily unavailable"); return globalThis.launchCredentialFixture.history ?? []; }
       export async function fetchEventTypes() { return []; }
-      export async function fetchEvents() { return { events: [], cursor: "", runId: "" }; }
+      export async function fetchEvents(root, runId) { (globalThis.launchCredentialFixture.followed ??= []).push(runId); return { events: [], cursor: "", runId }; }
       export async function fetchRunLog() { return ""; }
       export async function stopWorkflow() { return { stopped: true }; }
       export function spawnWorkflow(project, argv, env, nativeEnv) {
@@ -69,4 +70,78 @@ test("all launch callers share the setup readiness admission check", async () =>
     assert.equal(fixture.spawned.length, 1);
     assert.deepEqual(roots, [project.root, project.root, project.root]);
   } finally { manager.dispose(); }
+});
+
+function observedManager() {
+  const f = globalThis.launchCredentialFixture = {spawned:[],saved:[]};
+  const context = {workspaceState:{get:(_key,fallback)=>fallback,update:async(_key,value)=>f.saved.push(structuredClone(value))}};
+  const manager = new RunManager(context,{found:true,root:"/tmp/isolated-run-discovery",stateRoot:"/tmp/isolated-run-discovery/state"});
+  manager.startPolling = () => {};
+  manager.stopPolling = () => {};
+  return {f,manager};
+}
+
+test("external live jobs are followed by exact id even when a newer worker stream exists",async()=>{
+  const {f,manager}=observedManager();
+  try {
+    f.status={run_id:"external-live",process_id:42};
+    f.history=[{run_id:"worker",parent_run_id:"external-live",updated_at:"2026-10-12"},{run_id:"external-live",updated_at:"2026-10-11"}];
+    await manager.refresh();
+    assert.ok(f.followed.includes("external-live"));
+    assert.equal(manager.projectRootForRun("external-live"),"/tmp/isolated-run-discovery");
+    f.unreadable=true;
+    await manager.refresh();
+    assert.equal(manager.snapshot().history.length,2);
+    assert.match(manager.snapshot().discoveryError,/retry automatically/);
+    f.unreadable=false;
+    await manager.refresh();
+    assert.equal(manager.snapshot().discoveryError,"");
+  } finally {manager.dispose();}
+});
+
+test("reloaded tmux jobs retain liveness and early failures, then release only their finished pane",async()=>{
+  const {f,manager}=observedManager();
+  try {
+    const run=await manager.launch(emptyLaunchRequest(),null,null);
+    manager.handles.clear();
+    run.connection={kind:"tmux"};
+    f.pane={state:"running",pid:42};
+    await manager.refresh();
+    assert.equal(run.status,"running");
+    f.pane={state:"exited",code:127,output:"leanflow executable not found"};
+    await manager.refresh();
+    assert.equal(run.status,"failed");
+    assert.equal(run.exitCode,127);
+    assert.match(run.error,/executable not found/);
+    assert.deepEqual(f.released,[run.runId]);
+  } finally {manager.dispose();}
+});
+
+test("a missing tmux session never overrides an exact verified runtime owner",async()=>{
+  const {f,manager}=observedManager();
+  try {
+    const run=await manager.launch(emptyLaunchRequest(),null,null);
+    manager.handles.clear();
+    run.connection={kind:"tmux"};
+    run.startedAt="2026-01-01";
+    f.pane={state:"missing"};
+    f.status={run_id:run.runId,process_id:42};
+    await manager.refresh();
+    assert.equal(run.status,"running");
+    assert.equal(run.pid,42);
+  } finally {manager.dispose();}
+});
+
+
+test("early terminal output never reintroduces a private launch prompt into saved history",async()=>{
+  const {f,manager}=observedManager();
+  try {
+    const run=await manager.launch({...emptyLaunchRequest(),prompt:"private research notes"},null,null);
+    manager.handles.clear(); run.connection={kind:"tmux"};
+    f.pane={state:"exited",code:1,output:"error in private research notes"};
+    await manager.refresh();
+    assert.equal(run.status,"failed");
+    assert.ok(!JSON.stringify(f.saved).includes("private research notes"));
+    assert.equal(run.connection,undefined);
+  } finally {manager.dispose();}
 });

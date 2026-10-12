@@ -499,6 +499,8 @@ export function emptyLaunchRequest(): LaunchRequest {
 
 export type TrackedRunStatus = "starting" | "running" | "finished" | "failed" | "stopped";
 
+export interface RunConnection { kind: "tmux" | "terminal" }
+
 export interface TrackedRun {
   /** Stable id assigned by the extension, independent of the runtime's run_id. */
   id: string;
@@ -525,6 +527,9 @@ export interface TrackedRun {
   experimentId: string | null;
   experimentCell: string | null;
   error: string | null;
+  /** Execution transport only; never contains commands or credentials. */
+  connection?: RunConnection;
+  launchNotice?: string;
 }
 
 // -------------------------------------------------------------- experiments
@@ -762,6 +767,9 @@ export interface AppState {
   runs: TrackedRun[];
   history: RunSummary[];
   selectedRunId: string | null;
+  projectLiveStatus?: LiveStatus | null;
+  runDiscoveryError?: string;
+  runNavigation?: { sequence: number; tab: "live" | "logs" };
   liveStatus: LiveStatus | null;
   eventTypes: { type: string; count: number }[];
   experiments: ExperimentRun[];
@@ -805,6 +813,8 @@ export type WebviewMessage =
   | { type: "preview"; requestId: string; request: LaunchRequest }
   | { type: "stopRun"; id: string }
   | { type: "selectRun"; id: string | null }
+  | { type: "openRun"; id: string }
+  | { type: "openRunTerminal"; id: string }
   | { type: "loadEvents"; runId: string }
   | { type: "loadRunLog"; runId: string }
   | { type: "loadEventDetail"; runId: string; eventId: string }

@@ -359,6 +359,40 @@ test("project setup buttons expose progress, retry, readiness and provider setup
   } finally { ui.dispose(); }
 });
 
+test("job menus and clickable sidebar cards navigate exact live and past jobs", () => {
+  const ui = mount("live");
+  try {
+    ui.update(f => {
+      f.app.runs[0].connection = {kind:"tmux"};
+      f.app.history = [{run_id:"archived",label:"Saved proof",workflow_kind:"prove",started_at:"2026-10-01",updated_at:"2026-10-02",terminal:true,exit_code:0}];
+    });
+    ui.click("Open terminal"); assert.equal(message(ui,"openRunTerminal").id,"tracked-1");
+    ui.click("Job logs"); assert.equal(ui.view.tab,"logs");
+    ui.click("Job details"); assert.equal(ui.view.tab,"live");
+    const picker = ui.root().findByProps({"aria-label":"Selected job"});
+    ui.change(picker,"archived"); assert.equal(message(ui,"selectRun").id,"archived");
+    ui.update(f => { f.app.selectedRunId = "archived"; f.app.liveStatus = {run_id:"run-1",process_id:1,phase:"unrelated phase"}; });
+    assert.match(textOf(ui.root()), /Viewing a past job/);
+    assert.doesNotMatch(textOf(ui.root()), /unrelated phase/);
+    ui.click("Job logs");
+    assert.equal(message(ui,"loadEvents").runId,"archived");
+    ui.click("Raw log");
+    assert.equal(message(ui,"loadRunLog").runId,"archived");
+    assert.doesNotMatch(textOf(ui.root()), /fixture log/);
+  } finally { ui.dispose(); }
+  const sidebar = mount("launch",{},SidebarView);
+  try {
+    sidebar.click(sidebar.buttons().find(button=>button.props.className === "job-card-open"));
+    assert.equal(message(sidebar,"openRun").id,"tracked-1");
+    sidebar.update(f=>{
+      f.app.runs=[];
+      f.app.history=[{run_id:"external-past",label:"Past terminal job",workflow_kind:"prove",started_at:"2026-10-01",updated_at:"2026-10-02",terminal:true,exit_code:1}];
+    });
+    sidebar.click(sidebar.buttons().find(button=>button.props.className === "job-card-open"));
+    assert.equal(message(sidebar,"openRun").id,"external-past");
+  } finally { sidebar.dispose(); }
+});
+
 after(() => {
   const files = ["webview/App.tsx", ...readdirSync("webview/views").filter(name => name.endsWith(".tsx")).map(name => `webview/views/${name}`)];
   const buttons = [];

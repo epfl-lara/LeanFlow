@@ -219,7 +219,7 @@ There are no LeanFlow three-minute or twenty-minute response/check cutoffs.
 
 The VS Code launch page exposes global limits for every workflow. Research
 shows separate **Prover calls** and **Orchestrator calls** settings, defaulting
-to **150** and **50** per run. One `codex exec`, `lemex exec`, or Claude invocation
+to **15** and **5** per run. One `codex exec`, `lemex exec`, or Claude invocation
 counts as one call; planning, review and research share the orchestrator allowance.
 Clear a role limit for unlimited calls. Retry, proof-direction change,
 recovery-decision and graph-size controls remain configurable. See

@@ -119,8 +119,8 @@ test("an older CLI without an effective environment still previews profile and d
 
 test("empty role-call limits remain Unlimited in the preview before CLI resolution", () => {
   const catalog = { groups: [{ flags: [
-    { name: "LEANFLOW_PROVER_PROVER_SESSIONS", default: "150" },
-    { name: "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS", default: "50" },
+    { name: "LEANFLOW_PROVER_PROVER_SESSIONS", default: "15" },
+    { name: "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS", default: "5" },
     { name: "LEANFLOW_PROVER_MODE", default: "research" },
   ] }] };
   const rows = proverConfigurationRows({

@@ -76,7 +76,9 @@ def test_rejected_reviews_continue_within_total_budget(tmp_path, monkeypatch):
         return {"status": "completed", "api_calls": 1, "final_response": json.dumps(reply)}
 
     runtime = make_runtime(
-        tmp_path, config=ProverConfig(mode="research", total_api_calls=12), session=session
+        tmp_path,
+        config=ProverConfig(mode="research", total_api_calls=12, orchestrator_sessions=12),
+        session=session,
     )
     monkeypatch.setattr(planning_controller, "materialize", lambda *args: None)
     assert runtime._research_plan("Repair the rejected graph", affected=set(runtime.dag.roots))

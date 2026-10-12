@@ -46,10 +46,10 @@ async function fixture() {
   const services = {
     project: { found: true, root }, profiles: null,
     catalog: { groups: [{ flags: [{ name: "LEANFLOW_PROVER_PARALLELISM", value_type: "int", editable: true, extension_editable: true, minimum: 1, default: "1" }] }] },
-    onDidChange: () => disposable, state: () => ({ project: { found: true, root } }), reload: record("refresh"), reloadProfiles: record("profiles"), selectRun: record("select"),
+    onDidChange: () => disposable, state: () => ({ project: { found: true, root } }), reload: record("refresh"), reloadProfiles: record("profiles"), selectRun: record("select"), openRun: record("openRun"),
     setup: { start: record("setup"), cancel: record("cancelSetup"), showLog: record("setupLog"), assertLaunchReady: () => { if (f.setupBlocked) throw new Error("Project setup is incomplete. Retry setup."); } },
     providers: { refresh: record("providers"), act: record("providerAction"), state: () => f.providerState },
-    runs: { onDidAppendEvents: () => disposable, projectRootForRun: id => id === "run-1" ? root : null,
+    runs: { openTerminal: record("terminal"), onDidAppendEvents: () => disposable, projectRootForRun: id => id === "run-1" ? root : null,
       launch: async (...args) => { f.calls.push(["launch", ...args]); return { id: "tracked-1", runId: "run-1", label: "Test run" }; },
       stop: async id => { f.calls.push(["stop", id]); return { stopped: true }; }, loadEvents: async () => [], runLog: async () => "test log",
     },
@@ -103,6 +103,10 @@ test("launch, preview, stop, events, transcripts and guidance bind to the reques
     assert.equal(ui.last("preview").error, "");
     await ui.send({ type: "stopRun", id: "tracked-1" });
     await ui.send({ type: "selectRun", id: "tracked-1" });
+    await ui.send({ type: "openRun", id: "tracked-1" });
+    await ui.send({ type: "openRunTerminal", id: "tracked-1" });
+    assert.ok(ui.calls.some(row => row[0] === "openRun" && row[1] === "tracked-1"));
+    assert.ok(ui.calls.some(row => row[0] === "terminal" && row[1] === "tracked-1"));
     for (const type of ["loadEvents", "loadRunLog", "loadProver"]) await ui.send({ type, runId: "run-1" });
     assert.equal(ui.last("runLog").text, "test log");
     assert.equal(ui.last("proverState").snapshot.run_id, "run-1");

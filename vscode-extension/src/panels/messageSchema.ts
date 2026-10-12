@@ -249,6 +249,8 @@ export function parseWebviewMessage(
         : { ok: true, message: { type: "preview", requestId, request } };
     }
 
+    case "openRun":
+    case "openRunTerminal":
     case "stopRun": {
       const id = str(raw.id, 128);
       return id === null ? reject("id") : { ok: true, message: { type, id } };

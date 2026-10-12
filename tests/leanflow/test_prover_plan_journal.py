@@ -80,7 +80,7 @@ def _planning_runtime(tmp_path, monkeypatch, *, reject_reviews: int):
     runtime = ProverRuntime(
         root=tmp_path,
         targets=[source],
-        config=ProverConfig(mode="research"),
+        config=ProverConfig(mode="research", orchestrator_sessions=50),
         session=session,
     )
     return runtime, proposals

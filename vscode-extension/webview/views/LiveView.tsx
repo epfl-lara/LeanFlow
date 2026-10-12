@@ -1,7 +1,9 @@
 /** What the active run is doing right now, read from the live status snapshot. */
+import { appRunChoices, selectedRunChoice } from "../../src/core/runCatalog";
+import { RunMenu } from "./RunMenu";
 import { humanEventLabel } from "../../src/core/logRows";
 import { Card, Empty, Notice, Pill, Stat, StatusPill, relativeTime } from "../components";
-import { useSelectedRun, useStore } from "../store";
+import { useStore } from "../store";
 import { post } from "../vscodeApi";
 import { ProverWorkspace } from "./ProverWorkspace";
 
@@ -15,10 +17,11 @@ function heartbeatAge(iso: string | undefined): number | null {
 
 export function LiveView() {
   const { app, proverStates } = useStore();
-  const run = useSelectedRun();
-  const status = app?.liveStatus;
-  const runId = run?.runId || String(status?.run_id || "") || app?.history[0]?.run_id || "";
-  const workflowKind = run?.request.kind || status?.workflow_kind || app?.history[0]?.workflow_kind || "";
+  const choice = app ? selectedRunChoice(appRunChoices(app), app.selectedRunId) : null;
+  const run = choice?.tracked;
+  const runId = choice?.runId || "";
+  const status = app?.liveStatus?.run_id === runId ? app.liveStatus : null;
+  const workflowKind = choice?.workflowKind || "";
   // The dedicated prover publishes its own complete state. Its live-status
   // projection carries no provider, model, or agent capacity, so the generic
   // cards below would show dashes and a wrong agent count next to the real
@@ -48,6 +51,8 @@ export function LiveView() {
 
   return (
     <>
+      <RunMenu />
+      {choice && !choice.active && <Notice tone="info">Viewing a past job · {choice.status}. This is saved state, not a live process.</Notice>}
       {run && (
         <Card
           title={run.label}

@@ -43,8 +43,8 @@ const flags = [
   ["AGENT_CALLS", "int", ""],
   ["TOKENS", "int", ""],
   ["WALL_TIME_S", "float", ""],
-  ["PROVER_SESSIONS", "int", "150"],
-  ["ORCHESTRATOR_SESSIONS", "int", "50"],
+  ["PROVER_SESSIONS", "int", "15"],
+  ["ORCHESTRATOR_SESSIONS", "int", "5"],
   ["NEGATION_SESSIONS", "int", ""],
   ["MAX_RESTARTS", "int", ""],
   ["PLAN_REFINEMENTS", "int", ""],
@@ -347,8 +347,8 @@ test("Research, bottom-up and role call defaults come from the current catalog",
   assert.equal(ui.control("MODE").props.value, "research");
   const order = ui.control("SEARCH_ORDER");
   assert.equal(elements(order).find(item => item.type === "option" && item.props.value === "__default__").props.children.join(""), "default (bottom-up)");
-  assert.equal(ui.control("PROVER_SESSIONS").props.value, "150");
-  assert.equal(ui.control("ORCHESTRATOR_SESSIONS").props.value, "50");
+  assert.equal(ui.control("PROVER_SESSIONS").props.value, "15");
+  assert.equal(ui.control("ORCHESTRATOR_SESSIONS").props.value, "5");
   assert.deepEqual(ui.environment().env.set, {});
 });
 

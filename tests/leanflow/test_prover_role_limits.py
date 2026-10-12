@@ -353,3 +353,19 @@ def test_assignment_and_recovery_guidance_show_remaining_role_capacity(tmp_path:
     assert guidance["recovery_actions"]["retry"]["can_start"] is True
     assert guidance["recovery_actions"]["decompose"]["minimum_sessions_for_fresh_action"] == 3
     assert "negate is unavailable" in seen[0]["prompt"]
+
+
+@pytest.mark.parametrize("role,limit", [("prover", 15), ("orchestrator", 5)])
+def test_default_campaign_stops_at_the_native_invocation_limit(
+    tmp_path: Path, role: str, limit: int
+) -> None:
+    from leanflow_cli.workflows.prover.config import ProverConfig
+
+    runtime = make_runtime(tmp_path, config=ProverConfig())
+    for attempt in range(limit):
+        job, _ = runtime._new_job(role, node=runtime.dag.nodes[0], prompt=str(attempt))
+        runtime._finish_job(job, {"status": "completed", "api_calls": 1})
+    with pytest.raises(BudgetExhausted) as caught:
+        runtime._new_job(role, node=runtime.dag.nodes[0], prompt="over budget")
+    assert caught.value.code == role + "_sessions"
+    assert runtime.state["metrics"]["role_sessions"][role]["used"] == limit

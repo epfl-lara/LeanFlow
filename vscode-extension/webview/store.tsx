@@ -122,6 +122,7 @@ interface Store {
   events: Record<string, ActivityEvent[]>;
   eventDetails: Record<string, EventDetailEntry>;
   runLog: string;
+  runLogRunId: string;
   proverStates: Record<string, ProverStateEntry>;
   preview: { plan: LaunchPlanPreview | null; error: string; loading: boolean };
   diff: { rows: ProfileDiffRow[]; error: string; loading: boolean };
@@ -155,6 +156,7 @@ const INITIAL: Store = {
   events: {},
   eventDetails: {},
   runLog: "",
+  runLogRunId: "",
   proverStates: {},
   preview: { plan: null, error: "", loading: false },
   diff: { rows: [], error: "", loading: false },
@@ -200,8 +202,12 @@ function reduce(state: Store, action: Action): Store {
 
 function reduceHost(state: Store, message: HostMessage): Store {
   switch (message.type) {
-    case "state":
-      return { ...state, app: message.state };
+    case "state": {
+      const navigation = message.state.runNavigation;
+      const changed = navigation && navigation.sequence !== state.app?.runNavigation?.sequence;
+      const view = changed ? { ...state.view, tab: navigation.tab, logAgent: "", logSearch: "", logFilter: [] } : state.view;
+      return { ...state, app: message.state, view };
+    }
     case "proverState": {
       // Two reads can settle out of order, and a failed read must not blank a
       // dashboard that was showing real state: keep the newest good snapshot.
@@ -231,7 +237,7 @@ function reduceHost(state: Store, message: HostMessage): Store {
     case "diff":
       return { ...state, diff: { rows: message.rows, error: message.error, loading: false } };
     case "runLog":
-      return { ...state, runLog: message.text };
+      return { ...state, runLog: message.text, runLogRunId: message.runId };
     case "eventDetail": {
       const key = eventDetailKey(message.runId, message.eventId);
       // Re-insert so the freshest answer is the last to be evicted.

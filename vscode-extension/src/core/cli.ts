@@ -5,10 +5,11 @@
  * commands rather than by reading the state directory directly, so the on-disk
  * layout stays free to change without breaking the editor.
  */
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 
+import { launchWorkflowTerminal } from "./workflowTerminal";
 import { normalizeEventDetail } from "./eventDetail";
 import type { LaunchEnv } from "./launch";
 import { normalizeRunHistoryPayload } from "./runHistory";
@@ -33,6 +34,7 @@ import type {
   RunMetrics,
   RunHistorySnapshot,
   RunSummary,
+  RunConnection,
   ActivityEvent,
 } from "./types";
 
@@ -399,57 +401,13 @@ export async function previewLaunch(
   }
 }
 
-/**
- * Start a workflow as a detached background process.
- *
- * Detached rather than an integrated terminal on purpose: long runs and
- * sequential experiment sweeps must survive a window reload, and their output
- * is already recorded as structured state that the log viewer reads. The
- * child's stdio is discarded because the run log on disk is the authority.
- */
+/** Start a durable tmux session when available, otherwise an ordinary terminal. */
 export function spawnWorkflow(
   projectRoot: string,
   argv: string[],
   env: LaunchEnv,
   nativeEnv: NodeJS.ProcessEnv = {},
-): { pid: number | null; kill: () => boolean; onExit: Promise<number | null> } {
-  const child = spawn(cliPath(), ["workflow", ...argv], {
-    cwd: projectRoot,
-    env: { ...childEnv(env), ...nativeEnv },
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
-
-  const onExit = new Promise<number | null>((resolve) => {
-    child.once("exit", (code) => resolve(code));
-    child.once("error", () => resolve(null));
-  });
-
-  return {
-    pid: child.pid ?? null,
-    kill: () => {
-      if (child.pid === undefined) {
-        return false;
-      }
-      try {
-        // The child was started with `detached`, so it leads its own process
-        // group. Signalling the group reaches the Lean and MCP subprocesses it
-        // owns; signalling only the leader would orphan them.
-        if (process.platform !== "win32") {
-          process.kill(-child.pid, "SIGINT");
-          return true;
-        }
-      } catch {
-        // Fall back to the direct child below. This is also the only safe
-        // primitive Node exposes for a detached child on Windows.
-      }
-      try {
-        return child.kill("SIGINT");
-      } catch {
-        return false;
-      }
-    },
-    onExit,
-  };
+  prepared?: (connection: RunConnection) => Promise<void>,
+) {
+  return launchWorkflowTerminal(cliPath(), projectRoot, argv, { ...childEnv(env), ...nativeEnv }, prepared);
 }

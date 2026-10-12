@@ -108,7 +108,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand("leanflow.selectRun", (id: string) => {
-      services.selectRun(id);
+      services.openRun(id);
+      DashboardPanel.show(context.extensionUri, services);
     }),
 
     vscode.commands.registerCommand("leanflow.launch", () => {
@@ -172,10 +173,10 @@ export function activate(context: vscode.ExtensionContext): void {
         summary?: { run_id: string; project_root?: string };
       }) => {
         try {
-          const trackedId = node?.run?.id ?? services.state().selectedRunId;
+          const trackedId = node?.run?.id ?? (node?.summary ? null : services.state().selectedRunId);
           const tracked = trackedId ? services.runs.getRun(trackedId) : undefined;
           const runId =
-            tracked?.runId ?? node?.summary?.run_id ?? services.state().history[0]?.run_id ?? "";
+            node?.summary?.run_id ?? tracked?.runId ?? services.state().selectedRunId ?? services.state().history[0]?.run_id ?? "";
           const text = await services.runs.runLog(
             runId,
             2000,

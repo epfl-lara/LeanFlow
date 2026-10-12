@@ -657,7 +657,7 @@ def test_reviewed_direction_changes_charge_once_but_splits_do_not(tmp_path: Path
     runtime = ProverRuntime(
         root=tmp_path,
         targets=[path],
-        config=ProverConfig(mode="research", plan_refinements=1),
+        config=ProverConfig(mode="research", plan_refinements=1, orchestrator_sessions=50),
         session=planning,
         verifier=Verifier(),
     )

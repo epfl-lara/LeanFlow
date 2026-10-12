@@ -4,9 +4,9 @@
  * Anything that needs width — logs, the knob catalog, sweep tables — lives in
  * the dashboard panel instead of being squeezed in here.
  */
-import { Empty, Notice, StatusPill, relativeTime } from "../components";
+import { Empty, Notice, Pill, relativeTime } from "../components";
 import { Mark, PlayIcon, RefreshIcon } from "../icons";
-import { isActiveLiveStatus } from "../../src/core/runSelection";
+import { appRunChoices } from "../../src/core/runCatalog";
 import { LAUNCH_FIELD_LIMITS } from "../../src/core/types";
 import { useStore } from "../store";
 import { ProjectSetupCard } from "./ProjectSetupCard";
@@ -54,14 +54,10 @@ export function SidebarView() {
     );
   }
 
-  const active = app.runs.filter(
-    (run) => run.status === "running" || run.status === "starting",
-  );
-  const recent = app.runs.filter(
-    (run) => run.status !== "running" && run.status !== "starting",
-  );
-  const status = app.liveStatus;
-  const observedExternalRun = active.length === 0 && isActiveLiveStatus(status);
+  const choices = appRunChoices(app);
+  const active = choices.filter(run => run.active);
+  const recent = choices.filter(run => !run.active);
+  const status = app.projectLiveStatus ?? app.liveStatus;
 
   return (
     <div className="sidebar">
@@ -80,6 +76,7 @@ export function SidebarView() {
       </div>
 
       <ProjectSetupCard sidebar />
+      {app.runDiscoveryError && <Notice tone="warn">{app.runDiscoveryError}</Notice>}
       <section className="card" style={{ margin: 0 }}>
         <div className="card-title">Quick launch</div>
         <label className="field" style={{ marginBottom: 8 }}>
@@ -123,7 +120,7 @@ export function SidebarView() {
         </div>
       </section>
 
-      {status && (active.length > 0 || observedExternalRun) && (
+      {status && active.length > 0 && (
         <section className="card" style={{ margin: 0 }}>
           <div className="card-title">
             <span className="pill running">
@@ -149,65 +146,24 @@ export function SidebarView() {
         </section>
       )}
 
-      <div>
-        <div className="section-heading">Active</div>
-        {active.length === 0 && !observedExternalRun ? (
-          <Empty>Nothing running.</Empty>
-        ) : (
-          <>
-            {observedExternalRun && (
-              <section className="card" style={{ marginBottom: 8 }}>
-                <div className="spread">
-                  <span className="truncate">
-                    {status?.workflow_kind || "workflow"} · {status?.active_file_label || "project"}
-                  </span>
-                  <span className="pill running">
-                    <span className="dot" />
-                    {status?.phase || "running"}
-                  </span>
-                </div>
-                <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-                  Observed from the project’s verified live owner
-                </div>
-              </section>
-            )}
-            {active.map((run) => (
-            <section className="card" key={run.id} style={{ marginBottom: 8 }}>
-              <div className="spread">
-                <span className="truncate">{run.label}</span>
-                <StatusPill status={run.status} />
-              </div>
-              <div className="row tight" style={{ marginTop: 6 }}>
-                <span className="muted">{relativeTime(run.startedAt)}</span>
-                <button
-                  className="link"
-                  onClick={() => post({ type: "stopRun", id: run.id })}
-                >
-                  stop
-                </button>
-              </div>
-            </section>
-            ))}
-          </>
-        )}
-      </div>
-
-      {recent.length > 0 && (
-        <div>
-          <div className="section-heading">Recent</div>
-          {recent.slice(0, 6).map((run) => (
-            <section className="card" key={run.id} style={{ marginBottom: 8 }}>
-              <div className="spread">
-                <span className="truncate">{run.label}</span>
-                <StatusPill status={run.status} />
-              </div>
-              <div className="muted" style={{ fontSize: 11 }}>
-                {relativeTime(run.finishedAt ?? run.startedAt)}
-              </div>
-            </section>
-          ))}
+      {[{ label: "Live jobs", rows: active }, { label: "Past jobs", rows: recent }].map(group => (
+        <div key={group.label}>
+          <div className="section-heading">{group.label} · {group.rows.length}</div>
+          {group.rows.length === 0 && <Empty>{group.label === "Live jobs" ? "Nothing running." : "No saved jobs yet."}</Empty>}
+          <div className="job-list">
+            {group.rows.map(run => <section className="job-card" key={run.id}>
+              <button className="job-card-open" aria-pressed={app.selectedRunId === run.id} title={`Open ${run.label}`} onClick={() => post({ type: "openRun", id: run.id })}>
+                <span className="spread">
+                  <span className="truncate">{run.label}</span>
+                  <Pill tone={run.active ? "running" : run.status === "failed" ? "bad" : run.status === "stopped" ? "warn" : undefined}>{run.status}</Pill>
+                </span>
+                <span className="muted">{relativeTime(run.updatedAt)}</span>
+              </button>
+              {run.active && run.tracked && <button className="link job-stop" onClick={() => post({ type: "stopRun", id: run.id })}>stop</button>}
+            </section>)}
+          </div>
         </div>
-      )}
+      ))}
     </div>
   );
 }

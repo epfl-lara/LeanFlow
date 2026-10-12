@@ -346,6 +346,8 @@ export function trackedRunForPersistence(run: TrackedRun): TrackedRun {
   const appliedOverrides = safeOverrideEnvironment(run.appliedOverrides);
   return {
     ...run,
+    connection: run.connection?.kind === "tmux" || run.connection?.kind === "terminal" ? { kind: run.connection.kind } : undefined,
+    launchNotice: run.launchNotice ? redactSensitiveText(run.launchNotice, [rawPrompt]) : undefined,
     label: bounded(redactSensitiveText(run.label, [rawPrompt]), 512),
     request,
     command: boundedCommand(describeCommand(request, appliedOverrides.set)),

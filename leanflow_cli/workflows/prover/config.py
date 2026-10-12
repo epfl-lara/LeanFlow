@@ -58,8 +58,8 @@ class ProverConfig:
     search_order: str = "bottom-up"
     parallelism: int = 2
     agent_calls: int | None = None
-    prover_sessions: int | None = 150
-    orchestrator_sessions: int | None = 50
+    prover_sessions: int | None = 15
+    orchestrator_sessions: int | None = 5
     negation_sessions: int | None = None
     tokens: int | None = None
     wall_time_s: float | None = None

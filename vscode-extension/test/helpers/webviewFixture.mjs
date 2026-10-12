@@ -83,7 +83,7 @@ export function mount(tab = "launch", patch = {}, component = App) {
     view: { tab, form, logAgent: "", logRaw: false, logFilter: [], logSearch: "", knobSearch: "", knobAblatableOnly: false, knobProfile: "", collapsedGroups: [], diffLeft: "default", diffRight: "custom" },
     preview: { plan: null, error: "", loading: false }, diff: { rows: [], error: "", loading: false },
     toasts: [], events: { "run-1": ["agent-output", "agent-reasoning"].map((type, i) => ({ type, event_id: `event-${i}`, run_id: "run-1", agent_id: "prover-1", timestamp: now, message: `${type} message`, details: { job_id: "job-1", content_preview: `${type} full text` } })) },
-    eventDetails: {}, proverStates: { "run-1": { snapshot, error: "" } }, runLog: "fixture log",
+    eventDetails: {}, proverStates: { "run-1": { snapshot, error: "" } }, runLog: "fixture log", runLogRunId: "run-1",
     messages: [], effects,
     post(message) { assert.equal(parseWebviewMessage(message).ok, true, `Rejected UI message: ${JSON.stringify(message)}`); fixture.messages.push(message); },
     setForm(value) { fixture.view = { ...fixture.view, form: { ...fixture.view.form, ...value } }; fixture.refresh(); },

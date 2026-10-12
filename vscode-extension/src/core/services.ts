@@ -19,7 +19,7 @@ import { ProjectSetup } from "./projectSetup";
 import { ProviderSetup } from "./providerSetup";
 import { ProverService } from "./proverService";
 import { RunManager } from "./runManager";
-import { trackedRunForLiveStatus } from "./runSelection";
+import { runChoices, selectedRunChoice } from "./runCatalog";
 import {
   flagCatalogForDisplay,
   profileCatalogForDisplay,
@@ -35,6 +35,7 @@ export class LeanFlowServices implements vscode.Disposable {
   leanFiles: string[] = [];
   selectedRunId: string | null = null;
   busy = false;
+  private runNavigation: { sequence: number; tab: "live" | "logs" } | undefined;
 
   readonly setup: ProjectSetup;
   readonly providers: ProviderSetup;
@@ -93,10 +94,10 @@ export class LeanFlowServices implements vscode.Disposable {
 
   state(): AppState {
     const snapshot = this.runs.snapshot();
-    const focusedRun = trackedRunForLiveStatus(snapshot.runs, this.selectedRunId);
-    const focusedLiveStatus = focusedRun
-      ? this.runs.liveStatusForRun(focusedRun.id)
-      : null;
+    const choice = selectedRunChoice(runChoices(snapshot.runs, snapshot.history, snapshot.liveStatus), this.selectedRunId);
+    const focusedLiveStatus = choice?.tracked
+      ? this.runs.liveStatusForRun(choice.tracked.id)
+      : choice?.runId === snapshot.liveStatus?.run_id ? snapshot.liveStatus : null;
     return {
       providers: this.providers.state(),
       projectSetup: this.setup.state(),
@@ -107,13 +108,16 @@ export class LeanFlowServices implements vscode.Disposable {
       runs: snapshot.runs,
       history: snapshot.history,
       selectedRunId: this.selectedRunId,
+      projectLiveStatus: snapshot.liveStatus,
+      runDiscoveryError: snapshot.discoveryError,
+      runNavigation: this.runNavigation,
       // An isolated experiment cell has a different project-local status
       // file. Never pair a selected run with the source checkout's unrelated
       // snapshot merely because that is the workspace currently open.
       // A stopped historical row must not suppress the project's active CLI
       // run. Exact tracked selection still wins; otherwise expose the verified
       // live pointer, including workflows launched outside this window.
-      liveStatus: focusedRun ? focusedLiveStatus : snapshot.liveStatus,
+      liveStatus: focusedLiveStatus,
       eventTypes: snapshot.eventTypes,
       experiments: this.experiments.list(),
       leanFiles: this.leanFiles,
@@ -122,7 +126,18 @@ export class LeanFlowServices implements vscode.Disposable {
   }
 
   selectRun(id: string | null): void {
-    this.selectedRunId = id !== null && this.runs.getRun(id) ? id : null;
+    const snapshot = this.runs.snapshot();
+    const choices = runChoices(snapshot.runs, snapshot.history, snapshot.liveStatus);
+    this.selectedRunId = id !== null ? selectedRunChoice(choices, id)?.id ?? null : null;
+    this.changed.fire();
+  }
+
+  /** Select a clicked job and navigate every dashboard to its live details or saved logs. */
+  openRun(id: string): void {
+    this.selectRun(id);
+    const snapshot = this.runs.snapshot();
+    const choice = selectedRunChoice(runChoices(snapshot.runs, snapshot.history, snapshot.liveStatus), this.selectedRunId);
+    this.runNavigation = { sequence: (this.runNavigation?.sequence ?? 0) + 1, tab: choice?.active ? "live" : "logs" };
     this.changed.fire();
   }
 
@@ -132,6 +147,7 @@ export class LeanFlowServices implements vscode.Disposable {
       await this.setup.refresh(this.cli.ok);
       return;
     }
+    this.selectedRunId = null;
     this.project = next;
     this.runs.setProject(next);
     await this.reload();

@@ -95,7 +95,7 @@ def test_exhausted_refinement_budget_labels_the_dropped_direction_change_rejecte
     runtime = ProverRuntime(
         root=tmp_path,
         targets=[source],
-        config=ProverConfig(mode="research", plan_refinements=0),
+        config=ProverConfig(mode="research", plan_refinements=0, orchestrator_sessions=50),
         session=session,
     )
     assert runtime._research_plan("Construct a useful graph.")

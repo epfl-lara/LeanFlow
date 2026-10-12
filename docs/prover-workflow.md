@@ -244,8 +244,8 @@ every role together; the remaining settings further limit one role group:
 | `LEANFLOW_PROVER_AGENT_CALLS` | unset | Maximum native process invocations |
 | `LEANFLOW_PROVER_TOKENS` | unset | Reported-token threshold for admitting future invocations |
 | `LEANFLOW_PROVER_WALL_TIME_S` | unset | Cumulative active campaign time, including tools and verification |
-| `LEANFLOW_PROVER_PROVER_SESSIONS` | 150 | Prover invocations across all goals, retries and resumes |
-| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | 50 | Shared planning, review, research and recovery invocations |
+| `LEANFLOW_PROVER_PROVER_SESSIONS` | 15 | Prover invocations across all goals, retries and resumes |
+| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | 5 | Shared planning, review, research and recovery invocations |
 | `LEANFLOW_PROVER_NEGATION_SESSIONS` | unset | Refutation invocations across the campaign |
 
 The same defaults can be configured as `limits.agent_calls`, `limits.tokens` and

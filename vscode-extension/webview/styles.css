@@ -1711,3 +1711,15 @@ body.vscode-high-contrast-light {
 .setup-live-log { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; margin-top: 16px; background: var(--vscode-textCodeBlock-background); border-radius: 4px; font-size: 12px; }
 .setup-troubleshooting { margin-top: 16px; }
 .setup-troubleshooting > p { margin: 12px 0; }
+
+/* Job cards remain readable and keyboard-clickable in the narrow sidebar. */
+.run-menu { display: flex; flex-direction: column; gap: 12px; }
+.run-menu select { width: 100%; min-width: 0; }
+.job-list { display: flex; flex-direction: column; gap: 8px; max-height: 480px; overflow-y: auto; }
+.job-card { border: 1px solid var(--vscode-panel-border); border-radius: 6px; overflow: hidden; }
+.job-card-open { display: block; width: 100%; padding: 10px; background: transparent; border: 0; text-align: left; color: inherit; cursor: pointer; }
+.job-card-open:hover, .job-card-open[aria-pressed="true"] { background: var(--vscode-list-hoverBackground); }
+.job-card-open:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; }
+.job-card-open .spread { gap: 8px; }
+.job-card-open .muted { display: block; font-size: 11px; margin-top: 4px; }
+.job-stop { margin: 0 10px 10px; }

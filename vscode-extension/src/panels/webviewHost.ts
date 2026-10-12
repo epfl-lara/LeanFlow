@@ -236,7 +236,7 @@ export class WebviewHost implements vscode.Disposable {
         );
         services.selectRun(run.id);
         // The run id is minted at launch, so this is the first place it exists.
-        this.notify("info", `Started ${run.label} · run id ${run.runId}`);
+        this.notify(run.status === "failed" ? "error" : "info", run.status === "failed" ? run.error || "The workflow could not start." : `Started ${run.label}. ${run.launchNotice || ""}`);
         return;
       }
       case "preview": {
@@ -301,6 +301,15 @@ export class WebviewHost implements vscode.Disposable {
         } else if (outcome.reason) {
           this.notify("info", outcome.reason);
         }
+        return;
+      }
+      case "openRun": {
+        services.openRun(message.id);
+        await vscode.commands.executeCommand("leanflow.openDashboard");
+        return;
+      }
+      case "openRunTerminal": {
+        await services.runs.openTerminal(message.id);
         return;
       }
       case "selectRun": {

@@ -34,7 +34,8 @@ def runtime_at(root: Path, **options: Any) -> ProverRuntime:
     return ProverRuntime(
         root=root,
         targets=[root / "Main.lean"],
-        config=ProverConfig(mode="research"),
+        # Recovery tests exercise repeated repairs independently of product defaults.
+        config=ProverConfig(mode="research", orchestrator_sessions=50),
         verifier=Verifier(),
         **options,
     )

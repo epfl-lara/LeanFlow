@@ -72,6 +72,7 @@ if (tests) {
       stats: "webview/stats.ts",
       storageSecurity: "src/core/storageSecurity.ts",
       runOwnership: "src/core/runOwnership.ts",
+      runCatalog: "src/core/runCatalog.ts",
       runSelection: "src/core/runSelection.ts",
       runHistory: "src/core/runHistory.ts",
       runPrivacy: "src/core/runPrivacy.ts",

@@ -86,7 +86,7 @@ and reported-token limits are available for every workflow. Prove adds optional
 call limits for prover, orchestrator and refutation roles, plus retry,
 proof-direction, recovery-decision and graph-size controls. Call limits count
 native invocations. New proof runs default to Research and bottom-up order.
-Research shows Prover and Orchestrator panels with call limits of 150 and 50;
+Research shows Prover and Orchestrator panels with call limits of 15 and 5;
 the help control beside Mode explains the difference from Standard. The
 rendered command is always visible, and **Preview plan** resolves the launch
 without starting it, showing the exact argv and the complete `LEANFLOW_*`
@@ -241,23 +241,33 @@ Install LeanFlow, set the path if necessary, then reload the window.
 
 ## How runs are executed
 
-Runs are spawned detached, not in an integrated terminal. They survive a window
-reload, a sweep can keep going while you work, and their output is already
-recorded as structured state that the log viewer reads. On reload the extension
-re-adopts tracked runs and reconciles them against recorded status, because the
-process outlives the exit callback that would otherwise report it finished.
+New jobs use **tmux automatically when available** on the workspace host (including
+Remote SSH). Each job has its own session and environment. The job continues when
+you close VS Code or disconnect; **Open terminal** reattaches to it. Closing that
+terminal detaches. It does not stop the job. tmux does not protect against a host
+shutdown, and native runtimes still need their network connections.
 
-A run started or resumed from a terminal is noticed while the dashboard is
-idle. The extension watches the project's `live_status.json` and, on a bounded
-interval, compares that file's size and modification time; only a change makes
-it read state through `leanflow runs status`. The file is a change signal, never
-parsed by the editor. A discovered run is observed in the Live tab; stopping it
-remains with the terminal that owns it.
+If tmux is unavailable or cannot create a session, LeanFlow opens a **regular
+integrated terminal** and explains the fallback. Keep that terminal open until
+the job finishes. No tmux installation is required or performed automatically.
+An ambiguous launch stays under observation rather than starting a duplicate.
+Early startup errors are retained even before a workflow event stream exists.
 
-Stopping a run started by the current window interrupts its owned process group.
-After a reload, the extension asks `leanflow runs stop RUN_ID` instead; the CLI
-signals only after revalidating the run id, process token, and process-group
-identity. A stale or reused pid is refused and the UI reports why.
+**Live jobs** and **Past jobs** are clickable in both the sidebar and Runs tree.
+Click a live job for its details, or a past job for its saved logs. Live and Logs
+also share a **Jobs** menu, so selection always follows the same exact job through
+its proof workspace, agent events, and raw log. Saved history includes launches
+from other windows and terminals, with up to 100 recent streams per project.
+An incomplete historical record is marked **status unknown**, never assumed live
+from an old process id. Temporary read failures retain the previous job list and
+show a retry notice.
+
+Opening a project discovers its saved history and verified live owner. While
+idle, the extension watches the project's live-status file and checks its
+signature periodically; changes trigger a CLI refresh. Live jobs are followed
+automatically. Stopping an extension-launched job always goes through
+`leanflow runs stop RUN_ID`, which revalidates the run id and process identity.
+Externally started jobs remain observable; their owning terminal controls Stop.
 
 ## Privacy and network behavior
 

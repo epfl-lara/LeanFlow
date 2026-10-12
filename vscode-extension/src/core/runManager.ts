@@ -1,7 +1,7 @@
 /**
  * Own the lifecycle and observation of launched runs.
  *
- * A run is a detached child process plus a stream of state the runtime records
+ * A run is a tmux session or terminal plus a stream of state the runtime records
  * on disk. This class is the single place that starts one, tracks it across a
  * window reload, tails its activity, and reports when it ends.
  */
@@ -18,6 +18,7 @@ import {
   spawnWorkflow,
   stopWorkflow,
 } from "./cli";
+import { inspectWorkflowTerminal, releaseWorkflowTerminal, showWorkflowTerminal } from "./workflowTerminal";
 import { mergeActivityEvents } from "./eventBuffer";
 import { idleDiscoveryDecision, type IdleDiscoveryState } from "./idleDiscovery";
 import {
@@ -61,7 +62,7 @@ const LIVE_STATUS_FILE = "live_status.json";
 const WATCHER_DEBOUNCE_MS = 1_000;
 
 interface LiveHandle {
-  kill: () => boolean;
+  onExit: Promise<number | null>;
 }
 
 export interface RunManagerSnapshot {
@@ -69,6 +70,7 @@ export interface RunManagerSnapshot {
   history: RunSummary[];
   liveStatus: LiveStatus | null;
   eventTypes: { type: string; count: number }[];
+  discoveryError: string;
 }
 
 export class RunManager implements vscode.Disposable {
@@ -77,6 +79,8 @@ export class RunManager implements vscode.Disposable {
   private events = new Map<string, ActivityEvent[]>();
   private cursors = new Map<string, string>();
   private history: RunSummary[] = [];
+  private historyByRoot = new Map<string, RunSummary[]>();
+  private discoveryError = "";
   private liveStatus: LiveStatus | null = null;
   private statusesByRoot = new Map<string, LiveStatus | null>();
   private historyRoots = new Map<string, string>();
@@ -86,6 +90,8 @@ export class RunManager implements vscode.Disposable {
   private eventTypes: { type: string; count: number }[] = [];
   private timer: NodeJS.Timeout | null = null;
   private polling = false;
+  private liveTmuxRuns = new Set<string>();
+  private missingTmuxRuns = new Set<string>();
   private persistQueue: Promise<void> = Promise.resolve();
   private project: ProjectInfo;
   // Idle discovery: while nothing is polled, watch the live-status file and
@@ -142,6 +148,8 @@ export class RunManager implements vscode.Disposable {
     this.historyRoots.clear();
     this.newestHistoryByRoot.clear();
     this.history = [];
+    this.historyByRoot.clear();
+    this.discoveryError = "";
     void this.refresh();
   }
 
@@ -153,6 +161,7 @@ export class RunManager implements vscode.Disposable {
       history: this.history.map(runSummaryForDisplay),
       liveStatus: this.liveStatus === null ? null : liveStatusForDisplay(this.liveStatus),
       eventTypes: this.eventTypes,
+      discoveryError: this.discoveryError,
     };
   }
 
@@ -337,7 +346,7 @@ export class RunManager implements vscode.Disposable {
     });
     this.runs.set(id, run);
     try {
-      // Commit the identity before spawning the detached child. If VS Code
+      // Commit the identity before starting the terminal or tmux session. If VS Code
       // reloads in the launch gap, the next window can still account for it.
       await this.persist();
     } catch (error) {
@@ -352,11 +361,18 @@ export class RunManager implements vscode.Disposable {
       // Secrets cross only the process boundary, never tracked/persisted overrides.
       // Include all configured native backends because planner and prover can differ.
       const nativeEnv = await this.nativeEnvironment();
-      const child = spawnWorkflow(projectRoot, argv, env, nativeEnv);
+      const child = await spawnWorkflow(projectRoot, argv, env, nativeEnv, async connection => {
+        run.connection = connection;
+        await this.persist();
+      });
       run.pid = child.pid;
-      run.status = "running";
-      this.handles.set(id, { kill: child.kill });
-      void child.onExit.then((code) => this.finish(id, code));
+      run.status = child.pending ? "starting" : "running";
+      run.connection = child.connection;
+      run.launchNotice = child.notice;
+      if (child.onExit) {
+        this.handles.set(id, { onExit: child.onExit });
+        void child.onExit.then((code) => this.finish(id, code));
+      }
     } catch (error) {
       run.status = "failed";
       run.error = redactSensitiveText(
@@ -397,16 +413,8 @@ export class RunManager implements vscode.Disposable {
       return { stopped: false, reason: "Unknown run." };
     }
 
-    const handle = this.handles.get(id);
-    if (handle) {
-      if (this.stopRequested.has(id)) {
-        return { stopped: true, reason: "An interrupt has already been sent." };
-      }
-      if (!handle.kill()) {
-        return { stopped: false, reason: "That process is no longer running." };
-      }
-      this.stopRequested.add(id);
-      return { stopped: true, reason: "Interrupt sent; waiting for the process to exit." };
+    if (this.stopRequested.has(id)) {
+      return { stopped: true, reason: "An interrupt has already been sent." };
     }
 
     if (!run.runId) {
@@ -429,6 +437,13 @@ export class RunManager implements vscode.Disposable {
         reason: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  /** Open the exact selected job's terminal without starting a new workflow. */
+  async openTerminal(id: string): Promise<void> {
+    const run = this.runs.get(id);
+    if (!run?.connection || !run.runId) throw new Error("This job has no saved terminal connection. Its recorded logs are still available.");
+    await showWorkflowTerminal(run.runId, run.connection);
   }
 
   stopAll(): void {
@@ -460,7 +475,7 @@ export class RunManager implements vscode.Disposable {
       run.status = "stopped";
       run.exitCode = exitCode;
     } else {
-      run.status = terminalTrackedRunStatus("", "", exitCode);
+      run.status = exitCode === null ? "failed" : terminalTrackedRunStatus("", "", exitCode);
       run.exitCode = exitCode;
       if (run.status === "failed" && !run.error) {
         run.error = `leanflow exited with code ${exitCode ?? "unknown"}`;
@@ -469,7 +484,7 @@ export class RunManager implements vscode.Disposable {
     run.finishedAt = new Date().toISOString();
     void this.persist();
     this.changed.fire();
-    if (this.activeRuns().length === 0) {
+    if (this.activeRuns().length === 0 && !this.polling) {
       // One last read so the final events and status land before polling stops.
       void this.refresh().then(() => this.stopPolling());
     }
@@ -582,7 +597,7 @@ export class RunManager implements vscode.Disposable {
     this.idleState = decision.next;
     // The watcher names the exact file, so its notification is itself the
     // change; the timer only reads when the signature moved.
-    if ((decision.poll || fromWatcher) && !this.disposed) {
+    if ((decision.poll || fromWatcher || this.discoveryError) && !this.disposed) {
       await this.poll();
     }
   }
@@ -598,6 +613,34 @@ export class RunManager implements vscode.Disposable {
     }
     this.polling = true;
     try {
+      // tmux retains exited panes so even failures before the CLI writes its
+      // first event remain visible after an editor reload.
+      this.liveTmuxRuns.clear();
+      this.missingTmuxRuns.clear();
+      for (const run of this.activeRuns()) {
+        if (run.connection?.kind !== "tmux") continue;
+        const pane = await inspectWorkflowTerminal(run.runId);
+        if (pane.state === "running" || pane.state === "unknown") this.liveTmuxRuns.add(run.id);
+        if (pane.state === "running" && run.status === "starting") {
+          run.status = "running";
+          run.launchNotice = "Running in tmux. The job survives closing VS Code or disconnecting from the host.";
+          await this.persist();
+        }
+        if (pane.state === "missing") this.missingTmuxRuns.add(run.id);
+        if (pane.state === "exited") {
+          if (pane.code !== 0 && pane.output) {
+            // A startup error can echo argv before the CLI creates its redacted
+            // stream. After reload we only retain a prompt fingerprint, so do
+            // not persist raw console text for a prompt-bearing launch.
+            run.error = run.request.prompt
+              ? `The workflow exited with code ${pane.code ?? "unknown"}. Check its saved logs and the LeanFlow CLI/provider setup.`
+              : redactSensitiveText(pane.output);
+          }
+          this.finish(run.id, pane.code);
+          await this.persist();
+          await this.releaseTerminal(run);
+        }
+      }
       const roots = new Map<string, string>();
       if (this.project.found) {
         roots.set(this.rootKey(this.project.root), this.project.root);
@@ -615,18 +658,22 @@ export class RunManager implements vscode.Disposable {
           return {
             projectRoot,
             status: statusResult.status === "fulfilled" ? statusResult.value : null,
-            history: historyResult.status === "fulfilled" ? historyResult.value : [],
+            history: historyResult.status === "fulfilled" ? historyResult.value : this.historyByRoot.get(this.rootKey(projectRoot)) ?? [],
             stateReadable:
               statusResult.status === "fulfilled" && historyResult.status === "fulfilled",
           };
         }),
       );
 
+      this.discoveryError = snapshots.some(snapshot => !snapshot.stateReadable)
+        ? "Could not refresh job status or history. Showing the last saved jobs; live status may be unavailable. LeanFlow will retry automatically."
+        : "";
       this.historyRoots.clear();
       this.newestHistoryByRoot.clear();
       const mergedHistory = new Map<string, RunSummary>();
       for (const snapshot of snapshots) {
         const key = this.rootKey(snapshot.projectRoot);
+        this.historyByRoot.set(key, snapshot.history);
         this.statusesByRoot.set(key, snapshot.status);
         if (sameProjectRoot(snapshot.projectRoot, this.project.root)) {
           this.liveStatus = snapshot.status;
@@ -671,6 +718,9 @@ export class RunManager implements vscode.Disposable {
 
   private async pullEvents(): Promise<void> {
     const runTargets = new Map<string, string>();
+    for (const [rootKey, status] of this.statusesByRoot) {
+      if (isActiveLiveStatus(status) && status?.run_id) runTargets.set(String(status.run_id), rootKey);
+    }
     // Only active streams are followed continuously. Iterating every finished
     // experiment clone here turns a 1,000-cell sweep into 1,000 CLI processes
     // per poll. Finished runs are loaded on demand when the user selects them.
@@ -782,11 +832,19 @@ export class RunManager implements vscode.Disposable {
       if (!sameProjectRoot(run.projectRoot, projectRoot)) {
         continue;
       }
-      if (this.handles.has(run.id)) {
+      if (this.handles.has(run.id) || this.liveTmuxRuns.has(run.id)) {
         // This window owns the process; its exit callback is authoritative.
         continue;
       }
       const resolution = resolveRestoredRun(run, status, history, stateReadable);
+      if (resolution.kind === "waiting" && stateReadable && this.missingTmuxRuns.has(run.id) &&
+          Date.now() - Date.parse(run.startedAt) > 15_000) {
+        run.status = "failed";
+        run.error = "The tmux session ended without a final result. Saved logs are available; completion could not be confirmed.";
+        run.finishedAt = new Date().toISOString();
+        changed = true;
+        continue;
+      }
       if (resolution.kind === "adopt") {
         if (run.pid !== resolution.processId || run.status === "starting") {
           run.pid = resolution.processId;
@@ -837,9 +895,8 @@ export class RunManager implements vscode.Disposable {
   /**
    * Re-adopt tracked runs after a window reload.
    *
-   * The child processes are detached, so they survive the editor. Their exit
-   * callbacks do not, which is why anything still marked running is downgraded
-   * to be reconciled against recorded status on the next poll.
+   * tmux sessions survive the editor. Terminal restoration depends on VS Code.
+   * Reconcile every restored launch against its exact durable runtime identity.
    */
   private restore(): void {
     const stored = this.context.workspaceState.get<TrackedRun[]>(RUNS_STORAGE_KEY, []);
@@ -856,6 +913,9 @@ export class RunManager implements vscode.Disposable {
           status,
         }),
       );
+    }
+    for (const run of this.runs.values()) {
+      void this.releaseTerminal(run).catch(() => {});
     }
     // An older extension may have stored the raw `--prompt` tail. Rewrite the
     // memento immediately instead of waiting for the next lifecycle update.
@@ -876,6 +936,14 @@ export class RunManager implements vscode.Disposable {
     // this update's rejection to the launch path that must fail closed.
     this.persistQueue = update.catch(() => undefined);
     return update;
+  }
+
+  /** Reclaim only finished owned panes, including cleanup interrupted by a reload. */
+  private async releaseTerminal(run: TrackedRun): Promise<void> {
+    if (run.connection?.kind !== "tmux" || run.status === "starting" || run.status === "running") return;
+    if (!await releaseWorkflowTerminal(run.runId)) return;
+    run.connection = undefined;
+    await this.persist();
   }
 
   private rootKey(projectRoot: string): string {

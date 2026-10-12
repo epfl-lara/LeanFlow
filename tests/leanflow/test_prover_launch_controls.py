@@ -56,7 +56,7 @@ def test_role_invocation_limits_are_serialized_and_editable(
     assert getattr(ProverConfig(**config.to_mapping()), name) == expected
     spec = lookup_flag(env_name)
     assert spec is not None and spec.extension_editable
-    assert spec.default == {"prover_sessions": "150", "orchestrator_sessions": "50"}.get(name, "")
+    assert spec.default == {"prover_sessions": "15", "orchestrator_sessions": "5"}.get(name, "")
     assert spec.minimum == 0
 
 
@@ -123,7 +123,7 @@ def test_new_prover_launch_defaults_to_research_bottom_up_and_role_limits(
     assert plan.workflow.research_mode
     assert plan.child_env["LEANFLOW_RESEARCH_MODE"] == "1"
     assert (config.mode, config.search_order) == ("research", "bottom-up")
-    assert (config.prover_sessions, config.orchestrator_sessions) == (150, 50)
+    assert (config.prover_sessions, config.orchestrator_sessions) == (15, 5)
     for suffix, expected in (("MODE", "research"), ("SEARCH_ORDER", "bottom-up")):
         spec = lookup_flag("LEANFLOW_PROVER_" + suffix)
         assert spec is not None and spec.default == expected

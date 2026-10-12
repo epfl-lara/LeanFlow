@@ -9,6 +9,8 @@
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
+import { appRunChoices, selectedRunChoice } from "../../src/core/runCatalog";
+import { RunMenu } from "./RunMenu";
 import { eventSearchText } from "../../src/core/eventDetail";
 import {
   humanEventLabel,
@@ -21,7 +23,7 @@ import {
 } from "../../src/core/logRows";
 import type { ActivityEvent } from "../../src/core/types";
 import { Card, Empty, Notice } from "../components";
-import { useSelectedRun, useStore } from "../store";
+import { useStore } from "../store";
 import { post } from "../vscodeApi";
 import { EventDetailPanel } from "./EventDetail";
 
@@ -120,8 +122,8 @@ function shortTime(iso: string): string {
 }
 
 export function LogsView() {
-  const { app, view, setView, events, runLog } = useStore();
-  const run = useSelectedRun();
+  const { app, view, setView, events, runLog, runLogRunId } = useStore();
+  const run = app ? selectedRunChoice(appRunChoices(app), app.selectedRunId) : null;
   const [preset, setPreset] = useState("narrative");
   const [follow, setFollow] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, true>>({});
@@ -130,8 +132,9 @@ export function LogsView() {
 
   // Prefer the selected run's own stream; fall back to the newest recorded one
   // so a run started from a terminal is still readable here.
-  const runId = run?.runId || app?.history[0]?.run_id || "";
+  const runId = run?.runId || "";
   const stream: ActivityEvent[] = useMemo(() => events[runId] ?? [], [events, runId]);
+  const lastEventId = stream[stream.length - 1]?.event_id || "";
   const agents = useMemo(
     () => [...new Set(stream.map((event) => event.agent_id).filter(Boolean))].sort(),
     [stream],
@@ -153,7 +156,7 @@ export function LogsView() {
     if (view.logRaw) {
       post({ type: "loadRunLog", runId });
     }
-  }, [view.logRaw, runId]);
+  }, [view.logRaw, runId, lastEventId]);
 
   const activePreset = PRESETS.find((entry) => entry.id === preset) ?? PRESETS[0];
   const search = view.logSearch.trim().toLowerCase();
@@ -215,6 +218,7 @@ export function LogsView() {
 
   return (
     <>
+      <RunMenu />
       <Card
         title="Logs"
         subtitle={
@@ -328,7 +332,7 @@ export function LogsView() {
       )}
 
       {view.logRaw ? (
-        <pre className="raw">{runLog || "[no workflow run log recorded yet]"}</pre>
+        <pre className="raw">{(runLogRunId === runId ? runLog : "") || "[no workflow run log recorded yet]"}</pre>
       ) : (
         <div className="logs">
           <div className="log-list" ref={listRef}>

@@ -156,8 +156,8 @@ is one call, regardless of the requests, tools or compaction within it:
 
 | Launch override | Default | Calls counted |
 | --- | --- | --- |
-| `LEANFLOW_PROVER_PROVER_SESSIONS` | 150 | Prover invocations, including retries and resumes |
-| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | 50 | Planning, independent review, research and recovery invocations combined |
+| `LEANFLOW_PROVER_PROVER_SESSIONS` | 15 | Prover invocations, including retries and resumes |
+| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | 5 | Planning, independent review, research and recovery invocations combined |
 | `LEANFLOW_PROVER_NEGATION_SESSIONS` | Unlimited | Refutation invocations |
 
 These limits share the global allowance. Reservations prevent concurrent jobs

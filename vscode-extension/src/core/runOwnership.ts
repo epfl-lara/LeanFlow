@@ -1,5 +1,7 @@
 /** Decide whether durable workflow state still advertises a live owner. */
 import * as path from "node:path";
+import { terminalTrackedRunStatus } from "./runStatus";
+export { terminalTrackedRunStatus } from "./runStatus";
 
 import type { LiveStatus, RunSummary, TrackedRun, TrackedRunStatus } from "./types";
 
@@ -20,42 +22,6 @@ export type RestoredRunResolution =
   | { kind: "adopt"; processId: number }
   | { kind: "terminal"; status: TrackedRunStatus }
   | { kind: "abandoned"; error: string };
-
-/** Map the CLI's exact terminal vocabulary into the compact tree-view states. */
-export function terminalTrackedRunStatus(
-  statusValue: unknown,
-  phaseValue: unknown,
-  exitCodeValue: unknown,
-): TrackedRunStatus {
-  const terminal = String(statusValue ?? "").trim().toLowerCase();
-  if (terminal === "interrupted") {
-    return "stopped";
-  }
-  if (terminal === "failed") {
-    return "failed";
-  }
-  if (["succeeded", "paused", "disproved", "exited"].includes(terminal)) {
-    return "finished";
-  }
-  const phase = String(phaseValue ?? "").trim().toLowerCase();
-  if (phase === "stopped" || phase === "interrupted") {
-    return "stopped";
-  }
-  const exitCode =
-    typeof exitCodeValue === "number" && Number.isInteger(exitCodeValue)
-      ? exitCodeValue
-      : null;
-  if (exitCode === 0) {
-    return "finished";
-  }
-  if (exitCode === 130) {
-    return "stopped";
-  }
-  if (exitCode !== null || phase === "failed" || phase === "dead") {
-    return "failed";
-  }
-  return "finished";
-}
 
 /** Compare project roots without depending on their display spelling. */
 export function sameProjectRoot(left: string, right: string): boolean {

@@ -266,7 +266,7 @@ supports corruption detection, not protection against the filesystem owner.
 does not read or reinterpret LeanFlow's persistence files directly:
 
 - `src/core/cli.ts` owns JSON command execution, strict output parsing, and the
-  detached workflow spawn boundary. The host passes only catalogued
+  workflow launch boundary. The host passes only catalogued
   `LEANFLOW_*` overrides and a minted run id. Native credentials are injected
   separately immediately before spawn, never included in persisted overrides.
 - `src/core/providerCredentials.ts` stores explicit native keys and the Lemex
@@ -293,12 +293,22 @@ does not read or reinterpret LeanFlow's persistence files directly:
   per-event evidence cache. Missing reasoning is labelled as unreported.
   Agent-log navigation uses the recorded agent identity and clears stale search
   filters. Launch displays the resolved default backend from provider metadata.
-- `src/core/runManager.ts` persists a run record before spawn, binds it to its
-  project root and process identity, and reconciles restored runs only from an
-  exact run-id status or immutable terminal result. A restored run is stopped
-  through `leanflow runs stop`, which revalidates the recorded process.
+- `src/core/workflowTerminal.ts` prefers a private tmux server per job with an
+  inherited launch environment and retained exit status; it falls back to a regular
+  integrated terminal before dispatch, or after a confirmed failed session creation.
+  Ambiguous dispatch is observed without launching a second copy. No credentials
+  enter tmux arguments/config files. Reattachment never starts another workflow.
+- `src/core/runManager.ts` persists a run identity before launch and reconciles
+  exact runtime status, immutable results and owned tmux pane exits. It releases
+  finished private panes only after persisting their outcome, keeps cached history
+  through read failures, and follows external live ids independently of the newest
+  history stream. Every Stop uses the CLI's identity-validated `runs stop`.
+- `src/core/runCatalog.ts` merges tracked jobs, verified external owners and saved
+  history without duplicate ids or worker streams. `RunMenu.tsx`, `SidebarView.tsx`
+  and `runsTree.ts` share that catalog; exact selection applies to details and logs.
+  `services.ts` coordinates clicked-job navigation across both webview surfaces.
 - `src/core/runOwnership.ts` is the pure owner-adoption and terminal-state
-  policy. `src/core/runSelection.ts` prevents stopped tracked rows from masking
+  policy; `runStatus.ts` shares outcome labels with the browser. `src/core/runSelection.ts` prevents stopped tracked rows from masking
   an active project's live status in both the host and browser webview, and
   identifies verified external owners for bounded live polling.
   `src/core/projectDiscovery.ts` makes nested-manifest selection explicit and

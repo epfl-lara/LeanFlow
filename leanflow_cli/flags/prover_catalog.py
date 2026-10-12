@@ -87,12 +87,12 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
     ),
     _integer(
         "PROVER_SESSIONS",
-        150,
+        15,
         "Campaign-wide native prover invocation limit across all goals, retries, and resumes. Each invocation may make multiple model requests. Empty means unlimited; 0 disables prover invocations.",
     ),
     _integer(
         "ORCHESTRATOR_SESSIONS",
-        50,
+        5,
         "Campaign-wide native invocation limit shared by planning, review, and research jobs, including retries and resumes. Each invocation may make multiple model requests. Empty means unlimited; 0 disables these invocations.",
     ),
     _integer(

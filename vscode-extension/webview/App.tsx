@@ -1,6 +1,7 @@
 /** Shell: header, left nav, and the active view. */
 import { useEffect } from "react";
 
+import { appRunChoices } from "../src/core/runCatalog";
 import { Pill } from "./components";
 import {
   KnobsIcon,
@@ -89,7 +90,7 @@ export function App() {
   }
 
   const activeCount =
-    app?.runs.filter((run) => run.status === "running" || run.status === "starting").length ?? 0;
+    app ? appRunChoices(app).filter(run => run.active).length : 0;
   const sweepCount = app?.experiments.length ?? 0;
   const knobCount = app?.catalog?.count ?? 0;
 
