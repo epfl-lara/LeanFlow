@@ -456,6 +456,8 @@ button:focus-visible {
 }
 
 .launch-fields > label.field,
+.launch-fields > .field-with-help,
+.launch-options > .field-with-help,
 .launch-provider-field,
 .launch-options > div > label.field {
   display: grid;
@@ -464,7 +466,16 @@ button:focus-visible {
   row-gap: 6px;
 }
 
-.launch-provider-field > label.field {
+.launch-fields > .field-with-help > label.field,
+.launch-options > .field-with-help > label.field {
+  display: grid;
+  grid-template-rows: subgrid;
+  grid-row: span 3;
+  row-gap: 6px;
+}
+
+.launch-provider-field > label.field,
+.launch-provider-field > .field-with-help {
   display: grid;
   grid-template-rows: subgrid;
   grid-row: span 2;
@@ -558,64 +569,107 @@ button:focus-visible {
 /* Role grids mix selectors and limit groups with optional reset actions.
    Each field owns its height, so a wrapped hint cannot stretch a label row. */
 .prover-role .launch-fields > label.field,
-.prover-mode-fields > label.field {
+.prover-role .launch-fields > .field-with-help,
+.prover-mode-fields > label.field,
+.prover-mode-fields > .field-with-help {
   display: flex;
+  flex-direction: column;
   grid-row: auto;
   gap: 6px;
 }
 
-.prover-mode-control {
+.prover-role .field-with-help > label.field,
+.prover-mode-fields .field-with-help > label.field {
+  display: flex;
+  grid-row: auto;
+}
+
+.launch-provider-field > .field-with-help > label.field {
+  display: grid;
+  grid-template-rows: subgrid;
+  grid-row: span 2;
+  row-gap: 6px;
+}
+
+.field-with-help,
+.check-with-help {
   position: relative;
   min-width: 0;
 }
 
-.prover-mode-control > label.field > .label {
-  padding-right: 24px;
+.field-with-help > .field > .label,
+.check-with-help > .check > .body > span:first-child {
+  padding-right: 28px;
 }
 
-.prover-mode-help {
+.field-with-help > .info-help,
+.check-with-help > .info-help {
   position: absolute;
   top: 0;
   right: 0;
 }
 
-.prover-mode-help > summary {
+.info-help {
+  display: inline-block;
+  position: relative;
+  flex: none;
+  margin-left: 6px;
+  vertical-align: baseline;
+}
+
+.info-help > summary {
   list-style: none;
   cursor: pointer;
   color: var(--vscode-textLink-foreground);
   width: 20px;
   text-align: center;
+  font-size: 14px;
+  font-weight: 400;
 }
 
-.prover-mode-help > summary::-webkit-details-marker {
+.info-help > summary::-webkit-details-marker {
   display: none;
 }
 
-.prover-mode-help > summary:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
+.info-help > summary:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
   outline-offset: 2px;
+  border-radius: 3px;
 }
 
-.prover-mode-help-body {
+.info-help-body {
   position: absolute;
   top: 24px;
   right: 0;
-  z-index: 4;
+  z-index: 8;
   width: min(320px, 70vw);
-  padding: 10px 12px;
+  max-height: 50vh;
+  overflow: auto;
+  padding: 12px;
   border: 1px solid var(--lf-border);
   border-radius: var(--lf-radius);
   background: var(--vscode-editorWidget-background, var(--lf-base));
   box-shadow: 0 4px 16px #0006;
+  color: var(--vscode-foreground);
   font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
-.prover-mode-help-body p {
-  margin: 0;
+.card-title > .info-help .info-help-body,
+.prover-role-heading > .info-help .info-help-body {
+  left: 0;
+  right: auto;
 }
 
-.prover-mode-help-body p + p {
-  margin-top: 8px;
+.stat > .k {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
 }
 
 .global-limit {
@@ -642,7 +696,7 @@ button:focus-visible {
   color: var(--lf-muted);
 }
 
-.launch-options > div {
+.launch-options > div:not(.field-with-help) {
   display: contents;
 }
 

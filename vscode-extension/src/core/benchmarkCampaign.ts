@@ -67,6 +67,6 @@ export function benchmarkCalls(cell: BenchmarkCell): number {
 /** Show exactly the frozen global limits, including explicit zero. */
 export function benchmarkLimits(cell: BenchmarkCell): string {
   if (!cell.config || !("agent_calls" in cell.config)) return "Historical settings";
-  const limit = (value: unknown) => value == null ? "unlimited" : String(value);
+  const limit = (value: unknown) => value == null ? "∞" : String(value);
   return `${limit(cell.config.agent_calls)} calls · ${limit(cell.config.tokens)} tokens · ${limit(cell.config.wall_time_s)} seconds`;
 }

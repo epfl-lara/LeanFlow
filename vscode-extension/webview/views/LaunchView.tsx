@@ -17,6 +17,7 @@ import { changeNativeSelection, launchModelProblems, nativeSelections } from "..
 import { LAUNCH_FIELD_LIMITS, WORKFLOW_KINDS } from "../../src/core/types";
 import { Card, Check, Field, Notice } from "../components";
 import { PlayIcon } from "../icons";
+import { HELP } from "../help";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
 import { GlobalLimits } from "./GlobalLimits";
@@ -169,6 +170,7 @@ export function LaunchView() {
 
           <Field
             label="Target"
+            help={HELP.target}
             hint={
               form.kind === "prove"
                 ? "Leave empty to scan the whole project for remaining sorries."
@@ -199,7 +201,7 @@ export function LaunchView() {
           </Field>
 
           <div className="launch-provider-field">
-            <Field label="Agent backend">
+            <Field label="Agent backend" help={HELP.backend}>
               <select
                 value={form.provider}
                 aria-label="Agent backend"
@@ -231,6 +233,7 @@ export function LaunchView() {
           <div>
             <Check
               label="Clean room"
+              help={HELP.cleanRoom}
               hint="Block external research. Use only this project and installed libraries; model connections remain available."
               checked={form.cleanRoom}
               disabled={form.kind !== "prove" && !form.cleanRoom}
@@ -241,13 +244,13 @@ export function LaunchView() {
 
           <div>
             {form.kind === "prove" && <Check
-              label="Force single lane"
+              label="Force single lane" help={HELP.concurrency}
               hint="Run one prover job at a time; research planning remains available."
               checked={form.noParallel}
               onChange={(noParallel) => setForm({ noParallel })}
             />}
             <Field
-              label="Allowed axioms"
+              label="Allowed axioms" help={HELP.axioms}
               hint="Comma or space separated, beyond the standard three."
             >
               <input
@@ -259,7 +262,7 @@ export function LaunchView() {
               />
             </Field>
             <Field
-              label="Additional skills"
+              label="Additional skills" help={HELP.skills}
               hint={`One path per line, layered on top of the workflow's default skill. Up to ${LAUNCH_FIELD_LIMITS.additionalSkillCount} paths of ${LAUNCH_FIELD_LIMITS.additionalSkill.toLocaleString()} characters.`}
             >
               <textarea
@@ -289,7 +292,7 @@ export function LaunchView() {
         }
       >
         <div className="launch-profile">
-          <Field label="Profile">
+          <Field label="Profile" help={HELP.profile}>
             <select
               value={form.profile}
               onChange={(event) => setForm({ profile: event.target.value })}

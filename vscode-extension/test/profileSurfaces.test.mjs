@@ -128,5 +128,5 @@ test("empty role-call limits remain Unlimited in the preview before CLI resoluti
     profile: { overrides: { LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS: "" } },
     overrides: { LEANFLOW_PROVER_PROVER_SESSIONS: "", LEANFLOW_PROVER_MODE: "" }, catalog,
   });
-  assert.deepEqual(rows.map(row => [row.value, row.source]), [["Unlimited", "override"], ["Unlimited", "profile"], ["research", "override"]]);
+  assert.deepEqual(rows.map(row => [row.value, row.source]), [["∞", "override"], ["∞", "profile"], ["research", "override"]]);
 });

@@ -192,8 +192,9 @@ def test_snapshot_nested_in_project_excludes_its_own_staging_tree(tmp_path: Path
     assert not list(snapshot.glob(".snapshot-*"))
 
 
+@pytest.mark.parametrize("backend", ["codex", "claude", "lemex"])
 def test_one_native_invocation_owns_the_full_conversation_without_default_overrides(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
 ) -> None:
     root = tmp_path / "project"
     root.mkdir()
@@ -204,11 +205,24 @@ def test_one_native_invocation_owns_the_full_conversation_without_default_overri
 
     def harness(request: Any, **kwargs: Any) -> HarnessResult:
         calls.append(request)
-        assert request.backend == "lemex"
+        assert request.backend == backend
         assert request.model == request.effort == ""
         assert request.deadline is None
         assert request.on_started is not None
         request.on_started()
+        for number in range(5):
+            event = (
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": f"Reply {number}"}]},
+                }
+                if backend == "claude"
+                else {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": f"Reply {number}"},
+                }
+            )
+            kwargs["on_event"](event)
         mcp = json.loads(request.mcp_config.read_text())
         assert next(iter(mcp["mcpServers"])).startswith("leanflow_job_")
         return HarnessResult(
@@ -227,7 +241,7 @@ def test_one_native_invocation_owns_the_full_conversation_without_default_overri
         prompt="Prove the theorem",
         project_root=root,
         workspace=workspace,
-        config={"provider": "lemex"},
+        config={"provider": backend},
         api_budget=1,
         log_path=workspace / "events.jsonl",
         context={},
@@ -237,7 +251,27 @@ def test_one_native_invocation_owns_the_full_conversation_without_default_overri
     assert result["api_calls"] == 1
     assert result["usage_known"] is True
     assert result["session_id"] == "native-session"
-    assert [kind for kind, _ in events] == ["api-request", "job-session-end"]
+    assert [kind for kind, _ in events] == [
+        "api-request",
+        *(["agent-output"] * 5),
+        "job-session-end",
+    ]
+    resumed = run_session(
+        role="prover",
+        prompt="Continue the proof",
+        project_root=root,
+        workspace=workspace,
+        config={"provider": backend},
+        api_budget=2,
+        log_path=workspace / "events.jsonl",
+        context={},
+        on_event=lambda kind, detail: events.append((kind, detail)),
+    )
+    assert len(calls) == 2
+    assert calls[1].session_id == "native-session"
+    assert resumed["agent_calls"] == resumed["api_calls"] == 2
+    assert [detail["agent_calls"] for kind, detail in events if kind == "api-request"] == [1, 2]
+    assert len([kind for kind, _ in events if kind == "agent-output"]) == 10
 
 
 def test_startup_failure_is_not_an_agent_invocation(

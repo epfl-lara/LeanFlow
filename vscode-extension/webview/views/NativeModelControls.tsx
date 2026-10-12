@@ -1,6 +1,7 @@
 /** Render model and effort choices reported by the selected native runtime. */
 import type { NativeModelCatalog } from "../../src/core/providerCredentials";
 import { Field } from "../components";
+import { HELP } from "../help";
 
 interface SelectionProps {
   label: string;
@@ -26,7 +27,7 @@ export function NativeModelControl(props: SelectionProps) {
   const choices = catalog?.models ?? [];
   const extraValue = value && !choices.some(model => model.id === value);
   const resolved = choices.some(model => model.resolved_model === value);
-  return <Field label={props.label} source={props.source} hint={catalogHint(catalog)}>
+  return <Field label={props.label} source={props.source} hint={catalogHint(catalog)} help={HELP.model}>
     <select aria-label={props.ariaLabel} value={value ?? "__default__"}
       onChange={event => props.onChange(event.target.value === "__default__" ? undefined : event.target.value)}>
       {!launch && <option value="__default__">{profileValue ? `Use profile (${profileValue})` : inheritedLabel}</option>}
@@ -46,7 +47,7 @@ export function NativeEffortControl(props: SelectionProps & { model: string; eff
     ? "This runtime does not report reasoning choices for this model. Keep its native default."
     : !choices.length ? "This model has no configurable reasoning effort."
     : `Available for ${props.model}. ${props.effectiveEffort ? `Effective effort: ${props.effectiveEffort}.` : "The runtime chooses its default."}`;
-  return <Field label={props.label} source={props.source} hint={hint}>
+  return <Field label={props.label} source={props.source} hint={hint} help={HELP.effort}>
     <select aria-label={props.ariaLabel} value={props.value ?? "__default__"}
       onChange={event => props.onChange(event.target.value === "__default__" ? undefined : event.target.value)}>
       <option value="__default__">{props.profileValue ? `Use profile (${props.profileValue})` : props.inheritedLabel}</option>

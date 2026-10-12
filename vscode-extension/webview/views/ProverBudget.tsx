@@ -1,26 +1,27 @@
 /** The complete campaign budget: spend, reservations, availability, time, and allowances. */
 import { proverCost, type BudgetView } from "../../src/core/proverProgress";
 import { Stat } from "../components";
+import { HELP } from "../help";
 import { metric, ratio, seconds } from "./proverFormat";
 
 export function ProverBudget({ budget }: { budget: BudgetView }) {
   if (budget.nativeBackend) return <>
     <div className="stats" aria-label="Global campaign limits">
-      <Stat label="Agent calls / limit" value={`${metric(budget.usedCalls)} / ${budget.totalCalls === null ? "Unlimited" : metric(budget.totalCalls)}`} />
-      <Stat label="Active time / limit" value={`${seconds(budget.elapsedS)} / ${budget.wallTimeS === null ? "Unlimited" : seconds(budget.wallTimeS)}`} />
-      <Stat label="Reported input tokens" value={metric(budget.tokens.input)} />
-      <Stat label="Reported output tokens" value={metric(budget.tokens.output)} />
-      <Stat label="Global token limit" value={budget.tokenLimit === null ? "Unlimited" : metric(budget.tokenLimit)} />
-      <Stat label="Token coverage" value={budget.usageComplete === true ? "Complete" : "Incomplete or unknown"} small />
-      {budget.roleSessions.map(usage => <Stat key={usage.role}
+      <Stat label="Agent calls / limit" help={HELP.agentCalls} value={`${metric(budget.usedCalls)} / ${budget.totalCalls === null ? "∞" : metric(budget.totalCalls)}`} />
+      <Stat label="Active time / limit" help={HELP.activeTime} value={`${seconds(budget.elapsedS)} / ${budget.wallTimeS === null ? "∞" : seconds(budget.wallTimeS)}`} />
+      <Stat label="Reported input tokens" help={HELP.tokens} value={metric(budget.tokens.input)} />
+      <Stat label="Reported output tokens" help={HELP.tokens} value={metric(budget.tokens.output)} />
+      <Stat label="Global token limit" help={HELP.tokens} value={budget.tokenLimit === null ? "∞" : metric(budget.tokenLimit)} />
+      <Stat label="Token coverage" help={HELP.tokenCoverage} value={budget.usageComplete === true ? "Complete" : "Incomplete or unknown"} small />
+      {budget.roleSessions.map(usage => <Stat key={usage.role} help={`${HELP.agentCalls} ${HELP.reservations}`}
         label={`${usage.role === "negation" ? "Refutation" : usage.role === "orchestrator" ? "Orchestrator" : "Prover"} calls / limit`}
-        value={`${metric(usage.used)} / ${usage.limit === null ? "Unlimited" : metric(usage.limit)}${usage.reserved ? ` · ${metric(usage.reserved)} reserved` : ""}`} small />)}
-      <Stat label="Proof-direction changes / limit" value={`${metric(budget.planRefinements.used)} / ${budget.planRefinements.max === null ? "Unlimited" : metric(budget.planRefinements.max)}`} small />
-      <Stat label="Recovery decisions / limit" value={`${metric(budget.decompositions.used)} / ${budget.decompositions.max === null ? "Unlimited" : metric(budget.decompositions.max)}`} small />
-      <Stat label="Graph nodes / limit" value={ratio(budget.nodes.used, budget.nodes.max)} small />
-      <Stat label="Standard retries per goal" value={budget.maxRestartsPerNode === null ? "Unlimited" : metric(budget.maxRestartsPerNode)} small />
+        value={`${metric(usage.used)} / ${usage.limit === null ? "∞" : metric(usage.limit)}${usage.reserved ? ` · ${metric(usage.reserved)} reserved` : ""}`} small />)}
+      <Stat label="Proof-direction changes / limit" help={HELP.directionChanges} value={`${metric(budget.planRefinements.used)} / ${budget.planRefinements.max === null ? "∞" : metric(budget.planRefinements.max)}`} small />
+      <Stat label="Recovery decisions / limit" help={HELP.recovery} value={`${metric(budget.decompositions.used)} / ${budget.decompositions.max === null ? "∞" : metric(budget.decompositions.max)}`} small />
+      <Stat label="Graph nodes / limit" help={HELP.graph} value={ratio(budget.nodes.used, budget.nodes.max)} small />
+      <Stat label="Standard retries per goal" help={HELP.retries} value={budget.maxRestartsPerNode === null ? "∞" : metric(budget.maxRestartsPerNode)} small />
     </div>
-    <p className="muted">One native CLI invocation counts as one agent call. Token limits stop future calls; active calls can overshoot. Missing usage stays unknown. Native runtimes own sampling and context compression.</p>
+    <p className="muted">One process = one agent call. Its model replies and tool steps stay inside that call. ∞ means no cap; — means unknown. Token limits stop future calls; active calls can exceed them.</p>
   </>;
 
   const reserved = budget.reservedCalls === null

@@ -5,6 +5,7 @@ import { humanEventLabel } from "../../src/core/logRows";
 import { useStore } from "../store";
 import { EventDetailPanel } from "./EventDetail";
 import { clock } from "./proverFormat";
+import { HELP } from "../help";
 
 export function AgentActivity({ runId, jobId, agentId }: { runId: string; jobId: string; agentId: string }) {
   const { events, setView } = useStore();
@@ -15,7 +16,7 @@ export function AgentActivity({ runId, jobId, agentId }: { runId: string; jobId:
     {activity.latest && <p className="agent-latest">{activity.latest.slice(0, 420)}</p>}
     <details>
       <summary>Output and tool activity ({activity.total})</summary>
-      <p className="muted">Backend observations appear as they are emitted. Independent Lean checks determine acceptance. Reasoning is shown only when the backend exposes it.</p>
+      <p className="muted">{HELP.activity} Independent Lean checks determine acceptance.</p>
       {!activity.total && <p className="muted">No output is in the event buffer yet. A quiet agent may still be working; older runs may contain only final reports.</p>}
       {!activity.hasReasoning && activity.total > 0 && <p className="muted">No reasoning has been reported in the loaded events.</p>}
       {activity.hasReasoning && <label className="row tight"><input type="checkbox" checked={showReasoning} onChange={event => setShowReasoning(event.target.checked)} />Show reported reasoning</label>}

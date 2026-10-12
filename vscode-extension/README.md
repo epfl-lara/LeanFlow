@@ -338,7 +338,17 @@ medium, high, or extra high effort, restore a saved profile, or inherit the
 launch/prover default. Compact badges identify profile values and overrides.
 The **Global limits** card appears above Prover setup with optional campaign-wide
 calls, reported tokens, and active-time limits. Controls come from the installed CLI’s catalog;
-unknown usage remains `—` and unset global limits display as `Unlimited`.
+unknown usage remains `—` and settings without a cap display as **∞**. Zero is an
+explicit exhausted allowance, not ∞. The ⓘ controls open explanations by click or
+keyboard beside limits, roles, models and other workflow terms.
+
+An **agent call** is one native process (`codex exec`, `lemex exec`, or `claude -p`).
+It may make many model requests and emit many replies, reasoning messages and tool
+steps. Internal retries and context compression remain within that one call.
+Starting a new process for a LeanFlow retry or resume consumes another call.
+The activity event count is not a model-request count. Prover and orchestrator
+allowances apply across the whole run, including concurrent jobs; the orchestrator
+allowance also covers plan review and research jobs.
 
 The editor reads `leanflow runs prover RUN_ID --json`, which returns
 `{version: 1, found, prover}` for that exact run. It submits guidance through

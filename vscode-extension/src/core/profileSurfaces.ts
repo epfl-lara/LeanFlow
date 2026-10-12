@@ -6,6 +6,7 @@
  * only explains its verdicts and derives a compatible copy that drops the
  * offending knobs, so the user can act instead of guessing.
  */
+import { OPTIONAL_LIMIT_KNOBS } from "./limitDisplay";
 import { EMPTY_UNLIMITED_KNOBS, extensionKnobValueProblem, isExtensionEditableKnob } from "./launch";
 import type { FlagCatalog, FlagProfile, FlagSpec } from "./types";
 
@@ -160,8 +161,8 @@ export function proverConfigurationRows(input: {
       }
     }
   }
-  return rows.map(row => row.value === "" && EMPTY_UNLIMITED_KNOBS.has(row.name)
-    ? { ...row, value: "Unlimited" }
+  return rows.map(row => row.value === "" && OPTIONAL_LIMIT_KNOBS.has(row.name)
+    ? { ...row, value: "∞" }
     : row.name === "LEANFLOW_PROVER_MODE" && row.value === ""
       ? { ...row, value: input.catalog?.groups.flatMap(group => group.flags).find(flag => flag.name === row.name)?.default ?? "research" }
       : row);

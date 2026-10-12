@@ -146,13 +146,15 @@ test("reasoning defaults do not force a level, and unknown saved values stay vis
   assert.ok(elements(future.control("REASONING_EFFORT")).some((item) => item.type === "option" && item.props.value === "future-level"));
 });
 
-test("global limits are immediately visible and explicitly show Unlimited", () => {
+test("global limits show infinity and their controls remain outside the help disclosures", () => {
   const ui = fixture();
   const rendered = elements([GlobalLimits(), ProverSettings()]);
-  assert.ok(rendered.some(item => item.props?.className === "card-title" && item.props.children === "Global limits"));
-  assert.equal(elements(GlobalLimits()).filter(item => item.type === "details").length, 0);
+  assert.ok(rendered.some(item => item.props?.["aria-label"] === "About Global limits"));
+  for (const help of elements(GlobalLimits()).filter(item => item.type === "details")) {
+    assert.equal(elements(help).some(item => item.type === "input"), false);
+  }
   for (const suffix of ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"]) {
-    assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
+    assert.equal(ui.control(suffix).props.placeholder, "∞");
     assert.equal(ui.control(suffix).props.value, "");
   }
   assert.deepEqual(ui.environment().env, { set: {}, unset: [] });
@@ -220,7 +222,7 @@ test("structural allowances are visible and reach the runtime without changing r
   const ui = fixture({ overrides: { [prefix + "MODEL"]: "my-prover" } });
   for (const suffix of ["MAX_RESTARTS", "PLAN_REFINEMENTS", "MAX_DECOMPOSITIONS"]) {
     ui.control("MODE").props.onChange({ target: { value: suffix === "MAX_RESTARTS" ? "standard" : "research" } });
-    assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
+    assert.equal(ui.control(suffix).props.placeholder, "∞");
     assert.equal(ui.control(suffix).props.value, "");
     ui.control(suffix).props.onChange({ target: { value: "4" } });
     assert.equal(ui.environment().env.set[prefix + suffix], "4");
@@ -262,7 +264,7 @@ for (const kind of ["prove", "formalize", "review", "refactor", "golf", "draft"]
         state.app.profiles.profiles[1].overrides = { [prefix + "AGENT_CALLS"]: "7" };
         state.app.catalog.groups[0].flags.push(...flags.filter(flag => ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"].some(suffix => flag.name === prefix + suffix)));
       });
-      assert.equal(ui.root().findAllByProps({ className: "card-title" }).filter(node => textOf(node) === "Global limits").length, 1);
+      assert.equal(ui.root().findAllByProps({ className: "card-title" }).filter(node => textOf(node).startsWith("Global limits")).length, 1);
       assert.equal(ui.input(prefix + "AGENT_CALLS").props.value, "7");
       ui.change(ui.input(prefix + "AGENT_CALLS"), "");
       ui.change(ui.input(prefix + "WALL_TIME_S"), "2.5");
@@ -273,7 +275,7 @@ for (const kind of ["prove", "formalize", "review", "refactor", "golf", "draft"]
       ui.click("Restore profile agent calls");
       launch = resolveLaunchEnv(ui.view.form, ui.app.profiles, ui.app.catalog);
       assert.equal(launch.env.set[prefix + "AGENT_CALLS"], "7");
-      assert.equal(ui.input(prefix + "TOKENS").props.placeholder, "Unlimited");
+      assert.equal(ui.input(prefix + "TOKENS").props.placeholder, "∞");
       const roleControls = ui.root().findAll(node => node.props["aria-label"] === prefix + "ORCHESTRATOR_MODEL");
       assert.equal(roleControls.length, kind === "prove" ? 1 : 0);
     } finally { ui.dispose(); }
@@ -289,7 +291,7 @@ test("role session limits are independent, inherited, and explicitly clearable",
     assert.equal(ui.environment().env.set[prefix + suffix], "0");
     assert.equal(ui.environment().env.set[prefix + "AGENT_CALLS"], "20");
     ui.control(suffix).props.onChange({ target: { value: "" } });
-    assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
+    assert.equal(ui.control(suffix).props.placeholder, "∞");
     assert.equal(ui.environment().env.set[prefix + suffix], "");
     assert.deepEqual(ui.environment().env.unset, []);
     const reset = elements(ProverSettings()).find(item => item.props?.["aria-label"] === `Restore profile ${label}`);
@@ -355,7 +357,7 @@ test("an explicit empty role allowance is Unlimited rather than restoring a fini
   for (const suffix of ["PROVER_SESSIONS", "ORCHESTRATOR_SESSIONS"]) {
     ui.control(suffix).props.onChange({ target: { value: "" } });
     assert.equal(ui.control(suffix).props.value, "");
-    assert.equal(ui.control(suffix).props.placeholder, "Unlimited");
+    assert.equal(ui.control(suffix).props.placeholder, "∞");
     assert.equal(ui.environment().env.set[prefix + suffix], "");
     assert.ok(!ui.environment().env.unset.includes(prefix + suffix));
   }
@@ -428,4 +430,50 @@ test("an empty modern mode saved in a profile resets Research without legacy arg
   assert.deepEqual(ui.environment().rejected, []);
   assert.equal(ui.environment().env.set[prefix + "MODE"], "");
   assert.deepEqual(buildWorkflowArgs({ target: "", provider: "", model: "", additionalSkills: [], prompt: "", axioms: "", ...ui.form }, ui.environment().env.set), ["prove", "--provider", "lemex"]);
+});
+
+
+test("unfamiliar launch terms have accessible help outside the input labels", () => {
+  const ui = mount();
+  try {
+    ui.update(state => { state.app.catalog.groups[0].flags = flags; });
+    for (const term of ["Global limits", "Agent calls", "Dependency order", "Concurrent prover jobs", "Prover calls", "Orchestrator calls", "Refutation calls", "Recovery decisions", "Maximum graph nodes", "Clean room", "Profile", "Agent backend"]) {
+      const summary = ui.root().findByProps({"aria-label":`About ${term}`});
+      assert.equal(summary.type, "summary");
+      assert.equal(summary.parent.type, "details");
+      assert.equal(summary.parent.props.open, undefined);
+      for (let ancestor = summary.parent; ancestor; ancestor = ancestor.parent) assert.notEqual(ancestor.type, "label");
+      assert.ok(textOf(summary.parent).length > 30);
+    }
+    const calls = textOf(ui.root().findByProps({"aria-label":"About Agent calls"}).parent);
+    for (const command of ["codex exec", "claude -p", "lemex exec"]) assert.ok(calls.includes(command));
+    assert.match(calls, /many model requests/);
+    assert.match(calls, /internal retries/);
+    assert.match(calls, /new process.*resume.*counts again/i);
+    assert.equal(ui.messages.length, 0);
+  } finally { ui.dispose(); }
+});
+
+
+test("live limits distinguish infinity, explicit zero and unknown usage", () => {
+  const ui = mount("live");
+  try {
+    ui.update(state => {
+      const snapshot = state.proverStates["run-1"].snapshot;
+      Object.assign(snapshot.config, {native_backend:true,agent_calls:null,tokens:0,wall_time_s:null});
+      Object.assign(snapshot.metrics, {agent_calls:0,agent_call_limit:null,token_limit:0,input_tokens:null,output_tokens:null,role_sessions:[{role:"prover",used:0,reserved:0,limit:0}]});
+    });
+    const value = label => {
+      const stat = ui.root().findAllByProps({className:"stat"}).find(node => textOf(node.findByProps({className:"k"})).startsWith(label));
+      assert.ok(stat, `Missing ${label}`);
+      return textOf(stat.find(node => typeof node.props.className === "string" && node.props.className.split(" ").includes("v")));
+    };
+    assert.equal(value("Agent calls / limit"), "0 / ∞");
+    assert.equal(value("Prover calls / limit"), "0 / 0");
+    assert.equal(value("Global token limit"), "0");
+    assert.equal(value("Reported input tokens"), "—");
+    assert.ok(ui.root().findByProps({"aria-label":"About Agent calls / limit"}));
+    assert.match(textOf(ui.root()), /One process = one agent call/);
+    assert.match(textOf(ui.root()), /neither the agent-call budget nor a reliable count of model API requests/);
+  } finally { ui.dispose(); }
 });

@@ -317,7 +317,11 @@ does not read or reinterpret LeanFlow's persistence files directly:
   catalogued launch controls, grouped by role with independent model and reasoning
   effort selectors. `GlobalLimits.tsx` keeps global calls, reported tokens, and
   active time visible above role settings, converts entered minutes to seconds,
-  and preserves explicit Unlimited overrides and profile restoration.
+  and preserves explicit unbounded overrides and profile restoration.
+  `webview/InfoHelp.tsx` supplies accessible native disclosure controls; `help.ts`
+  shares term definitions across launch and live views. `src/core/limitDisplay.ts`
+  identifies optional limits for consistent ∞ displays, preserving zero and unknown
+  usage. Agent-call counters count native processes; activity events remain distinct.
   The host uses `runs prover` / `prover-message` / `runs event`,
   validates ownership and paths, and does not substitute another run's artifacts.
   `proverProgress.ts` and `proverOperations.ts` derive budget, capacity, operation,

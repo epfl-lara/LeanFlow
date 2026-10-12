@@ -33,7 +33,7 @@ test("costs require provenance and retain partial coverage labels", () => {
 test("native campaign counts invocations and shows explicit global limits", () => {
   const cell = {metrics:{agent_calls:2,api_calls:17,input_tokens:10,output_tokens:2,usage_complete:true},config:{agent_calls:0,tokens:null,wall_time_s:null}};
   assert.equal(benchmarkCalls(cell), 2);
-  assert.equal(benchmarkLimits(cell), "0 calls · unlimited tokens · unlimited seconds");
+  assert.equal(benchmarkLimits(cell), "0 calls · ∞ tokens · ∞ seconds");
   assert.equal(benchmarkSummary({cells:[cell]}).usageComplete, true);
   assert.equal(benchmarkLimits({metrics:{}}), "Historical settings");
 });

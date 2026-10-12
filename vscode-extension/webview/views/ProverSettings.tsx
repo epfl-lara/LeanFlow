@@ -4,6 +4,8 @@ import { BACKEND_IDS, BACKEND_LABELS, isBackend } from "../../src/core/providerC
 import { changeNativeSelection, nativeSelections, ROLE_PREFIXES } from "../../src/core/providerModels";
 import { PROVER_KNOB_LABELS } from "../../src/core/profileSurfaces";
 import { Card, Field } from "../components";
+import { InfoHelp } from "../InfoHelp";
+import { HELP, LIMIT_HELP } from "../help";
 import { useStore } from "../store";
 import { KnobControl } from "./KnobsView";
 import { NativeEffortControl, NativeModelControl } from "./NativeModelControls";
@@ -28,7 +30,7 @@ export function ProverSettings() {
   const effectiveMode = (form.overrides.LEANFLOW_PROVER_MODE ?? inheritedMode) || modeDefault;
 
   /** Keep profile inheritance and the legacy research switches consistent with the form. */
-  function control(suffix: string, shortLabel?: string, hint?: string) {
+  function control(suffix: string, shortLabel?: string, hint?: string, help?: string) {
     const name = `LEANFLOW_PROVER_${suffix}`;
     const spec = specs.get(name);
     if (!spec) return null;
@@ -47,7 +49,7 @@ export function ProverSettings() {
         ? { overrides, research: suffix === "MODE" ? mode === "research" : effectiveMode === "research", agents: 1, researchWorkers: null }
         : { overrides });
     };
-    return <Field key={name} label={shortLabel ?? label} source={inherited ? "Profile" : form.overrides[name] !== undefined ? "Override" : undefined} hint={hint ?? spec.summary}>
+    return <Field key={name} label={shortLabel ?? label} source={inherited ? "Profile" : form.overrides[name] !== undefined ? "Override" : undefined} hint={hint ?? spec.summary} help={help} helpLabel={suffix === "MODE" ? "Research and Standard modes" : undefined}>
       <KnobControl spec={spec} value={value} onChange={onChange} />
     </Field>;
   }
@@ -66,9 +68,9 @@ export function ProverSettings() {
       setForm({ overrides });
     };
     return <div className="global-limit" key={name}>
-      <Field label={label} source={override !== undefined ? "Override" : saved !== undefined ? "Profile" : undefined} hint={hint}>
+      <Field label={label} source={override !== undefined ? "Override" : saved !== undefined ? "Profile" : undefined} hint={hint} help={LIMIT_HELP[suffix]}>
         <input aria-label={name} type="number" min={spec.minimum} max={spec.maximum} step={1}
-          placeholder={suffix === "MAX_NODES" ? spec.default : "Unlimited"} value={value}
+          placeholder={suffix === "MAX_NODES" ? spec.default : "∞"} value={value}
           onChange={event => setValue(event.target.value)} />
       </Field>
       {override !== undefined && saved !== undefined && <button className="link" onClick={() => setValue(undefined)} aria-label={`Restore profile ${label.toLowerCase()}`}>Use profile limit</button>}
@@ -101,7 +103,7 @@ export function ProverSettings() {
     if (suffix === "MODEL") return <NativeModelControl key={name} {...common} label="Model" inheritedLabel={modelLabel} />;
     if (suffix === "REASONING_EFFORT") return <NativeEffortControl key={name} {...common} label="Reasoning effort" model={selected.model} effectiveEffort={selected.effort} inheritedLabel={effortLabel} />;
     const providerLabel = isBackend(parent.provider) ? BACKEND_LABELS[parent.provider] : "not available";
-    return <Field key={name} label="Backend" source={source} hint="Uses this native agent's own login and configuration.">
+    return <Field key={name} label="Backend" source={source} hint="Uses this native agent's own login and configuration." help={HELP.backend}>
       <select aria-label={name} value={value ?? "__default__"} onChange={event => onChange(event.target.value === "__default__" ? undefined : event.target.value)}>
         <option value="__default__">{profile?.overrides[name] ? `Use profile (${profile.overrides[name]})` : `Use ${parentLabel} backend (${providerLabel})`}</option>
         {(profile?.overrides[name] !== undefined || value === "") && <option value="">Use {parentLabel} backend ({providerLabel})</option>}
@@ -113,52 +115,43 @@ export function ProverSettings() {
   return <Card title="Prover setup" subtitle="Research builds, reviews, and revises a proof plan while provers work on its goals. Standard works through proof goals directly.">
     {profile && <div className="prover-profile-note">Profile <strong>{profile.name}</strong><span>Changes here apply to this launch.</span></div>}
     <div className="launch-fields prover-mode-fields">
-      <div className="prover-mode-control">
-        {control("MODE", "Mode", "Choose research coordination or direct sequential proving.")}
-        <details className="prover-mode-help">
-          <summary aria-label="About Research and Standard modes" title="About Research and Standard modes">ⓘ</summary>
-          <div className="prover-mode-help-body">
-            <p><strong>Research</strong> uses an orchestrator to plan and review a theorem graph, revise the proof direction, and coordinate parallel provers.</p>
-            <p><strong>Standard</strong> works directly through proof goals with one prover at a time, without the research planning stages.</p>
-          </div>
-        </details>
-      </div>
-      {control("SEARCH_ORDER", "Dependency order", "Bottom-up solves dependencies before the goals that use them. Top-down starts from the main goals.")}
-      {effectiveMode === "research" && control("PARALLELISM", "Concurrent prover jobs", "Maximum simultaneous proof jobs in research mode.")}
+      {control("MODE", "Mode", "Choose research coordination or direct sequential proving.", HELP.mode)}
+      {control("SEARCH_ORDER", "Dependency order", "Bottom-up solves dependencies before the goals that use them. Top-down starts from the main goals.", HELP.dependencyOrder)}
+      {effectiveMode === "research" && control("PARALLELISM", "Concurrent prover jobs", "Maximum simultaneous proof jobs in research mode.", HELP.concurrency)}
     </div>
     {effectiveMode === "research" ? <>
     <section className="prover-role" aria-label="Prover settings">
-      <div className="prover-role-heading"><strong>Prover</strong><span>Works on individual proof goals</span></div>
+      <div className="prover-role-heading"><strong>Prover</strong><InfoHelp label="Prover">{HELP.prover}</InfoHelp><span>Works on individual proof goals</span></div>
       <div className="launch-fields">
         {roleControl("prover", "PROVIDER")}
         {roleControl("prover", "MODEL")}
         {roleControl("prover", "REASONING_EFFORT")}
-        {limitControl("PROVER_SESSIONS", "Prover calls", "Total native prover invocations across the run. Retries and resumes count again. Empty means Unlimited; 0 starts none.")}
+        {limitControl("PROVER_SESSIONS", "Prover calls", "Shared across all prover jobs in the run. Clear for ∞; 0 starts none.")}
       </div>
     </section>
     <section className="prover-role" aria-label="Orchestrator settings">
-      <div className="prover-role-heading"><strong>Orchestrator</strong><span>Research uses this agent to plan, review, and revise the graph</span></div>
+      <div className="prover-role-heading"><strong>Orchestrator</strong><InfoHelp label="Orchestrator">{HELP.orchestrator}</InfoHelp><span>Research uses this agent to plan, review, and revise the graph</span></div>
       <div className="launch-fields">
         {roleControl("orchestrator", "PROVIDER")}
         {roleControl("orchestrator", "MODEL")}
         {roleControl("orchestrator", "REASONING_EFFORT")}
-        {limitControl("ORCHESTRATOR_SESSIONS", "Orchestrator calls", "Total planning, review, and research invocations across the run. Retries and resumes count again. Empty means Unlimited; 0 starts none.")}
+        {limitControl("ORCHESTRATOR_SESSIONS", "Orchestrator calls", "Shared by planning, review and research jobs. Clear for ∞; 0 starts none.")}
       </div>
     </section>
-    <p className="muted">One call is one native agent invocation, which can make many model requests. Retries and resumes count again. Global limits apply across all roles.</p>
+    <p className="muted">One process = one agent call, even with many model replies or tool steps. Global limits apply across all roles.</p>
     <section className="prover-role" aria-label="Research and recovery limits">
       <div className="prover-role-heading"><strong>Research and recovery limits</strong><span>Control retries and changes to the proof plan</span></div>
       <div className="launch-fields">
-        {limitControl("NEGATION_SESSIONS", "Refutation calls", "Total native refutation invocations across the run, including retries and resumes. Empty means Unlimited; 0 starts none.")}
-        {limitControl("PLAN_REFINEMENTS", "Proof-direction changes", "Limits changes of informal proof direction. Routine plan notes do not count. Empty means Unlimited; 0 keeps the initial direction.")}
-        {limitControl("MAX_DECOMPOSITIONS", "Recovery decisions", "Shared allowance for orchestrator retry, refutation, and decomposition decisions. Empty means Unlimited; 0 disables these recovery decisions.")}
+        {limitControl("NEGATION_SESSIONS", "Refutation calls", "Shared across refutation jobs in the run. Clear for ∞; 0 starts none.")}
+        {limitControl("PLAN_REFINEMENTS", "Proof-direction changes", "Limits changes of informal proof direction. Routine plan notes do not count. Clear for ∞; 0 keeps the initial direction.")}
+        {limitControl("MAX_DECOMPOSITIONS", "Recovery decisions", "Shared allowance for orchestrator retry, refutation, and decomposition decisions. Clear for ∞; 0 disables these recovery decisions.")}
         {limitControl("MAX_NODES", "Maximum graph nodes", "Maximum original declarations and helper lemmas in the theorem graph. Clear to use the CLI default.")}
       </div>
     </section>
     </> : <>
       <p className="muted">Standard uses one prover at a time. Saved role overrides remain available in Knobs.</p>
       <div className="launch-fields">
-        {limitControl("MAX_RESTARTS", "Standard retries per goal", "Additional passes after the first attempt in Standard mode. Empty means Unlimited; 0 allows no retries.")}
+        {limitControl("MAX_RESTARTS", "Standard retries per goal", "Additional passes after the first attempt in Standard mode. Clear for ∞; 0 allows no retries.")}
       </div>
     </>}
   </Card>;

@@ -14,6 +14,8 @@ import { profileLaunchSurfaces } from "../../src/core/profileSurfaces";
 import type { FlagSpec } from "../../src/core/types";
 import { LAUNCH_FIELD_LIMITS } from "../../src/core/types";
 import { Card, Empty, Notice } from "../components";
+import { OPTIONAL_LIMIT_KNOBS } from "../../src/core/limitDisplay";
+import { InfoHelp } from "../InfoHelp";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
 
@@ -70,7 +72,7 @@ export function KnobControl(props: {
         min={spec.minimum}
         max={spec.maximum}
         step={spec.value_type === "float" ? "any" : 1}
-        placeholder={spec.default || "unset"}
+        placeholder={OPTIONAL_LIMIT_KNOBS.has(spec.name) && effective === "" ? "∞" : spec.default || "unset"}
         value={value ?? ""}
         onChange={(event) => onChange(event.target.value === "" ? undefined : event.target.value)}
       />
@@ -175,7 +177,7 @@ export function KnobsView() {
   return (
     <>
       <Card
-        title="Knob catalog"
+        title={<>Knob catalog <InfoHelp label="Knobs and ablations">Knobs are individual run settings. A profile saves a group of them. An ablation changes a setting to compare its effect on results. Show plumbing includes internal settings intended for troubleshooting.</InfoHelp></>}
         subtitle={`${catalog.count} declared knobs across ${catalog.groups.length} subsystems. Marked knobs are the ones worth flipping in an ablation.`}
       >
         <div className="row tight">
@@ -433,7 +435,7 @@ export function KnobsView() {
                         </span>
                       )}
                     </div>
-                    <div className="summary">{flag.summary}</div>
+                    <div className="summary">{flag.summary.replace(/\bunlimited\b/gi, "∞")}</div>
                   </div>
                   <div className="control">
                     {isExtensionEditableKnob(flag) ? (
@@ -444,7 +446,7 @@ export function KnobsView() {
                           onChange={(value) => setOverride(flag.name, value)}
                         />
                         <span className="default-note">
-                          default {flag.default || "unset"}
+                          default {flag.default || (OPTIONAL_LIMIT_KNOBS.has(flag.name) ? "∞" : "unset")}
                         </span>
                       </>
                     ) : (

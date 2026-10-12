@@ -1,0 +1,38 @@
+/** Shared definitions for launch controls, live counters and agent activity. */
+export const HELP = {
+  agentCalls: "One agent call starts one Codex, Claude Code, or Lemex process: codex exec, claude -p, or lemex exec. That process can make many model requests and use tools repeatedly. Messages, tool steps, internal retries and context compression stay inside that call. A new process for a LeanFlow retry or resume counts again.",
+  activity: "These are recorded messages, reasoning, status updates and tool steps inside an agent call. Their count is neither the agent-call budget nor a reliable count of model API requests. One process may produce many of these events. Reasoning is visible only when the provider reports it.",
+  limits: "∞ means no cap for this setting; 0 allows no further work. Clear an optional limit to select ∞. Global limits apply to the whole run across all roles. Role limits also span the whole run, including concurrent jobs. Resuming retains usage already spent.",
+  activeTime: "Time spent running LeanFlow, including agents, tools and Lean verification, accumulated across resumes. Time while the run is stopped does not count. Reaching this limit stops active work.",
+  tokens: "Tokens are units of text processed by the model. Input includes its prompt and context; output is generated text. LeanFlow uses the usage reported by the native agent. The token cap prevents new agent calls; a running call can exceed it. Missing usage is shown as unknown, never as zero.",
+  tokenCoverage: "Complete means usage was reported for every counted agent call. Incomplete or unknown means some usage is missing, so displayed totals may be partial. A token cap blocks further calls when usage is unknown.",
+  mode: "Research uses an orchestrator to build and review a proof plan, revise the proof direction, and coordinate parallel provers. Standard works directly through proof goals with one prover at a time, without research planning stages.",
+  dependencyOrder: "The proof plan links goals to the helper lemmas they need. Bottom-up tackles those dependencies first. Top-down starts from the main goals and works toward their dependencies. Bottom-up is the default.",
+  concurrency: "The maximum number of prover jobs working at the same time. Four concurrent jobs can consume four agent calls at once; this is separate from the total call limit. Planning and verification have their own scheduling.",
+  prover: "A prover works on an individual Lean proof goal, using tools and proposing a proof. LeanFlow checks the result independently before accepting it.",
+  orchestrator: "The orchestrator plans and coordinates Research mode. Its shared call allowance covers planning, independent plan review and research jobs across the run, not just one worker.",
+  refutation: "A refutation job checks whether a proposed goal or helper lemma is false, for example by finding a counterexample. Its call allowance is shared across the run.",
+  directionChanges: "A change to the mathematical strategy in the informal proof plan. Routine notes and proof edits do not use this allowance. Zero keeps the initial direction.",
+  recovery: "When a proof attempt gets stuck, the orchestrator can request another attempt, test a refutation, or break a goal into smaller helper lemmas. These decisions share this allowance. Zero disables these recovery decisions.",
+  graph: "The theorem graph is the proof plan: each node is an original declaration or a helper lemma, and each edge records a dependency. This limit caps the total number of nodes.",
+  retries: "Additional proof attempts after the first attempt on a goal in Standard mode. Zero permits only the initial attempt. Each new native process also consumes an agent call.",
+  reservations: "Reserved calls are set aside for jobs that have not started yet. They prevent concurrent jobs from exceeding a limit. A reservation becomes a used call when its native process starts; it is not charged twice.",
+  backend: "The agent program that runs the task: Codex, Claude Code, or Lemex. Each keeps its own login, API configuration, model defaults and conversation management. The model is the choice made within that program.",
+  model: "The language model used by the selected agent program. Choices come from that program or its configured endpoint. Native default uses its own configured choice; role controls can inherit the launch or prover model.",
+  effort: "The model's requested level of reasoning effort. Higher settings may spend more time or tokens, but do not set a fixed time or call limit. Available levels and the default depend on the selected model and provider.",
+  cleanRoom: "Restricts agents to the project and installed libraries and blocks external research while keeping model connections available. It does not erase knowledge already learned by the model. Unsupported isolation setups fail before launching an agent.",
+  profile: "A saved group of settings. Profile values are inherited until you override a field for this launch. Use profile limit restores the saved value; clearing an optional limit explicitly selects ∞.",
+  axioms: "Axioms are assumptions a proof may rely on without proving them. LeanFlow accepts Lean’s standard axioms by default. Adding names here expands the permitted assumptions, so use this only when your problem requires them.",
+  skills: "Files containing extra instructions or methods for the agent. These supplement the built-in workflow guidance; they do not change what Lean accepts as a valid proof.",
+  target: "A Lean file to work on. For proving, an empty target scans the whole project for unfinished proofs. A sorry is Lean's placeholder for a proof that has not yet been supplied.",
+} as const;
+
+export const LIMIT_HELP: Record<string, string> = {
+  PROVER_SESSIONS: `${HELP.prover} ${HELP.agentCalls} ${HELP.limits}`,
+  ORCHESTRATOR_SESSIONS: `${HELP.orchestrator} ${HELP.agentCalls} ${HELP.limits}`,
+  NEGATION_SESSIONS: `${HELP.refutation} ${HELP.agentCalls}`,
+  PLAN_REFINEMENTS: HELP.directionChanges,
+  MAX_DECOMPOSITIONS: HELP.recovery,
+  MAX_NODES: HELP.graph,
+  MAX_RESTARTS: HELP.retries,
+};

@@ -6,6 +6,8 @@ import type { ProverJob, ProverSnapshot } from "../../src/core/prover";
 import { isRunningOperation, operationLabel, operationProgress } from "../../src/core/proverOperations";
 import { jobSettings, jobTimeline, stopUsage } from "../../src/core/proverProgress";
 import { Card } from "../components";
+import { InfoHelp } from "../InfoHelp";
+import { HELP } from "../help";
 import { useStore } from "../store";
 import { artifactName, clock, isTextArtifact, metric, pillTone, seconds } from "./proverFormat";
 
@@ -17,7 +19,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
   const { setView } = useStore();
   useEffect(() => { post({ type: "loadEvents", runId: state.run_id }); }, [state.run_id]);
   const nodeName = (id: string): string => state.dag.nodes.find((node) => node.id === id)?.name ?? id;
-  return <Card title="Agents and jobs" subtitle="Native sessions share the campaign’s global limits. Independent checks are listed under the controller.">
+  return <Card title="Agents and jobs" subtitle="Agent calls share the run’s global limits. Independent checks are listed under the controller.">
     {state.jobs.length === 0 && <div className="muted">No jobs launched yet.</div>}
     {state.jobs.map((job: ProverJob) => {
       const timeline = jobTimeline(job, now);
@@ -27,6 +29,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
       return <div className="prover-job" id={`prover-job-${job.id}`} key={job.id} style={job.parent_job_id ? { marginLeft: 12, borderLeft: "2px solid var(--vscode-panel-border)", paddingLeft: 12 } : undefined}>
         <div className="row"><strong>{job.agent_id}</strong><span className={`pill ${pillTone(job.status)}`}>{job.status || "queued"}</span>{job.phase && job.phase !== job.status && <span className="tag">{job.phase}</span>}</div>
         <div className="muted">{job.role || "prover"}{job.node_id ? <> · <span className="mono">{nodeName(job.node_id)}</span></> : null} · {metric(job.api_calls)}{state.config.native_backend ? " agent calls" : ` / ${metric(job.api_budget)} API calls`}
+          {state.config.native_backend && <InfoHelp label="Agent calls">{HELP.agentCalls}</InfoHelp>}
           {timeline.durationS !== null && <> · {timeline.live ? "running for" : "took"} {seconds(timeline.durationS)}</>}
           {job.started_at && <> · started {clock(job.started_at)}</>}
           {job.finished_at && <> · finished {clock(job.finished_at)}</>}
