@@ -318,6 +318,28 @@ test("Open agent log selects the real agent and preserves visible output", () =>
   } finally { ui.dispose(); }
 });
 
+test("live model settings explain native defaults without borrowing today's provider catalog", () => {
+  const ui = mount("live");
+  try {
+    ui.update(f => {
+      const state = f.proverStates["run-1"].snapshot;
+      f.proverStates["run-1"].snapshot = normalizeProverSnapshot({ ...state,
+        provider: "lemex", config: { agent_calls: null, provider: "lemex", orchestrator_provider: "claude", orchestrator_reasoning_effort: "high" },
+        jobs: [{ ...state.jobs[0], provider: "lemex", model: "" }],
+      }, "run-1");
+    });
+    const table = ui.root().findAllByType("table").find(node => /Model selection/.test(textOf(node)));
+    assert.ok(table);
+    assert.match(textOf(table), /ProverLemexNative defaultNative default/);
+    assert.match(textOf(table), /Orchestrator, review, and researchClaude CodeNative defaulthigh/);
+    assert.doesNotMatch(textOf(table), /—|fixture-model/);
+    assert.match(textOf(ui.root()), /exact model name was not recorded/);
+    assert.match(textOf(ui.root()), /lemex · Native default · model name not recorded/);
+    assert.match(textOf(ui.help("Run model settings")), /not whether an agent has started/);
+    ui.help("Run model settings", false);
+  } finally { ui.dispose(); }
+});
+
 test("proposal, controller, parent-job and disproof buttons preserve their exact targets", () => {
   const ui = mount("live");
   try {

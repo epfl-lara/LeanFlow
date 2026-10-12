@@ -408,3 +408,9 @@ The CLI surfaces this extension depends on — `leanflow flags`, `leanflow runs`
 and `leanflow workflow --dry-run --json` — are covered by
 `tests/leanflow/test_flag_catalog.py`, `tests/leanflow/test_runs_command.py`, and
 `tests/leanflow/test_extension_launch_contract.py` in the main repository.
+
+The live **Agents and model selection** table shows the saved backend, model
+selection and reasoning effort for each role. **Native default** means that no
+model override was passed to the native agent. If the run did not record its
+resolved model name, the dashboard says so explicitly; current provider settings
+are never substituted for historical job settings.

@@ -1,7 +1,10 @@
 /** What the controller is doing now: checks, builds, planning stages, capacity, and role settings. */
 import type { ProverSnapshot } from "../../src/core/prover";
-import { jobTimeline, roleSettings, type CapacityView, type ControllerView, type OperationView } from "../../src/core/proverProgress";
+import { jobTimeline, modelSelection, roleSettings, type CapacityView, type ControllerView, type OperationView } from "../../src/core/proverProgress";
+import { BACKEND_LABELS, isBackend } from "../../src/core/providerCredentials";
 import { Card, Notice, Stat } from "../components";
+import { InfoHelp } from "../InfoHelp";
+import { HELP } from "../help";
 import { useStore } from "../store";
 import { clock, metric, pillTone, seconds } from "./proverFormat";
 
@@ -82,24 +85,25 @@ export function ProverController({ state, controller, capacity, now, onJob }: {
       </details>}
     </Notice>}
     <div className="prover-roles">
-      <span className="label">Backend and models</span>
-      <div className="muted">
-        Agent backend <span className="mono">{state.provider || "not reported by this runtime version"}</span> · default reasoning effort{" "}
-        <span className="mono">{state.reasoning_effort || (state.config.native_backend ? "native runtime default" : "not reported")}</span>. Roles may override these defaults;
-        each job shows its recorded settings.
-      </div>
+      <span className="label">Agents and model selection <InfoHelp label="Run model settings">{HELP.runModels}</InfoHelp></span>
+      <div className="muted">Saved settings for this run. Each agent job below shows its own recorded settings.</div>
       <div className="table-wrap">
         <table className="data">
-          <thead><tr><th>Role</th><th>Model</th>{!state.config.native_backend && <><th>Context tokens</th><th>Compression</th><th>Call allowance</th></>}</tr></thead>
+          <thead><tr><th>Role</th><th>Backend</th><th>Model selection</th><th>Reasoning effort</th>{!state.config.native_backend && <><th>Context tokens</th><th>Compression</th><th>Call allowance</th></>}</tr></thead>
           <tbody>{roles.map((role) => <tr key={role.role}>
             <td>{role.label}</td>
-            <td className="mono">{role.model || "—"}</td>
+            <td>{isBackend(role.provider) ? BACKEND_LABELS[role.provider] : role.provider || "Not recorded"}</td>
+            <td className="mono">{modelSelection(role.model, state.config.native_backend)}</td>
+            <td>{role.reasoning_effort || (state.config.native_backend ? "Native default" : "Not recorded")}</td>
             {!state.config.native_backend && <><td>{metric(role.contextTokens)}</td>
             <td>{role.compression === null ? "—" : role.compression ? "on" : "off"}</td>
             <td>{metric(role.callsPerStage)} <span className="muted">{role.stageLabel}</span></td></>}
           </tr>)}</tbody>
         </table>
       </div>
+      {state.config.native_backend && roles.some((role) => !role.model) && <p className="muted">
+        Native default lets the backend choose the model. The exact model name was not recorded for these defaults.
+      </p>}
     </div>
   </Card>;
 }

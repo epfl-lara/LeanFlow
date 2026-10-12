@@ -17,6 +17,7 @@ import {
   isNewerProverSnapshot,
   jobSettings,
   jobTimeline,
+  modelSelection,
   operationLabel,
   proposalView,
   proverBudget,
@@ -481,6 +482,66 @@ test("job timelines compute a duration for finished jobs and keep live ones adva
   const live = jobTimeline({ started_at: "2026-09-06T14:00:00+00:00", finished_at: "", status: "running" }, NOW);
   assert.deepEqual(live, { durationS: 300, live: true });
   assert.deepEqual(jobTimeline({ started_at: "", finished_at: "", status: "completed" }, NOW), { durationS: null, live: false });
+});
+
+test("native defaults are labelled and each role retains its saved backend and effort", () => {
+  const state = snapshot({ provider: "lemex", reasoning_effort: "xhigh", config: {
+    agent_calls: null, provider: "lemex", model: "", reasoning_effort: "",
+    orchestrator_reasoning_effort: "xhigh",
+  } });
+  const [prover, planner] = roleSettings(state);
+  assert.equal(prover.provider, "lemex");
+  assert.equal(prover.reasoning_effort, "", "a role's native default must not become the launch effort");
+  assert.equal(planner.reasoning_effort, "xhigh");
+  assert.equal(modelSelection(prover.model, true), "Native default");
+  assert.equal(modelSelection(planner.model, true), "Native default");
+  assert.equal(modelSelection("", false), "Not recorded");
+  assert.equal(modelSelection("saved-model", true), "saved-model");
+});
+
+test("native models and efforts are inherited only within the same backend and model", () => {
+  const config = { agent_calls: 20, provider: "codex", model: "codex-model", reasoning_effort: "high" };
+  const same = roleSettings(snapshot({ config }))[1];
+  assert.equal(same.model, "codex-model");
+  assert.equal(same.reasoning_effort, "high");
+  const changed = roleSettings(snapshot({ config: { ...config, orchestrator_model: "other-model" } }))[1];
+  assert.equal(changed.model, "other-model");
+  assert.equal(changed.reasoning_effort, "");
+  const other = roleSettings(snapshot({ config: { ...config, orchestrator_provider: "claude" } }))[1];
+  assert.equal(other.provider, "claude");
+  assert.equal(other.model, "");
+  assert.equal(other.reasoning_effort, "");
+  const explicit = roleSettings(snapshot({ config: { ...config, orchestrator_provider: "lemex", orchestrator_model: "external-model", orchestrator_reasoning_effort: "low" } }))[1];
+  assert.equal(explicit.provider, "lemex");
+  assert.equal(explicit.model, "external-model");
+  assert.equal(explicit.reasoning_effort, "low");
+});
+
+test("saved native job defaults do not inherit overrides from a later resume", () => {
+  const state = snapshot({ config: { agent_calls: 20, provider: "lemex", model: "new-model", reasoning_effort: "high" }, jobs: [
+    { id: "old-default", role: "prover", provider: "lemex", model: "", reasoning_effort: "" },
+    { id: "old-explicit", role: "prover", provider: "claude", model: "saved-model", reasoning_effort: "low" },
+  ] });
+  const defaults = jobSettings(state.jobs[0], state);
+  assert.equal(defaults.model, "");
+  assert.equal(defaults.reasoning_effort, "");
+  assert.equal(defaults.source, "job");
+  const explicit = jobSettings(state.jobs[1], state);
+  assert.equal(explicit.provider, "claude");
+  assert.equal(explicit.model, "saved-model");
+  assert.equal(explicit.reasoning_effort, "low");
+});
+
+test("legacy jobs without their own settings use the correct role's saved settings", () => {
+  const state = snapshot({ config: { agent_calls: 20, provider: "codex", model: "codex-model", orchestrator_provider: "lemex" }, jobs: [
+    { id: "review", role: "review" }, { id: "research", role: "research" }, { id: "negation", role: "negation" },
+  ] });
+  for (const job of state.jobs.slice(0, 2)) {
+    const settings = jobSettings(job, state);
+    assert.equal(settings.provider, "lemex");
+    assert.equal(settings.model, "");
+  }
+  assert.equal(jobSettings(state.jobs[2], state).model, "codex-model");
 });
 
 test("graph validation wrapper does not double-count its protected-type check", () => {

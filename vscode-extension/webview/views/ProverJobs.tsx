@@ -4,7 +4,7 @@ import { AgentActivity } from "./AgentActivity";
 import { post } from "../vscodeApi";
 import type { ProverJob, ProverSnapshot } from "../../src/core/prover";
 import { isRunningOperation, operationLabel, operationProgress } from "../../src/core/proverOperations";
-import { jobSettings, jobTimeline, stopUsage } from "../../src/core/proverProgress";
+import { jobSettings, jobTimeline, modelSelection, stopUsage } from "../../src/core/proverProgress";
 import { Card } from "../components";
 import { InfoHelp } from "../InfoHelp";
 import { HELP } from "../help";
@@ -36,8 +36,9 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
         </div>
         {awaiting && <div className="muted">Awaiting {operationLabel(awaiting).toLowerCase()}{operationProgress(awaiting) ? ` ${operationProgress(awaiting)}` : ""} inside this job's allocation.</div>}
         {(settings.model || settings.provider) && <div className="muted">
-          {settings.provider && <>{settings.provider} · </>}<span className="mono">{settings.model || "model not reported"}</span>
-          {settings.reasoning_effort && <> · effort {settings.reasoning_effort}</>}
+          {settings.provider && <>{settings.provider} · </>}<span className="mono">{modelSelection(settings.model, state.config.native_backend)}</span>
+          {state.config.native_backend && !settings.model && <> · model name not recorded</>}
+          {(settings.reasoning_effort || state.config.native_backend) && <> · effort {settings.reasoning_effort || "native default"}</>}
           {!state.config.native_backend && settings.context_tokens !== null && <> · {metric(settings.context_tokens)} context tokens</>}
           {!state.config.native_backend && settings.compression !== null && <> · compression {settings.compression ? "on" : "off"}</>}
           {settings.source === "shared" && <> · run-level settings</>}

@@ -115,6 +115,10 @@ export interface ProverConfig {
   max_decompositions: number | null;
   wall_time_s: number | null;
   timeout_s: number | null;
+  provider: string;
+  orchestrator_provider: string;
+  reasoning_effort: string;
+  orchestrator_reasoning_effort: string;
   model: string;
   orchestrator_model: string;
   context_tokens: number | null;
@@ -221,7 +225,7 @@ export interface ProverSnapshot {
   sequence: number | null;
   started_at: string;
   finished_at: string;
-  /** Effective provider and reasoning effort shared by every role. */
+  /** Launch defaults; role and job settings may differ. */
   provider: string;
   reasoning_effort: string;
   goal: string;
@@ -319,6 +323,8 @@ function normalizeConfig(value: unknown): ProverConfig {
     total_api_calls: number(config.total_api_calls), orchestrator_api_calls: number(config.orchestrator_api_calls),
     max_nodes: number(config.max_nodes), max_decompositions: number(config.max_decompositions),
     wall_time_s: number(config.wall_time_s), timeout_s: number(config.timeout_s),
+    provider: text(config.provider), orchestrator_provider: text(config.orchestrator_provider),
+    reasoning_effort: text(config.reasoning_effort), orchestrator_reasoning_effort: text(config.orchestrator_reasoning_effort),
     model: text(config.model), orchestrator_model: text(config.orchestrator_model),
     context_tokens: number(config.context_tokens), orchestrator_context_tokens: number(config.orchestrator_context_tokens),
     compression: flag(config.compression), orchestrator_compression: flag(config.orchestrator_compression),

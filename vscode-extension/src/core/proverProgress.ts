@@ -611,69 +611,7 @@ export function isNewerProverSnapshot(previous: ProverSnapshot | null, next: Pro
 
 // ------------------------------------------------------------------ jobs, roles
 
-export interface RoleSetting {
-  role: "prover" | "orchestrator";
-  label: string;
-  model: string;
-  contextTokens: number | null;
-  compression: boolean | null;
-  callsPerStage: number | null;
-  stageLabel: string;
-}
-
-/** Per-role model and context; provider and reasoning effort are shared and stated once. */
-export function roleSettings(snapshot: ProverSnapshot): RoleSetting[] {
-  const config = snapshot.config;
-  return [
-    {
-      role: "prover", label: "Prover", model: config.model, contextTokens: config.context_tokens,
-      compression: config.compression, callsPerStage: config.job_api_calls,
-      stageLabel: "per prover pass, retained across local decomposition",
-    },
-    {
-      role: "orchestrator", label: "Orchestrator, review, and research", model: config.orchestrator_model || config.model,
-      contextTokens: config.orchestrator_context_tokens, compression: config.orchestrator_compression,
-      callsPerStage: config.orchestrator_api_calls,
-      stageLabel: "per planning, review, or research stage; each stage is a fresh context with its own allowance",
-    },
-  ];
-}
-
-export interface JobSettings {
-  provider: string;
-  model: string;
-  reasoning_effort: string;
-  context_tokens: number | null;
-  compression: boolean | null;
-  /** "job" when the job recorded its own settings, otherwise the run's shared ones. */
-  source: "job" | "shared";
-}
-
-/** The provider, model, and context one job ran with. */
-export function jobSettings(job: ProverJob, snapshot: ProverSnapshot): JobSettings {
-  const config = snapshot.config;
-  const orchestrator = job.role !== "prover" && job.role !== "negation";
-  const shared: JobSettings = {
-    provider: snapshot.provider,
-    model: orchestrator ? config.orchestrator_model || config.model : config.model,
-    reasoning_effort: snapshot.reasoning_effort,
-    context_tokens: orchestrator ? config.orchestrator_context_tokens : config.context_tokens,
-    compression: orchestrator ? config.orchestrator_compression : config.compression,
-    source: "shared",
-  };
-  const recorded = job.provider || job.model || job.reasoning_effort || job.context_tokens !== null || job.compression !== null;
-  if (!recorded) {
-    return shared;
-  }
-  return {
-    provider: job.provider || shared.provider,
-    model: job.model || shared.model,
-    reasoning_effort: job.reasoning_effort || shared.reasoning_effort,
-    context_tokens: job.context_tokens ?? shared.context_tokens,
-    compression: job.compression ?? shared.compression,
-    source: "job",
-  };
-}
+export { roleSettings, jobSettings, modelSelection, type RoleSetting, type JobSettings } from "./proverModelSettings";
 
 /** How long a job has run or ran; live jobs are measured against `nowMs`. */
 export function jobTimeline(

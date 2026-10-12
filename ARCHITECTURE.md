@@ -372,7 +372,9 @@ does not read or reinterpret LeanFlow's persistence files directly:
   The host uses `runs prover` / `prover-message` / `runs event`,
   validates ownership and paths, and does not substitute another run's artifacts.
   `proverProgress.ts` and `proverOperations.ts` derive budget, capacity, operation,
-  proposal and stop-reason views from the same snapshot. `proverCache.ts` and
+  proposal and stop-reason views from the same snapshot. `proverModelSettings.ts`
+  resolves saved role inheritance and job settings without substituting current
+  provider defaults for missing historical model names. `proverCache.ts` and
   `proverService.ts` cache exact-run CLI reads with file-stat change detection;
   `idleDiscovery.ts` detects external owners even when no run is selected.
   `profileSurfaces.ts` checks profile compatibility before launch.
