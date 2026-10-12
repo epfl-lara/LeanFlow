@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import shlex
 import time
@@ -36,12 +37,18 @@ from leanflow_cli.cli.cli_handlers import (
     _print_json,
     _print_mcp_bootstrap,
     _print_mcp_status,
-    _print_project_power_setup,
     _project_payload,
 )
 from leanflow_cli.cli.commands import SlashCommandCompleter, build_workflow_command_set
 from leanflow_cli.cli.doctor import run_doctor
 from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp
+from leanflow_cli.cli.project_command import (
+    execute_setup,
+    handle_project,
+    register_project_parser,
+    setup_exit_code,
+    setup_result_lines,
+)
 from leanflow_cli.cli.shell_ui import (
     bottom_toolbar as _build_bottom_toolbar,
 )
@@ -75,12 +82,8 @@ from leanflow_cli.workflow import (
 )
 from leanflow_cli.workflows.project import (
     ProjectNotFoundError,
-    clone_project_template,
     discover_leanflow_project,
     format_project_summary,
-    initialize_leanflow_project,
-    resolve_template_source,
-    setup_project_power_modes,
 )
 from leanflow_cli.workflows.workflow_state import (
     enqueue_workflow_agent_message,
@@ -521,80 +524,42 @@ class InteractiveShell:
         return 0
 
     def _run_project_command(self, argv: list[str]) -> int:
-        """Dispatch /project subcommands: init (initialize Lean workspace), create (clone template), and show (render project state). Updates shell cwd on successful init/create."""
+        """Use the shared setup pipeline and select the project only after readiness passes."""
         if not argv:
             try:
                 project = discover_leanflow_project(self.cwd)
             except ProjectNotFoundError:
                 self.console.print(
-                    "[dim]No active Lean workspace is open here. Use `/project init` in a Lean repo or `/project create <path>` to start one.[/]"
+                    "[dim]No active Lean workspace is open here. Use `/project setup` to prepare this folder or `/project create <path>` to start one.[/]"
                 )
                 return 1
             render_project_panel(self.console, project_summary=_project_payload(project))
             return 0
-        subcmd = argv[0]
-        if subcmd == "init":
-            path = argv[1] if len(argv) > 1 and not argv[1].startswith("--") else str(self.cwd)
-            name = ""
-            if "--name" in argv:
-                idx = argv.index("--name")
-                if idx + 1 < len(argv):
-                    name = argv[idx + 1]
-            target = Path(path).expanduser().resolve()
-            already_initialized = (target / ".leanflow" / "project.yaml").is_file()
-            project = initialize_leanflow_project(path, name=name or None)
-            setup_report = setup_project_power_modes(
-                project.lean_root,
-                progress=lambda message: self.console.print(message),
-            )
-            self.cwd = project.root
-            if already_initialized:
-                self._plain_notice(f"Project already initialized: {project.label}")
-            else:
-                self._plain_notice(f"Initialized project: {project.label}")
-            _print_project_power_setup(setup_report)
-            return 0
-        if subcmd == "create":
-            if len(argv) < 2:
-                self.console.print(
-                    "[dim]Usage: /project create <path> [--template-source <source>] [--name <name>] [/]"
-                )
-                return 1
-            path = argv[1]
-            template_source = ""
-            name = ""
-            if "--template-source" in argv:
-                idx = argv.index("--template-source")
-                if idx + 1 < len(argv):
-                    template_source = argv[idx + 1]
-            if "--name" in argv:
-                idx = argv.index("--name")
-                if idx + 1 < len(argv):
-                    name = argv[idx + 1]
-            if not template_source:
-                template_source = resolve_template_source(load_config(), os.environ)
-            if not template_source:
-                self.console.print(
-                    "[bold red]No template source configured.[/] Set `leanflow.project.template_source` or pass `--template-source`."
-                )
-                return 1
-            project = clone_project_template(
-                path, template_source=template_source, name=name or None
-            )
-            self.cwd = project.root
-            self._plain_notice(f"Created project: {project.label}")
-            return 0
-        if subcmd == "show":
-            target = argv[1] if len(argv) > 1 else str(self.cwd)
-            try:
-                project = discover_leanflow_project(target)
-            except ProjectNotFoundError as exc:
-                self.console.print(f"[bold red]{exc}[/]")
-                return 1
-            render_project_panel(self.console, project_summary=_project_payload(project))
-            return 0
-        self.console.print(f"[bold red]Unknown /project subcommand:[/] {subcmd}")
-        return 1
+        parser = argparse.ArgumentParser(prog="leanflow")
+        register_project_parser(parser.add_subparsers(dest="command"))
+        try:
+            args = parser.parse_args(["project", *argv])
+        except SystemExit as error:
+            return int(error.code or 0)
+        args.path = str((self.cwd / Path(args.path).expanduser()).resolve())
+        if args.project_command in {"show", "inspect"}:
+            return handle_project(args)
+        if args.source_file:
+            args.source_file = str((self.cwd / Path(args.source_file).expanduser()).resolve())
+        if args.json_output:
+            code = handle_project(args)
+            if code == 0:
+                self.cwd = discover_leanflow_project(args.path).root
+            return code
+        result = execute_setup(
+            args,
+            emit=lambda event: self.console.print(str(event.get("message", "")), markup=False),
+        )
+        for line in setup_result_lines(result):
+            self.console.print(line, markup=False)
+        if result.get("status") == "ready":
+            self.cwd = Path(result["root"])
+        return setup_exit_code(result)
 
     def _run_config_command(self, argv: list[str]) -> int:
         if not argv or argv[0] == "show":

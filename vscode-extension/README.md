@@ -6,6 +6,22 @@ The extension does not reimplement any part of LeanFlow. It drives the `leanflow
 CLI and reads run-scoped state through `leanflow runs`, so the editor, shell,
 evaluation harness, and exported results use the same evidence boundary.
 
+## Project setup
+
+Open a folder and click **Set up project** in the sidebar or Launch page.
+Mathlib is the default; LeanFlow creates an empty-folder project, adopts existing
+Lean files without rewriting them, or prepares an existing Lake project while
+preserving its versions and dependency pins. A loose file prompts for a project
+folder. Multi-root workspaces use a folder picker; SSH setup runs on the remote
+workspace host.
+
+Progress shows the current step and output. Failures include a reason, remedy,
+**Retry** and **Show log**; **Cancel** stops only this setup. Retrying reuses
+completed downloads and builds. **Ready to prove** requires a real Lean/REPL
+check, while incomplete proofs and `sorry`s remain valid starting points.
+Provider login is separate. Setup cannot change a project with an active run.
+The command palette exposes the same flow as **LeanFlow: Set Up Project**.
+
 ## Provider setup
 
 Open **Providers** in the dashboard, use the setup link beside **Agent backend**,
@@ -196,7 +212,8 @@ before the run ends is therefore not reported as changed.
 ## Requirements
 
 - `leanflow` on your `PATH` (or set `leanflow.cliPath`)
-- A registered LeanFlow project: `leanflow project init` inside your Lean repo
+- A project folder (use **Set up project** to create or prepare it)
+- Elan/Lake on the execution host; setup explains how to install missing prerequisites
 - Git and a local filesystem (virtual workspaces are not supported)
 - A trusted VS Code workspace, because LeanFlow executes the project's Lean toolchain
 

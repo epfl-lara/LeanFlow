@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from leanflow_cli.runtime.project_operations import ProjectBusyError, project_setup
 from leanflow_cli.workflows.prover import entrypoint, runtime
 from leanflow_cli.workflows.prover.config import ProverConfig
 
@@ -199,14 +200,44 @@ def test_clone_relocates_paths_without_rewriting_proof_or_source_text(launch):
 
 def test_lock_conflict_does_not_steal_existing_live_observer(launch, monkeypatch):
     root, observed = launch
+    original_flock = entrypoint.fcntl.flock
 
-    def busy(*args):
-        raise BlockingIOError("owned")
+    def busy(handle, flags):
+        if Path(handle.name).name == "controller.lock":
+            raise BlockingIOError("owned")
+        return original_flock(handle, flags)
 
     monkeypatch.setattr(entrypoint.fcntl, "flock", busy)
     assert entrypoint.main() == 1
     assert _state(root)["terminal"] and not observed
     assert _state(root)["status"] == "environment_error"
+
+
+def test_setup_ownership_rejects_prover_without_startup_writes(launch, monkeypatch, capsys):
+    root, observed = launch
+    monkeypatch.setattr(
+        runtime, "ProverRuntime", lambda **kwargs: pytest.fail("Controller started")
+    )
+    with project_setup(root):
+        assert entrypoint.main() == 1
+    assert not (root / ".leanflow").exists()
+    assert not observed
+    assert "Project setup is in progress" in capsys.readouterr().out
+
+
+def test_prover_excludes_setup_through_controller_execution(launch, monkeypatch):
+    root, _ = launch
+
+    def run(instance):
+        with pytest.raises(ProjectBusyError, match="running"):
+            with project_setup(root):
+                pytest.fail("Setup entered during the prover run")
+        return {"status": "completed", "metrics": {}}
+
+    monkeypatch.setattr(runtime.ProverRuntime, "run", run)
+    assert entrypoint.main() == 0
+    with project_setup(root):
+        pass
 
 
 def test_runtime_main_preserves_module_launch_compatibility(monkeypatch):

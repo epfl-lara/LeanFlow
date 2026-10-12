@@ -1643,3 +1643,13 @@ body.vscode-high-contrast-light {
 .native-model-status { margin-top: 14px; font-size: 11px; gap: 8px 12px; }
 .providers-view .row { row-gap: 10px; }
 .providers-view .btn { white-space: normal; }
+
+/* Setup feedback stays readable at sidebar width and during long downloads. */
+.setup-root { overflow-wrap: anywhere; font-size: 12px; }
+.setup-phase { margin-top: 12px; font-weight: 600; }
+.setup-error { color: var(--vscode-errorForeground); white-space: pre-wrap; overflow-wrap: anywhere; }
+.project-setup-actions { flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+
+.setup-source-diagnostics { margin-top: 16px; overflow-wrap: anywhere; }
+.setup-source-diagnostics summary { color: var(--vscode-editorWarning-foreground); cursor: pointer; }
+.setup-source-diagnostics li { margin-top: 8px; white-space: pre-wrap; }

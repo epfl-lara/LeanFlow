@@ -20,6 +20,7 @@ from core.utils import atomic_json_write
 from leanflow_cli.native.harness_artifacts import promote, source_files, verify_proposal
 from leanflow_cli.native.harness_context import prepare_context
 from leanflow_cli.native.harness_observer import NativeObserver
+from leanflow_cli.runtime.project_operations import project_activity
 from leanflow_cli.workflows.prover.native_bridge import NativeBridge
 from leanflow_cli.workflows.prover.native_snapshot import create_snapshot
 from leanflow_cli.workflows.prover.session_tools import SessionTools
@@ -36,15 +37,16 @@ def run_workflow(env: dict[str, str] | None = None) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", run_id):
         raise ValueError("Invalid native workflow run ID")
     directory = root / ".leanflow" / "native-workflows" / run_id
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / "controller.lock").open("a") as owner:
-        try:
-            fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise ValueError("This native workflow already has an active controller") from error
-        return _run_controller(
-            environment, root, kind, backend, directory, run_id, resume, observe=env is None
-        )
+    with project_activity(root):
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / "controller.lock").open("a") as owner:
+            try:
+                fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise ValueError("This native workflow already has an active controller") from error
+            return _run_controller(
+                environment, root, kind, backend, directory, run_id, resume, observe=env is None
+            )
 
 
 def _run_controller(

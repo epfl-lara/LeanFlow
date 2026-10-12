@@ -297,27 +297,20 @@ def test_interactive_mcp_bootstrap_prints_summary(monkeypatch, capsys):
     assert "public-fallbacks-enabled" in output
 
 
-def test_project_init_prints_repl_setup_progress(monkeypatch, tmp_path, capsys):
+def test_project_init_prints_verified_setup_progress(monkeypatch, tmp_path, capsys):
     root = tmp_path / "Demo"
-    root.mkdir()
-    (root / "lakefile.toml").write_text('name = "Demo"\n', encoding="utf-8")
-    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
 
-    def _fake_setup(_lean_root, *, progress=None):
-        if progress:
-            progress("[1/6] Inspecting Lean project for REPL acceleration")
-            progress(
-                "[6/6] Building REPL binary with `lake build repl` (this can take several minutes)"
-            )
-        return {"status": "ready", "repl_path": str(root / ".lake" / "build" / "bin" / "repl")}
+    def fake_setup(path, **options):
+        options["progress"](
+            {"type": "progress", "phase": "verification", "message": "Checking Lean and REPL"}
+        )
+        return {"status": "ready", "root": str(path)}
 
-    monkeypatch.setattr("leanflow_cli.main.setup_project_power_modes", _fake_setup)
-
+    monkeypatch.setattr("leanflow_cli.cli.project_command.prepare_project", fake_setup)
     assert main(["project", "init", str(root)]) == 0
     output = capsys.readouterr().out
-    assert "Inspecting Lean project for REPL acceleration" in output
-    assert "lake build repl" in output
-    assert "REPL acceleration ready" in output
+    assert "Checking Lean and REPL" in output
+    assert "Ready to prove" in output
 
 
 def test_describe_launch_plan_formats_provider_and_model(tmp_path):
@@ -682,24 +675,24 @@ def test_combined_status_skips_expensive_sandbox_probe_unless_verbose(
     assert calls[-1] == {"probe_engine": True, "recent_run_limit": 8}
 
 
-def test_interactive_project_init_reports_already_initialized(monkeypatch, tmp_path, capsys):
+def test_interactive_project_init_reuses_setup_and_selects_only_ready_project(
+    monkeypatch, tmp_path, capsys
+):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
-    root.mkdir()
-    (root / "lakefile.lean").write_text(
-        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
-    )
-    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    calls = []
 
+    def fake_setup(path, **options):
+        calls.append(path)
+        return {"status": "ready", "root": str(path)}
+
+    monkeypatch.setattr("leanflow_cli.cli.project_command.prepare_project", fake_setup)
     shell = InteractiveShell()
-
-    assert shell._run_project_command(["init", str(root)]) == 0
-    first = capsys.readouterr().out
-    assert "Initialized project: Demo" in first
-
-    assert shell._run_project_command(["init", str(root)]) == 0
-    second = capsys.readouterr().out
-    assert "Project already initialized: Demo" in second
+    for _ in range(2):
+        assert shell._run_project_command(["init", str(root)]) == 0
+        assert "Ready to prove" in capsys.readouterr().out
+        assert shell.cwd == root
+    assert calls == [str(root), str(root)]
 
 
 def test_interactive_workflow_log_prints_saved_runner_log(monkeypatch, tmp_path, capsys):

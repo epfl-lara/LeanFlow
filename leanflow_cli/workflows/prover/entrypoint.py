@@ -13,6 +13,7 @@ from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
 from core.utils import atomic_json_write
+from leanflow_cli.runtime.project_operations import ProjectBusyError, project_activity
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.observer import RunObserver, exit_code
 from leanflow_cli.workflows.prover.source import import_only_source, project_path, project_sources
@@ -145,9 +146,20 @@ def _startup_failure(
 
 def main() -> int:
     """Launch through the shared provider environment with observable failure outcomes."""
+    root = Path(os.environ.get("LEANFLOW_PROJECT_ROOT", os.getcwd())).resolve()
+    try:
+        with project_activity(root):
+            return _run_project(root)
+    except ProjectBusyError as error:
+        # Setup owns the project: even startup-error publication would be a conflicting write.
+        print(f"LeanFlow prover could not start: {error}", flush=True)
+        return 1
+
+
+def _run_project(root: Path) -> int:
+    """Hold project activity ownership through controller startup and terminal evidence."""
     from leanflow_cli.workflows.prover.runtime import ProverRuntime
 
-    root = Path(os.environ.get("LEANFLOW_PROJECT_ROOT", os.getcwd())).resolve()
     previous = os.environ.get("LEANFLOW_PROVER_RESUME_RUN_ID", "").strip()
     requested_id = os.environ.get("LEANFLOW_WORKFLOW_RUN_ID", "").strip()
     run_id = requested_id if _IDENTIFIER.fullmatch(requested_id) else uuid.uuid4().hex[:16]

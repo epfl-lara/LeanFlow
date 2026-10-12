@@ -57,6 +57,8 @@ if (tests) {
       agentActivity: "src/core/agentActivity.ts",
       launchPaths: "src/core/launchPaths.ts",
       projectDiscovery: "src/core/projectDiscovery.ts",
+      projectSetupProcess: "src/core/projectSetupProcess.ts",
+      projectSetupTypes: "src/core/projectSetupTypes.ts",
       eventBuffer: "src/core/eventBuffer.ts",
       eventDetail: "src/core/eventDetail.ts",
       logRows: "src/core/logRows.ts",

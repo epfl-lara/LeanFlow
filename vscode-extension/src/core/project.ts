@@ -12,6 +12,7 @@ import {
   isNestedProjectManifestCandidate,
   projectRootForUniqueManifest,
 } from "./projectDiscovery";
+import { isHostFileUri } from "./workspaceUris";
 import type { ProjectInfo } from "./types";
 
 const MANIFEST = path.join(".leanflow", "project.yaml");
@@ -34,6 +35,9 @@ function ascendToProject(start: string): string | null {
 }
 
 function describe(root: string): ProjectInfo {
+  // The CLI reports canonical roots; matching that spelling also keeps setup
+  // admission and run ownership consistent when a workspace uses a symlink.
+  try { root = fs.realpathSync(root); } catch { /* Discovery may race a folder move. */ }
   return {
     found: true,
     root,
@@ -54,7 +58,7 @@ function configuredProjectRoot(): string {
  *
  * Precedence is explicit setting, then the active editor's file (so a
  * multi-root workspace follows what the user is looking at), then the workspace
- * folders in order.
+ * unique project among the workspace folders.
  */
 export function discoverProject(): ProjectInfo {
   const configured = configuredProjectRoot();
@@ -64,48 +68,58 @@ export function discoverProject(): ProjectInfo {
   }
 
   const activeUri = vscode.window.activeTextEditor?.document.uri;
-  if (activeUri?.scheme === "file") {
+  if (activeUri && isHostFileUri(activeUri)) {
     const found = ascendToProject(path.dirname(activeUri.fsPath));
     if (found) {
       return describe(found);
     }
+    if (vscode.workspace.getWorkspaceFolder(activeUri)) return NO_PROJECT;
   }
 
+  const projects = new Set<string>();
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
-    if (folder.uri.scheme !== "file") {
+    if (!isHostFileUri(folder.uri)) {
       continue;
     }
     const found = ascendToProject(folder.uri.fsPath);
     if (found) {
-      return describe(found);
+      projects.add(found);
     }
   }
-  return NO_PROJECT;
+  return projects.size === 1 ? describe([...projects][0]) : NO_PROJECT;
 }
 
 /** Resolve one nested project when the workspace folder is its parent. */
-export async function discoverProjectIncludingNested(): Promise<ProjectInfo> {
+export async function discoverProjectIncludingNested(preferredRoot = ""): Promise<ProjectInfo> {
   const immediate = discoverProject();
   if (immediate.found || configuredProjectRoot()) {
     return immediate;
   }
 
-  // VS Code already indexes workspace files. Limit the query to two results so
+  // A setup choice is explicit, unlike workspace-folder ordering. Retain that
+  // selection when several projects exist and no editor identifies one.
+  if (preferredRoot && !vscode.window.activeTextEditor && fs.existsSync(path.join(preferredRoot, MANIFEST))) {
+    return describe(preferredRoot);
+  }
+
+  // VS Code already indexes workspace files. Keep the query bounded so
   // a parent folder containing several projects fails closed instead of
   // crawling a large tree or silently choosing the first one.
+  const active = vscode.window.activeTextEditor?.document.uri;
+  const activeFolder = active && isHostFileUri(active) ? vscode.workspace.getWorkspaceFolder(active) : undefined;
   const manifests = await vscode.workspace.findFiles(
-    "**/.leanflow/project.yaml",
+    activeFolder ? new vscode.RelativePattern(activeFolder, "**/.leanflow/project.yaml") : "**/.leanflow/project.yaml",
     "**/{.git,.lake,archive,archives,node_modules,build}/**",
     20,
   );
   const workspaceRoots = (vscode.workspace.workspaceFolders ?? [])
-    .filter((folder) => folder.uri.scheme === "file")
+    .filter((folder) => isHostFileUri(folder.uri))
     .map((folder) => folder.uri.fsPath);
   const candidate = projectRootForUniqueManifest(
     manifests
       .filter(
         (uri) =>
-          uri.scheme === "file" &&
+          isHostFileUri(uri) &&
           workspaceRoots.some((root) =>
             isNestedProjectManifestCandidate(root, uri.fsPath),
           ),

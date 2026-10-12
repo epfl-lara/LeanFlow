@@ -171,6 +171,26 @@ export class WebviewHost implements vscode.Disposable {
   private async dispatch(message: WebviewMessage): Promise<void> {
     const { services } = this;
     switch (message.type) {
+      case "configureProvider": {
+        await vscode.commands.executeCommand("leanflow.configureProvider");
+        return;
+      }
+      case "setupProject": {
+        await services.setup.start();
+        return;
+      }
+      case "retryProjectSetup": {
+        await services.setup.start(true);
+        return;
+      }
+      case "cancelProjectSetup": {
+        services.setup.cancel();
+        return;
+      }
+      case "showProjectSetupLog": {
+        await services.setup.showLog();
+        return;
+      }
       case "copyText": {
         // The host clipboard works even when webview clipboard permission is unavailable.
         await vscode.env.clipboard.writeText(message.text);
@@ -195,6 +215,7 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "launch": {
+        services.setup.assertLaunchReady(services.project.root);
         const profile = services.profiles?.profiles.find(row => row.name === message.request.profile);
         const problems = [...validateLaunch(message.request), ...launchModelProblems(message.request, services.providers.state(), profile?.overrides)];
         if (problems.length > 0) {
@@ -369,6 +390,7 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "startExperiment": {
+        services.setup.assertLaunchReady(services.project.root);
         const pending = services.experiments.pendingCellCount(message.matrixId);
         if (pending > 10) {
           const confirmed = await vscode.window.showWarningMessage(

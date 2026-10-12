@@ -47,6 +47,7 @@ async function fixture() {
     project: { found: true, root }, profiles: null,
     catalog: { groups: [{ flags: [{ name: "LEANFLOW_PROVER_PARALLELISM", value_type: "int", editable: true, extension_editable: true, minimum: 1, default: "1" }] }] },
     onDidChange: () => disposable, state: () => ({ project: { found: true, root } }), reload: record("refresh"), reloadProfiles: record("profiles"), selectRun: record("select"),
+    setup: { start: record("setup"), cancel: record("cancelSetup"), showLog: record("setupLog"), assertLaunchReady: () => { if (f.setupBlocked) throw new Error("Project setup is incomplete. Retry setup."); } },
     providers: { refresh: record("providers"), act: record("providerAction"), state: () => f.providerState },
     runs: { onDidAppendEvents: () => disposable, projectRootForRun: id => id === "run-1" ? root : null,
       launch: async (...args) => { f.calls.push(["launch", ...args]); return { id: "tracked-1", runId: "run-1", label: "Test run" }; },
@@ -66,8 +67,12 @@ async function fixture() {
 test("navigation, clipboard and provider actions reach native editor services", async () => {
   const ui = await fixture();
   try {
-    for (const type of ["ready", "refresh", "refreshProviders", "openDashboard", "openCliSettings"]) await ui.send({ type });
+    for (const type of ["ready", "refresh", "refreshProviders", "openDashboard", "openCliSettings", "setupProject", "retryProjectSetup", "cancelProjectSetup", "showProjectSetupLog", "configureProvider"]) await ui.send({ type });
     assert.equal(ui.last("state").state.project.root, ui.root);
+    assert.deepEqual(ui.calls.filter(row => row[0] === "setup"), [["setup"], ["setup", true]]);
+    assert.ok(ui.calls.some(row => row[0] === "cancelSetup"));
+    assert.ok(ui.calls.some(row => row[0] === "setupLog"));
+    assert.ok(ui.calls.some(row => row[0] === "command" && row[1] === "leanflow.configureProvider"));
     for (const backend of ["codex", "claude", "lemex"]) await ui.send({ type: "providerAction", backend, action: "apiKey" });
     for (const topic of ["install", "project-init"]) await ui.send({ type: "openExternalDoc", topic });
     assert.ok(ui.calls.some(row => row[0] === "command" && row[1] === "leanflow.openDashboard"));
@@ -89,6 +94,11 @@ test("launch, preview, stop, events, transcripts and guidance bind to the reques
     const request = { ...emptyLaunchRequest(), target: "Main.lean", provider: "lemex" };
     await ui.send({ type: "launch", request });
     assert.equal(ui.calls.find(row => row[0] === "launch")[1].target, "Main.lean");
+    ui.f.setupBlocked = true;
+    await ui.send({ type: "launch", request });
+    assert.equal(ui.calls.filter(row => row[0] === "launch").length, 1);
+    assert.match(ui.last("notify").message, /Project setup is incomplete/);
+    ui.f.setupBlocked = false;
     await ui.send({ type: "preview", requestId: "preview-1", request });
     assert.equal(ui.last("preview").error, "");
     await ui.send({ type: "stopRun", id: "tracked-1" });

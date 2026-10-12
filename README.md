@@ -50,11 +50,18 @@ leanflow doctor          # checks the Lean toolchain, MCP backends, and external
 
 ## Quick start
 
-Register an existing Lean project, then run a workflow:
+In VS Code, open a folder and click **Set up project** in the LeanFlow sidebar or
+dashboard. Mathlib is the default. Empty folders get a starter project; a folder
+with Lean files is prepared without rewriting them; existing Lean projects retain
+their toolchain and dependency pins. Setup shows progress, clear failures and
+**Retry**, **Cancel** and **Show log** actions. Provider login remains separate.
+
+The same setup is available in the terminal:
 
 ```bash
-cd /path/to/lean-project
-leanflow project init                  # registers the project (and sets up Lean acceleration when safe)
+cd /path/to/project-folder
+leanflow project setup                 # creates or prepares a Mathlib project
+# leanflow project setup --preset lean # optional minimal Lean project
 leanflow workflow prove Main.lean      # repair proofs in a file
 leanflow workflow formalize paper.tex  # formalize a source document
 ```
@@ -76,11 +83,18 @@ From another terminal, `leanflow status` returns a bounded live summary without
 waiting on the sandbox engine. Use `leanflow status --verbose` only when you
 also want the larger run history and a live sandbox-engine probe.
 
-When it can do so safely, `project init` also prepares Lean REPL acceleration (adds the
-`leanprover-community/repl` dependency and builds it) and local `lean-lsp-mcp` power modes — local
-Loogle, REPL-backed tactic screening for `lean_multi_attempt`, and optional local LeanExplore
-semantic search (`lean-explore[local]`). Anything unavailable falls back cleanly and is reported by
-`leanflow doctor`.
+`project init` remains an alias for the same setup pipeline. `project create <path>`
+prepares a new project, with an optional `--template-source` for existing template
+workflows. `project inspect --json` reports setup readiness without changing files.
+LeanFlow uses Git and Elan/Lake from the extension host; missing prerequisites have
+an actionable error. Elan obtains the project's pinned Lean toolchain as needed.
+New Mathlib projects pin Lean 4.33.1 and matching dependency revisions.
+
+Setup checks the real Lean REPL protocol before reporting **Ready to prove**.
+Unfinished proofs and `sorry`s do not block setup; custom import errors are reported
+separately. Ordinary Lake files receive the missing REPL requirement automatically;
+custom executable configurations receive the precise dependency line to add. Setup refuses to change a
+project with an active workflow, and cancellation stops only its owned processes.
 
 ## What a run guarantees
 

@@ -51,3 +51,22 @@ test("native credentials reach new launches separately from every persisted/publ
     }
   } finally { manager.dispose(); }
 });
+
+
+test("all launch callers share the setup readiness admission check", async () => {
+  const fixture = globalThis.launchCredentialFixture = { spawned: [], saved: [] };
+  const context = { workspaceState: { get: (_key, fallback) => fallback, update: async () => {} } };
+  const project = { found: true, root: "/tmp/leanflow-setup-admission", stateRoot: "/tmp/leanflow-setup-admission/.leanflow/workflow-state", label: "test" };
+  let ready = false;
+  const roots = [];
+  const manager = new RunManager(context, project, async () => ({}), root => { roots.push(root); if (!ready) throw new Error("Project setup is incomplete."); });
+  manager.startPolling = () => {};
+  try {
+    await assert.rejects(manager.launch(emptyLaunchRequest(), null, null), /setup is incomplete/);
+    assert.equal(fixture.spawned.length, 0);
+    ready = true;
+    await manager.launch(emptyLaunchRequest(), null, null);
+    assert.equal(fixture.spawned.length, 1);
+    assert.deepEqual(roots, [project.root, project.root, project.root]);
+  } finally { manager.dispose(); }
+});

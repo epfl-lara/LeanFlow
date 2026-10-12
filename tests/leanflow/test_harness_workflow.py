@@ -8,6 +8,7 @@ import pytest
 from agent.runtime.harness import HarnessResult
 from leanflow_cli.native import harness_artifacts as artifacts
 from leanflow_cli.native import harness_workflow as runner
+from leanflow_cli.runtime.project_operations import ProjectBusyError, project_setup
 
 
 @pytest.fixture(autouse=True)
@@ -77,6 +78,34 @@ def test_review_uses_selected_native_runtime_with_unlimited_defaults(tmp_path, m
     assert not seen[0].restricted_tools
     assert seen[0].deadline is None and seen[0].model == seen[0].effort == ""
     assert seen[0].cwd != tmp_path
+
+
+def test_setup_ownership_rejects_native_workflow_before_project_writes(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.setattr(
+        runner, "_run_controller", lambda *a, **kw: pytest.fail("Controller started")
+    )
+    with project_setup(root):
+        with pytest.raises(ProjectBusyError, match="setup"):
+            runner.run_workflow({"LEANFLOW_PROJECT_ROOT": str(root)})
+    assert not (root / ".leanflow").exists()
+
+
+def test_native_workflow_excludes_setup_for_entire_controller(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+
+    def controller(*args, **kwargs):
+        with pytest.raises(ProjectBusyError, match="running"):
+            with project_setup(root):
+                pytest.fail("Setup entered during a native workflow")
+        return {"status": "completed"}
+
+    monkeypatch.setattr(runner, "_run_controller", controller)
+    assert runner.run_workflow({"LEANFLOW_PROJECT_ROOT": str(root)}) == {"status": "completed"}
+    with project_setup(root):
+        pass
 
 
 def test_failed_proposal_never_touches_canonical_source_and_obeys_global_calls(

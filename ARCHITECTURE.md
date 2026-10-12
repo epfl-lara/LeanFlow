@@ -160,6 +160,30 @@ meaning; the controller checks elaboration and allowed axioms. Approved drafts
 return `draft_ready`; proof completion requires a separately started `prove` run.
 Review workflows publish findings only.
 
+## Project setup
+
+- `workflows/project_setup/` is the shared project preparation boundary. `scaffold.py`
+  classifies and adopts source folders with pinned new-project dependencies;
+  `verification.py` prepares compatible REPL dependencies and checks the real
+  verification protocol; `process.py` streams owned, cancellable subprocesses;
+  `service.py` drives phases and preserves source/version boundaries; `state.py`
+  stores home-owned receipts and invalidates stale readiness.
+- `workflows/project.py` owns project discovery and registration. Retired clone and
+  power-mode setup helpers are removed; CLI aliases use the shared pipeline.
+- `cli/project_command.py` routes setup/init/create through that pipeline, emits
+  human or NDJSON progress, and maps signals to cooperative cancellation. CLI and
+  interactive shell use the same implementation and readiness result.
+- `runtime/project_operations.py` holds canonical-path shared workflow / exclusive
+  setup locks outside the project. It also checks legacy controller locks and
+  live process identities, protecting already running workflows. Prover, native
+  workflows and formalization intake take shared ownership before project writes.
+- VS Code `src/core/projectSetupTypes.ts`, `projectSetupProcess.ts` and
+  `projectSetup.ts` define the receipt contract, streaming process boundary and
+  workspace-scoped service. `workspaceUris.ts` selects supported local or remote
+  filesystem URIs. `ProjectSetupCard.tsx` presents the same setup state in sidebar
+  and dashboard, with retry, cancellation and log access. Registration is distinct
+  from readiness; provider authentication remains under its native setup service.
+
 ## Cache ownership and freshness
 
 Native runtimes own prompt caching, session history and compaction. LeanFlow

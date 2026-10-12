@@ -112,6 +112,7 @@ export class RunManager implements vscode.Disposable {
     private readonly context: vscode.ExtensionContext,
     project: ProjectInfo,
     private readonly nativeEnvironment: () => Promise<NodeJS.ProcessEnv> = async () => ({}),
+    private readonly assertProjectReady: (root: string) => void = () => {},
   ) {
     this.project = project;
     this.restore();
@@ -246,11 +247,15 @@ export class RunManager implements vscode.Disposable {
     }
     const projectRoot = options.projectRoot ?? this.project.root;
     const rootKey = this.rootKey(projectRoot);
+    this.assertProjectReady(projectRoot);
     await validateLaunchProjectInputs(
       projectRoot,
       request.target,
       request.additionalSkills,
     );
+    // Setup can start while the asynchronous path check is pending. Recheck
+    // before reserving launch ownership so the two operations cannot overlap.
+    this.assertProjectReady(projectRoot);
     const researchConflict = researchConflictDescription(
       this.runs.values(),
       options.experimentId,

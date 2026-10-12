@@ -138,6 +138,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       try {
+        services.setup.assertLaunchReady(state.project.root);
         const run = await services.runs.launch(
           { ...emptyLaunchRequest(), kind: "prove", target },
           services.profiles,
@@ -192,25 +193,9 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
 
     vscode.commands.registerCommand("leanflow.initProject", async () => {
-      const folder = vscode.workspace.workspaceFolders?.[0];
-      if (!folder) {
-        void vscode.window.showWarningMessage("Open a folder containing a Lean project first.");
-        return;
-      }
-      try {
-        await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: "Initializing LeanFlow project" },
-          async () => {
-            await runCli(["project", "init", folder.uri.fsPath], {
-              cwd: folder.uri.fsPath,
-              timeoutMs: 600_000,
-            });
-          },
-        );
-        await services.reload();
-      } catch (error) {
-        await showCommandError(error);
-      }
+      DashboardPanel.show(context.extensionUri, services);
+      try { await services.setup.start(); }
+      catch (error) { await showCommandError(error); }
     }),
 
     vscode.commands.registerCommand("leanflow.doctor", async () => {

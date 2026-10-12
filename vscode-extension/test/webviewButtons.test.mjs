@@ -285,7 +285,9 @@ test("sidebar quick launch, dashboard, stop and setup recovery buttons work", ()
     ui.click("Install guide"); assert.ok(message(ui, "openExternalDoc"));
     ui.click("CLI path"); assert.ok(message(ui, "openCliSettings"));
     ui.update(f => { f.app.cli.ok = true; f.app.project.found = false; });
-    ui.click("How to register a project"); assert.equal(message(ui, "openExternalDoc").topic, "project-init");
+    ui.click("Set up project"); assert.ok(message(ui, "setupProject"));
+    ui.update(f => { f.app.projectSetup = { status: "ready", root: "/fixture", message: "Ready" }; });
+    ui.click("Set up provider"); assert.ok(message(ui, "configureProvider"));
   } finally { ui.dispose(); }
 });
 
@@ -322,6 +324,31 @@ test("proposal, controller, parent-job and disproof buttons preserve their exact
     ui.update(f => { f.view.logSearch = "stale search"; });
     ui.click(ui.buttons().find(node => textOf(node) === "Events"));
     assert.equal(ui.view.logAgent, "orchestrator-1"); assert.equal(ui.view.logSearch, "");
+  } finally { ui.dispose(); }
+});
+
+test("project setup buttons expose progress, retry, readiness and provider setup", () => {
+  const ui = mount();
+  try {
+    ui.click("Check / repair setup"); assert.ok(message(ui, "setupProject"));
+    ui.update(f => { f.app.projectSetup = { status: "running", root: "/fixture", phase: "dependencies", message: "Downloading Mathlib", canRetry: false }; });
+    assert.equal(ui.button("Start run").props.disabled, true);
+    ui.click("Cancel setup"); assert.ok(message(ui, "cancelProjectSetup"));
+    ui.click("Show setup log"); assert.ok(message(ui, "showProjectSetupLog"));
+    ui.update(f => { f.app.projectSetup = { ...f.app.projectSetup, status: "failed", message: "Download failed", remediation: "Check your network and retry.", canRetry: true }; });
+    assert.match(textOf(ui.root()), /Step: dependencies/);
+    assert.match(textOf(ui.root()), /Check your network and retry/);
+    ui.click("Retry setup"); assert.ok(message(ui, "retryProjectSetup"));
+    ui.update(f => { f.app.projectSetup = { ...f.app.projectSetup, status: "ready", canRetry: false, message: "Verification ready." }; });
+    assert.equal(ui.button("Start run").props.disabled, false);
+    assert.match(textOf(ui.root()), /Ready to prove/);
+    ui.update(f => { f.app.projectSetup.sourceDiagnostics = ["Problem.lean: unknown module PrivateLibrary"]; });
+    assert.match(textOf(ui.root()), /Source files need attention \(1\)/);
+    assert.match(textOf(ui.root()), /unknown module PrivateLibrary/);
+    assert.equal(ui.button("Start run").props.disabled, false);
+    ui.update(f => { f.app.projectSetup.activeRun = true; });
+    assert.equal(ui.button("Check / repair setup").props.disabled, true);
+    ui.click("Set up provider"); assert.equal(ui.view.tab, "providers");
   } finally { ui.dispose(); }
 });
 

@@ -24,19 +24,18 @@ from leanflow_cli.cli.cli_handlers import (
     _print_mcp_bootstrap,
     _print_mcp_repair,
     _print_mcp_status,
-    _print_project_power_setup,
-    _project_payload,
+    _project_payload,  # noqa: F401 -- retained CLI helper re-export
     workflow_run_help_text,
 )
 from leanflow_cli.cli.commands import build_workflow_command_set
 from leanflow_cli.cli.doctor import run_doctor
 from leanflow_cli.cli.flags_command import handle_flags, register_flags_parser
 from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp, repair_managed_mcp_patches
+from leanflow_cli.cli.project_command import handle_project, register_project_parser
 from leanflow_cli.cli.runs_command import handle_runs, register_runs_parser
 from leanflow_cli.config import (
     ensure_leanflow_home,
     get_leanflow_home,
-    load_config,
 )
 from leanflow_cli.runtime.env_loader import load_leanflow_dotenv
 from leanflow_cli.runtime.runtime_provider import (
@@ -56,11 +55,6 @@ from leanflow_cli.workflow import (
 )
 from leanflow_cli.workflows.project import (
     ProjectNotFoundError,
-    clone_project_template,
-    discover_leanflow_project,
-    initialize_leanflow_project,
-    resolve_template_source,
-    setup_project_power_modes,
 )
 from leanflow_cli.workflows.workflow_state import (
     load_workflow_checkpoints,
@@ -158,21 +152,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     mcp_repair.add_argument("--json", action="store_true", dest="json_output")
 
-    project_parser = subparsers.add_parser("project", help="Manage LeanFlow projects")
-    project_sub = project_parser.add_subparsers(dest="project_command")
-    project_init = project_sub.add_parser(
-        "init", help="Initialize a Lean repo as an LeanFlow project"
-    )
-    project_init.add_argument("path", nargs="?", default=".")
-    project_init.add_argument("--name", default="")
-    project_create = project_sub.add_parser(
-        "create", help="Clone a project template and register it"
-    )
-    project_create.add_argument("path")
-    project_create.add_argument("--template-source", default="")
-    project_create.add_argument("--name", default="")
-    project_show = project_sub.add_parser("show", help="Show current project")
-    project_show.add_argument("path", nargs="?", default=".")
+    register_project_parser(subparsers)
 
     workflow_parser = subparsers.add_parser(
         "workflow", help="Run a Lean workflow in the native runtime"
@@ -253,38 +233,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _handle_project(args: argparse.Namespace) -> int:
-    if args.project_command == "init":
-        project = initialize_leanflow_project(args.path, name=args.name or None)
-        setup_report = setup_project_power_modes(
-            project.lean_root, progress=lambda message: print(message)
-        )
-        print(f"Initialized project: {project.label}")
-        print(project.root)
-        _print_project_power_setup(setup_report)
-        return 0
-    if args.project_command == "create":
-        template_source = args.template_source or resolve_template_source(load_config(), os.environ)
-        if not template_source:
-            print(
-                "No template source configured. Use --template-source or set leanflow.project.template_source.",
-                file=sys.stderr,
-            )
-            return 1
-        project = clone_project_template(
-            args.path, template_source=template_source, name=args.name or None
-        )
-        print(f"Created project: {project.label}")
-        print(project.root)
-        return 0
-    if args.project_command == "show":
-        try:
-            project = discover_leanflow_project(args.path)
-        except ProjectNotFoundError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        _print_json(_project_payload(project))
-        return 0
-    raise SystemExit("Unknown project command")
+    """Delegate project setup and inspection to the shared command implementation."""
+    return handle_project(args)
 
 
 def _handle_status(args: argparse.Namespace) -> int:

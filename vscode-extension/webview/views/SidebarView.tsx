@@ -9,6 +9,8 @@ import { Mark, PlayIcon, RefreshIcon } from "../icons";
 import { isActiveLiveStatus } from "../../src/core/runSelection";
 import { LAUNCH_FIELD_LIMITS } from "../../src/core/types";
 import { useStore } from "../store";
+import { ProjectSetupCard } from "./ProjectSetupCard";
+import { projectSetupBlocksLaunch } from "../../src/core/projectSetupTypes";
 import { post } from "../vscodeApi";
 
 export function SidebarView() {
@@ -47,15 +49,7 @@ export function SidebarView() {
   if (!app.project.found) {
     return (
       <div className="sidebar">
-        <Notice tone="warn">
-          No LeanFlow project in this workspace.
-        </Notice>
-        <button
-          className="btn"
-          onClick={() => post({ type: "openExternalDoc", topic: "project-init" })}
-        >
-          How to register a project
-        </button>
+        <ProjectSetupCard sidebar />
       </div>
     );
   }
@@ -85,6 +79,7 @@ export function SidebarView() {
         </button>
       </div>
 
+      <ProjectSetupCard sidebar />
       <section className="card" style={{ margin: 0 }}>
         <div className="card-title">Quick launch</div>
         <label className="field" style={{ marginBottom: 8 }}>
@@ -116,6 +111,7 @@ export function SidebarView() {
         <div className="row tight" style={{ marginTop: 8 }}>
           <button
             className="btn"
+            disabled={projectSetupBlocksLaunch(app.projectSetup, app.project.root)}
             onClick={() => post({ type: "launch", request: { ...form, kind: "prove" } })}
           >
             <PlayIcon size={12} />

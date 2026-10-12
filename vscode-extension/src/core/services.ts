@@ -15,6 +15,7 @@ import {
   listLeanFiles,
   NO_PROJECT,
 } from "./project";
+import { ProjectSetup } from "./projectSetup";
 import { ProviderSetup } from "./providerSetup";
 import { ProverService } from "./proverService";
 import { RunManager } from "./runManager";
@@ -35,6 +36,7 @@ export class LeanFlowServices implements vscode.Disposable {
   selectedRunId: string | null = null;
   busy = false;
 
+  readonly setup: ProjectSetup;
   readonly providers: ProviderSetup;
   readonly runs: RunManager;
   readonly experiments: ExperimentEngine;
@@ -45,15 +47,26 @@ export class LeanFlowServices implements vscode.Disposable {
   readonly onDidChange = this.changed.event;
 
   private readonly disposables: vscode.Disposable[] = [];
+  private preparedProjectRoot = "";
 
   constructor(context: vscode.ExtensionContext) {
     this.project = discoverProject();
     this.providers = new ProviderSetup(context, () => this.project.root || undefined);
-    this.runs = new RunManager(context, this.project, () => this.providers.credentials.environment());
+    this.runs = new RunManager(context, this.project, () => this.providers.credentials.environment(), root => this.setup.assertLaunchReady(root));
     this.prover = new ProverService(this.runs);
+    this.setup = new ProjectSetup({
+      projectRoot: () => this.project.root,
+      activeRun: (root) => this.runs.launchBlocker(root) !== null,
+      completed: (root, ready) => {
+        if (ready) this.preparedProjectRoot = root;
+        return this.reload();
+      },
+    });
     this.experiments = new ExperimentEngine(context, this.runs, () => this.profiles, () => this.catalog);
 
     this.disposables.push(
+      this.setup,
+      this.setup.onDidChange(() => this.changed.fire()),
       this.providers,
       this.providers.onDidChange(() => this.changed.fire()),
       this.runs,
@@ -86,6 +99,7 @@ export class LeanFlowServices implements vscode.Disposable {
       : null;
     return {
       providers: this.providers.state(),
+      projectSetup: this.setup.state(),
       project: this.project,
       cli: { ...this.cli, error: redactSensitiveText(this.cli.error) },
       catalog: flagCatalogForDisplay(this.catalog),
@@ -113,8 +127,9 @@ export class LeanFlowServices implements vscode.Disposable {
   }
 
   private async rediscoverProject(): Promise<void> {
-    const next = await discoverProjectIncludingNested();
+    const next = await discoverProjectIncludingNested(this.preparedProjectRoot);
     if (next.root === this.project.root) {
+      await this.setup.refresh(this.cli.ok);
       return;
     }
     this.project = next;
@@ -130,7 +145,7 @@ export class LeanFlowServices implements vscode.Disposable {
     // is unchanged; that is the user's escape hatch from any cache.
     this.prover.invalidate();
     try {
-      this.project = await discoverProjectIncludingNested();
+      this.project = await discoverProjectIncludingNested(this.preparedProjectRoot);
       this.runs.setProject(this.project);
       await vscode.commands.executeCommand(
         "setContext",
@@ -139,6 +154,7 @@ export class LeanFlowServices implements vscode.Disposable {
       );
 
       this.cli = await checkCli();
+      await this.setup.refresh(this.cli.ok);
       void this.providers.refresh();
       if (this.cli.ok) {
         const cwd = this.project.found ? this.project.root : undefined;

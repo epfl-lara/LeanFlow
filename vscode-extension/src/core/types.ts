@@ -753,6 +753,7 @@ export interface ProjectInfo {
 }
 
 export interface AppState {
+  projectSetup?: import("./projectSetupTypes").ProjectSetupState;
   providers: import("./providerCredentials").ProviderSetupState;
   project: ProjectInfo;
   cli: CliStatus;
@@ -789,6 +790,11 @@ export type HostMessage =
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
 export type WebviewMessage =
+  | { type: "configureProvider" }
+  | { type: "setupProject" }
+  | { type: "retryProjectSetup" }
+  | { type: "cancelProjectSetup" }
+  | { type: "showProjectSetupLog" }
   | { type: "copyText"; text: string }
   | { type: "refreshProviders" }
   | { type: "providerAction"; backend: import("./providerCredentials").BackendId; action: import("./providerCredentials").ProviderAction }

@@ -25,6 +25,7 @@ from leanflow_cli.formalization.formalization_documents import (
     FormalizationDocumentContext,
     prepare_formalization_document_context,
 )
+from leanflow_cli.runtime.project_operations import project_activity
 from leanflow_cli.runtime.runtime_provider import (
     apply_runtime_model_override,
     resolve_runtime_provider,
@@ -821,12 +822,13 @@ def resolve_workflow_request(
         # initializes the target Lean file. A preview must not create any of
         # that, so it reports the plan without the intake and leaves the
         # document fields unresolved until the real launch.
-        formalization_document = prepare_formalization_document_context(
-            project_root=project.root,
-            cwd=cwd,
-            workflow_args=workflow.workflow_args,
-            project_label=project.label,
-        )
+        with project_activity(project.root):
+            formalization_document = prepare_formalization_document_context(
+                project_root=project.root,
+                cwd=cwd,
+                workflow_args=workflow.workflow_args,
+                project_label=project.label,
+            )
         normalized_workflow_args = formalization_document.source_relative
     # Preserve the normalized source/target scope independently of the active
     # Lean file. Formalization replaces ACTIVE_FILE with generated output, but

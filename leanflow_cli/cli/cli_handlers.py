@@ -29,7 +29,6 @@ from leanflow_cli.runtime.sandbox_runtime import (
 __all__ = [
     "_parse_config_value",
     "_print_json",
-    "_print_project_power_setup",
     "_project_payload",
     "_handle_config",
     "_handle_sandbox",
@@ -78,28 +77,6 @@ def _parse_config_value(raw: str) -> Any:
 
 def _print_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
-
-
-def _print_project_power_setup(report: Mapping[str, Any]) -> None:
-    status = str(report.get("status", "") or "unknown")
-    if status == "ready":
-        print(f"REPL acceleration ready: {report.get('repl_path', '')}")
-    elif status in {
-        "lake-missing",
-        "manual-setup-needed",
-        "update-failed",
-        "build-failed",
-        "binary-missing",
-        "toolchain-missing",
-    }:
-        print(f"REPL acceleration deferred: {status}")
-    else:
-        print(f"REPL acceleration status: {status}")
-    manual_steps = list(report.get("manual_steps", []) or [])
-    if manual_steps:
-        print("Manual REPL setup:")
-        for step in manual_steps:
-            print(f"  - {step}")
 
 
 def _project_payload(project: Any) -> dict[str, str]:

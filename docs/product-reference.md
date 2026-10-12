@@ -307,24 +307,49 @@ Use `/skills` to see what the agent can currently load and where each skill came
 
 ## Project Model
 
-LeanFlow exposes three project commands:
+Use **Set up project** in VS Code or the shared CLI flow:
 
-- `leanflow project init [path] [--name NAME]`
-- `leanflow project create <path> [--template-source SOURCE] [--name NAME]`
-- `leanflow project show [path]`
+- `leanflow project setup [path] [--name NAME] [--preset mathlib|lean]`
+- `leanflow project setup <folder> --source-file <file.lean>` copies a loose file without replacing an existing different file.
+- `leanflow project init [path]` is a compatibility alias for setup.
+- `leanflow project create <path> [--template-source SOURCE]` uses the same preparation pipeline after optional template cloning.
+- `leanflow project inspect [path] --json` reports read-only classification and readiness.
+- `leanflow project show [path]` shows the registered project.
 
-Requirements for `project init`:
+Empty folders get a Mathlib project and a starter theorem. A folder containing
+Lean files gets project configuration around its existing sources. Existing Lake
+projects preserve source contents, toolchain versions and dependency pins;
+invoking setup from a nested directory resolves to the actual project root.
+New projects use Lean 4.33.1 with fixed Mathlib and REPL commits. The optional
+`lean` preset omits Mathlib. Git and Elan/Lake must be available on the execution
+host; missing prerequisites produce a specific installation remedy.
 
-- the target must be inside a Lean 4 repo
-- a Lean root must be detectable from `lakefile.lean` or `lakefile.toml`
-- REPL acceleration setup is attempted automatically; `lakefile.toml` projects can be updated safely, while ambiguous `lakefile.lean` projects receive manual setup instructions
+Setup prepares dependencies and cached Mathlib builds, builds the compatible
+REPL, and verifies a known theorem through its real protocol. It does not require
+user proofs to be complete. Custom source-import diagnostics are separate from
+environment readiness. Setup adds a missing REPL requirement to TOML and ordinary
+Lake DSL configurations; custom executable configurations receive precise manual
+dependency instructions.
 
-LeanFlow writes:
+`--json` on setup/init/create streams newline-delimited `progress` and `output`
+events followed by one `result`. A result records status, failed phase, error
+code, message, remediation, log path, changed files and verified capabilities.
+Exit status is 0 for ready, 1 for failure and 130 for cancellation. Setup receipts
+and logs live under LeanFlow home; configuration changes invalidate readiness.
+Retry reuses dependency downloads and completed builds. There is no fixed build
+deadline; cancellation terminates only processes started by that setup.
 
-- `.leanflow/project.yaml`
-- `.leanflow/runtime/`
-- `.leanflow/cache/`
-- `.leanflow/workflows/`
+Setup holds exclusive project ownership; active workflows hold shared ownership.
+Existing controller locks and live process identities also protect workflows
+started before this setup mechanism was installed. A conflicting setup fails
+without altering the active project.
+
+Registration creates `.leanflow/project.yaml`, `.leanflow/runtime/`,
+`.leanflow/cache/` and `.leanflow/workflows/`. Registration alone does not certify
+readiness. The VS Code dashboard and sidebar share setup state, progress,
+**Retry**, **Cancel** and **Show log** actions. Multi-root workspaces select a
+specific folder, and SSH setup runs on the workspace host. Native provider login
+and API credentials remain a separate Providers step.
 
 Projects can explicitly deliver durable, target-scoped proof handoffs by adding
 `workflow_guidance` entries to `.leanflow/project.yaml`:
@@ -341,17 +366,6 @@ and reattached after a restart or compaction only when its content hash is
 absent from the active conversation. This keeps supervisor or research
 findings available without source-code comments or manual prompt steering.
 
-During `project init`, LeanFlow prints visible REPL setup progress:
-
-- inspect Lean project
-- detect `lean-toolchain`
-- check for an existing `repl` binary or dependency
-- add the `leanprover-community/repl` dependency when safe
-- run `lake update repl`
-- run `lake build repl`
-
-Long Lake commands print status before and after execution, including elapsed time. A failed REPL setup is a warning, not a project-init failure; proof workflows continue with LSP-backed tactic screening.
-- `.leanflow/workflow-state/`
 
 ## Skills And Overlays
 

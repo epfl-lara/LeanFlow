@@ -21,6 +21,8 @@ import { useStore } from "../store";
 import { post } from "../vscodeApi";
 import { GlobalLimits } from "./GlobalLimits";
 import { NativeModelControl } from "./NativeModelControls";
+import { ProjectSetupCard } from "./ProjectSetupCard";
+import { projectSetupBlocksLaunch } from "../../src/core/projectSetupTypes";
 import { ProverSettings } from "./ProverSettings";
 
 export function LaunchView() {
@@ -75,6 +77,7 @@ export function LaunchView() {
   const canLaunch = Boolean(
     app?.project.found &&
       app?.cli.ok &&
+      !projectSetupBlocksLaunch(app.projectSetup, app.project.root) &&
       restrictedKnobs.length === 0 &&
       problems.length === 0,
   );
@@ -118,12 +121,7 @@ export function LaunchView() {
           </div>
         </Notice>
       )}
-      {app?.cli.ok && !app.project.found && (
-        <Notice tone="warn">
-          No LeanFlow project in this workspace. Run <span className="tag">leanflow project
-          init</span> in your Lean repo, or set <span className="tag">leanflow.projectRoot</span>.
-        </Notice>
-      )}
+      <ProjectSetupCard />
 
       <Card
         title="Workflow"

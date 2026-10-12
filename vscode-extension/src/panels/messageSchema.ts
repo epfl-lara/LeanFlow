@@ -211,6 +211,11 @@ export function parseWebviewMessage(
       const text = str(raw.text, 4 * 1024 * 1024);
       return text === null ? reject("text") : { ok: true, message: { type, text } };
     }
+    case "configureProvider":
+    case "setupProject":
+    case "retryProjectSetup":
+    case "cancelProjectSetup":
+    case "showProjectSetupLog":
     case "ready":
     case "refresh":
     case "openDashboard":

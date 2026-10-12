@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import re
-import shutil
-import subprocess
-import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,9 +14,6 @@ LEANFLOW_PROJECT_DIRNAME = ".leanflow"
 LEANFLOW_PROJECT_MANIFEST_FILENAME = "project.yaml"
 LEANFLOW_PROJECT_SCHEMA_VERSION = 1
 LEANFLOW_PROJECT_TEMPLATE_ENV = "LEANFLOW_BLUEPRINT_TEMPLATE_SOURCE"
-REPL_REPOSITORY_URL = "https://github.com/leanprover-community/repl"
-REPL_TAG_PREFLIGHT_TIMEOUT_S = 20.0
-_REPL_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?$")
 
 _BLUEPRINT_MARKERS = (
     "lean-toolchain",
@@ -72,334 +64,6 @@ class LeanFlowProject:
 
 def format_project_summary(project: LeanFlowProject) -> str:
     return f"{project.label} ({project.root})"
-
-
-ProgressCallback = Callable[[str], None]
-
-
-def _emit_progress(progress: ProgressCallback | None, message: str) -> None:
-    if progress:
-        progress(message)
-
-
-def _read_lean_toolchain_version(lean_root: Path) -> str:
-    try:
-        raw = (lean_root / "lean-toolchain").read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-    if ":" in raw:
-        return raw.rsplit(":", 1)[-1].strip()
-    return raw
-
-
-def _repl_dependency_present(lean_root: Path) -> bool:
-    for lakefile in (lean_root / "lakefile.toml", lean_root / "lakefile.lean"):
-        if not lakefile.is_file():
-            continue
-        try:
-            text = lakefile.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if (
-            "leanprover-community/repl" in text
-            or 'name = "repl"' in text
-            or "name = 'repl'" in text
-            or "require repl" in text
-        ):
-            return True
-    return False
-
-
-def _append_repl_to_lakefile_toml(lean_root: Path, rev: str) -> bool:
-    lakefile = lean_root / "lakefile.toml"
-    if not lakefile.is_file():
-        return False
-    text = lakefile.read_text(encoding="utf-8")
-    if "leanprover-community/repl" in text or 'name = "repl"' in text or "name = 'repl'" in text:
-        return False
-    addition = (
-        "\n"
-        "[[require]]\n"
-        'name = "repl"\n'
-        'git = "https://github.com/leanprover-community/repl"\n'
-        f'rev = "{rev}"\n'
-    )
-    lakefile.write_text(text.rstrip() + "\n" + addition, encoding="utf-8")
-    return True
-
-
-def _repl_tag_key(tag: str) -> tuple[int, int, int, int, int] | None:
-    """Order REPL tags so ``v4.33.0-rc1 < v4.33.0 < v4.33.1``; ``None`` for other refs."""
-    match = _REPL_TAG_RE.match(str(tag or "").strip())
-    if match is None:
-        return None
-    major, minor, patch, rc = match.groups()
-    return int(major), int(minor), int(patch), 0 if rc else 1, int(rc or 0)
-
-
-def _list_repl_remote_tags(timeout: float = REPL_TAG_PREFLIGHT_TIMEOUT_S) -> list[str] | None:
-    """Return the REPL repository's tags, or ``None`` when the preflight cannot run.
-
-    One bounded ``git ls-remote`` is the only network access; offline, missing git,
-    or a slow remote all return ``None`` so the caller can say the pin is unverified
-    instead of failing setup.
-    """
-    if not shutil.which("git"):
-        return None
-    try:
-        completed = subprocess.run(
-            ["git", "ls-remote", "--tags", "--refs", REPL_REPOSITORY_URL],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if completed.returncode != 0:
-        return None
-    tags: list[str] = []
-    for line in completed.stdout.splitlines():
-        _sha, _tab, ref = line.strip().partition("\t")
-        if ref.startswith("refs/tags/"):
-            tags.append(ref[len("refs/tags/") :])
-    return tags
-
-
-def resolve_repl_revision(
-    version: str,
-    *,
-    tags: list[str] | None = None,
-    list_tags: Callable[[], list[str] | None] | None = None,
-) -> dict[str, Any]:
-    """Choose a REPL source revision that exists and compiles under the toolchain.
-
-    The REPL repository tags Lean minor releases but not every patch release, so
-    pinning the toolchain tag verbatim (``v4.33.1``) can request a tag that does
-    not exist. Prefer the exact tag; otherwise take the newest tag of the same
-    Lean minor that is not newer than the toolchain (a patch release keeps the
-    REPL source compatible, and Lake compiles it with the project toolchain).
-    ``status`` is ``exact``, ``nearest``, ``unverified`` (preflight unavailable, the
-    toolchain tag is used untested), or ``unresolved`` (no compatible tag exists).
-    """
-    requested = str(version or "").strip()
-    requested_key = _repl_tag_key(requested)
-    # Looked up at call time so tests and callers can replace the network preflight.
-    lister = list_tags if list_tags is not None else _list_repl_remote_tags
-    available = tags if tags is not None else lister()
-    if available is None:
-        return {
-            "requested": requested,
-            "rev": requested,
-            "status": "unverified",
-            "candidates": [],
-            "detail": (
-                f"could not list {REPL_REPOSITORY_URL} tags (offline or git unavailable); "
-                f"pinning the toolchain tag {requested} unverified"
-            ),
-        }
-    if requested in available:
-        return {
-            "requested": requested,
-            "rev": requested,
-            "status": "exact",
-            "candidates": [requested],
-            "detail": f"REPL tag {requested} exists",
-        }
-    candidates: list[tuple[tuple[int, int, int, int, int], str]] = []
-    if requested_key is not None:
-        for tag in available:
-            key = _repl_tag_key(tag)
-            if key is None or key[:2] != requested_key[:2] or key > requested_key:
-                continue
-            candidates.append((key, tag))
-    candidates.sort(reverse=True)
-    ordered = [tag for _key, tag in candidates]
-    if not ordered:
-        return {
-            "requested": requested,
-            "rev": "",
-            "status": "unresolved",
-            "candidates": [],
-            "detail": (
-                f"REPL has no tag {requested} and no earlier tag for the same Lean minor; "
-                "pin a tested revision by hand"
-            ),
-        }
-    chosen = ordered[0]
-    return {
-        "requested": requested,
-        "rev": chosen,
-        "status": "nearest",
-        "candidates": ordered,
-        "detail": (
-            f"REPL has no tag {requested}; pinning {chosen}, the newest tag of the same Lean "
-            "minor not newer than the toolchain (Lake compiles it with the project toolchain)"
-        ),
-    }
-
-
-def _detect_project_repl_binary(lean_root: Path) -> str:
-    suffix = ".exe" if os.name == "nt" else ""
-    candidates = [
-        lean_root / ".lake" / "build" / "bin" / f"repl{suffix}",
-        lean_root / ".lake" / "packages" / "repl" / ".lake" / "build" / "bin" / f"repl{suffix}",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
-    return ""
-
-
-def _run_power_setup_command(command: list[str], *, cwd: Path) -> tuple[int, str, float]:
-    started = time.monotonic()
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=str(cwd),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=900,
-        )
-        return completed.returncode, completed.stdout or "", time.monotonic() - started
-    except subprocess.TimeoutExpired as exc:
-        output = exc.stdout if isinstance(exc.stdout, str) else ""
-        return 124, output, time.monotonic() - started
-    except Exception as exc:
-        return 1, str(exc), time.monotonic() - started
-
-
-def setup_project_power_modes(
-    lean_root: str | Path,
-    *,
-    progress: ProgressCallback | None = None,
-) -> dict[str, Any]:
-    """Configure REPL acceleration by detecting and building the leanprover-community/repl dependency. Probes for an existing REPL binary, appends the dependency to lakefile.toml if absent, runs `lake update` and `lake build repl`, then returns a structured report (repl_available, repl_path, status, messages)."""
-    root = Path(lean_root).expanduser().resolve()
-    messages: list[str] = []
-
-    def note(message: str) -> None:
-        messages.append(message)
-        _emit_progress(progress, message)
-
-    report: dict[str, Any] = {
-        "repl_configured": False,
-        "repl_available": False,
-        "repl_path": "",
-        "status": "unknown",
-        "messages": messages,
-    }
-    note("[1/6] Inspecting Lean project for REPL acceleration")
-    version = _read_lean_toolchain_version(root)
-    if version:
-        note(f"[2/6] Detected Lean toolchain: {version}")
-    else:
-        note("[2/6] Lean toolchain version unavailable; skipping automatic REPL setup")
-        report["status"] = "toolchain-missing"
-        return report
-
-    existing_repl = _detect_project_repl_binary(root)
-    if existing_repl:
-        note(f"[3/6] Existing REPL binary found: {existing_repl}")
-        report.update(
-            {
-                "repl_configured": True,
-                "repl_available": True,
-                "repl_path": existing_repl,
-                "status": "ready",
-            }
-        )
-        return report
-
-    note("[3/6] Checking Lake dependency for leanprover-community/repl")
-    dependency_present = _repl_dependency_present(root)
-    if not dependency_present:
-        # Preflight the pin: the REPL repository does not tag every Lean patch
-        # release, and an unbuildable `rev` fails `lake update` after minutes of
-        # Mathlib work instead of at this step.
-        note(f"[4/6] Checking leanprover-community/repl for a tag compatible with {version}")
-        resolution = resolve_repl_revision(version)
-        note(f"[4/6] {resolution['detail']}")
-        report.update(
-            {
-                "repl_rev": resolution["rev"],
-                "repl_rev_status": resolution["status"],
-                "repl_rev_detail": resolution["detail"],
-            }
-        )
-        if resolution["status"] == "unresolved":
-            report.update(
-                {
-                    "status": "repl-rev-unresolved",
-                    "manual_steps": [
-                        "Pick a REPL revision known to build with this toolchain "
-                        f"(see {REPL_REPOSITORY_URL}/tags).",
-                        "Add it to the Lake configuration as the `repl` requirement.",
-                        "Run `lake update repl` and `lake build repl`.",
-                    ],
-                }
-            )
-            return report
-        repl_rev = str(resolution["rev"])
-        if (root / "lakefile.toml").is_file():
-            note(f"[4/6] Adding REPL dependency to lakefile.toml (rev {repl_rev})")
-            dependency_present = _append_repl_to_lakefile_toml(root, repl_rev)
-        else:
-            note(
-                "[4/6] lakefile.lean detected; automatic REPL edit is not safe, leaving manual setup instructions"
-            )
-            report.update(
-                {
-                    "status": "manual-setup-needed",
-                    "manual_steps": [
-                        f'Add `require repl from git "{REPL_REPOSITORY_URL}.git" @ "{repl_rev}"` to lakefile.lean.',
-                        "Run `lake update repl`.",
-                        "Run `lake build repl`.",
-                    ],
-                }
-            )
-            return report
-    else:
-        note("[4/6] REPL dependency already present")
-
-    report["repl_configured"] = bool(dependency_present)
-    if not shutil.which("lake"):
-        note("[5/6] Lake executable not found; REPL dependency is configured but build is deferred")
-        report["status"] = "lake-missing"
-        return report
-
-    note("[5/6] Running `lake update repl` (this may take a minute)")
-    update_code, update_output, update_elapsed = _run_power_setup_command(
-        ["lake", "update", "repl"], cwd=root
-    )
-    if update_code != 0:
-        note(
-            f"[5/6] `lake update repl` failed after {update_elapsed:.1f}s; continuing without REPL acceleration"
-        )
-        report.update({"status": "update-failed", "output": update_output[-2000:]})
-        return report
-    note(f"[5/6] `lake update repl` completed in {update_elapsed:.1f}s")
-
-    note("[6/6] Building REPL binary with `lake build repl` (this can take several minutes)")
-    build_code, build_output, build_elapsed = _run_power_setup_command(
-        ["lake", "build", "repl"], cwd=root
-    )
-    if build_code != 0:
-        note(
-            f"[6/6] `lake build repl` failed after {build_elapsed:.1f}s; continuing without REPL acceleration"
-        )
-        report.update({"status": "build-failed", "output": build_output[-2000:]})
-        return report
-    repl_path = _detect_project_repl_binary(root)
-    note(f"[6/6] `lake build repl` completed in {build_elapsed:.1f}s")
-    if repl_path:
-        note(f"REPL acceleration ready: {repl_path}")
-        report.update({"repl_available": True, "repl_path": repl_path, "status": "ready"})
-    else:
-        note("REPL build completed, but no repl binary was detected")
-        report["status"] = "binary-missing"
-    return report
 
 
 def is_lean_project_root(path: Path) -> bool:
@@ -456,7 +120,7 @@ def _project_manifest_path(root: Path) -> Path:
 
 
 def load_leanflow_project(target: str | Path) -> LeanFlowProject:
-    """Load an existing LeanFlow project from a manifest file (or directory path), validate its schema and structure, auto-migrate legacy manifests if needed, and return an LeanFlowProject with all resolved paths, metadata, and blueprint markers."""
+    """Validate and resolve a project manifest without creating or changing files."""
     candidate = Path(target).expanduser().resolve()
 
     if candidate.is_file():
@@ -522,18 +186,15 @@ def load_leanflow_project(target: str | Path) -> LeanFlowProject:
         field_name="paths.workflows",
     )
 
-    source_payload = payload.get("source") if isinstance(payload.get("source"), Mapping) else {}
-    blueprint_payload = (
-        payload.get("blueprint") if isinstance(payload.get("blueprint"), Mapping) else {}
-    )
+    source_value = payload.get("source")
+    source_payload = source_value if isinstance(source_value, Mapping) else {}
+    blueprint_value = payload.get("blueprint")
+    blueprint_payload = blueprint_value if isinstance(blueprint_value, Mapping) else {}
     markers = tuple(
         str(marker).strip()
         for marker in (blueprint_payload.get("markers") or [])
         if str(marker).strip()
     )
-
-    for path in (leanflow_dir, runtime_dir, cache_dir, workflows_dir):
-        path.mkdir(parents=True, exist_ok=True)
 
     return LeanFlowProject(
         root=root,
@@ -561,7 +222,7 @@ def discover_leanflow_project(start: str | Path) -> LeanFlowProject:
         if _project_manifest_path(candidate).is_file():
             return load_leanflow_project(candidate)
     raise ProjectNotFoundError(
-        "No active LeanFlow project found. Use `leanflow project init` first."
+        "No active LeanFlow project found. Use `leanflow project setup` first."
     )
 
 
@@ -571,15 +232,14 @@ def initialize_leanflow_project(root: str | Path, *, name: str | None = None) ->
     if not project_root.exists():
         raise ProjectCommandError(f"Project root does not exist: {project_root}")
 
+    lean_root = find_lean_project_root(project_root)
+    if lean_root is None:
+        raise ProjectCommandError("Lean project root not found. Set up a Lean project first.")
+    # Registration belongs to the Lake root even when requested from a subfolder.
+    project_root = lean_root
     manifest_path = project_root / LEANFLOW_PROJECT_DIRNAME / LEANFLOW_PROJECT_MANIFEST_FILENAME
     if manifest_path.is_file():
         return load_leanflow_project(project_root)
-
-    lean_root = find_lean_project_root(project_root)
-    if lean_root is None:
-        raise ProjectCommandError(
-            "Lean project root not found. `leanflow project init` only works inside Lean 4 repositories."
-        )
 
     leanflow_dir = project_root / LEANFLOW_PROJECT_DIRNAME
     leanflow_dir.mkdir(parents=True, exist_ok=True)
@@ -611,15 +271,3 @@ def initialize_leanflow_project(root: str | Path, *, name: str | None = None) ->
     manifest_path = leanflow_dir / LEANFLOW_PROJECT_MANIFEST_FILENAME
     manifest_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return load_leanflow_project(project_root)
-
-
-def clone_project_template(
-    destination: str | Path, *, template_source: str, name: str | None = None
-) -> LeanFlowProject:
-    destination_path = Path(destination).expanduser().resolve()
-    if destination_path.exists():
-        raise ProjectCommandError(f"Destination already exists: {destination_path}")
-    if not shutil.which("git"):
-        raise ProjectCommandError("Git is required for `leanflow project create`.")
-    subprocess.run(["git", "clone", template_source, str(destination_path)], check=True)
-    return initialize_leanflow_project(destination_path, name=name)
