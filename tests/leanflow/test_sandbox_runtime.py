@@ -233,6 +233,8 @@ def test_package_overlay_tolerates_concurrent_nonempty_destination(
     original_rename = Path.rename
 
     def race_rename(source: Path, target: Path) -> Path:
+        if Path(target) != cache_root / "repl":
+            return original_rename(source, target)
         Path(target).mkdir()
         raise OSError(errno.ENOTEMPTY, "directory not empty", str(target))
 

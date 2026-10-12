@@ -18,14 +18,6 @@ from leanflow_cli.config import (
     load_config,
     set_config_value,
 )
-from leanflow_cli.local_models import (
-    get_local_runtime_status,
-    list_local_runtimes,
-    read_local_runtime_logs,
-    start_local_runtime,
-    stop_local_runtime,
-    use_local_runtime,
-)
 from leanflow_cli.runtime.sandbox_runtime import (
     SandboxRuntimeError,
     build_sandbox_image,
@@ -37,13 +29,12 @@ from leanflow_cli.runtime.sandbox_runtime import (
 __all__ = [
     "_parse_config_value",
     "_print_json",
-    "_print_project_power_setup",
     "_project_payload",
-    "_handle_models",
     "_handle_config",
     "_handle_sandbox",
     "_print_mcp_status",
     "_print_mcp_bootstrap",
+    "_print_mcp_repair",
     "workflow_run_help_text",
 ]
 
@@ -57,7 +48,7 @@ def workflow_run_help_text(workflow: str) -> str:
         f"Run the {name} workflow in the native Lean runtime.",
         "",
         "options:",
-        "  --provider PROVIDER       Override the configured runtime provider",
+        "  --provider PROVIDER       Native backend: codex, claude, or lemex",
         "  --model MODEL             Override the model for this workflow",
         "  --no-parallel             Disable parallel prover/research execution",
     ]
@@ -88,28 +79,6 @@ def _print_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def _print_project_power_setup(report: Mapping[str, Any]) -> None:
-    status = str(report.get("status", "") or "unknown")
-    if status == "ready":
-        print(f"REPL acceleration ready: {report.get('repl_path', '')}")
-    elif status in {
-        "lake-missing",
-        "manual-setup-needed",
-        "update-failed",
-        "build-failed",
-        "binary-missing",
-        "toolchain-missing",
-    }:
-        print(f"REPL acceleration deferred: {status}")
-    else:
-        print(f"REPL acceleration status: {status}")
-    manual_steps = list(report.get("manual_steps", []) or [])
-    if manual_steps:
-        print("Manual REPL setup:")
-        for step in manual_steps:
-            print(f"  - {step}")
-
-
 def _project_payload(project: Any) -> dict[str, str]:
     return {
         "name": str(project.name),
@@ -125,30 +94,6 @@ def _project_payload(project: Any) -> dict[str, str]:
             ", ".join(project.blueprint_markers) if project.blueprint_markers else "[none]"
         ),
     }
-
-
-def _handle_models(args: argparse.Namespace) -> int:
-    if args.local_command == "list":
-        _print_json(list_local_runtimes())
-        return 0
-    if args.local_command == "status":
-        _print_json(get_local_runtime_status(args.runtime))
-        return 0
-    if args.local_command == "start":
-        _print_json(
-            start_local_runtime(args.runtime, model=args.model, host=args.host, port=args.port)
-        )
-        return 0
-    if args.local_command == "stop":
-        _print_json(stop_local_runtime(args.runtime))
-        return 0
-    if args.local_command == "logs":
-        print(read_local_runtime_logs(args.runtime, tail=args.tail))
-        return 0
-    if args.local_command == "use":
-        _print_json(use_local_runtime(args.runtime, model=args.model))
-        return 0
-    raise SystemExit("Unknown local models command")
 
 
 def _handle_config(args: argparse.Namespace) -> int:
@@ -221,6 +166,29 @@ def _print_mcp_bootstrap(payload: Mapping[str, Any]) -> None:
                 f"  local Loogle: {power.get('loogle_local_status', 'unknown')} ({power.get('loogle_cache_dir', '')})"
             )
             print(f"  REPL: {power.get('repl_status', 'unknown')}")
+
+
+def _print_mcp_repair(payload: Mapping[str, Any]) -> None:
+    """Print which managed source patches were applied by ``leanflow mcp repair``."""
+    print("Managed Lean MCP patches")
+    print(f"- home: {payload.get('home', '')}")
+    for name, raw_entry in dict(payload.get("patches", {}) or {}).items():
+        entry = dict(raw_entry or {})
+        if not entry.get("installed", False):
+            print(f"- {name}: not installed (run `leanflow mcp bootstrap`)")
+            continue
+        applied = ", ".join(
+            f"{key}={'ok' if value else 'skipped'}"
+            for key, value in entry.items()
+            if key != "installed"
+        )
+        print(f"- {name}: {applied or 'nothing to patch'}")
+    power = dict(payload.get("power_modes", {}) or {})
+    if power:
+        print(f"  local Loogle: {power.get('loogle_local_status', 'unknown')}")
+        client = dict(power.get("loogle_client", {}) or {})
+        if client.get("client_found") and client.get("detail"):
+            print(f"  loogle client: {client.get('detail')}")
 
 
 def _handle_sandbox(args: argparse.Namespace) -> int:

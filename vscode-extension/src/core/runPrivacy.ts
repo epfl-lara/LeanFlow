@@ -8,6 +8,7 @@ import {
 import type { LaunchEnv } from "./launch";
 import type {
   ActivityEvent,
+  ActivityEventDetail,
   FlagCatalog,
   LaunchPlanPreview,
   LaunchRequest,
@@ -21,6 +22,8 @@ import type {
 const MAX_COMMAND_LENGTH = 4096;
 const MAX_DIAGNOSTIC_LENGTH = 8192;
 const MAX_RUN_LOG_LENGTH = 2 * 1024 * 1024;
+/** One expanded event may carry a whole model turn or tool payload. */
+const MAX_EVIDENCE_LENGTH = 256 * 1024;
 const MAX_NESTING_DEPTH = 12;
 const REDACTED_CREDENTIAL = "<redacted:credential>";
 
@@ -177,6 +180,7 @@ function redactCommandPrompt(value: string): string {
 export function redactSensitiveText(
   value: string,
   exactPrompts: readonly string[] = [],
+  maximumLength = MAX_DIAGNOSTIC_LENGTH,
 ): string {
   let safe = value;
   for (const candidate of exactPrompts) {
@@ -209,7 +213,7 @@ export function redactSensitiveText(
         : `${prefix}${quote}${REDACTED_CREDENTIAL}`;
     },
   );
-  return bounded(safe, MAX_DIAGNOSTIC_LENGTH);
+  return bounded(safe, maximumLength);
 }
 
 function boundedRunLog(value: string): string {
@@ -239,6 +243,7 @@ function sanitizeUnknown(
   fieldName: string,
   exactPrompts: readonly string[],
   depth = 0,
+  maximumLength = MAX_DIAGNOSTIC_LENGTH,
 ): unknown {
   if (depth > MAX_NESTING_DEPTH) {
     return "<redacted:excessive-nesting>";
@@ -253,15 +258,17 @@ function sanitizeUnknown(
     if (PROMPT_FIELD_NAMES.has(normalized)) {
       return promptEvidenceMarker(value);
     }
-    return redactSensitiveText(value, exactPrompts);
+    return redactSensitiveText(value, exactPrompts, maximumLength);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeUnknown(item, fieldName, exactPrompts, depth + 1));
+    return value.map((item) =>
+      sanitizeUnknown(item, fieldName, exactPrompts, depth + 1, maximumLength),
+    );
   }
   if (value !== null && typeof value === "object") {
     const safe: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      safe[key] = sanitizeUnknown(item, key, exactPrompts, depth + 1);
+      safe[key] = sanitizeUnknown(item, key, exactPrompts, depth + 1, maximumLength);
     }
     return safe;
   }
@@ -336,12 +343,15 @@ export function launchRequestForPersistence(request: LaunchRequest): LaunchReque
 export function trackedRunForPersistence(run: TrackedRun): TrackedRun {
   const rawPrompt = run.request.prompt;
   const request = launchRequestForPersistence(run.request);
+  const appliedOverrides = safeOverrideEnvironment(run.appliedOverrides);
   return {
     ...run,
+    connection: run.connection?.kind === "tmux" || run.connection?.kind === "terminal" ? { kind: run.connection.kind } : undefined,
+    launchNotice: run.launchNotice ? redactSensitiveText(run.launchNotice, [rawPrompt]) : undefined,
     label: bounded(redactSensitiveText(run.label, [rawPrompt]), 512),
     request,
-    command: boundedCommand(describeCommand(request)),
-    appliedOverrides: safeOverrideEnvironment(run.appliedOverrides),
+    command: boundedCommand(describeCommand(request, appliedOverrides.set)),
+    appliedOverrides,
     error:
       run.error === null ? null : redactSensitiveText(run.error, [rawPrompt]),
   };
@@ -357,6 +367,15 @@ export function liveStatusForDisplay(status: LiveStatus): LiveStatus {
   return sanitizeUnknown(status, "", []) as LiveStatus;
 }
 
+/** Preserve a full bounded proof plan while redacting every other diagnostic normally. */
+export function proverStateForDisplay(status: LiveStatus): LiveStatus {
+  const safe = liveStatusForDisplay(status);
+  if (status && typeof status.plan_markdown === "string") {
+    safe.plan_markdown = redactSensitiveText(status.plan_markdown, [], 512 * 1024);
+  }
+  return safe;
+}
+
 /** Return a dry-run plan without prompt or credential values. */
 export function launchPlanForDisplay(
   plan: LaunchPlanPreview,
@@ -368,6 +387,11 @@ export function launchPlanForDisplay(
 /** Return an activity row safe to cross the webview boundary. */
 export function activityEventForDisplay(event: ActivityEvent): ActivityEvent {
   return sanitizeUnknown(event, "", []) as ActivityEvent;
+}
+
+/** Keep a whole recorded model turn readable while redacting credentials in it. */
+export function eventDetailForDisplay(detail: ActivityEventDetail): ActivityEventDetail {
+  return sanitizeUnknown(detail, "", [], 0, MAX_EVIDENCE_LENGTH) as ActivityEventDetail;
 }
 
 /** Return profile metadata without credential-shaped override values. */

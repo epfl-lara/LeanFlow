@@ -1807,6 +1807,10 @@ def test_source_negation_rejects_sorry_axiom(monkeypatch, tmp_path):
 
 
 def test_repeated_source_promotion_preserves_ambiguous_tmp_alias_evidence(monkeypatch, tmp_path):
+    # The kernel-check audit bracket is only emitted inside a managed workflow
+    # run (negation_promotion.py:1833/1845). Declare that precondition instead
+    # of inheriting a run id another test leaked into the process environment.
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "tmp-alias-promotion")
     canonical_project, alias_project, source, _node_id = _setup_tmp_alias_project(
         monkeypatch, tmp_path
     )
@@ -3098,3 +3102,31 @@ def test_finalize_keeps_every_active_promotion_beyond_history_cap(monkeypatch, t
     assert len(promotions) == 56
     assert promotions[0]["theorem"] == "theorem_0"
     assert promotions[-1]["theorem"] == "new_theorem"
+
+
+def test_negation_scratch_drops_the_replaced_declarations_docstring(tmp_path, monkeypatch):
+    """A dangling doc comment makes the negation file unparseable.
+
+    The negation replaces a declaration but keeps everything before it. A doc
+    comment belongs to the declaration it precedes, so leaving it there puts
+    `/-- ... -/` immediately before `set_option ... in`, which Lean rejects with
+    "unexpected token 'set_option'". The negation then fails for a syntactic
+    reason and is misread as an inconclusive refutation -- after burning a full
+    prover budget.
+    """
+    from leanflow_cli.workflows.prover.negation import _strip_dangling_declaration_docs as strip
+
+    # The dangling doc comment for the replaced declaration is dropped...
+    assert strip("import Mathlib\n\n/--\nThe main statement\n-/\n") == "import Mathlib\n\n"
+    # ...even when its body contains a nested block comment (the old rfind-based
+    # heuristic refused to strip this and left the file unparseable).
+    assert strip("import Mathlib\n\n/-- see `/- x -/` above -/\n") == "import Mathlib\n\n"
+    # A module docstring is not attached to a declaration and must survive.
+    keep = "import Mathlib\n\n/-!\n# Module\n-/\n"
+    assert strip(keep) == keep
+    # A plain block comment is legal before set_option and must survive.
+    keep = "import Mathlib\n\n/- note -/\n"
+    assert strip(keep) == keep
+    # A docstring on an earlier, retained declaration must survive.
+    keep = "import Mathlib\n/-- helper -/\ntheorem h : True := trivial\n\n"
+    assert strip(keep) == keep

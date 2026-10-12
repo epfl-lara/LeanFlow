@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import threading
 from dataclasses import replace
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -2221,78 +2219,6 @@ def _backend(
 
 
 class TestRunDecomposer:
-    def test_live_advisor_stub_reaches_managed_placement_and_graph(
-        self, monkeypatch, tmp_path, plan_enabled
-    ):
-        from tools.implementations import lean_experts
-
-        active = _file(tmp_path)
-        _ok_check(monkeypatch)
-        monkeypatch.setattr(lean_experts, "resolve_expert_provider", lambda _task: "test-model")
-        monkeypatch.setattr(lean_experts, "is_command_expert_provider", lambda _provider: False)
-        monkeypatch.setattr(
-            lean_experts,
-            "call_llm",
-            lambda **kwargs: SimpleNamespace(
-                model="test-model",
-                choices=[
-                    SimpleNamespace(
-                        message=SimpleNamespace(
-                            content=json.dumps(
-                                {
-                                    "helpers": [
-                                        {
-                                            "name": "abs_step",
-                                            "purpose": "Isolate the absolute-value nonnegativity step.",
-                                            "lean_skeleton": GOOD_STUB,
-                                            "dependencies": [],
-                                            "proof_hints": ["exact abs_nonneg a"],
-                                        }
-                                    ]
-                                }
-                            )
-                        )
-                    )
-                ],
-            ),
-        )
-        monkeypatch.setattr(
-            lean_experts,
-            "lean_incremental_check",
-            lambda **kwargs: {
-                "success": True,
-                "ok": False,
-                "errors": 0,
-                "has_errors": False,
-                "sorry": 2,
-                "tool": "lean_probe",
-                "action": "check_target",
-                "file": str(active.resolve()),
-                "target": "demo",
-                "replacement_matches_target": True,
-                "verification_scope": "target_candidate",
-                "output": "warning: declarations use `sorry`",
-            },
-        )
-
-        outcome = run_decomposer(
-            target_symbol="demo",
-            active_file=str(active),
-            statement=PARENT,
-            cwd=str(tmp_path),
-        )
-
-        assert outcome.ok
-        assert outcome.placed == ("abs_step",)
-        assert GOOD_STUB in active.read_text(encoding="utf-8")
-        helper_id = plan_state.node_id_for("abs_step", str(active))
-        target_id = plan_state.node_id_for("demo", str(active))
-        blueprint = plan_state.load_blueprint()
-        assert blueprint.node_by_id(helper_id).status == "stated"
-        assert any(
-            edge.source == helper_id and edge.target == target_id and edge.kind == "split_of"
-            for edge in blueprint.edges
-        )
 
     def test_new_managed_placement_flag_overrides_legacy_ready_flag(
         self, monkeypatch, tmp_path, plan_enabled

@@ -1,10 +1,7 @@
-"""Resolve the complete relentless-research workflow profile.
+"""Resolve research workflow settings and deterministic coordination policies.
 
-``LEANFLOW_RESEARCH_MODE=1`` activates the existing plan, retrieval,
-orchestration, dispatch, feasibility, reporting, and learning surfaces as one
-coherent profile. Difficulty becomes a route or epoch transition, never a
-terminal result. The 120-cycle limit is an epoch boundary, so research mode
-does not multiply it into one oversized model context.
+Native runtimes own conversation history and context compression. The profile
+sets supported Lean workflow capabilities and shared concurrency defaults.
 """
 
 from __future__ import annotations
@@ -20,21 +17,15 @@ ROUTABLE_STOPS = frozenset({"stalled", "blocked", "budget-breakpoint", "parked"}
 
 _PROFILE_DEFAULTS = {
     "LEANFLOW_PLAN_STATE": "1",
-    "LEANFLOW_PREMISE_RETRIEVAL": "1",
-    "LEANFLOW_BUDGET_BREAKPOINT": "1",
     "LEANFLOW_ORCHESTRATOR_ENABLED": "1",
     "LEANFLOW_ORCHESTRATOR_LLM_ENABLED": "1",
-    "LEANFLOW_ORCHESTRATOR_CADENCE_CYCLES": "4",
     "LEANFLOW_ORCHESTRATOR_MAX_ROUTES": "4",
-    "LEANFLOW_FIDELITY_AUDIT": "1",
-    "LEANFLOW_GRAPH_FRONTIER_SELECTION": "1",
     "LEANFLOW_PLANNER_ENABLED": "1",
     "LEANFLOW_DISPATCH_ENABLED": "1",
     "LEANFLOW_NEGATION_PROBE": "1",
     "LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK": "1",
     "LEANFLOW_FINAL_REPORT": "1",
     "LEANFLOW_LEARNINGS": "1",
-    "LEANFLOW_CURRICULUM_ORDERING": "1",
     "LEANFLOW_MANAGER_LLM_MODE": "live",
     # A dispatch worker may retain a multi-gigabyte Lean/LSP session after a
     # tool response. The project admission policy reclaims background-worker
@@ -65,6 +56,21 @@ _PROFILE_CAPACITY_KEYS = frozenset(
 def research_mode_enabled() -> bool:
     raw = str(os.getenv("LEANFLOW_RESEARCH_MODE", "") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def prover_research_mode_enabled() -> bool:
+    """Share the native prover's explicit mode, legacy switch, and default precedence."""
+    from leanflow_cli.workflows.prover.config import resolve_prover_mode
+
+    return resolve_prover_mode(os.environ) == "research"
+
+
+def prover_research_profile_env(workers: int = 2) -> dict[str, str]:
+    """Select the native research controller without enabling retired runner features."""
+    return {
+        "LEANFLOW_PROVER_MODE": "research",
+        "LEANFLOW_PROVER_PARALLELISM": str(max(1, workers)),
+    }
 
 
 def research_local_loogle_enabled(*, research: bool | None = None) -> bool:

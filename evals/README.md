@@ -1,45 +1,46 @@
-# Evaluation Harness
+# Evaluation harness
 
-This harness measures regression safety, proof capability, and research-mode
-persistence. Frozen benchmark inventories live in `corpus_manifest.json`.
-Scoring reads the workflow's `blueprint.json`, `summary.json`, `journal.jsonl`,
-decision packets, coach coverage, campaign epochs, and dispatch ledger.
-Generated results append to the untracked `evals/results.jsonl`.
+`corpus_manifest.json` pins task inventories and upstream source revisions.
+`harness.py` validates the manifest and scores saved artifacts from workflows
+that use `blueprint.json`, `summary.json`, and `journal.jsonl`. It does not launch
+model calls or verify Lean proofs itself.
 
-## Suites
+The dedicated prover uses a separate DAG/state format. Evaluate its terminal
+verification results through the [Lean-IMO campaign harness](../docs/lean-imo-campaign.md)
+and retain its native artifacts; do not pass those runs to the legacy
+blueprint scorer.
 
-- **T1 Regression:** the demo projects
-  (`testdata/workflow_projects/ProveDemo` IMOMath1–3, RealTheorems;
-  `DocFormalizationDemo`) must stay green, and flags-off runs must be
-  byte-identical on the hot path. `harness.t1_fixture_projects()` is the
-  inventory.
-- **T2 Capability:** 40 exact Lean 4 declarations: 20 from the pinned
-  Google DeepMind miniF2F test file and 20 from pinned PutnamBench.
-- **T3 Research-grade:** ten multi-hour campaigns: the isolated IMOMath3
-  scope and nine solved declarations from Formal Conjectures pinned at
-  `bench-v1-lean4.27.0`, including `erdos_865.variants.k2`.
-- **Adversarial fixtures:** four local Lean files covering a false leaf,
-  false decomposition, vacuity, and nonstandard-axiom temptation.
+## Inventories
 
-## Promotion Criteria
+- **T1:** the ProveDemo and DocFormalizationDemo regression projects.
+- **T2:** 40 declarations from pinned miniF2F and PutnamBench sources.
+- **T3:** ten research tasks, including the isolated IMOMath3 target and
+  declarations from pinned Formal Conjectures.
+- **T4:** 60 [Lean-IMO-Bench statements](../testdata/workflow_projects/LeanIMOBench/README.md).
+- **Adversarial fixtures:** false claims, false decompositions, vacuous targets,
+  and nonstandard axioms.
 
-- forced-stop/resume drills lose no verified work and reconcile the proof graph
-- persistence-coach coverage is 100%, with no strategy or verification authority
-- adversarial fixtures cannot pass through false statements or forbidden axioms
-- background dispatch loses no completed jobs
-- research runs produce complete terminal artifacts
-- voluntary-give-up and unresolved-success rates are both zero
+The manifest is an inventory, not a record that every suite has been executed.
+The local regression and adversarial fixtures are shipped; other tasks identify
+pinned external sources.
 
-## Protocol
+## Saved-artifact scoring
 
-Each suite version pins its toolchain and mathlib revision. Compare flags-off
-and flags-on runs against the same frozen corpus. `harness.append_result`
-writes one JSON object per line with the suite, experiment label, flags,
-metrics, and timestamp. Any T1 regression or statistically meaningful T2
-solve-rate drop blocks promotion.
+`score_terminal_artifacts(state_root)` checks terminal reports, graph counters,
+decision packets, and the journal for the supported blueprint format.
+`score_campaign_metrics(state_root)` reads that format's persisted campaign
+accounting, and `aggregate_campaign_metrics(reports)` combines the reports.
+`append_result` writes evaluation records to ignored `results.jsonl`.
 
-`python -m pytest tests/leanflow/test_eval_harness.py` exercises the scorer
-itself; live-run scoring is invoked with
-`harness.score_terminal_artifacts(<workflow-state root>)` and
-`harness.score_campaign_metrics(<workflow-state root>)`. Aggregate a frozen
-suite with `harness.aggregate_campaign_metrics(reports)`.
+From the repository root:
+
+```bash
+source .venv/bin/activate
+python -m pytest tests/leanflow/test_eval_harness.py -q -n 0
+```
+
+For capability comparisons, freeze the same corpus, toolchain, budgets, runtime,
+and solution-access settings for every condition. Keep reference proofs outside
+scored projects. Report verified completion separately from elaboration,
+interrupted attempts, partial proofs, and missing accounting. Validate final
+Lean artifacts independently before claiming a solve rate.

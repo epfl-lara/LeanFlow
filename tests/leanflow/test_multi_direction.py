@@ -12,12 +12,10 @@ from typing import Any
 
 import pytest
 
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.runtime import file_locks
 from leanflow_cli.workflows import multi_direction as md
 from leanflow_cli.workflows import plan_state
 from leanflow_cli.workflows.dispatch_models import LedgerEntry
-from leanflow_cli.workflows.orchestrator import OrchestratorRoute
 
 GOAL_FILE = "Demo/Main.lean"
 
@@ -424,79 +422,3 @@ def test_dispatch_disabled_fails_soft(project, monkeypatch):
 # ---------------------------------------------------------------------------
 # Runner wiring: dark unless direction tags + success path
 # ---------------------------------------------------------------------------
-
-
-def _apply_route(route: OrchestratorRoute, history: list) -> str:
-    return runner._orchestrator_apply_route(
-        route,
-        history,
-        {"_orchestrator_last_ctx": {"target_symbol": "goal", "active_file": GOAL_FILE}},
-        {},
-        agent=None,
-    )
-
-
-def test_runner_uses_multi_direction_for_tagged_statements(project, monkeypatch):
-    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: None)
-    monkeypatch.setattr(
-        runner.multi_direction,
-        "run_multi_direction",
-        lambda **kwargs: md.MultiDirectionOutcome(ok=True, winner="dirB", reason="won"),
-    )
-    history: list[dict] = []
-
-    action = _apply_route(
-        OrchestratorRoute(
-            route="decompose",
-            reason="llm directions",
-            target={"statements_to_state": _statements()},
-        ),
-        history,
-    )
-
-    assert action == "continue"
-    assert history and "direction 'dirB' fully proved" in history[-1]["content"]
-
-
-def test_runner_ignores_untagged_statements(project, monkeypatch):
-    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: None)
-
-    def explode(**kwargs):
-        raise AssertionError("multi-direction must not run without direction tags")
-
-    monkeypatch.setattr(runner.multi_direction, "run_multi_direction", explode)
-    history: list[dict] = []
-
-    action = _apply_route(
-        OrchestratorRoute(
-            route="decompose",
-            reason="plain decompose",
-            target={"statements_to_state": [{"name": "a", "statement": "s"}]},
-        ),
-        history,
-    )
-
-    assert action == "continue"  # normal decompose path (directive fallback)
-
-
-def test_runner_falls_through_when_no_winner(project, monkeypatch):
-    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: None)
-    monkeypatch.setattr(
-        runner.multi_direction,
-        "run_multi_direction",
-        lambda **kwargs: md.MultiDirectionOutcome(ok=False, reason="all directions exhausted"),
-    )
-    history: list[dict] = []
-
-    action = _apply_route(
-        OrchestratorRoute(
-            route="decompose",
-            reason="llm directions",
-            target={"statements_to_state": _statements()},
-        ),
-        history,
-    )
-
-    assert action == "continue"
-    # Fell through to the directive fallback, not the winner banner.
-    assert history and "fully proved" not in history[-1]["content"]

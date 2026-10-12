@@ -1,7 +1,11 @@
 /** What the active run is doing right now, read from the live status snapshot. */
+import { appRunChoices, selectedRunChoice } from "../../src/core/runCatalog";
+import { RunMenu } from "./RunMenu";
+import { humanEventLabel } from "../../src/core/logRows";
 import { Card, Empty, Notice, Pill, Stat, StatusPill, relativeTime } from "../components";
-import { useSelectedRun, useStore } from "../store";
+import { useStore } from "../store";
 import { post } from "../vscodeApi";
+import { ProverWorkspace } from "./ProverWorkspace";
 
 function heartbeatAge(iso: string | undefined): number | null {
   if (!iso) {
@@ -12,15 +16,24 @@ function heartbeatAge(iso: string | undefined): number | null {
 }
 
 export function LiveView() {
-  const { app } = useStore();
-  const run = useSelectedRun();
-  const status = app?.liveStatus;
+  const { app, proverStates } = useStore();
+  const choice = app ? selectedRunChoice(appRunChoices(app), app.selectedRunId) : null;
+  const run = choice?.tracked;
+  const runId = choice?.runId || "";
+  const status = app?.liveStatus?.run_id === runId ? app.liveStatus : null;
+  const workflowKind = choice?.workflowKind || "";
+  // The dedicated prover publishes its own complete state. Its live-status
+  // projection carries no provider, model, or agent capacity, so the generic
+  // cards below would show dashes and a wrong agent count next to the real
+  // figures; they are reserved for workflows without a prover snapshot.
+  const proverSnapshot = proverStates[runId]?.snapshot ?? null;
+  const proverLoading = workflowKind.includes("prove") && Boolean(runId) && !proverStates[runId];
 
   if (!app?.project.found) {
     return <Empty>Open a LeanFlow project to see live run state.</Empty>;
   }
 
-  if (!status && !run) {
+  if (!status && !run && !runId) {
     return (
       <Empty>
         Nothing running.
@@ -38,6 +51,8 @@ export function LiveView() {
 
   return (
     <>
+      <RunMenu />
+      {choice && !choice.active && <Notice tone="info">Viewing a past job · {choice.status}. This is saved state, not a live process.</Notice>}
       {run && (
         <Card
           title={run.label}
@@ -62,7 +77,7 @@ export function LiveView() {
           <div className="row tight" style={{ marginTop: 8 }}>
             <span className="muted">started {relativeTime(run.startedAt)}</span>
             {run.pid !== null && <span className="tag">pid {run.pid}</span>}
-            {run.runId && <span className="tag">{run.runId}</span>}
+            {run.runId && <span className="tag" title="Run id assigned at launch">{run.runId}</span>}
             {run.appliedOverrides.set &&
               Object.keys(run.appliedOverrides.set).length +
                 (run.appliedOverrides.unset?.length ?? 0) >
@@ -77,20 +92,29 @@ export function LiveView() {
         </Card>
       )}
 
-      {stale && (
+      {!run && status && !stale && (
+        <Notice tone="info">
+          Observing <span className="mono">{String(status.run_id || "a run")}</span> started outside this window. It was
+          discovered from the project's live status; Stop is available from the terminal that owns it.
+        </Notice>
+      )}
+
+      {stale && !proverLoading && !proverSnapshot?.terminal && (
         <Notice tone="warn">
           The recorded status belongs to a process that is no longer alive. It is shown as the
           last known state.
         </Notice>
       )}
-      {!stale && quiet && (
+      {!stale && quiet && !proverLoading && !proverSnapshot?.terminal && (
         <Notice tone="info">
           No heartbeat for {Math.round(age ?? 0)}s. A long Lean check or provider wait looks like
           this too.
         </Notice>
       )}
 
-      {status && (
+      {workflowKind.includes("prove") && <ProverWorkspace runId={runId} />}
+
+      {status && !proverLoading && !proverSnapshot && (
         <>
           <div className="stats">
             <Stat label="Phase" value={status.phase ?? "—"} small />
@@ -133,7 +157,11 @@ export function LiveView() {
               <div className="mono">{status.current_blocker}</div>
             </Card>
           )}
+        </>
+      )}
 
+      {status && (
+        <>
           {(status.declaration_queue_summary || status.declaration_queue_total) && (
             <Card
               title="Declaration queue"
@@ -154,7 +182,9 @@ export function LiveView() {
           {status.last_activity_message && (
             <Card title="Last activity">
               <div className="row tight" style={{ marginBottom: 6 }}>
-                <span className="tag">{status.last_activity_type}</span>
+                <span className="tag" title={status.last_activity_type}>
+                  {humanEventLabel(status.last_activity_type ?? "")}
+                </span>
                 <span className="muted">{relativeTime(status.updated_at)}</span>
               </div>
               <div>{status.last_activity_message}</div>

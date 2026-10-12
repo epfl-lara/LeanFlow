@@ -19,6 +19,7 @@ import {
 
 import type {
   ActivityEvent,
+  ActivityEventDetail,
   AppState,
   HostMessage,
   LaunchPlanPreview,
@@ -26,11 +27,13 @@ import type {
   ProfileDiffRow,
 } from "../src/core/types";
 import { launchRequestForViewState } from "../src/core/launch";
+import { isNewerProverSnapshot } from "../src/core/proverProgress";
 import { trackedRunForLiveStatus } from "../src/core/runSelection";
 import { emptyLaunchRequest } from "../src/core/types";
+import type { ProverSnapshot } from "../src/core/prover";
 import { loadViewState, post, saveViewState } from "./vscodeApi";
 
-export type TabId = "launch" | "live" | "logs" | "knobs" | "sweeps";
+export type TabId = "providers" | "launch" | "live" | "logs" | "knobs" | "sweeps";
 
 export interface ViewState {
   tab: TabId;
@@ -38,6 +41,7 @@ export interface ViewState {
   logFilter: string[];
   logSearch: string;
   logRaw: boolean;
+  logAgent: string;
   knobSearch: string;
   knobAblatableOnly: boolean;
   knobProfile: string;
@@ -52,6 +56,7 @@ const DEFAULT_VIEW: ViewState = {
   logFilter: [],
   logSearch: "",
   logRaw: false,
+  logAgent: "",
   knobSearch: "",
   knobAblatableOnly: false,
   knobProfile: "",
@@ -74,11 +79,51 @@ interface Toast {
   message: string;
 }
 
+/** One expanded event's full record, fetched on demand and cached per run+event. */
+export interface EventDetailEntry {
+  detail: ActivityEventDetail | null;
+  error: string;
+  loading: boolean;
+}
+
+/** Expanded rows are cheap to refetch; keep the cache from growing with a campaign. */
+const MAX_CACHED_EVENT_DETAILS = 200;
+
+export function eventDetailKey(runId: string, eventId: string): string {
+  return `${runId}:${eventId}`;
+}
+
+function boundedEventDetails(
+  entries: Record<string, EventDetailEntry>,
+): Record<string, EventDetailEntry> {
+  const keys = Object.keys(entries);
+  if (keys.length <= MAX_CACHED_EVENT_DETAILS) {
+    return entries;
+  }
+  // Object insertion order is the least-recently-fetched order.
+  const next = { ...entries };
+  for (const key of keys.slice(0, keys.length - MAX_CACHED_EVENT_DETAILS)) {
+    delete next[key];
+  }
+  return next;
+}
+
+/** The latest accepted snapshot for a run; `error` marks it stale when a later read failed. */
+export interface ProverStateEntry {
+  snapshot: ProverSnapshot | null;
+  error: string;
+  /** Wall-clock time this entry was received, for "snapshot age" displays. */
+  receivedAt: number;
+}
+
 interface Store {
   app: AppState | null;
   view: ViewState;
   events: Record<string, ActivityEvent[]>;
+  eventDetails: Record<string, EventDetailEntry>;
   runLog: string;
+  runLogRunId: string;
+  proverStates: Record<string, ProverStateEntry>;
   preview: { plan: LaunchPlanPreview | null; error: string; loading: boolean };
   diff: { rows: ProfileDiffRow[]; error: string; loading: boolean };
   toasts: Toast[];
@@ -90,6 +135,7 @@ type Action =
   | { type: "form"; patch: Partial<LaunchRequest> }
   | { type: "previewLoading" }
   | { type: "diffLoading" }
+  | { type: "eventDetailLoading"; key: string }
   | { type: "dismissToast"; id: number };
 
 const initialView = (() => {
@@ -108,7 +154,10 @@ const INITIAL: Store = {
   app: null,
   view: initialView,
   events: {},
+  eventDetails: {},
   runLog: "",
+  runLogRunId: "",
+  proverStates: {},
   preview: { plan: null, error: "", loading: false },
   diff: { rows: [], error: "", loading: false },
   toasts: [],
@@ -132,6 +181,16 @@ function reduce(state: Store, action: Action): Store {
       return { ...state, preview: { ...state.preview, loading: true } };
     case "diffLoading":
       return { ...state, diff: { ...state.diff, loading: true } };
+    case "eventDetailLoading": {
+      const previous = state.eventDetails[action.key];
+      return {
+        ...state,
+        eventDetails: {
+          ...state.eventDetails,
+          [action.key]: { detail: previous?.detail ?? null, error: "", loading: true },
+        },
+      };
+    }
     case "dismissToast":
       return { ...state, toasts: state.toasts.filter((toast) => toast.id !== action.id) };
     case "host":
@@ -143,8 +202,23 @@ function reduce(state: Store, action: Action): Store {
 
 function reduceHost(state: Store, message: HostMessage): Store {
   switch (message.type) {
-    case "state":
-      return { ...state, app: message.state };
+    case "state": {
+      const navigation = message.state.runNavigation;
+      const changed = navigation && navigation.sequence !== state.app?.runNavigation?.sequence;
+      const view = changed ? { ...state.view, tab: navigation.tab, logAgent: "", logSearch: "", logFilter: [] } : state.view;
+      return { ...state, app: message.state, view };
+    }
+    case "proverState": {
+      // Two reads can settle out of order, and a failed read must not blank a
+      // dashboard that was showing real state: keep the newest good snapshot.
+      const previous = state.proverStates[message.runId];
+      const incoming = message.snapshot;
+      const snapshot = incoming !== null && isNewerProverSnapshot(previous?.snapshot ?? null, incoming)
+        ? incoming
+        : previous?.snapshot ?? incoming;
+      return { ...state, proverStates: { ...state.proverStates,
+        [message.runId]: { snapshot, error: message.error, receivedAt: Date.now() } } };
+    }
     case "events": {
       const existing = message.reset ? [] : (state.events[message.runId] ?? []);
       // The host already de-duplicates by cursor, but a reset push overlapping
@@ -163,7 +237,19 @@ function reduceHost(state: Store, message: HostMessage): Store {
     case "diff":
       return { ...state, diff: { rows: message.rows, error: message.error, loading: false } };
     case "runLog":
-      return { ...state, runLog: message.text };
+      return { ...state, runLog: message.text, runLogRunId: message.runId };
+    case "eventDetail": {
+      const key = eventDetailKey(message.runId, message.eventId);
+      // Re-insert so the freshest answer is the last to be evicted.
+      const { [key]: _stale, ...rest } = state.eventDetails;
+      return {
+        ...state,
+        eventDetails: boundedEventDetails({
+          ...rest,
+          [key]: { detail: message.detail, error: message.error, loading: false },
+        }),
+      };
+    }
     case "targetPicked": {
       const view = { ...state.view, form: { ...state.view.form, target: message.path } };
       persistViewState(view);
@@ -187,6 +273,7 @@ interface StoreContextValue extends Store {
   setForm: (patch: Partial<LaunchRequest>) => void;
   requestPreview: (request: LaunchRequest) => void;
   requestDiff: (left: string, right: string) => void;
+  requestEventDetail: (runId: string, eventId: string) => void;
   dismissToast: (id: number) => void;
 }
 
@@ -226,13 +313,26 @@ export function StoreProvider(props: { children: ReactNode }) {
     post({ type: "diffProfiles", requestId: String(diffSeq.current), left, right });
   }, []);
 
+  const requestEventDetail = useCallback((runId: string, eventId: string) => {
+    dispatch({ type: "eventDetailLoading", key: eventDetailKey(runId, eventId) });
+    post({ type: "loadEventDetail", runId, eventId });
+  }, []);
+
   const dismissToast = useCallback((id: number) => {
     dispatch({ type: "dismissToast", id });
   }, []);
 
   const value = useMemo<StoreContextValue>(
-    () => ({ ...state, setView, setForm, requestPreview, requestDiff, dismissToast }),
-    [state, setView, setForm, requestPreview, requestDiff, dismissToast],
+    () => ({
+      ...state,
+      setView,
+      setForm,
+      requestPreview,
+      requestDiff,
+      requestEventDetail,
+      dismissToast,
+    }),
+    [state, setView, setForm, requestPreview, requestDiff, requestEventDetail, dismissToast],
   );
 
   return <StoreContext.Provider value={value}>{props.children}</StoreContext.Provider>;

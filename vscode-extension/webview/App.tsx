@@ -1,6 +1,7 @@
 /** Shell: header, left nav, and the active view. */
 import { useEffect } from "react";
 
+import { appRunChoices } from "../src/core/runCatalog";
 import { Pill } from "./components";
 import {
   KnobsIcon,
@@ -13,6 +14,7 @@ import {
 } from "./icons";
 import { useStore, type TabId } from "./store";
 import { KnobsView } from "./views/KnobsView";
+import { ProvidersView } from "./views/ProvidersView";
 import { LaunchView } from "./views/LaunchView";
 import { LiveView } from "./views/LiveView";
 import { LogsView } from "./views/LogsView";
@@ -22,6 +24,7 @@ import { mode, post } from "./vscodeApi";
 
 const TABS: { id: TabId; label: string; Icon: typeof PlayIcon }[] = [
   { id: "launch", label: "Launch", Icon: PlayIcon },
+  { id: "providers", label: "Providers", Icon: KnobsIcon },
   { id: "live", label: "Live", Icon: PulseIcon },
   { id: "logs", label: "Logs", Icon: LogsIcon },
   { id: "knobs", label: "Knobs", Icon: KnobsIcon },
@@ -87,7 +90,7 @@ export function App() {
   }
 
   const activeCount =
-    app?.runs.filter((run) => run.status === "running" || run.status === "starting").length ?? 0;
+    app ? appRunChoices(app).filter(run => run.active).length : 0;
   const sweepCount = app?.experiments.length ?? 0;
   const knobCount = app?.catalog?.count ?? 0;
 
@@ -99,6 +102,8 @@ export function App() {
 
   const body = () => {
     switch (view.tab) {
+      case "providers":
+        return <ProvidersView />;
       case "launch":
         return <LaunchView />;
       case "live":
@@ -133,7 +138,9 @@ export function App() {
         {app?.cli.ok ? (
           <span className="tag">{app.cli.version}</span>
         ) : (
-          <Pill tone="bad">CLI unavailable</Pill>
+          <Pill tone={app?.cli.health === "retrying" || app?.cli.health === "checking" ? "warn" : "bad"}>
+            {app?.cli.health === "retrying" ? "CLI retrying" : app?.cli.health === "checking" ? "Checking CLI" : "CLI unavailable"}
+          </Pill>
         )}
         <button className="btn ghost" onClick={() => post({ type: "refresh" })} title="Refresh">
           <RefreshIcon size={13} />

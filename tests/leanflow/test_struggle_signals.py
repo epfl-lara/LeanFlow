@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from leanflow_cli.workflows import struggle_signals
 from leanflow_cli.workflows.struggle_signals import Severity, StruggleContext, evaluate
 
 
@@ -80,10 +79,3 @@ def test_payload_round_trip_is_json_safe():
     payload = json.loads(json.dumps(report.to_payload()))
     assert payload["severity"] == "reroute"
     assert all(len(signal["evidence"]) <= 240 for signal in payload["signals"])
-
-
-def test_search_constants_match_the_runner():
-    from leanflow_cli.native import native_runner as runner
-
-    assert struggle_signals.SEARCH_REPEAT_STREAK_NUDGE == runner.SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT
-    assert struggle_signals.SEARCH_TOTAL_NUDGE == runner.SEARCH_PROGRESS_TOTAL_NUDGE_LIMIT

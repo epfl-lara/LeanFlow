@@ -1,4 +1,4 @@
-"""Tests for the extracted project_prove_manager helpers + native_runner re-export (Phase 2).
+"""Tests for the extracted project_prove_manager helpers.
 
 These cover the pure, closed-under-"calls" subset of the ``/prove`` project-manager moved out of
 native_runner: the per-file excerpt builders, the theorem/file difficulty heuristics, the import
@@ -9,15 +9,7 @@ work-queue orchestration still living there resolves the extracted helpers witho
 
 from pathlib import Path
 
-from leanflow_cli.native import native_runner
 from leanflow_cli.workflows import project_prove_manager as ppm
-
-
-def test_native_runner_reexports_are_identical():
-    # Every re-exported name in native_runner must be the SAME object as in project_prove_manager,
-    # so the orchestration helpers still living in native_runner resolve them without a back-import.
-    for name in ppm.__all__:
-        assert getattr(native_runner, name) is getattr(ppm, name), name
 
 
 def test_manager_active_predicate():

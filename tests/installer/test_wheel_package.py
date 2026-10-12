@@ -3,26 +3,26 @@
 import tomllib
 from pathlib import Path, PurePosixPath
 
+import pytest
 
-def test_wheel_configuration_includes_all_builtin_skills():
-    """Require package discovery and data rules for every curated skill document."""
+
+@pytest.mark.parametrize("package", ["leanflow_skills", "leanflow_specs"])
+def test_wheel_configuration_includes_all_runtime_documents(package: str) -> None:
+    """Require package discovery and data rules for every bundled runtime document."""
     repo_root = Path(__file__).resolve().parents[2]
-    skill_root = repo_root / "leanflow_skills"
-    skill_documents = {
-        path.relative_to(skill_root).as_posix()
-        for path in (repo_root / "leanflow_skills").glob("*/SKILL.md")
-    }
-    assert skill_documents
-    assert (skill_root / "__init__.py").is_file()
+    package_root = repo_root / package
+    documents = {path.relative_to(package_root).as_posix() for path in package_root.rglob("*.md")}
+    assert documents
+    assert (package_root / "__init__.py").is_file()
 
     with (repo_root / "pyproject.toml").open("rb") as stream:
         setuptools_config = tomllib.load(stream)["tool"]["setuptools"]
 
-    assert "leanflow_skills" in setuptools_config["packages"]["find"]["include"]
-    patterns = setuptools_config["package-data"]["leanflow_skills"]
+    assert package in setuptools_config["packages"]["find"]["include"]
+    patterns = setuptools_config["package-data"][package]
     missing = {
         document
-        for document in skill_documents
+        for document in documents
         if not any(PurePosixPath(document).match(pattern) for pattern in patterns)
     }
 

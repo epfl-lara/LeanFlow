@@ -1,0 +1,145 @@
+"""Explain terminal limits without confusing job exhaustion with campaign capacity."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from leanflow_cli.workflows.prover.runtime import ProverRuntime
+
+
+def job_stop_reason(job: dict[str, Any], result: dict[str, Any]) -> dict[str, Any] | None:
+    """Describe a single allocation's stop without declaring the campaign exhausted."""
+    if isinstance(result.get("stop_reason"), dict):
+        return dict(result["stop_reason"])
+    status = result.get("status")
+    if status not in {"budget_exhausted", "timeout", "context_limit"}:
+        return None
+    calls = status == "budget_exhausted"
+    return {
+        "code": "job_api_calls" if calls else "job_" + str(status),
+        "scope": "job",
+        "job_id": job["id"],
+        "node_id": job.get("node_id", ""),
+        "message": (
+            "This job used its call allocation."
+            if calls
+            else "This job reached its " + str(status) + " limit."
+        ),
+        "used": job.get("api_calls") if calls else None,
+        "limit": job.get("api_budget") if calls else None,
+        "next_step": "The controller evaluates saved progress for a bounded restart or branch replanning; this does not exhaust the campaign by itself.",
+    }
+
+
+def campaign_stop_reason(runtime: ProverRuntime, status: str) -> dict[str, Any] | None:
+    """Return the exact stopping scope and preserved obligations for the final report."""
+    if status == "completed":
+        return None
+    from leanflow_cli.workflows.prover.role_limits import stop_details
+
+    metrics = runtime.state["metrics"]
+    role_stop = stop_details(runtime)
+    limit: int | float | None
+    used = metrics.get("api_calls", 0)
+    if status not in {"budget_exhausted", "blocked", "timeout"}:
+        code, scope, message, used, limit = (
+            status,
+            "campaign",
+            str(runtime.state.get("error") or status.replace("_", " ")),
+            None,
+            None,
+        )
+    elif runtime.state.get("stop_code") == "campaign_tokens_unknown":
+        code, scope, message, used, limit = (
+            "campaign_tokens_unknown",
+            "campaign",
+            "Token usage is unavailable for a completed invocation; further token-capped calls require complete usage.",
+            None,
+            runtime.config.tokens,
+        )
+    elif runtime._deadline_reached():
+        code, scope, message, used, limit = (
+            "campaign_wall_time",
+            "campaign",
+            "The campaign reached its total active-time limit.",
+            round(runtime._elapsed(), 3),
+            runtime.config.wall_time_s,
+        )
+    elif role_stop is not None:
+        code, scope, message, used, limit = (
+            runtime.state["stop_code"],
+            "role",
+            str(runtime.state.get("error") or "The agent role reached its campaign session limit."),
+            role_stop["used"],
+            role_stop["limit"],
+        )
+    elif runtime.config.agent_calls is not None and used >= runtime.config.agent_calls:
+        code, scope, message, limit = (
+            "campaign_api_calls",
+            "campaign",
+            "The campaign used its total call budget.",
+            runtime.config.total_api_calls,
+        )
+    elif (
+        runtime.config.tokens is not None
+        and sum(int(metrics.get(key, 0) or 0) for key in ("input_tokens", "output_tokens"))
+        >= runtime.config.tokens
+    ):
+        code, scope, message, used, limit = (
+            "campaign_tokens",
+            "campaign",
+            "Reported token usage reached the global limit; no new agent invocation will start.",
+            sum(int(metrics.get(key, 0) or 0) for key in ("input_tokens", "output_tokens")),
+            runtime.config.tokens,
+        )
+    elif (
+        status == "budget_exhausted"
+        and runtime.config.mode == "research"
+        and runtime.config.max_decompositions is not None
+        and int(metrics.get("decompositions", 0)) >= runtime.config.max_decompositions
+    ):
+        code, scope, message, used, limit = (
+            "campaign_recoveries",
+            "campaign",
+            "The campaign used its recovery-decision budget; the remaining API calls do not renew that allocation.",
+            int(metrics.get("decompositions", 0)),
+            runtime.config.max_decompositions,
+        )
+    elif status in {"budget_exhausted", "blocked"}:
+        # A node can also be blocked by a bounded response failure. Describe the
+        # scheduler state without inventing a recovery-budget or planning cause.
+        code, scope, message, used, limit = (
+            "no_runnable_obligations",
+            "scheduler",
+            "No runnable obligation remains: every unproved node is blocked while the total call budget is not exhausted. Inspect the individual job stop reasons for the cause.",
+            None,
+            None,
+        )
+    else:
+        code, scope, message, used, limit = (
+            status,
+            "campaign",
+            str(runtime.state.get("error") or status.replace("_", " ")),
+            None,
+            None,
+        )
+    return {
+        "code": code,
+        "scope": scope,
+        "message": message,
+        "used": used,
+        "limit": limit,
+        "remaining_api_calls": (
+            None
+            if runtime.config.agent_calls is None
+            else max(0, runtime.config.agent_calls - metrics.get("api_calls", 0))
+        ),
+        "unresolved_nodes": [node.id for node in runtime.dag.nodes if node.status != "proved"],
+        "next_step": runtime.state.get("next_step")
+        or (
+            "Inspect the saved node reports and plan. Resume preserves spent calls and completed proofs; an exhausted allocation is not reset."
+            if scope == "scheduler"
+            else "Inspect the recorded cause and saved progress. Resume preserves consumed calls and active time."
+        ),
+    }

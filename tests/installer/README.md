@@ -1,22 +1,14 @@
-# Installer Tests
+# Installer verification
 
-This directory holds installer verification scenarios that run in clean,
-containerized environments.
+The Python tests in this directory check command branding and packaged runtime
+resources. Run them with the wrapper and Windows bootstrap tests:
 
-Each scenario usually includes:
+```bash
+source .venv/bin/activate
+python -m pytest tests/installer tests/test_install_wrapper.py tests/test_windows_installer_links.py -q -n 0
+```
 
-- `Dockerfile`: the base image for the scenario
-- `run.sh`: host-side entrypoint that builds the image and runs the container
-- `run-in-container.sh`: in-container entrypoint that executes the actual test
-- `README.md`: scenario-specific notes and requirements
-
-Current scenarios:
-
-- `ubuntu_repository_local_install_smoke`
-  Verifies the repository-local `./scripts/install-internal.sh` flow on a stock
-  `ubuntu:24.04` container. This scenario:
-  - starts from the stock Ubuntu base image
-  - exercises `./scripts/install-internal.sh` from a mounted git checkout
-  - verifies the installer bootstraps its own Debian/Ubuntu prerequisites
-  - stages a dummy `OPENAI_API_KEY` to test non-interactive provider setup
-  - verifies the workflow-derived workspace, config, guide, and helper scripts
+The `ubuntu_repository_local_install_smoke` scenario runs the direct local
+installer in an Ubuntu container. It verifies command wrappers, configuration,
+managed MCP setup, bundled skills/specs, and configuration preservation on
+reinstall. It needs Docker and network access for dependency downloads.

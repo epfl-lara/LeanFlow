@@ -14,6 +14,7 @@ import {
   allowedKnobNames,
   buildWorkflowArgs,
   describeCommand,
+  extensionKnobValueProblem,
   isExtensionEditableKnob,
   launchRequestForViewState,
   redactPromptArgument,
@@ -82,6 +83,14 @@ const CATALOG = {
 };
 const ALLOWED = allowedKnobNames(CATALOG);
 
+test("global time limits accept zero and reject negative or nonfinite values", () => {
+  const flag = {name:"LEANFLOW_PROVER_WALL_TIME_S",value_type:"float",minimum:0};
+  for (const invalid of ["-1", "NaN", "Infinity"]) assert.notEqual(extensionKnobValueProblem(flag, invalid), null);
+  for (const valid of ["0", "0.5", "28800"]) assert.equal(extensionKnobValueProblem(flag, valid), null);
+  assert.equal(extensionKnobValueProblem(flag, "", true), null);
+});
+
+
 function form(overrides = {}) {
   return {
     kind: "prove",
@@ -105,6 +114,16 @@ function form(overrides = {}) {
 
 test("a bare prove run passes only the workflow kind", () => {
   assert.deepEqual(buildWorkflowArgs(form()), ["prove"]);
+});
+
+test("clean-room proof runs are supported with every native backend", () => {
+  for (const provider of ["codex", "claude", "lemex"]) {
+    const request = form({ provider, cleanRoom: true });
+    assert.deepEqual(validateLaunch(request), []);
+    assert.equal(request.cleanRoom, true);
+    assert.ok(buildWorkflowArgs(request).includes("--clean-room"));
+  }
+  assert.match(validateLaunch(form({ kind: "golf", cleanRoom: true })).join(" "), /only supported for prove/);
 });
 
 test("a file-scoped run passes the target positionally", () => {
@@ -145,6 +164,21 @@ test("no-parallel wins over an agent count", () => {
 
 test("a single agent does not emit --agents", () => {
   assert.deepEqual(buildWorkflowArgs(form({ agents: 1 })), ["prove"]);
+});
+
+test("explicit bounded mode overrides stale legacy concurrency and research switches", () => {
+  const request = form({
+    agents: 4, research: true, researchWorkers: 3,
+    overrides: { LEANFLOW_PROVER_MODE: "standard" },
+  });
+  assert.deepEqual(buildWorkflowArgs(request), ["prove"]);
+  assert.deepEqual(buildWorkflowArgs({ ...request, noParallel: true }), ["prove", "--no-parallel"]);
+});
+
+test("resolved profile mode is authoritative for the actual launch argv", () => {
+  const request = form({ agents: 4, research: true, researchWorkers: 3 });
+  assert.deepEqual(buildWorkflowArgs(request, { LEANFLOW_PROVER_MODE: "standard" }), ["prove"]);
+  assert.deepEqual(buildWorkflowArgs(request, { LEANFLOW_PROVER_MODE: "research", LEANFLOW_PROVER_PARALLELISM: "2" }), ["prove"]);
 });
 
 test("the prompt is last, because --prompt consumes the rest of the line", () => {
@@ -454,6 +488,12 @@ test("prove-only flags are rejected on other workflows", () => {
 
 test("a clean prove form has no problems", () => {
   assert.deepEqual(validateLaunch(form({ target: "Main.lean" })), []);
+});
+
+test("legacy human-review values never reach redesigned prove launches or saved presets", () => {
+  const legacy = form({ kind: "prove", humanReview: true });
+  assert.equal(buildWorkflowArgs(legacy).includes("--human-review"), false);
+  assert.equal(launchRequestForViewState(legacy).humanReview, false);
 });
 
 test("fields the host would reject for length are reported by the form", () => {

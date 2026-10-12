@@ -1,0 +1,25 @@
+{
+  "name": "lean-imo-bench-research",
+  "overrides": {
+    "LEANFLOW_DISABLE_SOLUTION_RESEARCH": "0",
+    "LEANFLOW_RESEARCH_LOCAL_LOOGLE": "0",
+    "LEANFLOW_PROVER_MODE": "research",
+    "LEANFLOW_PROVER_SEARCH_ORDER": "bottom-up",
+    "LEANFLOW_PROVER_PARALLELISM": "2",
+    "LEANFLOW_PROVER_JOB_API_CALLS": "100",
+    "LEANFLOW_PROVER_TOTAL_API_CALLS": "600",
+    "LEANFLOW_PROVER_ORCHESTRATOR_API_CALLS": "30",
+    "LEANFLOW_PROVER_MAX_NODES": "16",
+    "LEANFLOW_PROVER_MAX_DECOMPOSITIONS": "6",
+    "LEANFLOW_PROVER_MAX_RESTARTS": "2",
+    "LEANFLOW_PROVER_PLAN_REFINEMENTS": "3",
+    "LEANFLOW_PROVER_TIMEOUT_S": "1200",
+    "LEANFLOW_PROVER_WALL_TIME_S": "7200",
+    "LEANFLOW_PROVER_CONTEXT_TOKENS": "64000",
+    "LEANFLOW_PROVER_ORCHESTRATOR_CONTEXT_TOKENS": "96000",
+    "LEANFLOW_PROVER_COMPRESSION": "1",
+    "LEANFLOW_PROVER_ORCHESTRATOR_COMPRESSION": "1",
+    "LEANFLOW_PROVER_FILL_DEFINITIONS": "0"
+  },
+  "summary": "CONTAMINATED-BY-DESIGN variant: literature research ON. Results are NOT comparable to the published 70% and must be reported under a separate label. Only the informal-mathematics arm is defensible; LEAP's Lean solutions are on GitHub."
+}

@@ -1,30 +1,11 @@
 #!/usr/bin/env python3
-"""
-Session Search Tool - Long-Term Conversation Recall
+"""Search historical session transcripts using SQLite and return verbatim excerpts."""
 
-Searches past session transcripts in SQLite via FTS5, then summarizes the top
-matching sessions using a cheap/fast model (same pattern as web_extract).
-Returns focused summaries of past conversations rather than raw transcripts,
-keeping the main model's context window clean.
-
-Flow:
-  1. FTS5 search finds matching messages ranked by relevance
-  2. Groups by session, takes the top N unique sessions (default 3)
-  3. Loads each session's conversation, truncates to ~100k chars centered on matches
-  4. Sends to Gemini Flash with a focused summarization prompt
-  5. Returns per-session summaries with metadata
-"""
-
-import asyncio
-import concurrent.futures
 import json
 import logging
 from typing import Any
 
-from agent.providers.auxiliary_client import async_call_llm
-
-MAX_SESSION_CHARS = 100_000
-MAX_SUMMARY_TOKENS = 10000
+MAX_SESSION_CHARS = 8000
 
 
 def _format_timestamp(ts: int | float | str | None) -> str:
@@ -56,7 +37,7 @@ def _format_timestamp(ts: int | float | str | None) -> str:
 
 
 def _format_conversation(messages: list[dict[str, Any]]) -> str:
-    """Format session messages into a readable transcript for summarization."""
+    """Format session messages into a readable transcript for retrieval."""
     parts = []
     for msg in messages:
         role = msg.get("role", "unknown").upper()
@@ -123,85 +104,32 @@ def _truncate_around_matches(full_text: str, query: str, max_chars: int = MAX_SE
     return prefix + truncated + suffix
 
 
-async def _summarize_session(
-    conversation_text: str, query: str, session_meta: dict[str, Any]
-) -> str | None:
-    """Summarize a single session conversation focused on the search query."""
-    system_prompt = (
-        "You are reviewing a past conversation transcript to help recall what happened. "
-        "Summarize the conversation with a focus on the search topic. Include:\n"
-        "1. What the user asked about or wanted to accomplish\n"
-        "2. What actions were taken and what the outcomes were\n"
-        "3. Key decisions, solutions found, or conclusions reached\n"
-        "4. Any specific commands, files, URLs, or technical details that were important\n"
-        "5. Anything left unresolved or notable\n\n"
-        "Be thorough but concise. Preserve specific details (commands, paths, error messages) "
-        "that would be useful to recall. Write in past tense as a factual recap."
-    )
-
-    source = session_meta.get("source", "unknown")
-    started = _format_timestamp(session_meta.get("started_at"))
-
-    user_prompt = (
-        f"Search topic: {query}\n"
-        f"Session source: {source}\n"
-        f"Session date: {started}\n\n"
-        f"CONVERSATION TRANSCRIPT:\n{conversation_text}\n\n"
-        f"Summarize this conversation with focus on: {query}"
-    )
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = await async_call_llm(
-                task="session_search",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.1,
-                max_tokens=MAX_SUMMARY_TOKENS,
-            )
-            return response.choices[0].message.content.strip()
-        except RuntimeError:
-            logging.warning("No auxiliary model available for session summarization")
-            return None
-        except Exception as e:
-            if attempt < max_retries - 1:
-                await asyncio.sleep(1 * (attempt + 1))
-            else:
-                logging.warning(
-                    "Session summarization failed after %d attempts: %s",
-                    max_retries,
-                    e,
-                    exc_info=True,
-                )
-                return None
-
-
 def session_search(
     query: str,
-    role_filter: str = None,
+    role_filter: str | None = None,
     limit: int = 3,
     db=None,
-    current_session_id: str = None,
+    current_session_id: str | None = None,
 ) -> str:
-    """
-    Search past sessions and return focused summaries of matching conversations.
-
-    Uses FTS5 to find matches, then summarizes the top sessions with Gemini Flash.
-    The current session is excluded from results since the agent already has that context.
-    """
+    """Return bounded transcript excerpts around matching historical sessions."""
     if db is None:
-        return json.dumps(
-            {"success": False, "error": "Session database not available."}, ensure_ascii=False
-        )
+        from core.state import DEFAULT_DB_PATH, SessionDB
+
+        if not DEFAULT_DB_PATH.is_file():
+            return json.dumps(
+                {"success": False, "error": "Session database not available."}, ensure_ascii=False
+            )
+        database = SessionDB()
+        try:
+            return session_search(query, role_filter, limit, database, current_session_id)
+        finally:
+            database.close()
 
     if not query or not query.strip():
         return json.dumps({"success": False, "error": "Query cannot be empty."}, ensure_ascii=False)
 
     query = query.strip()
-    limit = min(limit, 5)  # Cap at 5 sessions to avoid excessive LLM calls
+    limit = max(1, min(limit, 5))  # Bound the amount of recalled transcript text.
 
     try:
         # Parse role filter
@@ -273,7 +201,7 @@ def session_search(
             if len(seen_sessions) >= limit:
                 break
 
-        # Prepare all sessions for parallel summarization
+        # Read matching historical transcripts without invoking a model.
         tasks = []
         for session_id, match_info in seen_sessions.items():
             try:
@@ -292,59 +220,23 @@ def session_search(
                     exc_info=True,
                 )
 
-        # Summarize all sessions in parallel
-        async def _summarize_all() -> list[str | Exception]:
-            """Summarize all sessions in parallel."""
-            coros = [_summarize_session(text, query, meta) for _, _, text, meta in tasks]
-            return await asyncio.gather(*coros, return_exceptions=True)
-
-        try:
-            asyncio.get_running_loop()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                results = pool.submit(lambda: asyncio.run(_summarize_all())).result(timeout=60)
-        except RuntimeError:
-            # No event loop running, create a new one
-            results = asyncio.run(_summarize_all())
-        except concurrent.futures.TimeoutError:
-            logging.warning(
-                "Session summarization timed out after 60 seconds",
-                exc_info=True,
-            )
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
-                },
-                ensure_ascii=False,
-            )
-
-        summaries = []
-        for (session_id, match_info, _, _), result in zip(tasks, results):
-            if isinstance(result, Exception):
-                logging.warning(
-                    "Failed to summarize session %s: %s",
-                    session_id,
-                    result,
-                    exc_info=True,
-                )
-                continue
-            if result:
-                summaries.append(
-                    {
-                        "session_id": session_id,
-                        "when": _format_timestamp(match_info.get("session_started")),
-                        "source": match_info.get("source", "unknown"),
-                        "model": match_info.get("model"),
-                        "summary": result,
-                    }
-                )
+        excerpts = [
+            {
+                "session_id": session_id,
+                "when": _format_timestamp(match_info.get("session_started")),
+                "source": match_info.get("source", "unknown"),
+                "model": match_info.get("model"),
+                "excerpt": conversation_text,
+            }
+            for session_id, match_info, conversation_text, _ in tasks
+        ]
 
         return json.dumps(
             {
                 "success": True,
                 "query": query,
-                "results": summaries,
-                "count": len(summaries),
+                "results": excerpts,
+                "count": len(excerpts),
                 "sessions_searched": len(seen_sessions),
             },
             ensure_ascii=False,
@@ -358,11 +250,11 @@ def session_search(
 
 
 def check_session_search_requirements() -> bool:
-    """Requires SQLite state database and an auxiliary text model."""
+    """Require a historical SQLite state database."""
     try:
         from core.state import DEFAULT_DB_PATH
 
-        return DEFAULT_DB_PATH.parent.exists()
+        return DEFAULT_DB_PATH.is_file()
     except ImportError:
         return False
 
@@ -371,7 +263,7 @@ SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
         "Search your long-term memory of past conversations. This is your recall -- "
-        "every past session is searchable, and this tool summarizes what happened.\n\n"
+        "every stored historical session is searchable, and this tool returns verbatim excerpts.\n\n"
         "USE THIS PROACTIVELY when:\n"
         "- The user says 'we did this before', 'remember when', 'last time', 'as I mentioned'\n"
         "- The user asks about a topic you worked on before but don't have in current context\n"
@@ -384,7 +276,7 @@ SESSION_SEARCH_SCHEMA = {
         'phrases for exact match ("docker networking"), boolean (python NOT java), prefix (deploy*). '
         "IMPORTANT: Use OR between keywords for best results — FTS5 defaults to AND which misses "
         "sessions that only mention some terms. If a broad OR query returns nothing, try individual "
-        "keyword searches in parallel. Returns summaries of the top matching sessions."
+        "keyword searches in parallel. Returns excerpts of the top matching sessions without model calls."
     ),
     "parameters": {
         "type": "object",
@@ -399,7 +291,7 @@ SESSION_SEARCH_SCHEMA = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Max sessions to summarize (default: 3, max: 5).",
+                "description": "Max sessions to return (default: 3, max: 5).",
                 "default": 3,
             },
         },

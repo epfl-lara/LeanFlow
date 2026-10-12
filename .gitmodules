@@ -1,0 +1,3 @@
+[submodule "papers/MathAI2026"]
+	path = papers/MathAI2026
+	url = git@github.com:Lemmy00/LeanFlowNeurips2026.git

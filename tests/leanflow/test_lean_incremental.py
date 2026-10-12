@@ -2653,7 +2653,35 @@ def test_normalize_payload_only_bounds_feedback(monkeypatch):
     assert "tactics_truncated" not in check
 
 
-def test_normalize_payload_marks_diagnostic_heartbeat_timeout():
+@pytest.mark.parametrize("diagnostic", ["LeanProbe wall-clock deadline exceeded", "Lean timed out"])
+def test_normalize_payload_preserves_diagnostic_process_timeout(diagnostic):
+    payload = li._normalize_payload(
+        {"success": False, "ok": False, "timed_out": False, "error": diagnostic},
+        "check_target",
+    )
+
+    assert payload["timed_out"] is True
+    assert payload["timed_out_inferred_from_diagnostics"] is True
+
+
+def test_normalize_payload_preserves_explicit_process_timeout_with_heartbeat_diagnostic():
+    payload = li._normalize_payload(
+        {
+            "success": False,
+            "ok": False,
+            "timed_out": True,
+            "error_code": "lean_probe_wall_clock_timeout",
+            "messages": [{"severity": "error", "message": "maximum number of heartbeats reached"}],
+        },
+        "check_target",
+    )
+
+    assert payload["timed_out"] is True
+    assert payload["error_code"] == "lean_probe_wall_clock_timeout"
+    assert "timed_out_inferred_from_diagnostics" not in payload
+
+
+def test_normalize_payload_marks_heartbeat_as_lean_resource_failure():
     payload = li._normalize_payload(
         {
             "success": True,
@@ -2673,8 +2701,67 @@ def test_normalize_payload_marks_diagnostic_heartbeat_timeout():
         "feedback",
     )
 
-    assert payload["timed_out"] is True
-    assert payload["timed_out_inferred_from_diagnostics"] is True
+    assert payload["timed_out"] is False
+    assert payload["error_code"] == "lean_heartbeat_limit"
+    assert payload["success"] is True
+    assert payload["ok"] is False
+    assert "timed_out_inferred_from_diagnostics" not in payload
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "maximum number of heartbeats (200000) has been reached",
+        "Try increasing maxHeartbeats",
+        "deterministic timeout at whnf",
+        "(deterministic) timeout at `whnf`",
+    ],
+)
+@pytest.mark.parametrize("field", ["error", "output", "message", "stderr", "messages"])
+def test_normalize_payload_recovers_legacy_inferred_heartbeat_reports(diagnostic, field):
+    original = {
+        "ok": False,
+        "timed_out": True,
+        "timed_out_inferred_from_diagnostics": True,
+        field: (
+            [{"severity": "error", "message": diagnostic}] if field == "messages" else diagnostic
+        ),
+    }
+
+    payload = li._normalize_payload(original, "check_target")
+
+    assert payload["timed_out"] is False
+    assert payload["error_code"] == "lean_heartbeat_limit"
+    assert "timed_out_inferred_from_diagnostics" not in payload
+    assert original["timed_out"] is True
+    assert "error_code" not in original
+
+
+def test_normalize_payload_preserves_heartbeat_code_in_provider_projection():
+    payload = li._normalize_payload(
+        {
+            "ok": False,
+            "timed_out": False,
+            "output": "maximum number of heartbeats reached\n" + ("detail\n" * 2000),
+        },
+        "check_target",
+    )
+
+    projected = li.compact_check_payload(payload, max_chars=2000)
+
+    assert projected["error_code"] == "lean_heartbeat_limit"
+    assert projected["timed_out"] is False
+    assert projected["verification_status"] == "not_verified"
+
+
+def test_normalize_payload_does_not_reject_successful_check_mentioning_heartbeat_option():
+    payload = li._normalize_payload(
+        {"ok": True, "output": "set_option maxHeartbeats 1000000"}, "check_target"
+    )
+
+    assert payload["ok"] is True
+    assert "error_code" not in payload
+    assert "timed_out" not in payload
 
 
 def test_failed_helper_check_bounds_replayed_diagnostics():

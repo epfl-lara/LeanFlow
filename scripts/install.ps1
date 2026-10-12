@@ -6,7 +6,6 @@
 #
 # Usage:
 #   .\scripts\install.ps1
-#   .\scripts\install.ps1 -WithWorkspace
 #   .\scripts\install.ps1 -Distro Ubuntu
 #   .\scripts\install.ps1 -LinuxRepoDir "~/LeanFlow"
 #
@@ -32,8 +31,7 @@ function Write-Banner {
     Write-Host "│   Windows uses WSL2 and the shared installer flow      │" -ForegroundColor Magenta
     Write-Host "└─────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
     Write-Host ""
-    Write-Host "[note] This install can take up to 10 minutes." -ForegroundColor Yellow
-    Write-Host "[note] For a setup in under 10 seconds, try: https://morph.new/leanflow" -ForegroundColor Yellow
+    Write-Host "[note] The first install downloads Python dependencies and Lean tools." -ForegroundColor Yellow
     Write-Host ""
 }
 
@@ -218,22 +216,36 @@ case "$TARGET_DIR_RAW" in
     TARGET_DIR="$HOME"
     ;;
   "~/"*)
-    TARGET_DIR="$HOME/${TARGET_DIR_RAW#~/}"
+    TARGET_DIR="$HOME/${TARGET_DIR_RAW:2}"
     ;;
   *)
     TARGET_DIR="$TARGET_DIR_RAW"
     ;;
 esac
 
-if ! command -v git >/dev/null 2>&1; then
-  if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+if ! command -v git >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import venv, ensurepip, sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    sudo apt-get update
-    sudo apt-get install -y git
+    if [ "$(id -u)" = "0" ]; then
+      apt-get update
+      apt-get install -y git python3 python3-venv python3-pip
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo apt-get update
+      sudo apt-get install -y git python3 python3-venv python3-pip
+    else
+      echo "✗ Install git, Python 3.12+, and Python venv support inside WSL, then rerun."
+      exit 1
+    fi
   else
-    echo "✗ git is required inside WSL before LeanFlow can be installed."
+    echo "✗ Install git, Python 3.12+, and Python venv support inside WSL, then rerun."
     exit 1
   fi
+fi
+
+if ! python3 -c 'import venv, ensurepip, sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1; then
+  echo "✗ The WSL distro needs Python 3.12+ with venv support."
+  echo "  Install a supported Python as python3, or use a newer WSL distro, then rerun."
+  exit 1
 fi
 
 CHOSEN_BRANCH="$REQUESTED_BRANCH"
@@ -268,9 +280,9 @@ fi
 cd "$TARGET_DIR"
 if [ "$CREATE_WORKSPACE" = "1" ]; then
   echo "→ -WithWorkspace is accepted for compatibility."
-  echo "→ The shared LeanFlow template already provisions the workspace."
+  echo "→ Run leanflow project init inside your Lean project after installation."
 fi
-./scripts/install.sh
+./scripts/install-internal.sh
 '@
 }
 
@@ -295,7 +307,7 @@ function Resolve-WSLPath {
 function Main {
     Write-Banner
     Write-Info "LeanFlow on Windows runs through WSL2."
-    Write-Info "This bootstrap clones into your WSL home and then runs ./scripts/install.sh there."
+    Write-Info "This bootstrap clones into your WSL home and then runs ./scripts/install-internal.sh there."
     Ensure-WSL
 
     $resolvedBranch = Resolve-Branch
@@ -347,6 +359,7 @@ function Main {
     Write-Success "LeanFlow is installed in WSL."
     Write-Info "For daily use, open your WSL shell and run:"
     Write-Host "  cd $LinuxRepoDir" -ForegroundColor Yellow
+    Write-Host '  export PATH="$HOME/.local/bin:$PATH"' -ForegroundColor Yellow
     Write-Host "  leanflow" -ForegroundColor Yellow
     Write-Host ""
 }

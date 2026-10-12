@@ -10,13 +10,17 @@ import {
   isExtensionEditableKnob,
   rejectedProfileKnobNames,
 } from "../../src/core/launch";
+import { profileLaunchSurfaces } from "../../src/core/profileSurfaces";
 import type { FlagSpec } from "../../src/core/types";
 import { LAUNCH_FIELD_LIMITS } from "../../src/core/types";
 import { Card, Empty, Notice } from "../components";
+import { OPTIONAL_LIMIT_KNOBS } from "../../src/core/limitDisplay";
+import { InfoHelp } from "../InfoHelp";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
 
-function KnobControl(props: {
+/** Render a value editor from the CLI's authoritative flag metadata. */
+export function KnobControl(props: {
   spec: FlagSpec;
   value: string | undefined;
   onChange: (value: string | undefined) => void;
@@ -68,7 +72,7 @@ function KnobControl(props: {
         min={spec.minimum}
         max={spec.maximum}
         step={spec.value_type === "float" ? "any" : 1}
-        placeholder={spec.default || "unset"}
+        placeholder={OPTIONAL_LIMIT_KNOBS.has(spec.name) && effective === "" ? "∞" : spec.default || "unset"}
         value={value ?? ""}
         onChange={(event) => onChange(event.target.value === "" ? undefined : event.target.value)}
       />
@@ -107,6 +111,7 @@ export function KnobsView() {
       .map((group) => ({
         name: group.name,
         flags: group.flags.filter((flag) => {
+          if (view.form.kind === "prove" && flag.name === "LEANFLOW_HUMAN_REVIEW_ENABLED") return false;
           if (!showInternal && flag.kind === "internal") {
             return false;
           }
@@ -124,7 +129,7 @@ export function KnobsView() {
         }),
       }))
       .filter((group) => group.flags.length > 0);
-  }, [catalog, search, view.knobAblatableOnly, showInternal]);
+  }, [catalog, search, view.knobAblatableOnly, view.form.kind, showInternal]);
 
   const setOverride = (name: string, value: string | undefined) => {
     const next = { ...overrides };
@@ -156,7 +161,7 @@ export function KnobsView() {
   }
 
   const overrideCount = Object.keys(overrides).length;
-  const restrictedWorkingKnobs = rejectedProfileKnobNames(
+  const workingSurfaces = profileLaunchSurfaces(
     {
       name: "working-set",
       summary: "",
@@ -166,12 +171,13 @@ export function KnobsView() {
     catalog,
     true,
   );
+  const restrictedWorkingKnobs = workingSurfaces.incompatibilities.map((item) => item.name);
   const totalShown = groups.reduce((sum, group) => sum + group.flags.length, 0);
 
   return (
     <>
       <Card
-        title="Knob catalog"
+        title={<>Knob catalog <InfoHelp label="Knobs and ablations">Knobs are individual run settings. A profile saves a group of them. An ablation changes a setting to compare its effect on results. Show plumbing includes internal settings intended for troubleshooting.</InfoHelp></>}
         subtitle={`${catalog.count} declared knobs across ${catalog.groups.length} subsystems. Marked knobs are the ones worth flipping in an ablation.`}
       >
         <div className="row tight">
@@ -229,8 +235,8 @@ export function KnobsView() {
               <option key={profile.name} value={profile.name}>
                 {profile.name} ({Object.keys(profile.overrides).length})
                 {rejectedProfileKnobNames(profile, catalog).length > 0
-                  ? " · unavailable in VS Code"
-                  : ""}
+                  ? " · terminal only"
+                  : " · VS Code and terminal"}
               </option>
             ))}
           </select>
@@ -238,9 +244,27 @@ export function KnobsView() {
 
         {restrictedWorkingKnobs.length > 0 && (
           <Notice tone="error">
-            This working set contains terminal-only, invalid, or unknown knobs and cannot be saved or
-            launched from VS Code: <span className="mono">{restrictedWorkingKnobs.join(", ")}</span>.
-            Use a trusted terminal for sensitive debug/runtime settings.
+            <strong>This working set cannot be saved or launched from VS Code.</strong> A trusted terminal
+            accepts every catalogued knob; the extension refuses these:
+            <ul style={{ margin: "6px 0 0 16px", padding: 0 }}>
+              {workingSurfaces.incompatibilities.map((item) => (
+                <li key={item.name}>
+                  <span className="mono">{item.name}</span> — {item.reason.replace("-", " ")}: {item.detail}.
+                </li>
+              ))}
+            </ul>
+            <div className="row tight" style={{ marginTop: 8 }}>
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  const next = { ...overrides };
+                  for (const item of workingSurfaces.incompatibilities) delete next[item.name];
+                  setForm({ overrides: next });
+                }}
+              >
+                Drop refused knobs from the working set
+              </button>
+            </div>
           </Notice>
         )}
 
@@ -411,7 +435,7 @@ export function KnobsView() {
                         </span>
                       )}
                     </div>
-                    <div className="summary">{flag.summary}</div>
+                    <div className="summary">{flag.summary.replace(/\bunlimited\b/gi, "∞")}</div>
                   </div>
                   <div className="control">
                     {isExtensionEditableKnob(flag) ? (
@@ -422,7 +446,7 @@ export function KnobsView() {
                           onChange={(value) => setOverride(flag.name, value)}
                         />
                         <span className="default-note">
-                          default {flag.default || "unset"}
+                          default {flag.default || (OPTIONAL_LIMIT_KNOBS.has(flag.name) ? "∞" : "unset")}
                         </span>
                       </>
                     ) : (

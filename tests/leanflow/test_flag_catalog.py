@@ -26,6 +26,27 @@ from leanflow_cli.flags.spec import FlagProfile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+
+def test_prover_exposes_only_optional_global_limits() -> None:
+    """Keep native sampling, compression, and per-response budgets out of LeanFlow."""
+    for name in ("AGENT_CALLS", "TOKENS", "WALL_TIME_S"):
+        spec = lookup_flag("LEANFLOW_PROVER_" + name)
+        assert spec is not None
+        assert spec.default == ""
+        assert spec.minimum == 0
+    for name in (
+        "TIMEOUT_S",
+        "JOB_API_CALLS",
+        "ORCHESTRATOR_API_CALLS",
+        "TOTAL_API_CALLS",
+        "CONTEXT_TOKENS",
+        "COMPRESSION",
+        "BASE_URL",
+        "API_KEY_ENV",
+    ):
+        assert lookup_flag("LEANFLOW_PROVER_" + name) is None
+
+
 #: Directories holding runtime code the catalog documents.
 _SOURCE_DIRS = ("core", "agent", "tools", "leanflow_cli")
 
@@ -113,6 +134,12 @@ def test_catalog_names_are_unique() -> None:
     assert not duplicates, f"duplicate catalog entries: {duplicates}"
 
 
+def test_backend_catalog_offers_only_native_backends() -> None:
+    spec = lookup_flag("LEANFLOW_INFERENCE_PROVIDER")
+    assert spec is not None
+    assert spec.choices == ("", "codex", "claude", "lemex")
+
+
 def test_every_catalogued_knob_is_read_by_the_runtime(runtime_source: str) -> None:
     """A catalogued name the runtime never mentions is a typo or a dead entry."""
     missing = [spec.name for spec in FLAG_CATALOG if spec.name not in runtime_source]
@@ -185,11 +212,11 @@ def test_sensitive_knobs_are_terminal_only() -> None:
         "LEANFLOW_PLAN_STATE_DIR",
         "LEANFLOW_CLEAN_ROOM_TASK_LABELS",
         "LEANFLOW_REDACT_SECRETS",
-        "LEANFLOW_DUMP_REQUESTS",
-        "LEANFLOW_DUMP_REQUEST_STDOUT",
         "LEANFLOW_YOLO_MODE",
         "LEANFLOW_HOME",
         "LEANFLOW_SANDBOX_BASE_IMAGE",
+        "LEANFLOW_PROVER_ALLOWED_AXIOMS",
+        "LEANFLOW_PROVER_RESUME_RUN_ID",
     }
     actual = {spec.name for spec in FLAG_CATALOG if spec.sensitive}
     assert actual == expected
@@ -234,12 +261,10 @@ def test_effective_values_hide_internal_plumbing_by_default() -> None:
 
 
 def test_builtin_research_profile_tracks_the_runtime() -> None:
-    from leanflow_cli.workflows.research_mode import research_profile_env
+    from leanflow_cli.workflows.research_mode import prover_research_profile_env
 
     profile = resolve_profile("research")
-    for name, value in research_profile_env().items():
-        assert profile.overrides[name] == value
-    assert profile.overrides["LEANFLOW_RESEARCH_MODE"] == "1"
+    assert profile.overrides == prover_research_profile_env()
 
 
 def test_diff_ignores_knobs_that_resolve_to_the_same_value() -> None:
@@ -284,6 +309,91 @@ def test_profile_payload_lists_search_paths(tmp_path: Path) -> None:
     payload = profile_payload(tmp_path)
     assert payload["search_paths"][0].endswith("flag-profiles")
     assert payload["count"] >= 3
+
+
+def test_profile_launch_surfaces_flag_terminal_only_and_unusable_knobs() -> None:
+    """D07: the Beck–Fiala profile carried a terminal-only axiom knob VS Code rejects."""
+    from leanflow_cli.flags.resolve import profile_launch_surfaces
+
+    terminal_only = FlagProfile(
+        name="beck-fiala-research",
+        summary="",
+        overrides={
+            "LEANFLOW_PROVER_MODE": "research",
+            "LEANFLOW_PROVER_ALLOWED_AXIOMS": "propext,Classical.choice,Quot.sound",
+        },
+    )
+    surfaces = profile_launch_surfaces(terminal_only)
+    assert surfaces["terminal"] == {"supported": True, "rejected": []}
+    assert surfaces["extension"] == {
+        "supported": False,
+        "rejected": ["LEANFLOW_PROVER_ALLOWED_AXIOMS"],
+    }
+    assert surfaces["terminal_only_knobs"] == ["LEANFLOW_PROVER_ALLOWED_AXIOMS"]
+
+    unusable = FlagProfile(
+        name="broken",
+        summary="",
+        overrides={"LEANFLOW_PROJECT_ROOT": "/x", "LEANFLOW_NOT_A_REAL_KNOB": "1"},
+    )
+    surfaces = profile_launch_surfaces(unusable)
+    assert surfaces["terminal"]["supported"] is False
+    assert surfaces["terminal"]["rejected"] == ["LEANFLOW_NOT_A_REAL_KNOB", "LEANFLOW_PROJECT_ROOT"]
+    assert surfaces["extension"]["supported"] is False
+    assert surfaces["unknown_knobs"] == ["LEANFLOW_NOT_A_REAL_KNOB"]
+    assert surfaces["internal_knobs"] == ["LEANFLOW_PROJECT_ROOT"]
+
+    everywhere = profile_launch_surfaces(resolve_profile("default"))
+    assert everywhere["terminal"]["supported"] and everywhere["extension"]["supported"]
+
+
+def test_profile_payload_carries_launch_surfaces(tmp_path: Path) -> None:
+    (tmp_path / ".leanflow").mkdir(parents=True, exist_ok=True)
+    save_profile(
+        FlagProfile(
+            name="axioms-terminal",
+            summary="",
+            overrides={"LEANFLOW_PROVER_ALLOWED_AXIOMS": "propext"},
+        ),
+        project_root=tmp_path,
+    )
+
+    payload = profile_payload(tmp_path)
+
+    assert payload["launch_surfaces"] == ["terminal", "extension"]
+    entries = {entry["name"]: entry for entry in payload["profiles"]}
+    assert entries["axioms-terminal"]["launch_surfaces"]["extension"]["supported"] is False
+    assert entries["axioms-terminal"]["launch_surfaces"]["extension"]["rejected"] == [
+        "LEANFLOW_PROVER_ALLOWED_AXIOMS"
+    ]
+    assert entries["default"]["launch_surfaces"]["extension"]["supported"] is True
+    json.dumps(payload)
+
+
+def test_flags_commands_render_launch_surfaces(monkeypatch, tmp_path: Path, capsys) -> None:
+    from leanflow_cli.main import main
+
+    (tmp_path / ".leanflow").mkdir(parents=True, exist_ok=True)
+    save_profile(
+        FlagProfile(
+            name="axioms-terminal",
+            summary="terminal only",
+            overrides={"LEANFLOW_PROVER_ALLOWED_AXIOMS": "propext"},
+        ),
+        project_root=tmp_path,
+    )
+    monkeypatch.setattr("leanflow_cli.cli.flags_command._project_root", lambda: tmp_path)
+    monkeypatch.setenv("COLUMNS", "200")
+
+    assert main(["flags", "profiles"]) == 0
+    output = capsys.readouterr().out
+    assert "Surfaces" in output
+    assert "terminal only" in output
+
+    assert main(["flags", "effective", "--profile", "axioms-terminal", "--changed"]) == 0
+    captured = capsys.readouterr()
+    assert "terminal-only" in captured.err
+    assert "LEANFLOW_PROVER_ALLOWED_AXIOMS" in captured.err
 
 
 @pytest.mark.parametrize(

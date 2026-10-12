@@ -11,6 +11,7 @@ from leanflow_cli.lean.lean_services import probe_capabilities
 from leanflow_cli.runtime.branding import get_cli_command_name, get_product_name
 from leanflow_cli.runtime.runtime_provider import (
     format_runtime_provider_error,
+    resolve_backend_executable,
     resolve_runtime_provider,
 )
 from tools.mcp.mcp_tool import get_mcp_status
@@ -37,8 +38,11 @@ def _provider_payload() -> tuple[dict[str, Any], list[str]]:
     issues: list[str] = []
     try:
         runtime = resolve_runtime_provider()
+        executable = resolve_backend_executable(str(runtime["provider"]))
         return {
             "available": True,
+            "executable": executable,
+            "authentication": "owned by native CLI; not inspected",
             "provider": str(runtime.get("provider", "") or ""),
             "base_url": str(runtime.get("base_url", "") or ""),
             "api_mode": str(runtime.get("api_mode", "") or ""),
@@ -216,6 +220,16 @@ def _doctor_payload(
                     issues.append(
                         f"MCP bootstrap recommended for {entry.get('name', '[unknown]')}."
                     )
+                power = entry.get("power_modes")
+                power = dict(power) if isinstance(power, dict) else {}
+                if power.get("loogle_local_status") == "client-incompatible":
+                    client = power.get("loogle_client")
+                    client = dict(client) if isinstance(client, dict) else {}
+                    issues.append(
+                        "Managed lean-lsp Loogle client cannot drive the built Loogle index: "
+                        f"{client.get('detail') or 'index flag dialects differ'}. "
+                        f"Run `{cli_name} mcp repair` to re-apply the managed patches."
+                    )
 
     search_providers = [
         str(item) for item in capability.get("search_providers", []) if str(item).strip()
@@ -316,9 +330,9 @@ def _format_doctor_report(payload: dict[str, Any]) -> str:
                 "",
                 "Runtime provider:",
                 f"- provider: {provider.get('provider') or '[unset]'}",
-                f"- base URL: {provider.get('base_url') or '[unset]'}",
+                "- setup: native CLI login or API configuration",
                 f"- API mode: {provider.get('api_mode') or '[unset]'}",
-                f"- model: {provider.get('model') or '[unset]'}",
+                f"- model override: {provider.get('model') or 'native runtime default'}",
             ]
         )
     else:
@@ -361,6 +375,10 @@ def _format_doctor_report(payload: dict[str, Any]) -> str:
                     f"REPL={power.get('repl_status', 'unknown')}, "
                     f"search={power.get('remote_search_policy', 'public-fallbacks-enabled')}"
                 )
+                client = power.get("loogle_client")
+                client = dict(client) if isinstance(client, dict) else {}
+                if client.get("client_found") and client.get("detail"):
+                    lines.append(f"  loogle client: {client.get('detail')}")
 
     search = payload.get("search")
     if isinstance(search, dict):

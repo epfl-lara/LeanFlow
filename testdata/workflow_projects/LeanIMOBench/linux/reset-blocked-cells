@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Reset blocked benchmark cells without provider spending, preserving attempts."""
+
+import argparse
+import copy
+import json
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+BLOCKED = {"environment_error", "error", "infrastructure_error"}
+ARCHIVE = ("run_id", "status", "returncode", "started_at", "finished_at", "error", "metrics")
+CLEAR = (
+    "error",
+    "run_id",
+    "started_at",
+    "started_epoch",
+    "finished_at",
+    "returncode",
+    "process_identity",
+    "process_identity_error",
+    "controller_status",
+    "stop_reason",
+    "runtime_directory",
+    "runtime_sha256",
+    "project",
+)
+
+
+def owned_paths(campaign_dir: Path, cell_id: str) -> tuple[Path, Path]:
+    """Return partial artifacts contained within the campaign, rejecting escapes."""
+    if not cell_id or cell_id in {".", ".."} or Path(cell_id).name != cell_id:
+        raise ValueError(f"Invalid cell id: {cell_id!r}")
+    paths = (campaign_dir / "cells" / cell_id, campaign_dir / "cell-configs" / f"{cell_id}.json")
+    if any(not path.resolve().is_relative_to(campaign_dir.resolve()) for path in paths):
+        raise ValueError(f"Cell path escapes campaign: {cell_id!r}")
+    return paths
+
+
+def reset(campaign_dir: Path, apply: bool = False) -> int:
+    """Reset eligible blocked cells and archive their attempts before clearing state."""
+    campaign = json.loads((campaign_dir / "campaign.json").read_text())
+    paths = [(cell, owned_paths(campaign_dir, cell["id"])) for cell in campaign["cells"]]
+    touched = []
+    for cell, (stale, config) in paths:
+        if cell.get("status") not in BLOCKED:
+            continue
+        spent = int((cell.get("metrics") or {}).get("api_calls", 0) or 0)
+        if spent:
+            print(f"REFUSING {cell['id']}: {spent} api calls already spent; inspect by hand")
+            continue
+        touched.append(cell["id"])
+        print(
+            f"reset  {cell['id']}  (was {cell['status']}, lane {cell.get('lane')}, 0 calls spent)"
+        )
+        print(f"       error was: {str(cell.get('error'))[:110]}")
+        for path in (stale, config):
+            if path.exists():
+                print(f"       remove partial artifact: {path.relative_to(campaign_dir)}")
+        if apply:
+            cell.setdefault("executions", []).append(
+                {k: copy.deepcopy(cell.get(k)) for k in ARCHIVE}
+            )
+            for key in CLEAR:
+                cell.pop(key, None)
+            cell["status"] = "pending"
+            if stale.is_dir():
+                shutil.rmtree(stale)
+            if config.exists():
+                config.unlink()
+    if not touched:
+        print("no blocked cells")
+    elif apply:
+        campaign["status"] = "prepared"
+        campaign.pop("pause_reason", None)
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=campaign_dir, encoding="utf-8", delete=False
+        ) as stream:
+            stream.write(json.dumps(campaign, indent=2, ensure_ascii=False) + "\n")
+            temporary = Path(stream.name)
+        temporary.replace(campaign_dir / "campaign.json")
+        print(f"\napplied to {len(touched)} cell(s); attempt archived under executions[]")
+    else:
+        print(f"\ndry run: {len(touched)} cell(s) would be reset. Re-run with --apply.")
+    return len(touched)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Reset cells in an explicit campaign root, using dry-run mode by default."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--campaign-dir", default=os.environ.get("LEANFLOW_CAMPAIGN_DIR"))
+    parser.add_argument("--apply", action="store_true", help="Reset eligible blocked cells")
+    args = parser.parse_args(argv)
+    if not args.campaign_dir:
+        parser.error("set --campaign-dir or LEANFLOW_CAMPAIGN_DIR")
+    reset(Path(args.campaign_dir).expanduser().resolve(), args.apply)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

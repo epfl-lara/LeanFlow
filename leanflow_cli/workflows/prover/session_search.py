@@ -1,0 +1,108 @@
+"""Bound source-search output and apply read authority to each match."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import tempfile
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+_MATCHES_PER_FILE = 8
+
+#: Lean sources only: what a lemma search should see.
+LEAN_GLOBS: tuple[str, ...] = ("*.lean",)
+#: Lean sources plus the text documentation a project ships with -- notes,
+#: papers extracted to text, blueprints, bibliographies. A project's own
+#: write-ups were otherwise unreachable by any prover tool: read_file needs a
+#: path, and nothing could discover one.
+PROJECT_GLOBS: tuple[str, ...] = ("*.lean", "*.md", "*.txt", "*.tex", "*.bib")
+
+
+def search_sources(
+    query: str,
+    path: Path,
+    readable: Callable[[str], Path],
+    *,
+    globs: tuple[str, ...] = LEAN_GLOBS,
+    max_filesize: str = "1M",
+    timeout_s: float | None = None,
+) -> dict[str, Any]:
+    """Return bounded literal matches without buffering project-wide output in RAM.
+
+    ``max_filesize`` caps how large a file ripgrep will scan. The default suits
+    the lemma-search fallback; a project-documentation search raises it so a
+    large extracted paper or blueprint is not silently skipped (output stays
+    bounded by the per-file/total caps below, and the whole call is time-limited).
+    """
+    if not query or len(query) > 1000:
+        raise ValueError("Search query must contain 1 to 1000 characters")
+    include = [arg for glob in globs for arg in ("--glob", glob)]
+    # ripgrep's --glob filters directory traversal but NOT a path named
+    # explicitly on the command line: `rg --glob '*.lean' -- q solution.py`
+    # still greps solution.py. `path` is model-controlled, so re-apply the
+    # extension allowlist to every returned match -- otherwise a caller could
+    # point search at an out-of-glob file and read its lines regardless.
+    allowed_suffixes = {glob[1:] for glob in globs if glob.startswith("*.") and "/" not in glob}
+    with tempfile.TemporaryFile(mode="w+b") as output:
+        process = subprocess.run(
+            [
+                "rg",
+                "--json",
+                "--hidden",
+                "--no-ignore-vcs",
+                "-F",
+                *include,
+                "--glob",
+                "!.leanflow/**",
+                "--glob",
+                "!.git/**",
+                "--max-filesize",
+                max_filesize,
+                "--max-count",
+                str(_MATCHES_PER_FILE + 1),
+                "--",
+                query,
+                str(path),
+            ],
+            stdout=output,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_s,
+        )
+        output.seek(0)
+        matches = []
+        length = 0
+        matches_per_file: dict[Path, int] = {}
+        truncated = False
+        for raw in output:
+            row = json.loads(raw)
+            if row.get("type") != "match":
+                continue
+            data = row["data"]
+            try:
+                source = readable(data["path"]["text"])
+            except (ValueError, KeyError):
+                continue
+            if allowed_suffixes and source.suffix not in allowed_suffixes:
+                # An explicitly-named path slipped past ripgrep's --glob include.
+                continue
+            count = matches_per_file.get(source, 0)
+            if count >= _MATCHES_PER_FILE:
+                # One extra match distinguishes exactly-at-limit from omitted results.
+                truncated = True
+                continue
+            matches_per_file[source] = count + 1
+            raw_text = str(data.get("lines", {}).get("text", ""))
+            text = raw_text[:2000]
+            truncated = truncated or len(raw_text) > len(text)
+            matches.append({"path": str(source), "line": data["line_number"], "text": text})
+            length += len(text) + len(str(source))
+            if length >= 12000 or len(matches) >= 40:
+                truncated = True
+                break
+        return {
+            "success": process.returncode in {0, 1},
+            "results": matches,
+            "truncated": truncated,
+        }

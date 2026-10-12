@@ -15,12 +15,10 @@ from hashlib import sha256
 import pytest
 
 from core.process_identity import PROCESS_TOKEN_ENV, process_token_sha256
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import (
     campaign_epoch,
     dispatch_ledger_compaction,
     dispatch_service,
-    orchestrator,
     plan_state,
     research_finding_priority,
     research_findings,
@@ -28,6 +26,7 @@ from leanflow_cli.workflows import (
     research_route_context,
     workflow_json_io,
 )
+from leanflow_cli.workflows import campaign_epoch as _leaf_campaign_epoch
 from leanflow_cli.workflows.dispatch_models import (
     ASSIGNMENT_REVISION_INPUT_KEY,
     JobBudget,
@@ -3179,145 +3178,6 @@ def test_archive_upgrades_expected_checked_contract_drift_without_false_quaranti
     assert finding["deliverable"]["checked_replacement_status"] == "incomplete_unverified"
 
 
-def test_runner_reconciles_assignment_archive_on_each_delivery_tick(monkeypatch):
-    """Repeated scans page newly available archive slots after acknowledgements."""
-    calls: list[dict] = []
-    activities: list[tuple[str, str, dict]] = []
-    blueprint = plan_state.Blueprint()
-
-    def migrate(**kwargs):
-        calls.append(kwargs)
-        return {
-            **kwargs,
-            "reconstructed": 2,
-            "reconstructed_job_ids": [
-                "campaign.orchestrator.ds-001",
-                "campaign.orchestrator.em-002",
-            ],
-        }
-
-    monkeypatch.setattr(
-        runner.research_findings,
-        "migrate_consumed_findings_for_assignment",
-        migrate,
-    )
-    monkeypatch.setattr(
-        runner,
-        "_record_activity",
-        lambda event, message, **details: activities.append((event, message, details)),
-    )
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: blueprint)
-    state = {
-        "campaign_id": "campaign",
-        "current_queue_assignment": {
-            "target_symbol": "demo",
-            "active_file": "/tmp/Main.lean",
-        },
-    }
-
-    first = runner._migrate_research_findings_for_assignment(state, None)
-    second = runner._migrate_research_findings_for_assignment(state, None)
-
-    assert first["reconstructed"] == 2
-    assert second["reconstructed"] == 2
-    assert calls == [
-        {
-            "campaign_id": "campaign",
-            "target_symbol": "demo",
-            "active_file": "/tmp/Main.lean",
-            "blueprint": blueprint,
-        },
-        {
-            "campaign_id": "campaign",
-            "target_symbol": "demo",
-            "active_file": "/tmp/Main.lean",
-            "blueprint": blueprint,
-        },
-    ]
-    assert [activity[0] for activity in activities] == [
-        "research-finding-migration",
-        "research-finding-migration",
-    ]
-    assert activities[-1][2]["reconstructed_job_ids"] == [
-        "campaign.orchestrator.ds-001",
-        "campaign.orchestrator.em-002",
-    ]
-
-
-def test_runner_reports_new_deferred_archive_pointer_without_materialization(monkeypatch):
-    """A capacity-deferred consumed result is visible on its first migration."""
-    activities: list[tuple[str, dict]] = []
-    monkeypatch.setattr(
-        runner.research_findings,
-        "migrate_consumed_findings_for_assignment",
-        lambda **kwargs: {
-            **kwargs,
-            "materialized": 0,
-            "dematerialized": 0,
-            "quarantined": 0,
-            "deferred_capacity": 1,
-            "archive_updates": 1,
-        },
-    )
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", plan_state.Blueprint)
-    monkeypatch.setattr(
-        runner,
-        "_record_activity",
-        lambda event, _message, **details: activities.append((event, details)),
-    )
-
-    report = runner._migrate_research_findings_for_assignment(
-        {
-            "campaign_id": "campaign",
-            "current_queue_assignment": {
-                "target_symbol": "child",
-                "active_file": "/tmp/Main.lean",
-            },
-        },
-        None,
-    )
-
-    assert report["deferred_capacity"] == 1
-    assert activities == [("research-finding-migration", report)]
-
-
-def test_runner_suppresses_unchanged_quarantine_migration_activity(monkeypatch):
-    """A stable quarantine inventory is state, not a new activity transition."""
-    activities: list[tuple[str, dict]] = []
-    monkeypatch.setattr(
-        runner.research_findings,
-        "migrate_consumed_findings_for_assignment",
-        lambda **kwargs: {
-            **kwargs,
-            "materialized": 0,
-            "dematerialized": 0,
-            "quarantined": 100,
-            "archive_updates": 0,
-            "state_changed": False,
-        },
-    )
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", plan_state.Blueprint)
-    monkeypatch.setattr(
-        runner,
-        "_record_activity",
-        lambda event, _message, **details: activities.append((event, details)),
-    )
-
-    report = runner._migrate_research_findings_for_assignment(
-        {
-            "campaign_id": "campaign",
-            "current_queue_assignment": {
-                "target_symbol": "demo",
-                "active_file": "/tmp/Main.lean",
-            },
-        },
-        None,
-    )
-
-    assert report["quarantined"] == 100
-    assert activities == []
-
-
 def test_legacy_provenance_allows_safe_acknowledgement_after_restart(monkeypatch, tmp_path):
     """An exact ledger spec recovers the origin before compacting legacy evidence."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
@@ -5815,132 +5675,6 @@ def test_assignment_transition_does_not_overlap_unretired_exact_process(monkeypa
     assert service._entry(stale_job).state == "running"
 
 
-def test_scope_entry_releases_other_dispatch_worker_pid_without_signal_and_launches(
-    monkeypatch, tmp_path
-):
-    """A different worker spec frees the ghost lane without signaling its PID."""
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("LEANFLOW_DISPATCH_ENABLED", "1")
-    campaign_id = "campaign-scope-legacy-pid"
-    target_symbol = "erdos_242_family_one_yz_candidates"
-    active_file = str(tmp_path / "ErdosProblems" / "242.lean")
-    service = dispatch_service.DispatchService(root_job_id=campaign_id)
-    legacy_entry = _seed_legacy_killed_process(
-        service,
-        campaign_id=campaign_id,
-        target_symbol="no_witness_ten_sixty_one",
-        active_file=active_file,
-        suffix="ds-047",
-    )
-    monkeypatch.setattr(
-        dispatch_service,
-        "_dispatch_process_identity_has_exited",
-        lambda _entry: False,
-    )
-    monkeypatch.setattr(
-        dispatch_service,
-        "_read_process_argv",
-        lambda _process_id, **_kwargs: (
-            sys.executable,
-            "-m",
-            dispatch_service.DISPATCH_WORKER_MODULE,
-            "--spec-file",
-            str(tmp_path / ".leanflow" / "workflow-state" / "dispatch-jobs" / "other.spec.json"),
-        ),
-    )
-    monkeypatch.setattr(
-        dispatch_service,
-        "_terminate_dispatch_process_and_wait",
-        lambda _entry: pytest.fail("a mismatched PID must never be signaled"),
-    )
-
-    def fake_deploy_async(self, job_id):
-        self._transition(job_id, "deployed")
-        return self._transition(
-            job_id,
-            "running",
-            started_at=dispatch_service._now_iso(),
-        )
-
-    monkeypatch.setattr(
-        dispatch_service.DispatchService,
-        "deploy_async",
-        fake_deploy_async,
-    )
-    events: list[tuple[str, str, dict]] = []
-    monkeypatch.setattr(
-        research_portfolio,
-        "append_workflow_activity",
-        lambda event_type, message, **details: events.append((event_type, message, details)),
-    )
-    monkeypatch.setattr(research_portfolio, "read_workflow_activity", lambda **_kwargs: [])
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *args, **kwargs: "pass")
-    monkeypatch.setattr(
-        runner, "_migrate_research_findings_for_assignment", lambda *args, **kwargs: {}
-    )
-    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *args, **kwargs: "")
-    monkeypatch.setattr(
-        runner,
-        "_research_portfolio_poll_request",
-        lambda *args, **kwargs: runner._ResearchPortfolioPollRequest(
-            campaign_id=campaign_id,
-            campaign_epoch=1,
-            target_symbol=target_symbol,
-            active_file=active_file,
-            attempt_count=0,
-            workers=2,
-        ),
-    )
-    monkeypatch.setattr(
-        runner.campaign_epoch,
-        "pending_worker_refresh",
-        lambda **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        runner, "_publish_research_portfolio_completion_events", lambda *args, **kwargs: None
-    )
-    monkeypatch.setattr(
-        runner, "_retry_deferred_scratch_artifact_cleanup", lambda *args, **kwargs: None
-    )
-    monkeypatch.setattr(
-        runner,
-        "_orchestrator_consult",
-        lambda *args, **kwargs: orchestrator.OrchestratorRoute(
-            route="direct-prove",
-            reason="start foreground proving while grounding runs",
-        ),
-    )
-    state: dict = {}
-
-    prompt = runner._research_scope_entry_setup(
-        "start",
-        state,
-        {"target_symbol": target_symbol, "active_file": active_file},
-    )
-
-    portfolio = state["research_portfolio"]
-    assert portfolio["active"] == 1
-    assert len(portfolio["launched"]) == 1
-    launched = service._entry(portfolio["launched"][0])
-    assert launched.state == "running"
-    assert launched.spec.archetype == "deep_search"
-    assert launched.spec.inputs["target_symbol"] == target_symbol
-    legacy = service._entry(legacy_entry.spec.job_id)
-    assert legacy.process_release_reason == "legacy-dispatch-worker-spec-mismatch"
-    assert legacy.process_released_at
-    assert legacy.process_release_reported_at
-    release_events = [
-        event for event in events if event[0] == "research-portfolio-capacity-released"
-    ]
-    assert len(release_events) == 1
-    assert release_events[0][2]["job_id"] == legacy_entry.spec.job_id
-    assert release_events[0][2]["release_report_key"] == legacy.process_release_report_key
-    assert "[ORCHESTRATOR SCOPE-ENTRY ROUTE]" in prompt
-
-
 def test_release_activity_failure_does_not_block_launch_and_retries(monkeypatch, tmp_path):
     """A durable unreported tombstone retries without reclaiming its actor slot."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
@@ -6171,229 +5905,6 @@ def test_release_activity_append_marker_crash_deduplicates_on_retry(monkeypatch,
     assert reported.process_release_reported_at == "2026-07-18T10:00:00+00:00"
 
 
-def test_research_scope_entry_starts_grounding_and_records_route_before_foreground(monkeypatch):
-    calls: list[str] = []
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
-    monkeypatch.setattr(
-        runner, "_maybe_sync_plan_state", lambda *args, **kwargs: calls.append("plan")
-    )
-    monkeypatch.setattr(
-        runner,
-        "_maybe_statement_fidelity_audit",
-        lambda *args, **kwargs: calls.append("fidelity") or "pass",
-    )
-    monkeypatch.setattr(
-        runner, "_maintain_research_portfolio", lambda *args, **kwargs: calls.append("grounding")
-    )
-    monkeypatch.setattr(
-        runner,
-        "_take_research_findings_prompt",
-        lambda *args, **kwargs: calls.append("findings") or "[findings]",
-    )
-    monkeypatch.setattr(
-        runner,
-        "_orchestrator_consult",
-        lambda *args, **kwargs: calls.append("route")
-        or orchestrator.OrchestratorRoute(
-            route="direct-prove",
-            reason="start foreground proof while grounding runs",
-        ),
-    )
-    state: dict = {}
-
-    prompt = runner._research_scope_entry_setup("start", state, {"target_symbol": "demo"})
-
-    assert calls == ["plan", "fidelity", "grounding", "findings", "route"]
-    assert state["orchestrator_scope_entered"] is True
-    assert "[findings]" in prompt
-    assert "[ORCHESTRATOR SCOPE-ENTRY ROUTE]" in prompt
-    assert "direct-prove" in prompt
-
-
-def test_research_scope_entry_applies_the_authoritative_route_before_prompt(monkeypatch):
-    calls: list[tuple[str, str]] = []
-    selected = orchestrator.OrchestratorRoute(
-        route="plan",
-        reason="refresh the current target strategy",
-    )
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *args: "pass")
-    monkeypatch.setattr(runner, "_migrate_research_findings_for_assignment", lambda *args: {})
-    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *args: None)
-    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *args: "")
-    monkeypatch.setattr(
-        runner,
-        "_orchestrator_consult",
-        lambda *args, **kwargs: calls.append(("consult", selected.route)) or selected,
-    )
-
-    def apply(route, history, *_args, **_kwargs):
-        calls.append(("apply", route.route))
-        history.append(
-            {
-                "role": "user",
-                "content": "[LEANFLOW ORCHESTRATOR ROUTE: plan]\n- planner phase applied",
-            }
-        )
-        return "continue"
-
-    monkeypatch.setattr(runner, "_apply_orchestrator_route_with_completion", apply)
-    state: dict = {}
-
-    prompt = runner._research_scope_entry_setup(
-        "",
-        state,
-        {"target_symbol": "demo"},
-        agent=object(),
-        apply_route=True,
-    )
-
-    assert calls == [("consult", "plan"), ("apply", "plan")]
-    assert state[runner._RESEARCH_SCOPE_ENTRY_ACTION_KEY] == "continue"
-    assert "[ORCHESTRATOR SCOPE-ENTRY ROUTE]\n- route: plan" in prompt
-    assert "planner phase applied" in prompt
-    assert "route: decompose" not in prompt
-
-
-def test_fourth_scope_entry_route_rolls_epoch_before_startup_provider_call(monkeypatch, tmp_path):
-    """A startup scope consult must not defer its fourth-route rollover."""
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "campaign-scope-boundary")
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *args, **kwargs: "pass")
-    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        runner, "_take_research_findings_prompt", lambda *args, **kwargs: "[findings]"
-    )
-
-    state: dict = {}
-    for route_name in ("direct-prove", "plan", "decompose"):
-        runner.campaign_epoch.record_route_decision(state, route=route_name)
-
-    def fourth_consult(*args, **kwargs):
-        runner.campaign_epoch.record_route_decision(state, route="direct-prove")
-        return orchestrator.OrchestratorRoute(
-            route="direct-prove",
-            reason="continue the current proof shape",
-        )
-
-    monkeypatch.setattr(runner, "_orchestrator_consult", fourth_consult)
-    prompt = runner._research_scope_entry_setup("start", state, {"target_symbol": "demo"})
-
-    assert state["orchestrator_routes_used"] == 4
-    assert state["campaign_epoch_requested"] == "route-no-graph-progress"
-    assert "[findings]" in prompt
-    assert "[ORCHESTRATOR SCOPE-ENTRY ROUTE]" not in prompt
-
-    roll_calls: list[str] = []
-
-    def fake_roll(*args, reason, **kwargs):
-        roll_calls.append(reason)
-        return ([{"role": "user", "content": "fresh epoch"}], {"compacted": False}, {})
-
-    monkeypatch.setattr(runner, "_roll_autonomous_campaign_epoch", fake_roll)
-    history, compaction, checkpoint, rolled = runner._roll_pending_startup_scope_epoch(
-        object(), [], {}, {}, state, {"target_symbol": "demo"}
-    )
-
-    assert rolled is True
-    assert roll_calls == ["route-no-graph-progress"]
-    assert history == [{"role": "user", "content": "fresh epoch"}]
-    assert compaction == {"compacted": False}
-    assert checkpoint == {}
-    assert "campaign_epoch_requested" not in state
-
-
-def test_fourth_applied_scope_route_runs_before_startup_epoch_rollover(monkeypatch, tmp_path):
-    """Do not count a reserved fourth strategy as attempted before it runs."""
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "campaign-applied-scope-boundary")
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
-    monkeypatch.setattr(runner.scope_entry_admission, "arm", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *args, **kwargs: "pass")
-    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *args, **kwargs: "")
-    monkeypatch.setattr(
-        runner,
-        "_recheck_pending_research_helper_if_due",
-        lambda *args, **kwargs: "",
-    )
-    monkeypatch.setattr(
-        runner.research_helper_candidate_priority,
-        "matching",
-        lambda *args, **kwargs: None,
-    )
-    monkeypatch.setattr(runner, "_pending_checked_target_replacement", lambda *args: False)
-    monkeypatch.setattr(runner, "_reconcile_legacy_epoch_route_completion", lambda *args: None)
-
-    active = tmp_path / "Demo.lean"
-    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
-    state = {
-        "current_queue_assignment": {
-            "target_symbol": "demo",
-            "active_file": str(active),
-        }
-    }
-    for route_name in ("direct-prove", "plan", "negate"):
-        runner.campaign_epoch.record_route_decision(state, route=route_name, limit=99)
-
-    selected = orchestrator.OrchestratorRoute(
-        route="decompose",
-        reason="structurally recover after repeated verification limits",
-    )
-
-    def fourth_consult(*args, **kwargs):
-        runner.campaign_epoch.record_route_decision(
-            state,
-            route="decompose",
-            target_symbol="demo",
-            active_file=str(active),
-            trigger="scope-entry",
-            reserve_inflight=True,
-        )
-        return selected
-
-    applied: list[str] = []
-
-    def apply(route, *_args, **_kwargs):
-        applied.append(route.route)
-        return "continue"
-
-    monkeypatch.setattr(runner, "_orchestrator_consult", fourth_consult)
-    monkeypatch.setattr(runner, "_apply_orchestrator_route_with_completion", apply)
-
-    prompt = runner._research_scope_entry_setup(
-        "start",
-        state,
-        {"target_symbol": "demo", "active_file": str(active)},
-        agent=object(),
-        apply_route=True,
-    )
-
-    assert applied == ["decompose"]
-    assert "[ORCHESTRATOR SCOPE-ENTRY ROUTE]" in prompt
-    assert state["campaign_epoch_requested"] == "route-no-graph-progress"
-    scope = runner._orchestrator_event_scope(state)
-    assert runner.orchestrator_event_watermark.foreground_grace_active(state, scope=scope)
-
-    history, compaction, checkpoint, rolled = runner._roll_pending_startup_scope_epoch(
-        object(), [], {}, {}, state, {"target_symbol": "demo", "active_file": str(active)}
-    )
-
-    assert rolled is False
-    assert history == []
-    assert compaction == {}
-    assert checkpoint == {}
-    assert state["campaign_epoch_requested"] == "route-no-graph-progress"
-
-
 def test_shutdown_kills_every_open_portfolio_job(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("LEANFLOW_DISPATCH_ENABLED", "1")
@@ -6576,7 +6087,7 @@ def test_fresh_epoch_relaxes_only_older_semantic_cooldowns_to_refill_distinct_ro
         lambda _finding: "partial_coverage_without_completion",
     )
     state: dict = {}
-    campaign = runner.campaign_epoch.ensure_campaign(state)
+    campaign = _leaf_campaign_epoch.ensure_campaign(state)
     campaign_id = str(campaign["campaign_id"])
     target_symbol = "hard_goal"
     active_file = str(tmp_path / "Main.lean")
@@ -6591,7 +6102,7 @@ def test_fresh_epoch_relaxes_only_older_semantic_cooldowns_to_refill_distinct_ro
     prior_objectives = {
         research_portfolio._normalized_route_objective(entry.spec.objective) for entry in cooled
     }
-    runner.campaign_epoch.roll_epoch(
+    _leaf_campaign_epoch.roll_epoch(
         state,
         reason="route-no-graph-progress",
         cycle=4,
@@ -6642,7 +6153,7 @@ def test_same_epoch_semantic_cooldowns_are_never_relaxed(monkeypatch, tmp_path):
         lambda _finding: "partial_coverage_without_completion",
     )
     state: dict = {}
-    campaign = runner.campaign_epoch.ensure_campaign(state)
+    campaign = _leaf_campaign_epoch.ensure_campaign(state)
     campaign_id = str(campaign["campaign_id"])
     target_symbol = "hard_goal"
     active_file = str(tmp_path / "Main.lean")
@@ -6774,7 +6285,7 @@ def test_uncooled_lanes_fill_capacity_before_an_older_cooldown_is_relaxed(monkey
         lambda _finding: "partial_coverage_without_completion",
     )
     state: dict = {}
-    campaign = runner.campaign_epoch.ensure_campaign(state)
+    campaign = _leaf_campaign_epoch.ensure_campaign(state)
     campaign_id = str(campaign["campaign_id"])
     target_symbol = "hard_goal"
     active_file = str(tmp_path / "Main.lean")
@@ -6786,7 +6297,7 @@ def test_uncooled_lanes_fill_capacity_before_an_older_cooldown_is_relaxed(monkey
         campaign_epoch=1,
         archetypes=("empirical",),
     )
-    runner.campaign_epoch.roll_epoch(
+    _leaf_campaign_epoch.roll_epoch(
         state,
         reason="route-no-graph-progress",
         cycle=4,
@@ -6831,7 +6342,7 @@ def test_restart_after_epoch_commit_replays_worker_refresh_without_result_loss(
         fake_deploy_async,
     )
     state: dict = {}
-    campaign = runner.campaign_epoch.ensure_campaign(state)
+    campaign = _leaf_campaign_epoch.ensure_campaign(state)
     campaign_id = str(campaign["campaign_id"])
     active_file = str(tmp_path / "Main.lean")
     first = research_portfolio.maintain_portfolio(
@@ -6858,7 +6369,7 @@ def test_restart_after_epoch_commit_replays_worker_refresh_without_result_loss(
 
     # Simulate a crash immediately after the atomic campaign roll, before the
     # runner's best-effort eager worker-refresh call.
-    runner.campaign_epoch.roll_epoch(
+    _leaf_campaign_epoch.roll_epoch(
         state,
         reason="context-pressure",
         cycle=1,
@@ -6866,8 +6377,8 @@ def test_restart_after_epoch_commit_replays_worker_refresh_without_result_loss(
         active_file=active_file,
     )
     resumed: dict = {}
-    runner.campaign_epoch.ensure_campaign(resumed)
-    assert resumed[runner.campaign_epoch.EPOCH_WORKER_REFRESH_STATE_KEY]["pending"] is True
+    _leaf_campaign_epoch.ensure_campaign(resumed)
+    assert resumed[_leaf_campaign_epoch.EPOCH_WORKER_REFRESH_STATE_KEY]["pending"] is True
 
     refreshed = research_portfolio.maintain_portfolio(
         campaign_id=campaign_id,
@@ -6881,7 +6392,7 @@ def test_restart_after_epoch_commit_replays_worker_refresh_without_result_loss(
     assert open_job in refreshed["epoch_refresh_killed"]
     assert service._entry(completed_job).consumed is True
     assert service._entry(open_job).state == "killed"
-    assert runner.campaign_epoch.pending_worker_refresh(campaign_id=campaign_id) == {}
+    assert _leaf_campaign_epoch.pending_worker_refresh(campaign_id=campaign_id) == {}
     refreshed_signatures = {
         service._entry(job_id).spec.inputs["route_signature"] for job_id in refreshed["launched"]
     }
@@ -6921,7 +6432,7 @@ def test_epoch_worker_refresh_stays_pending_when_retirement_fails(monkeypatch, t
         fake_deploy_async,
     )
     state: dict = {}
-    campaign_id = str(runner.campaign_epoch.ensure_campaign(state)["campaign_id"])
+    campaign_id = str(_leaf_campaign_epoch.ensure_campaign(state)["campaign_id"])
     active_file = str(tmp_path / "Main.lean")
     first = research_portfolio.maintain_portfolio(
         campaign_id=campaign_id,
@@ -6931,7 +6442,7 @@ def test_epoch_worker_refresh_stays_pending_when_retirement_fails(monkeypatch, t
         workers=1,
     )
     old_job = first["launched"][0]
-    runner.campaign_epoch.roll_epoch(
+    _leaf_campaign_epoch.roll_epoch(
         state,
         reason="context-pressure",
         cycle=1,
@@ -6958,7 +6469,7 @@ def test_epoch_worker_refresh_stays_pending_when_retirement_fails(monkeypatch, t
     assert status["epoch_refresh_pending"] is True
     assert status["launched"] == []
     assert status["active_jobs"] == [old_job]
-    assert runner.campaign_epoch.pending_worker_refresh(campaign_id=campaign_id)["pending"] is True
+    assert _leaf_campaign_epoch.pending_worker_refresh(campaign_id=campaign_id)["pending"] is True
 
 
 def test_shutdown_counts_worker_already_normalized_as_killed(monkeypatch, tmp_path):
@@ -7189,163 +6700,6 @@ def test_zero_worker_portfolio_reports_cleanup_pending_for_live_exact_process(
     assert service._entry(spec.job_id).state == "running"
 
 
-def test_zero_worker_runner_still_maintains_persisted_portfolio(monkeypatch):
-    calls: list[dict] = []
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 0)
-    monkeypatch.setattr(runner, "_live_state_is_verified", lambda _state: False)
-    monkeypatch.setattr(
-        runner.campaign_epoch,
-        "ensure_campaign",
-        lambda _state: {"campaign_id": "campaign-demo"},
-    )
-    monkeypatch.setattr(
-        runner.research_portfolio,
-        "maintain_portfolio",
-        lambda **kwargs: calls.append(kwargs)
-        or {"active": 0, "active_jobs": [], "launched": [], "consumed": []},
-    )
-
-    runner._maintain_research_portfolio({}, {"target_symbol": "demo"})
-
-    assert calls and calls[0]["workers"] == 0
-
-
-def test_verified_state_does_not_refill_research_portfolio(monkeypatch):
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: True)
-    monkeypatch.setattr(
-        runner.research_portfolio,
-        "maintain_portfolio",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("must not refill")),
-    )
-
-    runner._maintain_research_portfolio({}, {"verified": True})
-
-
-def test_read_only_tool_boundary_polls_portfolio_during_foreground_turn(monkeypatch):
-    calls: list[tuple[dict, dict]] = []
-    staged: list[str] = []
-    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(
-        runner,
-        "_maintain_research_portfolio",
-        lambda state, live: calls.append((state, dict(live or {}))),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_take_research_findings_prompt",
-        lambda state, live: "[fresh research finding]",
-    )
-
-    class _Agent:
-        _managed_autonomy_state = {
-            "current_queue_assignment": {
-                "target_symbol": "demo",
-                "active_file": "Demo/Main.lean",
-            }
-        }
-
-        def is_interrupted(self):
-            return False
-
-        def stage_tool_result_appendix(self, text):
-            staged.append(text)
-
-    runner._handle_managed_tool_result(
-        _Agent(),
-        "lean_reasoning_help",
-        {},
-        '{"success": true}',
-    )
-
-    assert len(calls) == 1
-    assert calls[0][1] == {
-        "target_symbol": "demo",
-        "active_file": "Demo/Main.lean",
-    }
-    assert staged == ["[fresh research finding]"]
-
-
-@pytest.mark.parametrize(
-    "function_name",
-    [
-        "apply_verified_patch",
-        "lean_incremental_check",
-        "lean_verify",
-        "patch",
-        "terminal",
-        "write_file",
-    ],
-)
-def test_queue_authority_boundary_defers_portfolio_poll_to_queue_gate(monkeypatch, function_name):
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(
-        runner,
-        "_maintain_research_portfolio",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must defer")),
-    )
-
-    class _Agent:
-        _managed_autonomy_state = {}
-
-    runner._poll_research_portfolio_after_tool_result(_Agent(), function_name)
-
-
-def test_findings_are_target_scoped_and_delivered_to_foreground_once(monkeypatch):
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    summary = {
-        "dispatch_ledger": [
-            {
-                "spec": {
-                    "job_id": "campaign.ds-001",
-                    "inputs": {"target_symbol": "demo", "active_file": "/tmp/Demo.lean"},
-                }
-            },
-            {
-                "spec": {
-                    "job_id": "campaign.ds-002",
-                    "inputs": {"target_symbol": "other", "active_file": "/tmp/Demo.lean"},
-                }
-            },
-        ],
-        "research_findings": [
-            {
-                "job_id": "campaign.ds-001",
-                "archetype": "deep_search",
-                "deliverable": {"summary": "use invariant h"},
-            },
-            {
-                "job_id": "campaign.ds-002",
-                "archetype": "deep_search",
-                "deliverable": {"summary": "wrong target"},
-            },
-        ],
-    }
-    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
-    state = {
-        "current_queue_assignment": {
-            "target_symbol": "demo",
-            "active_file": "/tmp/Demo.lean",
-        }
-    }
-
-    selected = research_findings.relevant_findings(
-        summary,
-        target_symbol="demo",
-        active_file="/private/tmp/Demo.lean",
-    )
-    assert [finding["job_id"] for finding in selected] == ["campaign.ds-001"]
-
-    first = runner._take_research_findings_prompt(state, {"target_symbol": "demo"})
-    second = runner._take_research_findings_prompt(state, {"target_symbol": "demo"})
-
-    assert "use invariant h" in first
-    assert "wrong target" not in first
-    assert second == ""
-
-
 def test_findings_prompt_prioritizes_exact_replacement_without_cutting_code():
     replacement = "by\n  " + "exact True.intro\n  " * 500
     prompt = research_findings.prompt_payload(
@@ -7477,115 +6831,6 @@ def test_evidence_only_finding_retains_explicit_dead_end_route_and_reason():
     assert "one constant coloring cannot select it parametrically" in prompt
     assert "finite residue split leaves the universal tail open" in prompt
     assert "by_cases h29" not in prompt
-
-
-def test_research_handoff_persists_dead_ends_for_exact_assignment(monkeypatch):
-    """Make delivered research exclusions survive later context compression."""
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    active_file = "/tmp/P4.lean"
-    finding = {
-        "job_id": "campaign.ds-dead-end",
-        "target_symbol": "result",
-        "active_file": active_file,
-        "consumed_at": "2026-08-05T12:00:00+00:00",
-        "deliverable": {
-            "dead_ends": [
-                {
-                    "route": "constant coloring",
-                    "reason": "The branch choice must depend on the live move.",
-                }
-            ]
-        },
-    }
-    monkeypatch.setattr(
-        runner,
-        "_migrate_research_findings_for_assignment",
-        lambda *_args, **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        runner.plan_state,
-        "load_summary",
-        lambda: {"research_findings": [finding]},
-    )
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
-    recorded = []
-
-    def record_checkpoint_advisory(**kwargs):
-        recorded.append(kwargs)
-        return True
-
-    monkeypatch.setattr(
-        runner.plan_state,
-        "record_checkpoint_advisory",
-        record_checkpoint_advisory,
-    )
-    state = {
-        "campaign_id": "campaign",
-        "current_queue_assignment": {
-            "target_symbol": "result",
-            "active_file": active_file,
-        },
-    }
-
-    prompt = runner._take_research_findings_prompt(state, None)
-
-    assert "constant coloring" in prompt
-    assert len(recorded) == 1
-    assert recorded[0]["target_symbol"] == "result"
-    assert recorded[0]["active_file"] == active_file
-    assert recorded[0]["created_at"] == "2026-08-05T12:00:00+00:00"
-    assert recorded[0]["negative_evidence"] == [
-        "constant coloring: The branch choice must depend on the live move."
-    ]
-
-
-def test_research_handoff_backfills_dead_ends_from_delivered_findings(monkeypatch):
-    """Repair durable route memory when resuming a campaign from an older build."""
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    active_file = "/tmp/P4.lean"
-    finding = {
-        "job_id": "campaign.ds-already-delivered",
-        "target_symbol": "result",
-        "active_file": active_file,
-        "deliverable": {
-            "dead_ends": [
-                {
-                    "route": "fixed initial state",
-                    "reason": "The invariant requires a state-dependent witness.",
-                }
-            ]
-        },
-    }
-    summary = {"research_findings": [finding]}
-    monkeypatch.setattr(
-        runner,
-        "_migrate_research_findings_for_assignment",
-        lambda *_args, **_kwargs: {},
-    )
-    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
-    recorded = []
-    monkeypatch.setattr(
-        runner.plan_state,
-        "record_checkpoint_advisory",
-        lambda **kwargs: recorded.append(kwargs) or True,
-    )
-    marker = research_findings.delivery_key(finding["job_id"], "result")
-    state = {
-        "campaign_id": "campaign",
-        "research_findings_delivered": [marker],
-        "current_queue_assignment": {
-            "target_symbol": "result",
-            "active_file": active_file,
-        },
-    }
-
-    prompt = runner._take_research_findings_prompt(state, None)
-
-    assert prompt == ""
-    assert [record["negative_evidence"] for record in recorded] == [
-        ["fixed initial state: The invariant requires a state-dependent witness."]
-    ]
 
 
 def _partial_congruence_finding(*, failed_shape_count: int = 2, checked: bool = False):
@@ -8147,73 +7392,6 @@ def test_status_only_partial_result_cannot_seed_recursive_portfolio_refresh():
     )
 
 
-def test_research_handoff_forbids_acting_on_evidence_only_findings(monkeypatch):
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    active_file = "/tmp/Erdos242.lean"
-    summary = {
-        "research_findings": [
-            {
-                "job_id": "campaign.em-subsumed",
-                "target_symbol": "erdos_242",
-                "active_file": active_file,
-                "semantic_novelty": {
-                    "classification": "subsumed",
-                    "progress_anchor_eligible": False,
-                },
-                "deliverable": {"noncoverage_summary": "finite branch leaves a surviving input"},
-            }
-        ]
-    }
-    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
-    state = {
-        "current_queue_assignment": {
-            "target_symbol": "erdos_242",
-            "active_file": active_file,
-        }
-    }
-
-    prompt = runner._take_research_findings_prompt(state, None)
-
-    assert "finite branch leaves a surviving input" in prompt
-    assert "EVIDENCE_ONLY" in prompt
-    assert "must not be implemented or retried" in prompt
-
-
-def test_research_handoff_suppresses_status_only_partial_candidate(monkeypatch, tmp_path):
-    """Apply the same containment policy to the foreground prover handoff."""
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    finding = _status_only_partial_finding()
-    active_file = str(tmp_path / "Main.lean")
-    finding["active_file"] = active_file
-    monkeypatch.setattr(
-        runner,
-        "_migrate_research_findings_for_assignment",
-        lambda *_args, **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        runner.plan_state,
-        "load_summary",
-        lambda: {"research_findings": [finding]},
-    )
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
-    state = {
-        "current_queue_assignment": {
-            "target_symbol": "demo",
-            "active_file": active_file,
-        }
-    }
-
-    prompt = runner._take_research_findings_prompt(state, None)
-
-    assert "EVIDENCE_ONLY" in prompt
-    assert "em_366_residue_helper" not in prompt
-    assert "em_366_candidate" not in prompt
-    assert "s % 11 = 8" not in prompt
-    assert "Integrate the em-366 residue route" not in prompt
-
-
 def test_evidence_only_truncation_retains_obstruction_not_candidate_code():
     stale_route = "by_cases h29 : q % 29 = 28"
     prompt = research_findings.prompt_payload(
@@ -8269,153 +7447,6 @@ def test_ineligible_findings_cannot_raise_queue_research_priority():
         )
         == research_finding_priority.EXACT_TARGET_PRIORITY
     )
-
-
-def test_foreground_batch_never_acknowledges_evidence_omitted_by_exact_code(monkeypatch):
-    """A large checked candidate cannot crowd a neighboring finding out."""
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    active_file = "/tmp/Erdos242.lean"
-    replacement = "by\n  " + "exact True.intro\n  " * 1800
-    summary = {
-        "research_findings": [
-            {
-                "job_id": "campaign.ds-checked",
-                "archetype": "deep_search",
-                "target_symbol": "erdos_242",
-                "active_file": active_file,
-                "deliverable": {
-                    "status": "candidate_verified",
-                    "checked_replacements": [
-                        {
-                            "target_symbol": "erdos_242",
-                            "replacement": replacement,
-                            "worker_check": {
-                                "tool": "lean_incremental_check",
-                                "valid_without_sorry": True,
-                                "has_errors": False,
-                                "has_sorry": False,
-                                "replacement_matches_target": True,
-                            },
-                        }
-                    ],
-                },
-            },
-            {
-                "job_id": "campaign.em-next",
-                "archetype": "empirical",
-                "target_symbol": "erdos_242",
-                "active_file": active_file,
-                "deliverable": {"summary": "new residue-class obstruction"},
-            },
-        ]
-    }
-    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
-    state = {
-        "current_queue_assignment": {
-            "target_symbol": "erdos_242",
-            "active_file": active_file,
-        }
-    }
-
-    checked_prompt = runner._take_research_findings_prompt(state, None)
-
-    assert checked_prompt.count("exact True.intro") == 1800
-    assert "new residue-class obstruction" not in checked_prompt
-    assert research_findings.pending_foreground_markers(
-        state,
-        target_symbol="erdos_242",
-    ) == {research_findings.delivery_key("campaign.ds-checked", "erdos_242")}
-    assert research_findings.pending_checked_target_replacement(
-        state,
-        summary,
-        target_symbol="erdos_242",
-        active_file=active_file,
-        blueprint=None,
-    )
-
-    research_findings.acknowledge_foreground_deliveries(
-        state,
-        [
-            {"role": "user", "content": checked_prompt},
-            {"role": "assistant", "content": "Rechecking the exact candidate."},
-        ],
-    )
-    assert not research_findings.pending_checked_target_replacement(
-        state,
-        summary,
-        target_symbol="erdos_242",
-        active_file=active_file,
-        blueprint=None,
-    )
-    empirical_prompt = runner._take_research_findings_prompt(state, None)
-    assert "new residue-class obstruction" in empirical_prompt
-
-
-def test_oversized_exact_finding_stays_durable_without_starving_bounded_evidence(monkeypatch):
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    active_file = "/tmp/Erdos242.lean"
-    oversized = "by\n  " + "exact True.intro\n  " * 4000
-    summary = {
-        "research_findings": [
-            {
-                "job_id": "campaign.ds-oversized",
-                "target_symbol": "erdos_242",
-                "active_file": active_file,
-                "deliverable": {
-                    "status": "candidate_verified",
-                    "checked_replacements": [
-                        {
-                            "target_symbol": "erdos_242",
-                            "replacement": oversized,
-                            "worker_check": {
-                                "tool": "lean_incremental_check",
-                                "valid_without_sorry": True,
-                                "has_errors": False,
-                                "has_sorry": False,
-                                "replacement_matches_target": True,
-                            },
-                        }
-                    ],
-                },
-            },
-            {
-                "job_id": "campaign.em-bounded",
-                "target_symbol": "erdos_242",
-                "active_file": active_file,
-                "deliverable": {"summary": "bounded evidence still arrives"},
-            },
-        ]
-    }
-    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
-    state = {
-        "current_queue_assignment": {
-            "target_symbol": "erdos_242",
-            "active_file": active_file,
-        }
-    }
-
-    prompt = runner._take_research_findings_prompt(state, None)
-
-    assert "bounded evidence still arrives" in prompt
-    pending = research_findings.pending_foreground_markers(
-        state,
-        target_symbol="erdos_242",
-    )
-    assert pending == {research_findings.delivery_key("campaign.em-bounded", "erdos_242")}
-    assert research_findings.delivery_key("campaign.ds-oversized", "erdos_242") not in pending
-
-    research_findings.acknowledge_foreground_deliveries(
-        state,
-        [
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": "Using the bounded evidence first."},
-        ],
-    )
-    oversized_prompt = runner._take_research_findings_prompt(state, None)
-    assert "leanflow-research-finding-chunks-v1" in oversized_prompt
-    assert len(oversized_prompt) <= research_findings.FOREGROUND_PROMPT_HARD_CAP
 
 
 def test_oversized_finding_reassembles_exactly_and_resumes_after_restart(
@@ -8901,224 +7932,6 @@ def test_findings_prompt_keeps_new_evidence_ahead_of_parent_route_context():
     )
 
 
-def test_split_descendant_inherits_ancestor_findings_but_not_unrelated_theorem(monkeypatch):
-    """Keep decomposition from hiding useful research on its parent theorem."""
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    active_file = "/tmp/Erdos242.lean"
-    parent_id = plan_state.node_id_for("erdos_242", active_file)
-    child_id = plan_state.node_id_for("erdos_242_residual_mod_seven_eq_two", active_file)
-    unrelated_id = plan_state.node_id_for("other_theorem", active_file)
-    blueprint = plan_state.Blueprint(
-        nodes=(
-            plan_state.GraphNode(id=parent_id, name="erdos_242", file=active_file),
-            plan_state.GraphNode(
-                id=child_id,
-                name="erdos_242_residual_mod_seven_eq_two",
-                file=active_file,
-            ),
-            plan_state.GraphNode(id=unrelated_id, name="other_theorem", file=active_file),
-        ),
-        edges=(plan_state.GraphEdge(source=child_id, target=parent_id, kind="split_of"),),
-    )
-    summary = {
-        "dispatch_ledger": [
-            {
-                "spec": {
-                    "job_id": "campaign.ds-parent",
-                    "inputs": {"target_symbol": "erdos_242", "active_file": active_file},
-                }
-            },
-            {
-                "spec": {
-                    "job_id": "campaign.ds-unrelated",
-                    "inputs": {"target_symbol": "other_theorem", "active_file": active_file},
-                }
-            },
-        ],
-        "research_findings": [
-            {
-                "job_id": "campaign.ds-parent",
-                "deliverable": {"summary": "verified construction for k % 7 = 2"},
-            },
-            {
-                "job_id": "campaign.ds-unrelated",
-                "deliverable": {"summary": "same file, wrong theorem"},
-            },
-        ],
-    }
-    target = "erdos_242_residual_mod_seven_eq_two"
-
-    selected = research_findings.relevant_findings(
-        summary,
-        target_symbol=target,
-        active_file=active_file,
-        blueprint=blueprint,
-    )
-
-    assert [finding["job_id"] for finding in selected] == ["campaign.ds-parent"]
-
-    ctx = orchestrator.build_route_context(
-        trigger="event",
-        live_state={"target_symbol": target, "active_file": active_file},
-        blueprint=blueprint,
-        summary=summary,
-    )
-    assert [finding["job_id"] for finding in ctx.research_findings] == ["campaign.ds-parent"]
-
-    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: blueprint)
-    state = {
-        "current_queue_assignment": {
-            "target_symbol": target,
-            "active_file": active_file,
-        },
-        # A legacy parent-target event must not suppress the descendant event.
-        "orchestrator_jobs_seen": ["campaign.ds-parent"],
-    }
-    assert runner._orchestrator_event_due(state, 1) == "event"
-    assert runner._orchestrator_event_due(state, 1) == ""
-    prompt = runner._take_research_findings_prompt(state, None)
-    assert "verified construction for k % 7 = 2" in prompt
-    assert "same file, wrong theorem" not in prompt
-
-
-def test_finding_delivery_is_scoped_to_current_target_and_honors_legacy_exact_target(
-    monkeypatch,
-):
-    """Deliver a parent finding once again after the queue creates a descendant."""
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    active_file = "/tmp/Erdos242.lean"
-    parent = "erdos_242"
-    child = "erdos_242_residual_mod_seven_eq_two"
-    parent_id = plan_state.node_id_for(parent, active_file)
-    child_id = plan_state.node_id_for(child, active_file)
-    blueprint = plan_state.Blueprint(
-        nodes=(
-            plan_state.GraphNode(id=parent_id, name=parent, file=active_file),
-            plan_state.GraphNode(id=child_id, name=child, file=active_file),
-        ),
-        edges=(plan_state.GraphEdge(source=child_id, target=parent_id, kind="split_of"),),
-    )
-    summary = {
-        "dispatch_ledger": [
-            {
-                "spec": {
-                    "job_id": "campaign.ds-096",
-                    "inputs": {"target_symbol": parent, "active_file": active_file},
-                }
-            }
-        ],
-        "research_findings": [
-            {
-                "job_id": "campaign.ds-096",
-                "deliverable": {"summary": "promote Research242 construction"},
-            }
-        ],
-    }
-    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: blueprint)
-
-    state = {
-        "current_queue_assignment": {"target_symbol": parent, "active_file": active_file},
-        # Persisted by the old globally job-keyed implementation.
-        "research_findings_delivered": ["campaign.ds-096"],
-    }
-    assert runner._take_research_findings_prompt(state, None) == ""
-
-    state["current_queue_assignment"]["target_symbol"] = child
-    first_child = runner._take_research_findings_prompt(state, None)
-    second_child = runner._take_research_findings_prompt(state, None)
-
-    assert "promote Research242 construction" in first_child
-    assert second_child == ""
-    research_findings.acknowledge_foreground_deliveries(
-        state,
-        [
-            {"role": "user", "content": first_child},
-            {"role": "assistant", "content": "I will use the inherited construction."},
-        ],
-    )
-    assert "campaign.ds-096" in state["research_findings_delivered"]
-    assert any(
-        "campaign.ds-096" in key and child in key for key in state["research_findings_delivered"]
-    )
-
-
-def test_delivery_markers_survive_restart_and_remain_target_scoped(monkeypatch, tmp_path):
-    """Only an acknowledged turn suppresses restart delivery for its target."""
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    active_file = str(tmp_path / "Erdos242.lean")
-    parent = "erdos_242"
-    child = "erdos_242_residual_mod_seven_eq_two"
-    parent_id = plan_state.node_id_for(parent, active_file)
-    child_id = plan_state.node_id_for(child, active_file)
-    blueprint = plan_state.Blueprint(
-        nodes=(
-            plan_state.GraphNode(id=parent_id, name=parent, file=active_file),
-            plan_state.GraphNode(id=child_id, name=child, file=active_file),
-        ),
-        edges=(plan_state.GraphEdge(source=child_id, target=parent_id, kind="split_of"),),
-    )
-    summary = {
-        "research_findings": [
-            {
-                "job_id": "campaign.ds-096",
-                "target_symbol": parent,
-                "active_file": active_file,
-                "deliverable": {"summary": "verified child construction"},
-            }
-        ]
-    }
-    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: blueprint)
-
-    parent_state = {
-        "campaign_id": "campaign-demo",
-        "current_queue_assignment": {"target_symbol": parent, "active_file": active_file},
-    }
-    parent_prompt = runner._take_research_findings_prompt(parent_state, None)
-    assert "verified child construction" in parent_prompt
-
-    # Crash before a foreground provider response: no durable marker exists,
-    # so the same assignment must receive the finding again after restart.
-    unacknowledged_restart = {
-        "campaign_id": "campaign-demo",
-        "current_queue_assignment": {"target_symbol": parent, "active_file": active_file},
-    }
-    assert not research_findings.hydrate_delivery_markers(unacknowledged_restart)
-    assert "verified child construction" in runner._take_research_findings_prompt(
-        unacknowledged_restart, None
-    )
-
-    acknowledged = research_findings.acknowledge_foreground_deliveries(
-        parent_state,
-        [
-            {"role": "user", "content": parent_prompt},
-            {"role": "assistant", "content": "Using the completed finding now."},
-        ],
-    )
-    assert acknowledged == (research_findings.delivery_key("campaign.ds-096", parent),)
-
-    same_parent_restart = {
-        "campaign_id": "campaign-demo",
-        "current_queue_assignment": {"target_symbol": parent, "active_file": active_file},
-    }
-    assert research_findings.hydrate_delivery_markers(same_parent_restart)
-    assert runner._take_research_findings_prompt(same_parent_restart, None) == ""
-
-    # The marker is still target-scoped: a generated child inherits the
-    # parent's mathematical evidence and gets its own acknowledgement.
-    child_restart = {
-        "campaign_id": "campaign-demo",
-        "current_queue_assignment": {"target_symbol": child, "active_file": active_file},
-    }
-    assert research_findings.hydrate_delivery_markers(child_restart)
-    assert "verified child construction" in runner._take_research_findings_prompt(
-        child_restart, None
-    )
-
-
 def test_staged_finding_requires_assistant_response_before_acknowledgement():
     state = {"campaign_id": "campaign-demo"}
     marker = research_findings.delivery_key("campaign.ds-288", "erdos_242")
@@ -9148,82 +7961,6 @@ def test_staged_finding_requires_assistant_response_before_acknowledgement():
 
     assert acknowledged == (marker,)
     assert state["research_findings_delivered"] == [marker]
-
-
-def test_acknowledged_finding_survives_summary_and_process_state_regression(
-    monkeypatch,
-    tmp_path,
-):
-    """Recover an acknowledged pair from its isolated write-ahead receipt."""
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
-    campaign_id = "campaign-durable-ack"
-    target_symbol = "erdos_242"
-    active_file = str(tmp_path / "Erdos242.lean")
-    job_ids = ("campaign.ds-290", "campaign.em-291", "campaign.ds-332")
-    markers = tuple(
-        sorted(research_findings.delivery_key(job_id, target_symbol) for job_id in job_ids)
-    )
-    summary_path = research_findings._summary_path()
-    findings = [
-        {
-            "job_id": job_id,
-            "target_symbol": target_symbol,
-            "active_file": active_file,
-            "deliverable": {"summary": f"one-shot completed finding {job_id}"},
-        }
-        for job_id in job_ids
-    ]
-    workflow_json_io.write_json_file(
-        summary_path,
-        {
-            "research_findings": findings,
-            "research_delivery_state": {"campaign_id": campaign_id},
-        },
-    )
-    monkeypatch.setattr(
-        runner.plan_state,
-        "load_summary",
-        lambda: workflow_json_io.read_json_file(summary_path),
-    )
-    state = {
-        "campaign_id": campaign_id,
-        "current_queue_assignment": {
-            "target_symbol": target_symbol,
-            "active_file": active_file,
-        },
-    }
-    prompt = runner._take_research_findings_prompt(state, None)
-
-    assert (
-        research_findings.acknowledge_foreground_deliveries(
-            state,
-            [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": "Consumed the completed finding."},
-            ],
-        )
-        == markers
-    )
-
-    # Reproduce the live failure: both the in-process dict and the shared
-    # summary mirror regress after the acknowledgement event.
-    regressed = workflow_json_io.read_json_file(summary_path)
-    regressed["research_delivery_state"] = {"campaign_id": campaign_id}
-    workflow_json_io.write_json_file(summary_path, regressed)
-    restarted = {
-        "campaign_id": campaign_id,
-        "current_queue_assignment": {
-            "target_symbol": target_symbol,
-            "active_file": active_file,
-        },
-    }
-
-    assert runner._take_research_findings_prompt(restarted, None) == ""
-    assert restarted["research_findings_delivered"] == list(markers)
-    repaired = workflow_json_io.read_json_file(summary_path)
-    assert set(markers) <= set(repaired["research_delivery_state"]["research_findings_delivered"])
 
 
 def test_delivery_token_first_seen_in_assistant_requires_a_later_assistant():
@@ -9273,83 +8010,6 @@ def test_pending_foreground_admission_never_evicts_over_sixty_four_records():
     assert len(records) == research_findings.PENDING_FOREGROUND_CAP
     assert retained == set(admitted)
     assert set(refused).isdisjoint(retained)
-
-
-def test_more_than_one_hundred_undelivered_findings_survive_restart(monkeypatch, tmp_path):
-    """Drain a durable FIFO across both historical in-memory cap boundaries."""
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
-    active_file = str(tmp_path / "Erdos242.lean")
-    target_symbol = "erdos_242"
-    findings = [
-        {
-            "job_id": f"campaign.ds-{index:03d}",
-            "archetype": "deep_search",
-            "target_symbol": target_symbol,
-            "active_file": active_file,
-            "deliverable": {"summary": f"durable finding {index}"},
-        }
-        for index in range(130)
-    ]
-    workflow_json_io.write_json_file(
-        research_findings._summary_path(),
-        {"research_findings": findings},
-    )
-    monkeypatch.setattr(
-        runner.plan_state,
-        "load_summary",
-        lambda: workflow_json_io.read_json_file(research_findings._summary_path()),
-    )
-
-    state = {
-        "campaign_id": "campaign-restart-stress",
-        "current_queue_assignment": {
-            "target_symbol": target_symbol,
-            "active_file": active_file,
-        },
-    }
-    acknowledged_count = 0
-    while acknowledged_count < 66:
-        prompt = runner._take_research_findings_prompt(state, None)
-        assert prompt
-        acknowledged = research_findings.acknowledge_foreground_deliveries(
-            state,
-            [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": "Consumed this complete batch."},
-            ],
-        )
-        acknowledged_count += len(acknowledged)
-
-    restarted = {
-        "campaign_id": "campaign-restart-stress",
-        "current_queue_assignment": {
-            "target_symbol": target_symbol,
-            "active_file": active_file,
-        },
-    }
-    assert research_findings.hydrate_delivery_markers(restarted)
-    while True:
-        prompt = runner._take_research_findings_prompt(restarted, None)
-        if not prompt:
-            break
-        research_findings.acknowledge_foreground_deliveries(
-            restarted,
-            [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": "Consumed after restart."},
-            ],
-        )
-
-    delivered = set(restarted["research_findings_delivered"])
-    expected = {
-        research_findings.delivery_key(f"campaign.ds-{index:03d}", target_symbol)
-        for index in range(130)
-    }
-    assert expected <= delivered
-    persisted = workflow_json_io.read_json_file(research_findings._summary_path())
-    assert len(persisted["research_findings"]) <= research_portfolio.FINDINGS_CAP
 
 
 def test_pending_finding_is_reattached_after_context_reset():
@@ -9434,75 +8094,3 @@ def test_orchestrator_seen_markers_are_campaign_scoped(monkeypatch, tmp_path):
     fresh_campaign = {"campaign_id": "campaign-two"}
     assert not research_findings.hydrate_delivery_markers(fresh_campaign)
     assert "orchestrator_jobs_seen" not in fresh_campaign
-
-
-def test_campaign_exit_shuts_down_research_workers(monkeypatch):
-    calls: list[tuple[str, str]] = []
-    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(
-        runner.campaign_epoch,
-        "ensure_campaign",
-        lambda state: {"campaign_id": "campaign-demo"},
-    )
-    monkeypatch.setattr(
-        runner.research_portfolio,
-        "shutdown_portfolio",
-        lambda *, campaign_id, reason: calls.append((campaign_id, reason)) or [],
-    )
-    monkeypatch.setattr(runner.campaign_epoch, "record_process_exit", lambda *a, **k: None)
-
-    assert runner._record_campaign_exit(0, {}, {"verified": True}, reason="verified") == 0
-    assert calls == [("campaign-demo", "verified")]
-
-
-def test_finalizer_still_records_after_interrupted_worker_shutdown(monkeypatch):
-    recorded: list[tuple[int, str]] = []
-    shutdown_calls: list[str] = []
-    autonomy_state: dict[str, object] = {}
-    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
-    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
-    monkeypatch.setattr(
-        runner.campaign_epoch,
-        "ensure_campaign",
-        lambda state: {"campaign_id": "campaign-demo"},
-    )
-
-    def shutdown_portfolio(**kwargs):
-        shutdown_calls.append(str(kwargs["reason"]))
-        if len(shutdown_calls) == 1:
-            raise KeyboardInterrupt
-        return []
-
-    monkeypatch.setattr(runner.research_portfolio, "shutdown_portfolio", shutdown_portfolio)
-    monkeypatch.setattr(
-        runner.campaign_epoch,
-        "record_process_exit",
-        lambda state, code, **kwargs: recorded.append((code, kwargs["reason"])),
-    )
-    monkeypatch.setattr(runner, "_quiesce_native_writer_threads", lambda _agent: None)
-    monkeypatch.setattr(runner, "shutdown_native_runtime_services", lambda _agent: ())
-    monkeypatch.setattr(
-        runner,
-        "_write_signal_interruption_checkpoint",
-        lambda *args, **kwargs: None,
-    )
-    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda _agent: None)
-    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
-
-    result = runner._finalize_native_run(
-        runner.NativeRunFinalizer(),
-        runner.EXIT_INTERRUPTED,
-        agent=None,
-        history=[],
-        compaction_state={},
-        checkpoint_state={},
-        autonomy_state=autonomy_state,
-        live_state={"verified": False},
-        reason="signal interrupt",
-    )
-
-    assert result == runner.EXIT_INTERRUPTED
-    assert shutdown_calls == ["signal interrupt", "signal interrupt"]
-    assert recorded == [(runner.EXIT_INTERRUPTED, "signal interrupt")]

@@ -16,7 +16,7 @@ import json
 
 import pytest
 
-from tools.implementations import web_fetch, web_tools
+from tools.implementations import web_fetch
 from tools.registry import registry
 
 
@@ -226,60 +226,6 @@ def test_fallback_refuses_pdf_without_jina(monkeypatch):
     assert "error" in result
 
 
-def test_web_fetch_summarizes_long_pages(monkeypatch):
-    long_text = "word " * 4000  # ~20k chars, well over the summarization threshold
-
-    def fake_get(url, *, headers=None, timeout=None):
-        return FakeResponse(text=long_text)
-
-    async def fake_summarize(content, *, url="", title="", model=None, min_length=0):
-        return "SUMMARIZED"
-
-    monkeypatch.delenv("JINA_API_KEY", raising=False)
-    monkeypatch.setattr(web_fetch.requests, "get", fake_get)
-    monkeypatch.setattr(web_fetch, "process_content_with_llm", fake_summarize)
-
-    result = json.loads(_run(web_fetch.web_fetch_tool("https://example.com")))
-
-    assert result["content"] == "SUMMARIZED"
-
-
-def test_web_fetch_caps_when_summarizer_unavailable(monkeypatch):
-    long_text = "abcdefghij" * 2000  # 20k chars
-
-    def fake_get(url, *, headers=None, timeout=None):
-        return FakeResponse(text=long_text)
-
-    async def fake_summarize(content, *, url="", title="", model=None, min_length=0):
-        return None  # no auxiliary model available
-
-    monkeypatch.delenv("JINA_API_KEY", raising=False)
-    monkeypatch.setattr(web_fetch.requests, "get", fake_get)
-    monkeypatch.setattr(web_fetch, "process_content_with_llm", fake_summarize)
-
-    result = json.loads(_run(web_fetch.web_fetch_tool("https://example.com", max_chars=1000)))
-
-    assert result["truncated"] is True
-    assert "[... truncated for context management ...]" in result["content"]
-    assert len(result["content"]) <= 1000 + 80
-
-
-def test_web_summarizer_uses_one_bounded_provider_attempt(monkeypatch):
-    calls: list[dict] = []
-
-    async def fail_once(**kwargs):
-        calls.append(kwargs)
-        raise TimeoutError("provider read timeout")
-
-    monkeypatch.setattr(web_tools, "async_call_llm", fail_once)
-
-    with pytest.raises(TimeoutError, match="provider read timeout"):
-        _run(web_tools._call_summarizer_llm("long content", "", None))
-
-    assert len(calls) == 1
-    assert calls[0]["timeout"] == web_tools.SUMMARIZER_TIMEOUT_SECONDS
-
-
 def test_web_fetch_rejects_empty_url():
     result = json.loads(_run(web_fetch.web_fetch_tool("")))
     assert "error" in result
@@ -411,3 +357,14 @@ def test_web_download_registered_in_web_toolsets():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_web_fetch_returns_bounded_verbatim_content(monkeypatch):
+    long_text = "abcdefghij" * 2000
+    monkeypatch.setattr(
+        web_fetch.requests, "get", lambda *args, **kwargs: FakeResponse(text=long_text)
+    )
+    result = json.loads(_run(web_fetch.web_fetch_tool("https://example.com", max_chars=1000)))
+    assert result["content"].startswith(long_text[:1000])
+    assert result["truncated"] is True
+    assert len(result["content"]) <= 1080

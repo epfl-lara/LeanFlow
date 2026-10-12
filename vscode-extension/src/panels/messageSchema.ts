@@ -7,6 +7,7 @@
  * checked here before the handler sees it. A rejected message is dropped with a
  * reason rather than being partially applied.
  */
+import { isBackend } from "../core/providerCredentials";
 import type { LaunchRequest, WebviewMessage, WorkflowKind } from "../core/types";
 import {
   MAX_EXPERIMENT_AXIS,
@@ -206,11 +207,33 @@ export function parseWebviewMessage(
   const reject = (field: string) => ({ ok: false as const, reason: `${type}: bad ${field}` });
 
   switch (type) {
+    case "copyText": {
+      const text = str(raw.text, 4 * 1024 * 1024);
+      return text === null ? reject("text") : { ok: true, message: { type, text } };
+    }
+    case "configureProvider":
+    case "setupProject":
+    case "retryProjectSetup":
+    case "repairProjectSetup":
+    case "cancelProjectSetup":
+    case "showProjectSetupLog":
     case "ready":
     case "refresh":
     case "openDashboard":
     case "openCliSettings":
+    case "refreshProviders":
+    case "refreshStorage":
+    case "cleanStorage":
       return { ok: true, message: { type } as WebviewMessage };
+
+    case "providerAction": {
+      const backend = raw.backend;
+      const action = raw.action;
+      if (!isBackend(backend)) return reject("backend");
+      if (action !== "apiKey" && action !== "removeKey" && action !== "endpoint" && action !== "login" && action !== "config") return reject("action");
+      if ((action === "endpoint" && backend !== "lemex") || (action === "login" && backend === "lemex")) return reject("action for backend");
+      return { ok: true, message: { type, backend, action } };
+    }
 
     case "launch":
     case "preview": {
@@ -228,6 +251,8 @@ export function parseWebviewMessage(
         : { ok: true, message: { type: "preview", requestId, request } };
     }
 
+    case "openRun":
+    case "openRunTerminal":
     case "stopRun": {
       const id = str(raw.id, 128);
       return id === null ? reject("id") : { ok: true, message: { type, id } };
@@ -245,6 +270,38 @@ export function parseWebviewMessage(
     case "loadRunLog": {
       const runId = raw.runId === "" ? "" : identifier(raw.runId);
       return runId === null ? reject("runId") : { ok: true, message: { type, runId } };
+    }
+
+    case "loadProver": {
+      const runId = identifier(raw.runId);
+      return runId === null ? reject("runId") : { ok: true, message: { type, runId } };
+    }
+
+    case "loadEventDetail": {
+      // Both ids become CLI arguments that name files under the state root.
+      const runId = identifier(raw.runId);
+      const eventId = identifier(raw.eventId);
+      return runId !== null && eventId !== null
+        ? { ok: true, message: { type, runId, eventId } }
+        : reject("event fields");
+    }
+
+    case "proverMessage": {
+      const runId = identifier(raw.runId);
+      const agentId = identifier(raw.agentId);
+      const message = str(raw.message, 8192);
+      const requestId = raw.requestId === undefined ? undefined : identifier(raw.requestId);
+      return runId !== null && agentId !== null && message !== null && message.trim() && requestId !== null
+        ? { ok: true, message: { type, runId, agentId, message, requestId } } : reject("message fields");
+    }
+
+    case "openProverFile": {
+      const runId = identifier(raw.runId);
+      const filePath = str(raw.path, 4096);
+      const baselinePath = raw.baselinePath === undefined ? undefined : str(raw.baselinePath, 4096);
+      const line = raw.line === undefined ? undefined : strictInt(raw.line, 1, 10000000);
+      return runId !== null && filePath !== null && filePath !== "" && baselinePath !== null && line !== null
+        ? { ok: true, message: { type, runId, path: filePath, baselinePath, line } } : reject("file fields");
     }
 
     case "saveProfile": {

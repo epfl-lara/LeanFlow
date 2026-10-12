@@ -10,7 +10,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { CliError, fetchProfileDiff, previewLaunch } from "../core/cli";
+import {
+  CliError,
+  fetchEventDetail,
+  fetchProfileDiff,
+  previewLaunch,
+  sendProverMessage,
+} from "../core/cli";
+import { proverArtifactAllowed } from "../core/prover";
 import {
   buildWorkflowArgs,
   rejectedProfileKnobNames,
@@ -18,6 +25,7 @@ import {
   validateLaunch,
 } from "../core/launch";
 import { validateLaunchProjectInputs } from "../core/launchPaths";
+import { launchModelProblems } from "../core/providerModels";
 import {
   activityEventForDisplay,
   launchPlanForDisplay,
@@ -95,6 +103,7 @@ export function buildWebviewHtml(
 export class WebviewHost implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private ready = false;
+  private readonly proverLoads = new Set<string>();
 
   constructor(
     private readonly webview: vscode.Webview,
@@ -162,6 +171,36 @@ export class WebviewHost implements vscode.Disposable {
   private async dispatch(message: WebviewMessage): Promise<void> {
     const { services } = this;
     switch (message.type) {
+      case "configureProvider": {
+        await vscode.commands.executeCommand("leanflow.configureProvider");
+        return;
+      }
+      case "setupProject": {
+        await services.setup.start();
+        return;
+      }
+      case "repairProjectSetup": {
+        await services.setup.start(false, true);
+        return;
+      }
+      case "retryProjectSetup": {
+        await services.setup.start(true);
+        return;
+      }
+      case "cancelProjectSetup": {
+        services.setup.cancel();
+        return;
+      }
+      case "showProjectSetupLog": {
+        await services.setup.showLog();
+        return;
+      }
+      case "copyText": {
+        // The host clipboard works even when webview clipboard permission is unavailable.
+        await vscode.env.clipboard.writeText(message.text);
+        this.notify("info", "Copied to clipboard.");
+        return;
+      }
       case "ready": {
         this.ready = true;
         this.pushState();
@@ -171,12 +210,27 @@ export class WebviewHost implements vscode.Disposable {
         await services.reload();
         return;
       }
+      case "refreshProviders": {
+        await services.providers.refresh();
+        return;
+      }
+      case "refreshStorage": {
+        await services.storage.refresh();
+        return;
+      }
+      case "cleanStorage": {
+        await services.storage.clean();
+        this.notify("info", "Unused managed storage cleaned. Proofs and checkpoints were retained.");
+        return;
+      }
+      case "providerAction": {
+        await services.providers.act(message.backend, message.action);
+        return;
+      }
       case "launch": {
-        const problems = validateLaunch(message.request).filter((problem) =>
-          // The launcher silently corrects the agent count for a file-scoped
-          // prove run, so that advisory must not block the launch.
-          !problem.startsWith("A file-scoped prove run"),
-        );
+        services.setup.assertLaunchReady(services.project.root);
+        const profile = services.profiles?.profiles.find(row => row.name === message.request.profile);
+        const problems = [...validateLaunch(message.request), ...launchModelProblems(message.request, services.providers.state(), profile?.overrides)];
         if (problems.length > 0) {
           this.notify("error", problems.join(" "));
           return;
@@ -190,7 +244,8 @@ export class WebviewHost implements vscode.Disposable {
           services.catalog,
         );
         services.selectRun(run.id);
-        this.notify("info", `Started ${run.label}`);
+        // The run id is minted at launch, so this is the first place it exists.
+        this.notify(run.status === "failed" ? "error" : "info", run.status === "failed" ? run.error || "The workflow could not start." : `Started ${run.label}. ${run.launchNotice || ""}`);
         return;
       }
       case "preview": {
@@ -226,7 +281,7 @@ export class WebviewHost implements vscode.Disposable {
           }
           const plan = await previewLaunch(
             services.project.root,
-            buildWorkflowArgs(request),
+            buildWorkflowArgs(request, env.set),
             env,
           );
           this.post({
@@ -257,6 +312,15 @@ export class WebviewHost implements vscode.Disposable {
         }
         return;
       }
+      case "openRun": {
+        services.openRun(message.id);
+        await vscode.commands.executeCommand("leanflow.openDashboard");
+        return;
+      }
+      case "openRunTerminal": {
+        await services.runs.openTerminal(message.id);
+        return;
+      }
       case "selectRun": {
         services.selectRun(message.id);
         return;
@@ -269,6 +333,32 @@ export class WebviewHost implements vscode.Disposable {
           events: events.map(activityEventForDisplay),
           reset: true,
         });
+        return;
+      }
+      case "loadEventDetail": {
+        const { runId, eventId } = message;
+        const root = services.runs.projectRootForRun(runId);
+        if (!root) {
+          this.post({
+            type: "eventDetail",
+            runId,
+            eventId,
+            detail: null,
+            error: "This run is not in the project's recorded history.",
+          });
+          return;
+        }
+        try {
+          const detail = await fetchEventDetail(root, runId, eventId);
+          this.post({ type: "eventDetail", runId, eventId, detail, error: "" });
+        } catch (error) {
+          const raw = error instanceof Error ? error.message : String(error);
+          // An older CLI has no `runs event`; argparse reports the unknown choice.
+          const reason = /invalid choice/i.test(raw)
+            ? "The installed LeanFlow CLI cannot expand events (no `runs event` command). Update LeanFlow to read model output here."
+            : redactSensitiveText(raw);
+          this.post({ type: "eventDetail", runId, eventId, detail: null, error: reason });
+        }
         return;
       }
       case "loadRunLog": {
@@ -322,6 +412,7 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "startExperiment": {
+        services.setup.assertLaunchReady(services.project.root);
         const pending = services.experiments.pendingCellCount(message.matrixId);
         if (pending > 10) {
           const confirmed = await vscode.window.showWarningMessage(
@@ -385,6 +476,56 @@ export class WebviewHost implements vscode.Disposable {
           return;
         }
         await vscode.window.showTextDocument(vscode.Uri.file(target));
+        return;
+      }
+      case "loadProver": {
+        // One load per run at a time; the service serves an unchanged state
+        // file from cache, so a fast webview refresh costs no CLI process.
+        if (this.proverLoads.has(message.runId)) return;
+        this.proverLoads.add(message.runId);
+        try {
+          const result = await services.prover.load(message.runId);
+          this.post({ type: "proverState", runId: message.runId, snapshot: result.snapshot, error: result.error });
+        } finally {
+          this.proverLoads.delete(message.runId);
+        }
+        return;
+      }
+      case "proverMessage": {
+        try {
+          const root = services.runs.projectRootForRun(message.runId);
+          if (!root) throw new Error("The selected prover run is no longer available.");
+          await sendProverMessage(root, message.runId, message.agentId, message.message);
+          this.post({ type: "proverMessageResult", runId: message.runId, requestId: message.requestId ?? "", success: true, error: "" });
+          this.notify("info", "Guidance queued. The agent will receive it at its next decision boundary.");
+        } catch (error) {
+          const reason = redactSensitiveText(error instanceof Error ? error.message : String(error));
+          this.post({ type: "proverMessageResult", runId: message.runId, requestId: message.requestId ?? "", success: false, error: reason });
+          this.notify("error", reason);
+        }
+        return;
+      }
+      case "openProverFile": {
+        const root = services.runs.projectRootForRun(message.runId);
+        if (!root) throw new Error("The selected prover run is no longer available.");
+        // The allowlist is the run's own advertised artifacts; the cached
+        // snapshot is that same list, so opening a file needs no new CLI read.
+        const snapshot = services.prover.cached(message.runId) ?? (await services.prover.load(message.runId)).snapshot;
+        if (!snapshot || !proverArtifactAllowed(snapshot, message.path, message.baselinePath)) {
+          throw new Error("This artifact is not part of the selected prover run.");
+        }
+        const target = await resolveExistingProjectPath(root, message.path);
+        if (!target) throw new Error("The artifact does not exist inside this run's project.");
+        if (message.baselinePath) {
+          const baseline = await resolveExistingProjectPath(root, message.baselinePath);
+          if (!baseline) throw new Error("The recorded baseline does not exist inside this run's project.");
+          await vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(baseline), vscode.Uri.file(target), `${path.basename(target)} · run changes`);
+        } else {
+          const line = Math.max(0, (message.line ?? 1) - 1);
+          await vscode.window.showTextDocument(vscode.Uri.file(target), {
+            selection: new vscode.Range(line, 0, line, 0), preview: true,
+          });
+        }
         return;
       }
       case "openExternalDoc": {

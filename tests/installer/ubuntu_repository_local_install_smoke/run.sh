@@ -21,6 +21,6 @@ docker build -t "$IMAGE_TAG" -f "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR"
 echo "==> Running ubuntu_repository_local_install_smoke"
 docker run --rm \
     -e REPO_ROOT=/src \
-    -v "$REPO_ROOT:/src" \
+    -v "$REPO_ROOT:/src:ro" \
     "$IMAGE_TAG" \
     bash -lc "/src/tests/installer/ubuntu_repository_local_install_smoke/run-in-container.sh"

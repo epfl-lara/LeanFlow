@@ -43,7 +43,10 @@ _PREFIX_PATTERNS = [
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(
-    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(\S+)\2",
+    # A failed search must not retry the same identifier at every character.
+    # The leading class already consumes its entire prefix, so this boundary
+    # preserves matches while making long Lean/source identifiers linear.
+    rf"(?<![A-Z_])([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(\S+)\2",
     re.IGNORECASE,
 )
 

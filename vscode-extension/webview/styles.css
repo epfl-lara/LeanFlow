@@ -421,6 +421,290 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
+/* The launch form aligns label, control, and help rows independently. A long
+   hint or profile name must not shift the neighboring control's baseline. */
+.launch-view {
+  container-type: inline-size;
+  max-width: 1000px;
+  margin-inline: auto;
+}
+
+.launch-view .card {
+  padding: 18px;
+}
+
+.launch-view .card > .spread {
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.launch-view .card-title {
+  font-size: 14px;
+}
+
+.launch-view .card-subtitle {
+  margin-bottom: 16px;
+}
+
+.launch-fields,
+.launch-options,
+.launch-profile {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 20px;
+  align-items: start;
+}
+
+.launch-fields > label.field,
+.launch-fields > .field-with-help,
+.launch-options > .field-with-help,
+.launch-provider-field,
+.launch-options > div > label.field {
+  display: grid;
+  grid-template-rows: subgrid;
+  grid-row: span 3;
+  row-gap: 6px;
+}
+
+.launch-fields > .field-with-help > label.field,
+.launch-options > .field-with-help > label.field {
+  display: grid;
+  grid-template-rows: subgrid;
+  grid-row: span 3;
+  row-gap: 6px;
+}
+
+.launch-provider-field > label.field,
+.launch-provider-field > .field-with-help {
+  display: grid;
+  grid-template-rows: subgrid;
+  grid-row: span 2;
+}
+
+.launch-provider-field > button.link {
+  justify-self: start;
+  align-self: start;
+  text-align: left;
+}
+
+.launch-view label.field {
+  min-width: 0;
+}
+
+.launch-view label.field > .label {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--vscode-foreground);
+  font-weight: 500;
+}
+
+.field-source {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--lf-muted);
+  border: 1px solid var(--lf-border);
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 16px;
+}
+
+.launch-view input[type="text"],
+.launch-view input[type="number"],
+.launch-view select,
+.launch-view button.btn {
+  height: 34px;
+  min-width: 0;
+}
+
+.launch-view input[type="text"],
+.launch-view input[type="number"],
+.launch-view select {
+  padding-inline: 10px;
+}
+
+.launch-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.launch-target input {
+  flex: 1;
+}
+
+.launch-target button {
+  flex: 0 0 auto;
+}
+
+.prover-profile-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  font-size: 11px;
+  color: var(--lf-muted);
+  margin-bottom: 16px;
+  overflow-wrap: anywhere;
+}
+
+.prover-profile-note strong {
+  color: var(--vscode-foreground);
+  font-weight: 500;
+}
+
+.prover-profile-note > span {
+  flex-basis: 100%;
+}
+
+.prover-role {
+  margin: 18px 0;
+  padding: 14px;
+  border: 1px solid var(--lf-border);
+  border-radius: var(--lf-radius);
+  background: var(--lf-base);
+}
+
+/* Role grids mix selectors and limit groups with optional reset actions.
+   Each field owns its height, so a wrapped hint cannot stretch a label row. */
+.prover-role .launch-fields > label.field,
+.prover-role .launch-fields > .field-with-help,
+.prover-mode-fields > label.field,
+.prover-mode-fields > .field-with-help {
+  display: flex;
+  flex-direction: column;
+  grid-row: auto;
+  gap: 6px;
+}
+
+.prover-role .field-with-help > label.field,
+.prover-mode-fields .field-with-help > label.field {
+  display: flex;
+  grid-row: auto;
+}
+
+.launch-provider-field > .field-with-help > label.field {
+  display: grid;
+  grid-template-rows: subgrid;
+  grid-row: span 2;
+  row-gap: 6px;
+}
+
+.field-with-help,
+.check-with-help {
+  position: relative;
+  min-width: 0;
+}
+
+.field-with-help > .field > .label,
+.check-with-help > .check > .body > span:first-child {
+  padding-right: 28px;
+}
+
+.field-with-help > .info-help,
+.check-with-help > .info-help {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+.info-help {
+  display: inline-block;
+  position: relative;
+  flex: none;
+  margin-left: 6px;
+  vertical-align: baseline;
+}
+
+.info-help > summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground);
+  width: 20px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.info-help > summary::-webkit-details-marker {
+  display: none;
+}
+
+.info-help > summary:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.info-help-body {
+  position: fixed;
+  z-index: 1000;
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--lf-border);
+  border-radius: var(--lf-radius);
+  background: var(--vscode-editorWidget-background, var(--lf-base));
+  box-shadow: 0 4px 16px #0006;
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.stat > .k {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.global-limit {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.global-limit > button.link {
+  align-self: flex-start;
+}
+
+.prover-role-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-bottom: 14px;
+}
+
+.prover-role-heading > span {
+  font-size: 11px;
+  color: var(--lf-muted);
+}
+
+.launch-options > div:not(.field-with-help) {
+  display: contents;
+}
+
+@container (max-width: 480px) {
+  .launch-fields,
+  .launch-options,
+  .launch-profile {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .launch-view .card {
+    padding: 14px;
+  }
+}
+
 /* ------------------------------------------------------------------- chips */
 
 .pill {
@@ -551,16 +835,373 @@ button:focus-visible {
   line-height: 1.55;
 }
 
+/* ------------------------------------------------------ session segments */
+
+.log-segment + .log-segment {
+  margin-top: 6px;
+}
+
+/* The header frames the rows under it as one job, the way a CI log frames a
+   step: identity and outcome on one line, collapsible as a unit. */
+.log-segment-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--lf-border);
+  /* A sticky header must be opaque, or the rows scrolling under it show
+     through and the two sets of text overlap. */
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  color: var(--vscode-foreground);
+  font: inherit;
+  font-family: var(--vscode-font-family);
+  font-size: 11.5px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.log-segment-head .facts {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-segment-head .count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-segment-head:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.log-segment-head strong {
+  font-family: var(--lf-mono);
+  font-size: 11.5px;
+}
+
+.log-segment-head .spacer {
+  flex: 1;
+}
+
+.log-segment-head .caret {
+  font-size: 8px;
+  color: var(--lf-muted);
+  transition: transform 0.1s ease;
+}
+
+.log-segment-head.collapsed .caret {
+  transform: rotate(-90deg);
+}
+
 .log-line {
   display: grid;
-  grid-template-columns: 74px 190px 1fr;
+  grid-template-columns: 10px 64px 128px minmax(0, 1fr);
   gap: 10px;
   padding: 2px 10px;
   border-bottom: 1px solid transparent;
+  cursor: pointer;
+  user-select: text;
 }
 
 .log-line:hover {
   background: var(--vscode-list-hoverBackground);
+}
+
+.log-line:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.log-line .caret {
+  color: var(--lf-muted);
+  font-size: 8px;
+  line-height: inherit;
+  transition: transform 0.1s ease;
+}
+
+.log-line.expanded {
+  background: var(--lf-lift-2);
+}
+
+.log-line.expanded .caret {
+  transform: rotate(90deg);
+}
+
+/* ------------------------------------------------------- expanded event */
+
+.log-detail {
+  padding: 8px 12px 12px 30px;
+  border-bottom: 1px solid var(--lf-border);
+  background: var(--lf-lift-1);
+  font-family: var(--vscode-font-family);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.log-detail-facts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.log-detail-facts .spacer {
+  flex: 1;
+}
+
+.log-detail .notice {
+  margin: 4px 0 8px;
+}
+
+.log-detail-section {
+  margin-top: 10px;
+}
+
+.log-detail-section .label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--lf-muted);
+}
+
+/* A path is content, not a label: uppercasing it makes it unreadable. */
+.log-detail-section .label .subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--lf-mono);
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.log-detail-section .label .spacer {
+  flex: 1;
+}
+
+/* A section's top-level body is one bordered panel; nested values inside a
+   fields grid inherit the panel instead of nesting borders. */
+.log-detail-section > .rich,
+.log-detail-section > .section-fields,
+.log-detail-section > .code-block > pre {
+  border: 1px solid var(--lf-border);
+  border-radius: 4px;
+  background: var(--lf-lift-1);
+}
+
+.log-detail-section > .rich,
+.log-detail-section > .section-fields {
+  padding: 8px 12px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.log-detail-section.err > .rich,
+.log-detail-section.err > .section-fields,
+.log-detail-section.err > .code-block > pre {
+  border-left: 3px solid var(--vscode-charts-red);
+}
+
+.log-detail-section.ok > .rich,
+.log-detail-section.ok > .section-fields,
+.log-detail-section.ok > .code-block > pre {
+  border-left: 3px solid var(--vscode-charts-green);
+}
+
+.log-detail-raw-group {
+  margin-top: 12px;
+}
+
+.log-detail-raw summary {
+  cursor: pointer;
+  color: var(--lf-muted);
+  font-size: 11.5px;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.log-detail-raw .code-block {
+  margin: 6px 0 4px;
+}
+
+.log-detail-raw .code-block pre {
+  max-height: 260px;
+}
+
+/* --------------------------------------------------- readable payloads */
+
+.rich {
+  font-family: var(--vscode-font-family);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.rich p {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+
+.rich > :last-child {
+  margin-bottom: 0;
+}
+
+.rich h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 12px 0 6px;
+}
+
+.rich h4 {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--lf-muted);
+  margin: 12px 0 4px;
+}
+
+.rich > h3:first-child,
+.rich > h4:first-child {
+  margin-top: 0;
+}
+
+.rich ul,
+.rich ol {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+
+.rich li {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.rich blockquote {
+  margin: 0 0 8px;
+  padding: 2px 10px;
+  border-left: 3px solid var(--lf-border-strong);
+  color: var(--lf-muted);
+}
+
+.rich hr {
+  border: 0;
+  border-top: 1px solid var(--lf-border);
+  margin: 10px 0;
+}
+
+.rich code,
+.fields code,
+.field-inline code {
+  font-family: var(--lf-mono);
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
+}
+
+.rich .code-block {
+  margin: 0 0 8px;
+}
+
+.code-block {
+  position: relative;
+}
+
+.code-block .code-lang {
+  position: absolute;
+  top: 5px;
+  right: 9px;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--lf-muted);
+  pointer-events: none;
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--lf-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  background: var(--vscode-textCodeBlock-background, var(--lf-lift-2));
+  border: 1px solid var(--lf-border);
+  border-radius: 4px;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+  font-size: 12px;
+  align-items: baseline;
+}
+
+.fields .field {
+  display: contents;
+}
+
+.fields .field.block {
+  display: block;
+  grid-column: 1 / -1;
+  margin: 4px 0;
+}
+
+.fields dt {
+  color: var(--lf-muted);
+  font-family: var(--lf-mono);
+  font-size: 11px;
+}
+
+.fields .field.block dt {
+  margin-bottom: 4px;
+}
+
+.fields dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fields .fields {
+  padding: 6px 0 2px 10px;
+  border-left: 2px solid var(--lf-border);
+}
+
+.field-list {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.field-list li {
+  margin: 4px 0;
+}
+
+.field-inline {
+  white-space: pre-wrap;
+}
+
+.field-scalar {
+  font-family: var(--lf-mono);
+  font-size: 11.5px;
 }
 
 .log-line .ts {
@@ -575,9 +1216,62 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+/* One row is one line. A wrapped row destroys the column rhythm that makes a
+   long stream scannable; the full text is in the title and the expanded body. */
 .log-line .msg {
-  white-space: pre-wrap;
-  word-break: break-word;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.log-line .msg .text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-line .turn {
+  flex: 0 0 auto;
+  color: var(--lf-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-line .tag {
+  flex: 0 0 auto;
+}
+
+/* ------------------------------------------------------- event type filter */
+
+.log-types > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.log-types > summary::-webkit-details-marker {
+  display: none;
+}
+
+.log-types > summary::before {
+  content: "▶";
+  font-size: 8px;
+  color: var(--lf-muted);
+}
+
+.log-types[open] > summary::before {
+  content: "▾";
+}
+
+.log-types > summary .card-title {
+  margin-bottom: 0;
+}
+
+.log-types > summary .muted {
+  font-size: 12px;
 }
 
 .log-line.err .type {
@@ -887,3 +1581,140 @@ body.vscode-high-contrast-light {
     transition-duration: 0.01ms !important;
   }
 }
+/* Exact-run prover workspace: dependencies, readable plans, and agent activity. */
+.prover-dag-layout { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(260px, 1fr); gap: 18px; }
+.prover-dag-layout.graph-view { grid-template-columns: minmax(0, 1fr); }
+.prover-view-toggle { display: inline-flex; gap: 3px; }
+.prover-view-toggle [aria-pressed="true"] { border-color: var(--vscode-focusBorder); background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.prover-dag-layout input { width: 100%; padding: 8px 10px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 5px; }
+.prover-graph { margin-top: 14px; }
+.prover-graph-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.prover-graph-toolbar .row { margin: 0; }
+.prover-graph-zoom { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }
+.prover-graph-legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 14px; font-size: 11px; }
+.prover-graph-state { color: var(--graph-state-color, var(--vscode-descriptionForeground)); }
+.prover-graph-state.solved, .prover-graph-card.solved { --graph-state-color: var(--vscode-testing-iconPassed, #57b996); }
+.prover-graph-state.active, .prover-graph-card.active { --graph-state-color: var(--vscode-progressBar-background, #4c9aff); }
+.prover-graph-state.pending, .prover-graph-card.pending { --graph-state-color: var(--vscode-descriptionForeground, #939ba9); }
+.prover-graph-state.candidate, .prover-graph-card.candidate { --graph-state-color: var(--vscode-testing-iconQueued, #d4ac61); }
+.prover-graph-state.blocked, .prover-graph-card.blocked { --graph-state-color: var(--vscode-editorWarning-foreground, #d4ac61); }
+.prover-graph-state.failed, .prover-graph-card.failed { --graph-state-color: var(--vscode-testing-iconFailed, #e07575); }
+.prover-graph-viewport { height: 480px; overflow: auto; border: 1px solid var(--vscode-panel-border); border-radius: 10px; background-color: var(--vscode-editor-background); background-image: radial-gradient(var(--vscode-panel-border, #414957) 1px, transparent 1px); background-size: 20px 20px; overscroll-behavior: contain; }
+.prover-graph-canvas { position: absolute; transform-origin: top left; }
+.prover-graph-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.prover-graph-edge { fill: none; stroke: var(--vscode-descriptionForeground, #939ba9); stroke-width: 1.5; opacity: .45; }
+.prover-graph-edge.highlighted { stroke: var(--vscode-focusBorder, #4c9aff); stroke-width: 2.5; opacity: 1; }
+.prover-graph-card { position: absolute; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 12px 14px; border: 1px solid var(--vscode-panel-border); border-left: 4px solid var(--graph-state-color); border-radius: 9px; background: var(--vscode-sideBar-background, #20242c); color: var(--vscode-foreground); text-align: left; cursor: pointer; box-shadow: 0 3px 9px #0002; }
+.prover-graph-card:hover { background: var(--vscode-list-hoverBackground); }
+.prover-graph-card.selected { outline: 2px solid var(--vscode-focusBorder, #4c9aff); outline-offset: 3px; }
+.prover-graph-card:focus-visible { outline: 3px solid var(--vscode-focusBorder, #4c9aff); outline-offset: 4px; }
+.prover-graph-card.related:not(.selected) { border-top-color: var(--vscode-focusBorder, #4c9aff); }
+.prover-graph-card.matched { box-shadow: 0 0 0 2px var(--vscode-editor-findMatchHighlightBorder, #d4ac61); }
+.prover-graph-card.dimmed { opacity: .4; }
+.prover-graph-card strong { font-family: var(--vscode-editor-font-family), monospace; font-size: 12px; line-height: 18px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.prover-graph-card small { font-size: 10px; color: var(--vscode-descriptionForeground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prover-graph-card-top { display: flex; justify-content: space-between; gap: 5px; font-size: 10px; line-height: 14px; }
+.prover-graph-card-top > span:first-child { font-size: 9px; letter-spacing: .08em; color: var(--vscode-descriptionForeground); }
+.prover-graph-hint { font-size: 11px; margin-top: 10px; }
+.prover-graph-warning { color: var(--vscode-editorWarning-foreground, #d4ac61); }
+@media (max-width: 600px) { .prover-graph-viewport { height: 380px; } }
+.prover-tree { max-height: 460px; overflow: auto; margin-top: 10px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; }
+.prover-node { display: flex; align-items: center; width: 100%; gap: 8px; background: transparent; color: inherit; border: 0; border-bottom: 1px solid var(--vscode-panel-border); padding: 11px 10px; text-align: left; cursor: pointer; }
+.prover-node:hover { background: var(--vscode-list-hoverBackground); }
+.prover-node.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.prover-node-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.prover-node-name small { display: block; opacity: .65; font-size: 10px; padding-top: 3px; overflow-wrap: anywhere; }
+.prover-dot { flex: 0 0 7px; height: 7px; border-radius: 50%; background: var(--vscode-disabledForeground); }
+.prover-dot.ok { background: var(--vscode-testing-iconPassed, #5bb98c); }
+.prover-dot.warn { background: var(--vscode-testing-iconQueued, #c9a653); }
+.prover-dot.err { background: var(--vscode-testing-iconFailed, #da6c72); }
+.prover-node-detail { min-width: 0; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; }
+.prover-statement { white-space: pre-wrap; margin: 12px 0; max-height: 230px; }
+.prover-plan { max-height: 480px; overflow: auto; line-height: 1.6; }
+.prover-plan h3 { font-size: 15px; margin: 17px 0 7px; }
+.prover-plan p { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prover-plan-item { padding-left: 14px; margin: 5px 0; }
+.prover-plan-code { font-family: var(--vscode-editor-font-family), monospace; background: var(--vscode-textCodeBlock-background); padding: 1px 10px; white-space: pre-wrap; }
+.prover-plan-break { height: 5px; }
+.prover-job { padding: 12px 0; border-bottom: 1px solid var(--vscode-panel-border); }
+.prover-model-report, .prover-model-history { margin-top: 12px; }
+.prover-model-report .table-wrap { margin: 6px 0; }
+.prover-job:last-child { border-bottom: 0; }
+.prover-job .row { margin-top: 6px; }
+.prover-panels { align-items: start; }
+@media (max-width: 900px) { .prover-dag-layout { grid-template-columns: 1fr; } }
+/* Controller operations, capacity, and lifecycle detail. */
+.prover-ops { margin-top: 12px; }
+.prover-ops-recent { margin-top: 10px; }
+.prover-ops-recent > summary { cursor: pointer; font-size: 12px; color: var(--lf-muted); }
+.prover-op { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--lf-border); }
+.prover-op:last-child { border-bottom: 0; }
+.prover-op-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.prover-op-meta { font-size: 11px; color: var(--lf-muted); margin-top: 3px; }
+.prover-op-error { color: var(--vscode-charts-red); }
+.prover-progress { height: 6px; border-radius: 3px; background: var(--lf-lift-2, rgba(128, 128, 128, 0.2)); overflow: hidden; margin-top: 6px; max-width: 320px; }
+.prover-progress > span { display: block; height: 100%; background: var(--vscode-progressBar-background, #4c9aff); }
+.prover-stages { margin-top: 12px; }
+.prover-stage { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 5px 0; font-size: 12px; }
+.prover-roles { margin-top: 14px; }
+.prover-roles .table-wrap { margin-top: 6px; }
+.prover-roles table { width: 100%; }
+.prover-lifecycle { margin: 6px 0 10px; font-size: 12px; line-height: 1.5; }
+.prover-lifecycle .row { margin-top: 4px; }
+.prover-notes { max-height: 260px; overflow: auto; white-space: pre-wrap; margin: 6px 0; }
+.prover-change.pending { border-left: 3px solid var(--vscode-charts-yellow); padding-left: 10px; }
+.prover-job-stop { font-size: 12px; margin-top: 4px; }
+.prover-artifacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.prover-node-detail details > summary { cursor: pointer; font-size: 12px; color: var(--lf-muted); margin: 8px 0 4px; }
+.prover-job details > summary { cursor: pointer; font-size: 12px; color: var(--lf-muted); margin: 6px 0 2px; }
+
+/* Per-agent observations share the editor's colors and stay bounded on long runs. */
+.providers-view { display: grid; gap: 16px; }
+.agent-activity { margin: 10px 0; }
+.agent-latest { white-space: pre-wrap; overflow-wrap: anywhere; border-left: 2px solid var(--vscode-focusBorder); padding-left: 10px; }
+.agent-activity-feed { max-height: 520px; overflow-y: auto; margin: 8px 0; }
+.agent-activity-entry { border-bottom: 1px solid var(--vscode-panel-border); }
+.agent-activity-entry.reasoning { border-left: 2px solid var(--vscode-textLink-foreground); }
+.agent-activity-toggle { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; padding: 8px; background: transparent; color: inherit; border: 0; text-align: left; cursor: pointer; }
+.agent-activity-toggle:hover { background: var(--vscode-list-hoverBackground); }
+.agent-activity-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+.agent-activity-preview { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Provider setup and model metadata need breathing room beside wrapped actions. */
+.provider-native-details {
+  margin-top: 18px;
+  border-top: 1px solid var(--lf-border);
+  padding-top: 12px;
+}
+.provider-native-details > summary { cursor: pointer; padding-block: 4px; }
+.provider-native-details > summary:focus-visible { outline-offset: 3px; }
+.provider-native-details p { overflow-wrap: anywhere; }
+.native-model-status { margin-top: 14px; font-size: 11px; gap: 8px 12px; }
+.providers-view .row { row-gap: 10px; }
+.providers-view .btn { white-space: normal; }
+
+/* Setup feedback stays readable at sidebar width and during long downloads. */
+.setup-root { overflow-wrap: anywhere; font-size: 12px; }
+.setup-phase { margin-top: 12px; font-weight: 600; }
+.setup-error { color: var(--vscode-errorForeground); white-space: pre-wrap; overflow-wrap: anywhere; }
+.project-setup-actions { flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+
+.setup-source-diagnostics { margin-top: 16px; overflow-wrap: anywhere; }
+.setup-source-diagnostics summary { color: var(--vscode-editorWarning-foreground); cursor: pointer; }
+.setup-source-diagnostics li { margin-top: 8px; white-space: pre-wrap; }
+
+.setup-live-log { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; margin-top: 16px; background: var(--vscode-textCodeBlock-background); border-radius: 4px; font-size: 12px; }
+.setup-troubleshooting { margin-top: 16px; }
+.setup-troubleshooting > p { margin: 12px 0; }
+
+/* Job cards remain readable and keyboard-clickable in the narrow sidebar. */
+.run-menu { display: flex; flex-direction: column; gap: 12px; }
+.run-menu select { width: 100%; min-width: 0; }
+.job-list { display: flex; flex-direction: column; gap: 8px; max-height: 480px; overflow-y: auto; }
+.job-card { border: 1px solid var(--vscode-panel-border); border-radius: 6px; overflow: hidden; }
+.job-card-open { display: block; width: 100%; padding: 10px; background: transparent; border: 0; text-align: left; color: inherit; cursor: pointer; }
+.job-card-open:hover, .job-card-open[aria-pressed="true"] { background: var(--vscode-list-hoverBackground); }
+.job-card-open:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; }
+.job-card-open .spread { gap: 8px; }
+.job-card-open .muted { display: block; font-size: 11px; margin-top: 4px; }
+.job-stop { margin: 0 10px 10px; }

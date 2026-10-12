@@ -67,11 +67,6 @@ _MODULE_EXPORTS = {
         "check_clarify_requirements",
         "CLARIFY_SCHEMA",
     ),
-    "tools.implementations.delegate_tool": (
-        "delegate_task",
-        "check_delegate_requirements",
-        "DELEGATE_TASK_SCHEMA",
-    ),
 }
 
 _EXPORTS = {

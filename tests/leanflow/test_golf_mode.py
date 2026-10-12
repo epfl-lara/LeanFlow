@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import pytest
 
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import golf_mode
 from leanflow_cli.workflows.queue_models import QueueItem, select_next_item
 
@@ -54,17 +53,6 @@ def test_no_managed_flag_ships():
     runtime can honor is a dangling promise)."""
     assert not hasattr(golf_mode, "golf_managed_enabled")
     assert not hasattr(golf_mode, "record_golf_metrics")
-
-
-def test_runtime_wiring_is_deferred(monkeypatch):
-    """golf/refactor never join the managed loop yet — the substrate is
-    dark. `_is_autonomous_workflow` admits prove exactly as before."""
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "golf")
-    assert runner._is_autonomous_workflow() is False
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "refactor")
-    assert runner._is_autonomous_workflow() is False
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
-    assert runner._is_autonomous_workflow() is True  # prove unchanged
 
 
 # ---------------------------------------------------------------------------

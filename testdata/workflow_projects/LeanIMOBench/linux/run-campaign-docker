@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Run a frozen benchmark with the namespace support supplied by the container.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAMPAIGN_DIR="${LEANFLOW_CAMPAIGN_DIR:-}"
+REPO_DIR="${LEANFLOW_CAMPAIGN_REPO:-$(cd "$SCRIPT_DIR/../../../.." && pwd)}"
+CAMPAIGN_HOME="${LEANFLOW_CAMPAIGN_HOME:-$HOME}"
+IMAGE="${LEANFLOW_CAMPAIGN_IMAGE:-leanflow-leapbench:search}"
+
+usage() {
+  cat <<'HELP'
+Usage: run-campaign-docker --campaign-dir PATH [options] [--] COMMAND [ARGS...]
+
+Options:
+  --campaign-dir PATH  Campaign root (or LEANFLOW_CAMPAIGN_DIR)
+  --repo-dir PATH      LeanFlow checkout (or LEANFLOW_CAMPAIGN_REPO)
+  --home-dir PATH      Home containing .elan, .leanflow, and .codex
+  --image NAME         Container image (or LEANFLOW_CAMPAIGN_IMAGE)
+  -h, --help           Show this help
+
+LEANFLOW_CAMPAIGN_LANES controls concurrency (default: 2).
+Paths are mounted at the same absolute locations inside the container.
+HELP
+}
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --campaign-dir|--repo-dir|--home-dir|--image)
+      [[ $# -ge 2 ]] || { printf 'Missing value for %s\n' "$1" >&2; exit 2; }
+      case "$1" in
+        --campaign-dir) CAMPAIGN_DIR="$2" ;;
+        --repo-dir) REPO_DIR="$2" ;;
+        --home-dir) CAMPAIGN_HOME="$2" ;;
+        --image) IMAGE="$2" ;;
+      esac
+      shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+[[ -n "$CAMPAIGN_DIR" ]] || { printf 'Set --campaign-dir or LEANFLOW_CAMPAIGN_DIR.\n' >&2; exit 2; }
+[[ $# -gt 0 ]] || { usage >&2; exit 2; }
+CAMPAIGN_DIR="$(cd "$CAMPAIGN_DIR" && pwd)"
+REPO_DIR="$(cd "$REPO_DIR" && pwd)"
+CAMPAIGN_HOME="$(cd "$CAMPAIGN_HOME" && pwd)"
+for directory in .elan .leanflow .codex; do
+  [[ -d "$CAMPAIGN_HOME/$directory" ]] || { printf 'Required home directory missing: %s/%s\n' "$CAMPAIGN_HOME" "$directory" >&2; exit 2; }
+done
+exec docker run --rm -i \
+  --name "leanflow-bench-$$" \
+  --security-opt apparmor=unconfined --security-opt seccomp=unconfined \
+  --cap-add=SYS_ADMIN --cap-add=SETPCAP --cap-add=NET_ADMIN --cap-add=SYS_CHROOT \
+  --cap-add=SETUID --cap-add=SETGID --cap-add=SYS_PTRACE \
+  --user "$(id -u):$(id -g)" \
+  -v "$CAMPAIGN_DIR:$CAMPAIGN_DIR" \
+  -v "$REPO_DIR:$REPO_DIR:ro" \
+  -v "$CAMPAIGN_HOME/.elan:$CAMPAIGN_HOME/.elan" \
+  -v "$CAMPAIGN_HOME/.leanflow:$CAMPAIGN_HOME/.leanflow" \
+  -v "$CAMPAIGN_HOME/.codex:$CAMPAIGN_HOME/.codex" \
+  -e "HOME=$CAMPAIGN_HOME" \
+  -e "LEANFLOW_CAMPAIGN_LANES=${LEANFLOW_CAMPAIGN_LANES:-2}" \
+  -e "PATH=$CAMPAIGN_HOME/.elan/bin:/usr/local/bin:/usr/bin:/bin" \
+  -w "$CAMPAIGN_DIR" \
+  "$IMAGE" "$@"

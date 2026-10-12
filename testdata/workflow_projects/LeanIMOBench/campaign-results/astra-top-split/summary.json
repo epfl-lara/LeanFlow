@@ -1,0 +1,80 @@
+{
+  "by_category": {
+    "Combinatorics": {
+      "cells": 6,
+      "verified": 6
+    },
+    "Geometry": {
+      "cells": 12,
+      "verified": 12
+    }
+  },
+  "by_split": {
+    "Advanced": {
+      "cells": 13,
+      "verified": 13
+    },
+    "Basic": {
+      "cells": 5,
+      "verified": 5
+    }
+  },
+  "campaign": "Lean-IMO-Bench \u00b7 LEAP-unsolved \u00b7 top-down-split \u00b7 2 lanes",
+  "cells": 18,
+  "condition_set": "top-down-split",
+  "conditions": [
+    {
+      "label": "astra-top-split",
+      "model": "gpt-6-astra",
+      "orchestrator_effort": "xhigh",
+      "order": "top-down",
+      "prover_effort": "low"
+    }
+  ],
+  "config": {
+    "allow_internet": false,
+    "allowed_axioms": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "compression": true,
+    "context_tokens": 64000,
+    "fill_definitions": false,
+    "job_api_calls": 200,
+    "max_decompositions": 32,
+    "max_nodes": 128,
+    "max_restarts": 3,
+    "mode": "research",
+    "model": "gpt-6-astra",
+    "orchestrator_api_calls": 50,
+    "orchestrator_compression": true,
+    "orchestrator_context_tokens": 96000,
+    "orchestrator_model": "gpt-6-astra",
+    "orchestrator_reasoning_effort": "xhigh",
+    "parallelism": 4,
+    "plan_refinements": 16,
+    "reasoning_effort": "low",
+    "search_order": "top-down",
+    "timeout_s": 1200,
+    "total_api_calls": 2000,
+    "wall_time_s": 28800
+  },
+  "created_at": "2026-09-07T19:39:17.988255+00:00",
+  "leanflow_branch": "milikic/prover-redesign",
+  "leanflow_commit": "98071b3ab8651ec5eeaab5448f0f032f1df8cd11",
+  "proved_and_verified": 18,
+  "provider_base_url": "https://chatgpt.com/backend-api/codex",
+  "runtime_files_sha256": "85e17caffd427ee1f12b25c9010f135841e91832391e6b6fb03d1e0b76ea7a7e",
+  "status": "completed",
+  "totals": {
+    "api_calls": 3708,
+    "decompositions": 1,
+    "elapsed_s": 55870.408,
+    "helper_lemmas": 107,
+    "input_tokens": 108975864,
+    "output_tokens": 1589698,
+    "plan_refinements": 0
+  },
+  "updated_at": "2026-09-08T04:22:45.514389+00:00"
+}

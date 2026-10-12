@@ -1,35 +1,22 @@
 # LeanFlow
 
-**LeanFlow is a Lean-first AI automation tool.** It drives a language model
-inside a real Lean 4 project to repair proofs, formalize mathematics from source
-documents, and complete proof workflows until no `sorry` remains.
+LeanFlow automates Lean 4 proof repair and mathematical formalization. It works
+inside a Lean project, checks proof candidates independently, and records the
+plan, progress, logs, and usage so you can inspect or resume a run.
 
-Point it at a Lean file or project and it inspects diagnostics and goals, edits proofs, re-verifies with Lean after every step, and keeps going — with workflow logs, checkpoints, and resumable state — until the target actually builds clean.
-
-```bash
-leanflow                          # interactive shell
-leanflow workflow prove Main.lean # or run a workflow directly
-leanflow workflow prove Main.lean --provider codex --research
-leanflow workflow prove Main.lean --provider rcp --model zai-org/GLM-5.2
-```
-
-## Features
-
-- **Proof repair** — completes and fixes Lean proofs one declaration at a time, re-verifying with Lean after every edit (warm LeanProbe incremental checks, with Lake as the final gate). A run is "done" only when the code builds with no open goals and no `sorry`.
-- **Formalization** — turns a LaTeX/PDF source document or TeX project into a buildable, statement-verified Lean draft with source-linked declarations, then hands off to proof repair.
-- **Whole-project verification** — scans a project for remaining `sorry`s, ranks the files by dependency and difficulty, and works them in order until the project is clean.
-- **Resumable** — every run records activity, logs, checkpoints, file locks, and its work queue under the project, so long sessions resume without starting blind.
-- **Grounded research** — research mode combines Lean and mathlib search with
-  bounded exploration of local code, public repositories, papers, and the web;
-  failed routes and reusable findings remain in durable workflow state.
-- **Flexible providers** — Codex OAuth, direct provider APIs,
-  OpenAI-compatible endpoints, and local runtimes (vLLM, Ollama, or llama.cpp).
-- **Host isolation** — an optional sandbox runs the agent in a container and exports the result as a patch, never touching your working tree.
-- **Opt-in multi-agent** — file-lock-aware swarm mode for concurrent work, off by default.
-
-The scope is deliberately narrow: Lean automation, not a general chat assistant.
+- **Prove** fills existing `sorry` holes while preserving supplied statements.
+- **Research** develops a mathematical plan and coordinates concurrent provers
+  through a theorem dependency graph.
+- **Formalize** turns LaTeX or PDF sources into a buildable Lean statement draft
+  for review and subsequent proving.
+- **Observe** runs from the terminal or the [VS Code extension](vscode-extension/README.md).
+- **Isolate** a workflow in an optional container and review its exported patch.
 
 ## Install
+
+Use Linux, macOS, or WSL with Git and Python 3.12 or newer. Lean workflows also
+require the project's Lean toolchain and Lake, normally managed by `elan`.
+Codex, Claude Code, or Lemex provides the native agent runtime.
 
 ```bash
 git clone https://github.com/epfl-lara/LeanFlow.git
@@ -37,294 +24,183 @@ cd LeanFlow
 ./scripts/install-internal.sh
 ```
 
-Verify the install:
+On Windows, run `.\scripts\install.ps1` from PowerShell to install inside WSL2.
+Continue with project and provider setup in that WSL environment. For Remote SSH,
+install LeanFlow and the native runtime on the remote workspace host.
+
+The installer prepares a versioned runtime, managed Lean backends, and wrappers
+in `~/.local/bin`. Add that directory to your shell's `PATH` if needed:
 
 ```bash
+export PATH="$HOME/.local/bin:$PATH"
 leanflow --help
-leanflow doctor          # checks the Lean toolchain, MCP backends, and external tools
+leanflow doctor
 ```
 
-`doctor` also checks the external CLIs the workflows use: `rg` for local search and Poppler's
-`pdftotext` / `pdfinfo` / `pdfimages` for reading PDF sources.
+`doctor` reports missing tools and unavailable capabilities, including local
+search and PDF extraction. It checks native runtime availability without making
+an inference request. See the [installation reference](docs/product-reference.md#install)
+for custom paths and optional tools.
+
+To update, pull the desired revision and rerun the installer. A validated runtime
+is selected for future commands; active processes retain their environment.
+The default installation is editable: keep its source checkout stable while
+jobs run, or use `--no-editable` to install a wheel independent of checkout edits.
+See [storage and cleanup](docs/storage.md) for runtime and dependency retention.
 
 ## Quick start
 
-Register an existing Lean project, then run a workflow:
+Prepare a project and configure the native runtime before starting a workflow:
 
 ```bash
-cd /path/to/lean-project
-leanflow project init                  # registers the project (and sets up Lean acceleration when safe)
-leanflow workflow prove Main.lean      # repair proofs in a file
-leanflow workflow formalize paper.tex  # formalize a source document
+codex login
+leanflow config set model.provider codex
+
+cd /path/to/project-folder
+leanflow project setup
+leanflow workflow prove Main.lean
 ```
 
-Or use the interactive shell (the leading `/` is optional):
+`project setup` creates a Mathlib project in an empty folder, prepares a folder
+containing Lean files, or checks an existing Lake project while preserving its
+source, toolchain, and dependency pins. It checks the Lean verification protocol
+before reporting readiness. Use `--preset lean` for a minimal project or
+`--repair` to recheck dependencies and rebuild verification tools.
+
+The VS Code sidebar provides the same flow through **Set up project**, with
+progress, logs, retry, and cancellation. Provider login is separate from Lean
+project readiness.
+
+Choose the scope and workflow:
 
 ```bash
-leanflow
+leanflow workflow prove                         # discover project proof holes
+leanflow workflow prove Main.lean               # research mode, up to two provers
+leanflow workflow prove Main.lean --research-workers 3
+leanflow workflow prove Main.lean --clean-room  # project and installed libraries only
+leanflow workflow formalize docs/paper.tex      # draft source-linked statements
+leanflow status                                # inspect progress from another terminal
 ```
+
+Run `leanflow` for the interactive shell:
 
 ```text
-/prove [Main.lean]      /formalize docs/paper.tex      /autoformalize docs/
-/goals   /diagnostics   /proof-state
-/workflow status | activity | log 120
-/skills   /provider   /doctor   /mcp status   /exit
+/prove Main.lean
+/formalize docs/paper.tex
+/workflow status
+/workflow activity
+/workflow log 120
+/goals
+/diagnostics
+/provider
+/doctor
+/exit
 ```
 
-From another terminal, `leanflow status` returns a bounded live summary without
-waiting on the sandbox engine. Use `leanflow status --verbose` only when you
-also want the larger run history and a live sandbox-engine probe.
+## Verification and source protection
 
-When it can do so safely, `project init` also prepares Lean REPL acceleration (adds the
-`leanprover-community/repl` dependency and builds it) and local `lean-lsp-mcp` power modes — local
-Loogle, REPL-backed tactic screening for `lean_multi_attempt`, and optional local LeanExplore
-semantic search (`lean-explore[local]`). Anything unavailable falls back cleanly and is reported by
-`leanflow doctor`.
+Provers work in private scratch files. The controller installs a candidate only
+after independent Lean checks accept it and its axiom profile. Supplied source
+outside authorized proof holes stays protected; reviewed helper modules,
+imports, and library requirements are recorded as additional changes.
+Definition holes require explicit authorization.
 
-## What a run guarantees
+A successful `prove` run requires no `sorry` in the requested source files and
+a final project `lake build`. A file target limits the proof assignment to that
+file; omitting the target discovers eligible project source files. A blocked or
+limited run saves its state and reports an unresolved or failed outcome.
 
-A `prove` run is not "done" because the agent made a plausible edit — it is done only when Lean agrees. A successful run ends with:
+Research is the default, with bottom-up scheduling and two concurrent prover
+jobs. Standard mode uses one prover directly. Top-down scheduling is also
+available; candidates depending on unfinished helpers remain untrusted until
+those dependencies close and strict verification passes.
 
-- the relevant Lean code building
-- clean diagnostics and no open goals
-- no `sorry` in the active target
-- no remaining project `sorry` outside dependencies
+Clean-room proving supports all three native backends. It restricts research to
+the project and installed libraries, blocks external research and remote Lean
+search, and excludes prior native session context. Native model connections
+remain available. Clean-room checkpoints can resume; online or legacy runs
+cannot be converted into clean-room tests.
 
-LeanFlow reaches that by working in small, Lean-verified steps rather than one big edit:
+`formalize` has a separate completion gate: a buildable statement draft reviewed
+against its source, with intentional theorem proof holes. Review the draft, then
+run `prove` to complete it. `autoprove` and `autoformalize` are compatibility
+aliases of `prove` and `formalize`.
 
-- **`prove <file>`** drives the model one declaration at a time, re-checking with Lean after every edit and advancing only when the target is clean. Failed attempts are recorded and the original `sorry` is restored, so the file always stays buildable.
-- **`prove`** (no file) scans the project for remaining `sorry`s, ranks the files, and works them one at a time. Parallel agents stay off unless you opt into swarm mode.
-- **`prove --research`** keeps the foreground prover moving while a bounded
-  portfolio explores grounding, counterexamples, decompositions, and alternate
-  routes. Research findings remain advisory until they pass the same Lean
-  verification gates as foreground work, and exhausted branches are retained
-  instead of rediscovered. Repository and prior-solution research can be
-  disabled for clean-room benchmarks; see the
-  [product reference](docs/product-reference.md#relentless-proving-and-research-mode).
-- **`prove --clean-room`** disables repository-backed and task-specific
-  prior-solution research for one benchmark run while retaining general web,
-  paper, and local library search. Add one or more `--clean-room-label`
-  spellings when the file name alone does not identify the benchmark. Managed
-  writes remain limited to the assigned Lean source, its exact `Helpers.lean`
-  companion, and durable workflow state.
-- **`prove --human-review`** explicitly permits the orchestrator to park an
-  ambiguous goal for human review. Without this flag, uncertainty is recorded
-  and the workflow continues autonomously without changing the source statement.
-- **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
+See the [prover workflow](docs/prover-workflow.md) for settings, verification,
+limits, outcomes, and resume behavior.
 
-Headless proof outcomes are explicit: `0` means verified, `3` means an authoritatively promoted
-main-goal disproof, `2` means unresolved but checkpointed/resumable, `1` is a startup/runtime
-failure, and `130` is a signal interruption. LeanFlow never returns success while the requested
-scope still contains `sorry`.
+## Native backends and configuration
 
-The deeper mechanics (LaTeX preflight, the blueprint/verifier handoff, the project prove-manager, queue and checkpoint internals) are in the [product reference](docs/product-reference.md).
+LeanFlow supports **Codex**, **Claude Code**, and **Lemex**. Each CLI owns its
+login, credentials, endpoint, model calls, retries, sampling, and compression.
+Configure the native CLI first, then select it in LeanFlow:
 
-## Workflows
+```bash
+leanflow provider
+leanflow workflow prove Main.lean --provider codex
+leanflow workflow prove Main.lean --provider claude
+leanflow workflow prove Main.lean --provider lemex
+```
 
-- `prove` — repair and complete existing Lean proofs.
-- `formalize` — turn a LaTeX/PDF source document or TeX project into statement-verified Lean declarations; `/prove` then fills the resulting `sorry`s.
-- `draft` — create Lean declarations and proof skeletons.
-- `review` — inspect blockers, diagnostics, goals, and remaining `sorry`.
-- `refactor` / `golf` — simplify existing Lean code without breaking verification.
+Leave model and reasoning effort empty to inherit native defaults. `--model`
+and role settings are optional explicit overrides. Lemex inherits its native
+`LEMEX_BASE_URL` and `LEMEX_API_KEY`; external inference endpoints are configured
+there. The [backend reference](docs/product-reference.md#native-backends) covers
+setup and migration from the former direct-provider engine.
 
-`autoprove` and `autoformalize` are compatibility aliases of `prove` and `formalize`.
+Global limits on agent calls, reported tokens, and active time are optional:
 
-## Sandbox (host isolation)
+```bash
+leanflow config set limits.agent_calls 100
+leanflow config set limits.tokens 1000000
+leanflow config set limits.wall_time_s 28800
+```
 
-Run a workflow inside a container so the model can edit freely without touching your working tree:
+One native CLI invocation is one agent call, including a new retry or resume
+process. Its internal model requests and compaction share that call. Research
+also defaults to 15 prover calls and 5 orchestrator calls across the run; clear
+a role cap to make it unlimited. Token limits gate later invocations and may be
+exceeded by an active call. Limits and spending survive resume.
+
+User configuration lives in `~/.leanflow/config.yaml`; project registration and
+workflow state live under `.leanflow/`. Set `LEANFLOW_HOME` to choose another
+user-state directory. Inspect configuration and recorded state with:
+
+```bash
+leanflow flags list
+leanflow workflow --dry-run --json prove Main.lean
+leanflow runs list --json
+```
+
+## Container sandbox
+
+With Docker or Podman available, install the sandbox image and wrapper:
 
 ```bash
 ./scripts/install-sandbox.sh
 cd /path/to/lean-project
 leanflow-sandbox workflow prove Main.lean
-leanflow sandbox status
 ```
 
-The sandbox builds a local Docker/Podman image, copies the active project into a per-run worktree,
-and exports the final diff as `changes.patch` under `~/.leanflow/sandbox/runs/<run-id>/`. See the
-[sandbox runtime](docs/sandbox-runtime.md) doc for image options and the update flow.
+The sandbox works on a copied project and exports `changes.patch` under
+`~/.leanflow/sandbox/runs/<run-id>/`. Review the patch before applying it.
+See the [sandbox runtime](docs/sandbox-runtime.md) for network, credentials,
+cache mounts, and update options.
 
-## Providers and local runtimes
+## Documentation and development
 
-Inspect the active route with `leanflow provider`. For an RCP deployment with
-model-family-specific credentials:
+- [Documentation guide](docs/README.md) — operational references.
+- [Product reference](docs/product-reference.md) — workflows, projects, backends, settings, and diagnostics.
+- [Prover workflow](docs/prover-workflow.md) — source protection, limits, progress, and resume.
+- [VS Code extension](vscode-extension/README.md) — setup, launching, proof workspace, and experiments.
+- [Contributing](CONTRIBUTING.md) — development setup and required checks.
+- [Architecture](ARCHITECTURE.md) — module ownership and runtime invariants.
+- [Agent guide](AGENTS.md) — repository coding standards.
 
-```bash
-export GLM_BASE_URL="https://inference.rcp.epfl.ch/v1"
-export GLM_API_KEY="..."
-export RCP_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
-export RCP_OPENAI_API_KEY="..."
-leanflow workflow prove Main.lean --provider rcp --model zai-org/GLM-5.2
-```
-
-`--model` is scoped to that workflow and is propagated to its foreground,
-manager, planner, advisor, and compression calls. The general `custom` route
-remains available for other OpenAI-compatible endpoints through
-`LEANFLOW_OPENAI_BASE_URL` and `LEANFLOW_OPENAI_API_KEY`.
-
-To use an existing Codex CLI login (model and reasoning effort are read from `~/.codex/config.toml`
-unless `LEANFLOW_CODEX_MODEL` / `LEANFLOW_CODEX_REASONING_EFFORT` are set):
-
-```bash
-codex login
-leanflow config set model.provider codex
-```
-
-An explicit workflow provider applies its resolved model and reasoning effort
-to the foreground prover and every model-backed auxiliary lane for that launch.
-Process environment values take precedence over `~/.leanflow/.env`, so
-launch-scoped `LEANFLOW_CODEX_MODEL` and
-`LEANFLOW_CODEX_REASONING_EFFORT` overrides remain authoritative.
-
-To run a local model server (`vllm`, `ollama`, or `llama.cpp`):
-
-```bash
-leanflow models local start vllm google/gemma-3-27b-it
-leanflow provider --requested local
-```
-
-Override the provider for a single run without changing the saved default:
-
-```bash
-leanflow workflow --provider codex prove Main.lean
-```
-
-Run a clean-room benchmark without weakening normal research for later work:
-
-```bash
-leanflow workflow prove Benchmarks/P2.lean \
-  --provider rcp --model zai-org/GLM-5.2 --research \
-  --clean-room --clean-room-label "Benchmark Problem 2"
-```
-
-## Multi-agent mode
-
-LeanFlow does not spawn agents by default. Opt into swarm mode only when you want concurrent Lean work:
-
-```bash
-leanflow workflow prove Main.lean --agents 3
-```
-
-Swarm mode uses file-lock-aware delegation: locks live in `.leanflow/workflow-state/file_locks.json`,
-and file-write tools reject edits when another agent owns the file. Use `--prompt` for run-specific
-guidance on top of the Lean-first workflow contract:
-
-```bash
-leanflow workflow prove Main.lean --prompt "try abs_abs_sub before ring_nf"
-```
-
-## Project state
-
-LeanFlow keeps user-level state separate from per-project workflow state:
-
-- user config: `~/.leanflow/config.yaml`  ·  user env: `~/.leanflow/.env`
-- project manifest: `.leanflow/project.yaml`  ·  project workflow state: `.leanflow/workflow-state/`
-
-Workflow state holds activity, logs, checkpoints, file locks, route decisions,
-failed-attempt history, research findings, project plans, and outcomes. Safe
-provider or infrastructure pauses checkpoint current source and return a
-resumable status instead of discarding progress.
-
-## Runtime knobs
-
-The runtime reads feature switches and budgets from `LEANFLOW_*` environment
-variables. `leanflow flags` is the catalog of them:
-
-```bash
-leanflow flags list --ablatable        # knobs worth flipping in an experiment
-leanflow flags show LEANFLOW_NEGATION_PROBE
-leanflow flags effective --changed     # what this environment actually sets
-leanflow flags diff default research   # what --research really turns on
-```
-
-Named knob profiles are JSON files under `.leanflow/flag-profiles/` (project) or
-`~/.leanflow/flag-profiles/` (user), listed by `leanflow flags profiles`. Pair
-them with `leanflow workflow --dry-run --json` to see the exact argv and
-environment a run would receive before starting it — which is what makes two
-runs comparable. The catalog also marks which settings are safe for editor
-profiles: path redirection, raw-request capture, secret-redaction controls, and
-approval bypasses remain terminal-only and cannot be injected by the extension.
-
-`leanflow runs` exposes recorded state without requiring consumers to know the
-on-disk layout. `metrics RUN_ID --json` reports only evidence bound to that run:
-the verified activity stream plus a write-once final declaration/outcome and
-launch/final provenance snapshot. A separately sealed digest detects accidental
-edits and storage corruption (it is not a signature against a hostile filesystem
-owner). Exact evidence includes a canonical,
-credential-redacted digest of the effective `LEANFLOW_*` launch environment,
-content-addressed proof source, ignored project manifest/guidance, selected
-skills, LeanFlow runtime, Python/package inventory, behavior configuration, and
-dependency identities, complete Git command evidence, and matching
-`runner-exit`/final-outcome exit codes. Usage reports independent
-API-call, token, and cost completeness; an earlier provider total followed by
-unaccounted usage remains `null`, not a lower bound presented as exact. Provider
-retries, auxiliary calls, command experts, iteration-limit summaries, and
-dispatched child runs are explicitly unmetered until their full usage can be
-bound, so their API/token/cost totals cannot be presented as complete. Missing
-evidence remains explicitly unscored instead of falling back to mutable
-project-wide state. `list --json` strictly audits hot, final, and retained
-history, reports completeness (including limit truncation), and preserves
-`exit_code`, `terminal_phase`, and a stable terminal status for both hot and
-archived runs. A retained stream without terminal evidence is `unknown`, never
-assumed still running. `log RUN_ID` reads that
-run's timestamped console log, while `stop RUN_ID` interrupts only a revalidated
-live process identity. The other observers are `status`, `events`, `journal`,
-`outcomes`, and `types`; `provenance --json` describes the current checkout
-separately from any historical run.
-
-## VS Code extension
-
-[`vscode-extension/`](vscode-extension/README.md) is an editor front end over the
-same CLI: a launcher with a resolved-plan preview, live run state, a filtered
-view of the structured activity stream, a browsable knob catalog with profile
-save/diff, and knob-ablation sweeps. Research cells use private detached clones
-of one clean Git baseline, freeze their profile definitions and randomized
-order, resolve an explicit provider/model before the first paid launch, and
-score only from run-bound final evidence plus a complete source-history audit;
-unverifiable rows remain explicitly unscored. Exports use the
-`evals/harness.append_result` shape.
-
-```bash
-cd vscode-extension && npm install && npm run package
-```
-
-## Skills and specs
-
-LeanFlow steers the agent with a small curated Lean skill core in `leanflow_skills/` (e.g.
-`lean-proof-loop`, `lean-theorem-queue-worker`, `lean-diagnostics`, `lean-formalization`,
-`lean-search`, `lean-refactor-golf`). The canonical
-workflow contract lives in markdown specs under `leanflow_specs/workflows/` and `leanflow_specs/workers/`.
-
-Skills route the agent to the right workflow behavior; specs define the native tool order, verification
-gates, and worker recommendations. Keep skills thin — if a rule changes the workflow contract, put it in
-the linked spec and have the skill point to it rather than duplicating the procedure.
-
-## Documentation
-
-- [Product reference](docs/product-reference.md) — the full feature documentation.
-- [Sandbox runtime](docs/sandbox-runtime.md) — the isolated container runtime, patch export, and update flow.
-- [Architecture](ARCHITECTURE.md) — the module map and internals.
-- [Contributing / agent guide](AGENTS.md) — coding standards, the quality gate, and the repo's gotchas.
-
-## Development
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-```
-
-Run the quality gate before committing (CI enforces all four):
-
-```bash
-black .                # format (https://github.com/psf/black); CI checks with `black --check .`
-ruff check .           # lint (incl. unused-import F401)
-mypy                   # type-check the gated module set
-python -m pytest -q    # full suite
-```
-
-Coding standards, the layering rules, and the gotchas to avoid are in [AGENTS.md](AGENTS.md); the
-module map is in [ARCHITECTURE.md](ARCHITECTURE.md).
+LeanFlow also includes `draft`, `review`, `refactor`, and `golf` workflows.
+Its curated guidance lives in `leanflow_skills/`; workflow specifications live in
+`leanflow_specs/`. Built-in examples and evaluation fixtures are described in
+[testdata/workflow_projects](testdata/workflow_projects/README.md).
 
 ## License
 

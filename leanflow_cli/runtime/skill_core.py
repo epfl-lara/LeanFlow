@@ -13,6 +13,8 @@ from core.home import leanflow_home
 from leanflow_cli.lean.lean_workflow_specs import phase_fragment_text, specs_for_skill
 
 CURATED_BUILTIN_SKILLS = {
+    "lean-bounded-prover",
+    "lean-prover-orchestrator",
     "lean-proof-loop",
     "lean-diagnostics",
     "lean-formalization",

@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextvars import Context, copy_context
+from contextvars import copy_context
 from pathlib import Path
 
 import pytest
@@ -106,89 +106,6 @@ def test_copied_tool_context_reuses_actor_lease(capacity_env, monkeypatch):
         thread.join(timeout=2.0)
         assert not thread.is_alive()
     assert observed == [actor]
-
-
-def test_delegate_conversations_are_actor_capped_before_construction(capacity_env, monkeypatch):
-    """Planner-style delegates never enter AIAgent construction above N."""
-    from tools.implementations import delegate_tool
-
-    monkeypatch.setenv(BACKGROUND_PROVIDER_CAPACITY_ENV, "2")
-    active = 0
-    peak = 0
-    state_lock = threading.Lock()
-
-    def fake_unleased(**kwargs):
-        nonlocal active, peak
-        with state_lock:
-            active += 1
-            peak = max(peak, active)
-        try:
-            time.sleep(0.04)
-            return {"task_index": kwargs["task_index"], "status": "completed"}
-        finally:
-            with state_lock:
-                active -= 1
-
-    monkeypatch.setattr(delegate_tool, "_run_single_child_unleased", fake_unleased)
-    arguments = {
-        "goal": "g",
-        "context": None,
-        "toolsets": None,
-        "model": None,
-        "max_iterations": 1,
-        "parent_agent": object(),
-    }
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [
-            executor.submit(delegate_tool._run_single_child, task_index=index, **arguments)
-            for index in range(5)
-        ]
-        [future.result() for future in futures]
-    assert peak == 2
-
-
-def test_busy_planner_delegate_returns_capacity_deferred(capacity_env, monkeypatch):
-    """A foreground planner tick never waits for a whole background job."""
-    from tools.implementations import delegate_tool
-
-    monkeypatch.setenv(BACKGROUND_PROVIDER_CAPACITY_ENV, "1")
-    constructed = False
-
-    def should_not_construct(**_kwargs):
-        nonlocal constructed
-        constructed = True
-        return {}
-
-    monkeypatch.setattr(delegate_tool, "_run_single_child_unleased", should_not_construct)
-    with background_actor_lease():
-        context = copy_context()
-        result_holder: list[dict] = []
-
-        # A fresh context represents the foreground planner, not a nested tool
-        # inside the actor held above.
-        empty_context = Context()
-
-        def attempt() -> None:
-            result_holder.append(
-                delegate_tool._run_single_child(
-                    task_index=0,
-                    goal="plan",
-                    context=None,
-                    toolsets=None,
-                    model=None,
-                    max_iterations=1,
-                    parent_agent=object(),
-                    background_capacity_timeout_s=0.05,
-                )
-            )
-
-        thread = threading.Thread(target=empty_context.run, args=(attempt,), daemon=True)
-        thread.start()
-        thread.join(timeout=1.0)
-        assert not thread.is_alive()
-
-    assert not constructed
-    assert result_holder[0]["status"] == "capacity-deferred"
 
 
 @pytest.mark.parametrize("error_type", [TimeoutError, KeyboardInterrupt])

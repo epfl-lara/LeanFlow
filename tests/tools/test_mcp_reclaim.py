@@ -76,7 +76,6 @@ def test_multi_attempt_handler_preserves_result_then_retires_server(monkeypatch)
     server = mcp_tool.MCPServerTask("lean-lsp")
     server.session = session
     server._tools = [MagicMock()]
-    server._sampling = MagicMock()
     server._config = {"command": "lean-lsp-mcp"}
     other_server = mcp_tool.MCPServerTask("lean-proof-auto")
     other_server.session = MagicMock()
@@ -97,7 +96,6 @@ def test_multi_attempt_handler_preserves_result_then_retires_server(monkeypatch)
         assert "lean-lsp" not in mcp_tool._servers
         assert server.session is None
         assert server._task is None
-        assert server._sampling is None
         assert server._tools == []
         assert server._config == {}
         assert mcp_tool._servers["lean-proof-auto"] is other_server

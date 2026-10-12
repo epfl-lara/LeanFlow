@@ -1,3 +1,5 @@
+"""Exercise shared deterministic workflow helpers independently of retired engines."""
+
 from __future__ import annotations
 
 import json
@@ -7,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from leanflow_cli.config import save_config
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import workflow_state
 from leanflow_cli.workflows.workflow_state import (
     WorkflowLiveStatusOwnerConflictError,
@@ -47,95 +48,6 @@ def _owned_process(process_id: int) -> dict[str, object]:
         "process_session_id": process_id,
         "process_token_sha256": "a" * 64,
     }
-
-
-def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path):
-    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
-    monkeypatch.setenv("LEANFLOW_NATIVE_PROVIDER", "custom")
-    monkeypatch.setenv("LEANFLOW_NATIVE_MODEL", "google/gemma-3-27b-it")
-    monkeypatch.setenv("LEANFLOW_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
-    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path / "project"))
-    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
-    monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "2")
-    monkeypatch.setenv("LEANFLOW_PLANNER_ENABLED", "1")
-
-    runner._persist_live_status(
-        [{"role": "assistant", "content": "Working"}],
-        compaction_state={"reason": "auto", "snapshot_text": "snapshot"},
-        checkpoint_state={
-            "count": 2,
-            "current": {
-                "label": "proof milestone",
-                "linked_filesystem_checkpoint": "abc123def456",
-            },
-        },
-        live_state={
-            "active_file": "Main.lean",
-            "active_file_label": "Main.lean",
-            "target_symbol": "demo",
-            "diagnostics": "warning: declaration uses sorry",
-            "goals": "x : Nat\n⊢ x = x",
-            "build_status": "lake build running",
-            "message": "1 goal remaining",
-            "sorry_count": 1,
-            "blocker_summary": "remaining sorry",
-            "proof_solved": True,
-            "warning_cleanup_status": "verified",
-            "warning_cleanup_attempted": True,
-            "warning_cleanup_verified": True,
-            "warning_cleanup_warning_count": 0,
-            "warning_cleanup_diagnostics": "warning cleanup verified; no warnings remain",
-            "warning_cleanup": {
-                "status": "verified",
-                "proof_solved": True,
-                "attempted": True,
-                "verified": True,
-                "skipped": False,
-                "blocked": False,
-                "warning_count": 0,
-                "warning_summary": "",
-                "diagnostics": "warning cleanup verified; no warnings remain",
-            },
-            "document_formalization_handoff": {
-                "ok": False,
-                "issues": ["statement/source verification pending"],
-            },
-            "document_formalization_proof_sorry_count": 2,
-            "document_formalization_construction_sorry_count": 1,
-        },
-        phase="busy",
-    )
-
-    payload = load_workflow_live_status()
-
-    assert payload["phase"] == "busy"
-    assert payload["runtime_heartbeat_at"] == payload["updated_at"]
-    assert payload["parallel_agents"] == 1
-    assert payload["agent_capacity"] == {
-        "foreground": 1,
-        "planner": 2,
-        "background": 2,
-        "shared_background": 2,
-        "total": 3,
-    }
-    assert payload["workflow_kind"] == "prove"
-    assert payload["active_skill"] == "lean-proof-loop"
-    assert payload["latest_checkpoint_label"] == "proof milestone"
-    assert payload["snapshot_present"] is True
-    assert payload["goals"] == "x : Nat\n⊢ x = x"
-    assert payload["proof_solved"] is True
-    assert payload["warning_cleanup_status"] == "verified"
-    assert payload["warning_cleanup_verified"] is True
-    assert payload["warning_cleanup"]["status"] == "verified"
-    assert payload["document_formalization_handoff"]["ok"] is False
-    assert payload["document_formalization_handoff"]["issues"] == [
-        "statement/source verification pending"
-    ]
-    assert payload["document_formalization_proof_sorry_count"] == 2
-    assert payload["document_formalization_construction_sorry_count"] == 1
 
 
 def test_startup_status_preserves_mathematical_snapshot_and_replaces_owner(monkeypatch, tmp_path):
@@ -452,33 +364,6 @@ def test_dead_startup_normalization_preserves_previous_owner_metadata(monkeypatc
     assert payload["startup_previous_owner"]["run_id"] == "prove-aborted"
 
 
-def test_rebuilt_live_status_clears_startup_reconciliation_marker(monkeypatch, tmp_path):
-    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path / "project"))
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
-    monkeypatch.setattr(runner, "_held_lock_count", lambda _owner_id: 0)
-    mark_workflow_live_status_startup(
-        phase="reconciling",
-        metadata={"workflow_kind": "prove", "project_root": "/tmp/project"},
-    )
-
-    runner._persist_live_status(
-        [],
-        checkpoint_state={},
-        live_state={
-            "active_file": "/tmp/project/Main.lean",
-            "target_symbol": "remaining_goal",
-            "diagnostics": "warning: declaration uses sorry",
-            "sorry_count": 1,
-        },
-        phase="ready",
-    )
-
-    payload = load_workflow_live_status()
-    assert payload["phase"] == "ready"
-    assert "startup_reconciliation_pending" not in payload
-
-
 @pytest.mark.parametrize("phase", ["starting", "reconciling"])
 def test_startup_live_phases_count_as_active_agent_status(phase):
     assert workflow_state._agent_status_from_live_phase(phase) == "active"
@@ -522,203 +407,6 @@ def test_foreign_process_activity_cannot_refresh_owner_snapshot(monkeypatch, tmp
     assert payload["runtime_heartbeat_at"] == "2026-01-01T00:00:00+00:00"
 
 
-def test_persist_live_status_releases_locks_before_exit_payload(monkeypatch, tmp_path):
-    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path / "project"))
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
-    monkeypatch.setenv("LEANFLOW_NATIVE_RUNNER_OWNER", "agent-a")
-
-    released: list[str] = []
-    monkeypatch.setattr(
-        runner,
-        "release_all_file_locks",
-        lambda *, owner_id: released.append(owner_id) or {"released": 1},
-    )
-    monkeypatch.setattr(runner, "_held_lock_count", lambda owner_id: 0 if released else 1)
-
-    runner._persist_live_status(
-        [{"role": "assistant", "content": "Done"}],
-        live_state={
-            "active_file": "Main.lean",
-            "active_file_label": "Main.lean",
-            "diagnostics": "no errors found",
-            "goals": "no goals",
-            "build_status": "lake env lean Main.lean exits 0",
-            "verification_ok": True,
-            "last_verification": {"ok": True, "scope": "file", "tool": "lean_verify"},
-            "declaration_scope": "file",
-            "declaration_queue_total": 0,
-            "sorry_count": 0,
-        },
-        phase="exited",
-    )
-
-    payload = load_workflow_live_status()
-
-    assert released == ["agent-a"]
-    assert payload["phase"] == "exited"
-    assert payload["held_locks"] == 0
-
-
-@pytest.mark.parametrize(
-    ("exit_code", "reason", "proof_solved", "sorry_count"),
-    [
-        (0, "verified completion", True, 0),
-        (runner.EXIT_PAUSED, "explicit interactive exit", False, 1),
-        (runner.EXIT_PAUSED, "infrastructure pause", False, 1),
-        (runner.EXIT_DISPROVED, "authoritative disproof", False, 1),
-        (runner.EXIT_INTERRUPTED, "signal interrupt", False, 1),
-    ],
-    ids=[
-        "verified",
-        "explicit-exit-unresolved",
-        "infrastructure-pause",
-        "disproved",
-        "signal",
-    ],
-)
-def test_finalizer_persists_truthful_terminal_outcome_in_live_status(
-    monkeypatch,
-    tmp_path,
-    exit_code,
-    reason,
-    proof_solved,
-    sorry_count,
-):
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".leanflow").mkdir()
-    (project / ".leanflow" / "project.yaml").write_text("name: demo\n", encoding="utf-8")
-    source = project / "Main.lean"
-    source.write_text(
-        (
-            "theorem demo : False := by\n  sorry\n"
-            if exit_code == runner.EXIT_DISPROVED
-            else "theorem demo : True := by\n  trivial\n"
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
-    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
-    monkeypatch.setenv(
-        "LEANFLOW_PLAN_STATE_DIR",
-        str(project / ".leanflow" / "workflow-state"),
-    )
-    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda _agent: None)
-    monkeypatch.setattr(
-        runner,
-        "_write_signal_interruption_checkpoint",
-        lambda *args, **kwargs: None,
-    )
-    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
-    monkeypatch.setattr(runner, "_held_lock_count", lambda _owner_id: 0)
-    monkeypatch.setattr(runner, "_maybe_record_learnings", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_maybe_generate_final_report", lambda *args, **kwargs: None)
-
-    live_state = {
-        "active_file": str(source),
-        "target_symbol": "demo",
-        "declaration_scope": "file",
-        "proof_solved": proof_solved,
-        "sorry_count": sorry_count,
-    }
-    autonomy_state = {}
-    if exit_code == 0:
-        verified_state = {
-            **live_state,
-            "diagnostics": "no errors found",
-            "goals": "no goals",
-            "build_status": "lake env lean Main.lean exits 0",
-            "verification_ok": True,
-            "last_verification": {
-                "ok": True,
-                "scope": "file",
-                "tool": "lean_verify",
-            },
-        }
-        monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
-        monkeypatch.setattr(
-            runner,
-            "_revalidate_verified_scope_after_quiescence",
-            lambda *args, **kwargs: dict(verified_state),
-        )
-        monkeypatch.setattr(
-            runner,
-            "_live_state_is_verified",
-            lambda state: bool(dict(state or {}).get("verification_ok")),
-        )
-    elif exit_code == runner.EXIT_DISPROVED:
-        monkeypatch.setenv("LEANFLOW_NEGATION_PROBE", "1")
-        monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "status-finalizer-disproof")
-        campaign = runner.campaign_epoch.ensure_campaign(autonomy_state)
-        setup = runner.campaign_roots.initialize_campaign_roots(
-            campaign_id=campaign["campaign_id"],
-            project_root=project,
-            source_files=(source,),
-        )
-        assert setup.ok, setup.reason
-        promotion = {
-            "ok": True,
-            "is_main_goal": True,
-            "evidence": {"operation_path": str(source)},
-        }
-        autonomy_state.update(
-            {
-                "terminal_outcome": "disproved",
-                "negation_promotion": promotion,
-            }
-        )
-        monkeypatch.setattr(
-            runner,
-            "_revalidate_disproof_after_quiescence",
-            lambda _state: runner.negation_promotion.PromotionReconciliation(
-                terminal_disproof=True
-            ),
-        )
-        monkeypatch.setattr(
-            runner.negation_promotion,
-            "authoritative_runtime_main_promotion",
-            lambda *args, **kwargs: dict(promotion),
-        )
-        monkeypatch.setattr(
-            runner.negation_promotion,
-            "revalidate_promotion",
-            lambda *args, **kwargs: runner.negation_promotion.PromotionResult(
-                True,
-                "current",
-                is_main_goal=True,
-            ),
-        )
-
-    result = runner._finalize_native_run(
-        runner.NativeRunFinalizer(),
-        exit_code,
-        agent=None,
-        history=[],
-        compaction_state={},
-        checkpoint_state={},
-        autonomy_state=autonomy_state,
-        live_state=live_state,
-        reason=reason,
-    )
-
-    payload = load_workflow_live_status()
-    assert result == exit_code
-    assert payload["phase"] == "exited"
-    assert payload["process_id"] == 0
-    assert payload["exit_code"] == exit_code
-    assert payload["reason"] == reason
-    assert payload["proof_solved"] is proof_solved
-    expected_sorry_count = 0 if exit_code == runner.EXIT_INTERRUPTED else sorry_count
-    assert payload["sorry_count"] == expected_sorry_count
-    assert payload["interrupt_source"] == ("signal" if exit_code == runner.EXIT_INTERRUPTED else "")
-
-
 def test_workflow_state_prefers_project_local_state(monkeypatch, tmp_path):
     project = tmp_path / "project"
     (project / ".leanflow").mkdir(parents=True)
@@ -730,23 +418,6 @@ def test_workflow_state_prefers_project_local_state(monkeypatch, tmp_path):
 
     assert read_workflow_run_log(1) == "alpha"
     assert (project / ".leanflow" / "workflow-state" / "latest-run.log").is_file()
-
-
-def test_record_activity_captures_workflow_and_skill_context(monkeypatch, tmp_path):
-    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "review")
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/review Main.lean")
-    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_SKILL", "lean-diagnostics")
-
-    runner._record_activity("resume", "Loaded workflow checkpoint", checkpoint_label="milestone")
-
-    events = read_workflow_activity(limit=4)
-
-    assert len(events) == 1
-    assert events[0]["type"] == "resume"
-    assert events[0]["details"]["workflow_kind"] == "review"
-    assert events[0]["details"]["active_skill"] == "lean-diagnostics"
-    assert events[0]["details"]["checkpoint_label"] == "milestone"
 
 
 def test_workflow_run_log_round_trip(monkeypatch, tmp_path):

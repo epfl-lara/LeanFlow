@@ -6,46 +6,53 @@ import {
   rejectedProfileKnobNames,
   validateLaunch,
 } from "../../src/core/launch";
+import {
+  compatibleProfileName,
+  compatibleProfileOverrides,
+  profileLaunchSurfaces,
+  proverConfigurationRows,
+} from "../../src/core/profileSurfaces";
+import { BACKEND_IDS, BACKEND_LABELS, isBackend } from "../../src/core/providerCredentials";
+import { changeNativeSelection, launchModelProblems, nativeSelections } from "../../src/core/providerModels";
 import { LAUNCH_FIELD_LIMITS, WORKFLOW_KINDS } from "../../src/core/types";
 import { Card, Check, Field, Notice } from "../components";
 import { PlayIcon } from "../icons";
+import { HELP } from "../help";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
-
-/** Providers the CLI understands. Empty means "use the configured default". */
-const PROVIDERS = [
-  { id: "", label: "Configured default" },
-  { id: "codex", label: "codex — Codex OAuth" },
-  { id: "custom", label: "custom — OpenAI-compatible endpoint" },
-  { id: "openrouter", label: "openrouter" },
-  { id: "anthropic", label: "anthropic" },
-  { id: "deepseek", label: "deepseek" },
-  { id: "rcp", label: "rcp — EPFL inference" },
-  { id: "local", label: "local — vLLM / Ollama / llama.cpp" },
-];
+import { CliNotice } from "../CliNotice";
+import { GlobalLimits } from "./GlobalLimits";
+import { NativeModelControl } from "./NativeModelControls";
+import { ProjectSetupCard } from "./ProjectSetupCard";
+import { projectSetupBlocksLaunch } from "../../src/core/projectSetupTypes";
+import { ProverSettings } from "./ProverSettings";
 
 export function LaunchView() {
-  const { app, view, setForm, preview, requestPreview } = useStore();
+  const { app, view, setView, setForm, preview, requestPreview } = useStore();
   const form = view.form;
   const [showPlan, setShowPlan] = useState(false);
+  const defaultProvider = app?.providers?.error ? "" : app?.providers?.selected;
+  const defaultProviderLabel = isBackend(defaultProvider)
+    ? `Default (${BACKEND_LABELS[defaultProvider]})`
+    : app?.providers?.checking ? "Default (checking…)" : "Default (unavailable)";
 
-  const problems = useMemo(() => validateLaunch(form), [form]);
+  const activeProfile = app?.profiles?.profiles.find((profile) => profile.name === form.profile);
+  const selections = nativeSelections(form, app?.providers, activeProfile?.overrides);
+  const problems = [...validateLaunch(form), ...launchModelProblems(form, app?.providers, activeProfile?.overrides)];
   const command = useMemo(() => {
     try {
-      return describeCommand(form);
+      return describeCommand(form, { ...app?.profiles?.profiles.find((profile) => profile.name === form.profile)?.overrides, ...form.overrides });
     } catch (error) {
       return `[invalid launch: ${error instanceof Error ? error.message : String(error)}]`;
     }
-  }, [form]);
+  }, [form, app?.profiles]);
   const kindInfo = WORKFLOW_KINDS.find((kind) => kind.id === form.kind);
 
   const profiles = app?.profiles?.profiles ?? [];
-  const activeProfile = profiles.find((profile) => profile.name === form.profile);
-  const restrictedProfileKnobs = rejectedProfileKnobNames(
-    activeProfile,
-    app?.catalog ?? null,
-  );
-  const restrictedOverrideKnobs = rejectedProfileKnobNames(
+  // Each refused knob names its reason, so the fix is visible before launch
+  // rather than discovered from a rejected request.
+  const profileSurfaces = profileLaunchSurfaces(activeProfile, app?.catalog ?? null);
+  const overrideSurfaces = profileLaunchSurfaces(
     {
       name: "one-off-overrides",
       summary: "",
@@ -55,16 +62,26 @@ export function LaunchView() {
     app?.catalog ?? null,
     true,
   );
-  const restrictedKnobs = [...new Set([...restrictedProfileKnobs, ...restrictedOverrideKnobs])];
+  const incompatibilities = [
+    ...profileSurfaces.incompatibilities.map((item) => ({ ...item, from: "profile" as const })),
+    ...overrideSurfaces.incompatibilities.map((item) => ({ ...item, from: "override" as const })),
+  ];
+  const restrictedKnobs = [...new Set(incompatibilities.map((item) => item.name))];
+  const compatibleCopy = activeProfile && profileSurfaces.incompatibilities.length > 0
+    ? compatibleProfileOverrides(activeProfile, app?.catalog ?? null)
+    : null;
+  const compatibleCopyName = activeProfile ? compatibleProfileName(activeProfile.name) : "";
   const overrideCount = Object.keys(form.overrides).length;
-  const blockingProblems = problems.filter(
-    (problem) => !problem.startsWith("A file-scoped prove run"),
-  );
+  const boundedProver = form.kind === "prove" && Boolean(app?.catalog?.groups.some((group) => group.flags.some((flag) => flag.name === "LEANFLOW_PROVER_MODE")));
+  useEffect(() => {
+    if (form.kind === "prove" && form.humanReview) setForm({ humanReview: false });
+  }, [form.kind, form.humanReview, setForm]);
   const canLaunch = Boolean(
     app?.project.found &&
       app?.cli.ok &&
+      !projectSetupBlocksLaunch(app.projectSetup, app.project.root) &&
       restrictedKnobs.length === 0 &&
-      blockingProblems.length === 0,
+      problems.length === 0,
   );
 
   // Re-resolve the plan as the form settles. The CLI's --dry-run has no side
@@ -82,36 +99,9 @@ export function LaunchView() {
   const leanFileOptions = app?.leanFiles ?? [];
 
   return (
-    <>
-      {!app?.cli.ok && (
-        <Notice tone="error">
-          <strong>LeanFlow CLI setup is required.</strong>
-          <div style={{ marginTop: 4 }}>{app?.cli.error}</div>
-          <div className="row tight" style={{ marginTop: 8 }}>
-            <button
-              className="btn"
-              onClick={() => post({ type: "openExternalDoc", topic: "install" })}
-            >
-              Open install guide
-            </button>
-            <button
-              className="btn ghost"
-              onClick={() => post({ type: "openCliSettings" })}
-            >
-              Configure CLI path
-            </button>
-            <button className="btn ghost" onClick={() => post({ type: "refresh" })}>
-              Check again
-            </button>
-          </div>
-        </Notice>
-      )}
-      {app?.cli.ok && !app.project.found && (
-        <Notice tone="warn">
-          No LeanFlow project in this workspace. Run <span className="tag">leanflow project
-          init</span> in your Lean repo, or set <span className="tag">leanflow.projectRoot</span>.
-        </Notice>
-      )}
+    <div className="launch-view">
+      <CliNotice cli={app?.cli} />
+      {app?.cli.ok && <ProjectSetupCard />}
 
       <Card
         title="Workflow"
@@ -136,13 +126,18 @@ export function LaunchView() {
           </>
         }
       >
-        <div className="grid two">
+        <div className="launch-fields">
           <Field label="Workflow">
             <select
+              aria-label="Workflow"
               value={form.kind}
-              onChange={(event) =>
-                setForm({ kind: event.target.value as typeof form.kind })
-              }
+              onChange={(event) => {
+                const kind = event.target.value as typeof form.kind;
+                setForm(kind === "prove" ? { kind } : {
+                  kind, research: false, researchWorkers: null, agents: 1,
+                  cleanRoom: false, noParallel: false,
+                });
+              }}
             >
               {WORKFLOW_KINDS.map((kind) => (
                 <option key={kind.id} value={kind.id}>
@@ -154,13 +149,14 @@ export function LaunchView() {
 
           <Field
             label="Target"
+            help={HELP.target}
             hint={
               form.kind === "prove"
                 ? "Leave empty to scan the whole project for remaining sorries."
                 : undefined
             }
           >
-            <div className="row tight">
+            <div className="launch-target">
               <input
                 type="text"
                 list="leanflow-lean-files"
@@ -183,94 +179,57 @@ export function LaunchView() {
             </datalist>
           </Field>
 
-          <Field label="Provider">
-            <select
-              value={form.provider}
-              onChange={(event) => setForm({ provider: event.target.value })}
-            >
-              {PROVIDERS.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.label}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <div className="launch-provider-field">
+            <Field label="Agent backend" help={HELP.backend}>
+              <select
+                value={form.provider}
+                aria-label="Agent backend"
+                onChange={(event) => setForm(changeNativeSelection(form, { provider: event.target.value }, app?.providers, activeProfile?.overrides))}
+              >
+                <option value="">{defaultProviderLabel}</option>
+                {BACKEND_IDS.map((id) => <option key={id} value={id}>{BACKEND_LABELS[id]}</option>)}
+              </select>
+            </Field>
+            <button className="link" onClick={() => setView({ tab: "providers" })}>Manage login, API key, or endpoint</button>
+          </div>
 
-          <Field label="Model" hint="Empty uses the provider's configured default.">
-            <input
-              type="text"
-              maxLength={LAUNCH_FIELD_LIMITS.model}
-              placeholder="e.g. gpt-5.6-terra, moonshotai/Kimi-K2.6"
-              value={form.model}
-              onChange={(event) => setForm({ model: event.target.value })}
-            />
-          </Field>
+          <NativeModelControl label="Model" ariaLabel="Launch model" launch
+            value={form.model} catalog={selections.launch.catalog}
+            inheritedLabel={`${app?.providers?.model_override ? "LeanFlow default" : "Native default"} (${app?.providers?.model_override || selections.launch.catalog?.default_model || (app?.providers?.checking ? "checking…" : "not reported")})`}
+            onChange={model => setForm(changeNativeSelection(form, { model: model ?? "" }, app?.providers, activeProfile?.overrides))}
+          />
+        </div>
+        <div className="row native-model-status">
+          <button className="btn ghost" disabled={app?.providers?.checking} onClick={() => post({ type: "refreshProviders" })}>{app?.providers?.checking ? "Checking models…" : "Refresh models"}</button>
+          <span className="muted">{selections.launch.catalog?.status === "ready" && isBackend(selections.launch.provider) ? `Model list from ${BACKEND_LABELS[selections.launch.provider]}. Refresh after changing native settings.` : "Open Providers to check login, API key, or endpoint."}</span>
         </div>
       </Card>
 
-      <Card title="Mode">
-        <div className="grid two">
+      <GlobalLimits />
+      <ProverSettings />
+      <Card title="Workflow options">
+        <div className="launch-options">
           <div>
             <Check
-              label="Research mode"
-              hint="Plan, retrieval, orchestration, dispatch, feasibility, reporting and learning as one profile. prove only."
-              checked={form.research}
-              disabled={form.kind !== "prove"}
-              onChange={(research) => setForm({ research })}
-            />
-            {form.research && (
-              <div style={{ marginLeft: 22, marginTop: 6 }}>
-                <Field label="Research workers" hint="0 keeps the run single-lane.">
-                  <input
-                    type="number"
-                    min={0}
-                    max={16}
-                    value={form.researchWorkers ?? 2}
-                    onChange={(event) =>
-                      setForm({ researchWorkers: Number(event.target.value) })
-                    }
-                  />
-                </Field>
-              </div>
-            )}
-            <Check
               label="Clean room"
-              hint="Forbid looking up an existing solution to the target. Required for uncontaminated benchmark runs."
+              help={HELP.cleanRoom}
+              hint="Block external research. Use only this project and installed libraries; model connections remain available."
               checked={form.cleanRoom}
-              disabled={form.kind !== "prove"}
+              disabled={form.kind !== "prove" && !form.cleanRoom}
               onChange={(cleanRoom) => setForm({ cleanRoom })}
             />
-            <Check
-              label="Human review"
-              hint="Pause at review points for a verdict instead of routing autonomously."
-              checked={form.humanReview}
-              disabled={form.kind !== "prove"}
-              onChange={(humanReview) => setForm({ humanReview })}
-            />
+            {form.cleanRoom && <p className="muted">Existing online sessions cannot be reused. Clean-room checkpoints can resume.</p>}
           </div>
 
           <div>
-            <Check
-              label="Force single lane"
-              hint="Passes --no-parallel: one agent, no background workers."
+            {form.kind === "prove" && <Check
+              label="Force single lane" help={HELP.concurrency}
+              hint="Run one prover job at a time; research planning remains available."
               checked={form.noParallel}
               onChange={(noParallel) => setForm({ noParallel })}
-            />
+            />}
             <Field
-              label="Swarm agents"
-              hint="Above 1 opts into file-lock-aware concurrent work. A file-scoped prove run stays single-agent."
-            >
-              <input
-                type="number"
-                min={1}
-                max={16}
-                disabled={form.noParallel}
-                value={form.agents}
-                onChange={(event) => setForm({ agents: Number(event.target.value) })}
-              />
-            </Field>
-            <Field
-              label="Allowed axioms"
+              label="Allowed axioms" help={HELP.axioms}
               hint="Comma or space separated, beyond the standard three."
             >
               <input
@@ -282,7 +241,7 @@ export function LaunchView() {
               />
             </Field>
             <Field
-              label="Additional skills"
+              label="Additional skills" help={HELP.skills}
               hint={`One path per line, layered on top of the workflow's default skill. Up to ${LAUNCH_FIELD_LIMITS.additionalSkillCount} paths of ${LAUNCH_FIELD_LIMITS.additionalSkill.toLocaleString()} characters.`}
             >
               <textarea
@@ -311,8 +270,8 @@ export function LaunchView() {
             : "Apply a saved knob profile, then adjust individual knobs on the Knobs tab."
         }
       >
-        <div className="grid two">
-          <Field label="Profile">
+        <div className="launch-profile">
+          <Field label="Profile" help={HELP.profile}>
             <select
               value={form.profile}
               onChange={(event) => setForm({ profile: event.target.value })}
@@ -325,8 +284,8 @@ export function LaunchView() {
                     Object.keys(profile.overrides).length
                   } knobs
                   {rejectedProfileKnobNames(profile, app?.catalog ?? null).length > 0
-                    ? " · unavailable in VS Code"
-                    : ""}
+                    ? " · terminal only (see why below)"
+                    : " · VS Code and terminal"}
                 </option>
               ))}
             </select>
@@ -373,9 +332,56 @@ export function LaunchView() {
         )}
         {restrictedKnobs.length > 0 && (
           <Notice tone="error">
-            This configuration contains terminal-only, invalid, or unknown knobs and cannot run from
-            VS Code: <span className="mono">{restrictedKnobs.join(", ")}</span>. Remove
-            those overrides or run the profile explicitly from a trusted terminal.
+            <strong>This configuration cannot launch from VS Code.</strong> A trusted terminal accepts every
+            catalogued knob; the extension refuses the following, and says why:
+            <ul style={{ margin: "6px 0 0 16px", padding: 0 }}>
+              {incompatibilities.map((item) => (
+                <li key={`${item.from}:${item.name}`}>
+                  <span className="mono">{item.name}</span>{" "}
+                  <span className="muted">({item.from === "profile" ? `profile ${activeProfile?.name ?? ""}` : "one-off override"})</span>
+                  {" — "}{item.reason.replace("-", " ")}: {item.detail}.
+                </li>
+              ))}
+            </ul>
+            <div className="row tight" style={{ marginTop: 8 }}>
+              {compatibleCopy && Object.keys(compatibleCopy.overrides).length > 0 && (
+                <button
+                  className="btn"
+                  onClick={() => {
+                    post({
+                      type: "saveProfile",
+                      profile: {
+                        name: compatibleCopyName,
+                        summary: `${activeProfile?.summary ?? ""} (VS Code copy without ${compatibleCopy.removed.join(", ")})`.trim().slice(0, LAUNCH_FIELD_LIMITS.profileSummary),
+                        builtin: false,
+                        overrides: compatibleCopy.overrides,
+                      },
+                    });
+                    setForm({ profile: compatibleCopyName });
+                  }}
+                >
+                  Save a VS Code copy as {compatibleCopyName}
+                </button>
+              )}
+              {overrideSurfaces.incompatibilities.length > 0 && (
+                <button
+                  className="btn ghost"
+                  onClick={() => {
+                    const next = { ...form.overrides };
+                    for (const item of overrideSurfaces.incompatibilities) delete next[item.name];
+                    setForm({ overrides: next });
+                  }}
+                >
+                  Drop refused one-off overrides
+                </button>
+              )}
+            </div>
+            {compatibleCopy && (
+              <div className="muted" style={{ marginTop: 6 }}>
+                The copy keeps every other knob. Dropped knobs resolve to their declared defaults, so the
+                effective run may differ from the terminal profile; the resolved plan below shows exactly what applies.
+              </div>
+            )}
           </Notice>
         )}
       </Card>
@@ -445,9 +451,47 @@ export function LaunchView() {
                         <td className="mono">{value}</td>
                       </tr>
                     ))}
+                    <tr>
+                      <td className="muted" style={{ width: 150 }}>run id</td>
+                      <td className="muted">
+                        Assigned when the run starts, as <span className="mono">{form.kind}-vscode-run-…</span>; it
+                        appears in the start notification, the Live tab, and the Runs tree.
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
+              {boundedProver && (
+                <>
+                  <div className="section-heading">Dedicated prover configuration</div>
+                  <div className="muted" style={{ marginBottom: 6 }}>
+                    Effective values including those inherited from the profile. Each role can set its own model,
+                    reasoning effort, context, and compression. Unset role settings use their inherited defaults.
+                  </div>
+                  <div className="table-wrap" style={{ maxHeight: 320 }}>
+                    <table className="data">
+                      <thead>
+                        <tr><th>Setting</th><th>Value</th><th>From</th></tr>
+                      </thead>
+                      <tbody>
+                        {proverConfigurationRows({
+                          envEffective: preview.plan.env_effective,
+                          envDelta: preview.plan.env_delta,
+                          profile: activeProfile,
+                          overrides: form.overrides,
+                          catalog: app?.catalog ?? null,
+                        }).map((row) => (
+                          <tr key={row.name}>
+                            <td title={row.name}>{row.label}</td>
+                            <td className="mono">{row.value || "unset"}</td>
+                            <td><span className={`pill ${row.source === "override" ? "ok" : row.source === "profile" ? "warn" : ""}`}>{row.source}</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
               <div className="section-heading">
                 Environment delta ({Object.keys(preview.plan.env_delta).length})
               </div>
@@ -467,6 +511,6 @@ export function LaunchView() {
           )}
         </Card>
       )}
-    </>
+    </div>
   );
 }

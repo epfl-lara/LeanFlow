@@ -5,20 +5,26 @@
  * commands rather than by reading the state directory directly, so the on-disk
  * layout stays free to change without breaking the editor.
  */
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 
+import { launchWorkflowTerminal } from "./workflowTerminal";
+import { normalizeEventDetail } from "./eventDetail";
 import type { LaunchEnv } from "./launch";
 import { normalizeRunHistoryPayload } from "./runHistory";
+import { normalizeProverSnapshot, type ProverSnapshot } from "./prover";
 import {
+  eventDetailForDisplay,
   launchPlanForDisplay,
   liveStatusForDisplay,
+  proverStateForDisplay,
   redactSensitiveText,
   runLogForDisplay,
   runSummaryForDisplay,
 } from "./runPrivacy";
 import type {
+  ActivityEventDetail,
   CliStatus,
   FlagCatalog,
   LaunchPlanPreview,
@@ -28,6 +34,7 @@ import type {
   RunMetrics,
   RunHistorySnapshot,
   RunSummary,
+  RunConnection,
   ActivityEvent,
 } from "./types";
 
@@ -42,6 +49,7 @@ export class CliError extends Error {
     readonly stderr: string = "",
     readonly exitCode: number | null = null,
     readonly stdout: string = "",
+    readonly kind: NonNullable<CliStatus["issue"]> = "failed",
   ) {
     super(message);
     this.name = "CliError";
@@ -62,7 +70,7 @@ export function cliPath(): string {
  */
 export async function runCli(
   args: string[],
-  options: { cwd?: string; timeoutMs?: number } = {},
+  options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
 ): Promise<string> {
   const bin = cliPath();
   try {
@@ -70,7 +78,7 @@ export async function runCli(
       cwd: options.cwd,
       timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env },
+      env: { ...process.env, ...options.env },
     });
     return stdout;
   } catch (error) {
@@ -78,12 +86,20 @@ export async function runCli(
       stderr?: string;
       stdout?: string;
       code?: number | string;
+      killed?: boolean;
+      signal?: string;
     };
     if (err.code === "ENOENT") {
       throw new CliError(
         `LeanFlow CLI was not found at "${bin}". Install LeanFlow, then reload this ` +
-          `window, or set LeanFlow: CLI Path to the executable in Settings.`,
+          `window, or set LeanFlow: CLI Path to the executable in Settings.`, "", null, "", "missing",
       );
+    }
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      throw new CliError(`LeanFlow cannot execute "${bin}". Check the executable's permissions or choose another CLI path.`, "", null, "", "permission");
+    }
+    if (err.killed && err.signal) {
+      throw new CliError(`LeanFlow did not answer the ${args[0] || "CLI"} check within ${(options.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000} seconds. This does not stop an existing job.`, "", null, "", "timeout");
     }
     const stderr = (err.stderr ?? "").toString().trim();
     const stdout = (err.stdout ?? "").toString().trim();
@@ -128,12 +144,33 @@ export async function checkCli(): Promise<CliStatus> {
       path,
       version: "",
       error: error instanceof Error ? error.message : String(error),
+      issue: error instanceof CliError ? error.kind : "failed",
     };
   }
 }
 
 export function fetchFlagCatalog(cwd?: string): Promise<FlagCatalog> {
   return runCliJson<FlagCatalog>(["flags", "list", "--json"], { cwd });
+}
+
+/** Read the selected run's plan and DAG without falling back to another run. */
+export async function fetchProver(projectRoot: string, runId: string): Promise<ProverSnapshot | null> {
+  if (!runId) return null;
+  const payload = await runCliJson<{ prover: unknown }>(
+    ["runs", "--project", projectRoot, "prover", runId, "--json"], { cwd: projectRoot },
+  );
+  // Apply the same credential redaction as status before crossing into the webview.
+  const safe = proverStateForDisplay(payload.prover as LiveStatus);
+  return normalizeProverSnapshot(safe, runId);
+}
+
+/** Queue explicit user guidance for the runtime's next decision boundary. */
+export async function sendProverMessage(projectRoot: string, runId: string, agentId: string, message: string): Promise<void> {
+  const result = await runCliJson<{ success: boolean; error?: string }>(
+    ["runs", "--project", projectRoot, "prover-message", runId, "--agent", agentId, `--message=${message}`, "--json"],
+    { cwd: projectRoot },
+  );
+  if (!result.success) throw new CliError(result.error || "The prover did not accept this message.");
 }
 
 export function fetchProfiles(cwd?: string): Promise<ProfileCatalog> {
@@ -214,6 +251,25 @@ export async function fetchEvents(
     cursor: payload.cursor ?? since,
     runId: payload.run_id ?? runId,
   };
+}
+
+/**
+ * Join one compact activity row to the full model output recorded for it.
+ *
+ * The runtime keeps transcripts in each job's private log and only projects a
+ * bounded row into the polled stream, so this is read on demand when a row is
+ * expanded rather than shipped with every poll.
+ */
+export async function fetchEventDetail(
+  projectRoot: string,
+  runId: string,
+  eventId: string,
+): Promise<ActivityEventDetail> {
+  const payload = await runCliJson<unknown>(
+    ["runs", "--project", projectRoot, "event", runId, eventId],
+    { cwd: projectRoot },
+  );
+  return eventDetailForDisplay(normalizeEventDetail(payload, runId, eventId));
 }
 
 export async function fetchEventTypes(
@@ -355,56 +411,13 @@ export async function previewLaunch(
   }
 }
 
-/**
- * Start a workflow as a detached background process.
- *
- * Detached rather than an integrated terminal on purpose: long runs and
- * sequential experiment sweeps must survive a window reload, and their output
- * is already recorded as structured state that the log viewer reads. The
- * child's stdio is discarded because the run log on disk is the authority.
- */
+/** Start a durable tmux session when available, otherwise an ordinary terminal. */
 export function spawnWorkflow(
   projectRoot: string,
   argv: string[],
   env: LaunchEnv,
-): { pid: number | null; kill: () => boolean; onExit: Promise<number | null> } {
-  const child = spawn(cliPath(), ["workflow", ...argv], {
-    cwd: projectRoot,
-    env: childEnv(env),
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
-
-  const onExit = new Promise<number | null>((resolve) => {
-    child.once("exit", (code) => resolve(code));
-    child.once("error", () => resolve(null));
-  });
-
-  return {
-    pid: child.pid ?? null,
-    kill: () => {
-      if (child.pid === undefined) {
-        return false;
-      }
-      try {
-        // The child was started with `detached`, so it leads its own process
-        // group. Signalling the group reaches the Lean and MCP subprocesses it
-        // owns; signalling only the leader would orphan them.
-        if (process.platform !== "win32") {
-          process.kill(-child.pid, "SIGINT");
-          return true;
-        }
-      } catch {
-        // Fall back to the direct child below. This is also the only safe
-        // primitive Node exposes for a detached child on Windows.
-      }
-      try {
-        return child.kill("SIGINT");
-      } catch {
-        return false;
-      }
-    },
-    onExit,
-  };
+  nativeEnv: NodeJS.ProcessEnv = {},
+  prepared?: (connection: RunConnection) => Promise<void>,
+) {
+  return launchWorkflowTerminal(cliPath(), projectRoot, argv, { ...childEnv(env), ...nativeEnv }, prepared);
 }

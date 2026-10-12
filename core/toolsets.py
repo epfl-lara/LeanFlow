@@ -11,7 +11,6 @@ _EMPIRICAL_COMPUTE_TOOLS = ["empirical_compute"]
 _SKILL_TOOLS = ["skills_list", "skill_view"]
 _SESSION_TOOLS = ["session_search"]
 _COORDINATION_TOOLS = ["acquire_file_lock", "release_file_lock", "list_file_locks"]
-_DELEGATION_TOOLS = ["delegate_task"]
 _DOCUMENT_TOOLS = ["formalization_document_inspect", "read_pdf"]
 _LEAN_TOOLS = [
     "lean_capabilities",
@@ -28,8 +27,6 @@ _LEAN_TOOLS = [
     "lean_outline",
     "apply_verified_patch",
     "lean_extract_have",
-    "lean_reasoning_help",
-    "lean_decompose_helpers",
 ]
 _LEAN_RESEARCH_TOOLS = [
     tool
@@ -38,8 +35,6 @@ _LEAN_RESEARCH_TOOLS = [
     not in {
         "apply_verified_patch",
         "lean_extract_have",
-        "lean_reasoning_help",
-        "lean_decompose_helpers",
     }
 ]
 
@@ -56,6 +51,11 @@ _LEANFLOW_CORE_TOOLS = [
 
 
 TOOLSETS: dict[str, dict[str, Any]] = {
+    "leanflow-prover-session": {
+        "description": "Bounded prover sessions supply their own role-specific scratch tools",
+        "tools": [],
+        "includes": [],
+    },
     "web": {
         "description": "Web research tools",
         "tools": _WEB_TOOLS,
@@ -119,11 +119,6 @@ TOOLSETS: dict[str, dict[str, Any]] = {
         "tools": _LEAN_RESEARCH_TOOLS,
         "includes": [],
     },
-    "delegation": {
-        "description": "Explicit user-approved subagent delegation",
-        "tools": _DELEGATION_TOOLS,
-        "includes": [],
-    },
     "autoformalize": {
         "description": "Lean workflow tool surface",
         "tools": [],
@@ -159,8 +154,8 @@ TOOLSETS: dict[str, dict[str, Any]] = {
         "includes": ["file", "web", "terminal", "skills", "coordination", "lean"],
     },
     "leanflow-native-swarm": {
-        "description": "User-approved LeanFlow Lean swarm workflow toolset",
-        "tools": [*_LEANFLOW_CORE_TOOLS, *_DELEGATION_TOOLS],
+        "description": "LeanFlow native workflow toolset (runtime-owned agents)",
+        "tools": _LEANFLOW_CORE_TOOLS,
         "includes": [],
     },
 }

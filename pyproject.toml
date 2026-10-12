@@ -11,12 +11,8 @@ requires-python = ">=3.11"
 authors = [{ name = "LeanFlow contributors" }]
 license = { text = "Apache-2.0" }
 dependencies = [
-  "anthropic>=0.39.0",
-  "fire",
   "httpx",
-  "jinja2",
   "lean-probe>=0.3.0,<0.4",
-  "openai",
   "prompt_toolkit",
   "pydantic>=2.0",
   "python-dotenv",
@@ -24,7 +20,6 @@ dependencies = [
   "requests",
   "rich",
   "ruamel.yaml>=0.18.10",
-  "tenacity",
 ]
 
 [project.optional-dependencies]
@@ -36,7 +31,6 @@ pty = [
 ]
 web = ["firecrawl-py"]
 lean-explore = ["lean-explore[local]"]
-local-vllm = ["vllm>=0.8.0"]
 all = [
   "leanflow-agent[dev]",
   "leanflow-agent[mcp]",
@@ -47,7 +41,6 @@ all = [
 
 [project.scripts]
 leanflow = "leanflow_cli.main:main"
-leanflow-agent = "leanflow_agent:main"
 
 [tool.setuptools]
 py-modules = [
@@ -108,9 +101,8 @@ extend-exclude = '''/(testdata|optional-skills|\.venv|\.leanflow-venv|.*/\.lake)
 # misuse), import-sorting (I), and pyupgrade (UP — PEP585/604 modernization). Run `ruff check .`.
 select = ["F", "I", "UP"]
 # F401 (unused-import) is ENFORCED: genuinely-dead imports must be removed. The few deliberate
-#   re-exports / dynamic-access points that ruff cannot see (patch targets like run_agent.OpenAI and
-#   tools...terminal_tool._interrupt_event, the run_agent lazy-import surface, and the leaf-module
-#   re-export hubs pinned by the *_reexports_are_identical tests) each carry an explicit `# noqa: F401`.
+#   re-exports / dynamic-access points that ruff cannot see (such as terminal_tool._interrupt_event
+#   and leaf-module public re-exports) each carry an explicit `# noqa: F401`.
 # F841 (unused-variable): a handful of occurrences, not safely auto-fixable (may hide bugs).
 # UP035/UP022/UP042: behavior-sensitive manual modernizations (StrEnum, subprocess capture_output).
 ignore = ["F841", "UP035", "UP022", "UP042"]
@@ -120,11 +112,43 @@ python_version = "3.11"
 follow_imports = "silent"
 ignore_missing_imports = true
 no_site_packages = true
+# Check maintained executable scripts under their distinct file identities.
+scripts_are_modules = true
 # Incremental gate: ONLY these files are type-checked. The list grows each phase as
 # modules are extracted/cleaned. mypy needs explicit targets — overrides alone do not select.
 files = [
+  "leanflow_cli/runtime/storage",
+  "leanflow_cli/runtime/dependency_cache",
+  "leanflow_cli/runtime/runtime_install.py",
+  "leanflow_cli/cli/storage_command.py",
+  "agent/runtime/harness",
+  "core/campaign_limits.py",
+  "core/error_redaction.py",
+  "agent/providers/auxiliary_client.py",
+  "core/deadlines.py",
+  "leanflow_cli/native/harness_artifacts.py",
+  "leanflow_cli/native/harness_workflow.py",
+  "leanflow_cli/native/harness_observer.py",
+  "leanflow_cli/native/harness_context.py",
+  "leanflow_cli/native/harness_formalization.py",
+  "leanflow_cli/runtime/lemex_install.py",
+  "leanflow_cli/runtime/runtime_provider.py",
+  "leanflow_cli/runtime/provider_setup.py",
+  "leanflow_cli/runtime/provider_models.py",
+  "leanflow_cli/runtime/provider_protocol.py",
+  "scripts/lean_imo_campaign",
+  "testdata/workflow_projects/LeanIMOBench/linux/reclaim-finished-cells",
+  "testdata/workflow_projects/LeanIMOBench/linux/reset-blocked-cells",
+  "leanflow_cli/workflows/prover",
+  "leanflow_cli/workflows/project.py",
+  "leanflow_cli/workflows/project_setup",
+  "leanflow_cli/runtime/project_operations.py",
+  "leanflow_cli/cli/project_command.py",
+  "leanflow_cli/flags/prover_catalog.py",
+  "leanflow_cli/cli/prover_status.py",
   "core/constants.py",
   "core/filesystem.py",
+  "core/file_copy.py",
   "leanflow_cli/flags/__init__.py",
   "leanflow_cli/flags/spec.py",
   "leanflow_cli/flags/catalog.py",
@@ -151,6 +175,7 @@ files = [
   "core/verified_edit_authority.py",
   "core/utils.py",
   "leanflow_cli/lean/lean_interact_compat.py",
+  "leanflow_cli/lean/lean_check_outcomes.py",
   "leanflow_cli/lean/lean_probe_deadline.py",
   "leanflow_cli/native/support_module_materialization.py",
   "leanflow_cli/native/managed_edit_rollback.py",
@@ -158,31 +183,17 @@ files = [
   "leanflow_cli/native/timeout_refactor_guard.py",
   "leanflow_cli/native/failed_verification_assignment.py",
   "leanflow_cli/native/generated_helper_name_policy.py",
-  "agent/display/log_formatting.py",
-  "agent/runtime/workflow_events.py",
-  "agent/runtime/runtime_helpers.py",
-  "agent/providers/auxiliary_adapters.py",
   "agent/providers/isolated_auxiliary.py",
-  "agent/providers/auxiliary_rcp.py",
-  "agent/providers/auxiliary_nous.py",
-  "agent/providers/model_capabilities.py",
-  "agent/execution/command_safety.py",
   "agent/execution/admission_handoff.py",
-  "agent/execution/tool_batch_priority.py",
-  "agent/accounting/error_log.py",
-  "agent/accounting/token_accounting.py",
-  "agent/compression/context_compressor.py",
-  "agent/compression/summary_handoff.py",
-  "agent/execution/interrupt_controller.py",
-  "agent/display/output_manager.py",
-  "agent/prompting/prompt_manager.py",
-  "agent/providers/provider_client.py",
-  "agent/prompting/reasoning_processor.py",
-  "agent/prompting/response_normalizer.py",
-  "agent/providers/anthropic_messages.py",
-  "agent/execution/collaborator_resolvers.py",
   "tools/response.py",
   "tools/implementations/lean_experts.py",
+  "tools/implementations/web_tools.py",
+  "tools/implementations/web_fetch.py",
+  "tools/implementations/session_search_tool.py",
+  "tools/implementations/skills_guard.py",
+  "tools/utilities/approval.py",
+  "tools/implementations/lean_tool.py",
+  "tools/implementations/delegate_tool.py",
   "tools/utilities/advisor_source_context.py",
   "tools/utilities/advisor_persistence.py",
   "tools/utilities/bounded_call.py",
@@ -200,7 +211,6 @@ files = [
   "tools/utilities/repository_research_policy.py",
   "tools/utilities/scratch_terminal_guard.py",
   "tools/utilities/empirical_compute_runtime.py",
-  "agent/runtime/managed_run.py",
   "leanflow_cli/native/native_config.py",
   "leanflow_cli/native/campaign_roots.py",
   "leanflow_cli/native/final_report_failure_reuse.py",
@@ -355,11 +365,11 @@ files = [
   "leanflow_cli/cli/cli_handlers.py",
   "leanflow_cli/cli/shell_ui.py",
   "leanflow_cli/cli/loogle_local.py",
+  "leanflow_cli/cli/loogle_index_compat.py",
   "tools/mcp/mcp_reclaim.py",
   "tools/mcp/mcp_transport.py",
   "tools/mcp/mcp_sampling.py",
   "tools/mcp/mcp_config.py",
-  "agent/prompting/prompt_caching.py",
   "agent/accounting/usage_pricing.py",
   "agent/accounting/redact.py",
   "leanflow_cli/runtime/branding.py",

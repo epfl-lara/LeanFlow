@@ -142,9 +142,11 @@ class TestTruncateAroundMatches:
 
 
 class TestSessionSearch:
-    def test_no_db_returns_error(self):
+    def test_no_db_returns_error(self, tmp_path, monkeypatch):
+        from core import state
         from tools.implementations.session_search_tool import session_search
 
+        monkeypatch.setattr(state, "DEFAULT_DB_PATH", tmp_path / "missing.db")
         result = json.loads(session_search(query="test"))
         assert result["success"] is False
         assert "not available" in result["error"].lower()
@@ -227,22 +229,10 @@ class TestSessionSearch:
             {"role": "assistant", "content": "hi there"},
         ]
 
-        # Mock async_call_llm to raise RuntimeError → summarizer returns None
-        from unittest.mock import AsyncMock
-        from unittest.mock import patch as _patch
-
-        with _patch(
-            "tools.implementations.session_search_tool.async_call_llm",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("no provider"),
-        ):
-            result = json.loads(
-                session_search(
-                    query="test",
-                    db=mock_db,
-                    current_session_id=current_sid,
-                )
-            )
+        result = json.loads(
+            session_search(query="test", db=mock_db, current_session_id=current_sid)
+        )
+        assert result["results"][0]["excerpt"] == "[USER]: hello\n\n[ASSISTANT]: hi there"
 
         assert result["success"] is True
         # Current session should be skipped, only other_sid should appear

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import shlex
 import time
@@ -17,7 +18,6 @@ from core.process_identity import PROCESS_TOKEN_ENV, process_token_sha256
 from leanflow_cli.cli.banner import (
     build_welcome_banner,
     render_help,
-    render_local_runtime_table,
     render_project_panel,
     render_provider_panel,
     render_skill_panel,
@@ -32,18 +32,23 @@ from leanflow_cli.cli.banner import (
 )
 from leanflow_cli.cli.cli_handlers import (
     _handle_config,  # noqa: F401
-    _handle_models,  # noqa: F401
     _handle_sandbox,  # noqa: F401
     _parse_config_value,
     _print_json,
     _print_mcp_bootstrap,
     _print_mcp_status,
-    _print_project_power_setup,
     _project_payload,
 )
 from leanflow_cli.cli.commands import SlashCommandCompleter, build_workflow_command_set
 from leanflow_cli.cli.doctor import run_doctor
 from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp
+from leanflow_cli.cli.project_command import (
+    execute_setup,
+    handle_project,
+    register_project_parser,
+    setup_exit_code,
+    setup_result_lines,
+)
 from leanflow_cli.cli.shell_ui import (
     bottom_toolbar as _build_bottom_toolbar,
 )
@@ -63,15 +68,6 @@ from leanflow_cli.config import (
     load_config,
     set_config_value,
 )
-from leanflow_cli.local_models import (
-    get_local_runtime_status,
-    list_local_runtimes,
-    read_local_runtime_logs,
-    resolve_active_local_runtime,
-    start_local_runtime,
-    stop_local_runtime,
-    use_local_runtime,
-)
 from leanflow_cli.runtime.runtime_provider import (
     format_runtime_provider_error,
     list_runtime_provider_targets,
@@ -86,12 +82,8 @@ from leanflow_cli.workflow import (
 )
 from leanflow_cli.workflows.project import (
     ProjectNotFoundError,
-    clone_project_template,
     discover_leanflow_project,
     format_project_summary,
-    initialize_leanflow_project,
-    resolve_template_source,
-    setup_project_power_modes,
 )
 from leanflow_cli.workflows.workflow_state import (
     enqueue_workflow_agent_message,
@@ -184,12 +176,6 @@ class InteractiveShell:
         except Exception as exc:
             return f"unavailable ({format_runtime_provider_error(exc)})"
 
-    def _local_runtime_label(self) -> str:
-        runtime = resolve_active_local_runtime()
-        if not runtime:
-            return "(none)"
-        return f"{runtime.get('runtime', '')} {runtime.get('model', '')}".strip()
-
     def _active_skill_label(self) -> str:
         if self.active_skill:
             return self.active_skill
@@ -251,7 +237,7 @@ class InteractiveShell:
             model=self._model_label(),
             provider=self._provider_label(),
             project_label=self._project_label(),
-            local_runtime=self._local_runtime_label(),
+            local_runtime="",
         )
 
     def show_help(self) -> None:
@@ -266,7 +252,7 @@ class InteractiveShell:
             project_label=self._project_label(),
             provider=self._provider_label(),
             model=self._model_label(),
-            local_runtime=self._local_runtime_label(),
+            local_runtime="",
             home=get_leanflow_home(),
         )
         workflow_status = self._workflow_status_payload()
@@ -538,112 +524,42 @@ class InteractiveShell:
         return 0
 
     def _run_project_command(self, argv: list[str]) -> int:
-        """Dispatch /project subcommands: init (initialize Lean workspace), create (clone template), and show (render project state). Updates shell cwd on successful init/create."""
+        """Use the shared setup pipeline and select the project only after readiness passes."""
         if not argv:
             try:
                 project = discover_leanflow_project(self.cwd)
             except ProjectNotFoundError:
                 self.console.print(
-                    "[dim]No active Lean workspace is open here. Use `/project init` in a Lean repo or `/project create <path>` to start one.[/]"
+                    "[dim]No active Lean workspace is open here. Use `/project setup` to prepare this folder or `/project create <path>` to start one.[/]"
                 )
                 return 1
             render_project_panel(self.console, project_summary=_project_payload(project))
             return 0
-        subcmd = argv[0]
-        if subcmd == "init":
-            path = argv[1] if len(argv) > 1 and not argv[1].startswith("--") else str(self.cwd)
-            name = ""
-            if "--name" in argv:
-                idx = argv.index("--name")
-                if idx + 1 < len(argv):
-                    name = argv[idx + 1]
-            target = Path(path).expanduser().resolve()
-            already_initialized = (target / ".leanflow" / "project.yaml").is_file()
-            project = initialize_leanflow_project(path, name=name or None)
-            setup_report = setup_project_power_modes(
-                project.lean_root,
-                progress=lambda message: self.console.print(message),
-            )
-            self.cwd = project.root
-            if already_initialized:
-                self._plain_notice(f"Project already initialized: {project.label}")
-            else:
-                self._plain_notice(f"Initialized project: {project.label}")
-            _print_project_power_setup(setup_report)
-            return 0
-        if subcmd == "create":
-            if len(argv) < 2:
-                self.console.print(
-                    "[dim]Usage: /project create <path> [--template-source <source>] [--name <name>] [/]"
-                )
-                return 1
-            path = argv[1]
-            template_source = ""
-            name = ""
-            if "--template-source" in argv:
-                idx = argv.index("--template-source")
-                if idx + 1 < len(argv):
-                    template_source = argv[idx + 1]
-            if "--name" in argv:
-                idx = argv.index("--name")
-                if idx + 1 < len(argv):
-                    name = argv[idx + 1]
-            if not template_source:
-                template_source = resolve_template_source(load_config(), os.environ)
-            if not template_source:
-                self.console.print(
-                    "[bold red]No template source configured.[/] Set `leanflow.project.template_source` or pass `--template-source`."
-                )
-                return 1
-            project = clone_project_template(
-                path, template_source=template_source, name=name or None
-            )
-            self.cwd = project.root
-            self._plain_notice(f"Created project: {project.label}")
-            return 0
-        if subcmd == "show":
-            target = argv[1] if len(argv) > 1 else str(self.cwd)
-            try:
-                project = discover_leanflow_project(target)
-            except ProjectNotFoundError as exc:
-                self.console.print(f"[bold red]{exc}[/]")
-                return 1
-            render_project_panel(self.console, project_summary=_project_payload(project))
-            return 0
-        self.console.print(f"[bold red]Unknown /project subcommand:[/] {subcmd}")
-        return 1
-
-    def _run_models_command(self, argv: list[str]) -> int:
-        if not argv or argv[0] != "local":
-            self.console.print("[dim]Usage: /models local list|status|start|stop|logs|use ...[/]")
-            return 1
-        args = argv[1:]
-        if not args:
-            self.console.print("[dim]Usage: /models local list|status|start|stop|logs|use ...[/]")
-            return 1
-        subcmd = args[0]
-        if subcmd == "list":
-            render_local_runtime_table(self.console, runtimes=list_local_runtimes())
-            return 0
-        if subcmd == "status" and len(args) >= 2:
-            _print_json(get_local_runtime_status(args[1]))
-            return 0
-        if subcmd == "start" and len(args) >= 3:
-            _print_json(start_local_runtime(args[1], model=args[2]))
-            return 0
-        if subcmd == "stop" and len(args) >= 2:
-            _print_json(stop_local_runtime(args[1]))
-            return 0
-        if subcmd == "logs" and len(args) >= 2:
-            print(read_local_runtime_logs(args[1]))
-            return 0
-        if subcmd == "use" and len(args) >= 3:
-            _print_json(use_local_runtime(args[1], model=args[2]))
-            return 0
-        self.console.print(
-            "[dim]Usage: /models local list|status <runtime>|start <runtime> <model>|stop <runtime>|logs <runtime>|use <runtime> <model>[/]"
+        parser = argparse.ArgumentParser(prog="leanflow")
+        register_project_parser(parser.add_subparsers(dest="command"))
+        try:
+            args = parser.parse_args(["project", *argv])
+        except SystemExit as error:
+            return int(error.code or 0)
+        args.path = str((self.cwd / Path(args.path).expanduser()).resolve())
+        if args.project_command in {"show", "inspect"}:
+            return handle_project(args)
+        if args.source_file:
+            args.source_file = str((self.cwd / Path(args.source_file).expanduser()).resolve())
+        if args.json_output:
+            code = handle_project(args)
+            if code == 0:
+                self.cwd = discover_leanflow_project(args.path).root
+            return code
+        result = execute_setup(
+            args,
+            emit=lambda event: self.console.print(str(event.get("message", "")), markup=False),
         )
-        return 1
+        for line in setup_result_lines(result):
+            self.console.print(line, markup=False)
+        if result.get("status") == "ready":
+            self.cwd = Path(result["root"])
+        return setup_exit_code(result)
 
     def _run_config_command(self, argv: list[str]) -> int:
         if not argv or argv[0] == "show":
@@ -672,7 +588,7 @@ class InteractiveShell:
         render_provider_panel(
             self.console,
             resolved=resolved,
-            requested=requested or "auto",
+            requested=requested or "configured default",
             targets=list_runtime_provider_targets(),
         )
         return 0
@@ -1030,14 +946,6 @@ class InteractiveShell:
                 self.console.print(f"[bold red]{exc}[/]")
                 return True
             self._run_project_command(argv)
-            return True
-        if stripped.startswith("/models"):
-            try:
-                argv = shlex.split(stripped)[1:]
-            except ValueError as exc:
-                self.console.print(f"[bold red]{exc}[/]")
-                return True
-            self._run_models_command(argv)
             return True
         if stripped.startswith("/config"):
             try:

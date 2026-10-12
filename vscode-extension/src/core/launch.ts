@@ -5,6 +5,7 @@
  * determine a run, so both are recorded with every tracked run and every
  * experiment cell. Nothing else may reach the child process.
  */
+import { isBackend } from "./providerCredentials";
 import type {
   FlagCatalog,
   FlagProfile,
@@ -15,8 +16,13 @@ import type {
 import { LAUNCH_FIELD_LIMITS } from "./types";
 
 /** Build the argv that follows `leanflow workflow`. */
-export function buildWorkflowArgs(request: LaunchRequest): string[] {
+export function buildWorkflowArgs(
+  request: LaunchRequest,
+  environment: Readonly<Record<string, string>> = {},
+): string[] {
   const args: string[] = [request.kind];
+  const mode = environment.LEANFLOW_PROVER_MODE ?? request.overrides.LEANFLOW_PROVER_MODE;
+  const boundedMode = request.kind === "prove" && ["", "standard", "research"].includes(mode);
 
   const target = request.target.trim();
   if (target) {
@@ -35,10 +41,10 @@ export function buildWorkflowArgs(request: LaunchRequest): string[] {
   }
   if (request.noParallel) {
     args.push("--no-parallel");
-  } else if (request.agents > 1) {
+  } else if (!boundedMode && request.agents > 1) {
     args.push("--agents", String(request.agents));
   }
-  if (request.research) {
+  if (!boundedMode && request.research) {
     // --research-workers implies --research, but passing both keeps the
     // recorded command self-describing when the worker count is default.
     args.push("--research");
@@ -49,7 +55,7 @@ export function buildWorkflowArgs(request: LaunchRequest): string[] {
   if (request.cleanRoom) {
     args.push("--clean-room");
   }
-  if (request.humanReview) {
+  if (request.humanReview && request.kind !== "prove") {
     args.push("--human-review");
   }
   if (request.axioms.trim()) {
@@ -82,6 +88,13 @@ export interface LaunchEnv {
 
 /** Values above this length are rejected rather than passed to a child process. */
 const MAX_ENV_VALUE_LENGTH = 4096;
+
+// These native role limits distinguish an absent default from explicit Unlimited.
+export const EMPTY_UNLIMITED_KNOBS = new Set([
+  "LEANFLOW_PROVER_PROVER_SESSIONS",
+  "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS",
+  "LEANFLOW_PROVER_NEGATION_SESSIONS",
+]);
 
 /**
  * Compatibility fence for a CLI catalog predating `extension_editable`.
@@ -150,7 +163,7 @@ export function resolveLaunchEnv(
       rejected.push(name);
       continue;
     }
-    if (value === "") {
+    if (value === "" && !EMPTY_UNLIMITED_KNOBS.has(name) && name !== "LEANFLOW_PROVER_MODE") {
       delete merged[name];
       unset.push(name);
       continue;
@@ -176,7 +189,7 @@ export function extensionKnobValueProblem(
   if (value.includes("\0")) {
     return "value contains a NUL character";
   }
-  if (allowUnset && value === "") {
+  if (value === "" && (allowUnset || EMPTY_UNLIMITED_KNOBS.has(flag.name) || flag.name === "LEANFLOW_PROVER_MODE")) {
     return null;
   }
 
@@ -340,6 +353,7 @@ export function launchRequestForViewState(request: LaunchRequest): LaunchRequest
   return {
     ...request,
     target: safeText(request.target),
+    humanReview: request.kind === "prove" ? false : request.humanReview,
     provider: safeText(request.provider),
     model: safeText(request.model),
     axioms: safeText(request.axioms),
@@ -369,11 +383,11 @@ export function redactPromptArgument(command: string): string {
 }
 
 /** A shell-ish, prompt-redacted rendering of the launch for display. */
-export function describeCommand(request: LaunchRequest): string {
+export function describeCommand(request: LaunchRequest, environment: Readonly<Record<string, string>> = {}): string {
   const args = buildWorkflowArgs({
     ...request,
     prompt: promptDisplayMarker(request.prompt),
-  }).map((arg) =>
+  }, environment).map((arg) =>
     /[\s"']/.test(arg) ? JSON.stringify(arg) : arg,
   );
   return `leanflow workflow ${args.join(" ")}`;
@@ -415,6 +429,9 @@ function overlongFieldProblems(request: LaunchRequest): string[] {
   };
   check("The target", request.target, LAUNCH_FIELD_LIMITS.target);
   check("The provider", request.provider, LAUNCH_FIELD_LIMITS.provider);
+  if (request.provider.trim() && !isBackend(request.provider.trim())) {
+    problems.push("Select a supported agent backend: codex, claude, or lemex.");
+  }
   check("The model", request.model, LAUNCH_FIELD_LIMITS.model);
   check("The allowed-axiom list", request.axioms, LAUNCH_FIELD_LIMITS.axioms);
   check("The prompt", request.prompt, LAUNCH_FIELD_LIMITS.prompt);
@@ -464,11 +481,6 @@ export function validateLaunch(request: LaunchRequest): string[] {
   }
   if (request.kind === "formalize" && !request.target.trim()) {
     problems.push("formalize needs a source document (.tex or .pdf) as its target.");
-  }
-  if (request.agents > 1 && request.target.trim() && request.kind === "prove") {
-    problems.push(
-      "A file-scoped prove run is single-agent; the launcher will reset agents to 1.",
-    );
   }
   if (request.research && request.kind !== "prove") {
     problems.push("--research is only supported for prove.");

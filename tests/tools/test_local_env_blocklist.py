@@ -203,21 +203,26 @@ class TestBlocklistCoverage:
         }
         assert must_block.issubset(_LEANFLOW_PROVIDER_ENV_BLOCKLIST)
 
-    def test_registry_vars_are_in_blocklist(self):
-        """Every api_key_env_var and base_url_env_var from PROVIDER_REGISTRY
-        must appear in the blocklist — ensures no drift."""
-        from leanflow_cli.runtime.auth import PROVIDER_REGISTRY
-
-        for pconfig in PROVIDER_REGISTRY.values():
-            for var in pconfig.api_key_env_vars:
-                assert (
-                    var in _LEANFLOW_PROVIDER_ENV_BLOCKLIST
-                ), f"Registry var {var} (provider={pconfig.id}) missing from blocklist"
-            if pconfig.base_url_env_var:
-                assert pconfig.base_url_env_var in _LEANFLOW_PROVIDER_ENV_BLOCKLIST, (
-                    f"Registry base_url_env_var {pconfig.base_url_env_var} "
-                    f"(provider={pconfig.id}) missing from blocklist"
-                )
+    def test_legacy_provider_vars_remain_blocked_without_auth_module(self):
+        """Preserve secret isolation after removal of the credential router."""
+        names = {
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+            "GLM_BASE_URL",
+            "KIMI_API_KEY",
+            "KIMI_BASE_URL",
+            "MINIMAX_API_KEY",
+            "MINIMAX_BASE_URL",
+            "MINIMAX_CN_API_KEY",
+            "MINIMAX_CN_BASE_URL",
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        }
+        assert names.issubset(_LEANFLOW_PROVIDER_ENV_BLOCKLIST)
 
     def test_extra_auth_vars_covered(self):
         """Non-registry auth vars (ANTHROPIC_TOKEN, CLAUDE_CODE_OAUTH_TOKEN)

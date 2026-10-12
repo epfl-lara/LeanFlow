@@ -1,6 +1,7 @@
 /** Extension entry point: wire services, surfaces, and commands. */
 import * as vscode from "vscode";
 
+import { BACKEND_IDS, isBackend } from "./core/providerCredentials";
 import { CliError, runCli } from "./core/cli";
 import { relativeTarget } from "./core/project";
 import { redactSensitiveText } from "./core/runPrivacy";
@@ -8,6 +9,7 @@ import { LeanFlowServices } from "./core/services";
 import { emptyLaunchRequest } from "./core/types";
 import { ControlViewProvider } from "./panels/controlView";
 import { DashboardPanel } from "./panels/dashboardPanel";
+import { openBenchmarkPanel } from "./panels/benchmarkPanel";
 import { RunsTreeProvider } from "./views/runsTree";
 
 /** Show a command failure with direct routes to installation and configuration. */
@@ -48,9 +50,10 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     if (!state.cli.ok) {
-      statusBar.text = "$(warning) LeanFlow: CLI setup needed";
+      const transient = state.cli.health === "retrying" || state.cli.health === "checking";
+      statusBar.text = transient ? "$(sync~spin) LeanFlow: reconnecting" : "$(warning) LeanFlow: CLI setup needed";
       statusBar.tooltip =
-        `${redactSensitiveText(state.cli.error)}\nOpen the dashboard for setup guidance.`;
+        `${redactSensitiveText(state.cli.error)}\n${transient ? "Checking automatically. Open the dashboard for jobs and logs." : "Open the dashboard for setup guidance."}`;
       statusBar.show();
       return;
     }
@@ -85,6 +88,20 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("leanflow.openDashboard", () => {
       DashboardPanel.show(context.extensionUri, services);
     }),
+    vscode.commands.registerCommand("leanflow.openBenchmark", (uri?: vscode.Uri) =>
+      openBenchmarkPanel(context.extensionUri, services, uri),
+    ),
+
+    vscode.commands.registerCommand("leanflow.configureProvider", async () => {
+      const backend = await vscode.window.showQuickPick(BACKEND_IDS, { title: "Set up a LeanFlow provider" });
+      if (!isBackend(backend)) return;
+      const options = [{ label: "Save API key", action: "apiKey" as const }, { label: "Remove saved key", action: "removeKey" as const }, { label: "Open native configuration", action: "config" as const }];
+      const picked = await vscode.window.showQuickPick([...options, ...(backend === "lemex" ? [{ label: "Set endpoint", action: "endpoint" as const }] : [{ label: "Sign in with native CLI", action: "login" as const }])], { title: `${backend} setup` });
+      if (picked) {
+        try { await services.providers.act(backend, picked.action); }
+        catch (error) { await showCommandError(error); }
+      }
+    }),
 
     vscode.commands.registerCommand("leanflow.refresh", async () => {
       await services.reload();
@@ -92,7 +109,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand("leanflow.selectRun", (id: string) => {
-      services.selectRun(id);
+      services.openRun(id);
+      DashboardPanel.show(context.extensionUri, services);
     }),
 
     vscode.commands.registerCommand("leanflow.launch", () => {
@@ -122,6 +140,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       try {
+        services.setup.assertLaunchReady(state.project.root);
         const run = await services.runs.launch(
           { ...emptyLaunchRequest(), kind: "prove", target },
           services.profiles,
@@ -155,10 +174,10 @@ export function activate(context: vscode.ExtensionContext): void {
         summary?: { run_id: string; project_root?: string };
       }) => {
         try {
-          const trackedId = node?.run?.id ?? services.state().selectedRunId;
+          const trackedId = node?.run?.id ?? (node?.summary ? null : services.state().selectedRunId);
           const tracked = trackedId ? services.runs.getRun(trackedId) : undefined;
           const runId =
-            tracked?.runId ?? node?.summary?.run_id ?? services.state().history[0]?.run_id ?? "";
+            node?.summary?.run_id ?? tracked?.runId ?? services.state().selectedRunId ?? services.state().history[0]?.run_id ?? "";
           const text = await services.runs.runLog(
             runId,
             2000,
@@ -176,25 +195,9 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
 
     vscode.commands.registerCommand("leanflow.initProject", async () => {
-      const folder = vscode.workspace.workspaceFolders?.[0];
-      if (!folder) {
-        void vscode.window.showWarningMessage("Open a folder containing a Lean project first.");
-        return;
-      }
-      try {
-        await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: "Initializing LeanFlow project" },
-          async () => {
-            await runCli(["project", "init", folder.uri.fsPath], {
-              cwd: folder.uri.fsPath,
-              timeoutMs: 600_000,
-            });
-          },
-        );
-        await services.reload();
-      } catch (error) {
-        await showCommandError(error);
-      }
+      DashboardPanel.show(context.extensionUri, services);
+      try { await services.setup.start(); }
+      catch (error) { await showCommandError(error); }
     }),
 
     vscode.commands.registerCommand("leanflow.doctor", async () => {

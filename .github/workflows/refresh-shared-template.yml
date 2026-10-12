@@ -23,16 +23,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate refresh credentials
+      - name: Check shared-template configuration
+        id: template-configuration
         run: |
           if [ -z "${MORPH_API_KEY}" ]; then
-            echo "GitHub secret MORPH_API_KEY is required to publish the shared template alias." >&2
-            exit 1
+            echo "Shared-template publishing skipped: MORPH_API_KEY is not configured."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [ ! -f "${TEMPLATE_FILE}" ]; then
             echo "Tracked Morph template file is missing: ${TEMPLATE_FILE}" >&2
             exit 1
           fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
       - name: Publish shared template alias
+        if: steps.template-configuration.outputs.enabled == 'true'
         run: python3 scripts/publish_shared_template.py

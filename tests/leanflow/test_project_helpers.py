@@ -13,7 +13,6 @@ from leanflow_cli.workflows.project import (
     initialize_leanflow_project,
     is_lean_project_root,
     resolve_template_source,
-    setup_project_power_modes,
 )
 
 
@@ -141,61 +140,11 @@ def test_initialize_then_discover_produces_equal_project(monkeypatch, tmp_path):
     assert discovered.workflows_dir == root.resolve() / ".leanflow" / "workflows"
 
 
-def test_setup_project_power_modes_adds_repl_to_lakefile_toml(monkeypatch, tmp_path):
-    root = tmp_path / "proj"
-    root.mkdir()
-    (root / "lakefile.toml").write_text('name = "demo"\n', encoding="utf-8")
-    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
-    repl = root / ".lake" / "build" / "bin" / "repl"
-
-    def _fake_run(command, *, cwd):
-        assert cwd == root.resolve()
-        if command == ["lake", "build", "repl"]:
-            repl.parent.mkdir(parents=True, exist_ok=True)
-            repl.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-        return 0, "", 0.1
-
-    monkeypatch.setattr(
-        "leanflow_cli.workflows.project.shutil.which",
-        lambda name: "/usr/bin/lake" if name == "lake" else None,
-    )
-    monkeypatch.setattr("leanflow_cli.workflows.project._run_power_setup_command", _fake_run)
-    progress: list[str] = []
-
-    report = setup_project_power_modes(root, progress=progress.append)
-
-    rendered = (root / "lakefile.toml").read_text(encoding="utf-8")
-    assert 'name = "repl"' in rendered
-    assert 'rev = "v4.20.0"' in rendered
-    assert report["status"] == "ready"
-    assert report["repl_available"] is True
-    assert any("lake build repl" in message for message in progress)
-
-
-def test_setup_project_power_modes_does_not_duplicate_existing_repl(monkeypatch, tmp_path):
-    root = tmp_path / "proj"
-    root.mkdir()
-    (root / "lakefile.toml").write_text(
-        'name = "demo"\n\n[[require]]\nname = "repl"\ngit = "https://github.com/leanprover-community/repl"\nrev = "v4.20.0"\n',
-        encoding="utf-8",
-    )
-    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
-    monkeypatch.setattr("leanflow_cli.workflows.project.shutil.which", lambda name: None)
-
-    report = setup_project_power_modes(root)
-
-    rendered = (root / "lakefile.toml").read_text(encoding="utf-8")
-    assert rendered.count('name = "repl"') == 1
-    assert report["status"] == "lake-missing"
-
-
-def test_setup_project_power_modes_leaves_lakefile_lean_manual(monkeypatch, tmp_path):
+def test_initialize_from_nested_folder_registers_at_lake_root(tmp_path):
     root = _make_lean_root(tmp_path / "proj")
-    original = (root / "lakefile.lean").read_text(encoding="utf-8")
-    monkeypatch.setattr("leanflow_cli.workflows.project.shutil.which", lambda name: "/usr/bin/lake")
-
-    report = setup_project_power_modes(root)
-
-    assert (root / "lakefile.lean").read_text(encoding="utf-8") == original
-    assert report["status"] == "manual-setup-needed"
-    assert "manual_steps" in report
+    nested = root / "Demo" / "Subfolder"
+    nested.mkdir(parents=True)
+    project = initialize_leanflow_project(nested)
+    assert project.root == root
+    assert project.lean_root == root
+    assert not (nested / ".leanflow").exists()

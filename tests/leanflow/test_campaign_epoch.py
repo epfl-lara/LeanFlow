@@ -6,7 +6,6 @@ import json
 
 import pytest
 
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import campaign_epoch, negation_promotion
 from leanflow_cli.workflows.workflow_json_io import update_json_file
 
@@ -1206,127 +1205,6 @@ def test_marker_absent_legacy_campaign_gets_nonce_only_at_reservation(monkeypatc
     assert snapshot["provider_turn_nonce"] == 1
     assert campaign_epoch.NEGATION_PROMOTION_ROOT_REGISTRATION_OPEN_FIELD not in snapshot
     assert negation_promotion._validate_campaign_root_registry(snapshot).ok is False
-
-
-def test_resumed_runner_rolls_at_durable_cycle_ceiling_before_provider_call(monkeypatch, tmp_path):
-    """Process restarts cannot grant another full local cycle allowance."""
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "run-resume-cycle-ceiling")
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
-    first_state: dict = {}
-    for _ in range(8):
-        campaign_epoch.record_managed_cycle(first_state)
-
-    resumed_state: dict = {}
-    rolled = False
-    roll_calls: list[tuple[str, int]] = []
-    provider_calls: list[str] = []
-
-    def live_state(*args, **kwargs):
-        return {
-            "active_file": "/tmp/Demo.lean",
-            "target_symbol": "demo",
-            "sorry_count": 0 if rolled else 1,
-            "verification_ok": rolled,
-        }
-
-    def roll_epoch(
-        agent,
-        history,
-        compaction_state,
-        checkpoint_state,
-        autonomy_state,
-        live_state,
-        *,
-        reason,
-        cycle,
-    ):
-        nonlocal rolled
-        roll_calls.append((reason, cycle))
-        campaign_epoch.roll_epoch(autonomy_state, reason=reason, cycle=cycle)
-        rolled = True
-        return history, compaction_state, checkpoint_state
-
-    monkeypatch.setattr(runner, "_is_autonomous_workflow", lambda: True)
-    monkeypatch.setattr(runner, "_autonomous_max_cycles", lambda: 8)
-    monkeypatch.setattr(runner, "_journal_status", lambda: {})
-    monkeypatch.setattr(runner, "_build_live_proof_state_compat", live_state)
-    monkeypatch.setattr(
-        runner, "_promote_live_state_to_verified_compat", lambda state, autonomy_state: state
-    )
-    monkeypatch.setattr(
-        runner, "_live_state_is_verified", lambda state: bool(state.get("verification_ok"))
-    )
-    monkeypatch.setattr(runner, "_roll_autonomous_campaign_epoch", roll_epoch)
-    monkeypatch.setattr(
-        runner, "_advance_project_prove_manager_if_needed", lambda *args, **kwargs: False
-    )
-    monkeypatch.setattr(
-        runner, "_rebuild_history_for_theorem_transition", lambda *args, **kwargs: (None, None)
-    )
-    monkeypatch.setattr(
-        runner, "_maybe_run_document_formalization_review_agent", lambda *args: False
-    )
-    monkeypatch.setattr(runner, "_maybe_announce_final_file_sweep_state", lambda *args: None)
-    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args: None)
-    monkeypatch.setattr(
-        runner,
-        "_run_managed_conversation_with_retries",
-        lambda *args, **kwargs: provider_calls.append("called"),
-    )
-
-    runner._drive_autonomous_followups_inner(None, "", [], {}, {}, resumed_state)
-
-    assert roll_calls == [("cycle-ceiling", 8)]
-    assert provider_calls == []
-    assert resumed_state["campaign_epoch"] == 2
-    assert campaign_epoch.campaign_snapshot()["epoch_history"][-1]["cycles"] == 8
-
-
-def test_resumed_startup_rolls_spent_epoch_before_its_provider_turn(monkeypatch, tmp_path):
-    """The process startup turn is not a loophole around the durable ceiling."""
-    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "run-startup-cycle-ceiling")
-    first_state: dict = {}
-    for _ in range(8):
-        campaign_epoch.record_managed_cycle(first_state)
-
-    resumed_state: dict = {}
-    roll_calls: list[tuple[str, int]] = []
-
-    def roll_epoch(
-        agent,
-        history,
-        compaction_state,
-        checkpoint_state,
-        autonomy_state,
-        live_state,
-        *,
-        reason,
-        cycle,
-    ):
-        roll_calls.append((reason, cycle))
-        campaign_epoch.roll_epoch(autonomy_state, reason=reason, cycle=cycle)
-        return [{"role": "user", "content": "fresh epoch"}], {}, {}
-
-    monkeypatch.setattr(runner, "_autonomous_max_cycles", lambda: 8)
-    monkeypatch.setattr(runner, "_roll_autonomous_campaign_epoch", roll_epoch)
-
-    history, compaction, checkpoint, rolled = runner._roll_spent_startup_epoch_if_needed(
-        None,
-        [{"role": "assistant", "content": "stale context"}],
-        {"compacted": False},
-        {"current": "checkpoint"},
-        resumed_state,
-        {"target_symbol": "demo"},
-    )
-
-    assert rolled is True
-    assert roll_calls == [("cycle-ceiling", 8)]
-    assert history == [{"role": "user", "content": "fresh epoch"}]
-    assert compaction == {}
-    assert checkpoint == {}
-    assert resumed_state["campaign_epoch"] == 2
 
 
 def test_rollover_after_four_route_decisions_across_restart(monkeypatch, tmp_path):

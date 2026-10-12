@@ -1304,6 +1304,8 @@ _RETAINED_ACTIVITY_DETAIL_KEYS = {
     "agent_session_id",
     "parent_agent_session_id",
     "delegate_depth",
+    "job_id",
+    "evidence_id",
     "workflow_kind",
     "workflow_command",
     "active_skill",

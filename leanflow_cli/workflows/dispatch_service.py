@@ -45,8 +45,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agent.providers.isolated_auxiliary import sanitize_auxiliary_error
 from core.constants import WORKFLOW_STEP_BOUNDARY_INTERRUPT
+from core.error_redaction import sanitize_auxiliary_error
 from core.process_identity import (
     PROCESS_TOKEN_ENV,
     ProcessIdentity,

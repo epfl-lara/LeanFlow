@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 
 from leanflow_cli.config import (
     DEFAULT_CONFIG,
@@ -27,36 +26,21 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
     config = load_config()
 
     assert config["model"]["default"] == DEFAULT_CONFIG["model"]["default"]
-    assert config["model"]["default"] == "moonshotai/Kimi-K2.7-Code"
-    assert "context_lengths" not in config["model"]
-    assert config["auxiliary"]["lean_reasoning"]["provider"] == "main"
-    assert config["auxiliary"]["lean_reasoning"]["model"] == "moonshotai/Kimi-K2.6-int4"
-    assert config["auxiliary"]["lean_reasoning"]["reasoning_effort"] == "high"
-    assert config["auxiliary"]["lean_decompose_helpers"]["provider"] == ""
-    assert config["auxiliary"]["lean_decompose_helpers"]["model"] == ""
-    assert config["auxiliary"]["lean_decompose_helpers"]["reasoning_effort"] == ""
-    assert config["auxiliary"]["manager_nudge"]["provider"] == "auto"
-    assert config["auxiliary"]["manager_nudge"]["model"] == ""
-    assert config["auxiliary"]["manager_nudge"]["reasoning_effort"] == "low"
-    assert config["auxiliary"]["orchestration"]["reasoning_effort"] == "off"
-    assert config["agent"]["max_turns"] == 200
-    assert config["agent"]["reasoning_effort"] == "auto"
-    assert config["agent"]["seed"] == 42
-    assert config["agent"]["temperature"] == 0.3
-    assert config["agent"]["top_p"] is None
-    assert config["compression"]["prune_tool_output"] is True
-    assert config["compression"]["prune_keep_recent_user_turns"] == 2
-    assert config["compression"]["reserved_output_tokens"] == 20000
-    assert config["compression"]["threshold"] == 0.75
+    assert config["model"] == {"default": "", "provider": "codex"}
+    for task in config["auxiliary"].values():
+        assert task == {"provider": "", "model": "", "reasoning_effort": ""}
+    assert config["agent"] == {"reasoning_effort": ""}
+    assert config["limits"] == {"agent_calls": None, "tokens": None, "wall_time_s": None}
+    assert "compression" not in config
+    assert "local_models" not in config
+    assert "custom_providers" not in config
     assert config["logging"]["preview_lines"] == 8
     assert config["logging"]["preview_chars"] == 1600
     assert config["logging"]["activity_preview_chars"] == 420
     assert get_config_path().exists()
     rendered = get_config_path().read_text(encoding="utf-8")
-    assert "Main workflow model" in rendered
-    assert "Auxiliary theorem advisor" in rendered
-    assert "Auxiliary helper decomposer" in rendered
-    assert "Persistence coach" in rendered
+    assert "Native backends: codex, claude, lemex" in rendered
+    assert "sampling, context compression" in rendered
 
 
 def test_load_config_falls_back_to_defaults_on_malformed_yaml(monkeypatch, tmp_path):
@@ -78,8 +62,8 @@ def test_load_config_merges_user_overrides_onto_defaults(monkeypatch, tmp_path):
     assert config["model"]["default"] == "custom/model"
     # Unspecified agent fields should remain at defaults (deep merge).
     assert config["agent"]["temperature"] == 0.1
-    assert config["agent"]["seed"] == 42
-    assert config["agent"]["reasoning_effort"] == "auto"
+    assert "seed" not in config["agent"]
+    assert config["agent"]["reasoning_effort"] == ""
 
 
 def test_get_and_set_config_value_with_dotted_paths(monkeypatch, tmp_path):
@@ -181,31 +165,22 @@ def test_ensure_leanflow_home_creates_expected_subdirectories(monkeypatch, tmp_p
 
     home = ensure_leanflow_home()
 
-    for sub in ("sessions", "logs", "memories", "workflow-state", "local-models"):
+    for sub in ("sessions", "logs", "memories", "workflow-state"):
         assert (home / sub).is_dir(), f"{sub} directory was not created"
     assert (home / "config.yaml").exists()
     assert (home / ".env").exists()
     assert (home / "SOUL.md").exists()
     config_text = (home / "config.yaml").read_text(encoding="utf-8")
-    assert "Auxiliary helper decomposer" in config_text
+    assert "Native backends: codex, claude, lemex" in config_text
     assert "lean_decompose_helpers:" in config_text
     assert "manager_nudge:" in config_text
     assert "blueprint_verification:" in config_text
     assert "autoformalizer_verification:" in config_text
     env_text = (home / ".env").read_text(encoding="utf-8")
-    assert "LEANFLOW_OPENAI_BASE_URL=" in env_text
-    assert "KIMI_API_KEY=" in env_text
-    assert "AUXILIARY_LEAN_REASONING_MODEL=" in env_text
-    assert "AUXILIARY_LEAN_REASONING_REASONING_EFFORT=" in env_text
-    assert "AUXILIARY_LEAN_DECOMPOSE_HELPERS_MODEL=" in env_text
-    assert "AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT=" in env_text
-    assert "AUXILIARY_MANAGER_NUDGE_MODEL=" in env_text
-    assert "AUXILIARY_MANAGER_NUDGE_REASONING_EFFORT=" in env_text
-    assert "AUXILIARY_ORCHESTRATION_MODEL=" in env_text
-    assert "AUXILIARY_ORCHESTRATION_REASONING_EFFORT=" in env_text
-    assert "LEANFLOW_ORCHESTRATOR_LLM_TIMEOUT_S=" in env_text
-    assert "AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER=" in env_text
-    assert "AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER=" in env_text
+    assert "LEANFLOW_OPENAI_BASE_URL=" not in env_text
+    assert "LEANFLOW_INFERENCE_PROVIDER=" in env_text
+    assert "KIMI_API_KEY=" not in env_text
+    assert "AUXILIARY_LEAN_REASONING_PROVIDER=" not in env_text
 
 
 def test_ensure_leanflow_home_backfills_missing_env_template_keys(monkeypatch, tmp_path):
@@ -218,52 +193,34 @@ def test_ensure_leanflow_home_backfills_missing_env_template_keys(monkeypatch, t
 
     env_text = (home / ".env").read_text(encoding="utf-8")
     assert "LEANFLOW_OPENAI_API_KEY=keep-me" in env_text
-    assert "KIMI_API_KEY=" in env_text
-    assert "AUXILIARY_LEAN_REASONING_PROVIDER=" in env_text
-    assert "AUXILIARY_LEAN_REASONING_REASONING_EFFORT=" in env_text
-    assert "AUXILIARY_LEAN_DECOMPOSE_HELPERS_PROVIDER=" in env_text
-    assert "AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT=" in env_text
-    assert "AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER=" in env_text
-    assert "AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER=" in env_text
+    assert "LEANFLOW_INFERENCE_PROVIDER=" in env_text
+    assert "KIMI_API_KEY=" not in env_text
+    assert "AUXILIARY_LEAN_REASONING_PROVIDER=" not in env_text
 
 
-def test_ensure_leanflow_home_backfills_missing_config_defaults(monkeypatch, tmp_path):
+def test_existing_config_is_preserved_and_defaults_are_only_merged_in_memory(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    home = Path(str(tmp_path / "home"))
-    home.mkdir(parents=True)
-    (home / "config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "auxiliary": {
-                    "lean_reasoning": {
-                        "provider": "codex",
-                        "model": "",
-                    }
-                },
-                "mcp_servers": {
-                    "lean-lsp": {
-                        "command": "/tmp/lean-lsp-mcp",
-                        "enabled": True,
-                    }
-                },
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
+    home = tmp_path / "home"
+    home.mkdir()
+    original = "# keep my comment\nmodel:\n  provider: lemex\n"
+    (home / "config.yaml").write_text(original)
     ensure_leanflow_home()
+    assert (home / "config.yaml").read_text() == original
+    config = load_config()
+    assert config["model"] == {"provider": "lemex", "default": ""}
+    assert config["schema_version"] == 2
 
-    rendered = (home / "config.yaml").read_text(encoding="utf-8")
-    config = yaml.safe_load(rendered)
-    assert "Auxiliary helper decomposer" in rendered
-    assert config["auxiliary"]["lean_reasoning"]["provider"] == "codex"
-    assert config["auxiliary"]["lean_decompose_helpers"]["provider"] == ""
-    assert config["auxiliary"]["lean_decompose_helpers"]["model"] == ""
-    assert config["auxiliary"]["manager_nudge"]["reasoning_effort"] == "low"
-    assert config["auxiliary"]["blueprint_verification"]["provider"] == "main"
-    assert config["auxiliary"]["autoformalizer_verification"]["provider"] == "local"
-    assert config["mcp_servers"]["lean-lsp"]["command"] == "/tmp/lean-lsp-mcp"
+
+def test_legacy_config_gets_in_memory_migration_marker_without_rewriting(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    home = tmp_path / "home"
+    home.mkdir()
+    original = "model:\n  provider: custom\n  default: old-installed-model\n  base_url: ''\nagent:\n  temperature: 0.3\n"
+    (home / "config.yaml").write_text(original)
+    config = load_config()
+    assert config["schema_version"] == 1
+    assert config["model"]["default"] == "old-installed-model"
+    assert (home / "config.yaml").read_text() == original
 
 
 def test_load_config_is_cached_and_isolated(monkeypatch, tmp_path):

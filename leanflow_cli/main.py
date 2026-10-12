@@ -19,24 +19,24 @@ from leanflow_cli.cli.banner import (
 )
 from leanflow_cli.cli.cli_handlers import (
     _handle_config,
-    _handle_models,
     _handle_sandbox,
     _print_json,
     _print_mcp_bootstrap,
+    _print_mcp_repair,
     _print_mcp_status,
-    _print_project_power_setup,
-    _project_payload,
+    _project_payload,  # noqa: F401 -- retained CLI helper re-export
     workflow_run_help_text,
 )
 from leanflow_cli.cli.commands import build_workflow_command_set
 from leanflow_cli.cli.doctor import run_doctor
 from leanflow_cli.cli.flags_command import handle_flags, register_flags_parser
-from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp
+from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp, repair_managed_mcp_patches
+from leanflow_cli.cli.project_command import handle_project, register_project_parser
 from leanflow_cli.cli.runs_command import handle_runs, register_runs_parser
+from leanflow_cli.cli.storage_command import handle_storage, register_storage_parser
 from leanflow_cli.config import (
     ensure_leanflow_home,
     get_leanflow_home,
-    load_config,
 )
 from leanflow_cli.runtime.env_loader import load_leanflow_dotenv
 from leanflow_cli.runtime.runtime_provider import (
@@ -56,11 +56,6 @@ from leanflow_cli.workflow import (
 )
 from leanflow_cli.workflows.project import (
     ProjectNotFoundError,
-    clone_project_template,
-    discover_leanflow_project,
-    initialize_leanflow_project,
-    resolve_template_source,
-    setup_project_power_modes,
 )
 from leanflow_cli.workflows.workflow_state import (
     load_workflow_checkpoints,
@@ -75,6 +70,32 @@ from tools.mcp.mcp_tool import get_mcp_status
 
 WORKFLOW_COMMANDS = build_workflow_command_set()
 
+#: ``leanflow workflow`` options that select a preview instead of a launch, keyed
+#: to the parser destination they set.
+_PREVIEW_OPTIONS = {"--dry-run": "dry_run", "--json": "json_output"}
+#: Workflow names that report state instead of launching a run.
+_INFORMATIONAL_WORKFLOWS = frozenset({"status", "history", "activity", "log"})
+
+
+def _hoist_preview_options(args: argparse.Namespace) -> None:
+    """Recognize ``--dry-run``/``--json`` placed after the workflow name.
+
+    ``argparse.REMAINDER`` swallows every token after the workflow name, so a
+    misplaced preview option used to become part of the workflow arguments and
+    the CLI launched a run instead of previewing it. Tokens after ``--prompt`` or
+    ``--goal`` are prompt text and are left alone.
+    """
+    remaining: list[str] = []
+    prompt_seen = False
+    for token in list(getattr(args, "args", []) or []):
+        if not prompt_seen and token in _PREVIEW_OPTIONS:
+            setattr(args, _PREVIEW_OPTIONS[token], True)
+            continue
+        if token in {"--prompt", "--goal"}:
+            prompt_seen = True
+        remaining.append(token)
+    args.args = remaining
+
 
 def _seed_environment() -> None:
     home = get_leanflow_home()
@@ -87,7 +108,7 @@ def _load_runtime_env(*, cwd: Path | None = None) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser with all CLI subcommands and options. Constructs a hierarchical parser for version, status, config, doctor, mcp, project, workflow, sandbox, provider, and models commands, each with their own nested subparsers and flags."""
+    """Build the argument parser with all CLI subcommands and options. Constructs a hierarchical parser for version, status, config, doctor, mcp, project, workflow, sandbox and provider commands, each with their own nested subparsers and flags."""
     parser = argparse.ArgumentParser(
         prog="leanflow",
         description="Lean-first AI automation for Lean 4",
@@ -126,22 +147,14 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_bootstrap.add_argument("target", nargs="?", default="lean")
     mcp_bootstrap.add_argument("--json", action="store_true", dest="json_output")
     mcp_bootstrap.add_argument("--python", default=None)
+    mcp_repair = mcp_sub.add_parser(
+        "repair",
+        help="Re-apply managed source patches to installed MCP backends without reinstalling",
+    )
+    mcp_repair.add_argument("--json", action="store_true", dest="json_output")
 
-    project_parser = subparsers.add_parser("project", help="Manage LeanFlow projects")
-    project_sub = project_parser.add_subparsers(dest="project_command")
-    project_init = project_sub.add_parser(
-        "init", help="Initialize a Lean repo as an LeanFlow project"
-    )
-    project_init.add_argument("path", nargs="?", default=".")
-    project_init.add_argument("--name", default="")
-    project_create = project_sub.add_parser(
-        "create", help="Clone a project template and register it"
-    )
-    project_create.add_argument("path")
-    project_create.add_argument("--template-source", default="")
-    project_create.add_argument("--name", default="")
-    project_show = project_sub.add_parser("show", help="Show current project")
-    project_show.add_argument("path", nargs="?", default=".")
+    register_project_parser(subparsers)
+    register_storage_parser(subparsers)
 
     workflow_parser = subparsers.add_parser(
         "workflow", help="Run a Lean workflow in the native runtime"
@@ -149,7 +162,8 @@ def _build_parser() -> argparse.ArgumentParser:
     workflow_parser.add_argument(
         "--provider",
         default=None,
-        help="Override the configured provider for this workflow run",
+        choices=("codex", "claude", "lemex"),
+        help="Select the native agent backend",
     )
     workflow_parser.add_argument(
         "--dry-run",
@@ -206,66 +220,23 @@ def _build_parser() -> argparse.ArgumentParser:
     sandbox_run.add_argument("--no-network", action="store_true")
     sandbox_run.add_argument("args", nargs=argparse.REMAINDER)
 
-    provider_parser = subparsers.add_parser("provider", help="Show the resolved runtime provider")
+    provider_parser = subparsers.add_parser(
+        "provider", help="Show native agent backend configuration and setup"
+    )
     provider_parser.add_argument("--requested", "--provider", dest="requested", default=None)
-
-    model_parser = subparsers.add_parser("models", help="Manage local model runtimes")
-    model_sub = model_parser.add_subparsers(dest="models_command")
-    local_parser = model_sub.add_parser("local", help="Manage local runtimes")
-    local_sub = local_parser.add_subparsers(dest="local_command")
-    local_sub.add_parser("list", help="List local runtimes")
-    local_status = local_sub.add_parser("status", help="Show local runtime status")
-    local_status.add_argument("runtime")
-    local_start = local_sub.add_parser("start", help="Start a local runtime")
-    local_start.add_argument("runtime")
-    local_start.add_argument("model")
-    local_start.add_argument("--host", default=None)
-    local_start.add_argument("--port", type=int, default=None)
-    local_stop = local_sub.add_parser("stop", help="Stop a local runtime")
-    local_stop.add_argument("runtime")
-    local_logs = local_sub.add_parser("logs", help="Show local runtime logs")
-    local_logs.add_argument("runtime")
-    local_logs.add_argument("--tail", type=int, default=80)
-    local_use = local_sub.add_parser("use", help="Select the active local runtime/model")
-    local_use.add_argument("runtime")
-    local_use.add_argument("model")
+    provider_parser.add_argument(
+        "--json", action="store_true", help="Show credential-free setup metadata"
+    )
+    provider_parser.add_argument(
+        "--check", action="store_true", help="Check native installation and login without inference"
+    )
 
     return parser
 
 
 def _handle_project(args: argparse.Namespace) -> int:
-    if args.project_command == "init":
-        project = initialize_leanflow_project(args.path, name=args.name or None)
-        setup_report = setup_project_power_modes(
-            project.lean_root, progress=lambda message: print(message)
-        )
-        print(f"Initialized project: {project.label}")
-        print(project.root)
-        _print_project_power_setup(setup_report)
-        return 0
-    if args.project_command == "create":
-        template_source = args.template_source or resolve_template_source(load_config(), os.environ)
-        if not template_source:
-            print(
-                "No template source configured. Use --template-source or set leanflow.project.template_source.",
-                file=sys.stderr,
-            )
-            return 1
-        project = clone_project_template(
-            args.path, template_source=template_source, name=args.name or None
-        )
-        print(f"Created project: {project.label}")
-        print(project.root)
-        return 0
-    if args.project_command == "show":
-        try:
-            project = discover_leanflow_project(args.path)
-        except ProjectNotFoundError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        _print_json(_project_payload(project))
-        return 0
-    raise SystemExit("Unknown project command")
+    """Delegate project setup and inspection to the shared command implementation."""
+    return handle_project(args)
 
 
 def _handle_status(args: argparse.Namespace) -> int:
@@ -318,6 +289,13 @@ def _handle_mcp(args: argparse.Namespace) -> int:
         else:
             _print_mcp_bootstrap(payload)
         return 0
+    if command == "repair":
+        payload = repair_managed_mcp_patches()
+        if getattr(args, "json_output", False):
+            _print_json(payload)
+        else:
+            _print_mcp_repair(payload)
+        return 0
     raise SystemExit("Unknown MCP command")
 
 
@@ -326,6 +304,14 @@ from leanflow_cli.shell import InteractiveShell  # noqa: F401
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Pin the installed runtime for this command and all workflow launches it owns."""
+    from leanflow_cli.runtime.runtime_install import running_runtime_lease
+
+    with running_runtime_lease():
+        return _main(argv)
+
+
+def _main(argv: list[str] | None = None) -> int:
     # Invariant: env (LEANFLOW_HOME/etc) is seeded here BEFORE any handler runs. tools.mcp.mcp_tool
     # is imported at module load but only reads env at call time, so the order is safe — keep
     # it that way (do not add module-load-time env reads to the MCP import chain). (B2)
@@ -354,12 +340,29 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if not issues else 1
     if args.command == "project":
         return _handle_project(args)
+    if args.command == "storage":
+        return handle_storage(args)
     if args.command == "sandbox":
         return _handle_sandbox(args)
     if args.command == "workflow":
+        _hoist_preview_options(args)
         if any(token in {"-h", "--help"} for token in args.args):
             print(workflow_run_help_text(args.workflow))
             return 0
+        if (
+            args.workflow not in _INFORMATIONAL_WORKFLOWS
+            and getattr(args, "json_output", False)
+            and not getattr(args, "dry_run", False)
+        ):
+            # ``--json`` only describes a preview; without ``--dry-run`` it must not
+            # silently fall through to a real launch.
+            print(
+                "--json requires --dry-run: use "
+                f"`leanflow workflow --dry-run --json {str(args.workflow).lstrip('/')} ...`. "
+                "No run was started.",
+                file=sys.stderr,
+            )
+            return 2
         if args.workflow in {"status", "history", "activity", "log"}:
             payload = load_workflow_live_status()
             if args.workflow == "history":
@@ -434,14 +437,17 @@ def main(argv: list[str] | None = None) -> int:
         return handle_flags(args)
     if args.command == "runs":
         return handle_runs(args)
-    if args.command == "models":
-        return _handle_models(args)
     if args.command == "provider":
         try:
+            if args.json:
+                from leanflow_cli.runtime.provider_setup import provider_setup
+
+                _print_json(provider_setup(requested=args.requested, check=args.check))
+                return 0
             render_provider_panel(
                 Console(),
                 resolved=resolve_runtime_provider(requested=args.requested),
-                requested=args.requested or "auto",
+                requested=args.requested or "configured default",
                 targets=list_runtime_provider_targets(),
             )
             return 0

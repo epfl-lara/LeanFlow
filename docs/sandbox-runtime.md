@@ -1,37 +1,26 @@
-# LeanFlow Sandbox Runtime
+# LeanFlow sandbox runtime
 
-The sandbox runtime runs normal LeanFlow commands inside a local Docker or
-Podman container while keeping the host project out of the container mount set.
-It is intended for high-trust model/tool work where the agent may create,
-delete, or rewrite files freely, but those edits should remain reviewable before
-they touch the user's checkout.
+The sandbox runs LeanFlow commands inside a local Docker or Podman container
+using a copied project. It exports source changes as a patch for review before
+you apply them to the original checkout.
 
-## Design Choice
+## Project isolation
 
-The practical default is a container image plus a per-run copied worktree:
+The default uses a container image and a per-run worktree:
 
-- Docker/Podman provide the cross-platform runtime boundary and installable
-  Lean/Python/MCP tool environment.
+- Docker/Podman provide the runtime and Lean/Python/MCP environment.
 - The selected LeanFlow project is copied into
   `~/.leanflow/sandbox/runs/<run-id>/worktree`.
-- The original project path is never mounted into the container by default.
+- The original project root is not mounted for editing; dependency-cache mounts
+  are described below.
 - The copied worktree is committed as a local baseline before the run starts.
 - After the command exits, LeanFlow writes a binary-capable Git patch to
   `~/.leanflow/sandbox/runs/<run-id>/changes.patch`.
 
-This is deliberately different from a normal development bind mount. A direct
-read/write bind mount would make model edits immediately affect the host
-checkout. The copied-worktree path gives the model full freedom inside the
-container and keeps the host review/apply step explicit.
+## Install and update
 
-Dev containers are useful for editor-integrated development environments, and
-the sandbox image is intentionally compatible with that style of setup, but a
-devcontainer alone does not provide LeanFlow's per-run baseline, patch export,
-status file, or workflow-focused cache layout. Linux namespaces and macOS
-sandboxing remain useful implementation details, but they are not portable
-enough to be the only LeanFlow runtime.
-
-## Install And Update
+Use a working Docker or Podman engine and the prerequisites for the
+[local installer](product-reference.md#install).
 
 Install the normal CLI plus the sandbox image and wrapper:
 
@@ -51,8 +40,7 @@ The installer writes:
 - `leanflow-sandbox`: convenience wrapper for `leanflow sandbox run --`
 - `leanflow/sandbox:local`: local container image
 
-The default base image installs `leanflow[mcp]`, not the local LeanExplore extra,
-to keep the image portable and quick to build. Passing `--with-local-lean-explore`
+The default base image installs `leanflow[mcp]`. Passing `--with-local-lean-explore`
 builds the image with `leanflow[mcp,lean-explore]`, which includes
 `lean-explore[local]` and its embedding dependencies. Managed MCP bootstrap still
 installs the configured Lean backends in the sandbox home on first run in both
@@ -111,7 +99,7 @@ leanflow-sandbox prove Main.lean
 leanflow-sandbox /autoformalize docs/paper-directory
 ```
 
-## Secrets And Network
+## Secrets and network
 
 By default the sandbox passes `~/.leanflow/.env` with Docker/Podman's
 `--env-file` support. The file is not copied into the sandbox worktree. Override
@@ -133,13 +121,11 @@ If a provider endpoint runs on the host at `127.0.0.1`, configure it for the
 container-visible host address used by your engine, such as
 `host.docker.internal` on Docker Desktop.
 
-For an explicitly Codex-backed workflow, the sandbox mounts the minimal Codex
-OAuth files read-only. Because the image intentionally does not install the
-desktop `codex` executable, Codex reasoning and decomposition advisors use the
-same Responses API adapter there; regular local mode retains command-backed
-Codex expert behavior.
+For a Codex-backed workflow, the sandbox mounts the required Codex OAuth files
+read-only. The image uses the Responses API adapter; it does not require the
+desktop `codex` executable inside the container.
 
-## Filesystem Boundary
+## Filesystem boundary
 
 The container receives these writable mounts:
 
@@ -157,15 +143,10 @@ the project, toolchain, and dependency manifest. This prevents macOS/host
 executables from being reused inside Linux while retaining warm container
 builds across runs; ordinary dependency `.olean` data stays shared read-only.
 
-The container root filesystem is read-only by default, with tmpfs mounts for
-`/tmp` and `/run`. LeanInteract also receives a bounded 256 MiB, mode-1777 tmpfs
-at its package-local `cache/` directory because the upstream package creates that
-path at import time; the unprivileged workflow user can write there while
-installed package code remains read-only. Dependency installers
-use `/leanflow-cache/tmp` instead of the bounded `/tmp` tmpfs so large local
-semantic-search wheels cannot exhaust the temporary filesystem during first-run
-MCP bootstrap. Docker runs as the host UID/GID when available. Rootless Podman
-uses `--userns=keep-id`.
+The container root filesystem is read-only by default, with temporary writable
+mounts for `/tmp`, `/run`, and LeanInteract's package cache. Dependency installers
+use `/leanflow-cache/tmp` for larger downloads. Docker runs as the host UID/GID
+when available; rootless Podman uses `--userns=keep-id`.
 
 The project copy excludes common host-only state:
 
@@ -182,20 +163,18 @@ The project copy excludes common host-only state:
 The project manifest and project-local skills under `.leanflow/` are preserved
 so workflow resolution inside the sandbox sees the same LeanFlow project shape.
 
-Repository, paper, code, and article research are enabled by default. For a
-clean-room benchmark that excludes prior solutions, combine:
+Research uses network access by default. For proving with task-specific solution
+retrieval and repository installation blocked, use the workflow's clean-room
+option:
 
 ```bash
-export LEANFLOW_DISABLE_REPOSITORY_RESEARCH=1
-export LEANFLOW_DISABLE_SOLUTION_RESEARCH=1
-export LEANFLOW_CLEAN_ROOM_TASK_LABELS="Benchmark Problem 6|BP6"
+leanflow-sandbox workflow prove Main.lean --research \
+  --clean-room --clean-room-label "Benchmark Problem 2"
 ```
 
-The repository flag denies Git, repository clones, repository-host fetches,
-Sourcegraph, and repository-network terminal commands. The solution flag and
-labels deny task-identifying queries, results, URLs, and network commands.
-Unrelated mathematical, paper, and Mathlib research remains available.
-`leanflow sandbox run` propagates all three values into the container.
+General mathematical and Lean library search remains available. See the
+[prover reference](prover-workflow.md#research-and-clean-room-execution) for its
+research and dependency policy.
 
 ## Outputs
 

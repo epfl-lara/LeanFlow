@@ -1,4 +1,4 @@
-"""Plan or delegate native Lean worker requests and record their outcomes."""
+"""Prepare deterministic Lean worker plans and reject removed direct-model delegation."""
 
 from __future__ import annotations
 
@@ -50,7 +50,11 @@ def dispatch_worker(
     parent_agent: Any = None,
     owner_id: str = "",
 ) -> LeanWorkerResult:
-    """Route a Lean worker request to either plan-mode return or full agent delegation, with optional file locking. Acquires a file lock if requested, builds a worker prompt from the request spec, and either returns the prompt for planning or delegates execution to an agent with terminal/file/skills/coordination toolsets; records outcome in workflow state."""
+    """Build a worker plan or report that execution requires a native workflow.
+
+    Preserve optional file reservation and outcome recording for planning callers.
+    The retired in-process delegation path never constructs a model client.
+    """
     worker = request.worker.strip()
     lock_result: dict[str, Any] | None = None
     if request.use_file_lock and request.file_path and owner_id:
@@ -84,21 +88,14 @@ def dispatch_worker(
         append_workflow_outcome("lean-worker", result.to_dict())
         return result
 
-    from tools.implementations.delegate_tool import delegate_task
+    from agent.providers.auxiliary_client import RETIRED_PROVIDER_MESSAGE
 
-    delegated = delegate_task(
-        goal=request.goal,
-        context=prompt,
-        toolsets=["terminal", "file", "skills", "coordination"],
-        parent_agent=parent_agent,
-        max_iterations=40,
-    )
     result = LeanWorkerResult(
         worker=worker,
-        mode="delegate",
-        dispatched=True,
-        summary=f"Delegated {worker}",
-        result=delegated,
+        mode="native_required",
+        dispatched=False,
+        summary=RETIRED_PROVIDER_MESSAGE,
+        result={"error": RETIRED_PROVIDER_MESSAGE},
         lock=lock_result,
     )
     append_workflow_outcome("lean-worker", result.to_dict())

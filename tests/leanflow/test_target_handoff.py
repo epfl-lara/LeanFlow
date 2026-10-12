@@ -5,11 +5,9 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from hashlib import sha256
-from types import SimpleNamespace
 
 import pytest
 
-from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import (
     advisor_route_facts,
     decomposition_provenance,
@@ -693,29 +691,6 @@ def test_small_target_handoff_cap_preserves_newest_finding_once(target_state):
     assert len(block) <= 2_000
     assert block.count("campaign.large-2") == 1
     assert "LARGE-2" in block
-
-
-def test_decomposer_preflight_receives_target_knowledge(monkeypatch, target_state):
-    monkeypatch.setattr(runner, "_document_formalization_pre_tool_guard", lambda *args: None)
-    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: False)
-    monkeypatch.setattr(
-        runner.target_handoff,
-        "target_knowledge_block",
-        lambda **kwargs: "[LEANFLOW TARGET KNOWLEDGE]\n- q=3 route excluded",
-    )
-    agent = SimpleNamespace(
-        _managed_autonomy_state={
-            "current_queue_assignment": {
-                "target_symbol": "exceptional",
-                "active_file": str(target_state),
-            }
-        }
-    )
-    arguments = {"recent_failed_attempts": "attempt one failed"}
-
-    assert runner._managed_pre_tool_call(agent, "lean_decompose_helpers", arguments) is None
-    assert "attempt one failed" in arguments["recent_failed_attempts"]
-    assert "q=3 route excluded" in arguments["recent_failed_attempts"]
 
 
 def _queued_child_handoff_state(active_file, candidate: str):

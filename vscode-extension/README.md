@@ -1,179 +1,178 @@
 # LeanFlow for VS Code
 
-Launch, observe, and ablate LeanFlow proof workflows without leaving the editor.
+Launch and inspect LeanFlow workflows without leaving the editor. The extension
+uses the `leanflow` CLI, so the editor and terminal share project setup, launch
+settings, proof verification, and recorded run evidence.
 
-The extension does not reimplement any part of LeanFlow. It drives the `leanflow`
-CLI and reads run-scoped state through `leanflow runs`, so the editor, shell,
-evaluation harness, and exported results use the same evidence boundary.
+## Install and prepare a project
 
-## What it gives you
+Install [LeanFlow](../README.md#install) on the workspace host, then install the
+extension. To build a local package:
 
-**Launch** — a form over the whole `leanflow workflow` surface: workflow kind,
-target, provider, model, swarm width, research mode and worker count, clean
-room, human review, allowed axioms, extra skills, and a free-text prompt. The
-rendered command is always visible, and **Preview plan** resolves the launch
-without starting it, showing the exact argv and the complete `LEANFLOW_*`
-environment the child process would receive, with credentials redacted and
-prompt/command-template contents represented by fingerprints. An
-actual run seals its launch configuration and source identity separately from
-its final source and outcome, so later edits cannot rewrite what it claims.
+```bash
+cd vscode-extension
+npm install
+npm run package
+```
 
-**Live** — phase, target declaration, active file, sorry counts here and across
-the project, provider and model, skill, agent capacity, held locks, the
-declaration queue, the current blocker, Lean diagnostics, and goals. A stale
-snapshot (the owning process died) and a quiet heartbeat are called out rather
-than shown as if fresh.
+Install the generated `.vsix` using **Extensions: Install from VSIX**. Reload
+VS Code to activate an extension update after any active workflow has finished.
+Set `leanflow.cliPath` if the CLI is not on the extension host's `PATH`.
 
-**Logs** — the structured activity stream rather than scraped console text. The
-runtime emits around fifty event types at very different densities, so the
-filter is the point: presets for narrative, tool calls, Lean, provider, and
-research, plus per-type selection with counts. The structurally raw run log,
-including the closing token and cost summary, is one toggle away after prompt
-and credential fields have been scrubbed. Long runs retain a bounded tail in
-both the extension host and webview; eviction resets the displayed tail instead
-of duplicating or growing it without limit.
+Open a folder and choose **Set up project** in the LeanFlow sidebar. Mathlib is
+the default. Setup creates an empty-folder project, prepares existing Lean files,
+or checks an existing Lake project while preserving its source and versions.
+Multi-root workspaces use a folder picker; Remote SSH runs setup on the remote
+workspace host. A trusted workspace, Git, and a real filesystem are required.
 
-**Knobs** — every declared `LEANFLOW_*` knob, grouped by subsystem, with its
-type, default, and a description of what flipping it does. Knobs worth flipping
-in an ablation are marked. Build a working set, save it as a named profile, and
-diff two profiles to see exactly which knobs differ — comparing effective
-values, so a knob absent from one profile is compared against its real default
-rather than treated as unset. Settings that redirect storage, expose raw
-requests, disable redaction, or bypass approval remain visibly terminal-only;
-the extension cannot save or launch them.
+Readiness requires a real Lean verification-protocol check. **Check setup**
+reuses unchanged readiness; **Repair dependencies** explicitly rebuilds when
+needed. Progress, **Show setup log**, **Retry**, and **Cancel** remain available.
+Setup cannot change a project with an active workflow. Existing `sorry` holes
+are valid starting points.
 
-**Sweeps** — targets × profiles × models × repeats, expanded into a randomized,
-recorded run order and scored into a comparison table. Each row includes the
-proof outcome, declarations, failure taxonomy, duration, API calls, tokens,
-cost, complete launch/final provenance, and its exact frozen knob profile.
-Missing or unverifiable final evidence is marked **unscored** and excluded from
-means rather than becoming a zero or a failed proof. Repeats report measured
-and missing sample counts, Student-t mean intervals, and direct Welch intervals
-for condition contrasts. Export writes one JSON object per cell in the shape
-`evals/harness.append_result` uses. A sweep requires an explicit provider and
-model; before any paid cell, the extension resolves provider aliases, model,
-reasoning effort, and a credential-free endpoint identity and freezes them as
-the condition actually being tested.
+## Configure a native backend
 
-### Sweeps isolate every cell
+Open **Providers** or use **LeanFlow: Configure Provider**:
 
-Sequential cells must not share a mutable checkout: a proof written by an early
-condition would otherwise become a hidden input to every later one. Before the
-first cell, LeanFlow therefore requires a clean Git checkout, records its commit
-and tree, freezes the selected profiles, and gives every cell a detached local
-clone with a private dependency/build tree. The source checkout is read-only;
-the extension never resets, cleans, or removes it. Deleting a sweep removes only
-that sweep's app-owned clones after its process has stopped.
+- **Codex:** use its native login or an OpenAI API key.
+- **Claude Code:** use its native login or an Anthropic API key.
+- **Lemex:** configure its key and endpoint. The LeanFlow installer can supply a
+  managed pinned Lemex distribution.
 
-Cells still run one at a time so CPU, memory, provider throttling, and cache
-pressure do not become an uncontrolled parallelism variable. The order is
-randomized once from a persisted seed. The extension blocks overlapping runs it
-owns and rechecks the source project's durable owner before each cell. On
-scoring or reload it also audits the complete hot and retained run history for
-the source checkout; damaged, truncated, or nonterminal history fails closed
-instead of being interpreted as no overlap. Other programs and unrelated load
-on the machine remain outside its control, so published experiments should
-still run on an otherwise quiet host.
+The native runtime owns authentication, home, model requests, sampling, retries,
+and compression. **Open native config** opens its configuration.
+**Refresh setup** checks executable, login presence, and model metadata without
+an inference request. Presence does not validate paid API access.
 
-Isolation fails closed if the source is dirty or untracked, is not in Git, uses
-submodules or tracked symlinks, or routes project storage outside the clone.
-Private clones deliberately do not share `.lake` trees; budget disk and initial
-build time accordingly. Additional sweep skills must be tracked,
-project-relative `SKILL.md` paths; mutable user-level resolver names are
-rejected. The selected active skill and its linked files are content-bound per
-target.
+Explicit keys use VS Code password prompts and SecretStorage, scoped to the local
+or remote extension host. New extension-launched runs receive the native
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LEMEX_API_KEY`, and `LEMEX_BASE_URL`
+variables. Saved overrides take precedence over inherited values; removing them
+restores the native environment. Existing runs retain their launch settings.
 
-### What a scored cell proves, and what it does not
+Model and reasoning menus use the selected runtime's reported capabilities.
+Prover and orchestrator can select separate backends and models. Leave overrides
+empty to preserve native defaults. **Refresh models** reloads metadata after
+native configuration changes. Unknown metadata stays visibly unknown.
 
-A scored cell is bound to one verified run: an exact run id, a complete stream
-whose recomputed event count and SHA-256 match the sealed snapshot, verified
-terminal exit evidence, and non-source inputs that are identical in the sealed
-launch and final snapshots — runtime, Python packages, selected skills, behavior
-configuration, project configuration, toolchain, and dependency revisions. The
-Lean source is deliberately *not* held fixed: proving rewrites it, so the change
-is measured and reported rather than forbidden. Anything missing, truncated,
-mismatched, or nonterminal is reported **unscored** rather than estimated, and
-unscored rows never enter a mean, solve rate, or contrast.
+## Launch a workflow
 
-Those checks are unkeyed SHA-256 self-consistency, not signatures. They detect
-accidental edits, truncation, crashed or archived runs, and evidence belonging
-to a different run — the failure modes that actually corrupt a comparison. They
-are **not** tamper-proof against someone who can write to
-`<project>/.leanflow/workflow-state`, because such a party can rewrite a payload
-and its digest together. Run evidence is trustworthy exactly as far as
-filesystem access to the state directory is.
+**Launch** provides workflow, target, backend, model, prompt, skills, and axiom
+settings. **Preview plan** resolves the command and effective settings without
+starting work.
 
-Drift in those non-source inputs is compared between the sealed launch and final
-snapshots only. One modified during a run and restored to its original bytes
-before the run ends is therefore not reported as changed.
+New proof runs default to **Research**, **bottom-up**, and two concurrent prover
+jobs. Research adds planning and review around a theorem dependency graph.
+**Standard** uses one prover directly. Target selects the file containing proof
+holes; an empty target scans eligible project source files.
 
-## Requirements
+The **Global limits** card has optional calls, reported tokens, and active time.
+Time is entered in minutes. Empty limits display as **∞**; zero means exhausted.
+Research also defaults to 15 prover calls and 5 orchestrator calls across the run.
+Explicitly clear a role limit for unlimited. Profile values and launch overrides
+remain distinguishable, with help beside unfamiliar controls.
 
-- `leanflow` on your `PATH` (or set `leanflow.cliPath`)
-- A registered LeanFlow project: `leanflow project init` inside your Lean repo
-- Git and a local filesystem (virtual workspaces are not supported)
-- A trusted VS Code workspace, because LeanFlow executes the project's Lean toolchain
+One **agent call** is one `codex exec`, `lemex exec`, or `claude -p` process. It may
+make many model requests, replies, and tool steps. Internal retries and compaction
+share that call; a new process consumes another. Token limits gate future calls
+and may be exceeded by an active invocation. Missing usage stays unknown.
 
-If the CLI is missing, the sidebar and Launch view show the failing path and
-offer direct actions for the install guide, CLI setting, and a fresh check.
-Install LeanFlow, set the path if necessary, then reload the window.
+**Clean room** restricts proof research to the project and installed libraries,
+blocking external research and remote Lean search while retaining model access.
+Clean-room checkpoints can resume; online or legacy native context cannot be
+reused. See the [prover guide](../docs/prover-workflow.md).
+
+## Follow and control runs
+
+**Live jobs**, **Past jobs**, the Runs tree, and the shared Jobs menu select the
+same exact run for details and logs. Live workflows started from a terminal are
+also discoverable. Temporary CLI failures retain saved settings and job
+navigation while the extension retries; persistent installation problems provide
+an actionable path and update guidance.
+
+When available, each new job uses tmux on the workspace host. It can continue
+through closing VS Code or disconnecting; **Open terminal** reattaches without
+starting another job. Closing that terminal detaches. Without tmux, a regular
+integrated terminal is used and must remain open. Host shutdown still ends work.
+
+Stopping an extension-owned job goes through `leanflow runs stop RUN_ID`, which
+revalidates process identity. Externally started jobs remain observable and are
+controlled from their owning terminal. Incomplete history is marked unknown.
+
+The proof workspace shows the theorem graph or tree, statements, dependencies,
+plan, jobs, usage, controller checks, stop reasons, and recorded source changes.
+Only independently accepted proofs count as solved. Candidates awaiting checks
+and proposed graph changes remain visibly provisional. Source links and diffs
+open the selected run's artifacts. **Send guidance** queues a message for the
+controller or a selected job at its next decision boundary.
+
+**Agents and jobs** shows emitted messages, native tool activity, plans, and
+reported reasoning. Expand an event for recorded output or open the agent log.
+Missing or encrypted reasoning is not reconstructed. Activity events are distinct
+from agent-call counts and independent Lean acceptance.
+
+**Agents and models** and each job's **Model history** show model and effort
+settings recorded for each call, including resumes. Requested values, native
+session evidence, response model names, and **Runtime model default** are
+labelled separately. Absent values remain **Not reported**. Older history is not
+filled from today's runtime configuration.
+
+## Profiles and experiments
+
+**Knobs** lists the installed CLI's declared `LEANFLOW_*` settings, defaults,
+and descriptions. Save a profile or compare effective profile values. Project
+profiles live in `.leanflow/flag-profiles/`; user profiles live in
+`~/.leanflow/flag-profiles/`. Terminal-only or incompatible settings are explained
+and can be omitted from an editor-compatible copy.
+
+**Sweeps** compare targets, profiles, models, and repeats in a persisted randomized
+order. Every cell uses a private detached clone of one clean Git baseline with
+its own dependency/build tree. The source checkout is retained. Cells run
+sequentially, with frozen launch inputs and profiles. Budget initial build time
+and disk space for those private copies.
+
+Scoring requires exact-run terminal evidence, a complete activity stream, and
+matching launch/final non-source inputs. Missing, partial, or mismatched evidence
+makes a cell **unscored** and excludes it from aggregates. Missing tokens and cost
+stay unavailable. Exports include recorded provenance and configuration; inspect
+them before sharing. Integrity digests detect corruption and wrong-run evidence,
+not malicious rewriting by someone with access to the state directory.
+
+## Storage and privacy
+
+Providers shows managed storage, active protections, and free space.
+**Clean unused storage** removes owned, unused caches and obsolete runtimes.
+Defaults are a 20 GiB soft target and 10 GiB free-space reserve. Proofs, results,
+checkpoints, and logs are retained. See [storage and cleanup](../docs/storage.md).
+
+The extension has no telemetry or independent background network requests.
+Workflows contact the selected native model service. Credentials are excluded
+from webview state, profiles, ordinary run records, and exports. Half-filled
+prompts are not persisted. Resumable sweep prompts use SecretStorage; a missing
+or mismatched secret blocks pending cells.
 
 ## Settings
 
-| Setting | Default | What it does |
+| Setting | Default | Purpose |
 | --- | --- | --- |
-| `leanflow.cliPath` | `leanflow` | Path to the executable. |
-| `leanflow.projectRoot` | *(empty)* | Pin the project instead of discovering it. |
-| `leanflow.pollIntervalMs` | `1500` | How often live status and events are re-read. |
-| `leanflow.cellSettleMs` | `3000` | Wait for a sealed final metrics snapshot before scoring. |
-| `leanflow.eventBufferSize` | `4000` | Activity events kept in memory per run. |
-
-## How runs are executed
-
-Runs are spawned detached, not in an integrated terminal. They survive a window
-reload, a sweep can keep going while you work, and their output is already
-recorded as structured state that the log viewer reads. On reload the extension
-re-adopts tracked runs and reconciles them against recorded status, because the
-process outlives the exit callback that would otherwise report it finished.
-
-Stopping a run started by the current window interrupts its owned process group.
-After a reload, the extension asks `leanflow runs stop RUN_ID` instead; the CLI
-signals only after revalidating the run id, process token, and process-group
-identity. A stale or reused pid is refused and the UI reports why.
-
-## Privacy and network behavior
-
-The extension has no telemetry and makes no background network request of its
-own. LeanFlow workflows can contact the model provider selected by the user.
-Provider credentials are inherited by the child process but are not placed in
-webview state, tracked-run persistence, notifications, or experiment exports.
-Half-filled launcher prompts are intentionally not persisted. A resumable sweep
-stores its frozen prompt in VS Code SecretStorage and keeps only a SHA-256
-content identity in ordinary workspace state; a missing or mismatched secret
-blocks all pending cells. Prompt-bearing commands are omitted from exports.
-Exports still contain configuration, source remotes, content fingerprints, and
-local provenance paths, so inspect an export before sharing it publicly.
-
-## Where profiles live
-
-Saved knob profiles are JSON files under `<project>/.leanflow/flag-profiles/`,
-readable by the CLI too (`leanflow flags profiles`). Note that `.leanflow/` is
-git-ignored by default in the LeanFlow repo — if a profile defines a published
-ablation, copy it somewhere tracked.
+| `leanflow.cliPath` | `leanflow` | CLI executable |
+| `leanflow.projectRoot` | empty | Explicit project selection |
+| `leanflow.pollIntervalMs` | 5000 | Active status/event polling |
+| `leanflow.idlePollIntervalMs` | 20000 | Idle check for externally started work |
+| `leanflow.cellSettleMs` | 3000 | Wait for final evidence before scoring |
+| `leanflow.eventBufferSize` | 4000 | Retained activity events per run |
 
 ## Development
 
 ```bash
 npm install
-npm run watch      # rebuild host + webview on change
+npm run watch
 npm run typecheck
-npm test           # launch, trust-boundary, storage, isolation, scoring, and statistics tests
-npm run package    # produces a .vsix
+npm test
+npm run package
 ```
 
-Press <kbd>F5</kbd> in VS Code to launch an Extension Development Host.
-
-The CLI surfaces this extension depends on — `leanflow flags`, `leanflow runs`,
-and `leanflow workflow --dry-run --json` — are covered by
-`tests/leanflow/test_flag_catalog.py`, `tests/leanflow/test_runs_command.py`, and
-`tests/leanflow/test_extension_launch_contract.py` in the main repository.
+Press F5 in VS Code for an Extension Development Host. CLI contracts and host
+message validation have tests in the main repository and extension test suite.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for the repository quality gate.

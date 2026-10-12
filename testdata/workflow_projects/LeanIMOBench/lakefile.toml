@@ -1,0 +1,30 @@
+name = "lean_imo_bench"
+version = "0.1.0"
+defaultTargets = ["LeanIMOBench"]
+
+# Pinned dependencies permit reuse of matching built sibling projects (see README ->
+# "Shared Mathlib"). Upstream verified these statements under Lean/Mathlib
+# 4.27.0; every statement was re-verified to elaborate at this revision before
+# the pin was changed, and `lake build` is the standing gate.
+
+# No [leanOptions] block on purpose. Upstream verified these statements as
+# standalone `import Mathlib` files with default elaboration options;
+# overriding autoImplicit or linter settings here could change how a statement
+# elaborates.
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4"
+rev = "0df444a360eaa60ab8c11dca51a86af692955474"
+
+[[require]]
+name = "repl"
+git = "https://github.com/leanprover-community/repl"
+rev = "bbeedf38e0898869fc3b7c009e1ea877b46204e4"
+
+# Every problem is its own module so it can be built and proved independently.
+# The glob makes each one an addressable Lake target:
+#   lake build LeanIMOBench.Basic.PBBasic001
+[[lean_lib]]
+name = "LeanIMOBench"
+globs = ["LeanIMOBench.+"]

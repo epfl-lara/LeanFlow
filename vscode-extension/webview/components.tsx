@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import type { ExperimentCell, TrackedRunStatus } from "../src/core/types";
 import { Mark } from "./icons";
+import { InfoHelp } from "./InfoHelp";
 
 export function Card(props: {
   title?: ReactNode;
@@ -27,15 +28,19 @@ export function Card(props: {
 export function Field(props: {
   label: string;
   hint?: string;
+  source?: string;
+  help?: ReactNode;
+  helpLabel?: string;
   children: ReactNode;
 }) {
-  return (
+  const field = (
     <label className="field">
-      <span className="label">{props.label}</span>
+      <span className="label">{props.label}{props.source && <span className="field-source">{props.source}</span>}</span>
       {props.children}
       {props.hint && <span className="hint">{props.hint}</span>}
     </label>
   );
+  return props.help ? <div className="field-with-help">{field}<InfoHelp label={props.helpLabel ?? props.label}>{props.help}</InfoHelp></div> : field;
 }
 
 export function Check(props: {
@@ -43,9 +48,10 @@ export function Check(props: {
   label: string;
   hint?: string;
   disabled?: boolean;
+  help?: ReactNode;
   onChange: (value: boolean) => void;
 }) {
-  return (
+  const check = (
     <label className="check">
       <input
         type="checkbox"
@@ -59,6 +65,7 @@ export function Check(props: {
       </span>
     </label>
   );
+  return props.help ? <div className="check-with-help">{check}<InfoHelp label={props.label}>{props.help}</InfoHelp></div> : check;
 }
 
 const STATUS_TONE: Record<TrackedRunStatus, string> = {
@@ -82,10 +89,10 @@ export function Pill(props: { tone?: "ok" | "bad" | "warn" | "running"; children
   return <span className={`pill ${props.tone ?? ""}`}>{props.children}</span>;
 }
 
-export function Stat(props: { label: string; value: ReactNode; small?: boolean }) {
+export function Stat(props: { label: string; value: ReactNode; small?: boolean; help?: ReactNode }) {
   return (
     <div className="stat">
-      <div className="k">{props.label}</div>
+      <div className="k">{props.label}{props.help && <InfoHelp label={props.label}>{props.help}</InfoHelp>}</div>
       <div className={`v${props.small ? " small" : ""}`}>{props.value}</div>
     </div>
   );

@@ -5,8 +5,7 @@ Model Tools Module
 Thin orchestration layer over the tool registry. Each tool file in tools/
 self-registers its schema, handler, and metadata via tools.registry.register().
 This module triggers discovery (by importing the supported Lean-kernel tool
-modules), then provides the public API that run_agent.py and the leanflow
-shell consume.
+modules), then provides deterministic tool dispatch for LeanFlow services.
 
 Public API retained for the Lean-first runtime:
     get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode) -> list
@@ -69,8 +68,7 @@ def _run_async(coro):
 def _discover_tools():
     """Import all tool modules to trigger their registry.register() calls.
 
-    Wrapped in a function so import errors in optional tools (e.g., fal_client
-    not installed) don't prevent the rest from loading.
+    An unavailable optional tool must not prevent unrelated tools from loading.
     """
     _modules = [
         "tools.implementations.web_tools",
@@ -84,7 +82,6 @@ def _discover_tools():
         "tools.implementations.skills_tool",
         "tools.implementations.document_tool",
         "tools.implementations.lean_tool",
-        "tools.implementations.delegate_tool",
     ]
     import importlib
 
@@ -224,11 +221,8 @@ def get_tool_definitions(
 # handle_function_call  (the main dispatcher)
 # =============================================================================
 
-# Tools whose execution is intercepted by the agent loop (run_agent.py)
-# because they need agent-level state (TodoStore, MemoryStore, etc.).
-# The registry still holds their schemas; dispatch just returns a stub error
-# so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+# Removed in-process tool names remain explicit errors for historical callers.
+_AGENT_LOOP_TOOLS = {"todo", "memory", "delegate_task"}
 
 
 def handle_function_call(
@@ -266,7 +260,11 @@ def handle_function_call(
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
-            return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+            return json.dumps(
+                {
+                    "error": f"{function_name} used the removed in-process agent loop; use a native workflow"
+                }
+            )
 
         result = registry.dispatch(
             function_name,

@@ -1,12 +1,6 @@
-"""Tests for the extracted lean_parsing pure parsers + native_runner re-export (Phase 2)."""
+"""Tests for the extracted lean_parsing pure parsers."""
 
 from leanflow_cli.lean import lean_parsing
-from leanflow_cli.native import native_runner
-
-
-def test_native_runner_reexports_are_identical():
-    for name in lean_parsing.__all__:
-        assert getattr(native_runner, name) is getattr(lean_parsing, name), name
 
 
 def test_strip_lean_comments_and_strings_removes_comments_and_string_literals():

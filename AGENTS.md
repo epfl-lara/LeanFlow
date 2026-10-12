@@ -1,200 +1,128 @@
-# LeanFlow Agent Guide
+# LeanFlow agent guide
 
-Instructions for coding agents working on this repository.
+Instructions for coding agents working in this repository.
 
-## Product Scope
+## Scope and architecture
 
-LeanFlow is a Lean-first automation kernel.
+LeanFlow is a Lean-first orchestration and verification kernel. Prioritize proof
+repair, mathematical formalization, strict verification, clear status, logs,
+checkpoints, and resume. Keep generic assistant product features outside this repo.
 
-Primary goals:
+Dependencies flow in one direction:
+`core/` → `agent/` and `tools/` → `leanflow_cli/`.
+Never import a higher layer from a lower one. Keep one responsibility per module;
+extract cohesive sibling leaves when a file mixes concerns or grows beyond a few
+hundred lines. Use existing subpackages and update `ARCHITECTURE.md` when module
+ownership or public interfaces change.
 
-- automated Lean proof repair via `prove` and `autoprove`
-- mathematical formalization via `formalize` and `autoformalize`
-- strict project-wide verification with no lingering `sorry`
-- clear shell UX, workflow state, logs, checkpoints, and resumability
+| Path | Responsibility |
+| --- | --- |
+| `core/` | Home authority, state, clock, constants, registry, toolsets, and utilities |
+| `agent/runtime/harness/` | Native Codex, Claude Code, and Lemex execution |
+| `agent/accounting/` | Shared usage, pricing, and redaction utilities |
+| `tools/{implementations,utilities,mcp,environments}/` | Deterministic Lean tools and transport |
+| `leanflow_cli/{cli,formalization,lean,native,runtime,workflows}/` | CLI, source intake, Lean services, and orchestration |
+| `leanflow_skills/`, `leanflow_specs/` | Packaged Lean workflow guidance |
 
-Do not optimize this repo for generic chat-assistant breadth. Prefer changes that improve Lean workflows directly.
+Top-level `model_tools`, `toolsets`, and `utils` are compatibility re-exports of
+core modules. `run_agent.py`, `native_runner.py`, and removed direct-provider
+entry points contain migration errors. Do not reintroduce SDK model loops or
+routing. Native CLIs own authentication, model calls, retries, sampling,
+compression, and native session state.
 
-## Development Environment
+## Development environment and quality gate
 
-Always activate the repo venv before Python commands:
+Always activate the repository environment before Python commands:
 
 ```bash
 source .venv/bin/activate
 ```
 
-## Quality gate — run before every commit
-
-Every change must pass all four. CI (`.github/workflows/tests.yml`) enforces them on push/PR.
+Run all four before every commit; CI enforces them:
 
 ```bash
-source .venv/bin/activate
-black .                # format with black (https://github.com/psf/black); CI runs `black --check .`
-ruff check .           # lint: pyflakes (F incl. F401 unused-import), import-sort (I), pyupgrade (UP)
-mypy                   # type-check the gated module set (pyproject [tool.mypy] files=[...])
-python -m pytest -q    # full suite
+black .
+ruff check .
+mypy
+python -m pytest -q
 ```
 
-- Config lives in `pyproject.toml` (`[tool.black]` for formatting, `[tool.ruff.lint]` for linting,
-  `[tool.mypy]` for types).
-- **Black is the formatter** ([psf/black](https://github.com/psf/black)). Do not hand-format; let
-  black do it. Ruff is used only for linting and import-sorting, not formatting.
-- **Unused imports are not allowed.** `F401` is enforced; a genuinely dead import must be removed. The
-  few deliberate re-exports / dynamic-access points (see the anti-pattern below) carry an explicit
-  `# noqa: F401`. Never add an unused import without that comment.
-- As you clean/extract a module, **add it to the mypy `files` list** so its types stay checked.
-- The suite is green except **one known xdist flake**
-  (`tests/tools/test_mcp_tool.py::...::test_existing_tool_names_reflect_registered_subset`): it passes in
-  isolation (`-n0`) and only fails under full-parallel runs. Ignore *only* that one; investigate any other failure.
+Configuration lives in `pyproject.toml`. Black is the formatter; Ruff handles
+linting and import sorting. Do not hand-format Python or use Ruff formatting.
+Remove unused imports. An explicit `# noqa: F401` is allowed only for a genuine
+public re-export or dynamic patch target with an actual caller. Include extracted
+modules in the mypy `files` list.
 
-## Coding standards
+The known xdist flake is
+`tests/tools/test_mcp_tool.py::...::test_existing_tool_names_reflect_registered_subset`.
+It passes in isolation with `-n 0`; ignore only that parallel flake and investigate
+all other failures.
 
-**Write modular code.** One module = one responsibility. The layering is strict and one-directional:
-`core/` (depends on nothing above it) → `agent/` and `tools/` → `leanflow_cli/`. Never import "up" the
-stack (e.g. `core/` must not import `leanflow_cli`). When a file grows past a few hundred lines or starts
-mixing concerns, **extract a cohesive leaf module** (a sibling in the same subpackage) instead of growing
-it. `run_agent.py` and `leanflow_cli/native/native_runner.py` are legacy monoliths — put new logic in a
-focused module and call it; do not pile onto them. Group new modules into the existing subpackages
-(`agent/{accounting,execution,prompting,providers,compression,display,runtime}/`,
-`tools/{implementations,utilities,mcp,environments}/`,
-`leanflow_cli/{lean,native,formalization,workflows,cli,runtime}/`) and update `ARCHITECTURE.md` when you move/add modules.
+## Implementation standards
 
-**Document as you go.** Every module opens with a docstring stating its responsibility. Every non-trivial
-function gets a concise docstring: a one-line imperative summary (`Return …`, `Build …`, `Drive …`) plus key
-behavior, side effects, or the non-obvious "why". Match the terse, technical house style — no param-by-param
-`:param:` walls, no filler ("Helper function."), no restating the name. Add inline comments for *why*, not
-*what*, and only where the logic is non-obvious. Type-hint signatures.
+Every module starts with a responsibility docstring. Non-trivial functions need
+typed signatures and concise imperative docstrings describing behavior, side
+effects, or the non-obvious reason. Avoid parameter-by-parameter boilerplate and
+comments that restate code. Explain why where needed.
 
-**Write tests.** New behavior ships with tests. **Before refactoring coupled code, write characterization
-tests that pin the current behavior first** (see `tests/test_golden_cores.py`, `tests/agent/test_managed_run.py`).
-Keep the full suite green.
+New behavior requires tests. Before refactoring coupled code, add characterization
+tests that pin existing behavior. See `tests/agent/test_native_harness.py` and
+`tests/leanflow/test_retained_native_helpers.py`. Move tests with extracted helpers
+and patch names where the function resolves them; patching a former re-export
+does not affect a sibling's bound import.
 
-### Anti-patterns we already paid for — do NOT repeat
+Use `core.home.leanflow_home()` for every user-state path. Do not introduce another
+home resolver. LeanFlow orchestration uses `LEANFLOW_*`; the launcher supplies
+`LEANFLOW_NATIVE_*` and `LEANFLOW_PROJECT_ROOT`. Preserve native homes and
+credential variables; do not translate or copy native authentication.
 
-- **`F401` is enforced, but a few imports are deliberate re-exports / dynamic-access points** reached
-  via module-attribute access ruff cannot see — `run_agent.OpenAI`, `…terminal_tool._interrupt_event`, and
-  `run_agent`'s lazy-import surface (e.g. `run_agent._get_tool_emoji`). Those carry an explicit
-  `# noqa: F401`. When you add a `# noqa: F401`, it must be a *genuine* re-export/patch target — confirm a
-  real `module.NAME` / `from module import NAME` reference exists elsewhere. Do not use it to paper over a
-  truly dead import; remove that instead.
-- **`native_runner.py` is coupled to its tests by design.** `tests/leanflow/test_native_runner.py`
-  monkeypatches internals via `setattr(runner, NAME, …)`. A function moved into a sibling module that calls
-  those helpers by bare name binds to *its own* import and silently bypasses the patch. Do not extract from
-  `native_runner` until those tests move off `setattr`-monkeypatching.
-- **One home authority.** All home/state paths resolve through `core.home.leanflow_home()`
-  (`$LEANFLOW_HOME` or `~/.leanflow`).
-  Don't add per-module home resolvers.
-- **The native-workflow env contract is `LEANFLOW_`-only.** `leanflow_cli/workflow.py` sets
-  `LEANFLOW_NATIVE_*` / `LEANFLOW_PROJECT_ROOT`; `native_config` reads them.
+Controller-owned independent Lean acceptance determines proof completion.
+Preserve source protection, exact target types, axiom policy, transaction recovery,
+job capabilities, and run-bound evidence. Model reports and activity are not
+verification results.
 
-## Documentation map
+Use skills for guidance on the existing tool surface. Add tools only for
+necessary deterministic behavior such as verification, file ownership, state,
+or native process lifecycle.
 
-When you want to understand or change something, this is where it is written down — keep these in sync:
+## Documentation
 
-- **`README.md`** — product overview: what LeanFlow is, install, the core workflows.
-- **`AGENTS.md`** (this file) — how to work in the repo: standards, the quality gate, layout, anti-patterns.
-- **`ARCHITECTURE.md`** — the authoritative current module map, package boundaries, execution paths,
-  and load-bearing invariants (public imports, the `run_conversation` result schema, and tool
-  self-registration). **Update it whenever module ownership or the public surface changes.**
-- **`CONTRIBUTING.md`** — contribution basics and the skill-vs-tool decision.
-- **In-code docstrings** — the per-module / per-function reference (the primary source of truth for behavior).
-- **`docs/`** — deeper operational references (`product-reference.md` and `sandbox-runtime.md`).
+Keep behavior changes aligned across these sources:
 
-## Main Active Codepaths
+- `README.md`: installation and first workflows.
+- `docs/`: operational settings, proving, sandbox, storage, and evaluation guides.
+- `ARCHITECTURE.md`: module map, native contracts, and acceptance invariants.
+- `CONTRIBUTING.md`: development setup and required checks.
+- Module/function docstrings: primary behavior reference.
+- `vscode-extension/README.md` and `CHANGELOG.md`: editor setup and user-visible changes.
 
-```text
-LeanFlow/
-├── leanflow_cli/        # Shell UX, workflow orchestration, providers, local runtimes, locks, workflow state, Lean services
-├── leanflow_skills/     # Curated Lean-first skills
-├── agent/                # Prompt assembly, compression, display, auxiliary clients, AIAgent collaborators
-├── tools/                # Lean-kernel tools
-├── core/                 # Lowest layer: home authority (home.py) + session store (state.py) +
-│                         #   clock/constants + model_tools/toolsets/utils kernel
-├── run_agent.py          # Core conversation loop (AIAgent)
-└── README.md             # Main product documentation
-```
+Write general instructions without personal paths, temporary experiment diaries,
+or unsupported provider assumptions. Keep examples valid against the shipped CLI.
 
-The shared kernel (session store, clock, constants, tool registry API, toolsets, helpers) lives under
-`core/`. Top-level `model_tools` / `toolsets` / `utils` are thin re-export shims that keep
-`from model_tools import …` etc. working.
+## Excluded product surfaces
 
-The runtime is organized into single-responsibility leaf modules under
-`agent/{accounting,compression,display,execution,prompting,providers,runtime}/`,
-`leanflow_cli/{cli,formalization,lean,native,runtime,workflows}/`, and
-`tools/{environments,implementations,mcp,utilities}/`. Entry points and compatibility shims remain
-stable; see `ARCHITECTURE.md` for the current map and invariants. The key structures are:
+Do not reintroduce messaging gateways, ACP/editor servers, cron or schedulers,
+browser/voice products, batch data-generation subsystems, skill marketplaces, or
+mini-swe-agent and its Docker/Modal terminal backends. Supported terminal backends
+are local, SSH, Singularity, and Daytona; `leanflow sandbox` provides isolation.
 
-- `agent/` holds `AIAgent` collaborators. For example, accounting is under
-  `agent/accounting/`, context management under `agent/compression/`, tool execution under
-  `agent/execution/`, prompt shaping under `agent/prompting/`, and provider routing under
-  `agent/providers/`. `AIAgent` delegates through thin wrappers, properties, and lazy accessors in
-  `agent/execution/collaborator_resolvers.py`, preserving public imports and patch targets.
-- `leanflow_cli/` separates CLI handling, source formalization, Lean services, native process
-  lifecycle, provider/sandbox runtime, and persistent workflow coordination into their named
-  subpackages.
-- `tools/` separates callable implementations from deterministic utilities, MCP transport, and
-  execution environments.
-
-When adding behavior, prefer the smaller extracted module over growing the original monolith again.
-
-## Current Architecture
-
-- `leanflow_cli/main.py` is the active `leanflow` CLI entrypoint (CLI handlers in `cli/cli_handlers.py`; slash-command routing in `cli/commands.py`)
-- `leanflow_cli/native/native_runner.py` is the managed Lean workflow runtime (its leaf helpers live in sibling `leanflow_cli/native/` modules)
-- `leanflow_cli/lean/lean_services.py` is the Lean services hub (diagnostics/declarations/search/automation/sorry-stats split into sibling `leanflow_cli/lean/lean_*` modules)
-- `leanflow_cli/workflow.py` resolves workflow requests and toolset selection
-- `leanflow_cli/workflows/workflow_state.py` persists activity, checkpoints, logs, and status (status shaping in `workflows/activity_preview.py`)
-- `leanflow_cli/runtime/file_locks.py` handles cross-agent file reservations
-- `leanflow_cli/runtime/skill_core.py` resolves builtin, user, and project skill overlays
-- `agent/prompting/prompt_builder.py` injects skill guidance into the agent prompt
-- `run_agent.py` hosts `AIAgent`; its responsibilities are delegated to the `agent/` collaborators listed above (the `run_conversation` loop itself is not yet extracted)
-
-## Contribution Priorities
-
-1. Fix Lean workflow correctness bugs.
-2. Make autonomous workflows continue until the project is actually clean.
-3. Improve status visibility, workflow logs, checkpoints, and resume behavior.
-4. Improve Lean-focused skills and prompt guidance.
-5. Keep install/docs/README aligned with the shipped product.
-
-## Skill vs Tool
-
-Default to a skill when the behavior can be expressed as Lean workflow guidance on top of the existing tool surface.
-
-Add a tool only when deterministic runtime behavior is required, such as:
-
-- verification plumbing
-- file locking
-- workflow state persistence
-- provider/runtime lifecycle management
-
-## What Not To Reintroduce
-
-Do not reintroduce broad product surfaces that were intentionally removed:
-
-- gateway or messaging platforms
-- ACP/editor server integration
-- cron or scheduler product flows
-- browser or voice-first product flows
-- data-generation/batch-runner subsystems
-- marketplace-style skill hubs
-- the mini-swe-agent dependency and its docker/modal terminal backends (removed; the supported
-  terminal backends are local, ssh, singularity, daytona, and the `leanflow sandbox` for isolation)
-
-## Testing
-
-Preferred verification commands:
+## Focused checks
 
 ```bash
 source .venv/bin/activate
 python -m pytest tests/leanflow -q -n 0
-python -m pytest tests/leanflow tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
+python -m pytest tests/leanflow tests/agent/test_prompt_builder.py tests/agent/test_native_harness.py -q -n 0
 python -m leanflow_cli.main --help
-./scripts/install-internal.sh
 ```
 
-When changing workflow UX or runner behavior, also smoke-test the installed wrapper:
+For workflow UX, runner, or installation changes, also smoke-test installation and
+the installed wrapper:
 
 ```bash
+./scripts/install-internal.sh
 ~/.local/bin/leanflow --help
 ```
+
+An editable installation still references its checkout. Keep active runtime
+source stable while changing or installing another checkout. Extension changes
+require `npm run typecheck`, `npm test`, and `npm run package` in its directory.

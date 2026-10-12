@@ -1,23 +1,22 @@
 # Contributing to LeanFlow
 
-LeanFlow is a Lean-first automation kernel. Contributions should improve automated Lean proving, formalization, verification rigor, workflow visibility, or the shell UX around those jobs.
+Contributions should improve Lean proving, formalization, independent
+verification, workflow visibility, or the CLI and editor experience around them.
+Prioritize correctness, reliable continuation, inspectable state, and accurate
+installation and documentation.
 
-## Priorities
+## Development setup
 
-1. Fix bugs in `prove`, `autoprove`, `formalize`, and `autoformalize`.
-2. Make the autonomous runner stricter and more reliable.
-3. Improve shell status, workflow logs, checkpoints, and resume behavior.
-4. Strengthen Lean-first skills and prompt guidance.
-5. Keep the README and install surface accurate.
-
-## Development Setup
+Use Python 3.12 or newer:
 
 ```bash
+python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[dev]"
+python -m pip install -e '.[dev]'
 ```
 
-Run the complete quality gate before submitting a change:
+Activate the repository environment before Python commands. Run the complete
+quality gate before committing:
 
 ```bash
 black .
@@ -26,35 +25,36 @@ mypy
 python -m pytest -q
 ```
 
-## Main Codepaths
+Black formats Python; Ruff lints and sorts imports. New behavior requires tests.
+Write characterization tests before refactoring coupled code, add extracted
+modules to the mypy gate, and update documentation with behavior changes.
+Extension changes also require its typecheck, tests, and package build:
 
-- `leanflow_cli/` for shell UX, workflow orchestration, provider routing, local runtimes, locks, and workflow state
-- `leanflow_skills/` for the curated Lean-first skill core
-- `agent/` for prompt assembly, compression, display, and shared agent internals
-- `tools/` for the Lean-kernel tool surface
-- `run_agent.py` for the core conversation loop
-- `core/` for the shared kernel — session store, clock, constants, tool discovery (`model_tools`)
-  and toolsets. Top-level `model_tools` / `toolsets` / `utils` are re-export shims for `core.*`.
+```bash
+cd vscode-extension
+npm install
+npm run typecheck
+npm test
+npm run package
+```
 
-## Skill vs Tool
+## Code organization
 
-Default to a skill when the behavior can be expressed as Lean workflow guidance on top of the existing tool surface.
+Dependencies flow from `core/` through `agent/` and `tools/` to `leanflow_cli/`.
+Keep modules focused and use existing subpackages. The native harness under
+`agent/runtime/harness/` owns Codex, Claude Code, and Lemex process execution.
+`leanflow_cli/workflows/prover/` and `leanflow_cli/native/harness_*` own
+orchestration and independent acceptance. Native runtimes retain authentication,
+model calls, retries, sampling, and compression.
 
-Add a tool only when the runtime needs deterministic behavior that prompt instructions cannot reliably enforce, such as:
+Use skills for workflow guidance over existing tools. Add tools when deterministic
+behavior is needed for verification, state, process lifecycle, or file ownership.
+Preserve exact-source checks and meaningful completion gates.
 
-- Lean-specific verification plumbing
-- workflow state persistence
-- provider/runtime lifecycle management
-- file locking or other hard safety constraints
+LeanFlow's scope excludes messaging, editor servers, schedulers, browser/voice
+products, broad batch-generation systems, and skill marketplaces. Avoid adding
+those surfaces to the Lean kernel.
 
-## What Not To Reintroduce
-
-Do not reintroduce broad product surfaces that were intentionally cut from the kernel:
-
-- gateway or messaging platforms
-- ACP/editor server integration
-- cron or scheduler product flows
-- browser-automation product flows
-- voice-first product features
-- marketplace-style skill hubs
-- success criteria that stop before Lean is actually clean
+See [AGENTS.md](AGENTS.md) for coding standards and checks,
+[ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities, and the
+[documentation guide](docs/README.md) for operational references.

@@ -6,6 +6,7 @@
  */
 
 // ---------------------------------------------------------------- CLI shapes
+import type { ProverSnapshot } from "./prover";
 // These mirror the JSON emitted by `leanflow flags`, `leanflow runs`, and
 // `leanflow workflow --dry-run --json`. Keep them in step with
 // leanflow_cli/flags/spec.py and leanflow_cli/cli/runs_command.py.
@@ -76,6 +77,31 @@ export interface ActivityEvent {
   run_scope: string;
   message: string;
   details: Record<string, unknown>;
+}
+
+/** Where an expanded event's full record came from, if it could be joined. */
+export interface ActivityEventEvidence {
+  /** "job-log" (the agent's private transcript), "run-events" (controller log), or "none". */
+  source: string;
+  path: string;
+  /** "evidence_id" for an exact join, "heuristic" for a kind/time match, "" when absent. */
+  match: string;
+  record: {
+    kind: string;
+    timestamp: string;
+    evidence_id: string;
+    details: Record<string, unknown>;
+  } | null;
+}
+
+/** `leanflow runs event` — one activity row plus the model output recorded behind it. */
+export interface ActivityEventDetail {
+  version: number;
+  run_id: string;
+  event_id: string;
+  found: boolean;
+  event: ActivityEvent | null;
+  evidence: ActivityEventEvidence;
 }
 
 export interface RunSummary {
@@ -473,6 +499,8 @@ export function emptyLaunchRequest(): LaunchRequest {
 
 export type TrackedRunStatus = "starting" | "running" | "finished" | "failed" | "stopped";
 
+export interface RunConnection { kind: "tmux" | "terminal" }
+
 export interface TrackedRun {
   /** Stable id assigned by the extension, independent of the runtime's run_id. */
   id: string;
@@ -499,6 +527,9 @@ export interface TrackedRun {
   experimentId: string | null;
   experimentCell: string | null;
   error: string | null;
+  /** Execution transport only; never contains commands or credentials. */
+  connection?: RunConnection;
+  launchNotice?: string;
 }
 
 // -------------------------------------------------------------- experiments
@@ -552,9 +583,9 @@ export interface ExperimentBaseline {
 
 /** Canonical provider runtime resolved before the first paid sweep cell. */
 export interface ExperimentRuntimeIdentity {
-  /** Normalized selector passed by the experiment, such as `codex` or `rcp`. */
+  /** Requested selector retained in the historical experiment contract. */
   requestedProvider: string;
-  /** Provider identity the managed child records, such as `openai-codex` or `custom`. */
+  /** Recorded provider identity; legacy runs retain their original names. */
   provider: string;
   model: string;
   /** Credential-free endpoint identity; noncredential query settings are retained, fragments are not. */
@@ -717,6 +748,8 @@ export interface CliStatus {
   path: string;
   version: string;
   error: string;
+  health?: "checking" | "ready" | "retrying" | "unavailable";
+  issue?: "missing" | "permission" | "timeout" | "failed";
 }
 
 export interface ProjectInfo {
@@ -727,6 +760,9 @@ export interface ProjectInfo {
 }
 
 export interface AppState {
+  storage?: import("./storageState").StorageState | null;
+  projectSetup?: import("./projectSetupTypes").ProjectSetupState;
+  providers: import("./providerCredentials").ProviderSetupState;
   project: ProjectInfo;
   cli: CliStatus;
   catalog: FlagCatalog | null;
@@ -734,6 +770,9 @@ export interface AppState {
   runs: TrackedRun[];
   history: RunSummary[];
   selectedRunId: string | null;
+  projectLiveStatus?: LiveStatus | null;
+  runDiscoveryError?: string;
+  runNavigation?: { sequence: number; tab: "live" | "logs" };
   liveStatus: LiveStatus | null;
   eventTypes: { type: string; count: number }[];
   experiments: ExperimentRun[];
@@ -749,18 +788,44 @@ export type HostMessage =
   | { type: "preview"; requestId: string; plan: LaunchPlanPreview | null; error: string }
   | { type: "diff"; requestId: string; rows: ProfileDiffRow[]; error: string }
   | { type: "runLog"; runId: string; text: string }
+  | {
+      type: "eventDetail";
+      runId: string;
+      eventId: string;
+      detail: ActivityEventDetail | null;
+      error: string;
+    }
+  | { type: "proverState"; runId: string; snapshot: ProverSnapshot | null; error: string }
+  | { type: "proverMessageResult"; runId: string; requestId: string; success: boolean; error: string }
   | { type: "targetPicked"; path: string }
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
 export type WebviewMessage =
+  | { type: "refreshStorage" }
+  | { type: "cleanStorage" }
+  | { type: "configureProvider" }
+  | { type: "setupProject" }
+  | { type: "retryProjectSetup" }
+  | { type: "repairProjectSetup" }
+  | { type: "cancelProjectSetup" }
+  | { type: "showProjectSetupLog" }
+  | { type: "copyText"; text: string }
+  | { type: "refreshProviders" }
+  | { type: "providerAction"; backend: import("./providerCredentials").BackendId; action: import("./providerCredentials").ProviderAction }
   | { type: "ready" }
   | { type: "refresh" }
   | { type: "launch"; request: LaunchRequest }
   | { type: "preview"; requestId: string; request: LaunchRequest }
   | { type: "stopRun"; id: string }
   | { type: "selectRun"; id: string | null }
+  | { type: "openRun"; id: string }
+  | { type: "openRunTerminal"; id: string }
   | { type: "loadEvents"; runId: string }
   | { type: "loadRunLog"; runId: string }
+  | { type: "loadEventDetail"; runId: string; eventId: string }
+  | { type: "loadProver"; runId: string }
+  | { type: "proverMessage"; runId: string; agentId: string; message: string; requestId?: string }
+  | { type: "openProverFile"; runId: string; path: string; baselinePath?: string; line?: number }
   | { type: "saveProfile"; profile: FlagProfile }
   | { type: "deleteProfile"; name: string }
   | { type: "diffProfiles"; requestId: string; left: string; right: string }
