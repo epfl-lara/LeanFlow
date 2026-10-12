@@ -140,6 +140,7 @@ files = [
   "leanflow_cli/cli/prover_status.py",
   "core/constants.py",
   "core/filesystem.py",
+  "core/file_copy.py",
   "leanflow_cli/flags/__init__.py",
   "leanflow_cli/flags/spec.py",
   "leanflow_cli/flags/catalog.py",

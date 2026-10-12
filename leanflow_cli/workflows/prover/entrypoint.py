@@ -6,12 +6,12 @@ import fcntl
 import json
 import os
 import re
-import shutil
 import uuid
 from pathlib import Path
 from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
+from core.file_copy import copy_tree
 from core.utils import atomic_json_write
 from leanflow_cli.runtime.project_operations import ProjectBusyError, project_activity
 from leanflow_cli.workflows.prover.config import ProverConfig
@@ -66,7 +66,7 @@ def clone_resume_run(root: Path, previous: str, current: str) -> None:
     state = json.loads((old / "state.json").read_text())
     if not isinstance(state, dict) or state.get("run_id") != previous:
         raise ValueError("resume snapshot does not match its run ID")
-    shutil.copytree(old, new)
+    copy_tree(old, new)
     for path in new.rglob("*.json"):
         try:
             content = json.loads(path.read_text())

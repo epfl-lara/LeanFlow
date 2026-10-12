@@ -16,7 +16,11 @@ from agent.accounting.redact import redact_sensitive_text
 from agent.runtime.harness.network_policy import restricted_research
 from core.utils import atomic_json_write
 from leanflow_cli.workflows.prover.native_bridge import NativeBridge
-from leanflow_cli.workflows.prover.native_snapshot import create_snapshot, remap_project_text
+from leanflow_cli.workflows.prover.native_snapshot import (
+    prepare_snapshot,
+    release_snapshot_dependencies,
+    remap_project_text,
+)
 from leanflow_cli.workflows.prover.research_policy import ONLINE_POLICY, RESTRICTED_POLICY
 from leanflow_cli.workflows.prover.session_guidance import GuidanceInbox, skill_guidance
 from leanflow_cli.workflows.prover.session_tools import SessionTools
@@ -160,8 +164,7 @@ def run_session(
                 previous["session_id"] = session_id
                 atomic_json_write(ledger_path, previous)
 
-    if not snapshot.exists():
-        create_snapshot(project_root, snapshot)
+    prepare_snapshot(project_root, snapshot)
     scratch = snapshot / ".leanflow-job"
     scratch.mkdir(exist_ok=True)
     for name in ("Scratch.lean", "PLAN_job.md", "candidate.txt"):
@@ -337,4 +340,9 @@ def run_session(
         },
     )
     emit("job-session-end", output)
+    try:
+        release_snapshot_dependencies(snapshot)
+    except (OSError, ValueError) as exc:
+        # Cache cleanup must not turn a durably recorded proof response into a lost result.
+        emit("job-cache-cleanup-error", {"error": str(exc)})
     return output
