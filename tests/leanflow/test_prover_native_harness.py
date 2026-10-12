@@ -23,6 +23,14 @@ from leanflow_cli.workflows.prover.session_tools import SessionTools
 from tests.leanflow.test_prover_runtime import Verifier, project
 
 
+@pytest.fixture(autouse=True)
+def native_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep native database preparation inside disposable test homes."""
+    for backend in ("codex", "lemex", "claude"):
+        key = "CLAUDE_CONFIG_DIR" if backend == "claude" else f"{backend.upper()}_HOME"
+        monkeypatch.setenv(key, str(tmp_path / f"native-{backend}"))
+
+
 def test_native_defaults_leave_global_limits_and_model_settings_unset() -> None:
     config = ProverConfig.from_env({"LEANFLOW_NATIVE_PROVIDER": "lemex"})
     assert (config.agent_calls, config.tokens, config.wall_time_s, config.timeout_s) == (None,) * 4

@@ -13,6 +13,14 @@ from leanflow_cli.workflows.prover.agent_session import run_session
 from tests.leanflow.test_prover_runtime import project
 
 
+@pytest.fixture(autouse=True)
+def native_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep native database preparation inside disposable test homes."""
+    for backend in ("codex", "lemex", "claude"):
+        key = "CLAUDE_CONFIG_DIR" if backend == "claude" else f"{backend.upper()}_HOME"
+        monkeypatch.setenv(key, str(tmp_path / f"native-{backend}"))
+
+
 @pytest.mark.parametrize("previous_backend", [None, "codex", "claude", "lemex"])
 @pytest.mark.parametrize("backend", ["codex", "claude", "lemex"])
 def test_native_resume_identity_requires_matching_backend_without_resetting_spending(
@@ -36,6 +44,7 @@ def test_native_resume_identity_requires_matching_backend_without_resetting_spen
     }
     if previous_backend is not None:
         prior["backend"] = previous_backend
+        prior["database_home"] = str(tmp_path / f"native-{previous_backend}/leanflow-sqlite")
     ledger.write_text(json.dumps(prior))
     same_backend = previous_backend == backend
 

@@ -28,6 +28,7 @@ class IsolationPolicy:
     temp_root: Path | None = None
     readonly_roots: tuple[Path, ...] = ()
     network_allowed: bool = True
+    native_database_root: Path | None = None
 
 
 def build_runtime_isolation(
@@ -51,6 +52,11 @@ def build_runtime_isolation(
     home_key = "CLAUDE_CONFIG_DIR" if backend == "claude" else f"{backend.upper()}_HOME"
     native_home = Path(environment.get(home_key, str(home / f".{backend}"))).resolve()
     native_home.mkdir(parents=True, exist_ok=True)
+    database_root = None
+    if platform.system() == "Linux" and backend in {"codex", "lemex"}:
+        # SQLite must create journals beside its database, beyond individual file binds.
+        database_root = native_home / "leanflow-sqlite"
+        database_root.mkdir(mode=0o700, exist_ok=True)
     temporary = cwd.resolve() / ".leanflow-runtime" / "tmp"
     temporary.mkdir(parents=True, exist_ok=True)
     system_roots = [
@@ -127,6 +133,7 @@ def build_runtime_isolation(
         (*tuple(path.resolve() for path in denied_roots), *project_config),
         temporary,
         (Path(__file__).resolve().parents[3], *native_config),
+        native_database_root=database_root,
     )
 
 

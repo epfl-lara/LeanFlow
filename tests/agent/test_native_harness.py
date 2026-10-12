@@ -171,12 +171,20 @@ def test_native_executable_symlink_works_with_real_isolation(tmp_path: Path, ker
     executable = tmp_path / "native-cli"
     executable.write_text(
         f"#!{sys.executable}\n"
-        "import json, pathlib, sys\n"
+        "import json, pathlib, sqlite3, sys\n"
         "if sys.platform == 'linux':\n"
         "    assert pathlib.Path('/etc/resolv.conf').read_text()\n"
         "if sys.argv[1:3] == ['mcp', 'list']:\n"
         "    print('[]')\n"
         "    sys.exit(0)\n"
+        "if sys.platform == 'linux':\n"
+        "    setting=next(arg for arg in sys.argv if arg.startswith('sqlite_home='))\n"
+        "    database=pathlib.Path(json.loads(setting.split('=',1)[1]))/'history.sqlite'\n"
+        "    connection=sqlite3.connect(database)\n"
+        "    assert connection.execute('pragma journal_mode=wal').fetchone()==('wal',)\n"
+        "    connection.execute('create table calls (value text)')\n"
+        "    connection.execute(\"insert into calls values ('persisted')\")\n"
+        "    connection.commit();connection.close()\n"
         "assert sys.stdin.read() == 'a complete task'\n"
         "print(json.dumps({'type':'thread.started','thread_id':'symlink-session'}))\n"
         "print(json.dumps({'type':'item.completed','item':"
@@ -204,6 +212,13 @@ def test_native_executable_symlink_works_with_real_isolation(tmp_path: Path, ker
     assert result.session_id == "symlink-session"
     assert result.final_response == "isolated invocation"
     assert starts == [True]
+    if sys.platform == "linux":
+        assert request.isolation is not None
+        assert request.isolation.native_database_root is not None
+        import sqlite3
+
+        with sqlite3.connect(request.isolation.native_database_root / "history.sqlite") as db:
+            assert db.execute("select value from calls").fetchall() == [("persisted",)]
 
 
 @pytest.mark.parametrize(

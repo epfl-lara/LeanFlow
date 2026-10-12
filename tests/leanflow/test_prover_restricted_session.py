@@ -21,6 +21,14 @@ from leanflow_cli.workflows.prover.session_tools import SessionTools
 from tests.leanflow.test_prover_runtime import Verifier, project
 
 
+@pytest.fixture(autouse=True)
+def native_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep native database preparation inside disposable test homes."""
+    for backend in ("codex", "lemex", "claude"):
+        key = "CLAUDE_CONFIG_DIR" if backend == "claude" else f"{backend.upper()}_HOME"
+        monkeypatch.setenv(key, str(tmp_path / f"native-{backend}"))
+
+
 def _session(root: Path, **config: Any) -> dict[str, Any]:
     """Run one deterministic test job without invoking a real model."""
     return run_session(
@@ -102,6 +110,7 @@ def test_native_history_and_usage_baseline_are_bound_to_research_policy(
         "session_id": "earlier-session",
         "usage_total": {"input_tokens": 7, "output_tokens": 2},
         "research_policy": previous_policy,
+        "database_home": str(tmp_path / "native-codex/leanflow-sqlite"),
     }
     ledger.write_text(json.dumps(prior))
     expected_policy = "restricted-v1" if restricted else "online-v1"
@@ -119,6 +128,42 @@ def test_native_history_and_usage_baseline_are_bound_to_research_policy(
     result = _session(tmp_path, provider="codex", allow_internet=not restricted)
     assert result["agent_calls"] == 4
     assert json.loads(ledger.read_text())["research_policy"] == expected_policy
+
+
+@pytest.mark.parametrize("current_database", [False, True])
+def test_database_migration_keeps_spending_and_binds_native_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, current_database: bool
+) -> None:
+    """Resume only history from the current database without resetting consumed calls."""
+    monkeypatch.setattr("agent.runtime.harness.isolation.platform.system", lambda: "Linux")
+    project(tmp_path)
+    ledger = tmp_path / ".leanflow/jobs/.runtime/job/request-count.json"
+    ledger.parent.mkdir(parents=True)
+    database_home = str(tmp_path / "native-codex/leanflow-sqlite")
+    prior = {
+        "backend": "codex",
+        "used": 3,
+        "session_id": "earlier-session",
+        "usage_total": {"input_tokens": 7, "output_tokens": 2},
+        "research_policy": "online-v1",
+    }
+    if current_database:
+        prior["database_home"] = database_home
+    ledger.write_text(json.dumps(prior))
+
+    def harness(request: Any, **kwargs: Any) -> HarnessResult:
+        assert request.session_id == ("earlier-session" if current_database else "")
+        assert request.previous_usage == (prior["usage_total"] if current_database else None)
+        request.on_admitting()
+        request.on_started()
+        return HarnessResult("completed", "{}", session_id="current-session")
+
+    monkeypatch.setattr("agent.runtime.harness.run_harness", harness)
+    result = _session(tmp_path, provider="codex", allow_internet=True)
+    assert result["agent_calls"] == 4
+    saved = json.loads(ledger.read_text())
+    assert saved["used"] == 4 and saved["database_home"] == database_home
+    assert saved["session_id"] == "current-session"
 
 
 @pytest.mark.parametrize("previous_policy", [None, "online-v1"])

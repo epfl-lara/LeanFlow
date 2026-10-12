@@ -142,6 +142,14 @@ def build_command(
         command.extend(["--model", request.model])
     if request.effort:
         command.extend(["-c", f"model_reasoning_effort={json.dumps(request.effort)}"])
+    if (
+        request.isolation is not None
+        and request.isolation.native_database_root is not None
+        and not request.restricted_tools
+    ):
+        command.extend(
+            ["-c", "sqlite_home=" + json.dumps(str(request.isolation.native_database_root))]
+        )
     servers = _mcp_servers(request)
     native_mcp_servers = native_mcp_servers or {}
     collisions = set(servers) & set(native_mcp_servers)

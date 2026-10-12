@@ -267,6 +267,15 @@ def run_session(
             denied_roots=(project_root,),
             readable_roots=readable_roots,
         )
+        if policy.native_database_root is not None and not restricted:
+            database_home = str(policy.native_database_root)
+            if previous.get("database_home") != database_home:
+                # A migrated database cannot resume an old thread's native history.
+                # Controller progress and consumed calls remain authoritative.
+                previous.pop("session_id", None)
+                previous.pop("usage_total", None)
+            previous["database_home"] = database_home
+            atomic_json_write(ledger_path, previous)
         result = run_harness(
             HarnessRequest(
                 backend=backend,
@@ -330,6 +339,7 @@ def run_session(
             "used": calls,
             "backend": backend,
             "research_policy": research_policy,
+            "database_home": previous.get("database_home"),
             "session_id": result.session_id or previous.get("session_id", ""),
             "usage_total": (
                 result.usage_total

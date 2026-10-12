@@ -59,6 +59,12 @@ that boundary. Runtime configuration is protected from tool writes. Unrelated
 MCP servers, hooks, plugins, and project-local native settings cannot introduce
 extra authority.
 
+On Linux, Codex and Lemex use a dedicated `leanflow-sqlite` directory inside
+their native home for databases and journals. Configuration remains read-only;
+authentication is read from its original location. Resume retains this database
+location. Migrating older prover sessions starts a fresh native conversation while
+preserving controller progress and consumed calls.
+
 `agent/runtime/harness/preflight.py` checks host sandbox permissions without
 starting a model; `doctor` reports this separately from runtime installation.
 `runtime/mcp_protocol.py` guards the MCP v1 API required by managed Lean servers
