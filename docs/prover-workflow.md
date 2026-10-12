@@ -132,7 +132,8 @@ Global limits also use `limits.agent_calls`, `limits.tokens`, and
 `limits.wall_time_s` in LeanFlow configuration. Unset global limits are unlimited;
 zero means exhausted. Role caps are additional ceilings within the global cap.
 An absent role setting uses its default; an explicitly empty value selects
-unlimited. Saved runs retain their original limits.
+unlimited. Resume retains saved limits unless new limit controls are explicitly
+supplied. Changing a limit preserves spent calls and accumulated active time.
 
 One native process (`codex exec`, `lemex exec`, or `claude -p`) is one agent call.
 Internal model requests, retries, and compaction remain inside it. A new process

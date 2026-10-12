@@ -184,6 +184,32 @@ def test_saved_role_limits_survive_new_defaults(limit: int | None) -> None:
     assert (resumed.prover_sessions, resumed.orchestrator_sessions) == (limit, limit)
 
 
+def test_resume_applies_explicit_limits_without_resetting_spend_or_model_settings() -> None:
+    from leanflow_cli.workflows.prover.research_policy import restore_research_config
+
+    saved = ProverConfig(agent_calls=25, wall_time_s=3600, model="saved-model").to_mapping()
+    state = {
+        "config": saved,
+        "research_policy": "online-v1",
+        "metrics": {"agent_calls": 7, "elapsed_s": 3847},
+    }
+    env = {
+        "LEANFLOW_PROVER_AGENT_CALLS": "200",
+        "LEANFLOW_PROVER_WALL_TIME_S": "86400",
+        "LEANFLOW_PROVER_PROVER_SESSIONS": "",
+        "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS": "",
+    }
+    requested = ProverConfig.from_env(env)
+    resumed = restore_research_config(requested, state, env=env)
+    assert resumed.agent_calls == resumed.total_api_calls == 200
+    assert resumed.wall_time_s == 86400
+    assert resumed.prover_sessions is None and resumed.orchestrator_sessions is None
+    assert resumed.model == "saved-model"
+    assert state["metrics"] == {"agent_calls": 7, "elapsed_s": 3847}
+    untouched = restore_research_config(requested, state, env={})
+    assert untouched.agent_calls == 25 and untouched.wall_time_s == 3600
+
+
 def test_builtin_research_profile_activates_native_controller_without_legacy_features(
     native_launch: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
