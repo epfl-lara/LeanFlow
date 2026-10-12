@@ -69,6 +69,9 @@ def build_runtime_isolation(
             "/private/var/db/timezone",
         )
     ]
+    if platform.system() == "Linux":
+        # Ubuntu's resolver file points into /run, outside the /etc bind mount.
+        system_roots.append(Path("/etc/resolv.conf"))
     runtime_roots = [
         native_home,
         Path(sys.prefix),

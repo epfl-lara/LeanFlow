@@ -171,7 +171,9 @@ def test_native_executable_symlink_works_with_real_isolation(tmp_path: Path, ker
     executable = tmp_path / "native-cli"
     executable.write_text(
         f"#!{sys.executable}\n"
-        "import json, sys\n"
+        "import json, pathlib, sys\n"
+        "if sys.platform == 'linux':\n"
+        "    assert pathlib.Path('/etc/resolv.conf').read_text()\n"
         "if sys.argv[1:3] == ['mcp', 'list']:\n"
         "    print('[]')\n"
         "    sys.exit(0)\n"

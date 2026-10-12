@@ -14,6 +14,7 @@ from agent.runtime.harness.isolation import (
     IsolationPolicy,
     IsolationUnavailable,
     _carve_root,
+    build_runtime_isolation,
     sandbox_command,
 )
 
@@ -58,6 +59,37 @@ def test_linux_mount_carving_excludes_alias_to_protected_ancestor(tmp_path: Path
     source = project / "Main.lean"
     source.write_text("theorem t : True := by trivial")
     assert _carve_root(project, (private,)) == [source]
+
+
+def test_linux_resolver_target_is_granted_without_its_runtime_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Expose a symlinked DNS file without exposing unrelated host runtime files."""
+    resolver = Path("/etc/resolv.conf")
+    target = tmp_path / "host-runtime" / "stub-resolv.conf"
+    target.parent.mkdir()
+    target.write_text("nameserver 127.0.0.53\n")
+    original_resolve, original_exists = Path.resolve, Path.exists
+
+    def resolve(path: Path, *args, **kwargs) -> Path:
+        """Simulate the system resolver link while preserving all other paths."""
+        return target if path == resolver else original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    monkeypatch.setattr(Path, "exists", lambda path: path == resolver or original_exists(path))
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/bwrap")
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    policy = build_runtime_isolation("codex", snapshot, env={"HOME": str(tmp_path / "home")})
+    assert target in policy.readable_roots
+    assert target.parent not in policy.readable_roots
+    assert target not in policy.writable_roots
+    command = sandbox_command(["/usr/bin/true"], policy)
+    assert any(
+        command[index : index + 3] == ["--ro-bind", str(target), str(target)]
+        for index in range(len(command) - 2)
+    )
 
 
 @pytest.mark.skipif(
