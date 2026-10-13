@@ -12,7 +12,7 @@ authors = [{ name = "LeanFlow contributors" }]
 license = { text = "Apache-2.0" }
 dependencies = [
   "httpx",
-  "lean-probe>=0.3.0,<0.4",
+  "lean-probe>=0.4.1.dev0,<0.5",
   "prompt_toolkit",
   "pydantic>=2.0",
   "python-dotenv",
@@ -41,6 +41,10 @@ all = [
 
 [project.scripts]
 leanflow = "leanflow_cli.main:main"
+
+[tool.uv.sources]
+# Coordinated development lock; replace with the registry at companion release.
+lean-probe = { path = "../LeanProbe" }
 
 [tool.setuptools]
 py-modules = [
@@ -176,9 +180,10 @@ files = [
   "core/runtime_modes.py",
   "core/verified_edit_authority.py",
   "core/utils.py",
-  "leanflow_cli/lean/lean_interact_compat.py",
   "leanflow_cli/lean/lean_check_outcomes.py",
   "leanflow_cli/lean/lean_probe_deadline.py",
+  "leanflow_cli/lean/lean_session_lifecycle.py",
+  "leanflow_cli/runtime/project_build_cache",
   "leanflow_cli/native/support_module_materialization.py",
   "leanflow_cli/native/managed_edit_rollback.py",
   "leanflow_cli/native/diagnostic_loop_guard.py",

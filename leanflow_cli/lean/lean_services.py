@@ -136,6 +136,11 @@ from leanflow_cli.lean.lean_search_providers import (  # noqa: E402
     _quarantine_corrupt_leanexplore_db,
     _search_payload_fragments,
 )
+from leanflow_cli.lean.lean_session_lifecycle import (  # noqa: E402
+    LeanColdCheckEnvironmentChanged,
+    retained_incremental_build_guard,
+    retained_incremental_cold_check_guard,
+)
 
 # Phase 5: the pure ``sorry``-counting helpers (_count_sorries reads a single .lean file;
 # _project_sorry_stats walks a project tree and aggregates the counts) were extracted to
@@ -546,15 +551,15 @@ def _run_command(
 
 
 def _reclaim_incremental_before_local_lean(admission: ProjectLeanAdmission) -> bool:
-    """Close an owned LeanProbe before launching another local Lean process."""
-    from leanflow_cli.lean.lean_incremental import close_incremental_sessions
+    """Apply the warm-session policy before launching independent local Lean."""
+    from leanflow_cli.lean.lean_session_lifecycle import (
+        prepare_incremental_sessions_for_cold_check,
+    )
 
-    reclaimed = close_incremental_sessions()
-    if not reclaimed:
-        admission.retain_until_process_exit(
-            "owned LeanProbe session close failed before local Lean command"
-        )
-    return reclaimed
+    return prepare_incremental_sessions_for_cold_check(
+        admission,
+        close_failure_reason="owned LeanProbe session close failed before local Lean command",
+    ).ready
 
 
 def _tool_parameter_names(tool_name: str) -> set[str]:
@@ -979,8 +984,11 @@ def _diagnostics_text(
                     "Lean resource admission retained: an owned LeanProbe session "
                     "could not be closed before diagnostics."
                 )
-            _, output = _BACKEND.run_command(["lake", "env", "lean", relative], cwd=project_root)
-    except ProjectLeanAdmissionRetained as exc:
+            with retained_incremental_cold_check_guard(admission, project_root):
+                _, output = _BACKEND.run_command(
+                    ["lake", "env", "lean", relative], cwd=project_root
+                )
+    except (ProjectLeanAdmissionRetained, LeanColdCheckEnvironmentChanged) as exc:
         return str(exc)
     return output or "no diagnostics available"
 
@@ -1260,13 +1268,18 @@ def lean_verify(
         try:
             with project_lean_heavy_admission(root) as admission:
                 if _reclaim_incremental_before_local_lean(admission):
-                    code, output = run_verification_command()
+                    if normalized_mode in {"module", "project"}:
+                        with retained_incremental_build_guard(admission, root):
+                            code, output = run_verification_command()
+                    else:
+                        with retained_incremental_cold_check_guard(admission, root):
+                            code, output = run_verification_command()
                 else:
                     code, output = 1, (
                         "Lean resource admission retained: an owned LeanProbe session "
                         "could not be closed before verification."
                     )
-        except ProjectLeanAdmissionRetained as exc:
+        except (ProjectLeanAdmissionRetained, LeanColdCheckEnvironmentChanged) as exc:
             code, output = 1, str(exc)
     result = LeanVerificationResult(
         ok=code == 0,
@@ -2732,8 +2745,9 @@ def _run_axiom_harness(root: Path, harness_source: str) -> tuple[int, str]:
                         "Lean resource admission retained: an owned LeanProbe session "
                         "could not be closed before axiom inspection."
                     )
-                return _BACKEND.run_command(["lake", "env", "lean", relative], cwd=root)
-        except ProjectLeanAdmissionRetained as exc:
+                with retained_incremental_cold_check_guard(admission, root):
+                    return _BACKEND.run_command(["lake", "env", "lean", relative], cwd=root)
+        except (ProjectLeanAdmissionRetained, LeanColdCheckEnvironmentChanged) as exc:
             return 1, str(exc)
     finally:
         temp_path.unlink(missing_ok=True)

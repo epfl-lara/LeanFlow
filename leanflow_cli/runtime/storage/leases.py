@@ -45,7 +45,7 @@ def confined_path(path: Path, home: Path | None = None) -> Path:
     parts = relative.parts
     valid = (
         len(parts) >= 4
-        and parts[:3] == ("cache", "dependencies", "v1")
+        and parts[:3] in {("cache", "dependencies", "v1"), ("cache", "project-builds", "v1")}
         or len(parts) >= 2
         and parts[0] in {"runtimes", "releases"}
     )

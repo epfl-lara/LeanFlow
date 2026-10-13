@@ -78,7 +78,10 @@ def _allowed_axioms() -> set[str]:
 def _source_segments(source_text: str) -> tuple[str, list[Any], str]:
     """Return LeanProbe parser segments without constructing a Lean session."""
     try:
-        from lean_probe.core import segment_file
+        from lean_probe import API_REVISION, segment_file
+
+        if API_REVISION < 1:
+            raise RuntimeError("LeanFlow requires LeanProbe backend API revision 1 or later")
     except Exception as exc:
         return "", [], f"lean-probe segmenter unavailable: {str(exc)[:300]}"
     try:

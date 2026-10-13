@@ -29,6 +29,51 @@ dependencies, package overrides, edited Git checkouts and custom package directo
 keep their private installation. LeanFlow does not enable Lake's experimental
 artifact-cache layout or change compiler/sampling defaults.
 
+## Local project imports
+
+`LEANFLOW_PROJECT_BUILD_CACHE=1` enables an additional cache at
+`$LEANFLOW_HOME/cache/project-builds/v1`. It is disabled by default. Enable it for
+TOML-configured projects whose compilation is relocatable and whose inputs are
+contained in the prepared project, locked dependencies, and pinned toolchain.
+Undeclared compile-time IO, path-dependent metaprograms, and custom build recipes
+require their own reproducibility audit before opting in.
+
+Only fresh controller-created snapshots can restore or publish these entries,
+before native agent admission. Resumed or agent-edited workspaces cannot publish.
+The key covers effective source and resource bytes, configuration, compatible
+dependencies, compiler identity, platform, inherited build settings, and requested
+local imports. Unsupported layouts and uncertain dependency provenance skip reuse.
+
+The cache contains the outputs of the private prerequisite build, never the
+canonical project's existing proof artifacts. Entries have cryptographic file
+manifests and are published atomically. Restored files are private filesystem
+copies with distinct inodes. Corrupt or incompatible entries become cache misses.
+Lake runs after restoration and validates its original traces; LeanFlow does not
+synthesize freshness metadata or treat a cache hit as proof acceptance.
+
+Setup evidence includes eligibility, hit, publication, and key under
+`prerequisite_build.artifact_cache`. These managed entries participate in the
+existing storage leases and least-recently-used cleanup policy.
+The controls are listed by `leanflow flags` and can be saved in a flag profile.
+Cache opt-in is a trusted-terminal setting because it asserts project reproducibility.
+
+Input bytes are hashed when preparing the identity. Publication checks normal
+filesystem change metadata and directory membership instead of rereading whole
+dependencies. Filesystems that conceal mutations from inode, size, modification,
+and change metadata do not meet this contract. Toolchain digest memoization uses
+the same observable-change requirement. Ownership records stay compact; complete
+provenance lives in a separate sealed identity file.
+
+Foreground workers remain warm during independent exact-file verification by
+default. Set `LEANFLOW_LEAN_WARM_RETENTION=reclaim` to reduce retained memory.
+`auto` and `retain` still reclaim in low-memory and background-worker modes;
+they do not measure available RAM automatically. Cold-check boundaries compare
+current dependencies with the generation recorded when a warm environment was
+served, including changes made by another process before a no-op build. Changes
+during an exact check reject its result. Builds retire affected warm environments
+after expected artifact updates. Warm-only imported-state freshness remains
+caller-managed; prepare changed imports before reusing a new generation.
+
 ## Defaults and controls
 
 ```yaml

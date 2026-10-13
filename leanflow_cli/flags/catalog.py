@@ -597,6 +597,34 @@ FLAG_CATALOG: tuple[FlagSpec, ...] = (
         read_in=("core/runtime_modes.py",),
     ),
     FlagSpec(
+        name="LEANFLOW_PROJECT_BUILD_CACHE",
+        kind="feature",
+        value_type="bool",
+        default="0",
+        group=_LEAN,
+        summary=(
+            "Reuse controller-built local imports across fresh private snapshots. "
+            "Opt in only for relocatable TOML projects with declared compilation inputs."
+        ),
+        read_in=("leanflow_cli/runtime/project_build_cache/identity.py",),
+        sensitive=True,
+        ablatable=True,
+    ),
+    FlagSpec(
+        name="LEANFLOW_LEAN_WARM_RETENTION",
+        kind="runtime",
+        value_type="enum",
+        default="auto",
+        group=_LEAN,
+        summary=(
+            "Retain foreground proof-search workers during independent checks, or reclaim "
+            "them explicitly. Low-memory and background-worker modes always reclaim."
+        ),
+        read_in=("leanflow_cli/lean/lean_session_lifecycle.py",),
+        choices=("auto", "retain", "reclaim"),
+        ablatable=True,
+    ),
+    FlagSpec(
         name="LEANFLOW_DISABLE_MCP",
         kind="runtime",
         value_type="bool",

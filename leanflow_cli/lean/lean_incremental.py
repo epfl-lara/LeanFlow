@@ -1,9 +1,8 @@
-"""LeanFlow compatibility wrapper for LeanProbe incremental checks.
+"""Apply LeanFlow project policy to direct public LeanProbe calls.
 
-The public LeanFlow tool is still ``lean_incremental_check``.  Internally we
-delegate to LeanProbe so LeanFlow gets the maintained LeanInteract-backed
-parser, cache, diagnostics, and tactic feedback surface without changing the
-agent-facing workflow contract.
+LeanProbe owns parsing, transport, warm environments and proof feedback.
+LeanFlow owns resource admission, parent deadlines, source protection and
+independent acceptance; model-facing calls do not confer controller acceptance.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ from leanflow_cli.lean.lean_incremental_axioms import (
     build_inline_axiom_query,
     parse_inline_axiom_messages,
 )
-from leanflow_cli.lean.lean_interact_compat import install_linear_repl_reader
 from leanflow_cli.lean.lean_parsing import (
     _contains_lean_suggestion_tactic,
     _declaration_line_index_from_text,
@@ -65,110 +63,23 @@ _PROBE: Any | None = None
 _PROBE_EVER_STARTED = False
 
 
-def _import_lean_probe() -> tuple[Any, Any, Any, str]:
+def _import_lean_probe() -> tuple[Any, Any, str]:
     try:
-        install_linear_repl_reader()
-        from lean_probe import LeanIncrementalSegment, LeanProbe
-        from lean_probe.core import segment_file
+        from lean_probe import API_REVISION, LeanProbe, segment_file
+
+        if API_REVISION < 1:
+            raise RuntimeError("LeanProbe does not provide the required backend API revision 1")
     except Exception as exc:
-        return None, None, None, f"lean-probe unavailable: {exc}"
-    return LeanProbe, LeanIncrementalSegment, segment_file, ""
-
-
-LeanProbe, LeanIncrementalSegment, _probe_segment_file, _LEAN_PROBE_IMPORT_ERROR = (
-    _import_lean_probe()
-)
-
-
-def _segment_file(text: str) -> tuple[str, list[Any]]:
-    if _probe_segment_file is None:
-        raise RuntimeError(_LEAN_PROBE_IMPORT_ERROR)
-    segmentation_text = _normalize_inline_scoped_declarations(text)
-    header, segments = _probe_segment_file(segmentation_text)
-    return _repair_option_wrapped_segments(text, header, list(segments))
-
-
-_SCOPED_COMMAND_PREFIX_RE = r"(?:set_option|variable|include|omit|attribute|open(?:[ \t]+scoped)?)"
-_SCOPED_COMMAND_WRAPPER_BEFORE_DECL_RE = re.compile(
-    rf"(?m)(^[ \t]*(?:{_SCOPED_COMMAND_PREFIX_RE}[^\n]*\bin" r"(?:[ \t]*\n[ \t]*|[ \t]+))+)\Z"
-)
-_INLINE_SCOPED_DECLARATION_RE = re.compile(
-    rf"(?m)^(?P<wrapper>[ \t]*{_SCOPED_COMMAND_PREFIX_RE}\b[^\n]*\bin)"
-    r"(?P<space>[ \t]+)"
-    r"(?P<declaration>(?:(?:private|protected|noncomputable|unsafe|partial|nonrec|scoped|local)\s+)*"
-    r"(?:theorem|lemma|example|def|abbrev|opaque|axiom|instance|class|structure|inductive)\b)"
-)
-
-
-def _normalize_inline_scoped_declarations(text: str) -> str:
-    """Expose same-line scoped declarations to LeanProbe without shifting offsets."""
-
-    def replace(match: re.Match[str]) -> str:
-        spacing = match.group("space")
         return (
-            match.group("wrapper") + "\n" + (" " * (len(spacing) - 1)) + match.group("declaration")
+            None,
+            None,
+            "lean-probe unavailable: LeanFlow requires LeanProbe 0.4.1 development or later "
+            f"with backend API revision 1; reinstall the coordinated packages ({exc})",
         )
-
-    return _INLINE_SCOPED_DECLARATION_RE.sub(replace, text)
-
-
-def _rebuilt_segment(segment: Any, text: str, *, start: int, end: int) -> Any:
-    """Return one segment rebuilt over an exact source range."""
-    segment_text = text[start:end]
-    return LeanIncrementalSegment(
-        index=int(segment.index),
-        kind=str(segment.kind),
-        name=str(segment.name),
-        start=start,
-        end=end,
-        declaration_start=int(getattr(segment, "declaration_start", start) or start),
-        start_line=text.count("\n", 0, start) + 1,
-        end_line=max(text.count("\n", 0, end), text.count("\n", 0, start) + 1),
-        text=segment_text,
-        text_hash=hashlib.sha256(segment_text.encode("utf-8")).hexdigest(),
-    )
+    return LeanProbe, segment_file, ""
 
 
-def _repair_option_wrapped_segments(
-    text: str,
-    header: str,
-    segments: list[Any],
-) -> tuple[str, list[Any]]:
-    """Attach a preceding scoped command such as ``variable ... in`` to its declaration.
-
-    LeanProbe's generic segmenter otherwise places the wrapper in the header
-    or previous declaration. Incremental replay then elaborates a dangling
-    ``in`` and reports an unexpected EOF against the wrong prerequisite.
-    """
-    if LeanIncrementalSegment is None or not segments:
-        return header, segments
-    repaired = list(segments)
-    repaired_header = header
-    for index, segment in enumerate(tuple(repaired)):
-        start = int(getattr(segment, "start", 0) or 0)
-        prefix = text[:start]
-        match = _SCOPED_COMMAND_WRAPPER_BEFORE_DECL_RE.search(prefix)
-        if match is None:
-            continue
-        wrapper_start = match.start(1)
-        if index == 0:
-            repaired_header = text[:wrapper_start]
-        else:
-            previous = repaired[index - 1]
-            previous_start = int(getattr(previous, "start", 0) or 0)
-            repaired[index - 1] = _rebuilt_segment(
-                previous,
-                text,
-                start=previous_start,
-                end=wrapper_start,
-            )
-        repaired[index] = _rebuilt_segment(
-            segment,
-            text,
-            start=wrapper_start,
-            end=int(getattr(segment, "end", start) or start),
-        )
-    return repaired_header, repaired
+LeanProbe, _segment_file, _LEAN_PROBE_IMPORT_ERROR = _import_lean_probe()
 
 
 def _incremental_environment_failure(payload: Mapping[str, Any] | None) -> bool:
@@ -488,14 +399,6 @@ def _probe() -> Any:
     if LeanProbe is None:
         raise RuntimeError(_LEAN_PROBE_IMPORT_ERROR)
     if _PROBE is None:
-        # LeanProbe calls its module-local segmenter directly. Route that call
-        # through LeanFlow's compatibility repairs so scoped commands such as
-        # ``variable ... in`` remain attached to the declaration they govern.
-        # Without this, the wrapper is replayed at the end of the preceding
-        # segment and a valid file fails incrementally with an unexpected EOF.
-        from lean_probe import probe as lean_probe_runtime
-
-        lean_probe_runtime.segment_file = _segment_file
         _PROBE = LeanProbe(auto_build=False)
         _PROBE_EVER_STARTED = True
     return _PROBE
@@ -519,6 +422,9 @@ def lean_scratch_check(code: str, *, cwd: str = "", timeout_s: int = 90) -> dict
             reclaimed = False
             try:
                 probe = _probe()
+                from leanflow_cli.lean.lean_session_lifecycle import observe_incremental_project
+
+                observe_incremental_project(root, probe)
                 payload = dict(probe.check_code(code, cwd=cwd or None, timeout_s=timeout_s) or {})
             finally:
                 if project_lean_service_reclaim_enabled():
@@ -1608,14 +1514,97 @@ def close_incremental_sessions() -> bool:
     """
     global _PROBE
     if _PROBE is None:
+        from leanflow_cli.lean.lean_session_lifecycle import forget_incremental_project_generations
+
+        forget_incremental_project_generations()
         return True
     probe = _PROBE
     try:
-        probe.close()
+        result = probe.close()
     except Exception:
         return False
+    if isinstance(result, Mapping) and (
+        result.get("error") or result.get("success") is False or result.get("ok") is False
+    ):
+        return False
+    # Current LeanProbe keeps workers whose process exit could not be verified.
+    # A normal return from close() therefore does not prove complete retirement.
+    for name in ("_sessions", "_scratch_sessions", "_code_sessions"):
+        pool = getattr(probe, name, None)
+        if isinstance(pool, Mapping) and pool:
+            return False
     if _PROBE is probe:
         _PROBE = None
+    from leanflow_cli.lean.lean_session_lifecycle import forget_incremental_project_generations
+
+    forget_incremental_project_generations()
+    return True
+
+
+def incremental_sessions_active(project_root: Path | None = None) -> bool:
+    """Inspect resident file, scratch and proof-state ownership for one project.
+
+    Known empty pools and workers belonging only to other projects need no
+    dependency scan. Older or unrecognized backend ownership stays conservative.
+    """
+    probe = _PROBE
+    if probe is None:
+        return False
+    expected = project_root.resolve() if project_root is not None else None
+    unknown = False
+    for name in ("_sessions", "_scratch_sessions", "_code_sessions"):
+        pool = getattr(probe, name, None)
+        if not isinstance(pool, Mapping):
+            unknown = True
+            continue
+        try:
+            entries = list(pool.items())
+        except RuntimeError:
+            return True
+        for key, session in entries:
+            if expected is None:
+                return True
+            root = getattr(session, "project_root", None) or getattr(session, "cwd", None)
+            if name == "_code_sessions" and hasattr(session, "cwd") and session.cwd is None:
+                # Standalone proof-state workers have no imported project state.
+                continue
+            if root is None and name == "_sessions" and isinstance(key, tuple) and key:
+                root = key[0]
+            if root is None and name == "_scratch_sessions":
+                root = key
+            if isinstance(root, (str, Path)) and str(root):
+                try:
+                    if Path(root).resolve() == expected:
+                        return True
+                except OSError:
+                    unknown = True
+            else:
+                unknown = True
+    return unknown
+
+
+def close_incremental_project(project_root: Path) -> bool:
+    """Retire one changed project's warm state through LeanProbe's public API.
+
+    Dependency preparation and worker invalidation are separate operations.
+    Keep ownership if the supported backend cannot confirm scoped cleanup.
+    """
+    if _PROBE is None:
+        return True
+    close_project = getattr(_PROBE, "close_project", None)
+    if not callable(close_project):
+        return False
+    try:
+        result = close_project(project_root.resolve())
+    except Exception:
+        return False
+    if isinstance(result, Mapping) and (
+        result.get("error") or result.get("success") is False or result.get("ok") is False
+    ):
+        return False
+    from leanflow_cli.lean.lean_session_lifecycle import forget_incremental_project_generations
+
+    forget_incremental_project_generations(project_root)
     return True
 
 
@@ -1624,6 +1613,9 @@ def _discard_timed_out_probe(probe: Any) -> None:
     global _PROBE
     if _PROBE is probe:
         _PROBE = None
+    from leanflow_cli.lean.lean_session_lifecycle import forget_incremental_project_generations
+
+    forget_incremental_project_generations()
 
 
 def lean_incremental_capabilities(cwd: str | Path | None = None) -> dict[str, Any]:
@@ -2025,6 +2017,7 @@ def lean_incremental_check(
     admission_started = time.monotonic()
     admission_wait_s = 0.0
     probe_call_s = 0.0
+    generation_s = 0.0
     session_reclaim_s = 0.0
     probe_deadline: LeanProbeDeadlineExceeded | None = None
     with project_lean_heavy_admission(project_root) as admission:
@@ -2043,6 +2036,22 @@ def lean_incremental_check(
         probe_started = time.monotonic()
         try:
             probe = _probe()
+            from leanflow_cli.lean.lean_session_lifecycle import observe_incremental_project
+
+            generation_started = time.monotonic()
+            observe_incremental_project(project_root, probe)
+            generation_s = max(0.0, time.monotonic() - generation_started)
+            if generation_s >= _ADMISSION_DEADLINE_CHARGE_THRESHOLD_S:
+                probe_timeout_s -= generation_s
+                if probe_timeout_s <= 0:
+                    return _error_payload(
+                        action=leanflow_action,
+                        error="dependency provenance scan exhausted the Lean check deadline before proof execution",
+                        error_code="lean_environment_generation_timeout",
+                        file_path=resolved,
+                        target=theorem_id,
+                        timed_out=True,
+                    )
             if leanflow_action == "prepare_file":
                 payload = call_lean_probe_with_deadline(
                     probe,
@@ -2266,6 +2275,8 @@ def lean_incremental_check(
         "session_reclaim_s": round(session_reclaim_s, 3),
         "postprocess_s": round(postprocess_s, 3),
     }
+    if generation_s >= _ADMISSION_DEADLINE_CHARGE_THRESHOLD_S:
+        result["leanflow_timing"]["generation_s"] = round(generation_s, 3)
     if preserve_diagnostics:
         return result
     return _bound_failed_check_payload(result, _feedback_max_chars())

@@ -19,6 +19,7 @@ from leanflow_cli.lean import (
     lean_incremental,
     lean_search_providers,
     lean_services,
+    lean_session_lifecycle,
 )
 from leanflow_cli.lean.lean_services import LeanCapabilityReport
 
@@ -450,8 +451,20 @@ def test_lean_goals_unavailable_known_report_returns_without_broad_inspection(
     assert goals == "Lean goals unavailable."
 
 
-def test_direct_verify_reclaims_preexisting_incremental_session(monkeypatch, tmp_path):
-    """Parent verification closes owned LeanProbe state before spawning Lake."""
+@pytest.mark.parametrize(
+    ("setting", "low_memory", "dispatch", "closed"),
+    [
+        ("auto", False, False, False),
+        ("retain", False, False, False),
+        ("reclaim", False, False, True),
+        ("retain", True, False, True),
+        ("retain", False, True, True),
+    ],
+)
+def test_direct_verify_applies_incremental_session_policy(
+    monkeypatch, tmp_path, setting, low_memory, dispatch, closed
+):
+    """Keep foreground state while independently verifying through Lake."""
     project = tmp_path / "Demo"
     project.mkdir()
     (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
@@ -465,7 +478,15 @@ def test_direct_verify_reclaims_preexisting_incremental_session(monkeypatch, tmp
     probe = _Probe()
     commands = []
     monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.setenv("LEANFLOW_LEAN_WARM_RETENTION", setting)
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "1" if low_memory else "0")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1" if dispatch else "0")
     monkeypatch.setattr(lean_incremental, "_PROBE", probe)
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.lean_environment.lean_loader_generation",
+        lambda project: "unchanged",
+    )
+    lean_session_lifecycle.observe_incremental_project(project, probe)
     monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (project, ""))
     monkeypatch.setattr(
         lean_services,
@@ -476,8 +497,139 @@ def test_direct_verify_reclaims_preexisting_incremental_session(monkeypatch, tmp
     result = lean_services.lean_verify(cwd=project)
 
     assert result.ok is True
-    assert probe.closed is True
+    assert probe.closed is closed
     assert commands == [["lake", "build"]]
+
+
+@pytest.mark.parametrize("mode", ["project", "module"])
+@pytest.mark.parametrize("changed", [False, True])
+def test_retained_verify_invalidates_only_changed_build_dependencies(
+    monkeypatch, tmp_path, mode, changed
+):
+    """Preserve warm prefixes across no-op builds and retire changed imports."""
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text("theorem demo : True := by trivial\n", encoding="utf-8")
+    (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+    imported_artifact = project / "Dependency.olean"
+    imported_artifact.write_bytes(b"original")
+    calls = []
+
+    class Probe:
+        def close_project(self, root):
+            calls.append(("close-project", root))
+            return {"closed_sessions": {"file": 1, "scratch": 0, "proof_state": 0}}
+
+        def close(self):
+            pytest.fail("scoped invalidation discarded unrelated project sessions")
+
+    monkeypatch.setenv("LEANFLOW_LEAN_WARM_RETENTION", "auto")
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "0")
+    probe = Probe()
+    monkeypatch.setattr(lean_incremental, "_PROBE", probe)
+    monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (project, ""))
+
+    def generation(root):
+        calls.append(("generation", root))
+        return imported_artifact.read_bytes().hex()
+
+    def build(command, cwd=None):
+        calls.append(("build", command))
+        if changed:
+            imported_artifact.write_bytes(b"new dependency")
+        return 0, "ok"
+
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.lean_environment.lean_loader_generation", generation
+    )
+    monkeypatch.setattr(lean_services, "_run_command", build)
+    lean_session_lifecycle.observe_incremental_project(project, probe)
+    calls.clear()
+
+    result = lean_services.lean_verify(target=str(target), cwd=project, mode=mode)
+
+    command = ["lake", "build"] if mode == "project" else ["lake", "build", "Main"]
+    assert result.ok is True
+    assert calls == [
+        ("generation", project),
+        ("build", command),
+        ("generation", project),
+        *([("close-project", project)] if changed else []),
+    ]
+
+
+def test_retained_verify_fails_closed_when_changed_project_cannot_close(monkeypatch, tmp_path):
+    """A successful compiler cannot publish success with stale resident state."""
+    project = tmp_path / "Demo"
+    project.mkdir()
+    (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+    generations = iter(["before", "before", "after"])
+    calls = []
+
+    class Probe:
+        def close_project(self, root):
+            raise RuntimeError("resident project failed to close")
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.setenv("LEANFLOW_LEAN_WARM_RETENTION", "auto")
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "0")
+    probe = Probe()
+    monkeypatch.setattr(lean_incremental, "_PROBE", probe)
+    monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (project, ""))
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.lean_environment.lean_loader_generation",
+        lambda root: next(generations),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_run_command",
+        lambda command, cwd=None: (calls.append(command) or 0, "ok"),
+    )
+    lean_session_lifecycle.observe_incremental_project(project, probe)
+
+    result = lean_services.lean_verify(cwd=project)
+    retry = lean_services.lean_verify(cwd=project)
+
+    assert result.ok is retry.ok is False
+    assert "admission retained" in result.output.lower()
+    assert "admission retained" in retry.output.lower()
+    assert calls == [["lake", "build"]]
+
+
+def test_file_exact_verify_without_resident_sessions_skips_dependency_scan(monkeypatch, tmp_path):
+    """An existing empty probe holds no target-project state that needs scanning."""
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text("theorem demo : True := by trivial\n", encoding="utf-8")
+    (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+
+    class Probe:
+        _sessions = {}
+        _scratch_sessions = {}
+        _code_sessions = {}
+
+        def close(self):
+            pytest.fail("exact check discarded a retained session")
+
+    monkeypatch.setenv("LEANFLOW_LEAN_WARM_RETENTION", "auto")
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "0")
+    monkeypatch.setattr(lean_incremental, "_PROBE", Probe())
+    monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (project, ""))
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.lean_environment.lean_loader_generation",
+        lambda root: pytest.fail("exact check performed an unnecessary dependency scan"),
+    )
+    monkeypatch.setattr(lean_services, "_run_command", lambda command, cwd=None: (0, "ok"))
+
+    result = lean_services.lean_verify(target=str(target), cwd=project, mode="file_exact")
+
+    assert result.ok is True
+    assert result.command == "lake env lean Main.lean"
 
 
 def test_direct_verify_does_not_spawn_after_incremental_close_failure(monkeypatch, tmp_path):
@@ -491,6 +643,7 @@ def test_direct_verify_does_not_spawn_after_incremental_close_failure(monkeypatc
             raise RuntimeError("close failed")
 
     monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.setenv("LEANFLOW_LEAN_WARM_RETENTION", "reclaim")
     monkeypatch.setattr(lean_incremental, "_PROBE", _Probe())
     monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (project, ""))
     monkeypatch.setattr(
@@ -537,8 +690,11 @@ def test_file_exact_verify_uses_explicit_targets_nested_project(monkeypatch, tmp
     assert commands == [(["lake", "env", "lean", "Demo/Main.lean"], project)]
 
 
-def test_direct_axiom_harness_reclaims_preexisting_incremental_session(monkeypatch, tmp_path):
-    """A parent axiom check cannot overlap its own retained LeanProbe child."""
+@pytest.mark.parametrize("setting, closed", [("auto", False), ("reclaim", True)])
+def test_direct_axiom_harness_applies_incremental_session_policy(
+    monkeypatch, tmp_path, setting, closed
+):
+    """Retain foreground context while inspecting axioms in a fresh process."""
     project = tmp_path / "Demo"
     project.mkdir()
     (project / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
@@ -552,7 +708,15 @@ def test_direct_axiom_harness_reclaims_preexisting_incremental_session(monkeypat
     probe = _Probe()
     commands = []
     monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.setenv("LEANFLOW_LEAN_WARM_RETENTION", setting)
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "0")
     monkeypatch.setattr(lean_incremental, "_PROBE", probe)
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.lean_environment.lean_loader_generation",
+        lambda project: "unchanged",
+    )
+    lean_session_lifecycle.observe_incremental_project(project, probe)
     monkeypatch.setattr(
         lean_services,
         "_run_command",
@@ -564,7 +728,7 @@ def test_direct_axiom_harness_reclaims_preexisting_incremental_session(monkeypat
     )
 
     assert code == 0
-    assert probe.closed is True
+    assert probe.closed is closed
     assert commands and commands[0][:3] == ["lake", "env", "lean"]
 
 
@@ -579,6 +743,7 @@ def test_direct_axiom_harness_refuses_after_incremental_close_failure(monkeypatc
             raise RuntimeError("close failed")
 
     monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.setenv("LEANFLOW_LEAN_WARM_RETENTION", "reclaim")
     monkeypatch.setattr(lean_incremental, "_PROBE", _Probe())
     monkeypatch.setattr(
         lean_services,

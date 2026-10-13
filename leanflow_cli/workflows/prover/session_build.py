@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from core.deadlines import operation_cancelled, remaining_seconds
 from leanflow_cli.lean.lean_module_paths import _lean_imports_from_text
+from leanflow_cli.runtime.project_build_cache import ProjectBuildCache
+from leanflow_cli.runtime.storage import (
+    StoragePressure,
+    StorageSafetyError,
+    ensure_storage_capacity,
+)
 from leanflow_cli.workflows.prover import check_process
-from leanflow_cli.workflows.prover.check_sandbox import _validated_paths
+from leanflow_cli.workflows.prover.check_sandbox import _environment, _validated_paths
 
 
 def _local_imports(project: Path, source: Path | None) -> list[str]:
@@ -49,12 +57,14 @@ def build_session_imports(
     source_file: Path | None,
     deadline: float | None,
     cancelled: Callable[[], bool] | None,
+    cache_fresh_snapshot: bool = False,
 ) -> dict[str, Any]:
     """Build only imported local modules into private outputs under the campaign deadline.
 
     Snapshots deliberately omit canonical project artifacts. Lake resolves the
     prerequisites from filtered source while dependencies remain read-only;
-    ordinary LeanProbe checks receive no additional write capabilities.
+    ordinary LeanProbe checks receive no additional write capabilities. Cache reuse
+    is opt-in and limited to fresh snapshots before native agents receive access.
     """
     try:
         if operation_cancelled() or (cancelled is not None and cancelled()):
@@ -73,6 +83,33 @@ def build_session_imports(
             raise ValueError("Private project build outputs cannot be linked to another directory.")
         build.mkdir(parents=True, exist_ok=True)
         _validated_paths(project, build)
+        ensure_storage_capacity(build)
+        cache: ProjectBuildCache | None = None
+        cache_metadata: dict[str, Any] = {
+            "eligible": False,
+            "hit": False,
+            "published": False,
+            "key": None,
+            "reason": "Resumed or unspecified snapshots cannot publish project build artifacts",
+        }
+        if cache_fresh_snapshot:
+            try:
+                if any(build.iterdir()):
+                    raise ValueError("Fresh snapshots must start without local compiled artifacts")
+                with tempfile.TemporaryDirectory(prefix="leanflow-cache-identity-") as temporary:
+                    environment = _environment(Path(temporary))
+                    cache = ProjectBuildCache(project, modules, environment)
+                cache_metadata = cache.metadata
+                cache.restore(build)
+            except (
+                OSError,
+                ValueError,
+                StorageSafetyError,
+                StoragePressure,
+                subprocess.SubprocessError,
+            ) as exc:
+                cache_metadata["reason"] = str(exc)
+                cache = None
         result = check_process.isolated_command(
             project_root=project,
             workspace=work,
@@ -90,8 +127,24 @@ def build_session_imports(
                 or "Private project prerequisites failed to compile: "
                 + str(result.get("stderr") or result.get("stdout") or "Lake exited unsuccessfully"),
             }
-        return {**result, "modules": modules, "skipped": False}
-    except (OSError, ValueError) as exc:
+        if result.get("success") is True and cache is not None and not cache.metadata["hit"]:
+            try:
+                cache.publish(build)
+            except (
+                OSError,
+                ValueError,
+                StorageSafetyError,
+                StoragePressure,
+                subprocess.SubprocessError,
+            ) as exc:
+                cache_metadata["reason"] = str(exc)
+        return {
+            **result,
+            "modules": modules,
+            "skipped": False,
+            "artifact_cache": cache_metadata,
+        }
+    except (OSError, ValueError, StoragePressure) as exc:
         return {
             "success": False,
             "ok": False,

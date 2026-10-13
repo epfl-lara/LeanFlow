@@ -16,6 +16,12 @@ from core.project_resource_admission import (
     project_lean_heavy_admission,
 )
 from leanflow_cli.lean.lean_diagnostics import diagnostic_items
+from leanflow_cli.lean.lean_session_lifecycle import (
+    IncrementalSessionPreparation,
+    LeanColdCheckEnvironmentChanged,
+    prepare_incremental_sessions_for_cold_check,
+    retained_incremental_cold_check_guard,
+)
 
 _OUTPUT_LIMIT_BYTES = 1024 * 1024
 _OUTPUT_EDGE_BYTES = 448 * 1024
@@ -119,16 +125,14 @@ def _concise_failure_error(output: str) -> str:
     return str(output or "").strip()[:500]
 
 
-def _reclaim_incremental_before_exact_check(admission: ProjectLeanAdmission) -> bool:
-    """Close this process's LeanProbe before starting one-shot Lean."""
-    from leanflow_cli.lean.lean_incremental import close_incremental_sessions
-
-    reclaimed = close_incremental_sessions()
-    if not reclaimed:
-        admission.retain_until_process_exit(
-            "owned LeanProbe session close failed before ephemeral Lean verification"
-        )
-    return reclaimed
+def _reclaim_incremental_before_exact_check(
+    admission: ProjectLeanAdmission,
+) -> IncrementalSessionPreparation:
+    """Apply the warm-session policy before starting a fresh source checker."""
+    return prepare_incremental_sessions_for_cold_check(
+        admission,
+        close_failure_reason="owned LeanProbe session close failed before ephemeral Lean verification",
+    )
 
 
 def _admission_failure(
@@ -194,8 +198,8 @@ def lean_ephemeral_source_check(
         with tempfile.TemporaryFile(mode="w+b", dir=temp_dir) as output_handle:
             try:
                 with project_lean_heavy_admission(project_root) as admission:
-                    reclaimed = _reclaim_incremental_before_exact_check(admission)
-                    if not reclaimed:
+                    preparation = _reclaim_incremental_before_exact_check(admission)
+                    if not preparation.ready:
                         admission_payload = admission.to_dict()
                         return _admission_failure(
                             str(admission_payload.get("retention_reason", "") or ""),
@@ -204,40 +208,52 @@ def lean_ephemeral_source_check(
                                 "incremental_session_reclaimed": False,
                             },
                         )
-                    process = subprocess.Popen(
-                        command,
-                        cwd=str(project_root),
-                        stdout=output_handle,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=os.name != "nt",
-                    )
-                    try:
-                        process.wait(timeout=max(1, int(timeout_s)))
-                    except subprocess.TimeoutExpired:
-                        _stop_process_group(process)
-                        partial, truncated = _bounded_output(output_handle)
-                        return {
-                            "success": False,
-                            "ok": False,
-                            "timed_out": True,
-                            "retryable": True,
-                            "failure_kind": "infrastructure_timeout",
-                            "returncode": 124,
-                            "command": command,
-                            "error": "exact-project Lean source check timed out",
-                            "output": partial,
-                            "output_truncated": truncated,
-                            "messages": [],
-                            "resource_admission": {
-                                **admission.to_dict(),
-                                "incremental_session_reclaimed": reclaimed,
-                            },
+                    with retained_incremental_cold_check_guard(admission, project_root):
+                        process = subprocess.Popen(
+                            command,
+                            cwd=str(project_root),
+                            stdout=output_handle,
+                            stderr=subprocess.STDOUT,
+                            start_new_session=os.name != "nt",
+                        )
+                        try:
+                            process.wait(timeout=max(1, int(timeout_s)))
+                        except subprocess.TimeoutExpired:
+                            _stop_process_group(process)
+                            partial, truncated = _bounded_output(output_handle)
+                            return {
+                                "success": False,
+                                "ok": False,
+                                "timed_out": True,
+                                "retryable": True,
+                                "failure_kind": "infrastructure_timeout",
+                                "returncode": 124,
+                                "command": command,
+                                "error": "exact-project Lean source check timed out",
+                                "output": partial,
+                                "output_truncated": truncated,
+                                "messages": [],
+                                "resource_admission": {
+                                    **admission.to_dict(),
+                                    "incremental_session_reclaimed": preparation.reclaimed,
+                                },
+                            }
+                        output, truncated = _bounded_output(output_handle)
+                        resource_admission = {
+                            **admission.to_dict(),
+                            "incremental_session_reclaimed": preparation.reclaimed,
                         }
-                    output, truncated = _bounded_output(output_handle)
-                    resource_admission = {
-                        **admission.to_dict(),
-                        "incremental_session_reclaimed": reclaimed,
-                    }
+            except LeanColdCheckEnvironmentChanged as exc:
+                return {
+                    "success": False,
+                    "ok": False,
+                    "timed_out": False,
+                    "retryable": True,
+                    "failure_kind": "project_environment_changed",
+                    "error": str(exc),
+                    "output": "",
+                    "messages": [],
+                }
             except ProjectLeanAdmissionRetained as exc:
                 return _admission_failure(
                     str(exc),

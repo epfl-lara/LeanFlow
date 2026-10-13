@@ -489,37 +489,44 @@ def test_segment_file_normalizes_inline_open_scoped_abbrev():
     assert segments[0].declaration_start > segments[0].start
 
 
-def test_probe_uses_scoped_declaration_segment_repairs(monkeypatch):
-    source = "\n".join(
-        [
-            "def first : Nat := 1",
-            "",
-            "variable (P : Type) in",
-            "/-- A scoped alias. -/",
-            "abbrev Scoped := P",
-            "",
-            "theorem last : True := by",
-            "  trivial",
-            "",
-        ]
-    )
+def test_probe_calls_public_backend_without_monkeypatching_parser(monkeypatch):
+    import lean_probe
+    import lean_probe.probe as lean_probe_runtime
+
+    native_segmenter = lean_probe_runtime.segment_file
 
     class _FakeProbe:
         def __init__(self, *, auto_build):
             assert auto_build is False
 
-    import lean_probe.probe as lean_probe_runtime
-
     monkeypatch.setattr(li, "_PROBE", None)
     monkeypatch.setattr(li, "LeanProbe", _FakeProbe)
-    monkeypatch.setattr(lean_probe_runtime, "segment_file", li._probe_segment_file)
 
-    li._probe()
+    assert isinstance(li._probe(), _FakeProbe)
+    assert li._segment_file is lean_probe.segment_file
+    assert lean_probe_runtime.segment_file is native_segmenter
 
-    _header, segments = lean_probe_runtime.segment_file(source)
-    assert [segment.name for segment in segments] == ["first", "Scoped", "last"]
-    assert "variable (P : Type) in" not in segments[0].text
-    assert segments[1].text.startswith("variable (P : Type) in")
+
+@pytest.mark.parametrize("revision", [None, 0])
+def test_old_lean_probe_is_rejected_before_source_parsing(monkeypatch, revision):
+    import lean_probe
+
+    from leanflow_cli.lean import lean_helper_ephemeral
+
+    if revision is None:
+        monkeypatch.delattr(lean_probe, "API_REVISION")
+    else:
+        monkeypatch.setattr(lean_probe, "API_REVISION", revision)
+
+    backend, parser, error = li._import_lean_probe()
+    assert backend is None and parser is None
+    assert "requires LeanProbe 0.4.1" in error
+    assert "revision 1" in error
+    _header, segments, helper_error = lean_helper_ephemeral._source_segments(
+        "open scoped Classical in def target : Nat := 1\n"
+    )
+    assert segments == []
+    assert helper_error
 
 
 def test_segment_file_ignores_declaration_keywords_inside_comments_and_strings():
@@ -1487,6 +1494,8 @@ def test_foreground_research_applies_cold_start_timeout_floor(
 
 
 def test_foreground_research_honors_requested_timeout_after_probe_warmup(monkeypatch, tmp_path):
+    from leanflow_cli.lean import lean_session_lifecycle
+
     project, target = _write_project(
         tmp_path,
         "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
@@ -1510,6 +1519,7 @@ def test_foreground_research_honors_requested_timeout_after_probe_warmup(monkeyp
         li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
     )
     monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+    monkeypatch.setattr(lean_session_lifecycle, "observe_incremental_project", lambda *args: None)
 
     payload = li.lean_incremental_check(
         action="prepare_file",

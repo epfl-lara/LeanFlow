@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 from leanflow_cli.workflows.prover import check_process
-from leanflow_cli.workflows.prover.lean_environment import lean_environment_generation
+from leanflow_cli.workflows.prover.lean_environment import (
+    lean_environment_generation,
+    lean_loader_generation,
+)
 
 
 @pytest.fixture
@@ -82,6 +85,44 @@ def test_generation_ignores_private_receipts_and_excluded_managed_source(project
     assert lean_environment_generation(project) != before
 
 
+def test_loader_generation_ignores_uncompiled_source_edits_but_acceptance_tracks_them(
+    project: Path,
+) -> None:
+    """Keep warm loaded imports distinct from source-sensitive controller acceptance."""
+    source = project / "Library.lean"
+    source.write_text("theorem library : True := by trivial\n")
+    loader = lean_loader_generation(project)
+    acceptance = lean_environment_generation(project)
+    source.write_text("theorem library : True := by exact True.intro\n")
+
+    assert lean_loader_generation(project) == loader
+    assert lean_environment_generation(project) != acceptance
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["Library.olean", "Library.olean.private", "Library.olean.server", "Library.ir", "Library.o"],
+)
+def test_loader_generation_tracks_compiled_artifacts(project: Path, filename: str) -> None:
+    """Track loaded public, private, server, IR and native artifact versions."""
+    artifact = project / filename
+    artifact.write_bytes(b"before")
+    before = lean_loader_generation(project)
+    artifact.write_bytes(b"after!")
+
+    assert lean_loader_generation(project) != before
+
+
+def test_loader_generation_tracks_lake_configuration_source(project: Path) -> None:
+    """A source-form Lake configuration remains part of the loader identity."""
+    configuration = project / "lakefile.lean"
+    configuration.write_text("import Lake\n")
+    before = lean_loader_generation(project)
+    configuration.write_text("import Lake\nopen Lake DSL\n")
+
+    assert lean_loader_generation(project) != before
+
+
 def test_generation_never_reads_large_compiled_library_bytes(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -114,6 +155,33 @@ def test_small_same_size_library_changes_invalidate_even_with_coarse_stat(
     before = lean_environment_generation(project)
     artifact.write_bytes(b"after!")
     assert lean_environment_generation(project) != before
+
+
+@pytest.mark.parametrize("suffix", [".ir", ".ir.sig", ".o", ".o.export", ".o.server"])
+def test_compiled_sidecar_changes_invalidate_with_unchanged_public_olean_and_timestamps(
+    project: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    """Invalidate executable provenance even when the public interface is unchanged."""
+    public = project / "Library.olean"
+    public.write_bytes(b"stable public interface")
+    artifact = project / f"Library{suffix}"
+    artifact.write_bytes(b"before")
+    previous = artifact.lstat()
+    original_lstat = Path.lstat
+
+    def coalesced(path: Path, *args, **kwargs):
+        return previous if path == artifact else original_lstat(path, *args, **kwargs)
+
+    # Model a filesystem whose stat version does not distinguish rapid writes,
+    # in addition to restoring the observable access/modification timestamps.
+    monkeypatch.setattr(Path, "lstat", coalesced)
+    before = lean_environment_generation(project)
+    artifact.write_bytes(b"after!")
+    os.utime(artifact, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+
+    assert lean_environment_generation(project) != before
+    assert artifact.stat().st_mtime_ns == previous.st_mtime_ns
+    assert public.read_bytes() == b"stable public interface"
 
 
 @pytest.mark.parametrize("changed", ["artifact", "source", "config"])

@@ -84,6 +84,11 @@ blocking external research and remote Lean search while retaining model access.
 Clean-room checkpoints can resume; online or legacy native context cannot be
 reused. See the [prover guide](../docs/prover-workflow.md).
 
+Foreground checks retain warm LeanProbe workers by default. Low-memory and
+background-worker modes reclaim them. Local-import compilation reuse is an
+opt-in project contract described in the [storage guide](../docs/storage.md).
+LeanProbe owns the parser and transport; LeanFlow independently accepts proofs.
+
 ## Follow and control runs
 
 **Live jobs**, **Past jobs**, the Runs tree, and the shared Jobs menu select the

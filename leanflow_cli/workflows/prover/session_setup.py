@@ -17,6 +17,8 @@ def check_session_setup(
     toolset: SessionTools,
     runtime_dir: Path,
     emit: Callable[[str, dict[str, Any]], None],
+    *,
+    cache_fresh_snapshot: bool = False,
 ) -> dict[str, Any]:
     """Check the real sandbox, retain diagnostics, and keep the checker worker ready."""
     scratch_file = toolset.workspace / "Scratch.lean"
@@ -33,6 +35,7 @@ def check_session_setup(
         source_file=source_file,
         deadline=toolset.deadline,
         cancelled=toolset.cancelled,
+        cache_fresh_snapshot=cache_fresh_snapshot,
     )
     result = prerequisites
     if prerequisites.get("success") is True:

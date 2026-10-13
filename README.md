@@ -25,6 +25,15 @@ cd LeanFlow
 ./scripts/install-internal.sh
 ```
 
+This coordinated development branch requires the companion LeanProbe 0.4.1
+development build. Place its matching checkout beside LeanFlow, build its wheel,
+and supply it to the installer:
+
+```bash
+python3 -m pip wheel --no-deps ../LeanProbe --wheel-dir ../lean-probe-wheels
+PIP_FIND_LINKS="$PWD/../lean-probe-wheels" ./scripts/install-internal.sh
+```
+
 On Windows, run `.\scripts\install.ps1` from PowerShell to install inside WSL2.
 Continue with project and provider setup in that WSL environment. For Remote SSH,
 install LeanFlow and the native runtime on the remote workspace host.
@@ -111,6 +120,15 @@ Definition holes require explicit authorization.
 Before each prover or negation session starts, LeanFlow checks LeanProbe in that
 job's actual private project and OS sandbox, including its assigned imports.
 A setup failure stops model launch and saves the checker diagnostics.
+
+LeanProbe directly owns proof feedback, declaration parsing, and REPL transport.
+LeanFlow adds project resource limits and controller acceptance. Coordinated
+development installations require the companion LeanProbe development wheel.
+
+Foreground verification retains warm proof-search workers by default. Low-memory
+and background-worker modes reclaim them; `LEANFLOW_LEAN_WARM_RETENTION=reclaim`
+also selects reclamation explicitly. See [storage and compilation reuse](docs/storage.md)
+for the opt-in cache of local imports in fresh private workspaces.
 
 A successful `prove` run requires no `sorry` in the requested source files and
 a final project `lake build`. A file target limits the proof assignment to that

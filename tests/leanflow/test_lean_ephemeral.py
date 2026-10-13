@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from leanflow_cli.lean import lean_ephemeral, lean_incremental
+from leanflow_cli.lean import lean_ephemeral, lean_incremental, lean_session_lifecycle
 
 
 def test_exact_project_check_uses_out_of_tree_copy_and_removes_it(monkeypatch, tmp_path):
@@ -229,7 +229,20 @@ def test_parent_interrupt_reaps_process_group_and_source_harness(monkeypatch, tm
     assert not harnesses[0].exists()
 
 
-def test_exact_check_reclaims_owned_probe_under_project_admission(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("setting", "low_memory", "dispatch", "closed"),
+    [
+        ("auto", False, False, False),
+        ("retain", False, False, False),
+        ("reclaim", False, False, True),
+        ("retain", True, False, True),
+        ("retain", False, True, True),
+    ],
+)
+def test_exact_check_applies_warm_policy_under_project_admission(
+    monkeypatch, tmp_path, setting, low_memory, dispatch, closed
+):
+    """The fresh exact-source checker obeys memory modes and retains foreground state."""
     project = tmp_path / "project"
     project.mkdir()
 
@@ -254,7 +267,15 @@ def test_exact_check_reclaims_owned_probe_under_project_admission(monkeypatch, t
             return 0
 
     monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.setenv("LEANFLOW_LEAN_WARM_RETENTION", setting)
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "1" if low_memory else "0")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", "1" if dispatch else "0")
     monkeypatch.setattr(lean_incremental, "_PROBE", probe)
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.lean_environment.lean_loader_generation",
+        lambda project: "unchanged",
+    )
+    lean_session_lifecycle.observe_incremental_project(project, probe)
     monkeypatch.setattr(lean_ephemeral.subprocess, "Popen", Process)
 
     result = lean_ephemeral.lean_ephemeral_source_check(
@@ -263,8 +284,8 @@ def test_exact_check_reclaims_owned_probe_under_project_admission(monkeypatch, t
     )
 
     assert result["ok"] is True
-    assert probe.closed is True
-    assert result["resource_admission"]["incremental_session_reclaimed"] is True
+    assert probe.closed is closed
+    assert result["resource_admission"]["incremental_session_reclaimed"] is closed
     assert result["resource_admission"]["enforced"] is True
 
 
@@ -277,6 +298,7 @@ def test_exact_check_does_not_spawn_after_probe_reclaim_failure(monkeypatch, tmp
             raise RuntimeError("close failed")
 
     monkeypatch.setenv("LEANFLOW_PROJECT_LEAN_ADMISSION", "1")
+    monkeypatch.setenv("LEANFLOW_LEAN_WARM_RETENTION", "reclaim")
     monkeypatch.setattr(lean_incremental, "_PROBE", Probe())
     monkeypatch.setattr(
         lean_ephemeral.subprocess,

@@ -1369,16 +1369,26 @@ wheels = [
 
 [[package]]
 name = "lean-probe"
-version = "0.3.1"
-source = { registry = "https://pypi.org/simple" }
+version = "0.4.1.dev0"
+source = { directory = "../LeanProbe" }
 dependencies = [
     { name = "lean-interact" },
     { name = "mcp" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e1/bc/c30b8e802fd596a20c7a948157342264371ef53cd4f18978900a3496fc42/lean_probe-0.3.1.tar.gz", hash = "sha256:2e557c6e44178a897df2a6649575f849ab49739a0627b11eb7a80f31dd561cdf", size = 52440, upload-time = "2026-06-17T20:19:35.874Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/92/16/a843d87216923930d58c7badaf37f415a85c76332a43ba61e470f7ac4170/lean_probe-0.3.1-py3-none-any.whl", hash = "sha256:aa65e2ed6808ee1599fe10d218811783b035fe733b809bf89f85346f96cdf868", size = 42215, upload-time = "2026-06-17T20:19:34.576Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "build", marker = "extra == 'dev'" },
+    { name = "lean-interact", specifier = ">=0.11.0,<1" },
+    { name = "mcp", specifier = ">=1.2.0,<2" },
+    { name = "mypy", marker = "extra == 'dev'" },
+    { name = "pre-commit", marker = "extra == 'dev'" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "pytest-xdist", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "twine", marker = "extra == 'dev'" },
 ]
+provides-extras = ["mcp", "dev"]
 
 [[package]]
 name = "leanflow-agent"
@@ -1439,7 +1449,7 @@ requires-dist = [
     { name = "firecrawl-py", marker = "extra == 'web'" },
     { name = "httpx" },
     { name = "lean-explore", extras = ["local"], marker = "extra == 'lean-explore'" },
-    { name = "lean-probe", specifier = ">=0.3.0,<0.4" },
+    { name = "lean-probe", directory = "../LeanProbe" },
     { name = "leanflow-agent", extras = ["dev"], marker = "extra == 'all'" },
     { name = "leanflow-agent", extras = ["lean-explore"], marker = "extra == 'all'" },
     { name = "leanflow-agent", extras = ["mcp"], marker = "extra == 'all'" },

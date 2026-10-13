@@ -3,6 +3,14 @@
 User-visible changes to the LeanFlow VS Code extension. Entries before 0.1.20
 include features and settings from the former direct-provider runtime.
 
+## Unreleased
+
+- Retain foreground Lean proof workers across independent file checks while
+  preserving low-memory reclamation and compiled-import invalidation.
+- Allow audited projects to opt into reuse of controller-built local imports
+  across fresh private proof workspaces.
+- Use LeanProbe directly for declaration parsing and response transport.
+
 ## 0.1.39
 
 - Follow live prover and orchestrator messages, public reasoning, and tool output.

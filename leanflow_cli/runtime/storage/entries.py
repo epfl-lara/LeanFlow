@@ -42,9 +42,9 @@ def read_entry(entry: Path, home: Path | None = None) -> dict[str, Any] | None:
         parts = selected.relative_to(root).parts
         valid = (
             len(parts) == 4
-            and parts[:3] == ("cache", "dependencies", "v1")
+            and parts[:3] in {("cache", "dependencies", "v1"), ("cache", "project-builds", "v1")}
             and (
-                kind == "dependency"
+                kind == ("dependency" if parts[1] == "dependencies" else "project-build")
                 and bool(_KEY.fullmatch(parts[-1]))
                 or kind == "staging"
                 and parts[-1].startswith(".staging-")
@@ -154,9 +154,9 @@ def managed_entry_size(entry: Path) -> int:
 
 
 def managed_candidates(home: Path) -> list[Path]:
-    """Enumerate only immediate entries under the three explicit storage roots."""
+    """Enumerate only immediate entries under the explicit storage roots."""
     entries: list[Path] = []
-    for relative in ("cache/dependencies/v1", "runtimes", "releases"):
+    for relative in ("cache/dependencies/v1", "cache/project-builds/v1", "runtimes", "releases"):
         parent = home / relative
         cursor = parent
         linked = False

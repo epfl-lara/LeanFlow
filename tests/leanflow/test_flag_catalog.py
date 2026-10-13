@@ -27,6 +27,25 @@ from leanflow_cli.flags.spec import FlagProfile
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_compilation_controls_are_discoverable_and_profile_supported(tmp_path: Path) -> None:
+    """Expose supported compilation policies without allowing untrusted cache opt-in."""
+    cache = lookup_flag("LEANFLOW_PROJECT_BUILD_CACHE")
+    retention = lookup_flag("LEANFLOW_LEAN_WARM_RETENTION")
+    assert cache is not None and cache.default == "0" and cache.sensitive
+    assert not cache.extension_editable
+    assert retention is not None and retention.default == "auto"
+    assert retention.choices == ("auto", "retain", "reclaim")
+    profile = FlagProfile(
+        name="compilation-reuse",
+        summary="Use audited relocatable compilation with foreground warm retention.",
+        overrides={"LEANFLOW_PROJECT_BUILD_CACHE": "1", "LEANFLOW_LEAN_WARM_RETENTION": "auto"},
+        builtin=False,
+    )
+    save_profile(profile, project_root=tmp_path)
+    loaded = resolve_profile(profile.name, project_root=tmp_path)
+    assert loaded.overrides == profile.overrides
+
+
 def test_prover_exposes_only_optional_global_limits() -> None:
     """Keep native sampling, compression, and per-response budgets out of LeanFlow."""
     for name in ("AGENT_CALLS", "TOKENS", "WALL_TIME_S"):
@@ -217,6 +236,7 @@ def test_sensitive_knobs_are_terminal_only() -> None:
         "LEANFLOW_SANDBOX_BASE_IMAGE",
         "LEANFLOW_PROVER_ALLOWED_AXIOMS",
         "LEANFLOW_PROVER_RESUME_RUN_ID",
+        "LEANFLOW_PROJECT_BUILD_CACHE",
     }
     actual = {spec.name for spec in FLAG_CATALOG if spec.sensitive}
     assert actual == expected

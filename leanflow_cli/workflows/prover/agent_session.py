@@ -168,6 +168,7 @@ def run_session(
                 previous["session_id"] = session_id
                 atomic_json_write(ledger_path, previous)
 
+    fresh_snapshot = not snapshot.exists() and not snapshot.is_symlink()
     prepare_snapshot(project_root, snapshot)
     scratch = snapshot / ".leanflow-job"
     scratch.mkdir(exist_ok=True)
@@ -204,7 +205,7 @@ def run_session(
         from leanflow_cli.workflows.prover.check_process import close_check_workers
         from leanflow_cli.workflows.prover.session_setup import check_session_setup
 
-        setup = check_session_setup(toolset, runtime_dir, emit)
+        setup = check_session_setup(toolset, runtime_dir, emit, cache_fresh_snapshot=fresh_snapshot)
         if not setup["accepted"]:
             error = "Isolated prover workspace failed its LeanProbe setup check: " + str(
                 setup.get("error") or setup.get("error_code") or setup

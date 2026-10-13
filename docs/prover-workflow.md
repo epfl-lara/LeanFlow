@@ -80,6 +80,9 @@ from the optional [whole-workflow container sandbox](sandbox-runtime.md).
 Each prover and negation session checks LeanProbe again after creating or restoring
 its private project. Local modules imported by the assignment are first rebuilt
 from the private sources, with output confined to the private build cache.
+With `LEANFLOW_PROJECT_BUILD_CACHE=1`, eligible fresh workspaces can first restore
+previously controller-built local imports; Lake still checks their build traces.
+See [the cache requirements](storage.md#local-project-imports) before enabling reuse.
 Canonical build artifacts are excluded from these workspaces. This check uses the
 same sandbox and worker as the job's `lean_check` tool and loads the assigned
 scratch imports without requiring finished proofs. Failed setup stops before
@@ -87,6 +90,16 @@ model admission and consumes no new agent call.
 Cancellation and global deadlines retain their interrupted or timeout outcomes.
 Job activity records setup start and result; full diagnostics are retained in
 `jobs/.runtime/<job-id>/lean-setup.json`. A successful check keeps the worker warm.
+
+Foreground exact-file checks use independent Lean processes while retaining useful
+search workers. `LEANFLOW_LEAN_WARM_RETENTION=auto` is the default; `reclaim`
+selects the previous teardown behavior. `retain` requests foreground retention,
+but low-memory and background-worker modes still reclaim resident services.
+Module and project builds invalidate retained environments when their dependency
+generation changes. Ordinary source edits preserve unchanged imported environments.
+LeanFlow calls LeanProbe's public API directly; the backend owns declaration
+parsing and transport. Generation checks and independent acceptance remain
+separate from fast proof-search feedback.
 
 Independent acceptance checks the exact compiled candidate and its complete axiom
 profile. Default allowed axioms are `propext`, `Classical.choice`, and `Quot.sound`.

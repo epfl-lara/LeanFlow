@@ -15,6 +15,7 @@ _SKIP = {".git", ".leanflow", ".leanflow-job", ".venv", "node_modules", "__pycac
 _CONFIG = {"lean-toolchain", "lakefile.lean", "lakefile.toml", "lake-manifest.json"}
 _ENV = ("PATH", "ELAN_HOME", "ELAN_TOOLCHAIN", "LEAN_PATH")
 _CONTENT_FINGERPRINT_LIMIT = 64 * 1024
+_COMPILED_SIDECARS = (".ir", ".ir.sig", ".o", ".o.export", ".o.server")
 
 
 def _toolchain_roots(project: Path) -> list[Path]:
@@ -55,7 +56,7 @@ def _toolchain_roots(project: Path) -> list[Path]:
     return roots
 
 
-def _files(root: Path, excluded_sources: set[Path]) -> Iterator[Path]:
+def _files(root: Path, excluded_sources: set[Path], *, include_sources: bool) -> Iterator[Path]:
     """Walk dependency inputs, following aliases once and omitting controller state."""
 
     def relevant(path: Path) -> bool:
@@ -63,8 +64,9 @@ def _files(root: Path, excluded_sources: set[Path]) -> Iterator[Path]:
             path.name in _CONFIG
             or path.name in {"lean", "lake", "settings.toml"}
             or ".olean" in path.name
+            or path.name.endswith(_COMPILED_SIDECARS)
             or path.suffix in {".so", ".dylib", ".dll", ".a"}
-            or (path.suffix == ".lean" and path not in excluded_sources)
+            or (include_sources and path.suffix == ".lean" and path not in excluded_sources)
         )
 
     pending = [root]
@@ -92,7 +94,9 @@ def _files(root: Path, excluded_sources: set[Path]) -> Iterator[Path]:
                     yield child
 
 
-def lean_environment_generation(project: Path, *, excluded_sources: Iterable[Path] = ()) -> str:
+def lean_environment_generation(
+    project: Path, *, excluded_sources: Iterable[Path] = (), include_sources: bool = True
+) -> str:
     """Fingerprint canonical imports, toolchain and loader configuration for local reuse.
 
     Exact candidate/managed source hashes belong to the caller. This additional
@@ -100,6 +104,9 @@ def lean_environment_generation(project: Path, *, excluded_sources: Iterable[Pat
     including transitive imports, plugins, additions, removals and path aliases.
     Exclude managed source paths only when the caller separately keys their
     relevant import closure. Native snapshots use their own absolute root/key.
+    Acceptance uses the default source-sensitive mode. Warm-session lifecycle
+    uses ``lean_loader_generation`` so uncompiled source edits do not masquerade
+    as changed imports in an already-loaded environment.
 
     Small inputs are content-hashed because local filesystems can coalesce
     consecutive write timestamps. Large library bytes are not reread: device/inode, size and nanosecond change
@@ -147,7 +154,7 @@ def lean_environment_generation(project: Path, *, excluded_sources: Iterable[Pat
         if not root.exists():
             fingerprint.update(b"missing\0")
             continue
-        for path in _files(root, excluded):
+        for path in _files(root, excluded, include_sources=include_sources):
             if path in seen:
                 continue
             seen.add(path)
@@ -186,3 +193,14 @@ def lean_environment_generation(project: Path, *, excluded_sources: Iterable[Pat
                 fingerprint.update(path.read_bytes())
                 fingerprint.update(b"\0")
     return fingerprint.hexdigest()
+
+
+def lean_loader_generation(project: Path) -> str:
+    """Fingerprint compiled imports, native artifacts and loader configuration.
+
+    Uncompiled Lean sources do not change what a warm REPL or an exact-source
+    Lean process imports. Their bytes and declaration prefixes remain the
+    checking caller's responsibility. Keep configuration sources such as
+    ``lakefile.lean`` and toolchain selection in the loader identity.
+    """
+    return lean_environment_generation(project, include_sources=False)

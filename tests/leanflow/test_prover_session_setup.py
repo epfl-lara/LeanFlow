@@ -227,3 +227,37 @@ def test_real_private_workspace_setup_and_warm_leanprobe(
     assert not any(
         key[1] == (workspace / "project/.leanflow-job").resolve() for key in check_process._WORKERS
     )
+
+
+def test_native_setup_caches_only_newly_created_snapshots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Capture freshness before preparation; an existing workspace stays ineligible on retry."""
+    from leanflow_cli.workflows.prover import session_setup
+
+    project(tmp_path)
+    workspace = tmp_path / "jobs/prover"
+    workspace.mkdir(parents=True)
+    freshness: list[bool] = []
+
+    def setup(*args: Any, cache_fresh_snapshot: bool = False) -> dict[str, Any]:
+        freshness.append(cache_fresh_snapshot)
+        return {"accepted": False, "error_code": "backend_error", "error": "setup failed"}
+
+    monkeypatch.setattr(session_setup, "check_session_setup", setup)
+    monkeypatch.setattr(
+        "agent.runtime.harness.run_harness", lambda *args, **kwargs: pytest.fail("model launch")
+    )
+    for _ in range(2):
+        result = run_session(
+            role="prover",
+            prompt="prove",
+            project_root=tmp_path,
+            workspace=workspace,
+            config={"provider": "codex"},
+            api_budget=1,
+            log_path=workspace / "events.jsonl",
+            context={},
+        )
+        assert result["status"] == "environment_error"
+    assert freshness == [True, False]

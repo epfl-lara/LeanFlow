@@ -180,6 +180,26 @@ process identity. Unchanged verified setup reuses readiness; repair bypasses it.
 sealed publication, and private writable materialization. No writable shared
 symlinks or hardlinks are exposed. Root proof artifacts never enter the store.
 
+`runtime/project_build_cache/` optionally reuses controller-built local assignment
+imports across fresh private snapshots. Source/resource/compiler/dependency keys,
+cryptographic output manifests, sealed publication, and private materialization
+preserve provenance. Reuse requires a relocatable TOML project and explicit opt-in;
+resumed workspaces cannot publish. Lake validates restored traces before warming
+LeanProbe. Canonical root proof artifacts are never cache seeds.
+
+`lean/lean_session_lifecycle.py` selects foreground warm retention or memory-mode
+reclamation before independent cold checks. Exact verification still uses a fresh
+process. Cold boundaries compare current imports with the recorded warm generation;
+module/project builds invalidate retained state after dependency changes.
+Scoped cleanup preserves unrelated projects. Loader stamps cover compiled imports;
+ordinary source edits are checked by the source-protection and acceptance layers.
+
+LeanProbe owns scoped declaration segmentation and its response transport.
+LeanFlow calls its public Python API directly without replacing backend functions.
+`lean/lean_incremental.py` retains LeanFlow's admission, parent deadlines, source
+protection, axiom policy, and output contract. Coordinated development installs
+require the companion LeanProbe 0.4.1 development wheel or later.
+
 `runtime/storage/` owns policy, leases, marked entries, LRU cleanup, process-view
 protection, and abandoned-view recovery. Only managed entries or registered
 views are collectible; proofs and checkpoints remain outside deletion scope.
