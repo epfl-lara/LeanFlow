@@ -3,6 +3,13 @@
 User-visible changes to the LeanFlow VS Code extension. Entries before 0.1.20
 include features and settings from the former direct-provider runtime.
 
+## 0.1.39
+
+- Follow live prover and orchestrator messages, public reasoning, and tool output.
+- Keep streamed updates together and expanded details open as text arrives.
+- Show current tools, elapsed time, readable arguments/results, and a Reasoning filter.
+- Distinguish reported reasoning summaries from traces and preserve access to full records.
+
 ## 0.1.38
 
 - Default new proof runs to 250 total agent calls, 200 prover calls, 50

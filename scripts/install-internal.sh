@@ -405,6 +405,7 @@ ok "config: $LEANFLOW_HOME/config.yaml"
 
 step "Ensuring a compatible private Lemex runtime"
 LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -m leanflow_cli.runtime.lemex_install
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -m leanflow_cli.runtime.lemex_install --refresh --no-build
 ok "Lemex executable managed separately from its native configuration"
 
 step "Installing managed Lean MCP backends and power modes"

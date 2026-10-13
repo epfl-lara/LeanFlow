@@ -38,7 +38,18 @@ def test_native_output_is_joined_by_exact_evidence_and_never_marks_a_proof_accep
 
     def native(request, on_event):
         request.on_started()
+        on_event({"type": "harness.settings", "invocation_id": "invocation-1"})
         on_event({"type": "thread.started", "thread_id": "native-session"})
+        for fragment in ("Live ", "public progress. "):
+            on_event(
+                {
+                    "type": "item.delta",
+                    "item_id": "reasoning1",
+                    "item_type": "reasoning",
+                    "field": "text",
+                    "delta": fragment,
+                }
+            )
         on_event(
             {
                 "type": "item.completed",
@@ -76,7 +87,16 @@ def test_native_output_is_joined_by_exact_evidence_and_never_marks_a_proof_accep
     rows = [
         json.loads(line) for line in workflow_run_activity_path(run_id).read_text().splitlines()
     ]
-    reasoning = next(row for row in rows if row["type"] == "agent-reasoning")
+    reasoning_rows = [row for row in rows if row["type"] == "agent-reasoning"]
+    assert reasoning_rows[0]["details"]["partial"] is True
+    assert reasoning_rows[0]["details"]["invocation_id"] == "invocation-1"
+    assert reasoning_rows[0]["event_id"] != reasoning_rows[-1]["event_id"]
+    reasoning = reasoning_rows[-1]
+    assert reasoning["details"]["partial"] is False
+    live = read_event_detail(
+        root / ".leanflow/workflow-state", run_id, reasoning_rows[0]["event_id"]
+    )
+    assert live["evidence"]["record"]["details"]["text"] == "Live "
     assert reasoning["agent_id"] == job_id
     assert len(reasoning["details"]["content_preview"]) < len(explanation)
     assert "accepted" not in reasoning["details"]

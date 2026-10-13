@@ -639,3 +639,92 @@ def test_claude_resume_subtracts_saved_model_totals(fake_backend):
         "total_tokens": 100,
     }
     assert run_harness(replace(request, previous_usage=None)).usage is None
+
+
+def test_additive_native_credentials_are_redacted_before_logs_and_callbacks(
+    fake_backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Keep native verdict inputs original while publishing only credential-safe fragments."""
+    secret = "opaque-test-credential"
+    monkeypatch.setenv("TEST_NATIVE_API_KEY", secret)
+    monkeypatch.setenv("LEANFLOW_REDACT_SECRETS", "false")
+    events = []
+    for item_id, fragments in (
+        ("known", ("Working opaque-test-", "credential", "\n")),
+        ("assignment", ("API_KE", "Y=unstored-", "credential\nContinuing. ")),
+        ("header", ("Authorization: Bea", "rer uncached-", "credential\nNext step. ")),
+    ):
+        for fragment in fragments:
+            events.append(
+                {
+                    "type": "item.delta",
+                    "item_id": item_id,
+                    "item_type": "reasoning",
+                    "field": "raw_text",
+                    "reasoning_kind": "trace",
+                    "delta": fragment,
+                }
+            )
+    events += [
+        {
+            "type": "item.delta",
+            "item_id": [],
+            "item_type": "reasoning",
+            "field": "raw_text",
+            "delta": "unscoped-private-fragment",
+        },
+        {
+            "type": "item.delta",
+            "item_id": "tail",
+            "item_type": "agent_message",
+            "field": "text",
+            "delta": "Final ordinaryword",
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "answer",
+                "type": "agent_message",
+                "text": "Native state retains " + secret,
+            },
+        },
+        {"type": "turn.completed", "usage": {"input_tokens": 3, "output_tokens": 4}},
+    ]
+    request = fake_backend(
+        "import json\nfor event in "
+        + repr(events)
+        + ":\n    print(json.dumps(event), flush=True)\n"
+    )
+    log = tmp_path / "harness.jsonl"
+    seen = []
+    result = run_harness(replace(request, log_path=log), seen.append)
+    persisted = [json.loads(line) for line in log.read_text().splitlines()]
+    assert persisted == seen
+    assert result.status == "completed"
+    assert result.final_response.endswith(secret)
+    assert result.usage == {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7}
+    public = json.dumps(seen)
+    for private in ("opaque-test-", "unstored-", "uncached-", "unscoped-private-fragment"):
+        assert private not in public
+    assert "[REDACTED]" in public
+    assert "Continuing." in public and "Next step." in public
+    assert any(event.get("delta") == "ordinaryword" for event in seen)
+
+
+def test_malformed_native_delta_diagnostics_omit_unscoped_raw_fragments(
+    fake_backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Keep parse diagnostics without bypassing credential buffering through invalid JSON."""
+    monkeypatch.setenv("TEST_NATIVE_API_KEY", "opaque-test-credential")
+    malformed = '{"type":"item.delta","item_id":"item_0","delta":"opaque-test-'
+    terminal = json.dumps({"type": "turn.completed"})
+    request = fake_backend(f"print({malformed!r})\nprint({terminal!r})\n")
+    seen = []
+    log = tmp_path / "harness.jsonl"
+    result = run_harness(replace(request, log_path=log), seen.append)
+    assert result.status == "malformed_output"
+    assert "opaque-test-" not in log.read_text()
+    assert "opaque-test-" not in json.dumps(seen)
+    diagnostic = next(event for event in seen if event["type"] == "harness.invalid_output")
+    assert "Raw record omitted" in diagnostic["text"]
+    assert result.diagnostics

@@ -193,13 +193,24 @@ def preview_details(kind: str, details: Mapping[str, Any]) -> dict[str, Any]:
     """Return bounded, redacted preview fields for one prover event."""
     preview: dict[str, Any] = {}
     if kind.startswith("agent-"):
+        live_text = _text(details.get("text"))
+        live_result = _text(details.get("result"))
+        if details.get("partial") is True:
+            live_text = live_text[-PREVIEW_CHARS:]
+            live_result = live_result[-PREVIEW_CHARS:]
         preview.update(
-            content_preview=_clip(details.get("text"), PREVIEW_CHARS),
+            content_preview=_clip(live_text, PREVIEW_CHARS),
             content_chars=len(_text(details.get("text"))),
             arguments_preview=_clip(details.get("arguments"), ARGUMENT_CHARS),
-            result_preview=_clip(details.get("result"), PREVIEW_CHARS),
+            result_preview=_clip(live_result, PREVIEW_CHARS),
             backend=str(details.get("backend") or ""),
             item_id=str(details.get("item_id") or ""),
+            invocation_id=str(details.get("invocation_id") or ""),
+            reasoning_kind=str(details.get("reasoning_kind") or ""),
+            native_event=str(details.get("native_event") or ""),
+            description=_clip(details.get("description"), ARGUMENT_CHARS),
+            partial=details.get("partial") if isinstance(details.get("partial"), bool) else None,
+            duration_seconds=details.get("duration_seconds"),
         )
     elif kind == "api-response":
         assistant = details.get("assistant")
@@ -288,10 +299,11 @@ def event_message(kind: str, details: Mapping[str, Any], preview: Mapping[str, A
         text = str(preview.get("content_preview") or "")
         label = {
             "agent-output": "Agent",
-            "agent-reasoning": "Reasoning",
+            "agent-reasoning": "Reported reasoning",
             "agent-plan": "Plan",
             "agent-tool-start": "Tool started",
             "agent-tool-end": "Tool finished",
+            "agent-tool-progress": "Tool running",
         }.get(kind, "Agent status")
         return _line(
             f"{label}: {text or details.get('tool') or details.get('status') or 'Updated'}",

@@ -14,6 +14,7 @@ from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
 from agent.runtime.harness.network_policy import restricted_research
+from agent.runtime.harness.observation_stream import NativeObservationStream
 from core.utils import atomic_json_write
 from leanflow_cli.workflows.prover.native_bridge import NativeBridge
 from leanflow_cli.workflows.prover.native_snapshot import (
@@ -151,11 +152,11 @@ def run_session(
         if on_event is not None:
             on_event(kind, {**details, "evidence_id": evidence_id})
 
+    observations = NativeObservationStream(backend)
+
     def native_event(event: dict[str, Any]) -> None:
         """Checkpoint native identity and publish observational output separately."""
-        from agent.runtime.harness.observations import native_observations
-
-        for kind, details in native_observations(backend, event):
+        for kind, details in observations.consume(event):
             emit(kind, details)
         session_id = (
             event.get("thread_id")
@@ -336,6 +337,8 @@ def run_session(
             ),
             on_event=native_event,
         )
+        for kind, details in observations.flush():
+            emit(kind, details)
         bridge.drain()
         response = bridge.submitted_response or result.final_response
         # Only scratch outputs used by the independent controller cross the boundary.

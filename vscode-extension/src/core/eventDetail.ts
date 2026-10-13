@@ -8,6 +8,7 @@
  * the webview; the decisions about *how* each value should read are here.
  */
 import type { ActivityEvent, ActivityEventDetail } from "./types";
+import { reasoningLabel } from "./logRows";
 
 export type SectionKind = "prose" | "code" | "fields";
 
@@ -505,6 +506,32 @@ function toolCallSections(calls: unknown, prefix: string): EventOutputSection[] 
   return sections;
 }
 
+/** Unwrap textual MCP output so proof states and results do not read as transport envelopes. */
+function nativeToolResultSections(value: unknown, tone?: "err" | "ok"): EventOutputSection[] {
+  const parsed = parseStructured(value);
+  const content = record(parsed).content;
+  if (!Array.isArray(content) || !content.some(block => record(block).type === "text" && typeof record(block).text === "string")) {
+    const built = section("native-result", "Tool output", value, { tone });
+    return built ? [built] : [];
+  }
+  const sections: EventOutputSection[] = [];
+  content.slice(0, MAX_TOOL_CALL_SECTIONS).forEach((block, index) => {
+    const entry = record(block);
+    if (entry.type !== "text" || typeof entry.text !== "string") return;
+    const built = section(`native-result-${index}`, "Tool output", entry.text, { tone });
+    if (built) sections.push(built);
+  });
+  const extra = Object.fromEntries(Object.entries(record(parsed)).filter(([key]) => key !== "content" && key !== "isError" && key !== "is_error"));
+  const metadata = section("native-result-fields", "Additional tool fields", pruneEmpty(extra), { tone });
+  if (metadata) sections.push(metadata);
+  const other = content.filter(block => record(block).type !== "text").length;
+  if (other) {
+    const built = section("native-attachments", "Tool attachments", `${other} attachment${other === 1 ? "" : "s"} recorded. Expand the full record below for the original fields.`);
+    if (built) sections.push(built);
+  }
+  return sections;
+}
+
 /** Ordered sections to render for an expanded row; empty for a row with no output. */
 export function eventOutputSections(
   event: ActivityEvent,
@@ -522,9 +549,16 @@ export function eventOutputSections(
 
   if (type.startsWith("agent-")) {
     const text = first(full.text, details.content_preview);
-    add(section("native-text", type === "agent-reasoning" ? "Reported reasoning" : "Agent output", text));
+    const description = first(full.description, details.description);
+    const isTool = type.startsWith("agent-tool-");
+    if (isTool) add(section("native-description", "Action", description));
+    if (!isTool || text !== description) add(section("native-text", type === "agent-reasoning" ? reasoningLabel(first(full.reasoning_kind, details.reasoning_kind)) : "Agent output", text));
     add(section("native-arguments", "Tool arguments", first(full.arguments, details.arguments_preview)));
-    add(section("native-result", type === "agent-plan" ? "Agent plan" : "Tool output", first(full.result, details.result_preview)));
+    const result = first(full.result, details.result_preview);
+    const failed = statusTone(str(first(full.status, details.status))) === "err"
+      || record(parseStructured(result)).isError === true || record(parseStructured(result)).success === false;
+    if (type === "agent-plan") add(section("native-result", "Agent plan", result));
+    else sections.push(...nativeToolResultSections(result, failed ? "err" : undefined));
     add(section("native-error", "Backend error", first(full.error, details.error), { tone: "err" }));
   } else if (type === "api-response") {
     const assistant = record(full.assistant);
@@ -666,6 +700,7 @@ export function eventFacts(
   add("finish", str(details.finish_reason) || str(assistant.finish_reason));
   add("tool", str(details.tool));
   add("status", str(details.status));
+  if (details.partial === true) add("output", "streaming preview");
   if (typeof details.accepted === "boolean") {
     add("accepted", details.accepted ? "yes" : "no");
   }
@@ -692,7 +727,7 @@ export function eventSearchText(event: ActivityEvent): string {
   }
   const details = record(event.details);
   const parts = [event.type, event.message, event.agent_id];
-  for (const key of ["tool", "node_id", "model", "status", "error", "content", ...PREVIEW_KEYS]) {
+  for (const key of ["tool", "description", "reasoning_kind", "node_id", "model", "status", "error", "content", ...PREVIEW_KEYS]) {
     parts.push(str(details[key]));
   }
   if (Array.isArray(details.tool_calls)) {

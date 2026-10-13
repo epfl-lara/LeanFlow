@@ -27,6 +27,7 @@ from .processes import ProcessTree, cleanup_group
 from .redaction import environment_secrets, redact_native_value
 from .restricted import restricted_isolation
 from .settings import SettingsRecorder, native_input, private_control_response, startup_settings
+from .stream_redaction import NativeStreamRedactor
 
 
 def _stop_reason(request: HarnessRequest) -> str:
@@ -144,6 +145,7 @@ def run_harness(
         return HarnessResult(stop, session_id=request.session_id)
     state = EventState(request.backend, session_id=request.session_id)
     settings = SettingsRecorder(request, secrets)
+    public_stream = NativeStreamRedactor(secrets)
     malformed = False
     process: subprocess.Popen[bytes] | None = None
     if request.log_path is not None:
@@ -200,14 +202,25 @@ def run_harness(
             except (ValueError, TypeError) as exc:
                 malformed = True
                 state.diagnostics.append(f"Malformed native JSON output: {exc}")
-                _record(log, {"type": "harness.invalid_output", "text": decoded}, on_event, secrets)
+                # A truncated delta cannot be scoped or joined safely; retaining
+                # its raw body would bypass the fragment credential guard.
+                _record(
+                    log,
+                    {
+                        "type": "harness.invalid_output",
+                        "text": f"Malformed native JSON output: {exc}. Raw record omitted.",
+                    },
+                    on_event,
+                    secrets,
+                )
                 return
             state.consume(event)
             if change := settings.consume(event):
                 _record(log, change, on_event, secrets)
             if private_control_response(event):
                 return
-            _record(log, event, on_event, secrets)
+            for public_event in public_stream.consume(event):
+                _record(log, public_event, on_event, secrets)
 
         cleaned = False
         drain_deadline: float | None = None
@@ -259,6 +272,8 @@ def run_harness(
         finally:
             if not cleaned:
                 cleanup_group(process, tree)
+            for public_event in public_stream.flush():
+                _record(log, public_event, on_event, secrets)
             if process.stdout is not None:
                 process.stdout.close()
             if process.stderr is not None:

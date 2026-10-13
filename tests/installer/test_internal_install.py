@@ -109,7 +109,11 @@ def test_local_installer_preserves_config_and_publishes_immutable_runtimes(
         "  exit 0\n"
         "fi\n"
         'if [[ "${1:-}" == "-m" && "${2:-}" == "leanflow_cli.runtime.lemex_install" ]]; then\n'
-        "  printf 'lemex\\n' >> \"$INSTALL_OPERATIONS\"\n"
+        '  if [[ "${3:-}" == "--refresh" && "${4:-}" == "--no-build" ]]; then\n'
+        "    printf 'lemex-refresh\\n' >> \"$INSTALL_OPERATIONS\"\n"
+        "  else\n"
+        "    printf 'lemex\\n' >> \"$INSTALL_OPERATIONS\"\n"
+        "  fi\n"
         "  exit 0\n"
         "fi\n"
         'if [[ "${1:-}" == "-m" && "${2:-}" == "leanflow_cli.runtime.runtime_install" '
@@ -179,8 +183,10 @@ def test_local_installer_preserves_config_and_publishes_immutable_runtimes(
         "pip",
         "pip",
         "lemex",
+        "lemex-refresh",
         "backends",
         "lemex",
+        "lemex-refresh",
         "backends",
     ]
     cli = subprocess.run(

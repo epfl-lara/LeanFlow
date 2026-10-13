@@ -280,8 +280,8 @@ test("live graph, job artifacts, file diffs and guidance controls act on the sel
 test("logs filter, collapse, expand, retry, copy and switch to raw output", () => {
   const ui = mount("logs");
   try {
-    ui.update(f => { f.events["run-1"].unshift({ ...f.events["run-1"][0], type: "job-session-start", event_id: "session-start", details: { job_id: "job-1", role: "prover" } }); });
-    for (const label of ["Attention", "Everything", "Tool calls", "Lean", "Provider", "Research", "Narrative"]) ui.click(label);
+    ui.update(f => { f.events = { ...f.events, "run-1": [{ ...f.events["run-1"][0], type: "job-session-start", event_id: "session-start", details: { job_id: "job-1", role: "prover" } }, ...f.events["run-1"]] }; });
+    for (const label of ["Attention", "Everything", "Tool calls", "Reasoning", "Lean", "Provider", "Research", "Narrative"]) ui.click(label);
     const type = ui.buttons().find(node => node.props.title === "agent-output");
     ui.click(type); assert.deepEqual(ui.view.logFilter, ["agent-output"]);
     ui.click("Clear (1)"); assert.deepEqual(ui.view.logFilter, []);
@@ -333,7 +333,64 @@ test("Open agent log selects the real agent and preserves visible output", () =>
     ui.click("Open agent log");
     assert.equal(ui.view.logAgent, "prover-1");
     assert.equal(ui.view.tab, "logs");
-    assert.match(textOf(ui.root()), /agent-output message/);
+    assert.match(textOf(ui.root()), /agent-output full text/);
+  } finally { ui.dispose(); }
+});
+
+test("a live reported trace updates in place, keeps its detail open, and can be hidden", () => {
+  const ui = mount("live");
+  try {
+    const details = { job_id: "job-1", item_id: "reasoning-1", invocation_id: "native-1", reasoning_kind: "trace", partial: true, content_preview: "First exposed step [REDACTED]" };
+    const row = { ...ui.events["run-1"][0], type: "agent-reasoning", event_id: "partial-1", details };
+    ui.update(f => { f.events = { ...f.events, "run-1": [row] }; });
+    assert.match(textOf(ui.root()), /Receiving reported reasoning/);
+    assert.match(textOf(ui.root()), /Reported reasoning trace/);
+    const activity = () => ui.buttons().filter(node => node.props.className === "agent-activity-toggle");
+    assert.equal(activity().length, 1);
+    ui.click(activity()[0]);
+    ui.update(f => { f.eventDetails["run-1:partial-1"] = { detail: { found: true, evidence: { record: { details: { text: "Earlier loaded trace" } } } }, loading: false, error: "" }; });
+    assert.match(textOf(ui.root()), /Earlier loaded trace/);
+    ui.update(f => { f.events = { ...f.events, "run-1": [row, { ...row, event_id: "partial-2", details: { ...details, content_preview: "First exposed step [REDACTED]\nNext exposed step" } }] }; });
+    assert.equal(activity().length, 1);
+    assert.equal(activity()[0].props["aria-expanded"], true);
+    assert.equal(message(ui, "loadEventDetail").eventId, "partial-2");
+    assert.match(textOf(ui.root()), /Next exposed step/);
+    assert.ok(!textOf(ui.root()).includes("Earlier loaded trace"), "an updated item never reuses the prior event's full record");
+    for (const feed of ui.root().findAllByProps({ className: "agent-activity" })) {
+      for (const button of feed.findAllByType("button")) {
+        for (let parent = button.parent; parent && parent !== feed; parent = parent.parent) {
+          assert.notEqual(parent.type, "button", "detail actions are never nested inside the activity toggle");
+          assert.notEqual(parent.props.role, "button");
+        }
+      }
+    }
+    ui.click("Collapse detail");
+    assert.equal(activity()[0].props["aria-expanded"], false);
+    const reasoning = ui.root().findAllByType("label").find(node => textOf(node) === "Show reported reasoning").findByType("input");
+    ui.change(reasoning, false);
+    assert.equal(activity().length, 0);
+    assert.ok(!textOf(ui.root()).includes("Next exposed step"));
+    const follow = ui.root().findAllByType("label").find(node => textOf(node) === "Follow live").findByType("input");
+    ui.change(follow, false);
+    assert.equal(follow.props.checked, false);
+  } finally { ui.dispose(); }
+});
+
+test("live native tools show running output and finish without claiming proof acceptance", () => {
+  const ui = mount("live");
+  try {
+    const details = { job_id: "job-1", item_id: "tool-1", invocation_id: "native-1", tool: "lean_check", description: "Check the replacement declaration" };
+    const start = { ...ui.events["run-1"][0], type: "agent-tool-start", event_id: "start", details };
+    const progress = { ...start, type: "agent-tool-progress", event_id: "output", details: { ...details, partial: true, result_preview: "Lean is checking…" } };
+    ui.update(f => { f.events = { ...f.events, "run-1": [start, progress] }; });
+    assert.match(textOf(ui.root()), /Lean check is running/);
+    assert.match(textOf(ui.root()), /Lean is checking…/);
+    const final = { ...progress, type: "agent-tool-end", event_id: "finished", details: { ...details, partial: false, status: "completed", result_preview: "Check finished" } };
+    ui.update(f => { f.events = { ...f.events, "run-1": [start, progress, final] }; });
+    assert.ok(!textOf(ui.root()).includes("Lean check is running"));
+    assert.match(textOf(ui.root()), /Check finished/);
+    assert.equal(ui.buttons().filter(node => node.props.className === "agent-activity-toggle").length, 2);
+    assert.ok(!textOf(ui.root()).includes("Proof accepted"));
   } finally { ui.dispose(); }
 });
 

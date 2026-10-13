@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  activityEventKey,
+  activityEventLabel,
+  activityEventPreview,
+  activityEventState,
   elapsed,
   humanEventLabel,
   indexSessions,
@@ -38,6 +42,36 @@ test("wire event types read as labels, including the mixed hyphen and underscore
   assert.equal(humanEventLabel("research-portfolio-rebalanced"), "Research portfolio rebalanced");
   assert.equal(humanEventLabel("some_new_thing"), "Some new thing");
   assert.equal(humanEventLabel(""), "");
+});
+
+test("native activity identifies its tool, exposed reasoning kind, and observed state", () => {
+  const tool = event("agent-tool-start", "prover", { tool: "mcp__lean_probe__lean_check_target", description: "Check the replacement declaration", status: "running" });
+  assert.equal(activityEventLabel(tool), "Lean check target");
+  assert.equal(activityEventPreview(tool), "Check the replacement declaration");
+  assert.equal(activityEventState(tool), "Running");
+  const end = { ...tool, type: "agent-tool-end", details: { ...tool.details, status: "completed", result_preview: "Accepted by tool" } };
+  assert.equal(activityEventState(end), "Finished");
+  assert.equal(activityEventPreview(end), "Accepted by tool");
+  assert.equal(activityEventPreview({ ...end, details: { result_preview: JSON.stringify({ content: [{ type: "text", text: JSON.stringify({ message: "Replacement checked", goals: "⊢ n = n" }) }] }) } }), "Replacement checked");
+  assert.equal(activityEventPreview({ ...end, details: { result_preview: '{"content": [truncated' } }), '{"content": [truncated');
+  assert.equal(activityEventState({ ...end, details: { status: "failed" } }), "Failed");
+  assert.equal(activityEventLabel(event("agent-reasoning", "prover", { reasoning_kind: "summary" })), "Reasoning summary");
+  assert.equal(activityEventLabel(event("agent-reasoning", "prover", { reasoning_kind: "trace" })), "Reported reasoning trace");
+  assert.equal(activityEventLabel(event("agent-reasoning", "prover", { reasoning_kind: "unknown" })), "Reported reasoning");
+  assert.equal(activityEventState(event("agent-output", "prover", { partial: true })), "Streaming");
+  assert.equal(activityEventState(event("submission_checked", "prover", { accepted: true })), "", "activity does not invent a proof verdict");
+});
+
+test("live item keys survive updates and tool completion while separating invocations", () => {
+  const partial = event("agent-tool-progress", "prover", { item_id: "tool-1", invocation_id: "call-1", partial: true });
+  assert.equal(activityEventKey(partial), activityEventKey({ ...partial, event_id: "final", type: "agent-tool-end", details: { ...partial.details, partial: false } }));
+  assert.notEqual(activityEventKey(partial), activityEventKey({ ...partial, details: { ...partial.details, invocation_id: "call-2" } }));
+  const trace = event("agent-reasoning", "prover", { item_id: "reason-1", invocation_id: "call-1", reasoning_kind: "trace" });
+  assert.notEqual(activityEventKey(trace), activityEventKey({ ...trace, details: { ...trace.details, reasoning_kind: "summary" } }));
+  const partialSegments = segmentLogRows([partial], indexSessions([partial]));
+  const updated = { ...partial, event_id: "next-evidence" };
+  const updatedSegments = segmentLogRows([updated], indexSessions([updated]));
+  assert.equal(partialSegments[0].key, updatedSegments[0].key, "segment containers preserve the same live row too");
 });
 
 test("session facts are collected from the whole stream, including budget and outcome", () => {
@@ -153,4 +187,11 @@ test("interleaving slivers stay plain rows; real units of work get a header", ()
 
   const workflow = { key: ":e5", agentId: "", session: null, events: [event("runner-start", "")] };
   assert.equal(shouldFrameSegment(workflow), false, "workflow-level rows have no agent to frame");
+});
+
+
+test("historical native item IDs without invocation identity retain separate evidence rows", () => {
+  const first = event("agent-reasoning", "prover", { item_id: "item_0" });
+  const second = { ...first, event_id: "different-evidence" };
+  assert.notEqual(activityEventKey(first), activityEventKey(second));
 });

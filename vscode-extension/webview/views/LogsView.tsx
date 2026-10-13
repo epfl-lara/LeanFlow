@@ -12,7 +12,12 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { appRunChoices, selectedRunChoice } from "../../src/core/runCatalog";
 import { RunMenu } from "./RunMenu";
 import { eventSearchText } from "../../src/core/eventDetail";
+import { coalesceActivity } from "../../src/core/agentActivity";
 import {
+  activityEventKey,
+  activityEventLabel,
+  activityEventPreview,
+  activityEventState,
   humanEventLabel,
   indexSessions,
   segmentFacts,
@@ -33,6 +38,9 @@ const NARRATIVE_TYPES = new Set([
   "agent-reasoning",
   "agent-plan",
   "agent-status",
+  "agent-tool-start",
+  "agent-tool-end",
+  "agent-tool-progress",
   "assistant-response",
   "api-response",
   "api-error",
@@ -83,6 +91,11 @@ const PRESETS: { id: string; label: string; match: (type: string) => boolean }[]
     match: (type) => type.startsWith("tool-") || type.startsWith("agent-tool-"),
   },
   {
+    id: "reasoning",
+    label: "Reasoning",
+    match: (type) => type === "agent-reasoning",
+  },
+  {
     id: "lean",
     label: "Lean",
     match: (type) => type.startsWith("lean-") || type.includes("verification"),
@@ -104,9 +117,10 @@ function toneFor(type: string): string {
   if (type.includes("fail") || type.includes("error") || type.includes("rejected")) {
     return "err";
   }
-  if (type.startsWith("tool-")) {
+  if (type.startsWith("tool-") || type.startsWith("agent-tool-")) {
     return "tool";
   }
+  if (type === "agent-reasoning") return "reasoning";
   if (type.startsWith("lean-") || type.includes("verification")) {
     return "lean";
   }
@@ -133,7 +147,8 @@ export function LogsView() {
   // Prefer the selected run's own stream; fall back to the newest recorded one
   // so a run started from a terminal is still readable here.
   const runId = run?.runId || "";
-  const stream: ActivityEvent[] = useMemo(() => events[runId] ?? [], [events, runId]);
+  const stream: ActivityEvent[] = useMemo(() => (events[runId] ?? []).filter(event => event.run_id === runId), [events, runId]);
+  const activity = useMemo(() => coalesceActivity(stream), [stream]);
   const lastEventId = stream[stream.length - 1]?.event_id || "";
   const agents = useMemo(
     () => [...new Set(stream.map((event) => event.agent_id).filter(Boolean))].sort(),
@@ -162,7 +177,7 @@ export function LogsView() {
   const search = view.logSearch.trim().toLowerCase();
 
   const filtered = useMemo(() => {
-    return stream.filter((event) => {
+    return activity.filter((event) => {
       if (view.logAgent && event.agent_id !== view.logAgent) return false;
       if (view.logFilter.length > 0) {
         if (!view.logFilter.includes(event.type)) {
@@ -176,7 +191,7 @@ export function LogsView() {
       }
       return eventSearchText(event).includes(search);
     });
-  }, [stream, view.logFilter, view.logAgent, activePreset, search]);
+  }, [activity, view.logFilter, view.logAgent, activePreset, search]);
 
   const segments = useMemo(() => segmentLogRows(filtered, sessions), [filtered, sessions]);
 
@@ -184,7 +199,7 @@ export function LogsView() {
     if (follow && listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
-  }, [filtered.length, follow]);
+  }, [filtered.length, lastEventId, follow]);
 
   const toggleRow = (eventId: string) => {
     setExpanded((previous) => {
@@ -223,7 +238,7 @@ export function LogsView() {
         title="Logs"
         subtitle={
           runId
-            ? `Reading ${runId} — ${stream.length} events buffered, ${filtered.length} shown. Select an event to see the model output behind it.`
+            ? `${activity.length} activities, ${filtered.length} shown. Live text updates in place. Expand a row for output, arguments, and the original record.`
             : "No recorded run yet."
         }
         actions={
@@ -374,35 +389,38 @@ export function LogsView() {
                     )}
                     {!collapsed &&
                       segment.events.map((event) => {
-                        const open = Boolean(expanded[event.event_id]);
+                        const key = activityEventKey(event);
+                        const open = Boolean(expanded[key]);
                         const turn = turnNumber(event);
+                        const state = activityEventState(event);
                         return (
-                          <Fragment key={event.event_id}>
+                          <Fragment key={key}>
                             <div
                               aria-expanded={open}
                               className={`log-line ${toneFor(event.type)}${open ? " expanded" : ""}`}
-                              onClick={() => toggleRow(event.event_id)}
+                              onClick={() => toggleRow(key)}
                               onKeyDown={(keyboard) => {
                                 if (keyboard.key === "Enter" || keyboard.key === " ") {
                                   keyboard.preventDefault();
-                                  toggleRow(event.event_id);
+                                  toggleRow(key);
                                 }
                               }}
                               role="button"
                               tabIndex={0}
-                              title={`${event.type} · ${event.message}`}
+                              title={`${activityEventLabel(event)} · ${activityEventPreview(event)}`}
                             >
                               <span aria-hidden="true" className="caret">
                                 ▶
                               </span>
                               <span className="ts">{shortTime(event.timestamp)}</span>
-                              <span className="type">{humanEventLabel(event.type)}</span>
+                              <span className="type">{activityEventLabel(event)}</span>
                               <span className="msg">
                                 {turn !== null && <span className="turn">#{turn}</span>}
                                 {!framed && event.agent_id && (
                                   <span className="tag">{event.agent_id}</span>
                                 )}
-                                <span className="text">{event.message}</span>
+                                {state && <span className={`agent-event-state ${state.toLowerCase()}`}>{state}</span>}
+                                <span className="text">{activityEventPreview(event)}</span>
                               </span>
                             </div>
                             {open && <EventDetailPanel runId={runId} event={event} />}

@@ -153,7 +153,18 @@ Leave model and reasoning effort empty to inherit native defaults. `--model`
 and role settings are optional explicit overrides. Lemex inherits its native
 `LEMEX_BASE_URL` and `LEMEX_API_KEY`; external inference endpoints are configured
 there. The [backend reference](docs/product-reference.md#native-backends) covers
-setup and migration from the former direct-provider engine.
+setup and migration from the former direct-provider engine. Rerunning the
+LeanFlow installer adopts a compatible locally updated Lemex. To refresh only
+LeanFlow’s private Lemex copy, use:
+
+```bash
+python -m leanflow_cli.runtime.lemex_install --refresh --no-build
+```
+
+Run this from an activated LeanFlow installation or development environment.
+Older immutable copies remain available to existing jobs. The VS Code activity
+view shows public messages, tool progress and reasoning when the native runtime
+reports it; providers may expose summaries, traces, or no reasoning.
 
 New proof runs default to **250 total agent calls**, with caps of **200 prover
 calls** and **50 orchestration calls**, plus **24 hours of active time**. Configure

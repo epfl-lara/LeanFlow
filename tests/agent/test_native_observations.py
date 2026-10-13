@@ -19,8 +19,10 @@ from leanflow_cli.workflows.prover.event_preview import PREVIEW_CHARS, preview_d
 def test_native_text_is_emitted_once_and_keeps_full_text(backend, item_kind, kind):
     text = "A long public explanation.\n" * 150
     item = {"id": "item_1", "type": item_kind, "text": text}
-    for phase in ("item.started", "item.updated"):
-        assert native_observations(backend, {"type": phase, "item": item}) == []
+    assert native_observations(backend, {"type": "item.started", "item": item}) == []
+    partial = native_observations(backend, {"type": "item.updated", "item": item})
+    assert partial[0][1]["text"] == text
+    assert partial[0][1]["partial"] is True
     events = native_observations(backend, {"type": "item.completed", "item": item})
     assert events[0][0] == kind
     assert events[0][1]["text"] == text

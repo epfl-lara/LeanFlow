@@ -2,6 +2,7 @@
 
 Existing packaged distributions are copied and pinned by content. Fresh installations
 use Lemex's own installer at an exact source commit, with a private npm prefix.
+Explicit refresh adopts a local upgrade without changing older runtime objects.
 No release binary is assumed to exist, and no runtime credentials are inspected.
 """
 
@@ -21,7 +22,7 @@ from typing import Any, Iterator
 from core.home import leanflow_home
 
 LEMEX_SOURCE_URL = "https://github.com/Lemmy00/lemex.git"
-LEMEX_SOURCE_COMMIT = "677ad9df319b494c6f186bf8f069e789cb519255"
+LEMEX_SOURCE_COMMIT = "2f0e12c10d0baf7404a83da3b8cb8f04b77822c9"
 
 
 class LemexInstallError(RuntimeError):
@@ -279,25 +280,39 @@ def _build_from_source() -> dict[str, Any]:
         )
 
 
-def ensure_lemex(*, build: bool = True) -> dict[str, Any]:
-    """Verify a managed install, adopt a compatible package, or build pinned source."""
+def ensure_lemex(*, build: bool = True, refresh: bool = False) -> dict[str, Any]:
+    """Verify a content pin, optionally replacing it with a local package or source build.
+
+    Ordinary checks retain the existing pin without discovery or network access.
+    Refresh snapshots a compatible external installation before publishing its
+    pointer; older objects remain usable by active jobs. With builds disabled,
+    retain a healthy existing pin when no compatible external replacement exists.
+    """
     if os.name != "posix":
         raise LemexInstallError("Use LeanFlow through WSL2 on Windows to install Lemex.")
     with _install_lock():
         installed = _read_install(verify=True)
         if installed:
             probe_lemex(Path(installed["executable"]))
-            return installed
+            if not refresh:
+                return installed
         executable = shutil.which("lemex")
         if executable:
             try:
                 package = _package_root(Path(executable))
-                entrypoint = Path(executable).resolve().relative_to(package)
-                return _publish(package, entrypoint, source="adopted-content-pin", commit=None)
+                # A managed executable on PATH is already a pin, not evidence of
+                # a newly installed external version to adopt during refresh.
+                if not refresh or not package.is_relative_to((_root() / "objects").resolve()):
+                    entrypoint = Path(executable).resolve().relative_to(package)
+                    return _publish(package, entrypoint, source="adopted-content-pin", commit=None)
             except LemexInstallError:
                 if not build:
+                    if installed is not None:
+                        return installed
                     raise
         if not build:
+            if installed is not None:
+                return installed
             raise LemexInstallError("No compatible Lemex installation found")
         return _build_from_source()
 
@@ -308,11 +323,16 @@ def main() -> int:
     parser.add_argument(
         "--no-build",
         action="store_true",
-        help="Only verify or adopt an existing compatible installation",
+        help="Use existing installations only; keep a healthy pin if refresh has no replacement",
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Adopt a compatible local upgrade, or rebuild the pinned source",
     )
     args = parser.parse_args()
     try:
-        result = ensure_lemex(build=not args.no_build)
+        result = ensure_lemex(build=not args.no_build, refresh=args.refresh)
     except (LemexInstallError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f"Lemex installation failed: {exc}\n")
     print(f"Lemex ready: {result['executable']} ({result['source']}; {result['version']})")

@@ -238,3 +238,18 @@ only unambiguous contexts. Nonstandard dependency layouts can need manual repair
 
 Modes, scheduling, and budgets are configurable choices. They do not establish
 comparative solve rates or efficiency on a particular theorem collection.
+
+
+## Following agent activity
+
+In VS Code, expand **Output and tool activity** under a prover or orchestrator.
+Running jobs open this feed automatically. **Follow live** follows new messages
+and tool progress; each native tool shows its description when known and elapsed
+time when its start was recorded. Expanded rows present readable output, with
+full recorded fields available for inspection.
+
+**Reported reasoning** is optional native output. Public summaries and traces
+are labelled separately; visibility follows the native runtime’s settings.
+Stream fragments update one visible row, while the underlying observations keep
+separate evidence IDs. Interrupted output remains partial. A message or successful
+tool result does not establish proof acceptance; independent controller checks do.

@@ -109,10 +109,15 @@ and proposed graph changes remain visibly provisional. Source links and diffs
 open the selected run's artifacts. **Send guidance** queues a message for the
 controller or a selected job at its next decision boundary.
 
-**Agents and jobs** shows emitted messages, native tool activity, plans, and
-reported reasoning. Expand an event for recorded output or open the agent log.
-Missing or encrypted reasoning is not reconstructed. Activity events are distinct
-from agent-call counts and independent Lean acceptance.
+**Agents and jobs** opens live activity for running jobs. It shows messages,
+current tools, elapsed time, plans, and reported reasoning. **Follow live** keeps
+new activity in view. Streamed text updates in place, and expanding a row shows
+readable arguments and results with the recorded JSON available below.
+
+Use **Show reported reasoning** or the Logs view’s **Reasoning** filter to follow
+public summaries and traces. Availability depends on the native runtime and its
+settings. Missing or encrypted reasoning is not reconstructed. Activity counts
+are separate from agent-call limits and independent Lean acceptance.
 
 **Agents and models** and each job's **Model history** show model and effort
 settings recorded for each call, including resumes. Requested values, native

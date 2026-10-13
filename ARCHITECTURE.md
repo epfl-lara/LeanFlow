@@ -33,24 +33,30 @@ direct tests in their owning modules. New execution features use the harness.
 | `commands.py`, `discovery.py` | Native executable resolution and command construction |
 | `runner.py`, `processes.py` | Structured process I/O, resume, cancellation, and process-tree cleanup |
 | `events.py` | Native event parsing and cumulative-usage normalization |
-| `observations.py` | Emitted messages, reasoning, plans, tool activity, and settings observations |
+| `observations.py` | Public messages, reasoning, plans, tool descriptions, and settings observations |
+| `observation_stream.py` | Bounded live snapshots, throttling, invocation identity, and measured tool duration |
 | `settings.py` | Per-call reported model/effort history, separate from requested overrides |
 | `metadata.py`, `model_defaults.py` | Bounded read-only metadata transport and labelled native model defaults |
-| `redaction.py` | Credential and recognizable-secret removal before persistence/callbacks |
+| `redaction.py`, `stream_redaction.py` | Credential removal, including fragmented streamed secrets, before persistence/callbacks |
 | `isolation.py`, `restricted.py` | Private filesystem authority and restricted native context |
 | `network_policy.py`, `context_policy.py` | Local-only research and native automatic-context admission |
 
 One complete native process invocation is one LeanFlow agent call. Internal model
 requests, retries, and compaction remain native. Metadata inspection starts no
 model turn. An emitted tool result or assistant claim is an observation, never
-independent Lean acceptance.
+independent Lean acceptance. Public stream fragments become bounded cumulative
+previews; each persisted observation keeps a unique evidence ID. The editor
+coalesces only its visible timeline by invocation, native item and reasoning kind.
+Completed native messages remain authoritative; summaries and reported traces
+are labelled separately. Unreported or encrypted reasoning is never reconstructed.
 
 `runtime/runtime_provider.py` selects exactly `codex`, `claude`, or `lemex`.
 `env_loader.py` preserves native environment variables and excludes legacy
 provider credentials from LeanFlow dotenv. `config.py` rejects obsolete schema
 settings with migration guidance. `runtime/lemex_install.py` adopts or installs a
 pinned self-contained npm or native-source Lemex bundle, including companion files, without replacing its global executable
-or copying native authentication.
+or copying native authentication. Explicit refresh adopts a compatible local upgrade
+atomically while retaining immutable distributions used by older jobs.
 
 Native tools run in filtered private project snapshots under macOS seatbelt or
 Linux Bubblewrap. Unsupported isolation fails closed. The outer OS boundary owns

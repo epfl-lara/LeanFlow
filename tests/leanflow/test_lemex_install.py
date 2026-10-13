@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,146 @@ def test_damaged_companion_is_detected_on_installer_verification(installed_packa
     Path(result["distribution_root"]).joinpath("vendor/companion").write_text("modified")
     with pytest.raises(installer.LemexInstallError, match="pinned identity"):
         installer.ensure_lemex(build=False)
+
+
+def test_existing_pin_does_not_rediscover_or_build_a_runtime(installed_package, monkeypatch):
+    """Keep ordinary installation checks offline and stable after user upgrades."""
+    result = installer.ensure_lemex(build=False)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("An existing pin must not discover or build another runtime")
+
+    monkeypatch.setattr(installer.shutil, "which", unexpected)
+    monkeypatch.setattr(installer, "_build_from_source", unexpected)
+    assert installer.ensure_lemex() == result
+
+
+def test_failed_publication_leaves_the_current_pin_and_object_intact(installed_package):
+    """Leave readers on the complete existing bundle when a replacement fails."""
+    package, executable, _native_home = installed_package
+    result = installer.ensure_lemex(build=False)
+    pointer = installer._root() / "current.json"
+    before = pointer.read_bytes()
+    old_executable = Path(result["executable"])
+    old_content = old_executable.read_bytes()
+    executable.write_text("#!/bin/sh\necho incompatible\n")
+    with pytest.raises(installer.LemexInstallError, match="exec protocol"):
+        installer._publish(
+            package,
+            executable.relative_to(package),
+            source="adopted-content-pin",
+            commit=None,
+        )
+    assert pointer.read_bytes() == before
+    assert old_executable.read_bytes() == old_content
+    assert installer.resolve_lemex_executable() == old_executable
+
+
+def test_refresh_adopts_local_upgrade_without_changing_old_objects_or_native_home(
+    installed_package,
+):
+    package, executable, native_home = installed_package
+    old = installer.ensure_lemex(build=False)
+    native_before = {path.name: path.read_bytes() for path in native_home.iterdir()}
+    old_executable = Path(old["executable"])
+    old_content = old_executable.read_bytes()
+    (package / "vendor/companion").write_text("updated-native-resource")
+    executable.write_text(executable.read_text().replace("lemex-0.0.0", "lemex-0.1.0"))
+    new = installer.ensure_lemex(build=False, refresh=True)
+    assert new["sha256"] != old["sha256"]
+    assert new["version"] == "lemex-0.1.0"
+    assert new["source"] == "adopted-content-pin"
+    assert new["source_commit"] is None
+    assert installer.resolve_lemex_executable() == Path(new["executable"])
+    assert old_executable.read_bytes() == old_content
+    assert (
+        Path(old["distribution_root"]).joinpath("vendor/companion").read_text() == "native-resource"
+    )
+    assert (
+        Path(new["distribution_root"]).joinpath("vendor/companion").read_text()
+        == "updated-native-resource"
+    )
+    assert {path.name: path.read_bytes() for path in native_home.iterdir()} == native_before
+    assert installer.ensure_lemex(build=False) == new
+
+
+@pytest.mark.parametrize("replacement", ["missing", "incompatible", "managed", "symlink"])
+def test_no_build_refresh_retains_healthy_pin_when_no_external_upgrade_is_usable(
+    installed_package, monkeypatch, tmp_path, replacement
+):
+    package, executable, _native_home = installed_package
+    old = installer.ensure_lemex(build=False)
+    pointer = installer._root() / "current.json"
+    before = pointer.read_bytes()
+    if replacement == "missing":
+        monkeypatch.setattr(installer.shutil, "which", lambda _name: None)
+    elif replacement == "managed":
+        monkeypatch.setattr(installer.shutil, "which", lambda _name: old["executable"])
+    elif replacement == "symlink":
+        outside = tmp_path / "outside"
+        outside.write_text("private")
+        (package / "vendor/outside").symlink_to(outside)
+    else:
+        executable.write_text("#!/bin/sh\necho incompatible\n")
+    assert installer.ensure_lemex(build=False, refresh=True) == old
+    assert pointer.read_bytes() == before
+
+
+def test_refresh_builds_pinned_source_when_only_managed_runtime_is_on_path(
+    installed_package, monkeypatch
+):
+    old = installer.ensure_lemex(build=False)
+    monkeypatch.setattr(installer.shutil, "which", lambda _name: old["executable"])
+    rebuilt = {"source": "pinned-source", "sha256": "new-source"}
+    monkeypatch.setattr(installer, "_build_from_source", lambda: rebuilt)
+    assert installer.ensure_lemex(refresh=True) == rebuilt
+
+
+def test_refresh_without_a_runtime_or_build_permission_reports_missing_install(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "leanflow"))
+    monkeypatch.setattr(installer.shutil, "which", lambda _name: None)
+    with pytest.raises(installer.LemexInstallError, match="No compatible"):
+        installer.ensure_lemex(build=False, refresh=True)
+
+
+def test_refresh_verifies_new_bundle_before_atomic_pointer_switch(installed_package, monkeypatch):
+    package, _executable, _native_home = installed_package
+    old = installer.ensure_lemex(build=False)
+    (package / "vendor/companion").write_text("updated-native-resource")
+    probe = installer.probe_lemex
+    inspected = []
+
+    def check(executable):
+        inspected.append(executable)
+        assert installer.resolve_lemex_executable() == Path(old["executable"])
+        return probe(executable)
+
+    monkeypatch.setattr(installer, "probe_lemex", check)
+    new = installer.ensure_lemex(build=False, refresh=True)
+    assert len(inspected) == 2
+    assert inspected[0] == Path(old["executable"])
+    assert ".staging-" in str(inspected[1])
+    assert installer.resolve_lemex_executable() == Path(new["executable"])
+
+
+def test_cli_refresh_and_no_build_are_forwarded_explicitly(monkeypatch, capsys):
+    calls = []
+
+    def ensure(**kwargs):
+        calls.append(kwargs)
+        return {
+            "executable": "/managed/lemex",
+            "source": "adopted-content-pin",
+            "version": "lemex-0.1.0",
+        }
+
+    monkeypatch.setattr(installer, "ensure_lemex", ensure)
+    monkeypatch.setattr(sys, "argv", ["lemex_install", "--refresh", "--no-build"])
+    assert installer.main() == 0
+    assert calls == [{"build": False, "refresh": True}]
+    assert "lemex-0.1.0" in capsys.readouterr().out
 
 
 def test_native_source_bundle_is_adopted_with_companions(installed_package, monkeypatch):

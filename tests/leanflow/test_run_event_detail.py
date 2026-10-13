@@ -236,3 +236,23 @@ def test_cli_event_command_prints_the_join(state_root: Path, tmp_path: Path, cap
     )
     assert handle_runs(bad) == 2
     assert json.loads(capsys.readouterr().out)["success"] is False
+
+
+def test_missing_explicit_evidence_never_joins_a_nearby_stream_update(state_root: Path) -> None:
+    path = state_root / "activity" / "runs" / f"{RUN}.jsonl"
+    with path.open("a") as stream:
+        stream.write(
+            json.dumps(
+                _row(
+                    "missing-explicit",
+                    "api-response",
+                    "2026-09-06T13:23:30+00:00",
+                    api_calls=10,
+                    evidence_id="missing",
+                )
+            )
+            + "\n"
+        )
+    evidence = read_event_detail(state_root, RUN, "missing-explicit")["evidence"]
+    assert evidence["record"] is None
+    assert evidence["match"] == ""

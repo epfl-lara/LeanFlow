@@ -23,7 +23,7 @@ export interface SessionInfo {
 }
 
 export interface LogSegment {
-  /** Stable across re-renders: the agent plus the first row it contains. */
+  /** Stable across streamed updates: the agent plus the first visible item's identity. */
   key: string;
   agentId: string;
   session: SessionInfo | null;
@@ -44,6 +44,7 @@ const EVENT_LABELS: Record<string, string> = {
   "agent-reasoning": "Reported reasoning",
   "agent-tool-start": "Native tool started",
   "agent-tool-end": "Native tool finished",
+  "agent-tool-progress": "Native tool output",
   "agent-plan": "Agent plan",
   "agent-status": "Agent status",
   "api-request": "Request",
@@ -91,6 +92,82 @@ export function humanEventLabel(type: string): string {
   }
   const words = type.replace(/[-_]+/g, " ").trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : type;
+}
+
+/** Label only the reasoning the native provider explicitly chose to expose. */
+export function reasoningLabel(kind: unknown): string {
+  return kind === "summary" ? "Reasoning summary" : kind === "trace" ? "Reported reasoning trace" : "Reported reasoning";
+}
+
+/** Use an emitted tool name without requiring the reader to know its wire spelling. */
+export function readableToolName(name: unknown): string {
+  if (typeof name !== "string" || !name.trim()) return "Tool";
+  const leaf = name.split("__").at(-1) || name;
+  const words = leaf.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Give native activity a specific heading instead of repeating a generic event type. */
+export function activityEventLabel(event: ActivityEvent): string {
+  if (event.type === "agent-reasoning") return reasoningLabel(event.details?.reasoning_kind);
+  if (event.type.startsWith("agent-tool-")) {
+    return readableToolName(event.details?.tool);
+  }
+  return humanEventLabel(event.type);
+}
+
+/** Pull text out of a bounded tool preview while leaving its complete fields in the detail panel. */
+function compactToolPreview(value: string, depth = 0): string {
+  if (depth > 2 || !value.trim().startsWith("{")) return value;
+  try {
+    const parsed = record(JSON.parse(value));
+    for (const key of ["error", "stdout", "message", "text", "output", "goals"]) {
+      const text = str(parsed[key]);
+      if (text) return compactToolPreview(text, depth + 1);
+    }
+    if (Array.isArray(parsed.content)) {
+      const text = parsed.content.map(block => str(record(block).text)).filter(Boolean).slice(0, 3).join(" · ");
+      if (text) return compactToolPreview(text, depth + 1);
+    }
+  } catch {
+    // A truncated JSON preview is still useful text; the exact record is expandable.
+  }
+  return value;
+}
+
+/** Prefer the provider's description or content to runtime framing in compact rows. */
+export function activityEventPreview(event: ActivityEvent): string {
+  const details = record(event.details);
+  const text = event.type === "agent-tool-start"
+    ? str(details.description) || str(details.content_preview) || str(details.arguments_preview)
+    : event.type === "agent-tool-end" || event.type === "agent-tool-progress"
+      ? str(details.result_preview) || str(details.description)
+      : str(details.content_preview) || str(details.reasoning_preview);
+  const preview = event.type.startsWith("agent-tool-") ? compactToolPreview(text || event.message) : text || event.message;
+  return preview.replace(/\s+/g, " ").trim();
+}
+
+/** Describe observed activity only; a finished provider tool is not an accepted proof. */
+export function activityEventState(event: ActivityEvent): string {
+  const details = record(event.details);
+  const status = str(details.status).toLowerCase();
+  if (details.error || details.is_error === true || details.success === false || BAD.has(status)) return "Failed";
+  if (event.type === "agent-tool-start") return "Running";
+  if (details.partial === true) return "Streaming";
+  if (event.type === "agent-tool-end") return "Finished";
+  return "";
+}
+
+/** Keep an expanded live item open as its cumulative preview receives a new evidence id. */
+export function activityEventKey(event: ActivityEvent): string {
+  const item = event.details?.item_id;
+  return typeof item === "string" && item && typeof event.details?.invocation_id === "string" && event.details.invocation_id
+    ? JSON.stringify([
+      event.run_id, event.details?.job_id || event.agent_id, event.agent_id,
+      event.details?.invocation_id || "", event.type === "agent-tool-progress" ? "agent-tool-end" : event.type,
+      event.details?.reasoning_kind || "", item,
+    ])
+    : event.event_id;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -173,7 +250,7 @@ export function segmentLogRows(
       continue;
     }
     segments.push({
-      key: `${event.agent_id}:${event.event_id}`,
+      key: `${event.agent_id}:${activityEventKey(event)}`,
       agentId: event.agent_id,
       session: sessions.get(event.agent_id) ?? null,
       events: [event],

@@ -53,7 +53,7 @@ export function ProverJobs({ state, now, onOpen, onJob }: {
           {settings.source === "shared" && <> · run-level settings</>}
         </div>}
         <ProverModelHistory job={job} />
-        <AgentActivity runId={state.run_id} jobId={job.id} agentId={job.agent_id} />
+        <AgentActivity runId={state.run_id} jobId={job.id} agentId={job.agent_id} running={timeline.live} now={now} />
         {job.error && <div className="prover-op-error">{job.error}</div>}
         {job.stop_reason && <div className="prover-job-stop">
           <strong>Allocation ended:</strong> {job.stop_reason.message || job.stop_reason.code}

@@ -1672,6 +1672,14 @@ body.vscode-high-contrast-light {
 .providers-view { display: grid; gap: 16px; }
 .agent-activity { margin: 10px 0; }
 .agent-latest { white-space: pre-wrap; overflow-wrap: anywhere; border-left: 2px solid var(--vscode-focusBorder); padding-left: 10px; }
+.agent-latest-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 11px; }
+.agent-latest p { margin: 6px 0; line-height: 1.5; }
+.agent-current { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 12px; margin-bottom: 10px; }
+.agent-live-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--vscode-progressBar-background); }
+.agent-event-state { flex: 0 0 auto; font-size: 10px; border-radius: 4px; padding: 0 5px; border: 1px solid var(--vscode-panel-border); color: var(--lf-muted); }
+.agent-event-state.running, .agent-event-state.streaming { color: var(--vscode-textLink-foreground); }
+.agent-event-state.failed { color: var(--vscode-errorForeground); }
+.log-line.reasoning .type { color: var(--vscode-charts-purple, var(--lf-accent)); }
 .agent-activity-feed { max-height: 520px; overflow-y: auto; margin: 8px 0; }
 .agent-activity-entry { border-bottom: 1px solid var(--vscode-panel-border); }
 .agent-activity-entry.reasoning { border-left: 2px solid var(--vscode-textLink-foreground); }

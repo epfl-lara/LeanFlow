@@ -49,6 +49,15 @@ start, including when all prerequisite executables are already installed.
 The installer prefers the system `/usr/bin/bwrap` over a user-local copy so
 host AppArmor rules apply to the intended executable.
 
+Rerunning the installer adopts a compatible local Lemex upgrade. To refresh just
+the managed Lemex package, run
+`python -m leanflow_cli.runtime.lemex_install --refresh --no-build` from an
+activated LeanFlow environment. Refresh validates and snapshots the package,
+then switches the managed pointer atomically. It preserves native configuration,
+authentication and older immutable copies. Without a compatible local package,
+`--no-build` keeps the existing healthy runtime. Omit it to allow a pinned source
+build when necessary.
+
 On restricted Ubuntu hosts, installing `bubblewrap` alone may not provide the
 AppArmor policy required to create a sandbox. Ask an administrator to review
 and load the [Bubblewrap profile recommended by Ubuntu](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007),

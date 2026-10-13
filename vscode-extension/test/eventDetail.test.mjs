@@ -139,6 +139,25 @@ test("tool results keep their structure and flag failures", () => {
   assert.equal(failed.find((section) => section.id === "arguments"), undefined, "empty arguments are omitted");
 });
 
+test("native MCP text outputs render their contents rather than the transport envelope", () => {
+  const result = { content: [{ type: "text", text: JSON.stringify({ ok: false, goals: "⊢ n + 0 = n", error: "unsolved goals" }) }], isError: true };
+  const sections = eventOutputSections(event("agent-tool-end", { tool: "lean_check", description: "Check the current proof", status: "failed" }), { result });
+  assert.deepEqual(titles(sections), ["Action", "Tool output"]);
+  assert.equal(sections[1].kind, "fields");
+  assert.equal(sections[1].value.goals, "⊢ n + 0 = n");
+  assert.equal(sections[1].tone, "err");
+  assert.ok(!sections[1].text.includes('"content"'));
+  assert.deepEqual(result.content.length, 1, "original evidence is not modified");
+});
+
+test("reasoning labels distinguish an exposed summary from an exposed trace", () => {
+  for (const [kind, label] of [["summary", "Reasoning summary"], ["trace", "Reported reasoning trace"], [undefined, "Reported reasoning"]]) {
+    const sections = eventOutputSections(event("agent-reasoning", { reasoning_kind: kind, partial: true, content_preview: "Public provider text [REDACTED]" }), null);
+    assert.equal(sections[0].title, label);
+    assert.equal(sections[0].text, "Public provider text [REDACTED]");
+  }
+});
+
 test("legacy assistant-response rows expand from their own details", () => {
   const sections = eventOutputSections(
     event("assistant-response", {

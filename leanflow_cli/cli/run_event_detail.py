@@ -116,7 +116,7 @@ def _candidate(source: str, record: dict[str, Any]) -> dict[str, Any] | None:
 def _select(
     candidates: list[dict[str, Any]], event: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, str]:
-    """Pick the record for ``event``: by shared id, else by kind, count, tool, and time."""
+    """Require explicit evidence IDs; use kind/count/tool/time only for legacy rows."""
     details = event.get("details")
     details = details if isinstance(details, dict) else {}
     wanted = str(details.get("evidence_id", "") or "")
@@ -124,6 +124,7 @@ def _select(
         for candidate in candidates:
             if candidate["evidence_id"] == wanted:
                 return candidate, "evidence_id"
+        return None, ""
     kind = str(event.get("type", "") or "")
     same_kind = [candidate for candidate in candidates if candidate["kind"] == kind]
     api_calls = details.get("api_calls")
