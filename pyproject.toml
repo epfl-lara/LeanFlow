@@ -12,7 +12,7 @@ authors = [{ name = "LeanFlow contributors" }]
 license = { text = "Apache-2.0" }
 dependencies = [
   "httpx",
-  "lean-probe>=0.3.0,<0.4",
+  "lean-probe>=0.3.0,<0.5",
   "prompt_toolkit",
   "pydantic>=2.0",
   "python-dotenv",
@@ -23,8 +23,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0,<2", "black>=24", "ruff>=0.6", "mypy>=1.11"]
-mcp = ["mcp>=1.2.0,<2"]
+dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0,<3", "black>=24", "ruff>=0.6", "mypy>=1.11"]
+mcp = ["mcp>=1.2.0,<3"]
 pty = [
   "ptyprocess>=0.7.0; sys_platform != 'win32'",
   "pywinpty>=2.0.0; sys_platform == 'win32'",
