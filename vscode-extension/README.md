@@ -67,9 +67,10 @@ jobs. Research adds planning and review around a theorem dependency graph.
 **Standard** uses one prover directly. Target selects the file containing proof
 holes; an empty target scans eligible project source files.
 
-The **Global limits** card has optional calls, reported tokens, and active time.
+The **Global limits** card defaults to 250 agent calls and 24 hours of active time;
+reported tokens are unlimited by default.
 Time is entered in minutes. Empty limits display as **∞**; zero means exhausted.
-Research also defaults to 15 prover calls and 5 orchestrator calls across the run.
+Research also defaults to 200 prover calls and 50 orchestrator calls across the run.
 Explicitly clear a role limit for unlimited. Profile values and launch overrides
 remain distinguishable, with help beside unfamiliar controls.
 

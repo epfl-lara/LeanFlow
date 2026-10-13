@@ -89,8 +89,10 @@ export interface LaunchEnv {
 /** Values above this length are rejected rather than passed to a child process. */
 const MAX_ENV_VALUE_LENGTH = 4096;
 
-// These native role limits distinguish an absent default from explicit Unlimited.
+// Bounded defaults must remain distinct from an explicit unlimited allowance.
 export const EMPTY_UNLIMITED_KNOBS = new Set([
+  "LEANFLOW_PROVER_AGENT_CALLS",
+  "LEANFLOW_PROVER_WALL_TIME_S",
   "LEANFLOW_PROVER_PROVER_SESSIONS",
   "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS",
   "LEANFLOW_PROVER_NEGATION_SESSIONS",

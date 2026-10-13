@@ -32,7 +32,7 @@ def test_prover_exposes_only_optional_global_limits() -> None:
     for name in ("AGENT_CALLS", "TOKENS", "WALL_TIME_S"):
         spec = lookup_flag("LEANFLOW_PROVER_" + name)
         assert spec is not None
-        assert spec.default == ""
+        assert spec.default == {"AGENT_CALLS": "250", "WALL_TIME_S": "86400"}.get(name, "")
         assert spec.minimum == 0
     for name in (
         "TIMEOUT_S",

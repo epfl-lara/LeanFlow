@@ -197,8 +197,11 @@ are visible through normal filesystem metadata. Final verification remains requi
 
 ## Accounting and persistent contracts
 
-Unset global calls/tokens/time are unlimited; zero is exhausted. Prover role caps
-default to 15 prover and 5 orchestrator invocations per run. A spawned call is
+`core/workflow_limits.py` supplies new-run defaults shared by configuration,
+the controller, and the editor catalog: 250 total agent calls, 200 prover calls,
+50 orchestration calls, and 24 active hours. Explicit null/empty limits remain
+unlimited; zero is exhausted. Saved runs retain their limits unless overridden.
+A spawned call is
 charged even if interrupted; only proven non-start is refunded. Missing tokens
 remain unknown, and a token cap gates later admission rather than interrupting
 an invocation at an exact service-side count.

@@ -7,10 +7,34 @@ import sys
 import threading
 import time
 from io import StringIO
+from unittest.mock import Mock
 
 import pytest
 
 from leanflow_cli.workflows.project_setup import process
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX owned process groups")
+@pytest.mark.parametrize("running", [False, True])
+def test_macos_empty_group_permission_race_requires_an_exited_leader(
+    monkeypatch: pytest.MonkeyPatch, running: bool
+) -> None:
+    """Ignore macOS's empty-group error while preserving live-process failures."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    child = Mock(pid=424242)
+    child.poll.return_value = None if running else 0
+
+    def signal_group(pid: int, value: int) -> None:
+        if value != process.signal.SIGTERM:
+            raise PermissionError("group disappeared after termination")
+
+    monkeypatch.setattr(process.os, "killpg", signal_group)
+    if running:
+        with pytest.raises(PermissionError):
+            process._stop(child)
+    else:
+        process._stop(child)
+        child.wait.assert_called_once()
 
 
 def test_streaming_output_redacts_credentials_without_corrupting_raw_protocol(tmp_path):

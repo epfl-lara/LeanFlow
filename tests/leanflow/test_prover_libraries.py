@@ -126,7 +126,7 @@ def test_accepted_online_plan_installs_with_real_controller_defaults(project, mo
     )
     assert owner._research_plan("Plan with a new dependency")
     assert calls == ["orchestrator", "orchestrator", "review"]
-    assert timeouts == [None]
+    assert len(timeouts) == 1 and 0 < timeouts[0] <= 86400
     assert owner.state["proposal_status"] == "accepted"
     assert owner.state["libraries"][0]["status"] == "installed"
 

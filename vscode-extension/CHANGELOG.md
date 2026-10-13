@@ -3,6 +3,14 @@
 User-visible changes to the LeanFlow VS Code extension. Entries before 0.1.20
 include features and settings from the former direct-provider runtime.
 
+## 0.1.38
+
+- Default new proof runs to 250 total agent calls, 200 prover calls, 50
+  orchestration calls, and 24 hours of active time.
+- Preserve explicit unlimited global limits when clearing the launch controls.
+- Keep project setup cancellation reliable on macOS when a subprocess exits
+  during Stop.
+
 ## 0.1.34
 
 - Keep saved provider settings separate for each Remote SSH host, including

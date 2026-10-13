@@ -30,7 +30,7 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
     for task in config["auxiliary"].values():
         assert task == {"provider": "", "model": "", "reasoning_effort": ""}
     assert config["agent"] == {"reasoning_effort": ""}
-    assert config["limits"] == {"agent_calls": None, "tokens": None, "wall_time_s": None}
+    assert config["limits"] == {"agent_calls": 250, "tokens": None, "wall_time_s": 86400}
     assert "compression" not in config
     assert "local_models" not in config
     assert "custom_providers" not in config

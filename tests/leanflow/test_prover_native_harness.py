@@ -35,9 +35,14 @@ def native_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_native_defaults_leave_global_limits_and_model_settings_unset() -> None:
+def test_native_defaults_bound_calls_and_time_without_overriding_model_settings() -> None:
     config = ProverConfig.from_env({"LEANFLOW_NATIVE_PROVIDER": "lemex"})
-    assert (config.agent_calls, config.tokens, config.wall_time_s, config.timeout_s) == (None,) * 4
+    assert (config.agent_calls, config.tokens, config.wall_time_s, config.timeout_s) == (
+        250,
+        None,
+        86400,
+        None,
+    )
     assert (config.model, config.reasoning_effort, config.provider) == ("", "", "lemex")
     assert ProverConfig.from_env({"LEANFLOW_PROVER_AGENT_CALLS": "0"}).agent_calls == 0
 
@@ -352,11 +357,11 @@ def test_silent_session_has_no_three_or_twenty_minute_deadline(
         "leanflow_cli.workflows.prover.runtime.time.monotonic", lambda: runtime.started + 3600
     )
     runtime._ensure_active()
-    assert runtime._remaining_verification_time() is None
+    assert runtime._remaining_verification_time() == 86400 - 3600
     runtime._persist()
     saved = json.loads((runtime.store.directory / "state.json").read_text())
     assert saved["metrics"]["elapsed_s"] >= 3600
-    assert saved["metrics"]["agent_call_limit"] is None
+    assert saved["metrics"]["agent_call_limit"] == 250
 
 
 def test_bridge_polling_preserves_work_and_assignment_is_immutable(tmp_path: Path) -> None:

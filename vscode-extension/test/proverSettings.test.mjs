@@ -46,11 +46,11 @@ const flags = [
   ["ORCHESTRATOR_MODEL", "string", ""],
   ["REASONING_EFFORT", "string", ""],
   ["ORCHESTRATOR_REASONING_EFFORT", "string", ""],
-  ["AGENT_CALLS", "int", ""],
+  ["AGENT_CALLS", "int", "250"],
   ["TOKENS", "int", ""],
-  ["WALL_TIME_S", "float", ""],
-  ["PROVER_SESSIONS", "int", "15"],
-  ["ORCHESTRATOR_SESSIONS", "int", "5"],
+  ["WALL_TIME_S", "float", "86400"],
+  ["PROVER_SESSIONS", "int", "200"],
+  ["ORCHESTRATOR_SESSIONS", "int", "50"],
   ["NEGATION_SESSIONS", "int", ""],
   ["MAX_RESTARTS", "int", ""],
   ["PLAN_REFINEMENTS", "int", ""],
@@ -152,17 +152,19 @@ test("reasoning defaults do not force a level, and unknown saved values stay vis
   assert.ok(elements(future.control("REASONING_EFFORT")).some((item) => item.type === "option" && item.props.value === "future-level"));
 });
 
-test("global limits show infinity and their controls remain outside the help disclosures", () => {
+test("bounded defaults are visible and controls remain outside the help disclosures", () => {
   const ui = fixture();
   const rendered = elements([GlobalLimits(), ProverSettings()]);
   assert.ok(rendered.some(item => item.props?.["aria-label"] === "About Global limits"));
   for (const help of elements(GlobalLimits()).filter(item => item.type === "details")) {
     assert.equal(elements(help).some(item => item.type === "input"), false);
   }
-  for (const suffix of ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"]) {
+  for (const [suffix, value] of [["AGENT_CALLS", "250"], ["TOKENS", ""], ["WALL_TIME_S", "1440"]]) {
     assert.equal(ui.control(suffix).props.placeholder, "∞");
-    assert.equal(ui.control(suffix).props.value, "");
+    assert.equal(ui.control(suffix).props.value, value);
   }
+  assert.equal(ui.control("PROVER_SESSIONS").props.value, "200");
+  assert.equal(ui.control("ORCHESTRATOR_SESSIONS").props.value, "50");
   assert.deepEqual(ui.environment().env, { set: {}, unset: [] });
 });
 
@@ -186,8 +188,8 @@ test("clearing an inherited limit makes it Unlimited and profile reset restores 
   assert.equal(ui.control("AGENT_CALLS").props.value, "7");
   ui.control("AGENT_CALLS").props.onChange({ target: { value: "" } });
   assert.equal(ui.control("AGENT_CALLS").props.value, "");
-  assert.equal(ui.environment().env.set[prefix + "AGENT_CALLS"], undefined);
-  assert.deepEqual(ui.environment().env.unset, [prefix + "AGENT_CALLS"]);
+  assert.equal(ui.environment().env.set[prefix + "AGENT_CALLS"], "");
+  assert.deepEqual(ui.environment().env.unset, []);
   const reset = elements([GlobalLimits(), ProverSettings()]).find(item => item.props?.["aria-label"] === "Restore profile agent calls");
   assert.ok(reset);
   reset.props.onClick();
@@ -276,7 +278,8 @@ for (const kind of ["prove", "formalize", "review", "refactor", "golf", "draft"]
       ui.change(ui.input(prefix + "WALL_TIME_S"), "2.5");
       let launch = resolveLaunchEnv(ui.view.form, ui.app.profiles, ui.app.catalog);
       assert.deepEqual(launch.rejected, []);
-      assert.deepEqual(launch.env.unset, [prefix + "AGENT_CALLS"]);
+      assert.deepEqual(launch.env.unset, []);
+      assert.equal(launch.env.set[prefix + "AGENT_CALLS"], "");
       assert.equal(launch.env.set[prefix + "WALL_TIME_S"], "150");
       ui.click("Restore profile agent calls");
       launch = resolveLaunchEnv(ui.view.form, ui.app.profiles, ui.app.catalog);
@@ -353,8 +356,8 @@ test("Research, bottom-up and role call defaults come from the current catalog",
   assert.equal(ui.control("MODE").props.value, "research");
   const order = ui.control("SEARCH_ORDER");
   assert.equal(elements(order).find(item => item.type === "option" && item.props.value === "__default__").props.children.join(""), "default (bottom-up)");
-  assert.equal(ui.control("PROVER_SESSIONS").props.value, "15");
-  assert.equal(ui.control("ORCHESTRATOR_SESSIONS").props.value, "5");
+  assert.equal(ui.control("PROVER_SESSIONS").props.value, "200");
+  assert.equal(ui.control("ORCHESTRATOR_SESSIONS").props.value, "50");
   assert.deepEqual(ui.environment().env.set, {});
 });
 

@@ -155,21 +155,23 @@ and role settings are optional explicit overrides. Lemex inherits its native
 there. The [backend reference](docs/product-reference.md#native-backends) covers
 setup and migration from the former direct-provider engine.
 
-Global limits on agent calls, reported tokens, and active time are optional:
+New proof runs default to **250 total agent calls**, with caps of **200 prover
+calls** and **50 orchestration calls**, plus **24 hours of active time**. Configure
+global limits on calls, reported tokens, and active time:
 
 ```bash
-leanflow config set limits.agent_calls 100
+leanflow config set limits.agent_calls 250
 leanflow config set limits.tokens 1000000
-leanflow config set limits.wall_time_s 28800
+leanflow config set limits.wall_time_s 86400
 ```
 
 One native CLI invocation is one agent call, including a new retry or resume
 process. Its internal model requests and compaction share that call. Rejected
 submissions return feedback within that session; a new attempt carries forward
-the saved partial proof, notes, and report. Research
-also defaults to 15 prover calls and 5 orchestrator calls across the run; clear
-a role cap to make it unlimited. Token limits gate later invocations and may be
-exceeded by an active call. These are whole-job limits, rather than per-agent
+the saved partial proof, notes, and report. Research uses the role caps across
+the entire run; clear a limit to make it unlimited. Token limits gate later
+invocations and may be exceeded by an active call. These are whole-job limits,
+rather than per-agent
 model-request budgets. Limits and spending survive resume.
 
 User configuration lives in `~/.leanflow/config.yaml`; project registration and

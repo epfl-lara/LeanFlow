@@ -8,6 +8,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -75,6 +76,12 @@ def _stop(process: subprocess.Popen[str]) -> None:
             os.killpg(process.pid, value)
             return True
         except ProcessLookupError:
+            return False
+        except PermissionError:
+            # macOS can report EPERM for an empty group while its leader exits.
+            # A live owned process must still surface a real signalling failure.
+            if sys.platform != "darwin" or process.poll() is None:
+                raise
             return False
 
     if signal_group(signal.SIGTERM):

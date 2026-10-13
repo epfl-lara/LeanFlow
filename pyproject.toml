@@ -148,6 +148,7 @@ files = [
   "leanflow_cli/flags/prover_catalog.py",
   "leanflow_cli/cli/prover_status.py",
   "core/constants.py",
+  "core/workflow_limits.py",
   "core/filesystem.py",
   "core/file_copy.py",
   "leanflow_cli/flags/__init__.py",

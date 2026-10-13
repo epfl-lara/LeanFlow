@@ -13,6 +13,42 @@ from leanflow_cli.flags.spec import FlagProfile
 from leanflow_cli.workflows.prover.config import ProverConfig
 
 
+def test_legacy_call_input_and_explicit_unlimited_remain_supported() -> None:
+    assert ProverConfig(total_api_calls=19).agent_calls == 19
+    assert ProverConfig(agent_calls=None).agent_calls is None
+    assert ProverConfig(agent_calls=0).agent_calls == 0
+    with pytest.raises(ValueError, match="disagree"):
+        ProverConfig(agent_calls=19, total_api_calls=20)
+
+
+def test_default_limits_agree_across_config_runtime_and_editor_catalog() -> None:
+    from leanflow_cli.config import DEFAULT_CONFIG
+
+    defaults = {
+        "agent_calls": 250,
+        "prover_sessions": 200,
+        "orchestrator_sessions": 50,
+        "wall_time_s": 86400,
+    }
+    config = ProverConfig.from_env({})
+    for name, expected in defaults.items():
+        assert getattr(config, name) == expected
+        flag = lookup_flag("LEANFLOW_PROVER_" + name.upper())
+        assert flag is not None and float(flag.default) == expected
+    assert DEFAULT_CONFIG["limits"]["agent_calls"] == 250
+    assert DEFAULT_CONFIG["limits"]["wall_time_s"] == 86400
+
+
+@pytest.mark.parametrize("name", ["agent_calls", "wall_time_s"])
+@pytest.mark.parametrize("raw, expected", [("", None), ("0", 0), ("19", 19)])
+def test_bounded_global_defaults_allow_explicit_unlimited_and_zero(
+    name: str, raw: str, expected: int | None
+) -> None:
+    config = ProverConfig.from_env({"LEANFLOW_PROVER_" + name.upper(): raw})
+    assert getattr(config, name) == expected
+    assert getattr(ProverConfig(**config.to_mapping()), name) == expected
+
+
 @pytest.mark.parametrize("name", ["max_restarts", "plan_refinements", "max_decompositions"])
 @pytest.mark.parametrize("raw, expected", [("", None), ("0", 0), ("7", 7)])
 def test_structural_limits_are_optional_public_launch_settings(
@@ -56,7 +92,7 @@ def test_role_invocation_limits_are_serialized_and_editable(
     assert getattr(ProverConfig(**config.to_mapping()), name) == expected
     spec = lookup_flag(env_name)
     assert spec is not None and spec.extension_editable
-    assert spec.default == {"prover_sessions": "15", "orchestrator_sessions": "5"}.get(name, "")
+    assert spec.default == {"prover_sessions": "200", "orchestrator_sessions": "50"}.get(name, "")
     assert spec.minimum == 0
 
 
@@ -123,7 +159,8 @@ def test_new_prover_launch_defaults_to_research_bottom_up_and_role_limits(
     assert plan.workflow.research_mode
     assert plan.child_env["LEANFLOW_RESEARCH_MODE"] == "1"
     assert (config.mode, config.search_order) == ("research", "bottom-up")
-    assert (config.prover_sessions, config.orchestrator_sessions) == (15, 5)
+    assert (config.prover_sessions, config.orchestrator_sessions) == (200, 50)
+    assert (config.agent_calls, config.wall_time_s) == (250, 86400)
     for suffix, expected in (("MODE", "research"), ("SEARCH_ORDER", "bottom-up")):
         spec = lookup_flag("LEANFLOW_PROVER_" + suffix)
         assert spec is not None and spec.default == expected
@@ -142,16 +179,21 @@ def test_explicit_legacy_research_false_preserves_standard_selection(
     assert (config.mode, config.search_order) == ("standard", "top-down")
 
 
-def test_explicit_unlimited_role_calls_have_an_honest_preview_source(
+def test_explicit_unlimited_calls_and_time_have_an_honest_preview_source(
     native_launch: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for name in ("LEANFLOW_PROVER_PROVER_SESSIONS", "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS"):
+    for name in (
+        "LEANFLOW_PROVER_AGENT_CALLS",
+        "LEANFLOW_PROVER_WALL_TIME_S",
+        "LEANFLOW_PROVER_PROVER_SESSIONS",
+        "LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS",
+    ):
         monkeypatch.setenv(name, "")
     plan = workflow.resolve_workflow_request(
         "/prove Main.lean", active_cwd=native_launch, preview=True
     )
     preview = workflow.prover_config_preview(plan)
-    for name in ("prover_sessions", "orchestrator_sessions"):
+    for name in ("agent_calls", "wall_time_s", "prover_sessions", "orchestrator_sessions"):
         assert preview["effective"][name] is None
         assert preview["sources"][name] == "environment"
 
@@ -208,6 +250,39 @@ def test_resume_applies_explicit_limits_without_resetting_spend_or_model_setting
     assert state["metrics"] == {"agent_calls": 7, "elapsed_s": 3847}
     untouched = restore_research_config(requested, state, env={})
     assert untouched.agent_calls == 25 and untouched.wall_time_s == 3600
+
+
+def test_default_launch_does_not_replace_a_checkpoints_saved_global_limits(
+    native_launch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from leanflow_cli.config import DEFAULT_CONFIG
+    from leanflow_cli.workflows.prover.research_policy import restore_research_config
+
+    monkeypatch.setattr("leanflow_cli.config.load_config", lambda: DEFAULT_CONFIG)
+    plan = workflow.resolve_workflow_request(
+        "/prove Main.lean", active_cwd=native_launch, preview=True
+    )
+    saved = ProverConfig(agent_calls=37, wall_time_s=7200).to_mapping()
+    restored = restore_research_config(
+        ProverConfig.from_env(plan.child_env),
+        {"config": saved, "research_policy": "online-v1"},
+        env=plan.child_env,
+    )
+    assert (restored.agent_calls, restored.wall_time_s) == (37, 7200)
+
+
+def test_explicit_null_config_limits_clear_bounded_launch_defaults(
+    native_launch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "leanflow_cli.config.load_config",
+        lambda: {"limits": {"agent_calls": None, "wall_time_s": None}},
+    )
+    plan = workflow.resolve_workflow_request(
+        "/prove Main.lean", active_cwd=native_launch, preview=True
+    )
+    config = ProverConfig.from_env(plan.child_env)
+    assert config.agent_calls is None and config.wall_time_s is None
 
 
 def test_builtin_research_profile_activates_native_controller_without_legacy_features(

@@ -355,7 +355,7 @@ def test_assignment_and_recovery_guidance_show_remaining_role_capacity(tmp_path:
     assert "negate is unavailable" in seen[0]["prompt"]
 
 
-@pytest.mark.parametrize("role,limit", [("prover", 15), ("orchestrator", 5)])
+@pytest.mark.parametrize("role,limit", [("prover", 200), ("orchestrator", 50)])
 def test_default_campaign_stops_at_the_native_invocation_limit(
     tmp_path: Path, role: str, limit: int
 ) -> None:

@@ -235,13 +235,14 @@ model:
 agent:
   reasoning_effort: ""
 limits:
-  agent_calls: null
+  agent_calls: 250
   tokens: null
-  wall_time_s: null
+  wall_time_s: 86400
 ```
 
-The global limits cover every role and all resumes. `null` or an unset global
-limit means unlimited; zero means exhausted. Environment overrides are
+The global limits cover every role and all resumes. Missing settings default to
+250 calls and 24 active hours. An explicit `null` or empty environment value means
+unlimited; zero means exhausted. Environment overrides are
 `LEANFLOW_PROVER_AGENT_CALLS`, `LEANFLOW_PROVER_TOKENS`, and
 `LEANFLOW_PROVER_WALL_TIME_S`. They also apply to non-prover workflows.
 
@@ -256,7 +257,7 @@ future invocations; a running invocation can overshoot. Missing usage remains
 unknown and prevents another token-capped invocation. LeanFlow has no default
 per-response deadline or custom context-compression policy.
 
-Research also has run-wide role caps: 15 prover calls and 5 orchestrator calls by
+Research also has run-wide role caps: 200 prover calls and 50 orchestrator calls by
 default. Planning, review, research, and recovery share the orchestrator cap.
 Explicitly clear a role limit for unlimited. The [prover settings](prover-workflow.md#settings-and-limits)
 cover role caps, scheduling, recovery, and graph bounds.

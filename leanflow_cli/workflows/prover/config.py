@@ -8,6 +8,13 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from core.workflow_limits import (
+    DEFAULT_ACTIVE_TIME_S,
+    DEFAULT_AGENT_CALLS,
+    DEFAULT_ORCHESTRATOR_CALLS,
+    DEFAULT_PROVER_CALLS,
+)
+
 REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 ENV_NAMES = {
@@ -52,17 +59,17 @@ _RETIRED_SETTINGS = (
 
 @dataclass(frozen=True)
 class ProverConfig:
-    """Keep native settings explicit and global resource limits unlimited when unset."""
+    """Keep native settings explicit and bound new runs unless limits are cleared."""
 
     mode: str = "research"
     search_order: str = "bottom-up"
     parallelism: int = 2
-    agent_calls: int | None = None
-    prover_sessions: int | None = 15
-    orchestrator_sessions: int | None = 5
+    agent_calls: int | None = DEFAULT_AGENT_CALLS
+    prover_sessions: int | None = DEFAULT_PROVER_CALLS
+    orchestrator_sessions: int | None = DEFAULT_ORCHESTRATOR_CALLS
     negation_sessions: int | None = None
     tokens: int | None = None
-    wall_time_s: float | None = None
+    wall_time_s: float | None = float(DEFAULT_ACTIVE_TIME_S)
     max_nodes: int = 128
     max_restarts: int | None = None
     plan_refinements: int | None = None
@@ -88,10 +95,12 @@ class ProverConfig:
         if (
             self.agent_calls is not None
             and self.total_api_calls is not None
-            and self.agent_calls != self.total_api_calls
+            and self.agent_calls not in {DEFAULT_AGENT_CALLS, self.total_api_calls}
         ):
             raise ValueError("agent_calls and total_api_calls disagree")
-        calls = self.agent_calls if self.agent_calls is not None else self.total_api_calls
+        # Internal legacy callers supply only total_api_calls; it replaces the
+        # new-run default, while explicit non-default canonical limits must agree.
+        calls = self.total_api_calls if self.total_api_calls is not None else self.agent_calls
         object.__setattr__(self, "agent_calls", calls)
         object.__setattr__(self, "total_api_calls", calls)
         if self.mode not in {"standard", "research"}:
@@ -177,7 +186,12 @@ class ProverConfig:
         for name, env_name in ENV_NAMES.items():
             raw = source.get(env_name, "").strip()
             if not raw:
-                if env_name in source and name in {"prover_sessions", "orchestrator_sessions"}:
+                if env_name in source and name in {
+                    "agent_calls",
+                    "prover_sessions",
+                    "orchestrator_sessions",
+                    "wall_time_s",
+                }:
                     # Clearing a visible limit means Unlimited, not the new-run default.
                     values[name] = None
                 continue
@@ -190,6 +204,8 @@ class ProverConfig:
                 values[name] = raw.lower() in {"1", "true", "yes", "on"}
             elif isinstance(default, int):
                 values[name] = int(raw)
+            elif isinstance(default, float):
+                values[name] = float(raw)
             elif name == "allowed_axioms":
                 values[name] = tuple(part.strip() for part in raw.split(",") if part.strip())
             else:

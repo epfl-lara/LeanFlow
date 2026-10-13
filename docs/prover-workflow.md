@@ -132,19 +132,21 @@ aliases and overrides; missing values stay unknown.
 
 | Environment setting | Default | Meaning |
 | --- | --- | --- |
-| `LEANFLOW_PROVER_AGENT_CALLS` | unset | Native invocations across all roles |
+| `LEANFLOW_PROVER_AGENT_CALLS` | 250 | Native invocations across all roles |
 | `LEANFLOW_PROVER_TOKENS` | unset | Reported-token threshold for future calls |
-| `LEANFLOW_PROVER_WALL_TIME_S` | unset | Cumulative active time, including checks |
-| `LEANFLOW_PROVER_PROVER_SESSIONS` | 15 | Prover calls across goals, retries, and resumes |
-| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | 5 | Planning, review, research, and recovery calls |
+| `LEANFLOW_PROVER_WALL_TIME_S` | 86400 (24 hours) | Cumulative active time, including checks |
+| `LEANFLOW_PROVER_PROVER_SESSIONS` | 200 | Prover calls across goals, retries, and resumes |
+| `LEANFLOW_PROVER_ORCHESTRATOR_SESSIONS` | 50 | Planning, review, research, and recovery calls |
 | `LEANFLOW_PROVER_NEGATION_SESSIONS` | unset | Refutation calls across the run |
 
 Global limits also use `limits.agent_calls`, `limits.tokens`, and
-`limits.wall_time_s` in LeanFlow configuration. Unset global limits are unlimited;
-zero means exhausted. Role caps are additional ceilings within the global cap.
-An absent role setting uses its default; an explicitly empty value selects
-unlimited. Resume retains saved limits unless new limit controls are explicitly
-supplied. Changing a limit preserves spent calls and accumulated active time.
+`limits.wall_time_s` in LeanFlow configuration. New runs default to 250 total
+calls and 24 active hours; token usage is unlimited by default. Missing settings
+use these defaults; explicit `null` configuration or empty environment values
+select unlimited. Zero means exhausted. Role caps are additional ceilings within
+the global cap, shared across every job in that role. Resume retains saved limits
+unless new limit controls are explicitly supplied. Changing a limit preserves
+spent calls and accumulated active time.
 
 One native process (`codex exec`, `lemex exec`, or `claude -p`) is one agent call.
 Internal model requests, retries, and compaction remain inside it. A new process

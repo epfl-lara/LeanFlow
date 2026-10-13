@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from core.workflow_limits import (
+    DEFAULT_ACTIVE_TIME_S,
+    DEFAULT_AGENT_CALLS,
+    DEFAULT_ORCHESTRATOR_CALLS,
+    DEFAULT_PROVER_CALLS,
+)
 from leanflow_cli.flags.spec import FlagSpec
 
 _READER = ("leanflow_cli/workflows/prover/config.py",)
@@ -82,17 +88,17 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
     _integer("MAX_NODES", 128, "Maximum total theorem and helper nodes in the proof graph.", 1),
     _integer(
         "AGENT_CALLS",
-        None,
+        DEFAULT_AGENT_CALLS,
         "Global native CLI invocation limit. Each resume or retry is another call; empty means unlimited.",
     ),
     _integer(
         "PROVER_SESSIONS",
-        15,
+        DEFAULT_PROVER_CALLS,
         "Campaign-wide native prover invocation limit across all goals, retries, and resumes. Each invocation may make multiple model requests. Empty means unlimited; 0 disables prover invocations.",
     ),
     _integer(
         "ORCHESTRATOR_SESSIONS",
-        5,
+        DEFAULT_ORCHESTRATOR_CALLS,
         "Campaign-wide native invocation limit shared by planning, review, and research jobs, including retries and resumes. Each invocation may make multiple model requests. Empty means unlimited; 0 disables these invocations.",
     ),
     _integer(
@@ -109,7 +115,7 @@ PROVER_FLAGS: tuple[FlagSpec, ...] = (
         name="LEANFLOW_PROVER_WALL_TIME_S",
         kind="tuning",
         value_type="float",
-        default="",
+        default=str(DEFAULT_ACTIVE_TIME_S),
         group=_GROUP,
         summary="Global active campaign seconds across resumes, including tools and verification. Empty means unlimited.",
         read_in=_READER,

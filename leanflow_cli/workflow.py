@@ -281,7 +281,10 @@ def prover_config_preview(plan: NativeLaunchPlan) -> dict[str, Any]:
     sources: dict[str, str] = {}
     for field, name in ENV_NAMES.items():
         raw = str(env.get(name, "") or "").strip()
-        if raw or (name in env and field in {"prover_sessions", "orchestrator_sessions"}):
+        if raw or (
+            name in env
+            and field in {"agent_calls", "prover_sessions", "orchestrator_sessions", "wall_time_s"}
+        ):
             sources[field] = "environment" if parent.get(name) == env.get(name) else "launcher"
         elif field == "allowed_axioms" and str(env.get("LEANFLOW_NATIVE_ALLOWED_AXIOMS", "")):
             sources[field] = "launcher"
@@ -873,13 +876,21 @@ def resolve_workflow_request(
         toolset_name = "leanflow-native"
 
     child_env = dict(os.environ)
-    from leanflow_cli.config import load_config
+    from leanflow_cli.config import DEFAULT_CONFIG, load_config
 
     limits = load_config().get("limits", {})
     for name in ("agent_calls", "tokens", "wall_time_s"):
         value = limits.get(name) if isinstance(limits, Mapping) else None
-        if value is not None:
-            child_env.setdefault("LEANFLOW_PROVER_" + name.upper(), str(value))
+        if (
+            isinstance(limits, Mapping)
+            and name in limits
+            and value != DEFAULT_CONFIG["limits"][name]
+        ):
+            # Declared defaults already live in ProverConfig. Exporting them as
+            # explicit overrides would replace saved limits during checkpoint resume.
+            child_env.setdefault(
+                "LEANFLOW_PROVER_" + name.upper(), "" if value is None else str(value)
+            )
     if workflow.workflow_kind != "prove":
         # The environment-compatible research profile has the same prove-only
         # boundary as ``--research``. Keep independently configured feature

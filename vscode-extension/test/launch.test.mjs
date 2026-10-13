@@ -284,6 +284,24 @@ test("an emptied override is reported as unset, not just dropped", () => {
   assert.deepEqual(env.unset, ["LEANFLOW_NEGATION_PROBE"]);
 });
 
+test("clearing bounded global limits forwards explicit unlimited values", () => {
+  for (const [suffix, valueType, defaultValue] of [
+    ["AGENT_CALLS", "int", "250"],
+    ["WALL_TIME_S", "float", "86400"],
+  ]) {
+    const name = `LEANFLOW_PROVER_${suffix}`;
+    const catalog = {version: 1, count: 1, groups: [{name: "limits", flags: [{
+      name, value_type: valueType, default: defaultValue, minimum: 0,
+      editable: true, extension_editable: true, sensitive: false,
+    }]}]};
+    const result = resolveLaunchEnv(form({overrides: {[name]: ""}}), null, catalog);
+    assert.deepEqual(result.rejected, []);
+    assert.equal(result.env.set[name], "");
+    assert.ok(!result.env.unset.includes(name));
+    assert.deepEqual(resolveLaunchEnv(form(), null, catalog).env.set, {});
+  }
+});
+
 test("non-catalogued names are rejected, never passed to the child", () => {
   const { env, rejected } = resolveLaunchEnv(
     form({ overrides: { PYTHONPATH: ".", LD_PRELOAD: "/tmp/x.so", PATH: "/tmp" } }),

@@ -15,6 +15,7 @@ from leanflow_cli.runtime.runtime_install import source_identity
 from leanflow_cli.runtime.storage import StoragePolicy, cleanup_storage, register_entry
 from leanflow_cli.runtime.storage import process_views as process_inventory
 from leanflow_cli.runtime.storage.process_views import ProcessViews
+from leanflow_cli.workflows.prover import native_snapshot
 from scripts.lean_imo_campaign import artifacts, runner, storage
 from scripts.lean_imo_campaign.matrix import cells
 
@@ -52,6 +53,7 @@ def campaign_inputs(
     # transiently incomplete on busy hosts; its fail-closed behavior is tested
     # separately with real children in test_storage.py.
     monkeypatch.setattr(process_inventory, "process_views", lambda: ProcessViews((), (), True))
+    monkeypatch.setattr(native_snapshot, "process_views", lambda: ProcessViews((), (), True))
     home.mkdir()
     (home / "config.yaml").write_text("schema_version: 2\n")
     repo = tmp_path / "repo"

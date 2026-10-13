@@ -15,6 +15,7 @@ import yaml
 
 from core.filesystem import ensure_directory
 from core.home import DEFAULT_HOME, HOME_ENV, leanflow_home
+from core.workflow_limits import DEFAULT_ACTIVE_TIME_S, DEFAULT_AGENT_CALLS
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "toolsets": ["leanflow-cli"],
     "agent": {"reasoning_effort": ""},
-    "limits": {"agent_calls": None, "tokens": None, "wall_time_s": None},
+    "limits": {
+        "agent_calls": DEFAULT_AGENT_CALLS,
+        "tokens": None,
+        "wall_time_s": DEFAULT_ACTIVE_TIME_S,
+    },
     "storage": {"cache_target_gib": 20, "min_free_gib": 10, "automatic_cleanup": True},
     "logging": {
         "preview_lines": 8,
@@ -86,6 +91,7 @@ DEFAULT_CONFIG_HEADER = """# LeanFlow configuration
 # Empty values preserve the native CLI's configured defaults.
 # Auxiliary role values are optional overrides; empty values inherit the launch.
 # limits are global across a campaign: null means unlimited, 0 means exhausted.
+# New runs default to 250 agent calls and 24 hours of cumulative active time.
 # One native CLI invocation is one agent call. Reported token usage can stop
 # subsequent calls; an active call can overshoot the token limit.
 # storage bounds rebuildable managed caches; proofs and checkpoints are retained.
