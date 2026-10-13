@@ -1,4 +1,4 @@
-"""Capture external runtime inputs and isolate companion packaging side effects."""
+"""Capture runtime inputs and isolate wheel packaging from checkout build artifacts."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.utils import atomic_json_write
+from leanflow_cli.runtime.install_identity import source_identity, source_package_files
 from leanflow_cli.runtime.install_inputs import companion_identity
 
 INPUT_RECEIPT = ".leanflow-install-inputs.json"
@@ -36,6 +37,42 @@ def write_explicit_input_receipt(venv: Path, payload: dict[str, Any]) -> None:
     """Claim a fresh caller-selected directory and persist its source identity."""
     venv.mkdir(parents=True, exist_ok=False)
     atomic_json_write(venv / INPUT_RECEIPT, {**payload, "kind": "runtime-inputs"})
+
+
+def materialize_leanflow_input(venv: Path) -> Path:
+    """Build wheels from fresh inputs so deleted modules cannot survive in build/lib."""
+    payload = captured_install_inputs(venv)
+    original = payload.get("source_root")
+    identity = payload.get("identity")
+    if not isinstance(original, str) or not isinstance(identity, dict):
+        raise RuntimeError("Invalid captured LeanFlow package inputs")
+    source = Path(original)
+    mode = str(payload.get("install_mode", "wheel"))
+    if mode != "wheel":
+        raise RuntimeError("Editable installations must retain their original source path")
+    if payload.get("local_search"):
+        mode += ":local-search"
+    companion = payload.get("lean_probe_source")
+    companion_path = Path(companion) if isinstance(companion, str) and companion else None
+    expected = identity.get("source")
+
+    def matches(path: Path) -> bool:
+        """Check the exact captured package identity without generated metadata."""
+        return source_identity(path, mode=mode, lean_probe_source=companion_path) == expected
+
+    if not isinstance(expected, str) or not matches(source):
+        raise RuntimeError("LeanFlow inputs changed before packaging; retry stable source")
+    snapshot = venv / ".leanflow-package-inputs" / "LeanFlow"
+    if snapshot.exists() or snapshot.is_symlink():
+        raise RuntimeError("LeanFlow build inputs already exist; choose a fresh runtime")
+    snapshot.mkdir(parents=True)
+    for path in source_package_files(source):
+        destination = snapshot / path.relative_to(source)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, destination)
+    if not matches(snapshot) or not matches(source):
+        raise RuntimeError("LeanFlow inputs changed while copying; retry stable source")
+    return snapshot
 
 
 def materialize_companion_input(venv: Path) -> Path | None:

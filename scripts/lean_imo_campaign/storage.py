@@ -16,7 +16,7 @@ from leanflow_cli.runtime.dependency_cache import (
     materialize_dependencies,
 )
 from leanflow_cli.runtime.dependency_cache.identity import _identity, _key
-from leanflow_cli.runtime.runtime_install import source_identity
+from leanflow_cli.runtime.runtime_install import validate_install_inputs
 from leanflow_cli.runtime.storage import (
     ensure_storage_capacity,
     lease_entry,
@@ -51,17 +51,17 @@ def installed_runtime(repo: Path) -> Iterator[dict[str, Any]]:
                 or payload.get("ready") is not True
             ):
                 raise ValueError("Installation has no ready runtime identity")
-            mode = str(payload.get("install_mode", "editable"))
-            expected = source_identity(repo, mode=mode)
             identity = payload.get("identity")
-            if not isinstance(identity, dict) or identity.get("source") != expected:
-                raise ValueError("Installed runtime source differs from campaign source")
+            if not isinstance(identity, dict) or not isinstance(identity.get("source"), str):
+                raise ValueError("Installed runtime source identity is missing")
+            validate_install_inputs(repo, venv)
+            expected = identity["source"]
             python = venv / "bin/python"
             if not python.is_file():
                 raise ValueError("Installed runtime interpreter is absent")
             lease = lease_entry(entry)
             lease.__enter__()
-    except (OSError, KeyError, ValueError) as exc:
+    except (OSError, KeyError, ValueError, RuntimeError) as exc:
         raise ValueError(
             f"Cannot freeze this campaign's Python runtime: {exc}. {_REINSTALL}"
         ) from exc

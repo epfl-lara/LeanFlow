@@ -1,13 +1,21 @@
 """Verify explicit-runtime provenance and private concurrent packaging inputs."""
 
 import json
+import subprocess
+import sys
+import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from leanflow_cli.runtime import runtime_install
+from leanflow_cli.runtime.install_identity import source_package_files
 from leanflow_cli.runtime.install_inputs import companion_identity
-from leanflow_cli.runtime.install_snapshot import materialize_companion_input
+from leanflow_cli.runtime.install_snapshot import (
+    materialize_companion_input,
+    materialize_leanflow_input,
+)
 
 
 @pytest.fixture
@@ -82,3 +90,105 @@ def test_explicit_receipt_preserves_unrelated_parent_metadata(inputs, tmp_path):
     executable.write_text("#!/bin/sh\nexit 0\n")
     runtime_install.finalize_install(source, plan.venv_dir, tmp_path / "bin")
     assert marker.read_text() == previous
+
+
+def test_clean_wheel_excludes_deleted_modules_from_stale_checkout_build(inputs, tmp_path):
+    """Reproduce setuptools stale output inclusion and verify isolated wheel contents."""
+    source, companion = inputs
+    (source / "pyproject.toml").write_text(
+        "[project]\nname='fixture'\nversion='1.0'\n"
+        "[tool.setuptools.packages.find]\ninclude=['leanflow_cli*']\n"
+    )
+    package = source / "leanflow_cli/lean"
+    package.mkdir(parents=True)
+    (package.parent / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("")
+    (package / "native.py").write_text("native = True\n")
+    (source / "NOTICE").write_text("Required upstream attribution\n")
+    stale = source / "build/lib/leanflow_cli/lean"
+    stale.mkdir(parents=True)
+    (stale / "lean_interact_compat.py").write_text("removed_wrapper = True\n")
+    plan = runtime_install.prepare_install(source, mode="wheel", lean_probe_source=companion)
+
+    def wheel_files(root: Path, name: str) -> set[str]:
+        """Build a real offline wheel through the same setuptools backend as pip."""
+        destination = tmp_path / name
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys;from setuptools.build_meta import build_wheel;build_wheel(sys.argv[1])",
+                str(destination),
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        with zipfile.ZipFile(next(destination.glob("*.whl"))) as wheel:
+            return set(wheel.namelist())
+
+    removed = "leanflow_cli/lean/lean_interact_compat.py"
+    assert removed in wheel_files(source, "contaminated-wheel")
+    snapshot = materialize_leanflow_input(plan.venv_dir)
+    assert not (snapshot / "build").exists()
+    assert not list(snapshot.glob("*.egg-info"))
+    assert not (snapshot / ".leanflow").exists()
+    clean = wheel_files(snapshot, "clean-wheel")
+    assert "leanflow_cli/lean/native.py" in clean
+    assert removed not in clean
+    assert any(path.endswith("/NOTICE") for path in clean)
+    runtime_install.validate_install_inputs(source, plan.venv_dir)
+
+
+def test_wheel_inputs_are_independent_and_source_mutations_are_rejected(inputs):
+    """Keep simultaneous wheel builds separate and enforce captured source bytes."""
+    source, companion = inputs
+    (source / "leanflow_cli").mkdir()
+    module = source / "leanflow_cli/__init__.py"
+    module.write_text("original = True\n")
+    first = runtime_install.prepare_install(source, mode="wheel", lean_probe_source=companion)
+    second = runtime_install.prepare_install(source, mode="wheel", lean_probe_source=companion)
+    left, right = (materialize_leanflow_input(plan.venv_dir) for plan in (first, second))
+    assert (left / "leanflow_cli/__init__.py").stat().st_ino != (
+        right / "leanflow_cli/__init__.py"
+    ).stat().st_ino
+    (left / "leanflow_cli/__init__.py").write_text("builder_mutation = True\n")
+    assert (right / "leanflow_cli/__init__.py").read_bytes() == module.read_bytes()
+    third = runtime_install.prepare_install(source, mode="wheel", lean_probe_source=companion)
+    module.write_text("changed = True\n")
+    with pytest.raises(RuntimeError, match="changed before packaging"):
+        materialize_leanflow_input(third.venv_dir)
+
+
+def test_editable_inputs_keep_original_source_path(inputs):
+    """Never turn an editable install into an edit of an internal build copy."""
+    source, companion = inputs
+    plan = runtime_install.prepare_install(source, lean_probe_source=companion)
+    with pytest.raises(RuntimeError, match="Editable installations"):
+        materialize_leanflow_input(plan.venv_dir)
+
+
+def test_shipped_package_configuration_is_covered_by_snapshot_inputs():
+    """Fail when maintained package metadata gains inputs absent from clean wheel snapshots."""
+    root = Path(__file__).resolve().parents[2]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text())
+    selected = set(source_package_files(root))
+    assert not any((root / name).exists() for name in ("MANIFEST.in", "setup.cfg", "setup.py"))
+    assert "license-files" not in metadata["project"]
+    assert root / metadata["project"]["readme"] in selected
+    setuptools = metadata["tool"]["setuptools"]
+    assert set(setuptools) == {"py-modules", "packages", "package-data"}
+    assert set(setuptools["packages"]["find"]) == {"include"}
+    for name in setuptools["py-modules"]:
+        assert root / f"{name}.py" in selected
+    for pattern in setuptools["packages"]["find"]["include"]:
+        package = root / pattern.split(".")[0]
+        assert package / "__init__.py" in selected
+    for package, patterns in setuptools["package-data"].items():
+        for pattern in patterns:
+            assert set((root / package).glob(pattern)) <= selected
+    for pattern in ("LICEN[CS]E*", "COPYING*", "NOTICE*", "AUTHORS*"):
+        assert {path for path in root.glob(pattern) if path.is_file()} <= selected

@@ -151,6 +151,40 @@ def test_freeze_keeps_source_provenance_without_baseline_or_python_dependency_co
     assert (benchmark / "LeanIMOBench/P0.lean").read_text().endswith("sorry\n")
 
 
+@pytest.mark.parametrize("local_search", [False, True])
+def test_campaign_accepts_captured_companion_and_search_identity(
+    campaign_inputs, tmp_path, local_search
+):
+    """Validate real coordinated-install receipts rather than recomputing an incomplete identity."""
+    from scripts.lean_imo_campaign.storage import installed_runtime
+
+    repo, _benchmark, _directory, runtime = campaign_inputs
+    companion = tmp_path / "LeanProbe"
+    (companion / "src/lean_probe").mkdir(parents=True)
+    (companion / "pyproject.toml").write_text("[project]\nname='lean-probe'\n")
+    (companion / "src/lean_probe/__init__.py").write_text("API_REVISION = 1\n")
+    mode = "editable:local-search" if local_search else "editable"
+    expected = source_identity(repo, mode=mode, lean_probe_source=companion)
+    register_entry(
+        runtime,
+        kind="runtime",
+        identity={"source": expected},
+        metadata={
+            "ready": True,
+            "install_mode": "editable",
+            "source_root": str(repo),
+            "lean_probe_source": str(companion),
+            "local_search": local_search,
+        },
+    )
+    with installed_runtime(repo) as captured:
+        assert captured["python_runtime_identity"] == expected
+    (companion / "src/lean_probe/__init__.py").write_text("API_REVISION = 2\n")
+    with pytest.raises(ValueError, match="Cannot freeze this campaign's Python runtime"):
+        with installed_runtime(repo):
+            pytest.fail("Changed companion source must not be accepted")
+
+
 def test_freeze_requires_exact_current_source_and_does_not_clone_an_old_environment(
     campaign_inputs,
 ) -> None:

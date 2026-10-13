@@ -422,7 +422,13 @@ else
     PACKAGE_EXTRAS="mcp,lean-explore"
   fi
   python -m pip install --quiet --quiet --upgrade pip "setuptools<82" wheel
-  PACKAGE_SOURCES=("$REPO_ROOT[$PACKAGE_EXTRAS]")
+  LEANFLOW_BUILD_SOURCE="$REPO_ROOT"
+  if [[ "$INSTALL_MODE" == "wheel" ]]; then
+    LEANFLOW_BUILD_SOURCE="$(LEANFLOW_HOME="$LEANFLOW_HOME" PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$LEANFLOW_INSTALL_PYTHON" \
+      -m leanflow_cli.runtime.runtime_install package-input --source "$REPO_ROOT" --venv-dir "$LEANFLOW_VENV_DIR")"
+    ok "building LeanFlow wheel from isolated source inputs: $LEANFLOW_BUILD_SOURCE"
+  fi
+  PACKAGE_SOURCES=("$LEANFLOW_BUILD_SOURCE[$PACKAGE_EXTRAS]")
   if [[ -n "$LEAN_PROBE_SOURCE" ]]; then
     COMPANION_BUILD_SOURCE="$(LEANFLOW_HOME="$LEANFLOW_HOME" PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$LEANFLOW_INSTALL_PYTHON" \
       -m leanflow_cli.runtime.runtime_install companion-input --source "$REPO_ROOT" --venv-dir "$LEANFLOW_VENV_DIR")"

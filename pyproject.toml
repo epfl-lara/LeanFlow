@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0,<2", "black>=24", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0,<2", "black>=24", "ruff>=0.6", "mypy>=1.11", "setuptools>=61,<82", "wheel"]
 mcp = ["mcp>=1.2.0,<2"]
 pty = [
   "ptyprocess>=0.7.0; sys_platform != 'win32'",

@@ -27,6 +27,32 @@ _SOURCE_FILES = (
     "utils.py",
 )
 _EXCLUDED = {"__pycache__", ".lake", ".venv", "node_modules", ".git"}
+_LICENSE_PATTERNS = ("LICEN[CS]E*", "COPYING*", "NOTICE*", "AUTHORS*")
+
+
+def source_package_files(source: Path) -> list[Path]:
+    """Select maintained code, assets and setuptools license inputs for hashing and builds."""
+    files = [source / name for name in _SOURCE_FILES if (source / name).is_file()]
+    for pattern in _LICENSE_PATTERNS:
+        files.extend(path for path in source.glob(pattern) if path.is_file())
+    for name in _SOURCE_DIRS:
+        directory = source / name
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        for current, directories, names in os.walk(directory, followlinks=False):
+            directories[:] = sorted(
+                item
+                for item in directories
+                if item not in _EXCLUDED
+                and not item.endswith(".egg-info")
+                and not (Path(current) / item).is_symlink()
+            )
+            files.extend(
+                Path(current) / item
+                for item in names
+                if not item.endswith((".pyc", ".pyo")) and not (Path(current) / item).is_symlink()
+            )
+    return sorted(set(files))
 
 
 def source_identity(
@@ -38,23 +64,7 @@ def source_identity(
     digest.update(
         f"v1:{sys.version_info[:2]}:{platform.system()}:{platform.machine()}:{mode}".encode()
     )
-    files = [source / name for name in _SOURCE_FILES if (source / name).is_file()]
-    for name in _SOURCE_DIRS:
-        directory = source / name
-        if directory.is_symlink() or not directory.is_dir():
-            continue
-        for current, directories, names in os.walk(directory, followlinks=False):
-            directories[:] = sorted(
-                item
-                for item in directories
-                if item not in _EXCLUDED and not (Path(current) / item).is_symlink()
-            )
-            files.extend(
-                Path(current) / item
-                for item in names
-                if not item.endswith((".pyc", ".pyo")) and not (Path(current) / item).is_symlink()
-            )
-    for path in sorted(files):
+    for path in source_package_files(source):
         digest.update(path.relative_to(source).as_posix().encode())
         digest.update(b"\0")
         with path.open("rb") as stream:

@@ -213,8 +213,9 @@ guards dispatch and quiet polling; storage pressure checkpoints owned work.
 `runtime/install_inputs.py` validates companion API metadata without executing it;
 `install_companion.py` obtains an exact reviewed Git commit under the home authority.
 `install_identity.py` hashes LeanFlow and companion package inputs.
-`install_snapshot.py` records explicit-environment input receipts and copies companion
-packaging inputs per runtime, keeping concurrent builds independent.
+`install_snapshot.py` records explicit-environment input receipts and copies LeanFlow
+wheel and companion packaging inputs per runtime, keeping builds independent and
+excluding stale `build/lib` modules. Editable LeanFlow installs retain the original checkout.
 `install_native.py` adopts optional Lemex or builds it only for a selected provider.
 `runtime/runtime_install.py` claims fresh versioned Python environments and
 atomically selects a validated wrapper. Active runtimes are leased; healthy MCP

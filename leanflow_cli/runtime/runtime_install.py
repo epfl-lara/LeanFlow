@@ -23,6 +23,7 @@ from leanflow_cli.runtime.install_inputs import companion_identity
 from leanflow_cli.runtime.install_snapshot import (
     captured_install_inputs,
     materialize_companion_input,
+    materialize_leanflow_input,
     write_explicit_input_receipt,
 )
 from leanflow_cli.runtime.mcp_protocol import mcp_protocol_ready
@@ -366,6 +367,9 @@ def main() -> None:
     companion = subparsers.add_parser("companion-input")
     companion.add_argument("--source", type=Path, required=True)
     companion.add_argument("--venv-dir", type=Path, required=True)
+    package = subparsers.add_parser("package-input")
+    package.add_argument("--source", type=Path, required=True)
+    package.add_argument("--venv-dir", type=Path, required=True)
     subparsers.add_parser("ensure-backends")
     arguments = parser.parse_args()
     try:
@@ -389,6 +393,9 @@ def main() -> None:
             validate_install_inputs(arguments.source, arguments.venv_dir)
             snapshot = materialize_companion_input(arguments.venv_dir)
             print(str(snapshot) if snapshot else "")
+        elif arguments.command == "package-input":
+            validate_install_inputs(arguments.source, arguments.venv_dir)
+            print(materialize_leanflow_input(arguments.venv_dir))
         else:
             ensure_backends()
     except (OSError, RuntimeError, ValueError) as exc:

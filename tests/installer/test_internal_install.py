@@ -77,8 +77,10 @@ def test_installed_tools_still_probe_sandbox_and_prefer_system_bubblewrap(
     assert (binaries / "bwrap").resolve() == (system if system_bubblewrap else fallback)
 
 
+@pytest.mark.parametrize("wheel", [False, True])
 def test_local_installer_preserves_config_and_publishes_immutable_runtimes(
     tmp_path: Path,
+    wheel: bool,
 ) -> None:
     """Exercise real metadata and wrappers with only dependency installation stubbed."""
     source = tmp_path / "source with spaces"
@@ -151,6 +153,8 @@ def test_local_installer_preserves_config_and_publishes_immutable_runtimes(
         "--skip-os-tools",
         "--skip-leanexplore-data",
     ]
+    if wheel:
+        command.append("--no-editable")
 
     def install(*extra: str) -> subprocess.CompletedProcess[str]:
         """Run the isolated installer and retain diagnostics on failure."""
@@ -174,6 +178,9 @@ def test_local_installer_preserves_config_and_publishes_immutable_runtimes(
     assert metadata["bin_dir"] == str(binaries)
     assert venv.parent.parent == state / "runtimes"
     assert json.loads((venv.parent / ".leanflow-storage.json").read_text())["ready"] is True
+    assert (
+        venv / ".leanflow-package-inputs/LeanFlow/scripts/install-internal.sh"
+    ).exists() is wheel
     assert not (binaries / "leanflow-agent").exists()
     previous_python = (venv / "bin" / "python").read_bytes()
     with (state / "config.yaml").open("a", encoding="utf-8") as stream:

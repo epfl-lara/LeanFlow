@@ -141,6 +141,10 @@ changes. Keep these guarantees and verify them before committing:
   that change between preparation and publication, including explicit `--venv-dir`
   installs. Build companion packages from private per-runtime inputs so concurrent
   installers do not share writable setuptools metadata.
+  Wheel builds must use fresh LeanFlow package inputs too: an existing checkout's
+  `build/lib` can otherwise ship deleted modules. Test a real wheel from a stale
+  build directory and check that removed modules are absent. Editable installs
+  must continue to reference their original checkout.
 - Keep `install.sh` on the shared `install-internal.sh` path. WSL must call that
   same installer with literal arguments, select initialized WSL2 explicitly,
   preserve Git origin and unpublished work, and stop with initialization guidance

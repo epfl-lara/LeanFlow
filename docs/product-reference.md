@@ -50,7 +50,8 @@ The default package installation is editable: keep the source checkout in place
 and stable while its workflows run. Versioned environments protect interpreters
 and dependencies from in-place replacement; they do not freeze editable source.
 Use `--no-editable` for a wheel installation when the runtime must be independent
-of checkout edits.
+of checkout edits. Wheels build from fresh per-runtime source inputs, so old
+checkout build folders cannot reintroduce modules removed by an update.
 
 The installer prepares managed Lean MCP backends. It uses a matching adjacent
 `../LeanProbe` checkout, an explicit `--lean-probe-source PATH`, or downloads the
