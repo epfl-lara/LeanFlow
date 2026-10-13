@@ -30,6 +30,7 @@ class InputGuard:
 
     def __init__(self) -> None:
         self.files: dict[Path, tuple[int, ...]] = {}
+        self.symlinks: dict[Path, tuple[str, Path]] = {}
         self.directories: dict[Path, tuple[tuple[int, int], tuple[str, ...], frozenset[str]]] = {}
 
     def record_file(self, path: Path, before: os.stat_result) -> None:
@@ -38,6 +39,16 @@ class InputGuard:
         if _stamp(before) != _stamp(after):
             raise ValueError("Project cache input changed while its content was hashed")
         self.files[path] = _stamp(after)
+
+    def record_symlink(self, path: Path, before: os.stat_result, link: str, target: Path) -> None:
+        """Retain exact trusted compiler alias text and its confined resolved target."""
+        self.record_file(path, before)
+        try:
+            if os.readlink(path) != link or path.resolve(strict=True) != target:
+                raise ValueError("Compiler alias changed while its target was fingerprinted")
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("Compiler alias changed while its target was fingerprinted") from exc
+        self.symlinks[path] = (link, target)
 
     def record_directory(
         self, path: Path, names: Sequence[str], *, excluded: set[str] | None = None
@@ -61,6 +72,9 @@ class InputGuard:
             for path, expected in self.files.items():
                 if _stamp(path.lstat()) != expected:
                     return False
+            for path, (link, target) in self.symlinks.items():
+                if os.readlink(path) != link or path.resolve(strict=True) != target:
+                    return False
             for path, (inode, expected_names, omitted) in self.directories.items():
                 status = path.lstat()
                 if not stat.S_ISDIR(status.st_mode) or (status.st_dev, status.st_ino) != inode:
@@ -71,5 +85,5 @@ class InputGuard:
                 if actual != expected_names:
                     return False
             return True
-        except OSError:
+        except (OSError, RuntimeError):
             return False

@@ -149,7 +149,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_bootstrap.add_argument("--python", default=None)
     mcp_repair = mcp_sub.add_parser(
         "repair",
-        help="Re-apply managed source patches to installed MCP backends without reinstalling",
+        help="Rebuild patched MCP backends in fresh verified environments",
     )
     mcp_repair.add_argument("--json", action="store_true", dest="json_output")
 

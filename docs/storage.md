@@ -125,9 +125,24 @@ The installer creates versioned Python environments under
 `~/.leanflow/runtimes/<source-identity>/venv`. It validates a new environment before
 switching the command wrapper and installation metadata. Running processes keep
 their previous interpreter; leases and process inspection protect environments
-from collection. Healthy managed MCP environments are reused. Explicit existing
+from collection. Healthy managed MCP environments are reused. Repair creates a fresh permanent
+generation and checks its actual protocol before atomically switching commands.
+Existing MCP processes retain their old environment. MCP generations and pinned
+LeanProbe source downloads currently remain outside automatic cleanup; uncertain
+subprocess shutdown retains a failed candidate for inspection. Explicit existing
 `--venv-dir` paths are rejected; `--recreate-venv` creates a fresh sibling rather
 than deleting the previous runtime.
+
+An interrupted command switch records both old and new runtime paths in a
+publication journal, protecting them from collection until selection completes.
+An unchanged runtime can be reused without new-storage admission; a fresh build
+respects the configured storage reserve. On a fresh interpreter without YAML,
+bootstrap supports ordinary scalar block storage settings and refuses ambiguous
+formats.
+
+Explicit environments also capture source identities and reject mutations before
+publication. Companion package builds use private per-runtime copies, preventing
+shared packaging metadata from colliding between concurrent installers.
 
 The default installation is editable and still reads its source checkout. Keep
 that checkout stable while workflows run. Use `--no-editable` for a wheel install

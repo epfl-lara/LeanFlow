@@ -59,18 +59,23 @@ def probe_lemex(executable: Path) -> str:
     """Check the installed exec protocol without login or any inference request."""
     try:
         version = subprocess.run(
-            [str(executable), "--version"], check=True, text=True, capture_output=True
+            [str(executable), "--version"], check=True, text=True, capture_output=True, timeout=15
         ).stdout.strip()
         help_text = subprocess.run(
-            [str(executable), "exec", "--help"], check=True, text=True, capture_output=True
+            [str(executable), "exec", "--help"],
+            check=True,
+            text=True,
+            capture_output=True,
+            timeout=15,
         ).stdout
         resume = subprocess.run(
             [str(executable), "exec", "resume", "--help"],
             check=True,
             text=True,
             capture_output=True,
+            timeout=15,
         ).stdout
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         raise LemexInstallError(f"Could not inspect Lemex CLI at {executable}: {exc}") from exc
     required = ("--json", "--output-last-message", "--skip-git-repo-check")
     if (
@@ -234,7 +239,13 @@ def _build_from_source() -> dict[str, Any]:
     Its own default setup creates only missing native config files. Existing
     LEMEX_HOME content and the user's globally installed executable stay intact.
     """
-    missing = [name for name in ("git", "node", "npm", "rg", "bash") if not shutil.which(name)]
+    missing = [
+        name for name in ("git", "node", "npm", "rg", "bash", "python3") if not shutil.which(name)
+    ]
+    if not (shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")):
+        missing.append("C compiler (cc, clang or gcc)")
+    if not (shutil.which("cargo") and shutil.which("rustc")) and not shutil.which("curl"):
+        missing.append("curl (to install Rust)")
     if missing:
         raise LemexInstallError("Pinned Lemex source installation requires: " + ", ".join(missing))
     with tempfile.TemporaryDirectory(prefix=".source-", dir=_root()) as temporary:
@@ -285,8 +296,8 @@ def ensure_lemex(*, build: bool = True, refresh: bool = False) -> dict[str, Any]
 
     Ordinary checks retain the existing pin without discovery or network access.
     Refresh snapshots a compatible external installation before publishing its
-    pointer; older objects remain usable by active jobs. With builds disabled,
-    retain a healthy existing pin when no compatible external replacement exists.
+    pointer; older objects remain usable by active jobs. Retain a healthy existing
+    pin when no compatible external replacement exists, including source-built pins.
     """
     if os.name != "posix":
         raise LemexInstallError("Use LeanFlow through WSL2 on Windows to install Lemex.")
@@ -305,14 +316,14 @@ def ensure_lemex(*, build: bool = True, refresh: bool = False) -> dict[str, Any]
                 if not refresh or not package.is_relative_to((_root() / "objects").resolve()):
                     entrypoint = Path(executable).resolve().relative_to(package)
                     return _publish(package, entrypoint, source="adopted-content-pin", commit=None)
-            except LemexInstallError:
+            except (LemexInstallError, OSError, subprocess.SubprocessError):
+                if installed is not None:
+                    return installed
                 if not build:
-                    if installed is not None:
-                        return installed
                     raise
+        if installed is not None:
+            return installed
         if not build:
-            if installed is not None:
-                return installed
             raise LemexInstallError("No compatible Lemex installation found")
         return _build_from_source()
 
@@ -328,7 +339,7 @@ def main() -> int:
     parser.add_argument(
         "--refresh",
         action="store_true",
-        help="Adopt a compatible local upgrade, or rebuild the pinned source",
+        help="Adopt a compatible local upgrade; build pinned source only when no healthy runtime exists",
     )
     args = parser.parse_args()
     try:

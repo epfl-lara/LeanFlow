@@ -13,6 +13,7 @@ import pytest
 
 from leanflow_cli.runtime import project_build_cache as cache_module
 from leanflow_cli.runtime.project_build_cache import ProjectBuildCache, identity
+from leanflow_cli.runtime.project_build_cache import toolchain as compiler_tools
 from leanflow_cli.runtime.storage import (
     StoragePolicy,
     StoragePressure,
@@ -365,12 +366,12 @@ def test_compiler_resolution_uses_exact_actual_sandbox_environment(
         assert argv == [str(binaries / "elan"), "which", argv[-1]]
         return subprocess.CompletedProcess(argv, 0, str(binaries / argv[-1]) + "\n", "")
 
-    monkeypatch.setattr(identity.subprocess, "run", resolve)
+    monkeypatch.setattr(compiler_tools.subprocess, "run", resolve)
     result = identity._compiler_identity(root, environment)
     assert calls and all(call["env"] == environment and call["cwd"] == root for call in calls)
     assert result["toolchain"] == "marker-toolchain"
     assert result["lean_path"] == str(binaries / "lean")
-    assert result["core_runtime"]["lean/Init.olean"] == identity._toolchain_file_digest(core)
+    assert result["core_runtime"]["lean/Init.olean"] == compiler_tools._toolchain_file_digest(core)
     before = result["core_runtime"]["lean/Init.olean"]
     core.write_bytes(b"changed core runtime")
     assert (
@@ -607,3 +608,132 @@ def test_publication_metadata_guard_detects_input_changes_without_dependency_reh
     )
     assert not cache.publish(paths[0] / ".lake/build")
     assert "changed during" in cache.metadata["reason"]
+
+
+@pytest.mark.parametrize("link_kind", ["relative", "absolute", "chain"])
+def test_toolchain_file_alias_hashes_confined_target_and_link_identity(
+    tmp_path: Path, link_kind: str
+) -> None:
+    """Permit stock compiler aliases while retaining both portable link text and target bytes."""
+    from leanflow_cli.runtime.project_build_cache.freshness import InputGuard
+
+    root = tmp_path / "toolchain"
+    library = root / "lib"
+    library.mkdir(parents=True)
+    target = library / "libexample.so.1"
+    target.write_bytes(b"native library bytes")
+    alias = library / "libexample.so"
+    if link_kind == "absolute":
+        alias.symlink_to(target)
+    elif link_kind == "chain":
+        middle = library / "libexample.so.0"
+        middle.symlink_to(target.name)
+        alias.symlink_to(middle.name)
+    else:
+        alias.symlink_to(target.name)
+    guard = InputGuard()
+    first = compiler_tools._toolchain_file_digest(alias, toolchain_root=root, guard=guard)
+    assert guard.unchanged()
+    assert len(guard.symlinks) == (2 if link_kind == "chain" else 1)
+    assert first != compiler_tools._toolchain_file_digest(target)
+    before = target.stat()
+    target.write_bytes(b"changed library data")
+    os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert not guard.unchanged()
+    assert compiler_tools._toolchain_file_digest(alias, toolchain_root=root) != first
+
+
+def test_toolchain_alias_retarget_invalidates_hash_and_publication_guard(tmp_path: Path) -> None:
+    """Reject retargeting even when both confined targets have identical bytes."""
+    from leanflow_cli.runtime.project_build_cache.freshness import InputGuard
+
+    root = tmp_path / "toolchain"
+    (root / "lib").mkdir(parents=True)
+    first, second = root / "lib/first.so.1", root / "lib/second.so.1"
+    first.write_bytes(b"identical native bytes")
+    second.write_bytes(first.read_bytes())
+    alias = root / "lib/native.so"
+    alias.symlink_to(first.name)
+    guard = InputGuard()
+    original = compiler_tools._toolchain_file_digest(alias, toolchain_root=root, guard=guard)
+    alias.unlink()
+    alias.symlink_to(second.name)
+    assert not guard.unchanged()
+    assert compiler_tools._toolchain_file_digest(alias, toolchain_root=root) != original
+
+
+@pytest.mark.parametrize(
+    "unsupported", ["escape", "returning_escape", "cycle", "missing", "directory"]
+)
+def test_toolchain_aliases_cannot_escape_cycle_or_hide_unsupported_files(
+    tmp_path: Path, unsupported: str
+) -> None:
+    """Keep compiler alias permission confined to the exact selected installation."""
+    root = tmp_path / "toolchain"
+    (root / "lib").mkdir(parents=True)
+    alias = root / "lib/native.so"
+    target = tmp_path / "external.so"
+    target.write_bytes(b"outside native bytes")
+    if unsupported == "escape":
+        alias.symlink_to(target)
+    elif unsupported == "returning_escape":
+        inside = root / "lib/native.so.1"
+        inside.write_bytes(b"inside bytes")
+        target.unlink()
+        target.symlink_to(inside)
+        alias.symlink_to(target)
+    elif unsupported == "cycle":
+        middle = root / "lib/cycle.so"
+        middle.symlink_to(alias.name)
+        alias.symlink_to(middle.name)
+    elif unsupported == "missing":
+        alias.symlink_to("missing.so.1")
+    else:
+        alias.symlink_to(root / "lib", target_is_directory=True)
+    with pytest.raises(ValueError):
+        compiler_tools._toolchain_file_digest(alias, toolchain_root=root)
+
+
+def test_alias_permission_does_not_apply_to_project_sources_or_outputs(
+    canonical: Path, tmp_path: Path
+) -> None:
+    """Limit symlink support to explicitly selected compiler files, preserving copy isolation."""
+    target = tmp_path / "native.so.1"
+    target.write_bytes(b"external bytes")
+    alias = canonical / "native.so"
+    alias.symlink_to(target)
+    with pytest.raises(ValueError, match="exact selected toolchain"):
+        compiler_tools._toolchain_file_digest(alias)
+    with pytest.raises(ValueError, match="independent regular files"):
+        identity.tree_manifest(canonical)
+
+
+def test_compiler_identity_includes_versioned_library_targets_and_internal_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fingerprint real shared-library versions even when an alias selects one of them."""
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "lean-toolchain").write_text("selected-toolchain")
+    compiler = tmp_path / "compiler"
+    binary = compiler / "bin"
+    binary.mkdir(parents=True)
+    for name in ("elan", "lean", "lake"):
+        (binary / name).write_bytes(name.encode())
+        (binary / name).chmod(0o700)
+    library = compiler / "lib"
+    library.mkdir()
+    versioned = library / "native.so.1"
+    versioned.write_bytes(b"native runtime")
+    (library / "native.so").symlink_to(versioned.name)
+    monkeypatch.setattr(
+        compiler_tools.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, str(binary / argv[-1]), ""),
+    )
+    result = identity._compiler_identity(root, {"PATH": str(binary)})
+    assert set(result["core_runtime"]) == {"native.so", "native.so.1"}
+    assert result["core_runtime"]["native.so"] != result["core_runtime"]["native.so.1"]
+    versioned.write_bytes(b"changed native runtime")
+    changed = identity._compiler_identity(root, {"PATH": str(binary)})
+    assert result["core_runtime"] != changed["core_runtime"]

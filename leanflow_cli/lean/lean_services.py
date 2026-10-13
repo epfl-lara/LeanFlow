@@ -787,7 +787,10 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
     explicit = str(os.getenv("LEANFLOW_PROJECT_ROOT", "") or "").strip()
     base = Path(cwd or explicit or os.getcwd()).expanduser().resolve()
     project_root, project_error = _project_root(base)
-    binaries = {name: bool(shutil.which(name)) for name in ("lean", "lake", "elan", "git", "rg")}
+    binaries = {
+        name: bool(shutil.which(name))
+        for name in ("lean", "lake", "elan", "git", "rg", "pdftotext", "pdfinfo", "pdfimages")
+    }
     mcp_tools = _discover_lean_mcp_tools()
     # These proof-auto surfaces have repeatedly produced low-signal harness
     # failures in managed workflows. Keep the lower-level service functions for
@@ -827,6 +830,8 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         if entry.get("managed") and str(entry.get("name", "") or "").strip()
     }
     degraded: list[str] = _apply_disabled_mcp_tools(mcp_tools, cwd=project_root or base)
+    if not all(binaries[name] for name in ("pdftotext", "pdfinfo", "pdfimages")):
+        degraded.append("PDF extraction tools unavailable; install Poppler for PDF workflows")
     if not binaries.get("lean"):
         degraded.append("lean binary unavailable")
     if not binaries.get("lake"):

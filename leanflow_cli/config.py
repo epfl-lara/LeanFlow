@@ -155,15 +155,22 @@ def default_config_yaml(config: Mapping[str, Any] | None = None) -> str:
 
 
 def _ensure_default_config_file(home: Path) -> None:
+    """Create missing defaults atomically without replacing user-owned configuration."""
     config_path = home / "config.yaml"
-    if not config_path.exists():
-        config_path.write_text(default_config_yaml(DEFAULT_CONFIG), encoding="utf-8")
+    if config_path.exists():
         _secure_file(config_path)
         return
+    from leanflow_cli.cli.mcp_install_generation import (
+        atomic_managed_config_write,
+        managed_mcp_install_lock,
+    )
 
     # Existing configuration is user-owned, including retired settings. A load
     # can explain migration, but must never silently rewrite keys or choices.
-    _secure_file(config_path)
+    with managed_mcp_install_lock(home):
+        if not config_path.exists():
+            atomic_managed_config_write(config_path, default_config_yaml(DEFAULT_CONFIG))
+        _secure_file(config_path)
 
 
 def _merge_env_template(existing: str) -> str:
@@ -193,14 +200,26 @@ def _merge_env_template(existing: str) -> str:
 
 
 def _ensure_default_env_file(home: Path) -> None:
+    """Merge defaults atomically under the same ownership lock as setting updates."""
+    from leanflow_cli.cli.mcp_install_generation import (
+        atomic_managed_config_write,
+        managed_mcp_install_lock,
+    )
+
     env_path = home / ".env"
     if env_path.exists():
-        updated = _merge_env_template(env_path.read_text(encoding="utf-8"))
-    else:
-        updated = DEFAULT_ENV_TEMPLATE.rstrip() + "\n"
-    if not env_path.exists() or env_path.read_text(encoding="utf-8") != updated:
-        env_path.write_text(updated, encoding="utf-8")
-    _secure_file(env_path)
+        existing = env_path.read_text(encoding="utf-8")
+        if _merge_env_template(existing) == existing:
+            # Atomic writers make a complete unchanged snapshot safe to read
+            # without blocking behind a potentially long backend installation.
+            _secure_file(env_path)
+            return
+    with managed_mcp_install_lock(home):
+        existing = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        updated = _merge_env_template(existing)
+        if not env_path.exists() or existing != updated:
+            atomic_managed_config_write(env_path, updated)
+        _secure_file(env_path)
 
 
 def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
@@ -307,11 +326,7 @@ def load_config() -> dict[str, Any]:
     path = get_config_path()
     if not path.exists():
         ensure_leanflow_home()
-        path.write_text(default_config_yaml(DEFAULT_CONFIG), encoding="utf-8")
-        _secure_file(path)
-        _CONFIG_CACHE = deepcopy(DEFAULT_CONFIG)
-        _CONFIG_CACHE_KEY = cache_key
-        return deepcopy(_CONFIG_CACHE)
+        _ensure_default_config_file(get_leanflow_home())
 
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -326,11 +341,17 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(config: Mapping[str, Any]) -> None:
-    ensure_leanflow_home()
-    path = get_config_path()
-    path.write_text(yaml.safe_dump(dict(config), sort_keys=False), encoding="utf-8")
-    _secure_file(path)
-    invalidate_config_cache()
+    """Publish the complete config atomically under the MCP selection lock."""
+    from leanflow_cli.cli.mcp_install_generation import (
+        atomic_managed_config_write,
+        managed_mcp_install_lock,
+    )
+
+    with managed_mcp_install_lock(get_leanflow_home()):
+        ensure_leanflow_home()
+        path = get_config_path()
+        atomic_managed_config_write(path, yaml.safe_dump(dict(config), sort_keys=False))
+        invalidate_config_cache()
 
 
 def _descend_config(
@@ -365,10 +386,17 @@ def get_config_value(key_path: str, default: Any = None) -> Any:
 
 
 def set_config_value(key_path: str, value: Any) -> None:
-    config = load_config()
-    node, leaf = _descend_config(config, key_path, create=True)
-    node[leaf] = value
-    save_config(config)
+    """Read and update one value without racing an MCP generation switch."""
+    from leanflow_cli.cli.mcp_install_generation import managed_mcp_install_lock
+
+    with managed_mcp_install_lock(get_leanflow_home()):
+        # Another process can select a backend while this process retains its
+        # read cache. Mutations must rebase on the locked current document.
+        invalidate_config_cache()
+        config = load_config()
+        node, leaf = _descend_config(config, key_path, create=True)
+        node[leaf] = value
+        save_config(config)
 
 
 def load_env_file() -> dict[str, str]:
@@ -388,11 +416,17 @@ def load_env() -> dict[str, str]:
 
 
 def save_env_value(key: str, value: str) -> None:
-    values = load_env_file()
-    values[key] = value
-    lines = [f"{env_key}={env_value}" for env_key, env_value in sorted(values.items())]
-    get_env_path().write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-    _secure_file(get_env_path())
+    """Preserve existing entries and publish one env update atomically under ownership."""
+    from leanflow_cli.cli.mcp_install_generation import (
+        atomic_managed_config_write,
+        managed_mcp_install_lock,
+    )
+
+    with managed_mcp_install_lock(get_leanflow_home()):
+        values = load_env_file()
+        values[key] = value
+        lines = [f"{env_key}={env_value}" for env_key, env_value in sorted(values.items())]
+        atomic_managed_config_write(get_env_path(), "\n".join(lines) + ("\n" if lines else ""))
 
 
 def get_env_value(key: str, default: str | None = None) -> str | None:

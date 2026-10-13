@@ -11,7 +11,7 @@ echo  LeanFlow WSL Installer
 echo  Launching PowerShell bootstrap...
 echo.
 
-powershell -ExecutionPolicy ByPass -NoProfile -File "%~dp0install.ps1" %*
+powershell.exe -ExecutionPolicy ByPass -NoLogo -NoProfile -File "%~dp0install.ps1" %*
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
@@ -21,3 +21,4 @@ if %ERRORLEVEL% NEQ 0 (
     echo.
     exit /b 1
 )
+exit /b 0

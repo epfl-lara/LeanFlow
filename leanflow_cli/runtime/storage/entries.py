@@ -172,6 +172,26 @@ def managed_candidates(home: Path) -> list[Path]:
 def protected_install_paths(home: Path) -> list[Path] | None:
     """Protect the selected install and current process; uncertainty pins all runtimes."""
     paths = [Path(sys.prefix).resolve(), Path(__file__).resolve()]
+    journal = home / "install-switch.json"
+    if journal.exists() or journal.is_symlink():
+        try:
+            if journal.is_symlink():
+                return None
+            pending = json.loads(journal.read_text(encoding="utf-8"))
+            if (
+                not isinstance(pending, dict)
+                or pending.get("schema_version") != 1
+                or pending.get("protect_all") is not False
+                or not isinstance(pending.get("paths"), list)
+                or not pending["paths"]
+            ):
+                return None
+            for raw in pending["paths"]:
+                if not isinstance(raw, str) or not Path(raw).is_absolute():
+                    return None
+                paths.append(Path(raw).resolve())
+        except (OSError, ValueError):
+            return None
     marker = home / "install-root"
     if not marker.exists() and not marker.is_symlink():
         return paths

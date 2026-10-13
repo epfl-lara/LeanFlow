@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import os
-import platform
 import shlex
 import subprocess
 import sys
@@ -20,28 +18,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.home import leanflow_home
+from leanflow_cli.runtime.install_identity import source_identity
+from leanflow_cli.runtime.install_inputs import companion_identity
+from leanflow_cli.runtime.install_snapshot import (
+    captured_install_inputs,
+    materialize_companion_input,
+    write_explicit_input_receipt,
+)
 from leanflow_cli.runtime.mcp_protocol import mcp_protocol_ready
 
 _MARKER = ".leanflow-storage.json"
-_SOURCE_DIRS = (
-    "agent",
-    "core",
-    "leanflow_cli",
-    "tools",
-    "leanflow_skills",
-    "leanflow_specs",
-    "scripts",
-)
-_SOURCE_FILES = (
-    "pyproject.toml",
-    "README.md",
-    "leanflow_agent.py",
-    "run_agent.py",
-    "model_tools.py",
-    "toolsets.py",
-    "utils.py",
-)
-_EXCLUDED = {"__pycache__", ".lake", ".venv", "node_modules", ".git"}
 
 
 @dataclass(frozen=True)
@@ -52,39 +38,6 @@ class InstallPlan:
     identity: str
     reuse: bool
     managed: bool
-
-
-def source_identity(source: Path, *, mode: str = "editable") -> str:
-    """Hash installed source inputs without depending on Git or copying caches."""
-    source = source.resolve()
-    digest = hashlib.sha256()
-    digest.update(
-        f"v1:{sys.version_info[:2]}:{platform.system()}:{platform.machine()}:{mode}".encode()
-    )
-    files = [source / name for name in _SOURCE_FILES if (source / name).is_file()]
-    for name in _SOURCE_DIRS:
-        directory = source / name
-        if directory.is_symlink() or not directory.is_dir():
-            continue
-        for current, directories, names in os.walk(directory, followlinks=False):
-            directories[:] = sorted(
-                item
-                for item in directories
-                if item not in _EXCLUDED and not (Path(current) / item).is_symlink()
-            )
-            files.extend(
-                Path(current) / item
-                for item in names
-                if not item.endswith((".pyc", ".pyo")) and not (Path(current) / item).is_symlink()
-            )
-    for path in sorted(files):
-        digest.update(path.relative_to(source).as_posix().encode())
-        digest.update(b"\0")
-        with path.open("rb") as stream:
-            while block := stream.read(1024 * 1024):
-                digest.update(block)
-        digest.update(b"\0")
-    return digest.hexdigest()[:24]
 
 
 def _marker(path: Path) -> dict[str, object]:
@@ -138,6 +91,7 @@ def prepare_install(
     mode: str = "editable",
     installer_pid: int | None = None,
     local_search: bool = False,
+    lean_probe_source: Path | None = None,
 ) -> InstallPlan:
     """Claim a fresh permanent runtime without changing an existing environment."""
     from leanflow_cli.runtime.storage import (
@@ -149,14 +103,14 @@ def prepare_install(
 
     source = source.resolve()
     home = leanflow_home().resolve()
-    identity = source_identity(source, mode=f"{mode}:local-search" if local_search else mode)
+    identity = source_identity(
+        source,
+        mode=f"{mode}:local-search" if local_search else mode,
+        lean_probe_source=lean_probe_source,
+    )
     managed = explicit_venv is None
     runtime = home / "runtimes" / identity
     venv = explicit_venv.expanduser().absolute() if explicit_venv else runtime / "venv"
-    # Fresh Python installations cannot load YAML yet. Admission still uses the
-    # safe defaults; the installed CLI subsequently reads configured limits.
-    bootstrap_policy = StoragePolicy() if importlib.util.find_spec("yaml") is None else None
-    ensure_storage_capacity(venv, policy=bootstrap_policy)
     with storage_lock():
         if managed and runtime.exists():
             marker = _marker(runtime)
@@ -175,6 +129,20 @@ def prepare_install(
             venv = runtime / "venv"
         if not managed and (venv.exists() or venv.is_symlink()):
             _reject_existing(venv)
+        # A no-op rerun consumes no new runtime storage. Fresh interpreters still
+        # honor ordinary user limits before third-party YAML is installed.
+        if importlib.util.find_spec("yaml") is None:
+            from leanflow_cli.runtime.install_storage import bootstrap_storage_policy
+
+            bootstrap_policy: StoragePolicy | None = bootstrap_storage_policy()
+        else:
+            bootstrap_policy = None
+        try:
+            ensure_storage_capacity(venv, policy=bootstrap_policy)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Cannot prepare a new installation: {exc}. Retry the installer after freeing space or adjusting storage settings."
+            ) from exc
         if managed:
             runtime.mkdir(parents=True)
             register_entry(
@@ -187,6 +155,29 @@ def prepare_install(
                     "source_root": str(source),
                     "venv_dir": str(venv),
                     "install_mode": mode,
+                    "lean_probe_source": (
+                        str(lean_probe_source.resolve()) if lean_probe_source else ""
+                    ),
+                    "lean_probe_digest": (
+                        companion_identity(lean_probe_source) if lean_probe_source else ""
+                    ),
+                    "local_search": local_search,
+                },
+            )
+        else:
+            write_explicit_input_receipt(
+                venv,
+                {
+                    "identity": {"source": identity},
+                    "source_root": str(source),
+                    "install_mode": mode,
+                    "local_search": local_search,
+                    "lean_probe_source": (
+                        str(lean_probe_source.resolve()) if lean_probe_source else ""
+                    ),
+                    "lean_probe_digest": (
+                        companion_identity(lean_probe_source) if lean_probe_source else ""
+                    ),
                 },
             )
     return InstallPlan(venv, identity, False, managed)
@@ -231,19 +222,12 @@ def finalize_install(source: Path, venv: Path, bin_dir: Path) -> None:
         f"installed_at={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
     )
     with storage_lock():
-        old_wrapper = wrapper.read_text(encoding="utf-8") if wrapper.is_file() else None
-        _atomic_text(wrapper, wrapper_text, executable=True)
-        try:
-            _atomic_text(metadata, metadata_text)
-        except OSError:
-            if old_wrapper is None:
-                wrapper.unlink(missing_ok=True)
-            else:
-                _atomic_text(wrapper, old_wrapper, executable=True)
-            raise
+        validate_install_inputs(source, venv)
+        # Finish ownership registration before making commands user-visible.
+        # An unused, completed runtime is safe to reuse after a failed switch.
         runtime = venv.parent
         marker = _marker(runtime)
-        if marker.get("kind") == "runtime":
+        if marker.get("kind") == "runtime" and marker.get("venv_dir") == str(venv):
             identity = marker.get("identity")
             register_entry(
                 runtime,
@@ -255,6 +239,9 @@ def finalize_install(source: Path, venv: Path, bin_dir: Path) -> None:
                     "source_root": str(source),
                     "venv_dir": str(venv),
                     "install_mode": marker.get("install_mode", "editable"),
+                    "lean_probe_source": marker.get("lean_probe_source", ""),
+                    "lean_probe_digest": marker.get("lean_probe_digest", ""),
+                    "local_search": marker.get("local_search", False),
                 },
             )
         release = source.parent
@@ -264,10 +251,64 @@ def finalize_install(source: Path, venv: Path, bin_dir: Path) -> None:
                 kind="runtime-release",
                 metadata={"source_root": str(source)},
             )
+        old_wrapper = wrapper.read_text(encoding="utf-8") if wrapper.is_file() else None
+        old_metadata = metadata.read_text(encoding="utf-8") if metadata.is_file() else None
+        from leanflow_cli.runtime.storage.entries import protected_install_paths
+
+        protected = protected_install_paths(home)
+        journal = home / "install-switch.json"
+        _atomic_text(
+            journal,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "paths": [str(path) for path in (protected or [])] + [str(source), str(venv)],
+                    "protect_all": protected is None,
+                }
+            ),
+        )
+        try:
+            _atomic_text(wrapper, wrapper_text, executable=True)
+            _atomic_text(metadata, metadata_text)
+        except BaseException:
+            if old_wrapper is None:
+                wrapper.unlink(missing_ok=True)
+            else:
+                _atomic_text(wrapper, old_wrapper, executable=True)
+            if old_metadata is None:
+                metadata.unlink(missing_ok=True)
+            elif metadata.read_text(encoding="utf-8") != old_metadata:
+                _atomic_text(metadata, old_metadata)
+            journal.unlink(missing_ok=True)
+            raise
+        journal.unlink(missing_ok=True)
+
+
+def validate_install_inputs(source: Path, venv: Path) -> None:
+    """Refuse publication when managed source inputs changed during installation."""
+    marker = captured_install_inputs(venv)
+    if marker.get("source_root") != str(source.resolve()):
+        raise RuntimeError("Installation source differs from its captured input path")
+    identity = marker.get("identity")
+    if not isinstance(identity, dict) or not isinstance(identity.get("source"), str):
+        raise RuntimeError("Managed runtime is missing its source input identity")
+    mode = str(marker.get("install_mode", "editable"))
+    if marker.get("local_search"):
+        mode += ":local-search"
+    companion = marker.get("lean_probe_source")
+    current = source_identity(
+        source,
+        mode=mode,
+        lean_probe_source=Path(companion) if isinstance(companion, str) and companion else None,
+    )
+    if current != identity["source"]:
+        raise RuntimeError(
+            "Source inputs changed during installation; rerun against stable checkouts"
+        )
 
 
 def ensure_backends() -> None:
-    """Reuse healthy MCP environments and refuse to modify running backends."""
+    """Reuse healthy MCP environments or validate a fresh immutable generation."""
     from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp, managed_mcp_server_status
 
     status = managed_mcp_server_status()
@@ -276,13 +317,13 @@ def ensure_backends() -> None:
         for item in status.values()
     ):
         return
-    managed = str(leanflow_home().resolve() / "mcp" / "venvs")
-    if any(managed in command for command in active_runtime_paths()):
-        raise RuntimeError(
-            "Managed MCP backends are in use and need repair; "
-            "installation will not modify them while jobs are running."
-        )
     bootstrap_lean_mcp()
+    installed = managed_mcp_server_status()
+    if not installed or not all(
+        item.get("healthy") and mcp_protocol_ready(Path(str(item["venv_dir"])))
+        for item in installed.values()
+    ):
+        raise RuntimeError("Managed MCP bootstrap did not produce validated server environments")
 
 
 @contextmanager
@@ -314,10 +355,17 @@ def main() -> None:
     prepare.add_argument("--mode", choices=("editable", "wheel"), default="editable")
     prepare.add_argument("--installer-pid", type=int)
     prepare.add_argument("--local-search", action="store_true")
+    prepare.add_argument("--lean-probe-source", type=Path)
     finalize = subparsers.add_parser("finalize")
     finalize.add_argument("--source", type=Path, required=True)
     finalize.add_argument("--venv-dir", type=Path, required=True)
     finalize.add_argument("--bin-dir", type=Path, required=True)
+    validate = subparsers.add_parser("validate-inputs")
+    validate.add_argument("--source", type=Path, required=True)
+    validate.add_argument("--venv-dir", type=Path, required=True)
+    companion = subparsers.add_parser("companion-input")
+    companion.add_argument("--source", type=Path, required=True)
+    companion.add_argument("--venv-dir", type=Path, required=True)
     subparsers.add_parser("ensure-backends")
     arguments = parser.parse_args()
     try:
@@ -329,14 +377,21 @@ def main() -> None:
                 mode=arguments.mode,
                 installer_pid=arguments.installer_pid,
                 local_search=arguments.local_search,
+                lean_probe_source=arguments.lean_probe_source,
             )
             print("reuse" if plan.reuse else "new")
             print(plan.venv_dir)
         elif arguments.command == "finalize":
             finalize_install(arguments.source, arguments.venv_dir, arguments.bin_dir)
+        elif arguments.command == "validate-inputs":
+            validate_install_inputs(arguments.source, arguments.venv_dir)
+        elif arguments.command == "companion-input":
+            validate_install_inputs(arguments.source, arguments.venv_dir)
+            snapshot = materialize_companion_input(arguments.venv_dir)
+            print(str(snapshot) if snapshot else "")
         else:
             ensure_backends()
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         parser.exit(1, f"LeanFlow installation refused: {exc}\n")
 
 

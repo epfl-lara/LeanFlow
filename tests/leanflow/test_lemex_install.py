@@ -129,9 +129,10 @@ def test_refresh_adopts_local_upgrade_without_changing_old_objects_or_native_hom
     assert installer.ensure_lemex(build=False) == new
 
 
+@pytest.mark.parametrize("build", [False, True])
 @pytest.mark.parametrize("replacement", ["missing", "incompatible", "managed", "symlink"])
 def test_no_build_refresh_retains_healthy_pin_when_no_external_upgrade_is_usable(
-    installed_package, monkeypatch, tmp_path, replacement
+    installed_package, monkeypatch, tmp_path, replacement, build
 ):
     package, executable, _native_home = installed_package
     old = installer.ensure_lemex(build=False)
@@ -147,18 +148,42 @@ def test_no_build_refresh_retains_healthy_pin_when_no_external_upgrade_is_usable
         (package / "vendor/outside").symlink_to(outside)
     else:
         executable.write_text("#!/bin/sh\necho incompatible\n")
-    assert installer.ensure_lemex(build=False, refresh=True) == old
+    monkeypatch.setattr(
+        installer, "_build_from_source", lambda: pytest.fail("healthy Lemex rebuilt")
+    )
+    assert installer.ensure_lemex(build=build, refresh=True) == old
     assert pointer.read_bytes() == before
 
 
-def test_refresh_builds_pinned_source_when_only_managed_runtime_is_on_path(
+def test_refresh_keeps_pinned_source_when_only_managed_runtime_is_on_path(
     installed_package, monkeypatch
 ):
-    old = installer.ensure_lemex(build=False)
+    package, executable, _native_home = installed_package
+    old = installer._publish(
+        package,
+        executable.relative_to(package),
+        source="pinned-source",
+        commit=installer.LEMEX_SOURCE_COMMIT,
+    )
     monkeypatch.setattr(installer.shutil, "which", lambda _name: old["executable"])
-    rebuilt = {"source": "pinned-source", "sha256": "new-source"}
-    monkeypatch.setattr(installer, "_build_from_source", lambda: rebuilt)
-    assert installer.ensure_lemex(refresh=True) == rebuilt
+    monkeypatch.setattr(
+        installer, "_build_from_source", lambda: pytest.fail("healthy Lemex rebuilt")
+    )
+    assert installer.ensure_lemex(refresh=True) == old
+
+
+def test_refresh_retains_healthy_pin_when_external_package_is_unreadable(
+    installed_package, monkeypatch
+):
+    """An unreadable optional upgrade cannot invalidate a complete usable distribution."""
+    old = installer.ensure_lemex(build=False)
+
+    def fail(*args):
+        raise OSError("external package unreadable")
+
+    monkeypatch.setattr(installer, "_package_root", fail)
+
+    assert installer.ensure_lemex(build=True, refresh=True) == old
 
 
 def test_refresh_without_a_runtime_or_build_permission_reports_missing_install(

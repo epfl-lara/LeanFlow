@@ -1,5 +1,6 @@
 """Verify Windows bootstrap targets and the generated WSL installer script."""
 
+import base64
 import os
 import subprocess
 from pathlib import Path
@@ -24,7 +25,8 @@ def test_windows_installers_use_current_bootstrap_targets():
 
     assert '$DefaultRepoUrl = "https://github.com/epfl-lara/LeanFlow.git"' in install_ps1
     assert (
-        'powershell -ExecutionPolicy ByPass -NoProfile -File "%~dp0install.ps1" %*' in install_cmd
+        'powershell.exe -ExecutionPolicy ByPass -NoLogo -NoProfile -File "%~dp0install.ps1" %*'
+        in install_cmd
     )
 
 
@@ -45,6 +47,10 @@ def test_wsl_bootstrap_runs_direct_installer_and_bootstraps_python(
     package_marker = tmp_path / "packages-installed"
     fake_commands = {
         "git": "exit 0\n",
+        "python3.14": "exit 1\n",
+        "python3.13": "exit 1\n",
+        "python3.12": "exit 1\n",
+        "python": "exit 1\n",
         "python3": (
             f'if [[ -f "$PACKAGE_MARKER" ]]; then exit 0; fi\nexit {int(missing_python)}\n'
         ),
@@ -77,8 +83,20 @@ def test_wsl_bootstrap_runs_direct_installer_and_bootstraps_python(
         "COMMAND_LOG": str(command_log),
         "PACKAGE_MARKER": str(package_marker),
     }
+    payload = [
+        "https://example.test/LeanFlow.git",
+        "main",
+        "~/LeanFlow",
+        "0",
+        "",
+        "1",
+        "0",
+        "",
+        "0",
+    ]
+    encoded = [base64.b64encode(("." + value).encode()).decode() for value in payload]
     result = subprocess.run(
-        ["bash", str(script), "https://example.test/LeanFlow.git", "main", "~/LeanFlow", "0"],
+        ["bash", str(script), *encoded],
         env=environment,
         text=True,
         capture_output=True,

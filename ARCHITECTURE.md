@@ -198,7 +198,8 @@ LeanProbe owns scoped declaration segmentation and its response transport.
 LeanFlow calls its public Python API directly without replacing backend functions.
 `lean/lean_incremental.py` retains LeanFlow's admission, parent deadlines, source
 protection, axiom policy, and output contract. Coordinated development installs
-require the companion LeanProbe 0.4.1 development wheel or later.
+use adjacent or explicitly selected LeanProbe source, with a pinned source
+download for standalone checkouts.
 
 `runtime/storage/` owns policy, leases, marked entries, LRU cleanup, process-view
 protection, and abandoned-view recovery. Only managed entries or registered
@@ -209,11 +210,28 @@ Defaults are a 20 GiB soft target and 10 GiB reserve. `prover/storage_admission.
 guards dispatch and quiet polling; storage pressure checkpoints owned work.
 `cli/storage_command.py` exposes inspection, cleanup, and explicit publication.
 
+`runtime/install_inputs.py` validates companion API metadata without executing it;
+`install_companion.py` obtains an exact reviewed Git commit under the home authority.
+`install_identity.py` hashes LeanFlow and companion package inputs.
+`install_snapshot.py` records explicit-environment input receipts and copies companion
+packaging inputs per runtime, keeping concurrent builds independent.
+`install_native.py` adopts optional Lemex or builds it only for a selected provider.
 `runtime/runtime_install.py` claims fresh versioned Python environments and
 atomically selects a validated wrapper. Active runtimes are leased; healthy MCP
 environments are reused. Existing environments are not upgraded in place.
 Editable installs still reference their source checkout, which must stay stable
 while jobs run; wheel installs separate runtime code from checkout edits.
+Ownership registration and input freshness checks precede command publication.
+A persistent switch journal protects both pointer generations across abrupt exit.
+`install_storage.py` reads scalar block limits before YAML dependencies are available.
+`cli/mcp_install_generation.py` owns permanent MCP generations, interprocess
+selection locking, actual MCP initialization checks and atomic configuration
+replacement. `cli/mcp_install_receipts.py` binds reuse to the current package
+specification, patch sources, installed metadata and files, and initialized arguments.
+Repair never patches a running environment in place. Selected
+commands are validated as contained managed paths. Uncertain subprocess shutdown
+retains a failed candidate; MCP generations and pinned companion sources are
+currently outside automatic storage collection.
 
 Acceptance reuse is controller-only and binds candidate bytes, protected types,
 axiom policy, import closure, and Lean environment. Dependency changes invalidate

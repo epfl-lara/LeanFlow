@@ -3,8 +3,8 @@
 The readiness check found the managed lean-lsp-mcp client sending ``--write-index``
 to a Loogle build that only accepts ``--index-mode``/``--index-file``. These tests
 pin the negotiation patch, the build record ``loogle_local`` writes, the
-compatibility status behind ``leanflow doctor``, and the offline
-``leanflow mcp repair`` path that applies the patch.
+compatibility status behind ``leanflow doctor``, and immutable generation
+selection by ``leanflow mcp repair``.
 """
 
 from __future__ import annotations
@@ -367,8 +367,50 @@ def test_ensure_local_loogle_records_the_built_binary_dialect(tmp_path, monkeypa
     assert again["index_dialect"] == "index-mode"
 
 
-def test_repair_reapplies_patches_without_reinstalling(tmp_path):
+def test_repair_rebuilds_a_fresh_generation_and_preserves_active_client(tmp_path, monkeypatch):
     home, _cache = _make_home_with_client_and_build(tmp_path, source_flag="--index-mode")
+    old_client = compat.managed_client_loogle_module(home)
+    assert old_client is not None
+    old_source = old_client.read_text()
+
+    def install(venv_dir, install_spec, **kwargs):
+        spec = next(
+            item
+            for item in mcp_bootstrap.MANAGED_LEAN_MCP_SPECS.values()
+            if item.venv_name == venv_dir.name
+        )
+        command = mcp_bootstrap._managed_command_in_venv(spec, venv_dir)
+        command.parent.mkdir(parents=True)
+        command.write_text("#!/bin/sh\nexit 0\n")
+        command.chmod(0o755)
+        for package in mcp_bootstrap._managed_mcp_packages(spec):
+            metadata = (
+                venv_dir / "lib/python3.12/site-packages" / f"{package}-1.0.dist-info/METADATA"
+            )
+            metadata.parent.mkdir(parents=True, exist_ok=True)
+            metadata.write_text(f"Name: {package}\nVersion: 1.0\n")
+        if spec.name == "lean-lsp":
+            client = _write_client(venv_dir)
+            client.write_text(
+                "# When any --path is passed to loogle\n# _leanflow_build_loogle_inner\n"
+                "# LeanFlow: reap Loogle after startup timeout\n" + client.read_text()
+            )
+            client.with_name("server.py").write_text(
+                "# LeanFlow: stop the shared local Loogle with the stdio session\n"
+            )
+        elif spec.name == "lean-proof-auto":
+            package = venv_dir / "lib/python3.12/site-packages/lean_interact"
+            package.mkdir()
+            (package / "utils.py").write_text(
+                "# RichHandler(rich_tracebacks=True, console=Console(stderr=True))\n"
+            )
+
+    monkeypatch.setattr(mcp_bootstrap, "_install_into_managed_venv", install)
+    monkeypatch.setattr(
+        mcp_bootstrap,
+        "_validate_managed_mcp_environment",
+        lambda *args, **kwargs: {"console_script": True, "fastmcp": True, "initialized": True},
+    )
 
     payload = mcp_bootstrap.repair_managed_mcp_patches(home)
 
@@ -376,9 +418,11 @@ def test_repair_reapplies_patches_without_reinstalling(tmp_path):
     lean_lsp = payload["patches"]["lean-lsp"]
     assert lean_lsp["installed"] is True
     assert lean_lsp["index_flags"] is True
-    assert payload["patches"]["lean-proof-auto"] == {"installed": False}
+    assert payload["patches"]["lean-proof-auto"]["installed"] is True
     client = compat.managed_loogle_client_status(home)
     assert client["client_patched"] is True
+    assert compat.managed_client_loogle_module(home) != old_client
+    assert old_client.read_text() == old_source
 
 
 def test_main_mcp_repair_prints_applied_patches(monkeypatch, tmp_path, capsys):

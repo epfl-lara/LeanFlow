@@ -126,3 +126,65 @@ the installed wrapper:
 An editable installation still references its checkout. Keep active runtime
 source stable while changing or installing another checkout. Extension changes
 require `npm run typecheck`, `npm test`, and `npm run package` in its directory.
+
+## Installation invariants and release checks
+
+Treat changes to installers, Python requirements/locks, runtime publication,
+managed MCP setup, native-provider discovery, and project setup as installation
+changes. Keep these guarantees and verify them before committing:
+
+- A standalone checkout must install its required LeanProbe API without a
+  manually prepared wheel or private pip settings. Coordinate the Python API,
+  version requirements, source pin, and uv development override. Verify that a
+  pinned Git commit is publicly fetchable before publishing a dependent change.
+  Include companion package contents in the runtime identity and reject inputs
+  that change between preparation and publication, including explicit `--venv-dir`
+  installs. Build companion packages from private per-runtime inputs so concurrent
+  installers do not share writable setuptools metadata.
+- Keep `install.sh` on the shared `install-internal.sh` path. WSL must call that
+  same installer with literal arguments, select initialized WSL2 explicitly,
+  preserve Git origin and unpublished work, and stop with initialization guidance
+  when setup cannot continue. Unattended installation must not request passwords
+  or elevation. Detect unsupported interpreters and paths before publication.
+- Codex and Claude installations must not require a fresh Lemex build. Build
+  Lemex only when requested or selected in saved configuration; preserve native
+  configuration and authentication. Check prerequisites before starting a build.
+  Installation must not log in to a provider or make inference calls.
+- Never upgrade, patch, rename, or delete an existing runtime/MCP environment in
+  place. Create virtual environments at their permanent paths because shebangs
+  capture those paths. Validate installed imports, executable startup, and actual
+  MCP initialization/list-tools before selecting fresh commands. Pin required
+  managed packages and fingerprint specs, patches, installed metadata and files
+  so upgrades cannot mistake an obsolete backend for a healthy current one. Keep active old
+  processes working; uncertain subprocess shutdown requires retaining its paths.
+- Register ownership before publishing commands. Serialize configuration changes,
+  preserve unrelated settings, and atomically replace complete documents. Test
+  failure recovery, unchanged reruns, explicit recreation, and concurrent selection.
+  Readiness must distinguish installation, project verification, native login,
+  sandbox support, optional search, and controller-accepted proofs.
+
+Run the installer/runtime regression tests as well as the full quality gate:
+
+```bash
+python -m pytest tests/installer tests/test_install_wrapper.py tests/test_windows_installer_links.py tests/leanflow/test_runtime_install.py tests/leanflow/test_install_inputs.py tests/leanflow/test_install_companion.py tests/leanflow/test_install_native.py tests/leanflow/test_mcp_bootstrap.py tests/leanflow/test_config_atomic.py tests/leanflow/test_install_publication.py tests/leanflow/test_install_storage.py tests/leanflow/test_install_snapshot.py -q -n 0
+```
+
+When PowerShell is available, set `LEANFLOW_TEST_POWERSHELL` to its executable so
+the Windows launcher tests execute. A skipped launcher test or mocked WSL boundary
+does not establish real Windows/WSL installation success.
+
+For installer behavior changes, smoke-test a fresh isolated state/bin directory
+from a frozen source copy on macOS and an available Linux host; run the Ubuntu
+smoke at `tests/installer/ubuntu_repository_local_install_smoke/run.sh` when Docker
+is available. Exercise the default provider without optional Lemex, a wheel
+installation, unchanged rerun/config preservation, and installed module locations
+from outside the source checkout (`python -I`). Container tests must archive sources
+on the host, including new nonignored modules, rather than depend on worktree Git
+metadata inside the container. Never copy credentials or ignored runtime state.
+
+Verify empty-folder project setup with real LeanProbe acceptance/rejection of valid,
+invalid, and `sorry` proofs, independent controller checking, and a final Lake
+build. Keep disk-reserve and sandbox restrictions visible; do not weaken global
+policy to obtain a green test. Record exact source inputs, platform, checks, and
+limits in ignored evidence. Report unavailable real platforms explicitly. Keep
+general guidance in documentation and exclude machine-specific logs from commits.

@@ -127,7 +127,7 @@ def resolve_backend_executable(backend: str) -> str:
         setup = {
             "codex": "Install Codex CLI, then use codex login or export OPENAI_API_KEY.",
             "claude": "Install Claude Code, then use its login or export ANTHROPIC_API_KEY.",
-            "lemex": "Run the LeanFlow installer to install Lemex; configure its native LEMEX_BASE_URL and LEMEX_API_KEY.",
+            "lemex": "Run the LeanFlow installer with --with-lemex; configure its native LEMEX_BASE_URL and LEMEX_API_KEY.",
         }
         raise RuntimeProviderError(f"{name} executable is missing. {setup[name]}")
     return str(executable)

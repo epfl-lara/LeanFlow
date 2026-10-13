@@ -8,7 +8,12 @@ and VS Code extension share the same workflow launcher.
 
 The installer supports Linux, macOS, and WSL. It requires Git and Python 3.12 or
 newer with `venv` and `pip`. Lean projects require their configured Lean toolchain
-and Lake, normally managed by `elan`.
+and Lake, normally managed by `elan`. Fresh runtime construction uses a default
+10 GiB free-space reserve; configure `storage.min_free_gib` to change it. An
+unchanged validated runtime can be reused without new-runtime admission.
+On Ubuntu/Debian, Python also needs `python3-venv` (or matching `python3.X-venv`);
+a supported private Python can be selected with `--python` when administrator
+access is unavailable.
 
 ```bash
 git clone https://github.com/epfl-lara/LeanFlow.git
@@ -19,8 +24,17 @@ leanflow --help
 leanflow doctor
 ```
 
-On Windows, run `.\scripts\install.ps1` from PowerShell. Use `-Distro NAME` to
+On Windows, run `.\scripts\install.cmd` from PowerShell. Use `-Distro NAME` to
 select a WSL2 distribution or `-LinuxRepoDir PATH` for its Linux checkout.
+The launcher selects an initialized WSL2 distribution, preserves an explicitly
+selected distribution, and stops with initialization guidance when needed.
+Automatic selection requires a normal Linux user; use `-Distro NAME` explicitly
+when an installation as root is intentional.
+`-NonInteractive` prevents elevation and password prompts; `-WithLemex` and
+`-LeanProbeSource PATH` forward the corresponding Linux options. It preserves
+the existing Git origin and refuses to switch a checkout with private or
+divergent commits. A requested unpublished branch fails explicitly; an automatic
+branch fallback announces that main was selected.
 Finish any requested WSL initialization, then configure the native runtime and
 Lean project inside that environment. Remote SSH workspaces need LeanFlow and
 its prerequisites on the remote host.
@@ -38,10 +52,20 @@ and dependencies from in-place replacement; they do not freeze editable source.
 Use `--no-editable` for a wheel installation when the runtime must be independent
 of checkout edits.
 
-The installer prepares managed Lean MCP backends and a pinned Lemex distribution.
-It can adopt an existing self-contained Lemex package without changing its global
-executable or native configuration. Codex and Claude Code use their own
-installations. Local search uses `rg`; PDF inspection uses Poppler's `pdftotext`,
+The installer prepares managed Lean MCP backends. It uses a matching adjacent
+`../LeanProbe` checkout, an explicit `--lean-probe-source PATH`, or downloads the
+exact reviewed LeanProbe commit into managed state. This supports the development
+backend before its Python package release. Git and package downloads need network
+access; local companion source avoids the Git download. Its packaged contents are
+part of the runtime identity and are rechecked before commands switch.
+
+Codex is the default provider. Codex and Claude Code use their own installations.
+A compatible self-contained Lemex installation can be adopted automatically.
+A fresh pinned Lemex source build runs only when saved configuration selects
+Lemex or `--with-lemex` is supplied. That build additionally requires Node.js,
+npm, ripgrep, Bash, Python, a C compiler, and Rust (or curl to install Rust),
+network access and build time. Native authentication and configuration are
+preserved. The installer does not make model calls. Local search uses `rg`; PDF inspection uses Poppler's `pdftotext`,
 `pdfinfo`, and `pdfimages`. Missing optional capabilities are reported.
 Linux and WSL also require Bubblewrap with usable user namespaces for native
 proving. The installer attempts to prepare it and checks whether its sandbox can
@@ -76,9 +100,25 @@ installation uses local text search and available hosted/MCP search providers.
 
 Custom home, wrapper directory, interpreter, and fresh environment paths are
 available through `--leanflow-home`, `--bin-dir`, `--python`, and `--venv-dir`.
+Installation paths may contain spaces. Python build tooling does not support
+dollar signs in the state/runtime paths, so the installer rejects those paths
+before changing the installation. Source and wrapper paths can contain dollar
+signs. Line breaks in installation paths are rejected.
 An existing explicit environment path is rejected. `--recreate-venv` prepares a
-fresh sibling, preserving the previous environment. Use `--skip-os-tools` or
+fresh sibling, preserving the previous environment. `--non-interactive` disables package and Git prompts; it does not install a
+provider CLI or log in to one. Use `--skip-os-tools` or
 `--skip-leanexplore-data` to manage those optional components yourself.
+
+Managed MCP repair builds fresh permanent environments, checks actual protocol
+initialization and tools, then atomically selects their commands. Package specs,
+patch implementations, installed metadata, validated arguments and patch/command
+contents are fingerprinted; a mismatch prepares a new generation on upgrade.
+Custom MCP arguments and symlinked configuration targets are preserved. Existing
+processes retain their previous environments. Configuration updates share a
+process lock and preserve unrelated settings. Failed candidates are cleaned
+only when their subprocess shutdown is confirmed; uncertain shutdown retains
+the candidate for inspection. Managed MCP generations and pinned companion
+sources currently remain outside automatic storage collection.
 
 To update, pull the desired revision and rerun the installer. It validates the
 new environment before selecting it for future commands. Keep any source

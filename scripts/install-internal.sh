@@ -15,6 +15,9 @@ LEANFLOW_INSTALL_PYTHON="${LEANFLOW_INSTALL_PYTHON:-python3}"
 LEANFLOW_FETCH_LEANEXPLORE_DATA="${LEANFLOW_FETCH_LEANEXPLORE_DATA:-0}"
 LEANFLOW_INSTALL_OS_TOOLS="${LEANFLOW_INSTALL_OS_TOOLS:-1}"
 INSTALL_MODE="editable"
+LEAN_PROBE_SOURCE="${LEANFLOW_LEAN_PROBE_SOURCE:-}"
+WITH_LEMEX=0
+INSTALL_NONINTERACTIVE=0
 RECREATE_VENV=0
 STEP=0
 TOTAL_STEPS=12
@@ -60,6 +63,7 @@ select_install_python() {
     printf 'LeanFlow installation requires Python 3.12+ with venv support; the explicitly selected interpreter is unsupported or unavailable: %s\n' \
       "$LEANFLOW_INSTALL_PYTHON" >&2
     printf 'Use --python PATH to select a supported interpreter.\n' >&2
+    printf 'On Ubuntu/Debian, install python3-venv (or the matching python3.X-venv package). A private Python distribution can also be selected with --python.\n' >&2
     return 1
   fi
   for candidate in \
@@ -78,6 +82,7 @@ select_install_python() {
     fi
   done
   printf 'LeanFlow installation requires Python 3.12+ with venv support. Install a supported Python or select it with --python PATH.\n' >&2
+  printf 'On Ubuntu/Debian, install python3-venv (or matching python3.X-venv). Without administrator access, use a private Python distribution with venv and ensurepip support.\n' >&2
   return 1
 }
 
@@ -114,7 +119,10 @@ missing_external_tools_text() {
       missing+=("$binary")
     fi
   done
-  printf '%s' "${missing[*]}"
+  if ((${#missing[@]})); then
+    printf '%s' "${missing[*]}"
+  fi
+  return 0
 }
 
 link_external_tool_candidates() {
@@ -264,6 +272,9 @@ Options:
   --local-leanexplore    Install optional local semantic search and fetch its data
   --skip-os-tools       Do not install or wire external CLI tools
   --no-editable          Install a wheel instead of editable mode
+  --lean-probe-source PATH Use a companion checkout (default: adjacent or pinned download)
+  --with-lemex           Build Lemex if no compatible installation exists
+  --non-interactive      Disable package-manager and Git credential prompts
   -h, --help             Show this help
 
 Behavior:
@@ -274,6 +285,15 @@ TXT
 }
 
 while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --leanflow-home|--bin-dir|--venv-dir|--python|--lean-probe-source)
+      if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+        printf 'Missing value for %s\n' "$1" >&2
+        usage >&2
+        exit 2
+      fi
+      ;;
+  esac
   case "$1" in
     --leanflow-home)
       LEANFLOW_HOME="$2"
@@ -312,6 +332,18 @@ while [[ $# -gt 0 ]]; do
       INSTALL_MODE="wheel"
       shift
       ;;
+    --lean-probe-source)
+      LEAN_PROBE_SOURCE="$2"
+      shift 2
+      ;;
+    --with-lemex)
+      WITH_LEMEX=1
+      shift
+      ;;
+    --non-interactive)
+      INSTALL_NONINTERACTIVE=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -325,6 +357,22 @@ while [[ $# -gt 0 ]]; do
 done
 
 select_install_python
+if ! git --version >/dev/null 2>&1; then
+  printf 'LeanFlow installation requires Git. Install it before rerunning the installer.\n' >&2
+  exit 1
+fi
+if [[ "$INSTALL_NONINTERACTIVE" == "1" ]]; then
+  export PIP_NO_INPUT=1 GIT_TERMINAL_PROMPT=0 NONINTERACTIVE=1
+fi
+COMPANION_ARGS=(--source "$REPO_ROOT" --bin-dir "$LEANFLOW_BIN_DIR")
+if [[ -n "$LEANFLOW_VENV_DIR" ]]; then
+  COMPANION_ARGS+=(--venv-dir "$LEANFLOW_VENV_DIR")
+fi
+if [[ -n "$LEAN_PROBE_SOURCE" ]]; then
+  COMPANION_ARGS+=(--lean-probe-source "$LEAN_PROBE_SOURCE")
+fi
+LEAN_PROBE_SOURCE="$(LEANFLOW_HOME="$LEANFLOW_HOME" PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$LEANFLOW_INSTALL_PYTHON" \
+  -m leanflow_cli.runtime.install_inputs "${COMPANION_ARGS[@]}")"
 banner
 step "Preparing install directories"
 mkdir -p "$LEANFLOW_HOME" "$LEANFLOW_BIN_DIR"
@@ -334,6 +382,9 @@ ok "bin : $LEANFLOW_BIN_DIR"
 ok "Python: $LEANFLOW_INSTALL_PYTHON"
 
 INSTALL_ARGS=(prepare --source "$REPO_ROOT" --mode "$INSTALL_MODE" --installer-pid "$$")
+if [[ -n "$LEAN_PROBE_SOURCE" ]]; then
+  INSTALL_ARGS+=(--lean-probe-source "$LEAN_PROBE_SOURCE")
+fi
 if [[ "$LEANFLOW_FETCH_LEANEXPLORE_DATA" == "1" ]]; then
   INSTALL_ARGS+=(--local-search)
 fi
@@ -371,14 +422,32 @@ else
     PACKAGE_EXTRAS="mcp,lean-explore"
   fi
   python -m pip install --quiet --quiet --upgrade pip "setuptools<82" wheel
+  PACKAGE_SOURCES=("$REPO_ROOT[$PACKAGE_EXTRAS]")
+  if [[ -n "$LEAN_PROBE_SOURCE" ]]; then
+    COMPANION_BUILD_SOURCE="$(LEANFLOW_HOME="$LEANFLOW_HOME" PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$LEANFLOW_INSTALL_PYTHON" \
+      -m leanflow_cli.runtime.runtime_install companion-input --source "$REPO_ROOT" --venv-dir "$LEANFLOW_VENV_DIR")"
+    PACKAGE_SOURCES+=("$COMPANION_BUILD_SOURCE")
+    ok "installing isolated matching LeanProbe source: $COMPANION_BUILD_SOURCE"
+  fi
+  PIP_ARGS=(-m pip install --quiet --quiet)
   if [[ "$INSTALL_MODE" == "editable" ]]; then
-    python -m pip install --quiet --quiet -e "$REPO_ROOT[$PACKAGE_EXTRAS]"
+    PIP_ARGS+=(-e)
+  fi
+  if ! python "${PIP_ARGS[@]}" "${PACKAGE_SOURCES[@]}"; then
+    warn "package installation failed; existing command wrappers remain unchanged"
+    warn "Check network/package access, or supply a compatible checkout with --lean-probe-source PATH."
+    exit 1
+  fi
+  if [[ "$INSTALL_MODE" == "editable" ]]; then
     ok "installed editable package"
   else
-    python -m pip install --quiet --quiet "$REPO_ROOT[$PACKAGE_EXTRAS]"
     ok "installed package wheel"
   fi
 fi
+"$LEANFLOW_VENV_DIR/bin/python" -I -c \
+  'from lean_probe import API_REVISION; from leanflow_cli.lean import lean_incremental; assert API_REVISION >= 1 and not lean_incremental._LEAN_PROBE_IMPORT_ERROR, "Reinstall matching LeanFlow and LeanProbe packages"'
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -I \
+  -m leanflow_cli.runtime.runtime_install validate-inputs --source "$REPO_ROOT" --venv-dir "$LEANFLOW_VENV_DIR"
 
 step "Fetching local LeanExplore data"
 if [[ "$LEANFLOW_FETCH_LEANEXPLORE_DATA" == "1" ]]; then
@@ -395,7 +464,7 @@ fi
 # provider/env discovery. This makes ~/.leanflow/config.yaml and ~/.leanflow/.env
 # explicit installation artifacts instead of hidden first-run side effects.
 step "Creating LeanFlow config"
-LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" <<'PY'
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -I <<'PY'
 from leanflow_cli.config import ensure_leanflow_home, load_config
 
 ensure_leanflow_home()
@@ -403,13 +472,17 @@ load_config()
 PY
 ok "config: $LEANFLOW_HOME/config.yaml"
 
-step "Ensuring a compatible private Lemex runtime"
-LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -m leanflow_cli.runtime.lemex_install
-LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -m leanflow_cli.runtime.lemex_install --refresh --no-build
-ok "Lemex executable managed separately from its native configuration"
+step "Preparing the selected native runtime"
+NATIVE_ARGS=(-m leanflow_cli.runtime.install_native)
+if [[ "$WITH_LEMEX" == "1" ]]; then
+  NATIVE_ARGS+=(--with-lemex)
+fi
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -I \
+  "${NATIVE_ARGS[@]}"
+ok "native provider setup checked without login or model calls"
 
 step "Installing managed Lean MCP backends and power modes"
-LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" \
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -I \
   -m leanflow_cli.runtime.runtime_install ensure-backends
 ok "managed MCP bootstrap complete"
 
@@ -418,7 +491,7 @@ LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/leanflow" --help >/dev/nu
 ok "leanflow --help"
 
 step "Writing command wrappers"
-LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" \
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" -I \
   -m leanflow_cli.runtime.runtime_install finalize \
   --source "$REPO_ROOT" --venv-dir "$LEANFLOW_VENV_DIR" --bin-dir "$LEANFLOW_BIN_DIR"
 ok "wrapper: $LEANFLOW_BIN_DIR/leanflow"
@@ -436,6 +509,10 @@ step "Recording install metadata"
 ok "metadata: ${LEANFLOW_HOME}/install-root"
 
 printf '\nLeanFlow installed.\n'
+printf 'Lean project setup, native provider login, and usable sandbox support are separate readiness checks.\n'
+if [[ -n "$(missing_external_tools_text)" ]]; then
+  warn "optional tools still unavailable: $(missing_external_tools_text); inspect leanflow doctor"
+fi
 printf '  repo: %s\n' "$REPO_ROOT"
 printf '  home: %s\n' "$LEANFLOW_HOME"
 printf '  config: %s/config.yaml\n' "$LEANFLOW_HOME"

@@ -8,12 +8,16 @@ comment-preserving YAML edits only for the managed MCP entries.
 from __future__ import annotations
 
 import contextlib
+import inspect
+import io
+import json
 import os
 import re
 import shutil
 import stat
 import subprocess
 import sys
+import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -22,6 +26,18 @@ from typing import Any
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
+from leanflow_cli.cli.mcp_install_generation import (
+    MCPValidationCleanupUncertain,
+    atomic_managed_config_write,
+    managed_config_write_target,
+    managed_mcp_install_lock,
+    validate_managed_mcp_candidate,
+)
+from leanflow_cli.cli.mcp_install_receipts import (
+    managed_mcp_receipt_status,
+    mcp_install_fingerprint,
+    write_managed_mcp_receipt,
+)
 from leanflow_cli.config import (
     ensure_leanflow_home,
     get_config_path,
@@ -62,15 +78,15 @@ MANAGED_LEAN_MCP_SPECS: dict[str, ManagedMCPServerSpec] = {
         name="lean-proof-auto",
         role="secondary-automation-context",
         venv_name="lean-proof-auto",
-        install_spec="lean-proof-auto-mcp @ git+https://github.com/padieul/lean-proof-auto-mcp.git@v0.4.0",
+        install_spec="lean-proof-auto-mcp @ git+https://github.com/padieul/lean-proof-auto-mcp.git@8d829ecf8e25ac7597fd5cc41b043a40aa404ec1",
         console_script="lean-proof-auto-mcp",
-        extra_install_specs=("PyYAML",),
+        extra_install_specs=("lean-interact==0.11.5", "PyYAML==6.0.3"),
     ),
     "lean-explore": ManagedMCPServerSpec(
         name="lean-explore",
         role="semantic-declaration-search",
         venv_name="lean-explore",
-        install_spec="lean-explore",
+        install_spec="lean-explore==1.3.0",
         console_script="lean-explore",
         args=("mcp", "serve", "--backend", "api"),
         min_python=(3, 12),
@@ -112,8 +128,31 @@ def local_loogle_supported() -> bool:
 
 
 def managed_mcp_venv_dir(name: str, home: str | os.PathLike[str] | None = None) -> Path:
+    """Resolve the selected contained managed environment, or the legacy default."""
     spec = MANAGED_LEAN_MCP_SPECS[name]
-    return managed_mcp_root(home) / "venvs" / spec.venv_name
+    home_path = Path(home).expanduser().resolve() if home else get_leanflow_home()
+    root = managed_mcp_root(home_path) / "venvs"
+    _yaml, doc = _load_bootstrap_document(home_path / get_config_path().name)
+    configured = doc.get("mcp_servers", {})
+    entry = configured.get(name, {}) if isinstance(configured, Mapping) else {}
+    if isinstance(entry, Mapping) and entry.get("managed") is True:
+        command = Path(str(entry.get("command", "") or "")).expanduser()
+        suffix = ".exe" if os.name == "nt" else ""
+        if (
+            command.is_absolute()
+            and command.name == f"{spec.console_script}{suffix}"
+            and command.parent.name == ("Scripts" if os.name == "nt" else "bin")
+            and command.parent.parent.name == spec.venv_name
+        ):
+            candidate = command.parent.parent
+            try:
+                candidate.resolve().relative_to(root.resolve())
+                command.resolve().relative_to(candidate.resolve())
+            except (OSError, ValueError):
+                pass
+            else:
+                return candidate
+    return root / spec.venv_name
 
 
 def _venv_bin_dir(venv_dir: Path) -> Path:
@@ -124,6 +163,11 @@ def managed_mcp_command_path(name: str, home: str | os.PathLike[str] | None = No
     spec = MANAGED_LEAN_MCP_SPECS[name]
     suffix = ".exe" if os.name == "nt" else ""
     return _venv_bin_dir(managed_mcp_venv_dir(name, home)) / f"{spec.console_script}{suffix}"
+
+
+def _managed_command_in_venv(spec: ManagedMCPServerSpec, venv_dir: Path) -> Path:
+    """Locate one server's console command in an explicitly selected generation."""
+    return _venv_bin_dir(venv_dir) / f"{spec.console_script}{'.exe' if os.name == 'nt' else ''}"
 
 
 def _secure_file(path: Path) -> None:
@@ -216,10 +260,10 @@ def _load_bootstrap_document(path: Path) -> tuple[YAML, CommentedMap]:
 
 
 def _write_bootstrap_document(path: Path, yaml: YAML, payload: CommentedMap) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.dump(payload, handle)
-    _secure_file(path)
+    """Atomically replace complete YAML while retaining its comments and quotes."""
+    handle = io.StringIO()
+    yaml.dump(payload, handle)
+    atomic_managed_config_write(path, handle.getvalue())
     # This writes the managed config file directly (preserving comments via ruamel) rather than
     # through config.save_config(), so it must drop the in-process load_config() cache itself —
     # otherwise a later load_config() in the same process returns the pre-bootstrap config.
@@ -228,10 +272,11 @@ def _write_bootstrap_document(path: Path, yaml: YAML, payload: CommentedMap) -> 
 
 
 def _ensure_managed_server_entry(
-    entry: CommentedMap, *, spec: ManagedMCPServerSpec, home: Path
+    entry: CommentedMap, *, spec: ManagedMCPServerSpec, home: Path, venv_dir: Path
 ) -> None:
-    entry["command"] = str(managed_mcp_command_path(spec.name, home))
-    entry["args"] = list(spec.args)
+    entry["command"] = str(_managed_command_in_venv(spec, venv_dir))
+    if "args" not in entry:
+        entry["args"] = list(spec.args)
     env_defaults = dict(spec.env)
     if spec.name == "lean-lsp":
         env_defaults.update(_lean_lsp_power_env(home))
@@ -275,11 +320,23 @@ def _ensure_managed_server_entry(
         sampling["enabled"] = False
 
 
-def write_managed_mcp_config(home: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    """Ensure the LeanFlow config file contains entries for all managed Lean MCP servers with correct command paths, roles, and power-mode environments (REPL timeout, Loogle cache dir, local-search instructions)."""
+def write_managed_mcp_config(
+    home: str | os.PathLike[str] | None = None,
+    *,
+    venv_dirs: Mapping[str, Path] | None = None,
+) -> dict[str, Any]:
+    """Publish explicit managed targets while preserving the latest user configuration."""
     home_path = Path(home).expanduser().resolve() if home else ensure_leanflow_home()
     home_path.mkdir(parents=True, exist_ok=True)
     _secure_dir(home_path)
+    with managed_mcp_install_lock(home_path):
+        return _write_managed_mcp_config_locked(home_path, venv_dirs=venv_dirs)
+
+
+def _write_managed_mcp_config_locked(
+    home_path: Path, *, venv_dirs: Mapping[str, Path] | None
+) -> dict[str, Any]:
+    """Read the current document only after candidate environments are validated."""
     path = home_path / get_config_path().name
     yaml, doc = _load_bootstrap_document(path)
     mcp_servers = doc.get("mcp_servers")
@@ -299,7 +356,21 @@ def write_managed_mcp_config(home: str | os.PathLike[str] | None = None) -> dict
         elif not isinstance(existing, CommentedMap):
             existing = _commented_map(dict(existing))
             mcp_servers[spec.name] = existing
-        _ensure_managed_server_entry(existing, spec=spec, home=home_path)
+        venv_dir = (
+            Path(venv_dirs[spec.name])
+            if venv_dirs is not None and spec.name in venv_dirs
+            else managed_mcp_venv_dir(spec.name, home_path)
+        )
+        if venv_dir.name != spec.venv_name:
+            raise ValueError(f"Invalid managed environment name for {spec.name}")
+        try:
+            venv_dir.resolve().relative_to((managed_mcp_root(home_path) / "venvs").resolve())
+            _managed_command_in_venv(spec, venv_dir).resolve().relative_to(venv_dir.resolve())
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                f"Managed environment or command escapes the installation root: {venv_dir}"
+            ) from exc
+        _ensure_managed_server_entry(existing, spec=spec, home=home_path, venv_dir=venv_dir)
         updated.append(spec.name)
 
     _write_bootstrap_document(path, yaml, doc)
@@ -338,27 +409,12 @@ def _ensure_venv(
     python_bin: str | None = None,
     min_python: tuple[int, int] | None = None,
 ) -> Path:
+    """Create a fresh environment without repairing or deleting any existing one."""
+    if venv_dir.exists() or venv_dir.is_symlink():
+        raise RuntimeError(f"Refusing to modify an existing managed MCP environment: {venv_dir}")
     venv_dir.parent.mkdir(parents=True, exist_ok=True)
     _secure_dir(venv_dir.parent)
     existing_python = _venv_bin_dir(venv_dir) / ("python.exe" if os.name == "nt" else "python")
-    if existing_python.exists():
-        try:
-            subprocess.run(
-                [str(existing_python), "-V"],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            if min_python is None:
-                return existing_python
-            version = _python_version_tuple(existing_python)
-            if version is not None and version >= min_python:
-                return existing_python
-            shutil.rmtree(venv_dir, ignore_errors=True)
-        except Exception:
-            shutil.rmtree(venv_dir, ignore_errors=True)
-    if existing_python.exists():
-        return existing_python
 
     candidates: list[str] = []
     if min_python and min_python >= (3, 12):
@@ -401,6 +457,9 @@ def _install_into_managed_venv(
     min_python: tuple[int, int] | None = None,
     extra_install_specs: tuple[str, ...] = (),
 ) -> None:
+    """Install only into a new permanent environment path."""
+    if venv_dir.exists() or venv_dir.is_symlink():
+        raise RuntimeError(f"Refusing to upgrade an existing managed MCP environment: {venv_dir}")
     python_path = _ensure_venv(venv_dir, python_bin=python_bin, min_python=min_python)
     subprocess.run(
         [
@@ -527,34 +586,19 @@ def _apply_lean_lsp_patches(venv_dir: Path) -> dict[str, bool]:
 
 
 def repair_managed_mcp_patches(home: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    """Re-apply the managed source patches to installed MCP backends without reinstalling.
+    """Rebuild, patch and validate fresh backends before selecting their generation.
 
-    ``bootstrap`` refreshes pip packages and needs the network; a patch that
-    shipped after the backends were installed (such as Loogle index-flag
-    negotiation) only needs the files already on disk. Missing virtualenvs are
-    reported, never created.
+    Reuse pip's package cache when available. Never mutate loaded package files
+    or relocate an existing environment whose console-script paths are fixed.
     """
     home_path = Path(home).expanduser().resolve() if home else get_leanflow_home()
-    patches: dict[str, dict[str, Any]] = {}
-    lean_lsp_venv = managed_mcp_venv_dir("lean-lsp", home_path)
-    if lean_lsp_venv.is_dir():
-        patches["lean-lsp"] = {"installed": True, **_apply_lean_lsp_patches(lean_lsp_venv)}
-    else:
-        patches["lean-lsp"] = {"installed": False}
-    proof_auto_venv = managed_mcp_venv_dir("lean-proof-auto", home_path)
-    if proof_auto_venv.is_dir():
-        patches["lean-proof-auto"] = {
-            "installed": True,
-            "stdio_logging": _patch_lean_proof_auto_stdio_logging(proof_auto_venv),
-        }
-    else:
-        patches["lean-proof-auto"] = {"installed": False}
-    return {
-        "success": True,
-        "home": str(home_path),
-        "patches": patches,
-        "power_modes": managed_mcp_power_status(home_path),
+    result = bootstrap_lean_mcp(home=home_path)
+    result["patches"] = {
+        entry["name"]: {"installed": True, **entry.get("patches", {})}
+        for entry in result["servers"]
+        if entry["name"] in {"lean-lsp", "lean-proof-auto"}
     }
+    return result
 
 
 def managed_mcp_power_status(
@@ -649,7 +693,7 @@ def managed_mcp_power_status(
 def managed_mcp_server_status(
     home: str | os.PathLike[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Check installation and configuration health of each managed MCP server (lean-lsp, lean-proof-auto, lean-explore): verify venv and command exist, config matches expected paths, and enabled flag is set; attach lean-lsp power modes; flag if bootstrap is recommended."""
+    """Check selected commands and initialization receipts against current packages and patches."""
     home_path = Path(home).expanduser().resolve() if home else get_leanflow_home()
     config_path = home_path / get_config_path().name
     _yaml, doc = _load_bootstrap_document(config_path)
@@ -663,21 +707,37 @@ def managed_mcp_server_status(
         cfg = configured.get(spec.name, {})
         cfg = dict(cfg) if isinstance(cfg, Mapping) else {}
         configured_command = str(cfg.get("command", "") or "")
+        try:
+            arguments = _managed_server_arguments(spec, configured)
+            receipt_status = managed_mcp_receipt_status(
+                venv_dir,
+                expected_fingerprint=_managed_mcp_fingerprint(spec),
+                packages=_managed_mcp_packages(spec),
+                arguments=arguments,
+                installed_files=_managed_mcp_installed_files(spec, venv_dir),
+            )
+        except ValueError as exc:
+            receipt_status = {"current": False, "reason": str(exc)}
         entry = {
             "name": spec.name,
             "role": spec.role,
             "managed": True,
             "venv_dir": str(venv_dir),
             "command": str(command_path),
-            "installed": command_path.exists(),
+            "installed": command_path.is_file()
+            and (os.name == "nt" or os.access(command_path, os.X_OK)),
             "configured": bool(cfg),
             "command_matches": configured_command == str(command_path),
             "enabled": bool(cfg.get("enabled", True)) if cfg else False,
+            "receipt": receipt_status,
         }
         if spec.name == "lean-lsp":
             entry["power_modes"] = power_status
         entry["healthy"] = bool(
-            entry["installed"] and entry["configured"] and entry["command_matches"]
+            entry["installed"]
+            and entry["configured"]
+            and entry["command_matches"]
+            and receipt_status["current"]
         )
         entry["bootstrap_recommended"] = not bool(entry["healthy"])
         status[spec.name] = entry
@@ -696,8 +756,126 @@ def _lean_lsp_env_from_home(home_path: Path) -> dict[str, Any]:
 def bootstrap_lean_mcp(
     *, home: str | os.PathLike[str] | None = None, python_bin: str | None = None
 ) -> dict[str, Any]:
-    """Install all managed MCP servers into isolated virtualenvs, patch lean-lsp Loogle search paths, generate config entries with power-mode environment variables, and return detailed installation report including server venvs, command paths, and power-mode status."""
+    """Build and validate immutable permanent environments before atomic selection."""
     home_path = Path(home).expanduser().resolve() if home else ensure_leanflow_home()
+    with managed_mcp_install_lock(home_path):
+        return _bootstrap_lean_mcp_locked(home_path, python_bin=python_bin)
+
+
+def _validate_managed_mcp_environment(
+    spec: ManagedMCPServerSpec,
+    venv_dir: Path,
+    home_path: Path,
+    *,
+    args: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Check console execution, FastMCP imports and a real isolated MCP handshake."""
+    command = _managed_command_in_venv(spec, venv_dir)
+    _yaml, document = _load_bootstrap_document(home_path / get_config_path().name)
+    configured = document.get("mcp_servers", {})
+    user_env = _server_env_from_config(
+        configured if isinstance(configured, Mapping) else {}, spec.name
+    )
+    # This protocol probe must not start a Lean project or build a Loogle index.
+    # Project-specific functional checks remain the installation smoke gate.
+    env = {
+        **os.environ,
+        **{str(key): str(value) for key, value in spec.env.items()},
+        **{str(key): str(value) for key, value in user_env.items()},
+        "LEAN_REPL": "false",
+        "LEAN_LOOGLE_LOCAL": "false",
+    }
+    return validate_managed_mcp_candidate(
+        spec.name,
+        venv_dir,
+        command,
+        args=args if args is not None else _managed_server_arguments(spec, configured),
+        env=env,
+        cwd=home_path / "mcp",
+    )
+
+
+def _managed_server_arguments(spec: ManagedMCPServerSpec, configured: Any) -> tuple[str, ...]:
+    """Preserve and validate explicit user arguments before initialization and selection."""
+    entry = configured.get(spec.name, {}) if isinstance(configured, Mapping) else {}
+    arguments = entry.get("args", spec.args) if isinstance(entry, Mapping) else spec.args
+    if not isinstance(arguments, (list, tuple)) or not all(
+        isinstance(argument, str) for argument in arguments
+    ):
+        raise ValueError(f"Managed MCP arguments must be a list of strings: {spec.name}")
+    return tuple(arguments)
+
+
+def _managed_mcp_packages(spec: ManagedMCPServerSpec) -> tuple[str, ...]:
+    """Identify package metadata needed to verify the installed MCP backend."""
+    return tuple(
+        re.split(r"\s|==", requirement, maxsplit=1)[0]
+        for requirement in (spec.install_spec, *spec.extra_install_specs)
+    ) + ("mcp",)
+
+
+def _managed_mcp_fingerprint(spec: ManagedMCPServerSpec) -> str:
+    """Hash requested package settings and the source of every managed patch."""
+    patches = []
+    patch_constants: dict[str, str] = {}
+    if spec.name == "lean-lsp":
+        from leanflow_cli.cli import loogle_index_compat
+        from leanflow_cli.cli.loogle_local import (
+            patch_lean_lsp_loogle_build_lock,
+            patch_lean_lsp_loogle_lifecycle,
+        )
+
+        patches = [
+            _patch_lean_lsp_loogle_project_paths,
+            patch_lean_lsp_loogle_build_lock,
+            patch_lean_lsp_loogle_lifecycle,
+            loogle_index_compat.patch_lean_lsp_loogle_index_flags,
+        ]
+        patch_constants["index_marker"] = loogle_index_compat._INDEX_FLAGS_MARKER
+    elif spec.name == "lean-proof-auto":
+        patches = [_patch_lean_proof_auto_stdio_logging]
+    return mcp_install_fingerprint(
+        {**spec.to_dict(), "mcp_requirement": MCP_REQUIREMENT, "patch_constants": patch_constants},
+        (inspect.getsource(patch) for patch in patches),
+    )
+
+
+def _managed_mcp_installed_files(spec: ManagedMCPServerSpec, venv_dir: Path) -> list[Path]:
+    """Fingerprint the command and concrete package files managed patches can change."""
+    relatives = {
+        "lean-lsp": ("lean_lsp_mcp/loogle.py", "lean_lsp_mcp/server.py"),
+        "lean-proof-auto": ("lean_interact/utils.py",),
+    }.get(spec.name, ())
+    files = [_managed_command_in_venv(spec, venv_dir)]
+    for relative in relatives:
+        files.extend(venv_dir.glob(f"lib/python*/site-packages/{relative}"))
+        windows = venv_dir / "Lib/site-packages" / relative
+        if windows.is_file():
+            files.append(windows)
+    return files
+
+
+def _generation_is_selected(home_path: Path, generation: Path) -> bool:
+    """Retain a generation whenever configuration might already reference it."""
+    try:
+        _yaml, doc = _load_bootstrap_document(home_path / get_config_path().name)
+        entries = doc.get("mcp_servers", {})
+        if isinstance(entries, Mapping):
+            for entry in entries.values():
+                if isinstance(entry, Mapping):
+                    command = Path(str(entry.get("command", "") or "")).expanduser()
+                    if command.is_absolute() and command.resolve().is_relative_to(
+                        generation.resolve()
+                    ):
+                        return True
+        return False
+    except Exception:
+        return True
+
+
+def _bootstrap_lean_mcp_locked(home_path: Path, *, python_bin: str | None) -> dict[str, Any]:
+    """Install only into a newly owned generation and leave older paths untouched."""
+    managed_config_write_target(home_path / get_config_path().name)
     managed_root = managed_mcp_root(home_path)
     (managed_root / "venvs").mkdir(parents=True, exist_ok=True)
     managed_loogle_cache_dir(home_path).mkdir(parents=True, exist_ok=True)
@@ -706,31 +884,127 @@ def bootstrap_lean_mcp(
     _secure_dir(managed_root / "cache")
     _secure_dir(managed_loogle_cache_dir(home_path))
 
+    generation = managed_root / "venvs" / f"gen-{uuid.uuid4().hex}"
+    generation.mkdir(mode=0o700)
     installed_servers: list[dict[str, Any]] = []
-    for spec in MANAGED_LEAN_MCP_SPECS.values():
-        venv_dir = managed_mcp_venv_dir(spec.name, home_path)
-        _install_into_managed_venv(
-            venv_dir,
-            spec.install_spec,
-            python_bin=python_bin,
-            min_python=spec.min_python,
-            extra_install_specs=spec.extra_install_specs,
+    venv_dirs: dict[str, Path] = {}
+    validated_arguments: dict[str, tuple[str, ...]] = {}
+    selected = False
+    try:
+        marker = generation / ".leanflow-mcp-generation.json"
+        marker.write_text(
+            json.dumps(
+                {
+                    "owner": "leanflow-mcp-bootstrap",
+                    "generation": generation.name,
+                    "state": "building",
+                    "installer_pid": os.getpid(),
+                }
+            )
+            + "\n"
         )
-        if spec.name == "lean-lsp":
-            _apply_lean_lsp_patches(venv_dir)
-        elif spec.name == "lean-proof-auto":
-            _patch_lean_proof_auto_stdio_logging(venv_dir)
-        installed_servers.append(
-            {
-                "name": spec.name,
-                "role": spec.role,
-                "venv_dir": str(venv_dir),
-                "command": str(managed_mcp_command_path(spec.name, home_path)),
-                "install_spec": spec.install_spec,
-            }
+        _secure_file(marker)
+        for spec in MANAGED_LEAN_MCP_SPECS.values():
+            venv_dir = generation / spec.venv_name
+            _install_into_managed_venv(
+                venv_dir,
+                spec.install_spec,
+                python_bin=python_bin,
+                min_python=spec.min_python,
+                extra_install_specs=spec.extra_install_specs,
+            )
+            patches: dict[str, bool] = {}
+            if spec.name == "lean-lsp":
+                patches = _apply_lean_lsp_patches(venv_dir)
+            elif spec.name == "lean-proof-auto":
+                patches["stdio_logging"] = _patch_lean_proof_auto_stdio_logging(venv_dir)
+            required_patches = {
+                "lean-lsp": ("project_paths", "build_lock", "lifecycle", "index_flags"),
+                "lean-proof-auto": ("stdio_logging",),
+            }.get(spec.name, ())
+            failed_patches = [name for name in required_patches if patches.get(name) is not True]
+            if failed_patches:
+                raise RuntimeError(
+                    f"Required managed MCP patches failed for {spec.name}: "
+                    + ", ".join(failed_patches)
+                )
+            _yaml, document = _load_bootstrap_document(home_path / get_config_path().name)
+            arguments = _managed_server_arguments(spec, document.get("mcp_servers", {}))
+            validation = _validate_managed_mcp_environment(
+                spec, venv_dir, home_path, args=arguments
+            )
+            write_managed_mcp_receipt(
+                venv_dir,
+                expected_fingerprint=_managed_mcp_fingerprint(spec),
+                packages=_managed_mcp_packages(spec),
+                installed_files=_managed_mcp_installed_files(spec, venv_dir),
+                arguments=arguments,
+                validation=validation,
+            )
+            validated_arguments[spec.name] = arguments
+            venv_dirs[spec.name] = venv_dir
+            installed_servers.append(
+                {
+                    "name": spec.name,
+                    "role": spec.role,
+                    "venv_dir": str(venv_dir),
+                    "command": str(_managed_command_in_venv(spec, venv_dir)),
+                    "install_spec": spec.install_spec,
+                    "patches": patches,
+                    "validation": validation,
+                }
+            )
+        _yaml, document = _load_bootstrap_document(home_path / get_config_path().name)
+        for spec in MANAGED_LEAN_MCP_SPECS.values():
+            if (
+                _managed_server_arguments(spec, document.get("mcp_servers", {}))
+                != validated_arguments[spec.name]
+            ):
+                raise ValueError(
+                    f"Managed MCP arguments changed during initialization: {spec.name}"
+                )
+        config_result = write_managed_mcp_config(home_path, venv_dirs=venv_dirs)
+        selected = True
+        with contextlib.suppress(OSError):
+            atomic_managed_config_write(
+                marker,
+                json.dumps(
+                    {
+                        "owner": "leanflow-mcp-bootstrap",
+                        "generation": generation.name,
+                        "state": "selected",
+                    }
+                )
+                + "\n",
+            )
+    except BaseException as exc:
+        uncertain = isinstance(
+            exc,
+            (
+                subprocess.TimeoutExpired,
+                TimeoutError,
+                KeyboardInterrupt,
+                SystemExit,
+                MCPValidationCleanupUncertain,
+            ),
         )
-
-    config_result = write_managed_mcp_config(home_path)
+        if uncertain:
+            with contextlib.suppress(OSError):
+                atomic_managed_config_write(
+                    marker,
+                    json.dumps(
+                        {
+                            "owner": "leanflow-mcp-bootstrap",
+                            "generation": generation.name,
+                            "state": "failed-cleanup-uncertain",
+                            "failure_kind": type(exc).__name__,
+                        }
+                    )
+                    + "\n",
+                )
+        elif not selected and not _generation_is_selected(home_path, generation):
+            shutil.rmtree(generation, ignore_errors=True)
+        raise
     power_status = managed_mcp_power_status(home_path)
     for entry in installed_servers:
         if entry.get("name") == "lean-lsp":
@@ -739,6 +1013,7 @@ def bootstrap_lean_mcp(
         "success": True,
         "home": str(home_path),
         "managed_root": str(managed_root),
+        "generation": generation.name,
         "config_path": config_result["config_path"],
         "remote_search_policy": REMOTE_SEARCH_POLICY,
         "power_modes": power_status,

@@ -761,6 +761,11 @@ def test_direct_axiom_harness_refuses_after_incremental_close_failure(monkeypatc
 
 
 def test_probe_capabilities_reports_managed_mcp_roles(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        lean_services.shutil,
+        "which",
+        lambda name: None if name in {"pdftotext", "pdfinfo", "pdfimages"} else f"/bin/{name}",
+    )
     project = tmp_path / "Demo"
     project.mkdir()
     monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (project, ""))
@@ -808,6 +813,8 @@ def test_probe_capabilities_reports_managed_mcp_roles(monkeypatch, tmp_path):
     assert report.mcp_server_roles["lean-lsp"] == "primary-state-search"
     assert report.managed_mcp_servers["lean-lsp"] is True
     assert report.managed_mcp_servers["lean-proof-auto"] is False
+    assert not report.binaries["pdftotext"]
+    assert any("PDF extraction tools unavailable" in reason for reason in report.degraded_reasons)
 
 
 def test_lean_search_marks_semantic_provider_fallback(monkeypatch, tmp_path):

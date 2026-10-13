@@ -38,7 +38,8 @@ Open **Providers** or use **LeanFlow: Configure Provider**:
 - **Codex:** use its native login or an OpenAI API key.
 - **Claude Code:** use its native login or an Anthropic API key.
 - **Lemex:** configure its key and endpoint. The LeanFlow installer can supply a
-  managed pinned Lemex distribution.
+  managed pinned Lemex distribution with installer `--with-lemex` (or when
+  Lemex is already selected in saved configuration).
 
 The native runtime owns authentication, home, model requests, sampling, retries,
 and compression. **Open native config** opens its configuration.

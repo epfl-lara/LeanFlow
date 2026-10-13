@@ -30,6 +30,12 @@ TXT
 }
 
 while [[ $# -gt 0 ]]; do
+  if [[ "$1" == --leanflow-home || "$1" == --bin-dir ]]; then
+    if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+      printf 'Missing value for %s\n' "$1" >&2
+      exit 2
+    fi
+  fi
   case "$1" in
     --no-build)
       BUILD_IMAGE=0
@@ -75,12 +81,12 @@ if [[ "$BUILD_IMAGE" == "1" ]]; then
 fi
 
 mkdir -p "$LEANFLOW_BIN_DIR"
-cat > "$LEANFLOW_BIN_DIR/leanflow-sandbox" <<EOF
-#!/usr/bin/env bash
-: "\${LEANFLOW_HOME:=${LEANFLOW_HOME}}"
-export LEANFLOW_HOME
-exec "${LEANFLOW_BIN_DIR}/leanflow" sandbox run -- "\$@"
-EOF
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'if [[ -z "${LEANFLOW_HOME:-}" ]]; then LEANFLOW_HOME=%q; fi\n' "$LEANFLOW_HOME"
+  printf 'export LEANFLOW_HOME\n'
+  printf 'exec %q sandbox run -- "$@"\n' "$LEANFLOW_BIN_DIR/leanflow"
+} > "$LEANFLOW_BIN_DIR/leanflow-sandbox"
 chmod +x "$LEANFLOW_BIN_DIR/leanflow-sandbox"
 
 printf '\nLeanFlow sandbox installed.\n'

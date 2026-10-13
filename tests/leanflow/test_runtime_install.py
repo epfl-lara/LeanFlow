@@ -20,6 +20,9 @@ from leanflow_cli.runtime import runtime_install as installer
 def source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Build small source inputs and an isolated home for installer tests."""
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("storage:\n  min_free_gib: 0\n", encoding="utf-8")
     root = tmp_path / "source"
     (root / "leanflow_cli").mkdir(parents=True)
     (root / "leanflow_cli" / "main.py").write_text("print('test')\n", encoding="utf-8")
@@ -35,6 +38,17 @@ def _complete(plan: installer.InstallPlan, source: Path, bin_dir: Path) -> None:
         path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         path.chmod(0o755)
     installer.finalize_install(source, plan.venv_dir, bin_dir)
+
+
+def _shell_companion(tmp_path: Path) -> Path:
+    """Supply compatible source metadata without reaching Git or package registries."""
+    companion = tmp_path / "LeanProbe"
+    (companion / "src/lean_probe").mkdir(parents=True)
+    (companion / "pyproject.toml").write_text(
+        '[project]\nname = "lean-probe"\nversion = "0.4.1.dev0"\n', encoding="utf-8"
+    )
+    (companion / "src/lean_probe/__init__.py").write_text("API_REVISION = 1\n", encoding="utf-8")
+    return companion
 
 
 def test_identity_uses_source_not_git_or_dependency_caches(source: Path) -> None:
@@ -253,21 +267,21 @@ def test_healthy_mcp_backends_reused_without_install(source: Path, monkeypatch: 
     installer.ensure_backends()
 
 
-def test_unhealthy_active_mcp_backend_is_not_modified(
+def test_unhealthy_active_mcp_backend_is_replaced_without_modification(
     source: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from leanflow_cli.cli import mcp_bootstrap
 
+    replaced: list[bool] = []
+    monkeypatch.setattr(mcp_bootstrap, "bootstrap_lean_mcp", lambda: replaced.append(True))
     monkeypatch.setattr(
-        mcp_bootstrap, "managed_mcp_server_status", lambda: {"lean": {"healthy": False}}
+        mcp_bootstrap,
+        "managed_mcp_server_status",
+        lambda: {"lean": {"healthy": bool(replaced), "venv_dir": "/fresh/lean"}},
     )
-    monkeypatch.setattr(
-        installer,
-        "active_runtime_paths",
-        lambda: (f"123 {source.parent}/home/mcp/venvs/lean/bin/python",),
-    )
-    with pytest.raises(RuntimeError, match="backends are in use"):
-        installer.ensure_backends()
+    monkeypatch.setattr(installer, "mcp_protocol_ready", lambda _: True)
+    installer.ensure_backends()
+    assert replaced == [True]
 
 
 def test_present_backend_with_incompatible_protocol_is_repaired(source: Path, monkeypatch) -> None:
@@ -279,12 +293,61 @@ def test_present_backend_with_incompatible_protocol_is_repaired(source: Path, mo
         "managed_mcp_server_status",
         lambda: {"lean": {"healthy": True, "venv_dir": "/fixture/lean"}},
     )
-    monkeypatch.setattr(installer, "mcp_protocol_ready", lambda _: False)
-    monkeypatch.setattr(installer, "active_runtime_paths", lambda: ())
     repaired = []
+    monkeypatch.setattr(installer, "mcp_protocol_ready", lambda _: bool(repaired))
     monkeypatch.setattr(mcp_bootstrap, "bootstrap_lean_mcp", lambda: repaired.append(True))
     installer.ensure_backends()
     assert repaired == [True]
+
+
+def test_failed_new_mcp_protocol_blocks_publication(source: Path, monkeypatch) -> None:
+    from leanflow_cli.cli import mcp_bootstrap
+
+    monkeypatch.setattr(mcp_bootstrap, "bootstrap_lean_mcp", lambda: None)
+    monkeypatch.setattr(
+        mcp_bootstrap,
+        "managed_mcp_server_status",
+        lambda: {"lean": {"healthy": True, "venv_dir": "/broken/lean"}},
+    )
+    monkeypatch.setattr(installer, "mcp_protocol_ready", lambda _: False)
+    with pytest.raises(RuntimeError, match="did not produce validated"):
+        installer.ensure_backends()
+
+
+def test_storage_registration_failure_keeps_previous_commands(source: Path, monkeypatch) -> None:
+    from leanflow_cli.runtime import storage
+
+    first = installer.prepare_install(source)
+    _complete(first, source, source.parent / "bin")
+    wrapper = source.parent / "bin/leanflow"
+    pointer = source.parent / "home/install-root"
+    before = (wrapper.read_bytes(), pointer.read_bytes())
+    second = installer.prepare_install(source, recreate=True)
+    (second.venv_dir / "bin").mkdir(parents=True)
+    (second.venv_dir / "bin/leanflow").write_text("#!/bin/sh\nexit 0\n")
+
+    def fail(*args, **kwargs):
+        raise OSError("registration failed")
+
+    monkeypatch.setattr(storage, "register_entry", fail)
+    with pytest.raises(OSError, match="registration failed"):
+        installer.finalize_install(source, second.venv_dir, source.parent / "bin")
+    assert (wrapper.read_bytes(), pointer.read_bytes()) == before
+
+
+def test_source_changes_during_install_keep_previous_commands(source: Path) -> None:
+    first = installer.prepare_install(source)
+    _complete(first, source, source.parent / "bin")
+    wrapper = source.parent / "bin/leanflow"
+    pointer = source.parent / "home/install-root"
+    before = (wrapper.read_bytes(), pointer.read_bytes())
+    second = installer.prepare_install(source, recreate=True)
+    (second.venv_dir / "bin").mkdir(parents=True)
+    (second.venv_dir / "bin/leanflow").write_text("#!/bin/sh\nexit 0\n")
+    (source / "leanflow_cli/main.py").write_text("changed during package install\n")
+    with pytest.raises(RuntimeError, match="Source inputs changed"):
+        installer.finalize_install(source, second.venv_dir, source.parent / "bin")
+    assert (wrapper.read_bytes(), pointer.read_bytes()) == before
 
 
 def test_failed_shell_install_never_switches_existing_commands(
@@ -294,6 +357,7 @@ def test_failed_shell_install_never_switches_existing_commands(
     root = Path(__file__).resolve().parents[2]
     home, bin_dir = tmp_path / "home", tmp_path / "bin"
     home.mkdir()
+    (home / "config.yaml").write_text("storage:\n  min_free_gib: 0\n", encoding="utf-8")
     bin_dir.mkdir()
     (home / "install-root").write_text("old metadata\n", encoding="utf-8")
     (bin_dir / "leanflow").write_text("old wrapper\n", encoding="utf-8")
@@ -317,6 +381,8 @@ def test_failed_shell_install_never_switches_existing_commands(
             str(root / "scripts" / "install-internal.sh"),
             "--skip-os-tools",
             "--skip-leanexplore-data",
+            "--lean-probe-source",
+            str(_shell_companion(tmp_path)),
         ],
         cwd=tmp_path,
         env=environment,
@@ -365,8 +431,17 @@ def test_shell_install_skips_old_default_python_before_importing_code(tmp_path: 
     )
     environment.pop("LEANFLOW_INSTALL_PYTHON", None)
     environment.pop("LEANFLOW_VENV_DIR", None)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("storage:\n  min_free_gib: 0\n", encoding="utf-8")
     result = subprocess.run(
-        [str(root / "scripts/install-internal.sh"), "--skip-os-tools", "--skip-leanexplore-data"],
+        [
+            str(root / "scripts/install-internal.sh"),
+            "--skip-os-tools",
+            "--skip-leanexplore-data",
+            "--lean-probe-source",
+            str(_shell_companion(tmp_path)),
+        ],
         cwd=tmp_path,
         env=environment,
         text=True,

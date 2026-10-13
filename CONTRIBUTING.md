@@ -11,13 +11,12 @@ Use Python 3.12 or newer:
 
 This development branch requires the matching LeanProbe 0.4.1 development
 checkout beside LeanFlow as `../LeanProbe`. The uv lock uses that companion
-source directly. For pip, install the companion before LeanFlow:
+source directly. For pip, resolve both sources in the same installation:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install ../LeanProbe
-python -m pip install -e '.[dev]'
+python -m pip install -e '.[dev]' ../LeanProbe
 ```
 
 Activate the repository environment before Python commands. Run the complete

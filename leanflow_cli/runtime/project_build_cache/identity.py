@@ -6,17 +6,15 @@ import hashlib
 import json
 import os
 import platform
-import shutil
 import stat
-import subprocess
 import tomllib
 from collections.abc import Mapping, Sequence
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from leanflow_cli.runtime.dependency_cache.checkout import _git
 from leanflow_cli.runtime.project_build_cache.freshness import InputGuard
+from leanflow_cli.runtime.project_build_cache.toolchain import _compiler_identity
 
 _EXCLUDED = {
     ".git",
@@ -77,98 +75,6 @@ def tree_manifest(
                 "executable": bool(path.stat().st_mode & 0o111),
             }
     return {"directories": sorted(directories), "files": files}
-
-
-@lru_cache(maxsize=32768)
-def _toolchain_digest(path: Path, stamp: tuple[int, ...]) -> str:
-    """Memoize immutable external toolchain bytes by inode and complete change metadata."""
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def _toolchain_file_digest(path: Path, *, guard: InputGuard | None = None) -> str:
-    """Detect replacement and same-size rewrites before reusing a compiler content digest."""
-    status = path.lstat()
-    if not stat.S_ISREG(status.st_mode):
-        raise ValueError("Project build caching requires regular toolchain files")
-    stamp = (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
-    digest = _toolchain_digest(path, stamp)
-    if guard is not None:
-        guard.record_file(path, status)
-    return digest
-
-
-def _compiler_identity(
-    project: Path, environment: Mapping[str, str], *, guard: InputGuard | None = None
-) -> dict[str, Any]:
-    """Resolve the exact selected Lean and Lake binaries through Elan without compiling."""
-    toolchain = (project / "lean-toolchain").read_text(encoding="utf-8").strip()
-    if not toolchain:
-        raise ValueError("Project build caching requires an explicit Lean toolchain")
-    elan = shutil.which("elan", path=environment.get("PATH"))
-    if elan is None:
-        raise ValueError("Project build caching requires resolvable Elan executables")
-    binaries: dict[str, Any] = {"toolchain": toolchain}
-    for name in ("lean", "lake"):
-        result = subprocess.run(
-            [elan, "which", name],
-            cwd=project,
-            env=dict(environment),
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if result.returncode or not result.stdout.strip():
-            raise ValueError(f"Cannot resolve the selected {name} compiler for project caching")
-        executable = Path(result.stdout.strip())
-        binaries[f"{name}_path"] = str(executable.resolve(strict=True))
-        binaries[f"{name}_sha256"] = _toolchain_file_digest(executable, guard=guard)
-    invoked_lake = shutil.which("lake", path=environment.get("PATH"))
-    if invoked_lake is None or not (
-        os.path.samefile(invoked_lake, binaries["lake_path"])
-        or os.path.samefile(invoked_lake, elan)
-    ):
-        raise ValueError(
-            "Project build caching requires the selected Lake executable or standard Elan proxy"
-        )
-    binaries["elan_sha256"] = _toolchain_file_digest(Path(elan).resolve(strict=True), guard=guard)
-    libraries = Path(binaries["lean_path"]).parent.parent / "lib"
-    runtime: dict[str, str] = {}
-    if libraries.is_symlink() or not libraries.is_dir():
-        raise ValueError("Project build caching requires a private complete toolchain library tree")
-    for directory, directories, names in os.walk(libraries, followlinks=False):
-        if guard is not None:
-            guard.record_directory(Path(directory), [*directories, *names])
-        if any((Path(directory) / name).is_symlink() for name in directories):
-            raise ValueError(
-                "Project build caching cannot fingerprint linked toolchain library directories"
-            )
-        for name in names:
-            path = Path(directory) / name
-            if name.endswith(
-                (
-                    ".olean",
-                    ".olean.private",
-                    ".olean.server",
-                    ".ir",
-                    ".ir.sig",
-                    ".so",
-                    ".dylib",
-                    ".a",
-                    ".dll",
-                    ".o",
-                    ".o.export",
-                    ".o.server",
-                )
-            ):
-                runtime[path.relative_to(libraries).as_posix()] = _toolchain_file_digest(
-                    path, guard=guard
-                )
-    if not runtime:
-        raise ValueError("Project build caching requires available core Lean runtime artifacts")
-    binaries["core_runtime"] = runtime
-    return binaries
 
 
 def _dependencies(project: Path, *, guard: InputGuard | None = None) -> dict[str, Any]:

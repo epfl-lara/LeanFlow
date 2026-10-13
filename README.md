@@ -25,16 +25,12 @@ cd LeanFlow
 ./scripts/install-internal.sh
 ```
 
-This coordinated development branch requires the companion LeanProbe 0.4.1
-development build. Place its matching checkout beside LeanFlow, build its wheel,
-and supply it to the installer:
+The installer uses an adjacent matching `../LeanProbe` checkout when present.
+Otherwise it downloads the exact reviewed LeanProbe commit automatically; a
+separate wheel build is unnecessary. Use `--lean-probe-source PATH` to select a
+compatible local source explicitly, including for an offline source download.
 
-```bash
-python3 -m pip wheel --no-deps ../LeanProbe --wheel-dir ../lean-probe-wheels
-PIP_FIND_LINKS="$PWD/../lean-probe-wheels" ./scripts/install-internal.sh
-```
-
-On Windows, run `.\scripts\install.ps1` from PowerShell to install inside WSL2.
+On Windows, run `.\scripts\install.cmd` from PowerShell to install inside WSL2.
 Continue with project and provider setup in that WSL environment. For Remote SSH,
 install LeanFlow and the native runtime on the remote workspace host.
 
@@ -51,6 +47,11 @@ leanflow doctor
 search and PDF extraction. It checks native runtime availability without making
 an inference request. See the [installation reference](docs/product-reference.md#install)
 for custom paths and optional tools.
+
+Codex is the default provider. Lemex is built only when selected in saved
+configuration or requested with `--with-lemex`; a compatible existing Lemex can
+be adopted automatically. Installing LeanFlow does not log in to a provider.
+Use `--non-interactive` for unattended package and Git operations.
 
 To update, pull the desired revision and rerun the installer. A validated runtime
 is selected for future commands; active processes retain their environment.
@@ -122,8 +123,8 @@ job's actual private project and OS sandbox, including its assigned imports.
 A setup failure stops model launch and saves the checker diagnostics.
 
 LeanProbe directly owns proof feedback, declaration parsing, and REPL transport.
-LeanFlow adds project resource limits and controller acceptance. Coordinated
-development installations require the companion LeanProbe development wheel.
+LeanFlow adds project resource limits and controller acceptance. The installer
+supplies the matching LeanProbe source automatically.
 
 Foreground verification retains warm proof-search workers by default. Low-memory
 and background-worker modes reclaim them; `LEANFLOW_LEAN_WARM_RETENTION=reclaim`

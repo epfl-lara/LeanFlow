@@ -15,9 +15,21 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: LeanFlow
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          path: LeanFlow
+
+      - name: Checkout pinned LeanProbe companion
+        uses: actions/checkout@v4
+        with:
+          repository: epfl-lara/LeanProbe
+          ref: 0252843eae96cd24601dc999626d5f262337d221
+          path: LeanProbe
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5

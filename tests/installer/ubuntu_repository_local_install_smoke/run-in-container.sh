@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SOURCE_ROOT="${REPO_ROOT:-/src}"
+SOURCE_ARCHIVE_DIR="${SOURCE_ARCHIVE_DIR:-/source-archives}"
 INSTALL_ROOT="$(mktemp -d /tmp/leanflow-install-smoke.XXXXXX)"
-REPO_ROOT="$INSTALL_ROOT/repo"
+REPO_ROOT="$INSTALL_ROOT/LeanFlow"
 LEANFLOW_HOME="$INSTALL_ROOT/state"
 LEANFLOW_BIN_DIR="$INSTALL_ROOT/bin"
 unset LEANFLOW_VENV_DIR
@@ -14,22 +14,24 @@ die() {
     exit 1
 }
 
-[[ -f "$SOURCE_ROOT/scripts/install-internal.sh" ]] || die "installer not found under $SOURCE_ROOT"
-mkdir -p "$REPO_ROOT"
-
-# Copy tracked sources from the read-only mount; never install into the host checkout.
-git -c safe.directory="$SOURCE_ROOT" -C "$SOURCE_ROOT" ls-files -z | while IFS= read -r -d '' source; do
-    [[ -f "$SOURCE_ROOT/$source" ]] || continue
-    mkdir -p "$REPO_ROOT/$(dirname "$source")"
-    cp "$SOURCE_ROOT/$source" "$REPO_ROOT/$source"
-done
+[[ -f "$SOURCE_ARCHIVE_DIR/LeanFlow.tar.gz" ]] || die "LeanFlow source archive is missing"
+tar -xzf "$SOURCE_ARCHIVE_DIR/LeanFlow.tar.gz" -C "$INSTALL_ROOT"
+if [[ -f "$SOURCE_ARCHIVE_DIR/LeanProbe.tar.gz" ]]; then
+    tar -xzf "$SOURCE_ARCHIVE_DIR/LeanProbe.tar.gz" -C "$INSTALL_ROOT"
+fi
+[[ -x "$REPO_ROOT/scripts/install-internal.sh" ]] || die "installer executable mode was not preserved"
 cd "$REPO_ROOT"
 
 INSTALL_ARGS=(
     --leanflow-home "$LEANFLOW_HOME"
     --bin-dir "$LEANFLOW_BIN_DIR"
     --skip-leanexplore-data
+    --no-editable
+    --non-interactive
 )
+if [[ -d "$INSTALL_ROOT/LeanProbe" ]]; then
+    INSTALL_ARGS+=(--lean-probe-source "$INSTALL_ROOT/LeanProbe")
+fi
 ./scripts/install-internal.sh "${INSTALL_ARGS[@]}"
 
 export PATH="$LEANFLOW_BIN_DIR:$PATH"
@@ -41,13 +43,16 @@ leanflow version
 leanflow mcp status --json
 
 LEANFLOW_VENV_DIR="$(sed -n 's/^venv_dir=//p' "$LEANFLOW_HOME/install-root")"
-"$LEANFLOW_VENV_DIR/bin/python" - "$REPO_ROOT" "$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR" "$LEANFLOW_BIN_DIR" <<'CHECK'
+"$LEANFLOW_VENV_DIR/bin/python" -I - "$REPO_ROOT" "$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR" "$LEANFLOW_BIN_DIR" <<'CHECK'
 import json
 from pathlib import Path
 import sys
 
 from leanflow_cli.lean.lean_workflow_specs import load_lean_specs, validate_lean_specs
 from leanflow_cli.runtime.skill_core import discover_skills
+from lean_probe import API_REVISION
+import lean_probe
+import leanflow_cli
 
 repo_root, state, venv, binaries = map(Path, sys.argv[1:])
 assert (state / 'config.yaml').is_file()
@@ -57,8 +62,14 @@ assert metadata['repo_root'] == str(repo_root)
 assert metadata['venv_dir'] == str(venv)
 assert metadata['bin_dir'] == str(binaries)
 assert venv.parent.parent == state / 'runtimes'
-assert json.loads((venv.parent / '.leanflow-storage.json').read_text())['ready'] is True
+runtime_marker = json.loads((venv.parent / '.leanflow-storage.json').read_text())
+assert runtime_marker['ready'] is True
 assert not (binaries / 'leanflow-agent').exists()
+assert API_REVISION >= 1
+assert Path(leanflow_cli.__file__).resolve().is_relative_to(venv)
+assert Path(lean_probe.__file__).resolve().is_relative_to(venv)
+assert runtime_marker['install_mode'] == 'wheel'
+assert not (repo_root / '.git').exists()
 assert load_lean_specs()
 assert discover_skills()
 assert validate_lean_specs() == []
@@ -72,5 +83,21 @@ printf '\nSMOKE_CUSTOM_VALUE=preserved\n' >> "$LEANFLOW_HOME/.env"
 rg -F '# installer smoke marker' "$LEANFLOW_HOME/config.yaml"
 rg -F 'SMOKE_CUSTOM_VALUE=preserved' "$LEANFLOW_HOME/.env"
 leanflow --help >/dev/null
+
+"$LEANFLOW_VENV_DIR/bin/python" -I - "$LEANFLOW_HOME" <<'CHECK_PROVIDER'
+from pathlib import Path
+import sys
+import shutil
+import yaml
+
+state = Path(sys.argv[1])
+config = yaml.safe_load((state / 'config.yaml').read_text())
+assert config.get('model', {}).get('provider') == 'codex', config
+lemex_store = state / 'runtimes' / 'lemex'
+assert not (lemex_store / 'current.json').exists()
+assert not (lemex_store / 'objects').exists()
+assert shutil.which('cargo') is None
+print('Default Codex route and preserved wheel runtime verified.')
+CHECK_PROVIDER
 
 echo 'Ubuntu repository-local installer smoke passed.'

@@ -5,6 +5,10 @@ include features and settings from the former direct-provider runtime.
 
 ## Unreleased
 
+- Obtain the reviewed LeanProbe source automatically during installation; build
+  Lemex only when requested or selected, and repair MCP backends in fresh environments.
+- Harden WSL2 selection, unattended installation, and existing checkout preservation.
+
 - Retain foreground Lean proof workers across independent file checks while
   preserving low-memory reclamation and compiled-import invalidation.
 - Allow audited projects to opt into reuse of controller-built local imports

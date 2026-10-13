@@ -85,7 +85,15 @@ def test_local_installer_preserves_config_and_publishes_immutable_runtimes(
     (source / "scripts").mkdir(parents=True)
     script = source / "scripts" / "install-internal.sh"
     script.write_bytes((REPO_ROOT / "scripts" / "install-internal.sh").read_bytes())
+    companion = tmp_path / "LeanProbe"
+    (companion / "src/lean_probe").mkdir(parents=True)
+    (companion / "pyproject.toml").write_text(
+        '[project]\nname = "lean-probe"\nversion = "0.4.1.dev0"\n', encoding="utf-8"
+    )
+    (companion / "src/lean_probe/__init__.py").write_text("API_REVISION = 1\n", encoding="utf-8")
     state = tmp_path / "state with spaces"
+    state.mkdir()
+    (state / "config.yaml").write_text("storage:\n  min_free_gib: 0\n", encoding="utf-8")
     binaries = tmp_path / "bin $literal with spaces"
     binaries.mkdir()
     (binaries / "leanflow-agent").write_text("legacy wrapper\n", encoding="utf-8")
@@ -93,8 +101,10 @@ def test_local_installer_preserves_config_and_publishes_immutable_runtimes(
     fixture.mkdir()
     operations = tmp_path / "operations.txt"
     python = shlex.quote(sys.executable)
+    _write_executable(fixture / "git", '[[ "${1:-}" == "--version" ]]\n')
     _write_executable(
         fixture / "python",
+        'if [[ "${1:-}" == "-I" ]]; then shift; fi\n'
         'if [[ "${1:-}" == "-c" ]]; then exit 0; fi\n'
         'if [[ "${1:-}" == "-m" && "${2:-}" == "venv" ]]; then\n'
         '  mkdir -p "$3/bin"\n'
@@ -108,12 +118,8 @@ def test_local_installer_preserves_config_and_publishes_immutable_runtimes(
         "  printf 'pip\\n' >> \"$INSTALL_OPERATIONS\"\n"
         "  exit 0\n"
         "fi\n"
-        'if [[ "${1:-}" == "-m" && "${2:-}" == "leanflow_cli.runtime.lemex_install" ]]; then\n'
-        '  if [[ "${3:-}" == "--refresh" && "${4:-}" == "--no-build" ]]; then\n'
-        "    printf 'lemex-refresh\\n' >> \"$INSTALL_OPERATIONS\"\n"
-        "  else\n"
-        "    printf 'lemex\\n' >> \"$INSTALL_OPERATIONS\"\n"
-        "  fi\n"
+        'if [[ "${1:-}" == "-m" && "${2:-}" == "leanflow_cli.runtime.install_native" ]]; then\n'
+        "  printf 'lemex\\n' >> \"$INSTALL_OPERATIONS\"\n"
         "  exit 0\n"
         "fi\n"
         'if [[ "${1:-}" == "-m" && "${2:-}" == "leanflow_cli.runtime.runtime_install" '
@@ -131,8 +137,10 @@ def test_local_installer_preserves_config_and_publishes_immutable_runtimes(
         "PYTHONPATH": str(REPO_ROOT),
         "INSTALL_FIXTURE": str(fixture),
         "INSTALL_OPERATIONS": str(operations),
+        "PATH": f"{fixture}:{os.environ['PATH']}",
     }
     environment.pop("LEANFLOW_VENV_DIR", None)
+    environment.pop("LEANFLOW_LEAN_PROBE_SOURCE", None)
     command = [
         "bash",
         str(script),
@@ -183,10 +191,8 @@ def test_local_installer_preserves_config_and_publishes_immutable_runtimes(
         "pip",
         "pip",
         "lemex",
-        "lemex-refresh",
         "backends",
         "lemex",
-        "lemex-refresh",
         "backends",
     ]
     cli = subprocess.run(
@@ -262,3 +268,78 @@ def test_local_installer_rejects_python_prerequisites_before_creating_paths(
     assert not state.exists()
     assert not binaries.exists()
     assert not venv.exists()
+
+
+@pytest.mark.parametrize("option", ["--python", "--lean-probe-source", "--bin-dir"])
+def test_shorthand_installer_forwards_arguments_and_errors(option: str) -> None:
+    """Keep shorthand installation on the supported parser before side effects."""
+    shorthand = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts/install.sh"), option],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    standard = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts/install-internal.sh"), option],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert shorthand.returncode == standard.returncode == 2
+    assert shorthand.stderr == standard.stderr
+    assert f"Missing value for {option}" in shorthand.stderr
+
+
+def test_missing_git_is_reported_before_installation_changes(tmp_path: Path) -> None:
+    """Stop before source downloads or state creation when Git is unavailable."""
+    fixture = tmp_path / "tools"
+    fixture.mkdir()
+    _write_executable(fixture / "git", "exit 1\n")
+    state = tmp_path / "state"
+    result = subprocess.run(
+        [
+            "bash",
+            str(REPO_ROOT / "scripts/install-internal.sh"),
+            "--python",
+            sys.executable,
+            "--leanflow-home",
+            str(state),
+        ],
+        env={**os.environ, "PATH": f"{fixture}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert "requires Git" in result.stderr
+    assert not state.exists()
+
+
+def test_all_ready_external_tools_have_an_empty_missing_summary(tmp_path: Path) -> None:
+    """Keep the final summary compatible with macOS Bash3.2 empty arrays."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    _write_executable(binaries / "uname", "printf 'Darwin\\n'\n")
+    for name in ("rg", "pdftotext", "pdfinfo", "pdfimages"):
+        _write_executable(binaries / name, "exit 0\n")
+    definitions = (
+        (REPO_ROOT / "scripts/install-internal.sh")
+        .read_text()
+        .split("\nwhile [[ $# -gt 0 ]]", 1)[0]
+    )
+    script = tmp_path / "summary.sh"
+    script.write_text(definitions + "\nmissing_external_tools_text\n")
+    result = subprocess.run(
+        ["/bin/bash", str(script)],
+        env={**os.environ, "PATH": str(binaries) + ":" + os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert result.stderr == ""
