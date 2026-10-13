@@ -188,7 +188,9 @@ metadata inside the container. Never copy credentials or ignored runtime state.
 
 Verify empty-folder project setup with real LeanProbe acceptance/rejection of valid,
 invalid, and `sorry` proofs, independent controller checking, and a final Lake
-build. Keep disk-reserve and sandbox restrictions visible; do not weaken global
+build. Exercise a real proof through the direct LeanProbe MCP server and require
+every stdout line to be a JSON-RPC message, including when the backend emits warnings.
+Keep disk-reserve and sandbox restrictions visible; do not weaken global
 policy to obtain a green test. Record exact source inputs, platform, checks, and
 limits in ignored evidence. Report unavailable real platforms explicitly. Keep
 general guidance in documentation and exclude machine-specific logs from commits.

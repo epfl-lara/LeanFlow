@@ -12,7 +12,7 @@ from core.home import leanflow_home
 from leanflow_cli.runtime.install_inputs import companion_identity, resolve_lean_probe_source
 
 LEAN_PROBE_URL = "https://github.com/epfl-lara/LeanProbe.git"
-LEAN_PROBE_COMMIT = "0252843eae96cd24601dc999626d5f262337d221"
+LEAN_PROBE_COMMIT = "7786b999a3b74c76402fd96f0a15165224f8271f"
 
 
 def _git(*arguments: str, cwd: Path) -> str:

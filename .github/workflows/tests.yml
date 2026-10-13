@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: epfl-lara/LeanProbe
-          ref: 0252843eae96cd24601dc999626d5f262337d221
+          ref: 7786b999a3b74c76402fd96f0a15165224f8271f
           path: LeanProbe
 
       - name: Install uv
