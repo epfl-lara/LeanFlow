@@ -244,6 +244,23 @@ Its curated guidance lives in `leanflow_skills/`; workflow specifications live i
 `leanflow_specs/`. Built-in examples and evaluation fixtures are described in
 [testdata/workflow_projects](testdata/workflow_projects/README.md).
 
+## Citation
+
+If you use LeanFlow in your research, please cite
+[LeanFlow: A Case Study in Workflow-Driven Lean Autoformalization](https://arxiv.org/abs/2607.20503):
+
+```bibtex
+@misc{milikic2026leanflowcasestudyworkflowdriven,
+  title={LeanFlow: A Case Study in Workflow-Driven Lean Autoformalization},
+  author={Lazar Milikic and Simon Guilloud and Khanh Nguyen and Viktor Kuncak},
+  year={2026},
+  eprint={2607.20503},
+  archivePrefix={arXiv},
+  primaryClass={cs.AI},
+  url={https://arxiv.org/abs/2607.20503},
+}
+```
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
