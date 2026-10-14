@@ -215,6 +215,37 @@ export function parseWebviewMessage(
   const reject = (field: string) => ({ ok: false as const, reason: `${type}: bad ${field}` });
 
   switch (type) {
+    case "listFormalizationPreparationRecovery":
+    case "recoverFormalizationPreparation":
+    case "cancelFormalizationRecovery":
+      return { ok: true, message: { type } };
+    case "resolveFormalizationPreparation": {
+      const reason = str(raw.reason, 16000);
+      return formalizationId(raw.transactionId) && formalizationId(raw.observationId) && reason !== null && reason.trim()
+        ? { ok: true, message: { type, transactionId: raw.transactionId, observationId: raw.observationId, reason } } : reject("preparation recovery observation");
+    }
+    case "planFormalizationPreparation":
+    case "prepareFormalization": {
+      if (!formalizationId(raw.documentId) || !formalizationId(raw.revisionId) || !["mathlib", "lean"].includes(String(raw.preset))) return reject("preparation identity");
+      if (raw.overrides !== undefined) {
+        if (!raw.overrides || typeof raw.overrides !== "object" || Array.isArray(raw.overrides)) return reject("preparation overrides");
+        try { if (Buffer.byteLength(JSON.stringify(raw.overrides), "utf8") > 64 * 1024) return reject("preparation overrides"); } catch { return reject("preparation overrides"); }
+      }
+      return { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId, preset: raw.preset as "mathlib" | "lean", ...(raw.overrides !== undefined ? { overrides: raw.overrides as Record<string, unknown> } : {}) } };
+    }
+    case "cancelFormalizationPreparation":
+      return formalizationId(raw.documentId) && formalizationId(raw.revisionId)
+        ? { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId } } : reject("preparation identity");
+    case "listFormalizationConflicts":
+      return { ok: true, message: { type } };
+    case "openFormalizationConflictVersion":
+      return formalizationId(raw.transactionId) && formalizationId(raw.observationId) && formalizationId(raw.versionId)
+        ? { ok: true, message: { type, transactionId: raw.transactionId, observationId: raw.observationId, versionId: raw.versionId } } : reject("conflict version identity");
+    case "resolveFormalizationConflict": {
+      const reason = str(raw.reason, 16000);
+      return formalizationId(raw.transactionId) && formalizationId(raw.observationId) && reason !== null && reason.trim()
+        ? { ok: true, message: { type, transactionId: raw.transactionId, observationId: raw.observationId, reason } } : reject("conflict resolution");
+    }
     case "listFormalizations":
       return { ok: true, message: { type } };
     case "inspectFormalization":

@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from leanflow_cli.formalization.environment import LIBRARY_SEMANTICS
 from leanflow_cli.formalization.evidence import digest, identity, read_blob
 from leanflow_cli.formalization.records import source_bytes
-from leanflow_cli.workflows.prover.native_bridge import NativeBridge, _validate_arguments
+from leanflow_cli.formalization.review_registry import compiler_base_policy, declaration_index
+from leanflow_cli.formalization.review_transport import (
+    REVIEW_RESPONSE_BYTES,
+    _json_text,
+    _response_size,
+)
+from leanflow_cli.formalization.review_transport import EvidenceBridge as EvidenceBridge
 
 
 def _span_text(record: dict[str, Any], span: dict[str, Any]) -> str | None:
@@ -42,7 +47,8 @@ def evidence_documents(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
     documents: dict[str, dict[str, Any]] = {
         "inventory": record["inventory"],
         "layout": record["layout"],
-        "declarations": record["checks"],
+        "controller-checks": record["checks"],
+        "declarations": declaration_index(record["checks"]),
         "units": {"units": record["units"]},
     }
     for row in record["checks"]["declarations"]:
@@ -66,6 +72,17 @@ def evidence_documents(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
         ):
             documents["source:" + relative] = {
                 "sha256": digest(raw),
+                "rendered_page_delivery": "unavailable",
+                "physical_page_inventory": record["inventory"].get(
+                    "page_inventory",
+                    record["inventory"].get("companion_pdf", {}).get("page_inventory", {}),
+                ),
+                "review_requirement": (
+                    "PDF-only mathematics requires a verified full-page transcription. "
+                    "For a TeX companion, audit correspondence and additional content; "
+                    "do not rely on unverified extraction for PDF-only mathematical evidence. "
+                    "Native reviewers receive this transcription evidence, not the rendered PDF."
+                ),
                 "pages": [
                     page
                     for page in record["inventory"].get("pages", [])
@@ -93,6 +110,22 @@ def evidence_documents(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "original_text": text,
             "source_sha256": record["source_files"][relative],
             "binary_requires_visual_repair": text is None,
+            **(
+                {
+                    "pdf_fidelity": next(
+                        (
+                            page.get("fidelity", {"status": "unverified"})
+                            for page in record["inventory"].get("pages", [])
+                            if page["index"] == region["page_index"]
+                            and page.get("file", relative) == relative
+                        ),
+                        {"status": "unverified"},
+                    ),
+                    "rendered_page_delivery": "unavailable",
+                }
+                if region.get("coordinate_space") == "pdf_page"
+                else {}
+            ),
         }
     lean_files = {**record.get("context_lean_files", {}), **record.get("lean_files", {})}
     for relative, key in lean_files.items():
@@ -119,6 +152,23 @@ def mandatory_dossier(
     return {
         "schema_version": 1,
         "phase": "coherence" if coherence else "translation",
+        "pdf_evidence_policy": {
+            "rendered_page_delivery": "unavailable",
+            "source_authority": record["inventory"]["source_kind"],
+            "physical_page_inventory": record["inventory"].get(
+                "page_inventory",
+                record["inventory"].get("companion_pdf", {}).get("page_inventory", {}),
+            ),
+            "requirement": (
+                "A trusted physical page census must cover the entire PDF. PDF-only pages "
+                "require actor=user verified complete transcriptions, including "
+                "mathematically relevant rasterized clauses and diagrams. Extracted text alone "
+                "is insufficient even when nonempty. For TeX companions, check correspondence "
+                "and extra mathematical content: the TeX remains the claim authority; block "
+                "rather than rely on unverified PDF-only evidence. Review transcription "
+                "fidelity metadata and independent coverage of the repaired text."
+            ),
+        },
         "units": units,
         "source_items": [items[key] for key in sorted(required)],
         "regions": (
@@ -126,26 +176,25 @@ def mandatory_dossier(
                 {
                     **region,
                     "evidence_id": "region:" + region["id"],
+                    **(
+                        {"pdf_fidelity": documents["region:" + region["id"]]["pdf_fidelity"]}
+                        if region.get("coordinate_space") == "pdf_page"
+                        else {}
+                    ),
                     "text_delivery": (
                         "visual_repair"
                         if documents.get("region:" + region["id"], {}).get("original_text") is None
                         else (
                             "paged"
-                            if len(
-                                json.dumps(documents["region:" + region["id"]], ensure_ascii=False)
-                            )
-                            > 16000
+                            if _response_size(documents["region:" + region["id"]])
+                            > REVIEW_RESPONSE_BYTES
                             else "inline"
                         )
                     ),
                     "original_text": (
                         documents.get("region:" + region["id"], {}).get("original_text")
-                        if len(
-                            json.dumps(
-                                documents.get("region:" + region["id"], {}), ensure_ascii=False
-                            )
-                        )
-                        <= 16000
+                        if _response_size(documents.get("region:" + region["id"], {}))
+                        <= REVIEW_RESPONSE_BYTES
                         else None
                     ),
                 }
@@ -190,11 +239,22 @@ def mandatory_dossier(
                 if row.get("semantic_surface", True)
             ],
         },
+        "compiler_base_policy": compiler_base_policy(record["checks"]),
+        "review_reading_order": (
+            "Read this complete dossier, full source/context and required region coverage, "
+            "then every mapped exact declaration row and referenced noncompiler semantic "
+            "definition/type row. Follow direct_dependencies when mathematical meaning "
+            "requires it. declarations is a complete registry index with exact row IDs. "
+            "controller-checks retains the unabridged compilation audit, including duplicate "
+            "profiles/obligations and kernel import paths; retrieve it when provenance or "
+            "audit details are needed. Audit inventories never replace mathematical evidence."
+        ),
         "lean_files": {name: documents["lean:" + name] for name in sorted(referenced_files)},
         "evidence_catalog": {
             key: {
                 "sha256": identity(value),
                 "characters": len(json.dumps(value, ensure_ascii=False)),
+                "utf8_bytes": len(_json_text(value).encode("utf-8")),
             }
             for key, value in documents.items()
         },
@@ -214,7 +274,7 @@ def review_assignment(
         "dossier_id": dossier_id,
         "dossier": dossier,
     }
-    if len(json.dumps(assignment, ensure_ascii=False)) <= 200000:
+    if _response_size(assignment) <= REVIEW_RESPONSE_BYTES:
         return assignment, documents
     documents["assignment-dossier"] = dossier
     return {
@@ -224,75 +284,7 @@ def review_assignment(
         "required_read": "Read every page of assignment-dossier through read_evidence before reviewing; no content was omitted. Its evidence catalog provides full surrounding sources.",
         "unit_count": len(dossier["units"]),
         "region_count": len(dossier["regions"]),
-        "characters": len(json.dumps(dossier, ensure_ascii=False, sort_keys=True)),
+        "characters": len(_json_text(dossier)),
+        "utf8_bytes": len(_json_text(dossier).encode("utf-8")),
         "sha256": identity(dossier),
     }, documents
-
-
-class EvidenceBridge(NativeBridge):
-    """Remove every command/check/write operation from the native reviewer bridge."""
-
-    documents: dict[str, dict[str, Any]]
-
-    def schemas(self) -> list[dict[str, Any]]:
-        """Advertise only assignment recovery and bounded frozen evidence retrieval."""
-        return [
-            {
-                "name": "get_assignment",
-                "description": "Read the complete immutable review assignment.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "name": "read_evidence",
-                "description": "Read a bounded page of frozen JSON. Offsets are character offsets; continue until next_offset is null. max_characters optionally reduces the default8000 (1..8000); output is also capped at16000 UTF-8 bytes. No live files are readable.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string"},
-                        "offset": {"type": "integer"},
-                        "max_characters": {"type": "integer"},
-                    },
-                    "required": ["id", "offset"],
-                    "additionalProperties": False,
-                },
-            },
-        ]
-
-    def call(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        """Resolve opaque catalog keys rather than accepting reviewer filesystem paths."""
-        schema = next((row for row in self.schemas() if row["name"] == name), None)
-        if schema is None:
-            raise ValueError("Reviewers have no command, edit, or publication capability")
-        _validate_arguments(arguments, schema["inputSchema"])
-        if name == "get_assignment":
-            return copy.deepcopy(self.context)
-        key = str(arguments["id"])
-        if key not in self.documents:
-            raise ValueError("Evidence ID is outside the frozen review catalog")
-        text = json.dumps(self.documents[key], ensure_ascii=False, sort_keys=True)
-        offset = arguments["offset"]
-        if type(offset) is not int or not 0 <= offset <= len(text):
-            raise ValueError("Invalid evidence offset")
-        limit = arguments.get("max_characters", 8000)
-        if type(limit) is not int or not 1 <= limit <= 8000:
-            raise ValueError("Evidence page size must be between1 and8000 characters")
-        end = min(offset + limit, len(text))
-        result = {
-            "id": key,
-            "sha256": identity(self.documents[key]),
-            "text": text[offset:end],
-            "offset": offset,
-            "next_offset": end if end < len(text) else None,
-            "complete_length": len(text),
-        }
-        while len(json.dumps(result, ensure_ascii=False).encode()) > 16000:
-            end = offset + (end - offset) // 2
-            if end == offset:
-                raise ValueError("Evidence metadata exceeds the transport limit")
-            result.update(text=text[offset:end], next_offset=end if end < len(text) else None)
-        return result

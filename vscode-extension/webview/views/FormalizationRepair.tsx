@@ -5,7 +5,7 @@ import type { FormalizationAction, FormalizationItem, FormalizationRegion, Forma
 export function FormalizationRepair({ snapshot, item, disabled, submit, pdfSelection }: {
   snapshot: FormalizationSnapshot; item?: FormalizationItem; disabled: boolean; submit: (action: FormalizationAction) => void; pdfSelection?: FormalizationSourceRef | null;
 }) {
-  const [mode, setMode] = useState<"add" | "boundary" | "mapping" | "scope" | "transcribe">("add");
+  const [mode, setMode] = useState<"add" | "boundary" | "mapping" | "scope" | "transcribe" | "retry">("add");
   const [title, setTitle] = useState("");
   const [kind, setKind] = useState("theorem");
   const [artifactId, setArtifactId] = useState("");
@@ -16,11 +16,15 @@ export function FormalizationRepair({ snapshot, item, disabled, submit, pdfSelec
   const [reason, setReason] = useState("");
   const [mapping, setMapping] = useState("");
   const [verified, setVerified] = useState(false);
+  const [sourceIds, setSourceIds] = useState<string[]>([]);
+  const [unitId, setUnitId] = useState("");
+  const hasPdf = snapshot.source.kind === "pdf" || snapshot.artifacts.some(entry => entry.kind === "pdf" || entry.path.toLowerCase().endsWith(".pdf"));
+  useEffect(() => { setSourceIds(item ? [item.id] : []); setUnitId(""); }, [item?.id]);
   useEffect(() => {
-    if (snapshot.source.kind === "pdf" && pdfSelection?.page_index !== undefined) {
+    if ((snapshot.source.kind === "pdf" || mode === "transcribe") && pdfSelection?.page_index !== undefined) {
       setArtifactId(pdfSelection.artifact_id); setStart(pdfSelection.page_index + 1); setPassage(pdfSelection.text ?? ""); setVerified(false);
     }
-  }, [pdfSelection, snapshot.source.kind]);
+  }, [pdfSelection, snapshot.source.kind, mode]);
   const artifacts = snapshot.artifacts.filter(artifact => {
     const pdf = artifact.kind === "pdf" || artifact.path.toLowerCase().endsWith(".pdf");
     return snapshot.source.kind === "pdf" ? pdf : !pdf && (["tex", "source"].includes(artifact.kind) || artifact.path.toLowerCase().endsWith(".tex"));
@@ -33,20 +37,25 @@ export function FormalizationRepair({ snapshot, item, disabled, submit, pdfSelec
   }] : [];
   const mapped = mapping.trim() ? mapping.trim().split("\n").map(line => {
     const split = line.indexOf("|");
-    return { file: split < 0 ? "" : line.slice(0, split).trim(), name: split < 0 ? "" : line.slice(split + 1).trim() };
+    const location = split < 0 ? "" : line.slice(0, split).trim();
+    const name = split < 0 ? "" : line.slice(split + 1).trim();
+    return location.startsWith("imports:") ? { file: "", imports: location.slice(8).split(",").map(value => value.trim()).filter(Boolean), name }
+      : { file: location, name };
   }) : [];
   const valid = !disabled && (mode === "add" ? title.trim() && refs.length && (isPdf || end >= start)
     : mode === "boundary" ? item && refs.length && (isPdf || end >= start)
     : mode === "scope" ? item && reason.trim()
-    : mode === "transcribe" ? snapshot.source.kind === "pdf" && passage.trim() && reason.trim() && verified
-    : item && reason.trim() && mapped.every(ref => ref.file.endsWith(".lean") && ref.name));
+    : mode === "transcribe" ? hasPdf && passage.trim() && reason.trim() && verified
+    : mode === "retry" ? reason.trim()
+    : item && reason.trim() && sourceIds.length && mapped.length && mapped.every(ref => (ref.file.endsWith(".lean") || ref.imports?.length) && ref.name));
   const send = () => {
     if (!valid) return;
     if (mode === "add") submit({ type: "add_item", title, kind, source_refs: refs });
     else if (mode === "boundary" && item) submit({ type: "update_boundary", item_id: item.id, source_refs: refs });
     else if (mode === "scope" && item) submit({ type: "set_scope", item_id: item.id, scope, reason });
-    else if (mode === "transcribe") submit({ type: "transcribe_page", page_index: start - 1, text: passage, reason, verified: true });
-    else if (item) submit({ type: "set_mapping", item_id: item.id, lean_refs: mapped, rationale: reason });
+    else if (mode === "transcribe") submit({ type: "replace_page_transcription", page_index: start - 1, text: passage, reason, verified: true });
+    else if (mode === "retry") submit({ type: "retry_extraction", reason });
+    else if (item) submit({ type: "set_mapping", item_id: item.id, ...(sourceIds.length !== 1 || sourceIds[0] !== item.id ? { source_ids: sourceIds } : {}), ...(unitId.trim() ? { unit_id: unitId.trim() } : {}), lean_refs: mapped, rationale: reason });
   };
   return <details className="card formalization-repair">
     <summary>Repair inventory or mapping</summary>
@@ -56,7 +65,8 @@ export function FormalizationRepair({ snapshot, item, disabled, submit, pdfSelec
       <option value="boundary" disabled={!item}>Change selected item's source boundary</option>
       <option value="mapping" disabled={!item}>Correct selected item's Lean mapping</option>
       <option value="scope" disabled={!item}>Change selected item's scope</option>
-      <option value="transcribe" disabled={snapshot.source.kind !== "pdf"}>Repair a complete PDF page transcription</option>
+      <option value="transcribe" disabled={!hasPdf}>Verify or replace a complete PDF page transcription</option>
+      <option value="retry">Retry extraction from the original frozen source</option>
     </select></label>
     {(mode === "add" || mode === "boundary") && <>
       {mode === "add" && <div className="formalization-fields">
@@ -74,14 +84,20 @@ export function FormalizationRepair({ snapshot, item, disabled, submit, pdfSelec
       {mode === "boundary" && canonicalRefs.length > 1 && <p className="notice warn">This replaces all {canonicalRefs.length} statement source references with the selected boundary. Use the CLI to retain multiple source ranges.</p>}
     </>}
     {mode === "scope" && <label>Scope<select aria-label="Source scope" value={scope} onChange={event => setScope(event.target.value as typeof scope)}><option value="included">Included</option><option value="excluded">Explicitly excluded</option></select></label>}
-    {mode === "mapping" && <label>Lean mappings (one per line: file | fully qualified declaration)<textarea aria-label="Corrected Lean mappings" value={mapping} onChange={event => setMapping(event.target.value)} placeholder="Main/Paper/Results.lean | Paper.result" /></label>}
+    {mode === "mapping" && <>
+      <fieldset><legend>Source claims represented together</legend>{snapshot.items.filter(source => source.scope !== "excluded").map(source => <label key={source.id}><input type="checkbox" aria-label={`Map source claim ${source.title}`} checked={sourceIds.includes(source.id)} onChange={event => setSourceIds(ids => event.target.checked ? [...ids, source.id] : ids.filter(id => id !== source.id))} />{source.title}</label>)}</fieldset>
+      <label>Lean mappings (one per line: file | fully qualified declaration)<textarea aria-label="Corrected Lean mappings" value={mapping} onChange={event => setMapping(event.target.value)} placeholder={"Main/Paper/Results.lean | Paper.result\nimports:Init | Nat.add_comm"} /></label>
+      <p>Existing declarations can be reused by their file or import modules. Select every source claim in a shared mapping. The controller checks all referenced declarations.</p>
+      <details><summary>Select a particular review unit</summary><label>Review unit ID<input aria-label="Mapping review unit ID" value={unitId} onChange={event => setUnitId(event.target.value)} /></label><p>Use the existing unit ID to change one mapping when a source claim belongs to multiple units.</p></details>
+    </>}
     {mode === "transcribe" && <>
       <label>Physical page<input aria-label="Transcription physical page" type="number" min={1} value={start} onChange={event => { setStart(Math.max(1, Number(event.target.value))); setVerified(false); }} /></label>
       <label>Complete page transcription<textarea aria-label="Complete page transcription" value={passage} maxLength={100000} onChange={event => { setPassage(event.target.value); setVerified(false); }} /></label>
       <label><input type="checkbox" aria-label="Full transcription checked against frozen page" checked={verified} onChange={event => setVerified(event.target.checked)} />I checked the full transcription against the frozen page.</label>
-      <p>This records repaired source text. Its mathematical items still need inventory accounting and independent translation review.</p>
+      <p>Include every formula and mathematically relevant diagram or rasterized clause. Replacing a page reopens its coverage and the affected statement boundaries, mappings and proof permission. Original PDF bytes and earlier revisions remain available. The repaired items still require independent translation review.</p>
     </>}
-    {(mode === "scope" || mode === "mapping" || mode === "transcribe") && <label>Reason<textarea aria-label="Repair reason" value={reason} onChange={event => setReason(event.target.value)} maxLength={16000} /></label>}
+    {mode === "retry" && <p className="notice warn">Retry after installing or fixing the extraction tools. This rereads the unchanged frozen source, reopens inventory repairs, and removes current mappings, reviews and proof permissions. Earlier revisions preserve your previous work. A different source version must be selected as a new intake.</p>}
+    {(mode === "scope" || mode === "mapping" || mode === "transcribe" || mode === "retry") && <label>Reason<textarea aria-label="Repair reason" value={reason} onChange={event => setReason(event.target.value)} maxLength={16000} /></label>}
     <button className="btn" disabled={!valid} onClick={send}>Submit repair for {snapshot.revision_id}</button>
   </details>;
 }

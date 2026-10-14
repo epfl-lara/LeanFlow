@@ -147,8 +147,10 @@ search, and excludes prior native session context. Native model connections
 remain available. Clean-room checkpoints can resume; online or legacy runs
 cannot be converted into clean-room tests.
 
-`formalize` freezes a complete source inventory, checks the generated Lean project,
-and requires independent item and document reviews. Definitions must be complete;
+`formalize` freezes a complete source inventory, estimates and prepares pinned
+dependencies, and requires a reviewed representative slice before translating the
+whole document. It checks the resulting Lean project and requires independent item
+and document reviews. Definitions must be complete;
 named theorem proofs may remain pending. The editor links source/PDF and Lean
 locations and shows coverage, review and proof status separately. Launch proving
 from the exact published handoff. Formalization supports pinned Mathlib through

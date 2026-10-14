@@ -11,6 +11,7 @@ import { readFormalizationArtifact } from "../dist/test/formalizationArtifact.mj
 import { parseWebviewMessage } from "../dist/test/messageSchema.mjs";
 import { buildWorkflowArgs } from "../dist/test/launch.mjs";
 import { formalizationFixture } from "./helpers/formalizationFixture.mjs";
+import { formalizationConflictFixture } from "./helpers/formalizationConflictFixture.mjs";
 
 test("coverage never equates an excluded claim, checked shell, or conditional construction with a reviewed proof", () => {
   const snapshot = parseFormalizationSnapshot(formalizationFixture());
@@ -19,6 +20,8 @@ test("coverage never equates an excluded claim, checked shell, or conditional co
   assert.equal(snapshot.items[1].elaboration_status, "checked");
   assert.throws(() => parseFormalizationSnapshot({ ...snapshot, schema_version: 2 }), /not supported/);
   assert.throws(() => parseFormalizationSnapshot({ ...snapshot, items: [snapshot.items[0], snapshot.items[0]] }), /invalid source inventory/);
+  assert.throws(() => parseFormalizationSnapshot({ ...snapshot, preparation: { status: "prepared", current: "true" } }), /invalid preparation/);
+  assert.throws(() => parseFormalizationSnapshot({ ...snapshot, acceptance_freshness: { status: "current", current: "true", reason: "" } }), /invalid preparation/);
 });
 
 test("PDF navigation uses physical pages, document-bound artifacts and approximate text candidates", () => {
@@ -42,6 +45,91 @@ test("repairs reject arbitrary paths, forged verdicts and missing revision expec
   assert.equal(parseWebviewMessage({ type: "openFormalizationArtifact", documentId: "../paper", revisionId: "revision-1", artifactId: "source-pdf" }).ok, false);
 });
 
+test("PDF replacements and shared/imported mapping repairs are typed and discard forged evidence", () => {
+  const repair = action => parseWebviewMessage({ type: "formalizationAction", documentId: "paper-1", revisionId: "revision-1", action });
+  const replacement = { type: "replace_page_transcription", page_index: 0, text: "Full page including every raster formula", reason: "Checked rendered page", verified: true };
+  assert.deepEqual(repair({ ...replacement, approved: true }).message.action, replacement);
+  assert.equal(repair({ ...replacement, verified: false }).ok, false);
+  assert.deepEqual(repair({ type: "retry_extraction", reason: "Poppler repaired", approved: true }).message.action, { type: "retry_extraction", reason: "Poppler repaired" });
+  assert.equal(repair({ type: "retry_extraction", reason: " " }).ok, false);
+  const action = { type: "set_mapping", source_ids: ["item-1", "item-2"], unit_id: "shared-unit", lean_refs: [{ imports: ["Init"], name: "Nat.add_comm", declaration_origin: "dependency" }], rationale: "The two source claims reuse one compiled declaration" };
+  assert.deepEqual(repair({ ...action, lean_refs: [{ ...action.lean_refs[0], type_hash: "forged", approved: true }] }).message.action, action);
+  assert.equal(repair({ ...action, source_ids: ["item-1", "item-1"] }).ok, false);
+  assert.equal(repair({ ...action, lean_refs: [{ imports: ["../escape"], name: "t" }] }).ok, false);
+  assert.equal(repair({ ...action, lean_refs: [{ file: "Main.lean", name: "t", declaration_origin: "dependency" }] }).ok, false);
+  assert.equal(repair({ ...action, lean_refs: [] }).ok, false);
+});
+
+test("conflict messages carry opaque observation identities and never accept paths or client hashes", () => {
+  const resolved = parseWebviewMessage({ type: "resolveFormalizationConflict", transactionId: "transaction-1", observationId: "observation-1", reason: "Merged the concurrent save", destinations: { "/outside": "forged" }, choice: "overwrite" });
+  assert.deepEqual(resolved.message, { type: "resolveFormalizationConflict", transactionId: "transaction-1", observationId: "observation-1", reason: "Merged the concurrent save" });
+  assert.equal(parseWebviewMessage({ ...resolved.message, reason: " " }).ok, false);
+  assert.equal(parseWebviewMessage({ type: "openFormalizationConflictVersion", transactionId: "transaction-1", observationId: "observation-1", versionId: "../outside" }).ok, false);
+  const opened = parseWebviewMessage({ type: "openFormalizationConflictVersion", transactionId: "transaction-1", observationId: "observation-1", versionId: "version-retained", path: "/outside" });
+  assert.equal("path" in opened.message, false);
+});
+
+test("conflict service reconstructs version pages and resolves only freshly observed maps", async () => {
+  const calls = [];
+  const fixture = formalizationConflictFixture();
+  const service = new FormalizationService(() => "/project", async args => {
+    calls.push(args);
+    if (args[1] === "resolve-conflict") return JSON.stringify({ transaction_id: "transaction-1", requires_new_acceptance: true });
+    if (args[1] === "conflict-artifact") return JSON.stringify({ id: "version-retained", path: "/controller/frozen/version.lean", sha256: "b".repeat(64), kind: "lean" });
+    const value = structuredClone(fixture);
+    if (args.includes("--version-offset")) {
+      value.transactions[0].versions = value.transactions[0].versions.slice(1);
+      value.transactions[0].version_offset = 1;
+    } else {
+      value.transactions[0].versions = value.transactions[0].versions.slice(0, 1);
+      value.transactions[0].next_version_offset = 1;
+    }
+    return JSON.stringify(value);
+  });
+  assert.equal((await service.conflicts()).transactions[0].versions.length, 2);
+  await service.resolveConflict("transaction-1", "observation-1", "Merged exact current files");
+  const resolution = JSON.parse(calls.at(-1)[2].slice("--resolution-json=".length));
+  assert.deepEqual(resolution, { transaction_id: "transaction-1", observation_id: "observation-1", destinations: fixture.transactions[0].destinations, retained_slots: fixture.transactions[0].retained_slots, choice: "keep_current", reason: "Merged exact current files" });
+  const count = calls.filter(args => args[1] === "resolve-conflict").length;
+  await assert.rejects(service.resolveConflict("transaction-1", "old-observation", "Old bytes"), /versions changed/);
+  assert.equal(calls.filter(args => args[1] === "resolve-conflict").length, count);
+  await service.conflictArtifact("transaction-1", "observation-1", "version-retained");
+  assert.deepEqual(calls.at(-1), ["formalization", "conflict-artifact", "transaction-1", "version-retained", "--expected-observation", "observation-1", "--json"]);
+});
+
+test("conflict service retains unavailable history and rejects fabricated reconstructed versions", async () => {
+  const fixture = formalizationConflictFixture();
+  Object.assign(fixture.transactions[0], {
+    unavailable_journal: true, planned_versions: null, versions: [], version_count: 0,
+    revoked_revision_ids: ["revision-1"], unavailable_versions: { "blobs/missing": "a".repeat(64) },
+  });
+  const service = new FormalizationService(() => "/project", async () => JSON.stringify(fixture));
+  const shown = (await service.conflicts()).transactions[0];
+  assert.equal(shown.unavailable_journal, true);
+  assert.deepEqual(shown.revoked_revision_ids, ["revision-1"]);
+  fixture.transactions[0].versions = formalizationConflictFixture().transactions[0].versions;
+  fixture.transactions[0].version_count = 2;
+  await assert.rejects(service.conflicts(), /cannot contain reconstructed versions/);
+});
+
+test("source workspace planning and infrastructure resolution stay bound to controller identities", async () => {
+  const calls = [];
+  const transaction = { transaction_id: "prep-1", observation_id: "obs-1", history_id: "history-1", destinations: { ".lake": "a".repeat(64) }, retained_slots: { "retained/lake": "b".repeat(64) }, state: "CONFLICTED", active: true, conflicts: ["Changed infrastructure"], resolutions: [] };
+  const service = new FormalizationService(() => "", async (args, options) => {
+    calls.push({ args, options });
+    if (args[1] === "plan") return JSON.stringify({ schema_version: 1, plan: { preset: "lean", required_imports: ["Init"] }, semantic_approval: false });
+    return JSON.stringify({ schema_version: 1, transactions: [transaction] });
+  });
+  service.bindSourceRoot("/source folder");
+  assert.equal((await service.preparationPlan("paper-1", "revision-1", "lean")).preset, "lean");
+  assert.deepEqual(calls[0], { args: ["formalization", "plan", "paper-1", "--expected-revision", "revision-1", "--preset", "lean", "--json"], options: { cwd: "/source folder", timeoutMs: 60_000 } });
+  const args = await service.preparationResolutionArgs("prep-1", "obs-1", "Checked retained dependency directories locally");
+  const request = JSON.parse(args[2].slice("--resolution-json=".length));
+  assert.deepEqual(request.observation, { transaction_id: "prep-1", observation_id: "obs-1", history_id: "history-1", destinations: transaction.destinations, retained_slots: transaction.retained_slots });
+  await assert.rejects(service.preparationResolutionArgs("prep-1", "old-observation", "Stale inspection"), /versions changed/);
+  assert.ok(calls.every(call => call.options.timeoutMs === 60_000));
+});
+
 test("the client passes exact revision and JSON as argv and never reads state itself", async () => {
   const calls = [];
   const service = new FormalizationService(() => "/owning/host/project", async (args, options) => {
@@ -50,6 +138,8 @@ test("the client passes exact revision and JSON as argv and never reads state it
     return JSON.stringify(formalizationFixture());
   });
   await service.list(); await service.show("paper-1"); await service.inspect("paper/main.tex");
+  assert.equal(calls[0].options.timeoutMs, 60_000);
+  assert.equal(calls[1].options.timeoutMs, 60_000);
   await service.inspect("paper/main.tex", "paper/Rendered Copy.pdf");
   assert.deepEqual(calls.at(-1), { args: ["formalization", "inspect", "paper/main.tex", "--companion-pdf", "paper/Rendered Copy.pdf", "--json"], options: { cwd: "/owning/host/project" } });
   const action = { type: "set_scope", item_id: "item-1", scope: "excluded", reason: 'Keep literal $(no-command) and "quotes"' };

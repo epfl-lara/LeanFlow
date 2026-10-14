@@ -868,14 +868,38 @@ def resolve_workflow_request(
             research_workers=(0 if workflow.no_parallel else research_worker_count()),
         )
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
-    project = discover_leanflow_project(cwd)
+    effective_provider = str(requested_provider or workflow.provider_override or "").strip()
+    preparation_launch: dict[str, Any] | None = None
+    if workflow.workflow_kind == "formalize":
+        runtime = resolve_runtime_provider(requested=effective_provider or None)
+        if workflow.model_override:
+            runtime = apply_runtime_model_override(
+                runtime,
+                requested_provider=effective_provider
+                or str(runtime.get("requested_provider", "") or ""),
+                model=workflow.model_override,
+            )
+        from leanflow_cli.formalization.preparation_launch import (
+            prepare_formalization_launch,
+            preview_source_project,
+        )
+
+        if preview:
+            project = preview_source_project(cwd)
+        else:
+            preparation_launch = prepare_formalization_launch(
+                cwd, workflow.workflow_args, runtime, user_goal=workflow.explicit_goal
+            )
+            project = discover_leanflow_project(preparation_launch["root"])
+    else:
+        project = discover_leanflow_project(cwd)
     # Make local Loogle work by default outside research mode: lean-lsp-mcp
     # otherwise builds it with a pinned toolchain that may not match the
     # project. Full research campaigns retain foreground lean-lsp but skip the
     # additional resident index unless explicitly memory-provisioned.
     if (
         not preview
-        and workflow.workflow_kind != "prove"
+        and workflow.workflow_kind not in {"prove", "formalize"}
         and research_local_loogle_enabled(research=workflow.research_mode)
     ):
         try:
@@ -884,9 +908,9 @@ def resolve_workflow_request(
             ensure_local_loogle_for_project_async(project.root)
         except Exception:
             pass
-    effective_provider = str(requested_provider or workflow.provider_override or "").strip()
-    runtime = resolve_runtime_provider(requested=effective_provider or None)
-    if workflow.model_override:
+    if workflow.workflow_kind != "formalize":
+        runtime = resolve_runtime_provider(requested=effective_provider or None)
+    if workflow.model_override and workflow.workflow_kind != "formalize":
         runtime = apply_runtime_model_override(
             runtime,
             requested_provider=(
@@ -906,6 +930,7 @@ def resolve_workflow_request(
                 cwd=cwd,
                 workflow_args=workflow.workflow_args,
                 project_label=project.label,
+                require_preparation=True,
             )
         normalized_workflow_args = formalization_document.source_relative
     # Preserve the normalized source/target scope independently of the active
@@ -953,6 +978,8 @@ def resolve_workflow_request(
         toolset_name = "leanflow-native"
 
     child_env = dict(os.environ)
+    if preparation_launch is not None:
+        child_env["LEANFLOW_FORMALIZATION_BUDGET_PATH"] = str(preparation_launch["budget_path"])
     for key in ("LEANFLOW_FORMALIZATION_HANDOFF", "LEANFLOW_FORMALIZATION_REVISION"):
         child_env.pop(key, None)
     from leanflow_cli.config import DEFAULT_CONFIG, load_config

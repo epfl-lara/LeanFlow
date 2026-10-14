@@ -135,6 +135,7 @@ def prepare_formalization_document_context(
     cwd: str | Path,
     workflow_args: str,
     project_label: str = "",
+    require_preparation: bool = False,
 ) -> FormalizationDocumentContext:
     """Freeze source intake and allocate prospective modules without editing project sources."""
     from leanflow_cli.formalization.intake import prepare_intake
@@ -143,4 +144,4 @@ def prepare_formalization_document_context(
     selection = _select_formalization_document(
         root, Path(cwd).expanduser().resolve(), workflow_args
     )
-    return prepare_intake(root, selection)
+    return prepare_intake(root, selection, require_preparation=require_preparation)

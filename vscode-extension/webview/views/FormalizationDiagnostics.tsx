@@ -41,7 +41,7 @@ function CommandDiagnostic({ diagnostic, disabled, submit, openSource }: {
       <p>Reason: {resolution.reason}</p>
       <p className="muted">Recorded source interpretation; mathematical translation still requires independent review.</p>
     </>}
-    {typeof diagnostic.resolution === "string" && <p>Source repair: {diagnostic.resolution === "verified_transcription" ? "verified page transcription" : "explicit scope exclusion"}{diagnostic.resolution_reason ? ` · ${diagnostic.resolution_reason}` : ""}</p>}
+    {typeof diagnostic.resolution === "string" && <p>Source repair: {diagnostic.resolution === "verified_transcription" ? "verified page transcription" : diagnostic.resolution === "explicit_source_boundary" ? "statement boundary re-established" : "explicit scope exclusion"}{diagnostic.resolution_reason ? ` · ${diagnostic.resolution_reason}` : ""}</p>}
     {resolvable && <>
       <label>Command meaning at every occurrence<textarea aria-label={`Command interpretation for ${diagnostic.id}`} maxLength={16000} value={interpretation} onChange={event => { setInterpretation(event.target.value); setVerified(false); }} /></label>
       <label>Source evidence and reason<textarea aria-label={`Command evidence for ${diagnostic.id}`} maxLength={16000} value={reason} onChange={event => { setReason(event.target.value); setVerified(false); }} /></label>

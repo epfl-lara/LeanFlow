@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import copy
 from typing import Any
 
 from leanflow_cli.formalization.evidence import digest, identity
+from leanflow_cli.formalization.inventory_authority import (
+    complete_inventory,
+    select_review_inventory,
+)
 from leanflow_cli.formalization.records import source_artifact_id, source_bytes
 
 
@@ -208,20 +212,26 @@ def _classify(record: dict[str, Any], action: dict[str, Any]) -> None:
     if classification == "excluded" and region.get("repair_required"):
         region["repair_required"] = False
         for diagnostic in record["inventory"]["diagnostics"]:
-            if (
-                diagnostic.get("page_index") == region.get("page_index")
-                and diagnostic["code"] == "pdf_text_missing"
-            ):
+            if diagnostic.get("page_index") == region.get("page_index") and diagnostic["code"] in {
+                "pdf_text_missing",
+                "pdf_fidelity_unverified",
+            }:
                 diagnostic.update(
                     blocking=False,
                     resolution="explicit_scope_exclusion",
                     resolution_reason=region["reason"],
                 )
+    from leanflow_cli.formalization.pdf_actions import reconcile_extraction_diagnostics
+
+    reconcile_extraction_diagnostics(record["inventory"])
 
 
 def _transcribe(record: dict[str, Any], action: dict[str, Any]) -> None:
-    """Accept an explicit full-page transcription, leaving its coverage audit unresolved."""
-    if record["inventory"]["source_kind"] != "pdf" or action.get("verified") is not True:
+    """Replace verified page evidence and reopen affected claims without reusing offsets."""
+    inventory = record["inventory"]
+    if (inventory["source_kind"] != "pdf" and not inventory.get("companion_pdf")) or action.get(
+        "verified"
+    ) is not True:
         raise ValueError(
             "Page transcription requires an explicit verification against the frozen PDF"
         )
@@ -229,48 +239,25 @@ def _transcribe(record: dict[str, Any], action: dict[str, Any]) -> None:
     text, reason = str(action.get("text", "")).strip(), _reason(action)
     if not text:
         raise ValueError("A verified transcription must contain the complete page text")
-    if any(
-        span.get("page_index") == page["index"]
-        for item in record["inventory"]["items"]
-        for span in item["statement_spans"]
-    ):
-        raise ValueError(
-            "Existing page items need re-extraction before replacing their complete transcription"
-        )
-    page.update(
-        text=text,
-        boxes=[],
-        mapping_method="manual_transcription",
-        mapping_precision="approximate",
-        transcription={
-            "actor": "user",
-            "verified": True,
-            "reason": reason,
-            "content_hash": digest(text),
-        },
-    )
-    for region in record["inventory"]["regions"]:
-        if region.get("page_index") == page["index"]:
-            region.update(
-                text_start=0,
-                text_end=len(text),
-                disposition="unresolved",
-                repair_required=False,
-                item_ids=[],
-                reason="Verified transcription still requires a coverage audit",
-            )
-    for diagnostic in record["inventory"]["diagnostics"]:
-        if (
-            diagnostic.get("page_index") == page["index"]
-            and diagnostic["code"] == "pdf_text_missing"
-        ):
-            diagnostic.update(
-                blocking=False, resolution="verified_transcription", resolution_reason=reason
-            )
+    from leanflow_cli.formalization.pdf_actions import replace_transcription
+
+    replace_transcription(record, page, text, reason)
 
 
 def apply_action(record: dict[str, Any], action: dict[str, Any]) -> None:
     """Apply one typed repair to a new revision; never accept review claims from clients."""
+    result = copy.deepcopy(record)
+    result["inventory"] = copy.deepcopy(complete_inventory(record))
+    _apply_action(result, action)
+    if "full_inventory" in record:
+        result["full_inventory"] = copy.deepcopy(result["inventory"])
+        select_review_inventory(result)
+    record.clear()
+    record.update(result)
+
+
+def _apply_action(record: dict[str, Any], action: dict[str, Any]) -> None:
+    """Mutate complete source authority only after the caller creates a private repair copy."""
     item: dict[str, Any]
     kind = action.get("type")
     if kind == "set_scope":
@@ -280,6 +267,16 @@ def apply_action(record: dict[str, Any], action: dict[str, Any]) -> None:
         _item(record, str(action.get("item_id", ""))).update(
             scope=scope, scope_reason=_reason(action), scope_actor="user"
         )
+        for diagnostic in record["inventory"]["diagnostics"]:
+            if diagnostic["code"] == "pdf_item_boundary_missing" and diagnostic.get(
+                "item_id"
+            ) == action.get("item_id"):
+                diagnostic.update(
+                    blocking=scope == "included"
+                    and not _item(record, str(action["item_id"]))["statement_spans"],
+                    resolution="explicit_scope_exclusion" if scope == "excluded" else None,
+                    resolution_reason=_reason(action),
+                )
     elif kind == "authorize_proof":
         if type(action.get("authorized")) is not bool:
             raise ValueError("Proof authorization requires an explicit boolean decision")
@@ -294,8 +291,12 @@ def apply_action(record: dict[str, Any], action: dict[str, Any]) -> None:
         from leanflow_cli.formalization.diagnostic_actions import resolve_command
 
         resolve_command(record, action)
-    elif kind == "transcribe_page":
+    elif kind in {"transcribe_page", "replace_page_transcription"}:
         _transcribe(record, action)
+    elif kind == "retry_extraction":
+        from leanflow_cli.formalization.extraction_actions import retry_extraction
+
+        retry_extraction(record, _reason(action))
     elif kind in {"add_item", "update_boundary"}:
         refs = action.get("source_refs")
         if not isinstance(refs, list):
@@ -343,52 +344,22 @@ def apply_action(record: dict[str, Any], action: dict[str, Any]) -> None:
             text=text,
             content_hash="sha256:" + identity({"text": text, "spans": spans}),
             scope="included",
+            boundary_review_required=False,
         )
+        for diagnostic in record["inventory"]["diagnostics"]:
+            if (
+                diagnostic["code"] == "pdf_item_boundary_missing"
+                and diagnostic.get("item_id") == item["id"]
+            ):
+                diagnostic.update(blocking=False, resolution="explicit_source_boundary")
         _repair_regions(record, item, spans)
         from leanflow_cli.formalization.source_companion import refresh_companion_refs
 
         refresh_companion_refs(record["inventory"])
     elif kind == "set_mapping":
-        item = _item(record, str(action.get("item_id", "")))
-        refs, rationale = action.get("lean_refs"), str(action.get("rationale", "")).strip()
-        if not isinstance(refs, list) or not refs or not rationale:
-            raise ValueError("Mapping requires Lean references and representation rationale")
-        normalized = []
-        for ref in refs:
-            if (
-                not isinstance(ref, dict)
-                or not isinstance(ref.get("name"), str)
-                or not ref["name"].strip()
-            ):
-                raise ValueError("Mapping references require fully qualified Lean names")
-            file = str(ref.get("file", ""))
-            if (
-                not file
-                or Path(file).is_absolute()
-                or ".." in Path(file).parts
-                or not file.endswith(".lean")
-            ):
-                raise ValueError("Lean references require project-relative Lean file paths")
-            normalized.append({"file": file, "name": ref["name"].strip()})
-        if any(
-            item["id"] in unit["required_source_ids"] and len(unit["required_source_ids"]) > 1
-            for unit in record["units"]
-        ):
-            raise ValueError(
-                "This source item belongs to a shared review unit; change its complete unit mapping together"
-            )
-        record["units"] = [
-            unit for unit in record["units"] if item["id"] not in unit["required_source_ids"]
-        ]
-        record["units"].append(
-            {
-                "id": "unit-" + item["id"],
-                "required_source_ids": [item["id"]],
-                "declarations": normalized,
-                "representation_note": rationale,
-                "depends_on_units": [],
-            }
-        )
+        from leanflow_cli.formalization.mapping_actions import set_mapping
+
+        set_mapping(record, action)
     else:
         raise ValueError("Unknown formalization action; review approval cannot be set by an action")
     record["actions"].append({**action, "actor": "user"})

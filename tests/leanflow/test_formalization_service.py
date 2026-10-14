@@ -55,6 +55,14 @@ def _action(snapshot: dict, **values: object) -> dict:
     }
 
 
+def _assume_current_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep revision/byte-drift fixtures independent of compiler-freshness integration tests."""
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.freshness.published_acceptance_freshness",
+        lambda *_, **__: {"current": True, "status": "current", "reason": ""},
+    )
+
+
 def test_intake_freezes_bytes_without_creating_lean_or_blueprint(tmp_path: Path) -> None:
     source = _source(tmp_path)
     first = inspect_document(tmp_path, source)
@@ -163,7 +171,10 @@ def test_concurrent_actions_cannot_both_apply_to_the_same_revision(tmp_path: Pat
     assert results.count("conflict") == 1
 
 
-def test_old_accepted_receipt_never_approves_a_new_selected_revision(tmp_path: Path) -> None:
+def test_old_accepted_receipt_never_approves_a_new_selected_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assume_current_environment(monkeypatch)
     record = create_document(tmp_path, _source(tmp_path))
     directory = Path(record["_directory"])
     receipt = {
@@ -296,7 +307,10 @@ def test_explicit_item_and_region_scope_exclusion_can_pass_proposal_coverage(
     assert apply_proposal(record, proposal)["inventory"]["audit_complete"]
 
 
-def test_published_zero_obligation_handoff_remains_visible(tmp_path: Path) -> None:
+def test_published_zero_obligation_handoff_remains_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assume_current_environment(monkeypatch)
     record = create_document(tmp_path, _source(tmp_path))
     receipt = {
         "revision_id": record["revision_id"],
@@ -417,6 +431,7 @@ def test_changing_claim_boundary_revokes_proof_consent(tmp_path: Path) -> None:
 def test_published_snapshot_disables_handoff_on_code_drift_or_pending_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _assume_current_environment(monkeypatch)
     record = create_document(tmp_path, _source(tmp_path))
     code = tmp_path / "Main.lean"
     code.write_text("theorem zero : True := by sorry\n")
@@ -531,6 +546,18 @@ def test_partial_pdf_selection_leaves_residual_unresolved(tmp_path: Path) -> Non
     source = tmp_path / "paper.pdf"
     _pdf(source, ["First statement. Second statement."])
     initial = inspect_document(tmp_path, source)
+    initial = act_document(
+        tmp_path,
+        initial["document_id"],
+        initial["revision_id"],
+        {
+            "type": "replace_page_transcription",
+            "page_index": 0,
+            "text": "First statement. Second statement.",
+            "verified": True,
+            "reason": "Checked the complete page, including all mathematical content",
+        },
+    )
     added = act_document(
         tmp_path,
         initial["document_id"],

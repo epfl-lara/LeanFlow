@@ -4,10 +4,9 @@ Formalization prepares and reviews the mathematical statements and definitions t
 the prover will use. Coverage, Lean elaboration, source fidelity and proof completion
 are separate results. A green build alone does not establish a faithful translation.
 
-For remaining product work, including automatic project/dependency preparation,
-see [formalization readiness and review scope](formalization-readiness.md).
+For supported boundaries and release evidence, see [formalization readiness and review scope](formalization-readiness.md).
 
-Start in an initialized Lean project with a pinned toolchain:
+Start in a source folder or an existing Lean project:
 
 ```bash
 leanflow formalization inspect docs/paper.tex --json
@@ -17,9 +16,67 @@ leanflow formalization list --json
 leanflow formalization show <document-id> --json
 ```
 
-The source may be a TeX file, an unambiguous TeX project directory or a PDF. Intake
+Before translation, LeanFlow estimates representations and dependencies in a
+read-only native session, prepares pinned infrastructure privately, and checks a
+representative slice with a fresh reviewer. An existing project keeps its package
+pins and mathematical files. The prover receives a checked setup and reviewed
+statements after complete translation acceptance.
+
+For deterministic inspection and explicit setup without launching a model:
+
+```bash
+leanflow formalization plan <document-id> --expected-revision <revision-id> --json
+leanflow formalization prepare <document-id> --expected-revision <revision-id> --json
+```
+
+Automatic native launch starts with Lean core and selects the shipped Mathlib version
+when discovery requires it. Explicit `plan` and `prepare` commands default to Mathlib;
+`--preset lean` prepares a core-only project. `--plan-json` accepts explicit pinned packages and imports;
+`--offline` forbids acquisition. A model recommendation cannot authorize a new
+package source. Setup runs privately and selects infrastructure only after checking
+it. Interrupted publication or concurrent saves preserve every version and require
+recovery or explicit reconciliation before another launch.
+
+Preparation publishes only changed infrastructure entries and preserves existing
+dependency Git settings. Exact checked infrastructure can be reused for a new source
+revision when its layout, pins and requested imports match the checked receipt.
+Private stages and unused incoming entries are removed only after controller-owned
+process cleanup is verified; uncertain ownership retains the files for recovery.
+Retained transaction history has its own identity audit, while current environment
+acceptance still checks complete dependency bytes.
+
+Changed local Lean files require a setup check before the next translation, including
+files added by an earlier publication. Proof handoffs have their own freshness checks.
+Setup bounds Lake concurrency and labels its sampled process-RSS sum conservatively;
+shared mapped pages can appear in more than one process's RSS.
+The default setup ceiling is 16 GiB. Set `LEANFLOW_SETUP_MAX_RSS_GIB=20` for a larger
+project; whole-number values from 1 to 20 are supported. Worker retention stays
+bounded when the ceiling increases.
+
+Ambiguous compiler acquisition history preserves every version. A healthy installed
+compiler can still be checked and reused. If acquisition needs an acknowledgment,
+use the journal and target paths from the setup diagnostic:
+
+```bash
+python -m leanflow_cli.workflows.project_setup.toolchain_recovery inspect \
+  --journal <journal-path> --target <compiler-target>
+python -m leanflow_cli.workflows.project_setup.toolchain_recovery acknowledge \
+  --journal <journal-path> --target <compiler-target> \
+  --observation <observation-id> --confirm-processes-stopped
+```
+
+Inspect the preserved versions and check that acquisition processes stopped before
+acknowledging. A changed observation or a live original owner rejects acknowledgment;
+acknowledgment records the uncertainty and never deletes ambiguous compiler files.
+Preparation keeps its immutable plan and receipt in full snapshots, with small
+durable per-entry progress records between transaction state changes. Large
+changed-file sets therefore write journal data in proportion to their size.
+Recovery binds each progress record to its snapshot before checking paths and
+retained versions; progress cannot replace a missing plan or receipt.
+
+The source may be a TeX file, an unambiguous TeX project directory or a PDF. Inspection
 freezes source files and creates a complete region inventory without creating Lean
-files. The author works in an isolated copy. LeanFlow allocates modules under an
+files. Project preparation creates import-only roots and the actual Lake layout. The author works in an isolated copy. LeanFlow allocates modules under an
 actual Lake library root, including projects whose library is named `Main`.
 
 An explicitly selected companion PDF is frozen with the TeX bundle. This records an
@@ -158,6 +215,14 @@ source blobs, immutable receipt history, prior review decisions, `Blueprint.md` 
 removing private caches does not
 remove the published source links.
 
+Publication journals and retained file versions belong to the project under
+`.leanflow/formalization-publication-transactions/`; author-run folders contain
+only pointers, so cleaning an old run preserves recovery evidence. Keep these
+transaction directories when removing disposable caches. If historical evidence
+is unavailable, publication recovery can acknowledge its exact observed loss
+while keeping current workspace files. This permits fresh work and revokes the
+affected acceptance; missing versions and write plans are never reconstructed.
+
 The transaction records its exact write set before mutation, refuses overwriting a
 concurrent save and retains displaced files for recovery, including writes through
 already-open editor handles. Pending transactions and conflicts block cooperating
@@ -254,3 +319,19 @@ checks do not change ordinary proving.
 Dependency inventory is checked before paid author work and again on direct or
 resumed launches. Passing inventory establishes input availability only; it never
 replaces kernel replay, source review or the whole-project build.
+
+## Stale acceptance and recovery
+
+Editor refreshes reuse display hashes only while complete input metadata, including
+inode, size, modification time and change time, remains unchanged. Actual acceptance
+and prover startup independently check the bytes. A runtime, compiler or dependency
+change disables the old handoff while preserving its evidence. Prepare the project
+and run formalization again under the current checker; complete declarations can be
+reused from preserved modules after fresh source review.
+
+Publication conflicts can be inspected through the editor or
+`leanflow formalization conflicts --json`. Reconcile the current workspace files,
+then confirm the exact observed versions with a reason. Resolution archives every
+version and revokes old acceptance. Infrastructure has its own
+`preparation-conflicts`, `recover-preparation` and `resolve-preparation` operations;
+normal launches remain blocked until every pending conflict is resolved.

@@ -389,9 +389,25 @@ def test_unchanged_project_definition_is_available_as_frozen_review_evidence(sou
 
 def _review_transport(source_record, tmp_path, monkeypatch, *, decision="PASS", malformed=False):
     calls = []
+    bridges = []
+    bridge_type = review.EvidenceBridge
+
+    def evidence_bridge(**kwargs):
+        bridge = bridge_type(**kwargs)
+        bridges.append(bridge)
+        return bridge
 
     def invoke(request):
         assignment = json.loads(request.prompt[len(review._CONTRACT) + 1 :])
+        if "dossier_ref" in assignment:
+            offset, chunks = 0, []
+            while offset is not None:
+                page = bridges[-1].call(
+                    "read_evidence", {"id": assignment["dossier_ref"], "offset": offset}
+                )
+                chunks.append(page["text"])
+                offset = page["next_offset"]
+            assignment = {**assignment, "dossier": json.loads("".join(chunks))}
         calls.append(assignment)
         request.on_started()
         result = answer(
@@ -405,6 +421,7 @@ def _review_transport(source_record, tmp_path, monkeypatch, *, decision="PASS", 
         return HarnessResult(status="completed", final_response=result)
 
     monkeypatch.setattr(review, "run_harness", invoke)
+    monkeypatch.setattr(review, "EvidenceBridge", evidence_bridge)
     monkeypatch.setattr(review, "build_runtime_isolation", lambda *a, **kw: object())
     return calls, dict(
         backend="claude",

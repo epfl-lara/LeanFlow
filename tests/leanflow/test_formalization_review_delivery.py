@@ -1,5 +1,6 @@
 """Keep complete review evidence usable within bounded native tool responses."""
 
+import copy
 import json
 from pathlib import Path
 
@@ -7,11 +8,12 @@ import pytest
 
 from agent.runtime.harness import HarnessResult
 from leanflow_cli.formalization import review
-from leanflow_cli.formalization.evidence import put_blob
+from leanflow_cli.formalization.evidence import identity, put_blob
 from leanflow_cli.formalization.review_dossier import (
     EvidenceBridge,
     evidence_documents,
     mandatory_dossier,
+    review_assignment,
 )
 from leanflow_cli.workflows.prover.session_tools import SessionTools
 from tests.leanflow.test_formalization_revision_review import (
@@ -21,6 +23,103 @@ from tests.leanflow.test_formalization_revision_review import (
 from tests.leanflow.test_formalization_revision_review import source_record as _source_record
 
 source_record = _source_record
+
+
+def test_compiled_registry_index_retains_exact_meaning_and_unabridged_audit(source_record):
+    checks = source_record["checks"]
+    checks["declarations"][0].update(body="Expr.app " * 10000, body_hash="root-body")
+    checks["declarations"].append({"name": "helper", "kind": "definition", "body": "full-body"})
+    checks["library_declarations"] = [
+        {
+            "name": "Library.Data",
+            "module": "Library",
+            "kind": "definition",
+            "body": "Nat",
+            "semantic_surface": True,
+        },
+        {
+            "name": "Library.Proof",
+            "module": "Library",
+            "kind": "theorem",
+            "body": None,
+            "body_omitted": True,
+            "semantic_surface": False,
+        },
+    ]
+    checks["kernel_replay"] = {
+        "imports": [{"module": "Init", "path": "long-import-path"}] * 5000,
+        "trusted_modules": ["Init"],
+    }
+    checks["profiles"] = {row["name"]: row for row in checks["declarations"]}
+    before = copy.deepcopy(checks)
+    documents = evidence_documents(source_record)
+    index = documents["declarations"]
+    assert documents["controller-checks"] == before
+    assert checks == before
+    assert index["controller_audit"]["sha256"] == identity(before)
+    assert index["controller_audit"]["evidence_id"] == "controller-checks"
+    assert len(json.dumps(index)) < 4000
+    assert len(json.dumps(documents["controller-checks"])) > 400000
+    assert {row["name"] for row in index["declarations"]} == {"t", "helper"}
+    for row in index["declarations"]:
+        assert documents[row["evidence_id"]] == next(
+            item for item in before["declarations"] if item["name"] == row["name"]
+        )
+    assert [row["semantic_surface"] for row in index["library_declarations"]] == [True, False]
+    assert documents["library-declaration:Library.Data"]["body"] == "Nat"
+    assert documents["library-declaration:Library.Proof"]["body_omitted"]
+    dossier = mandatory_dossier(source_record, source_record["units"], coherence=True)
+    assert dossier["compiler_base_policy"]["trusted_module_count"] == 1
+    assert (
+        dossier["library_evidence"]["declarations"][0]["evidence_id"]
+        == "library-declaration:Library.Data"
+    )
+    assert len(dossier["regions"]) == len(source_record["inventory"]["regions"])
+    assert dossier["evidence_catalog"]["controller-checks"]["sha256"] == identity(before)
+
+
+def test_complete_controller_audit_remains_losslessly_paged_with_utf8_envelope_cap(source_record):
+    original = {
+        "declarations": [{"name": "t", "type": "α" * 30000, "body": "full original kernel term"}],
+        "kernel_replay": {"imports": ["Init"]},
+    }
+    source_record["checks"] = original
+    tools = SessionTools(
+        role="reviewer",
+        project_root=Path(source_record["_directory"]),
+        workspace=Path(source_record["_directory"]) / "audit-tools",
+        context={},
+        allow_internet=False,
+    )
+    with EvidenceBridge(
+        toolset=tools,
+        context={},
+        callbacks={},
+        directory=Path(source_record["_directory"]) / "audit-bridge",
+    ) as bridge:
+        bridge.documents = evidence_documents(source_record)
+        parts, offset = [], 0
+        while True:
+            response = bridge.dispatch(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "read_evidence",
+                        "arguments": {"id": "controller-checks", "offset": offset},
+                    },
+                }
+            )
+            assert len(json.dumps(response, ensure_ascii=False).encode()) <= 16000
+            page = json.loads(response["result"]["content"][0]["text"])
+            assert page["sha256"] == identity(original)
+            parts.append(page["text"])
+            if page["next_offset"] is None:
+                break
+            assert page["next_offset"] > offset
+            offset = page["next_offset"]
+        assert json.loads("".join(parts)) == original
 
 
 def test_batch_summary_omits_unrelated_declarations_and_large_proof_terms(source_record):
@@ -165,6 +264,7 @@ def test_serialized_mcp_pages_are_bounded_and_reconstruct_unicode_exactly(tmp_pa
             assert not result["isError"]
             serialized = result["content"][0]["text"]
             assert len(serialized.encode()) <= 16000
+            assert len(json.dumps(response, ensure_ascii=False).encode()) <= 16000
             page = json.loads(serialized)
             chunks.append(page["text"])
             assert page["next_offset"] is None or page["next_offset"] > offset
@@ -172,6 +272,89 @@ def test_serialized_mcp_pages_are_bounded_and_reconstruct_unicode_exactly(tmp_pa
         assert json.loads("".join(chunks)) == original
         tiny = bridge.call("read_evidence", {"id": "dense", "offset": 0, "max_characters": 17})
         assert len(tiny["text"]) == 17 and tiny["next_offset"] == 17
+
+
+@pytest.mark.parametrize("content", ["x" * 50000, '漢字😀"\\\n' * 9000])
+def test_assignment_recovery_pages_complete_context_with_transport_bound(tmp_path, content):
+    tools = SessionTools(
+        role="reviewer",
+        project_root=tmp_path,
+        workspace=tmp_path / "tools",
+        context={},
+        allow_internet=False,
+    )
+    context = {"dossier": {"text": content, "last": "required final qualifier"}, "revision_id": "r"}
+    bridge = EvidenceBridge(
+        toolset=tools, context=context, callbacks={}, directory=tmp_path / "bridge"
+    )
+    bridge.documents = {}
+    with bridge:
+        request = {
+            "jsonrpc": "2.0",
+            "id": "😀" * 60,
+            "method": "tools/call",
+            "params": {"name": "get_assignment", "arguments": {}},
+        }
+        response = bridge.dispatch(request)
+        assert len(json.dumps(response, ensure_ascii=False).encode()) <= 16000
+        manifest = json.loads(response["result"]["content"][0]["text"])
+        assert manifest["assignment_ref"] == "assignment-context"
+        offset, chunks = 0, []
+        while offset is not None:
+            request["params"] = {
+                "name": "read_evidence",
+                "arguments": {"id": manifest["assignment_ref"], "offset": offset},
+            }
+            response = bridge.dispatch(request)
+            assert len(json.dumps(response, ensure_ascii=False).encode()) <= 16000
+            page = json.loads(response["result"]["content"][0]["text"])
+            chunks.append(page["text"])
+            offset = page["next_offset"]
+        assert json.loads("".join(chunks)) == context
+        request["id"] = "😀" * 1000
+        bounded_error = bridge.dispatch(request)
+        assert bounded_error["id"] is None and len(json.dumps(bounded_error).encode()) <= 16000
+
+
+@pytest.mark.parametrize("content", ["small ASCII", "漢字" * 8000])
+def test_initial_assignment_uses_wire_budget_and_keeps_complete_dossier(source_record, content):
+    dossier = {
+        "units": [],
+        "regions": [],
+        "source_evidence": content,
+        "final": "required qualifier",
+    }
+    assignment, documents = review_assignment(source_record, dossier, "dossier-1")
+    if "dossier_ref" in assignment:
+        assert documents[assignment["dossier_ref"]] == dossier
+        assert assignment["utf8_bytes"] > 16000
+    else:
+        assert assignment["dossier"] == dossier
+    tools = SessionTools(
+        role="reviewer",
+        project_root=Path(source_record["_directory"]),
+        workspace=Path(source_record["_directory"]) / "tools",
+        context={},
+        allow_internet=False,
+    )
+    bridge = EvidenceBridge(
+        toolset=tools,
+        context=assignment,
+        callbacks={},
+        directory=Path(source_record["_directory"]) / "assignment-bridge",
+    )
+    bridge.documents = documents
+    with bridge:
+        response = bridge.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "get_assignment", "arguments": {}},
+            }
+        )
+        assert len(json.dumps(response, ensure_ascii=False).encode()) <= 16000
+        assert json.loads(response["result"]["content"][0]["text"]) == assignment
 
 
 def test_unavailable_evidence_is_not_a_cached_semantic_rejection(

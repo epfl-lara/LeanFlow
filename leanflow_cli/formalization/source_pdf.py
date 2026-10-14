@@ -13,6 +13,63 @@ from typing import Any
 from .source_provenance import digest, identity
 
 
+def has_complete_page_census(inventory: dict[str, Any]) -> bool:
+    """Require a trusted physical page count instead of trusting text extraction boundaries."""
+    census = inventory.get(
+        "page_inventory", inventory.get("companion_pdf", {}).get("page_inventory", {})
+    )
+    return (
+        census.get("verified") is True
+        and census.get("method") == "pdfinfo"
+        and isinstance(census.get("physical_page_count"), int)
+        and census["physical_page_count"] > 0
+        and census["physical_page_count"] == len(inventory.get("pages", []))
+    )
+
+
+def has_verified_page_evidence(inventory: dict[str, Any], page: dict[str, Any]) -> bool:
+    """Recognize complete user exclusions or transcription bound to the frozen PDF bytes."""
+    regions = [
+        region
+        for region in inventory["regions"]
+        if region.get("page_index") == page["index"]
+        and region.get("coordinate_space") == "pdf_page"
+    ]
+    if regions and all(
+        region.get("disposition") == "excluded" and region.get("actor") == "user"
+        for region in regions
+    ):
+        return True
+    transcription = page.get("transcription", {})
+    file = page.get("file", inventory.get("source_relative"))
+    expected_pdf = str(inventory.get("files", {}).get(file, {}).get("sha256", "")).removeprefix(
+        "sha256:"
+    )
+    return (
+        page.get("fidelity", {}).get("status") == "verified_transcription"
+        and transcription.get("verified") is True
+        and transcription.get("actor") == "user"
+        and transcription.get("content_hash") == digest(page["text"]).removeprefix("sha256:")
+        and bool(expected_pdf)
+        and page.get("fidelity", {}).get("pdf_sha256") == expected_pdf
+    )
+
+
+def assert_pdf_review_ready(inventory: dict[str, Any]) -> None:
+    """Reject PDF-only authority without a complete census and verified physical page evidence."""
+    if inventory["source_kind"] != "pdf":
+        return
+    if not has_complete_page_census(inventory):
+        raise ValueError(
+            "PDF source fidelity requires a verified complete physical page inventory; retry extraction with working PDF metadata tools"
+        )
+    for page in inventory["pages"]:
+        if not has_verified_page_evidence(inventory, page):
+            raise ValueError(
+                f"PDF physical page {page['index'] + 1} requires a verified full-page transcription; extracted text and warning acknowledgment cannot authorize review"
+            )
+
+
 def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
     """Bound external extraction time without truncating successful source output."""
     return subprocess.run(
@@ -123,7 +180,7 @@ def inventory_pdf(source: Path, relative: str, document_id: str) -> dict[str, An
             try:
                 result = _run([info_tool, "-box", str(frozen)])
                 page_count = re.search(r"^Pages:\s*(\d+)\s*$", result.stdout, re.MULTILINE)
-                if result.returncode == 0 and page_count:
+                if result.returncode == 0 and page_count and int(page_count[1]) > 0:
                     count = int(page_count[1])
                 else:
                     diagnostic(
@@ -181,8 +238,8 @@ def inventory_pdf(source: Path, relative: str, document_id: str) -> dict[str, An
                 "pdf_extractor_missing",
                 "pdftotext is unavailable; install Poppler or provide a verified page transcription",
             )
-    if not pages:
-        pages = [
+    if count > len(pages):
+        pages.extend(
             {
                 "index": index,
                 "label": str(index + 1),
@@ -192,8 +249,13 @@ def inventory_pdf(source: Path, relative: str, document_id: str) -> dict[str, An
                 "mapping_method": "unavailable",
                 "mapping_precision": "unavailable",
             }
-            for index in range(count)
-        ]
+            for index in range(len(pages), count)
+        )
+    if not count:
+        diagnostic(
+            "pdf_page_census_unverified",
+            "The complete physical page count is unknown; retry extraction with working PDF metadata tools before source review",
+        )
     if not pages:
         diagnostic(
             "pdf_pages_unknown",
@@ -203,6 +265,18 @@ def inventory_pdf(source: Path, relative: str, document_id: str) -> dict[str, An
     regions: list[dict[str, Any]] = []
     for page in pages:
         page_index = page["index"]
+        page["fidelity"] = {
+            "status": "unverified",
+            "review_authority": "extraction_candidate",
+            "required_action": "verified_full_page_transcription",
+            "pdf_sha256": file_hash,
+        }
+        diagnostic(
+            "pdf_fidelity_unverified",
+            "Extracted text can omit formulas, rasterized clauses or diagrams; verify a complete page transcription against the frozen PDF before mathematical review",
+            page_index=page_index,
+            repair_required=True,
+        )
         if not page["text"].strip():
             diagnostic(
                 "pdf_text_missing",
@@ -273,7 +347,7 @@ def inventory_pdf(source: Path, relative: str, document_id: str) -> dict[str, An
                     if item["statement_spans"][0]["page_index"] == page_index
                 ],
                 "reason": "Page coverage and mathematical text fidelity require source audit",
-                "repair_required": not bool(page["text"].strip()),
+                "repair_required": True,
             }
         )
     if not pages:
@@ -293,6 +367,11 @@ def inventory_pdf(source: Path, relative: str, document_id: str) -> dict[str, An
         )
     return {
         "files": {relative: {"sha256": file_hash, "encoding": "binary", "size": len(raw)}},
+        "page_inventory": {
+            "verified": count > 0,
+            "method": "pdfinfo" if count else "unavailable",
+            "physical_page_count": count or None,
+        },
         "pages": pages,
         "items": items,
         "regions": regions,

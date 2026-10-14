@@ -45,6 +45,7 @@ def attach_companion(inventory: dict[str, Any], pdf: dict[str, Any]) -> None:
         "sha256": metadata["sha256"],
         "selection": "explicit",
         "correspondence_verified": False,
+        "page_inventory": pdf.get("page_inventory", {}),
     }
     inventory["pages"] = [{**page, "file": file} for page in pdf["pages"]]
     inventory["regions"].extend(
@@ -52,10 +53,29 @@ def attach_companion(inventory: dict[str, Any], pdf: dict[str, Any]) -> None:
             **region,
             "item_ids": [],
             "reason": "Companion PDF correspondence and additional mathematical content require source audit",
+            "repair_required": (
+                not bool(pdf["pages"][region["page_index"]]["text"].strip())
+                if "page_index" in region
+                else region.get("repair_required", True)
+            ),
         }
         for region in pdf["regions"]
     )
-    inventory["diagnostics"].extend(pdf["diagnostics"])
+    inventory["diagnostics"].extend(
+        {
+            **diagnostic,
+            **(
+                {
+                    "blocking": False,
+                    "repair_required": False,
+                    "message": "TeX is the claim authority. Companion extraction is unverified: audit correspondence and any additional mathematics; supply verified transcription before relying on PDF-only evidence.",
+                }
+                if diagnostic["code"] == "pdf_fidelity_unverified"
+                else {}
+            ),
+        }
+        for diagnostic in pdf["diagnostics"]
+    )
     refresh_companion_refs(inventory)
 
 

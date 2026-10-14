@@ -30,6 +30,60 @@ def roots(tmp_path: Path) -> tuple[Path, Path, Path]:
     return paths
 
 
+@pytest.mark.parametrize("cleanup_verified", [True, False])
+def test_worker_bound_retains_same_target_and_evicts_before_next_prefix(
+    roots: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch, cleanup_verified: bool
+) -> None:
+    from lean_probe import LeanProbe
+    from lean_probe import probe as probe_api
+
+    module = SimpleNamespace(LeanProbe=LeanProbe)
+    module._probe = lambda: module.LeanProbe(auto_build=False)
+    probe = check_worker._worker_probe(module)
+    assert probe.max_file_sessions == probe.max_code_sessions == probe.max_scratch_sessions == 1
+    project, workspace, _ = roots
+    events: list[str] = []
+    active: set[int] = set()
+    peak = 0
+    servers = []
+
+    class Server:
+        def __init__(self) -> None:
+            nonlocal peak
+            self.index = len(servers)
+            servers.append(self)
+            active.add(self.index)
+            peak = max(peak, len(active))
+            events.append("start:" + str(self.index))
+
+        def kill(self) -> None:
+            events.append("stop:" + str(self.index))
+            if cleanup_verified:
+                active.discard(self.index)
+
+        def is_alive(self) -> bool:
+            return self.index in active
+
+    monkeypatch.setattr(probe_api, "build_server", lambda **kwargs: (Server(), None, ""))
+    monkeypatch.setattr(probe, "_select_repl_dir", lambda root: None)
+    first, error = probe._get_session(project, workspace / "First.lean")
+    assert first is not None and not error
+    reused, error = probe._get_session(project, workspace / "First.lean")
+    assert reused is first and not error and events == ["start:0"]
+    second, error = probe._get_session(project, workspace / "Second.lean")
+    assert peak == 1
+    if cleanup_verified:
+        assert second is not None and second is not first and not error
+        assert events == ["start:0", "stop:0", "start:1"] and active == {1}
+        third, error = probe._get_session(project, workspace / "Third.lean")
+        assert third is not None and not error and active == {2} and peak == 1
+    else:
+        assert second is None and "still alive" in error
+        assert events == ["start:0", "stop:0"] and active == {0}
+    active.clear()
+    probe.close()
+
+
 @pytest.mark.parametrize("system,binary", [("Darwin", "sandbox-exec"), ("Linux", "bwrap")])
 def test_missing_os_isolation_never_starts_unprotected_process(
     monkeypatch: pytest.MonkeyPatch, roots: tuple[Path, Path, Path], system: str, binary: str

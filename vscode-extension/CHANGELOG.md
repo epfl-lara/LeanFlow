@@ -5,6 +5,18 @@ include features and settings from the former direct-provider runtime.
 
 ## Unreleased
 
+- Open the dashboard from a source-only sidebar and inspect TeX/PDF sources before
+  a Lean project exists; prepare pinned dependencies and project layout with
+  progress and cancellation before starting translation.
+- Require reviewed representative translations before complete document expansion.
+- Repair verified PDF transcriptions and shared/imported mappings without losing history.
+- Inspect preserved publication conflicts and keep explicitly reconciled files with
+  a recorded resolution; acknowledge unavailable history without reconstructing
+  missing evidence, and require new review after acceptance is revoked.
+- Let preparation cancellation finish safe cleanup and preserve the controller's
+  final readiness receipt before refreshing the selected document.
+- Show stale compiler/dependency acceptance separately from historical proof results.
+
 - Add a backend-owned formalization inventory with explicit source-region
   accounting, revision-bound repairs, and separate review, elaboration, and proof states.
 - Inspect TeX roots, project folders, and PDFs before model launch. Open verified

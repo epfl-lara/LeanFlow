@@ -28,6 +28,7 @@ const bundle = await build({
     builder.onLoad({ filter: /src\/core\/cli\.ts$/ }, () => ({ contents: `
       const record = (name, args) => globalThis.hostFixture.calls.push([name, ...args]);
       export class CliError extends Error {}
+      export function cliPath() { return 'leanflow-test-fixture'; }
       export async function fetchEventDetail(...args) { record('detail', args); return { event: {}, evidence: {} }; }
       export async function fetchProfileDiff(...args) { record('diff', args); return []; }
       export async function previewLaunch(...args) { record('preview', args); return { workflow: 'prove', provider: 'lemex' }; }

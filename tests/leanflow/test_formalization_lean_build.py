@@ -34,11 +34,12 @@ def build_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, d
     def command(**kwargs: object) -> dict:
         calls.append(kwargs)
         args = kwargs["argv"]
+        assert "-j1" in args
         assert isinstance(args, list)
         assert args[0] == str(compiler / "bin/lean")
         if "--deps-json" in args:
             imports = []
-            for file in args[2:]:
+            for file in args[args.index("--deps-json") + 1 :]:
                 text = Path(file).read_text()
                 names = ["Init"] + [
                     line.split()[1] for line in text.splitlines() if line.startswith("import ")
@@ -47,7 +48,8 @@ def build_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, d
                     {"errors": [], "result": {"imports": [{"module": name} for name in names]}}
                 )
             return {"success": True, "stdout": json.dumps({"imports": imports})}
-        setup = json.loads(Path(args[1].removeprefix("--setup=")).read_text())
+        setup_arg = next(arg for arg in args if arg.startswith("--setup="))
+        setup = json.loads(Path(setup_arg.removeprefix("--setup=")).read_text())
         assert setup["plugins"] == setup["dynlibs"] == []
         assert setup["imports"] is None
         output = Path(args[args.index("-o") + 1])
@@ -222,7 +224,8 @@ def test_compile_options_and_exact_artifact_hashes_are_retained(
     layout["libraries"][0]["lean_options"] = {"autoImplicit": False, "maxSynthPendingDepth": 3}
     result = lean_build.build_project(root, layout, root.parent / "check")
     for call in calls[1:]:
-        setup = json.loads(Path(call["argv"][1].removeprefix("--setup=")).read_text())
+        setup_arg = next(arg for arg in call["argv"] if arg.startswith("--setup="))
+        setup = json.loads(Path(setup_arg.removeprefix("--setup=")).read_text())
         assert setup["options"] == layout["libraries"][0]["lean_options"]
         assert not call.get(
             "extra_writable_roots"

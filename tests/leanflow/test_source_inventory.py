@@ -341,6 +341,7 @@ def test_pdf_tool_unavailability_requires_repair(
     assert {diagnostic["code"] for diagnostic in inventory["diagnostics"]} == {
         "pdf_extractor_missing",
         "pdf_pages_unknown",
+        "pdf_page_census_unverified",
     }
 
 

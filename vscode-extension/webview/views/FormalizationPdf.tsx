@@ -5,8 +5,8 @@ import { pdfItemCandidates, type FormalizationItem, type FormalizationPdf, type 
 
 interface PdfResources { worker: string; fonts: string; cmaps: string; iccs: string }
 
-export function FormalizationPdfView({ pdf, items, selectedId, selectItem, onSelection, companion = false }: {
-  pdf: FormalizationPdf; items: FormalizationItem[]; selectedId: string; selectItem: (id: string) => void; onSelection?: (ref: FormalizationSourceRef) => void; companion?: boolean;
+export function FormalizationPdfView({ pdf, items, selectedId, selectItem, onSelection, companion = false, publicationVersion = false }: {
+  pdf: FormalizationPdf; items: FormalizationItem[]; selectedId: string; selectItem: (id: string) => void; onSelection?: (ref: FormalizationSourceRef) => void; companion?: boolean; publicationVersion?: boolean;
 }) {
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [pageIndex, setPageIndex] = useState(pdf.pageIndex);
@@ -98,8 +98,9 @@ export function FormalizationPdfView({ pdf, items, selectedId, selectItem, onSel
       <span>of {document?.numPages ?? "…"}{pageLabel ? ` · printed ${pageLabel}` : ""}</span>
       <button className="btn" disabled={!document || pageIndex + 1 >= document.numPages} onClick={() => setPageIndex(index => index + 1)}>Next page</button>
     </div>
-    <p className="muted">Select text in the PDF to narrow candidate source items. Page links remain available when text extraction is missing.</p>
+    {publicationVersion ? <p className="notice">This displays the frozen publication version bound to the observed file hash. Compare it with your current workspace before recording reconciliation.</p> : <p className="muted">Select text in the PDF to narrow candidate source items. Page links remain available when text extraction is missing.</p>}
     {companion && <p className="notice">This PDF is a visual companion. Check approximate page links against the rendered page; repair statement boundaries in the frozen TeX source.</p>}
+    {!companion && !publicationVersion && <p className="notice warn">Extracted text can omit formulas and rasterized clauses even on readable pages. Verify or replace each complete page transcription below before translation review can pass.</p>}
     {selected && <p className="notice">Mapping: {selected.precision ?? "missing"}{selected.method ? ` · ${selected.method}` : ""}. {selected.text || "No passage alignment recorded."}</p>}
     {companion && selected?.page_index === undefined && <p className="notice warn">No page match is available for this source item. Browse the PDF to check it; the displayed page is not a claimed match.</p>}
     {loading && <p role="status">Rendering frozen page…</p>}
@@ -115,11 +116,11 @@ export function FormalizationPdfView({ pdf, items, selectedId, selectItem, onSel
       </div>
     </div>
     <p className="muted">{pageInfo}</p>
-    <div aria-live="polite">
+    {!publicationVersion && <div aria-live="polite">
       <strong>{selection ? "Selected passage candidates" : "Items on this page"}</strong>
       {selection && <><blockquote>{selection}</blockquote><button className="btn" onClick={() => setSelection("")}>Show all page items</button></>}
       {candidates.length ? <ul>{candidates.map(item => <li key={item.id}><button className="link" onClick={() => selectItem(item.id)}>{item.title}</button></li>)}</ul>
         : <p>No linked items match this {selection ? "passage" : "page"}. {companion ? "Check the frozen TeX source to add a missing item or repair its boundary." : "Add a missing item or repair a boundary below."} This does not establish that the page contains no mathematics.</p>}
-    </div>
+    </div>}
   </section>;
 }

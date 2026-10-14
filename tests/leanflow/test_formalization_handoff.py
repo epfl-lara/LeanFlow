@@ -10,9 +10,14 @@ from typing import Any
 
 import pytest
 
-from leanflow_cli.formalization import handoff, publication
+from leanflow_cli.formalization import freshness, handoff, publication
 from leanflow_cli.formalization.evidence import digest, durable_json, identity
-from leanflow_cli.formalization.records import document_directory, save_receipt, save_revision
+from leanflow_cli.formalization.records import (
+    document_directory,
+    load_document,
+    save_receipt,
+    save_revision,
+)
 from leanflow_cli.workflows.prover import entrypoint, runtime
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.source import SourceDocument, discover
@@ -61,6 +66,45 @@ def _registry() -> dict[str, Any]:
         ],
         "obligations": [row],
     }
+
+
+def test_readonly_reuse_cannot_expand_proof_write_scope(tmp_path: Path) -> None:
+    registry = _registry()
+    registry["obligations"][0]["declaration_origin"] = "existing_project"
+    with pytest.raises(ValueError, match="cannot authorize proof writes"):
+        handoff.build_handoff(
+            tmp_path,
+            document_id="paper",
+            revision_id="revision",
+            registry=registry,
+            files={},
+            environment_id="environment",
+        )
+
+
+def test_handoff_reuses_only_exact_checked_environment_and_default_stays_strict(
+    reviewed, monkeypatch
+) -> None:
+    root, result = reviewed
+    path = document_directory(root, "paper", published=True) / "handoff.json"
+    monkeypatch.setattr(
+        handoff,
+        "environment_identity",
+        lambda root: pytest.fail("Already checked environment must not be hashed twice"),
+    )
+    assert (
+        handoff.validate_handoff(
+            root, path, result["revision_id"], checked_environment_id="environment"
+        )
+        == result
+    )
+    with pytest.raises(ValueError, match="environment changed"):
+        handoff.validate_handoff(
+            root, path, result["revision_id"], checked_environment_id="different"
+        )
+    monkeypatch.setattr(handoff, "environment_identity", lambda root: "drift")
+    with pytest.raises(ValueError, match="environment changed"):
+        handoff.validate_handoff(root, path, result["revision_id"])
 
 
 @pytest.fixture
@@ -139,6 +183,7 @@ def reviewed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dic
         },
     )
     monkeypatch.setattr(handoff, "environment_identity", lambda root: "environment")
+    monkeypatch.setattr(freshness, "environment_identity", lambda root: "environment")
     monkeypatch.setattr(
         publication, "assert_no_pending_publication", lambda root: None, raising=False
     )
@@ -500,3 +545,82 @@ def test_snapshot_authenticates_proof_completion_and_opens_certified_source(
         and stale["proof_completion"] == "pending"
         and not stale["proof_revision_id"]
     )
+
+
+def test_mixed_existing_reuse_and_generated_proof_authenticates_completed_certificate(
+    reviewed, monkeypatch, admitted_snapshot_layout
+) -> None:
+    """Retain readonly reuse without expecting it in the owned proof compiler profiles."""
+    from leanflow_cli.formalization.service import show_document
+
+    root, old_handoff = reviewed
+    directory = document_directory(root, "paper", published=True)
+    record = load_document(root, "paper")
+    record["checks"]["declarations"].append(
+        {
+            "name": "other",
+            "module": "Other",
+            "file": "Unrelated.lean",
+            "declaration_origin": "existing_project",
+            "kind": "definition",
+            "type_hash": "readonly-type",
+            "body_hash": "readonly-body",
+            "source_sha256": old_handoff["files"]["Unrelated.lean"],
+            "pending": False,
+        }
+    )
+    record = save_revision(directory, record)
+    accepted = handoff.build_handoff(
+        root,
+        document_id="paper",
+        revision_id=record["revision_id"],
+        registry=record["checks"],
+        files=record["project_source_hashes"],
+        environment_id=record["environment_id"],
+    )
+    durable_json(directory / "handoff.json", accepted)
+    save_receipt(
+        directory,
+        {"status": "published", "revision_id": record["revision_id"], "handoff": accepted},
+    )
+    untouched = (root / "Unrelated.lean").read_bytes()
+    path = root / "src/Main.lean"
+    document = SourceDocument("src/Main.lean", path.read_text(), replacements={"1": "trivial"})
+    path.write_text(document.render())
+    profiles = {
+        "Paper.target": {
+            "name": "Paper.target",
+            "type_hash": "type-target",
+            "body_hash": "proved",
+            "pending": False,
+            "conditional": False,
+            "axioms": [],
+        }
+    }
+    monkeypatch.setattr(
+        handoff,
+        "inspect_draft",
+        lambda *args, **kwargs: {
+            "accepted": True,
+            "profiles": profiles,
+            **accepted["acceptance_policy"],
+        },
+    )
+    certificate = handoff.proof_preservation_certificate(
+        root, accepted, {document.path: document}, root / "checks", ProverConfig().allowed_axioms
+    )
+    assert "other" not in certificate["checks"]["profiles"]
+    assert (root / "Unrelated.lean").read_bytes() == untouched
+    view = show_document(root, "paper")
+    assert view["proof_completion"] == "checked", view["diagnostics"]
+    assert view["proof_revision_id"] == certificate["proof_revision_id"]
+    assert not view["can_prove"]
+    profiles["Paper.target"]["type_hash"] = "changed"
+    with pytest.raises(ValueError, match="type changed"):
+        handoff.proof_preservation_certificate(
+            root,
+            accepted,
+            {document.path: document},
+            root / "checks",
+            ProverConfig().allowed_axioms,
+        )

@@ -325,6 +325,15 @@ def _inspect(
     if names and {row.get("name") for row in rows} != set(names):
         raise ValueError("Kernel report does not contain every exact requested declaration")
     checked = evaluate_policy(rows, allowed_axioms, dependency=dependency)
+    # Existing project reuse is read-only, but its compiler ranges still identify
+    # the frozen local source. Dependency ranges have no such source authority.
+    if dependency and local_artifacts:
+        raw = {row["name"]: row for row in rows}
+        for row in checked["declarations"]:
+            if row["module"] in local_artifacts:
+                for key in ("line_start", "source_range"):
+                    if key in raw[row["name"]]:
+                        row[key] = raw[row["name"]][key]
     checked["kernel_replay"] = json.loads(replay_path.read_text())
     if full_import_replay:
         library_report = workspace / "library-evidence.jsonl"
@@ -481,6 +490,8 @@ def inspect_draft(
             if result.get("accepted"):
                 for row in result["declarations"]:
                     row["file"] = mapping[row["module"]]
+                    row["declaration_origin"] = "generated"
+                    row["source_sha256"] = hashlib.sha256(sources[row["file"]]).hexdigest()
                 result.update(
                     modules=mapping,
                     layout=layout,
@@ -512,8 +523,13 @@ def inspect_dependency(
     allowed_axioms: tuple[str, ...] = ("propext", "Classical.choice", "Quot.sound"),
     deadline: float | None = None,
     cancelled: Callable[[], bool] | None = None,
+    local_artifacts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Resolve exact existing names in explicit pinned imports without new declarations."""
+    """Resolve exact read-only project or dependency names using recorded artifacts.
+
+    Project modules are available only through the controller's compiled artifact
+    map; arbitrary local search paths never authorize existing-declaration reuse.
+    """
     try:
         if deadline is None:
             deadline = deadline_after(DEFAULT_INSPECTION_TIMEOUT_SECONDS)
@@ -522,12 +538,13 @@ def inspect_dependency(
         layout = inspect_layout(root, deadline=deadline, cancelled=cancelled)
         if not layout.get("accepted"):
             return layout
-        _admitted_project_sources(root, layout=layout)
+        sources = _admitted_project_sources(root, layout=layout)
+        local_sources = {module_for_file(layout, name): name for name in sources}
         library = project_path(root, layout["lean_lib_dir"])
         library.mkdir(parents=True, exist_ok=True)
         workspace.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="leanflow-dependency-inspect-") as temporary:
-            return _inspect(
+            result = _inspect(
                 root,
                 imports,
                 Path(temporary).resolve(),
@@ -537,6 +554,24 @@ def inspect_dependency(
                 cancelled,
                 library,
                 dependency=True,
+                local_artifacts=local_artifacts,
             )
+        if result.get("accepted"):
+            for row in result["declarations"]:
+                if row["module"] in (local_artifacts or {}):
+                    relative = local_sources.get(row["module"])
+                    if relative is None:
+                        raise ValueError(
+                            f"Existing declaration has no admitted project source: {row['name']}"
+                        )
+                    row.update(
+                        declaration_origin="existing_project",
+                        file=relative,
+                        source_sha256=sources[relative],
+                    )
+                else:
+                    row["declaration_origin"] = "dependency"
+            result["profiles"] = {row["name"]: row for row in result["declarations"]}
+        return result
     except (OSError, ValueError, KeyError, TypeError) as exc:
         return {"accepted": False, "error": f"Dependency inspection failed: {exc}"}

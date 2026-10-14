@@ -110,6 +110,9 @@ def publish_checked(
     if not checked.get("accepted") or not review.get("accepted"):
         raise ValueError("Both compiled policy and independent source review must pass")
     record = checked["record"]
+    from leanflow_cli.formalization.slice_gate import assert_complete_slice
+
+    assert_complete_slice(root, record)
     revision, document_id = record["revision_id"], record["document_id"]
     from leanflow_cli.formalization.records import current_selection_token
 
@@ -228,6 +231,7 @@ def publish_checked(
 
     def validate() -> None:
         assert_selection_authority()
+        assert_complete_slice(root, record)
         if load_document(root, document_id)["revision_id"] != revision:
             raise ValueError("Selected formalization revision changed before publication")
         if load_receipt(record) != receipt:

@@ -203,6 +203,13 @@ def test_formalization_intake_shares_project_ownership(
         raise ValueError("intake reached safely")
 
     monkeypatch.setattr(workflow, "prepare_formalization_document_context", intake)
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.preparation_launch.prepare_formalization_launch",
+        lambda *args, **kwargs: {
+            "root": root,
+            "budget_path": root / ".leanflow/formalization-campaigns/fixture/budget.json",
+        },
+    )
     if setup_already_running:
         with operations.project_setup(root):
             with pytest.raises(operations.ProjectBusyError):

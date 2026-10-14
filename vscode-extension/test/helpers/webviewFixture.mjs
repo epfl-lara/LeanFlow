@@ -9,7 +9,7 @@ import { build } from "esbuild";
 
 const output = path.resolve("dist/test/webviewFixture.mjs");
 const bundle = await build({
-  stdin: { contents: `export { App } from './webview/App'; export { SidebarView } from './webview/views/SidebarView'; export { emptyLaunchRequest } from './src/core/types'; export { normalizeProverSnapshot } from './src/core/prover'; export { parseWebviewMessage } from './src/panels/messageSchema';`, resolveDir: process.cwd(), loader: "tsx" },
+  stdin: { contents: `export { App } from './webview/App'; export { SidebarView } from './webview/views/SidebarView'; export { emptyLaunchRequest } from './src/core/types'; export { normalizeProverSnapshot } from './src/core/prover'; export { parseWebviewMessage } from './src/panels/messageSchema'; import { FormalizationConflicts } from './webview/views/FormalizationConflicts'; import { FormalizationPreparation } from './webview/views/FormalizationPreparation'; import { formalizationFixture } from './test/helpers/formalizationFixture.mjs'; export function FormalizationConflictsFixture() { return <FormalizationConflicts ready={true} />; } export function FormalizationPreparationFixture() { return <FormalizationPreparation snapshot={globalThis.webviewFixture.sourceSnapshot ?? formalizationFixture()} ready={true} />; }`, resolveDir: process.cwd(), loader: "tsx" },
   bundle: true, write: false, format: "esm", platform: "node", jsx: "automatic", jsxDev: true,
   external: ["react", "react-dom"],
   plugins: [{ name: "inert-webview-host", setup(builder) {
@@ -41,7 +41,7 @@ const bundle = await build({
 });
 await mkdir(path.dirname(output), { recursive: true });
 await writeFile(output, bundle.outputFiles[0].text);
-export const { App, SidebarView, emptyLaunchRequest, normalizeProverSnapshot, parseWebviewMessage } = await import(pathToFileURL(output));
+export const { App, SidebarView, FormalizationConflictsFixture, FormalizationPreparationFixture, emptyLaunchRequest, normalizeProverSnapshot, parseWebviewMessage } = await import(pathToFileURL(output));
 export { act };
 export const clickedButtons = new Set();
 

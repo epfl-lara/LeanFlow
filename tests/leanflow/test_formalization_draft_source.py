@@ -43,11 +43,17 @@ def test_author_deferral_preserves_all_original_source_diagnostics_and_coverage(
 ) -> None:
     inventory = paired_record["inventory"]
     original = copy.deepcopy(inventory)
-    assert {row["support_command"] for row in inventory["diagnostics"]} == {
+    support = [row for row in inventory["diagnostics"] if row.get("support_command")]
+    assert len(support) == 3
+    assert {row["support_command"] for row in support} == {
         "includegraphics",
         "bibliography",
         "addbibresource",
     }
+    assert any(
+        row["code"] == "pdf_fidelity_unverified" and not row["blocking"]
+        for row in inventory["diagnostics"]
+    )
     assert intake.author_blocking_diagnostics(inventory) == []
     assert inventory == original
     monkeypatch.setattr(intake.lean_build, "validate_build_inputs", lambda *a, **kw: {})
@@ -58,6 +64,7 @@ def test_author_deferral_preserves_all_original_source_diagnostics_and_coverage(
             "accepted": True,
             "library": "Main",
             "owned_prefix": "Main/Document",
+            "module_prefix": "Main.Document",
             "aggregator": "Main/Document.lean",
         },
     )
@@ -66,14 +73,20 @@ def test_author_deferral_preserves_all_original_source_diagnostics_and_coverage(
     )
     frozen = json.loads(context.manifest_path.read_text())["inventory"]
     assert frozen == original
-    assert all(row["blocking"] and "resolution" not in row for row in frozen["diagnostics"])
+    assert all(
+        row["blocking"] and "resolution" not in row
+        for row in frozen["diagnostics"]
+        if row.get("support_command")
+    )
+    assert len(frozen["diagnostics"]) == len(original["diagnostics"])
     assert not frozen["audit_complete"] and frozen["extraction_status"] == "blocked"
     assert frozen["companion_pdf"]["correspondence_verified"] is False
     guidance = context.context_path.read_text()
     assert "DRAFT PREPARATION ONLY" in guidance
     assert 'return exactly {"status":"blocked","reason":' in guidance
     assert "Do not submit a falsely complete proposal" in guidance
-    assert all(row["id"] in guidance for row in frozen["diagnostics"])
+    assert all(row["id"] in guidance for row in frozen["diagnostics"] if row["blocking"])
+    assert all(row["id"] not in guidance for row in frozen["diagnostics"] if not row["blocking"])
     assert not context.target_lean_path.exists()
 
 
@@ -90,7 +103,7 @@ def test_author_deferral_requires_explicit_frozen_pair_and_structured_diagnostic
         inventory["companion_pdf"]["sha256"] = "different PDF"
     else:
         for row in inventory["diagnostics"]:
-            row.pop("support_command")
+            row.pop("support_command", None)
     assert len(intake.author_blocking_diagnostics(inventory)) == 3
     assert not intake.draft_source_guidance(inventory)
 
@@ -140,8 +153,8 @@ def test_scanner_version_refreshes_old_diagnostics_without_modifying_sources(
     legacy = copy.deepcopy(paired_record)
     legacy["inventory"]["extraction_version"] = "provenance-scanner-v3"
     for row in legacy["inventory"]["diagnostics"]:
-        row.pop("support_command")
-        row.pop("support_target")
+        row.pop("support_command", None)
+        row.pop("support_target", None)
     saved = save_revision(document_directory(tmp_path, legacy["document_id"]), legacy)
     refreshed = create_document(tmp_path, tmp_path / "paper.tex")
     assert saved["revision_id"] != refreshed["revision_id"]
@@ -284,7 +297,9 @@ def test_native_draft_only_turn_stops_without_retry_or_promotion(
         assert result["error"] == "Missing original figure assets"
     else:
         assert "Unresolved source assets" in result["error"]
-    assert result["source_diagnostics"] == [row["id"] for row in record["inventory"]["diagnostics"]]
+    assert result["source_diagnostics"] == [
+        row["id"] for row in record["inventory"]["diagnostics"] if row["blocking"]
+    ]
     assert len(calls) == 1
     assert (calls[0].cwd / "Main/Document/Setup.lean").exists()
     assert not (tmp_path / "Main/Document/Setup.lean").exists()

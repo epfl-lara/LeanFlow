@@ -13,9 +13,12 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 from core.error_redaction import sanitize_auxiliary_error
+
+if TYPE_CHECKING:
+    from leanflow_cli.workflows.project_setup.execution import SetupExecutionPolicy
 
 Progress = Callable[[dict[str, Any]], None]
 
@@ -105,8 +108,23 @@ def run_command(
     phase: str,
     input_text: str | None = None,
     stdout_only: bool = False,
+    execution_policy: SetupExecutionPolicy | None = None,
 ) -> tuple[int, str]:
     """Stream both channels, keeping successful protocol stdout separate on request."""
+    if execution_policy is not None:
+        from leanflow_cli.workflows.project_setup.execution_process import run_restricted_command
+
+        return run_restricted_command(
+            command,
+            cwd=cwd,
+            log=log,
+            cancel=cancel,
+            progress=progress,
+            phase=phase,
+            input_text=input_text,
+            stdout_only=stdout_only,
+            execution_policy=execution_policy,
+        )
     check_cancel(cancel)
     log.write("\n$ " + safe_text(" ".join(command)) + "\n")
     log.flush()

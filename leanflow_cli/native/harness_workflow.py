@@ -18,6 +18,7 @@ from agent.runtime.harness.network_policy import restricted_research
 from core.campaign_limits import CampaignLimits, LimitReached
 from core.utils import atomic_json_write
 from leanflow_cli.formalization.records import current_selection_token, save_receipt
+from leanflow_cli.formalization.stage_errors import RepreparationRequired
 from leanflow_cli.native.harness_artifacts import promote, source_files, verify_proposal
 from leanflow_cli.native.harness_context import prepare_context
 from leanflow_cli.native.harness_observer import NativeObserver
@@ -87,23 +88,22 @@ def _run_controller(
             draft_source_rejection,
             preflight_dependencies,
         )
+        from leanflow_cli.formalization.inventory_authority import complete_inventory
         from leanflow_cli.formalization.records import load_document
 
         selected_document = load_document(root, document_id)
-        blockers = [
-            row["message"] for row in author_blocking_diagnostics(selected_document["inventory"])
-        ]
+        selected_inventory = complete_inventory(selected_document)
+        blockers = [row["message"] for row in author_blocking_diagnostics(selected_inventory)]
         if blockers:
             raise ValueError("Repair source inventory before formalization: " + "; ".join(blockers))
-        source_draft_guidance = draft_source_guidance(selected_document["inventory"])
-        source_draft_blocker = draft_source_rejection(selected_document["inventory"])
+        source_draft_guidance = draft_source_guidance(selected_inventory)
+        source_draft_blocker = draft_source_rejection(selected_inventory)
         requested_revision = environment.get("LEANFLOW_FORMALIZATION_REVISION", "")
         if requested_revision not in {
             selected_document["revision_id"],
             selected_document.get("author_base_revision"),
         }:
             raise ValueError("Source inventory changed; restart from its selected revision")
-        preflight_dependencies(root, document_id)
     state_path = directory / "state.json"
     if resume:
         state = json.loads(state_path.read_text())
@@ -163,14 +163,34 @@ def _run_controller(
     if restricted:
         environment = {**environment, "LEANFLOW_PROVER_ALLOW_INTERNET": "false"}
     atomic_json_write(state_path, state)
+    from leanflow_cli.native.harness_formalization_stages import (
+        campaign_budget_limits,
+        campaign_budget_path,
+    )
+
+    limits_path = (
+        campaign_budget_path(root, environment, directory)
+        if kind == "formalize"
+        else directory / "limits.json"
+    )
     budget = CampaignLimits(
-        directory / "limits.json",
-        {
-            name: environment.get("LEANFLOW_PROVER_" + name.upper())
-            for name in ("agent_calls", "tokens", "wall_time_s")
-        },
+        limits_path,
+        (
+            campaign_budget_limits(limits_path, environment)
+            if kind == "formalize"
+            else {
+                name: environment.get("LEANFLOW_PROVER_" + name.upper())
+                for name in ("agent_calls", "tokens", "wall_time_s")
+            }
+        ),
     )
     cancelled = threading.Event()
+    terminal_submission = threading.Event()
+
+    def execution_stopped() -> bool:
+        """Interrupt paid native work when external drift cannot be corrected by the author."""
+        return cancelled.is_set() or terminal_submission.is_set()
+
     storage_admission = StorageAdmission(root)
     storage_error = ""
     finished = threading.Event()
@@ -209,6 +229,10 @@ def _run_controller(
             observer.start(state)
             observing.set()
         storage_admission.check(force=True)
+        if kind == "formalize":
+            # Dependency census can be expensive. Install campaign monitoring and
+            # cancellation before paying that read-only preparation cost.
+            preflight_dependencies(root, document_id)
         prepare_snapshot(root, snapshot)
         scratch = snapshot / ".leanflow-job"
         scratch.mkdir(exist_ok=True)
@@ -229,6 +253,11 @@ def _run_controller(
             context["source_draft_guidance"] = source_draft_guidance
             if source_draft_guidance not in prompt:
                 prompt += "\n" + source_draft_guidance
+        source_prompt = prompt
+        if kind == "formalize":
+            from leanflow_cli.native.harness_formalization_stages import stage_assignment
+
+            context, prompt = stage_assignment(root, environment, context, source_prompt)
         initial_prompt = prompt
         receipt: dict[str, Any] = {}
         validation_lock = threading.Lock()
@@ -241,6 +270,8 @@ def _run_controller(
         def submit(response: str) -> dict[str, Any]:
             """Freeze one proposal at a time and retain only independently accepted bytes."""
             with validation_lock:
+                if terminal_submission.is_set():
+                    return dict(last_validation)
                 receipt.clear()
                 atomic_json_write(directory / "accepted.json", {"accepted": False})
                 if observer is not None:
@@ -295,6 +326,25 @@ def _run_controller(
                     receipt.clear()
                     receipt.update(checked)
                     atomic_json_write(directory / "accepted.json", checked)
+                if checked.get("error_code") == "needs_reprepare":
+                    terminal_submission.set()
+                elif kind == "formalize":
+                    try:
+                        stage_assignment(root, environment, context, source_prompt)
+                    except RepreparationRequired as error:
+                        checked = {
+                            "accepted": False,
+                            "status": "check_error",
+                            "error_code": error.error_code,
+                            "error": str(error),
+                        }
+                        receipt.clear()
+                        last_validation.clear()
+                        last_validation.update(checked)
+                        atomic_json_write(directory / "accepted.json", checked)
+                        terminal_submission.set()
+                    else:
+                        bridge.context = dict(context)
                 return {
                     key: value
                     for key, value in checked.items()
@@ -308,7 +358,7 @@ def _run_controller(
             context=context,
             timeout_s=None,
             deadline=deadline,
-            cancelled=cancelled.is_set,
+            cancelled=execution_stopped,
             allow_internet=not restricted,
         )
         with NativeBridge(
@@ -392,7 +442,7 @@ def _run_controller(
                             previous_usage=None if restricted else state.get("usage_total"),
                             env=environment,
                             deadline=deadline,
-                            cancelled=cancelled.is_set,
+                            cancelled=execution_stopped,
                             mcp_config=mcp_path,
                             log_path=directory / f"{invocation}.jsonl",
                             isolation=isolation,
@@ -415,6 +465,14 @@ def _run_controller(
                     error=result.error,
                 )
                 atomic_json_write(state_path, state)
+                if last_validation.get("error_code") == "needs_reprepare":
+                    state.update(
+                        status="needs_reprepare",
+                        error=last_validation.get(
+                            "error", "Check source and project preparation again"
+                        ),
+                    )
+                    return state
                 remaining = budget.remaining()
                 if remaining is not None and remaining <= 0:
                     raise LimitReached("Global campaign time limit reached")
@@ -460,6 +518,7 @@ def _run_controller(
                         status={
                             "check_cancelled": "cancelled",
                             "check_timeout": "deadline_exceeded",
+                            "needs_reprepare": "needs_reprepare",
                         }.get(str(last_validation.get("error_code", "")), "blocked"),
                         error=last_validation.get(
                             "error", "Formalization checking could not finish"
@@ -548,6 +607,41 @@ def _run_controller(
                                 + json.dumps(review)
                             )
                             continue
+                        if (
+                            record.get("workflow_protocol") == 2
+                            and record.get("proposal_phase") == "representative_slice"
+                        ):
+                            from leanflow_cli.formalization.slice_gate import save_reviewed_slice
+
+                            slice_receipt = save_reviewed_slice(root, receipt, review)
+                            save_receipt(
+                                record,
+                                {
+                                    "schema_version": 1,
+                                    "document_id": document_id,
+                                    "revision_id": record["revision_id"],
+                                    "status": "slice_reviewed",
+                                    "checks": record["checks"],
+                                    "reviews": review.get("reviews", []),
+                                    "handoff": None,
+                                    "slice_id": slice_receipt["slice_id"],
+                                },
+                            )
+                            state.update(
+                                formalization_phase="complete",
+                                representative_slice=slice_receipt["slice_id"],
+                            )
+                            atomic_json_write(state_path, state)
+                            receipt.clear()
+                            last_validation.clear()
+                            atomic_json_write(directory / "accepted.json", {"accepted": False})
+                            context, prompt = stage_assignment(
+                                root, environment, context, source_prompt
+                            )
+                            bridge.context = dict(context)
+                            initial_prompt = prompt
+                            prompt += "\nIndependent representative-slice review passed. Expand the remaining source while preserving the accepted slice."
+                            continue
                         from leanflow_cli.formalization.publish import publish_checked
 
                         publication = publish_checked(
@@ -585,12 +679,22 @@ def _run_controller(
                     )
                     return state
                 # The native process has ended, so continuation is another charged invocation.
-                prompt = (
+                feedback = (
                     "Continue the existing assignment. Independent verification rejected the source proposal. Repair these errors, then use submit_files: "
                     + json.dumps(last_validation)
                 )
+                if kind == "formalize":
+                    context, prompt = stage_assignment(root, environment, context, source_prompt)
+                    bridge.context = dict(context)
+                    initial_prompt = prompt
+                    prompt += "\n" + feedback
+                else:
+                    prompt = feedback
             state["status"] = "cancelled"
             return state
+    except RepreparationRequired as error:
+        state.update(status="needs_reprepare", error=str(error))
+        return state
     except InterruptedError as error:
         state.update(status="cancelled", error=str(error))
         return state

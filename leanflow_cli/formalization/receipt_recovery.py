@@ -55,9 +55,22 @@ def reconcile_committed_receipt(root: Path, record: dict[str, Any]) -> None:
         f"formalization/{document}/current.json": digest((portable / "current.json").read_bytes()),
     }
     registry = load_registry(root)
+    if any(item.get("revision_id") == revision for item in registry.get("revoked_revisions", [])):
+        return
+    if any(
+        entry.get("loss")
+        and (entry["loss"]["state"] != "RESOLVED" or revision in entry["loss"]["revision_ids"])
+        for entry in registry["transactions"].values()
+    ):
+        return
     committed = False
     for entry in registry["transactions"].values():
-        journal = load_journal(contained(root, entry["journal"]))
+        if entry.get("loss"):
+            continue
+        path = contained(root, entry["journal"])
+        if not path.is_file():
+            continue
+        journal = load_journal(path)
         if (
             journal["state"] == "COMMITTED"
             and not journal["conflicts"]

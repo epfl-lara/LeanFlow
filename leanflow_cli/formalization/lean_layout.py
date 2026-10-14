@@ -12,6 +12,7 @@ from typing import Any
 
 from core.deadlines import remaining_seconds
 from leanflow_cli.formalization.environment import compiler_executable
+from leanflow_cli.formalization.evidence import identity
 from leanflow_cli.formalization.lean_configuration import (
     static_configuration as _static_configuration,
 )
@@ -202,6 +203,25 @@ def resolve_layout(root: Path, document_id: str) -> dict[str, Any]:
         .as_posix(),
         "modules": [prefix],
         "build_targets": [f"+{prefix}:olean"],
+    }
+
+
+def generation_layout(layout: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    """Allocate each prepared translation independently of older published declarations."""
+    if record.get("workflow_protocol") != 2 or not layout.get("accepted"):
+        return layout
+    preparation_id = record.get("preparation_id")
+    if not isinstance(preparation_id, str) or not preparation_id:
+        raise ValueError("A prepared translation requires its controller preparation identity")
+    prefix = layout["module_prefix"] + ".Run_" + identity(preparation_id)[:12]
+    owned = Path(layout["src_dir"]).joinpath(*prefix.split(".")).as_posix()
+    return {
+        **layout,
+        "module_prefix": prefix,
+        "owned_prefix": owned,
+        "aggregator": owned + ".lean",
+        "modules": [prefix],
+        "build_targets": ["+" + prefix + ":olean"],
     }
 
 

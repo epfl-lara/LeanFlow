@@ -135,4 +135,7 @@ def project_setup(root: Path) -> Iterator[None]:
 def project_activity(root: Path) -> Iterator[None]:
     """Keep setup excluded through the complete workflow, including terminal publication."""
     with _project_lock(root.expanduser().resolve(), exclusive=False):
+        from leanflow_cli.formalization.preparation_transaction import assert_no_pending_preparation
+
+        assert_no_pending_preparation(root)
         yield

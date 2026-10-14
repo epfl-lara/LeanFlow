@@ -5,6 +5,27 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from leanflow_cli.formalization.evidence import digest
+
+
+def assert_reuse_sources_unchanged(
+    declarations: list[dict[str, Any]], baseline: dict[str, bytes], changed: dict[str, bytes]
+) -> None:
+    """Refuse reuse evidence elaborated from controller-modified existing project sources."""
+    for row in declarations:
+        if row.get("declaration_origin") != "existing_project":
+            continue
+        relative = row.get("file")
+        if (
+            relative not in baseline
+            or row.get("source_sha256") != digest(baseline[relative])
+            or (relative in changed and changed[relative] != baseline[relative])
+        ):
+            raise ValueError(
+                "Existing project reuse requires unchanged original source bytes; "
+                f"move reusable declarations to an unchanged module: {row['name']}"
+            )
+
 
 def merge_library_evidence(
     existing: list[dict[str, Any]], incoming: list[dict[str, Any]]
@@ -51,13 +72,29 @@ def merge_library_evidence(
 
 
 def merge_reused_declarations(checks: dict[str, Any], result: dict[str, Any]) -> None:
-    """Merge repeated library roots while refusing to relabel generated declarations."""
+    """Merge read-only project/library roots without granting generated ownership."""
     rows = {row["name"]: row for row in checks["declarations"]}
     for row in result["declarations"]:
         name = row["name"]
         previous = rows.get(name)
-        if row.get("file") or (previous is not None and previous.get("file")):
+        origin = row.get("declaration_origin", "generated" if row.get("file") else "dependency")
+        previous_origin = (
+            previous.get(
+                "declaration_origin", "generated" if previous.get("file") else "dependency"
+            )
+            if previous is not None
+            else None
+        )
+        if origin not in {"existing_project", "dependency"} or previous_origin == "generated":
             raise ValueError(f"A project declaration cannot be mapped as library reuse: {name}")
+        if origin == "existing_project" and (
+            not row.get("file") or not row.get("source_sha256") or row.get("pending")
+        ):
+            raise ValueError(
+                f"Existing project reuse requires immutable verified source evidence: {name}"
+            )
+        if origin == "dependency" and row.get("file"):
+            raise ValueError(f"Dependency reuse cannot claim project source ownership: {name}")
         if previous is not None and previous != row:
             raise ValueError(f"Reused declaration differs between inspections: {name}")
         rows[name] = row

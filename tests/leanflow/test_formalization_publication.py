@@ -40,7 +40,7 @@ def _publish(root: Path, checkpoint=None, **kwargs):
 
 
 def _journal(root: Path):
-    path = current_journal(root / ".leanflow/transaction")
+    path = current_journal(root / ".leanflow/transaction", root=root)
     assert path is not None
     return path, load_journal(path)
 

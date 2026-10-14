@@ -4,6 +4,17 @@ from leanflow_cli.flags.spec import FlagSpec
 
 FORMALIZATION_FLAGS = (
     FlagSpec(
+        name="LEANFLOW_SETUP_MAX_RSS_GIB",
+        kind="tuning",
+        value_type="int",
+        default="16",
+        minimum=1,
+        maximum=20,
+        group="Project setup",
+        summary="Sampled aggregate owned-process RSS ceiling in GiB; shared pages count per process.",
+        read_in=("leanflow_cli/workflows/project_setup/execution.py",),
+    ),
+    FlagSpec(
         name="LEANFLOW_FORMALIZATION_REVIEW_PROVIDER",
         kind="runtime",
         value_type="enum",

@@ -2,26 +2,36 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { readFormalizationArtifact } from "../core/formalizationArtifact";
+import { formalizationWorkspaceRoot } from "../core/formalizationWorkspace";
 import { redactSensitiveText } from "../core/runPrivacy";
 import type { LeanFlowServices } from "../core/services";
 import { resolveExistingProjectPath } from "../core/storageSecurity";
 import type { HostMessage, LaunchRequest, WebviewMessage } from "../core/types";
+import { FormalizationPreparationHost } from "./formalizationPreparationHost";
+import { FormalizationRecoveryHost } from "./formalizationRecoveryHost";
 
 const MESSAGE_TYPES = new Set([
   "listFormalizations", "inspectFormalization", "showFormalization", "formalizationAction",
   "openFormalizationArtifact", "proveFormalization",
+  "listFormalizationConflicts", "openFormalizationConflictVersion", "resolveFormalizationConflict",
+  "planFormalizationPreparation", "prepareFormalization", "cancelFormalizationPreparation",
+  "listFormalizationPreparationRecovery", "recoverFormalizationPreparation", "resolveFormalizationPreparation", "cancelFormalizationRecovery",
 ]);
 
 export class FormalizationHost {
   private queue: Promise<void> = Promise.resolve();
   private readonly openedSources = new Map<string, { documentId: string; revisionId: string; artifactId: string }>();
   private readonly selectionListener: vscode.Disposable | undefined;
+  private readonly preparation: FormalizationPreparationHost;
+  private readonly recovery: FormalizationRecoveryHost;
 
   constructor(
     private readonly services: LeanFlowServices,
     private readonly post: (message: HostMessage) => void,
     private readonly launch: (request: LaunchRequest) => Promise<void>,
   ) {
+    this.preparation = new FormalizationPreparationHost(services, post);
+    this.recovery = new FormalizationRecoveryHost(services, post);
     this.selectionListener = vscode.window.onDidChangeTextEditorSelection?.(event => {
       const source = this.openedSources.get(event.textEditor.document.uri.toString());
       const selection = event.selections[0];
@@ -30,11 +40,13 @@ export class FormalizationHost {
     });
   }
 
-  dispose(): void { this.selectionListener?.dispose(); this.openedSources.clear(); }
+  dispose(): void { this.preparation.dispose(); this.recovery.dispose(); this.selectionListener?.dispose(); this.openedSources.clear(); }
 
   /** Serialize requests within this webview; the controller also checks cross-client revisions. */
   async handle(message: WebviewMessage): Promise<boolean> {
     if (!MESSAGE_TYPES.has(message.type)) return false;
+    if (message.type === "cancelFormalizationPreparation") { this.preparation.cancel(message); return true; }
+    if (message.type === "cancelFormalizationRecovery") { this.recovery.cancel(); return true; }
     const request = this.queue.then(() => this.dispatch(message));
     this.queue = request.catch(() => undefined);
     await request;
@@ -44,7 +56,38 @@ export class FormalizationHost {
   private async dispatch(message: WebviewMessage): Promise<void> {
     const service = this.services.formalizations;
     try {
+      if (!this.services.project.root) service.bindSourceRoot(await formalizationWorkspaceRoot(""));
       switch (message.type) {
+        case "listFormalizationPreparationRecovery":
+        case "recoverFormalizationPreparation":
+        case "resolveFormalizationPreparation":
+          await this.recovery.handle(message);
+          return;
+        case "planFormalizationPreparation":
+        case "prepareFormalization":
+          await this.preparation.handle(message);
+          return;
+        case "listFormalizationConflicts":
+          this.post({ type: "formalizationConflicts", snapshot: await service.conflicts(), error: "" });
+          return;
+        case "openFormalizationConflictVersion": {
+          const artifact = await service.conflictArtifact(message.transactionId, message.observationId, message.versionId);
+          const bytes = await readFormalizationArtifact(artifact);
+          if (artifact.kind === "pdf" || artifact.path.toLowerCase().endsWith(".pdf")) {
+            this.post({ type: "formalizationConflictPdf", transactionId: message.transactionId, observationId: message.observationId, versionId: message.versionId,
+              pdf: { documentId: message.transactionId, revisionId: message.observationId, artifactId: message.versionId, pageIndex: 0, base64: bytes.toString("base64") } });
+            return;
+          }
+          if (bytes.includes(0)) throw new Error("This preserved version requires local binary inspection on the owning host.");
+          const document = await vscode.workspace.openTextDocument({ content: bytes.toString("utf8"), language: artifact.kind === "lean" || artifact.path.endsWith(".lean") ? "lean4" : "plaintext" });
+          await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+          return;
+        }
+        case "resolveFormalizationConflict":
+          await service.resolveConflict(message.transactionId, message.observationId, message.reason);
+          this.post({ type: "formalizationConflicts", snapshot: await service.conflicts(), error: "", resolvedTransactionId: message.transactionId });
+          this.post({ type: "notify", level: "info", message: "Current workspace files retained. Available versions and any unavailable publication history were recorded with the resolution. Revalidate the mathematical translation before proving." });
+          return;
         case "listFormalizations":
           this.post({ type: "formalizationList", documents: await service.list(), error: "" });
           return;
@@ -54,8 +97,7 @@ export class FormalizationHost {
           return;
         }
         case "inspectFormalization": {
-          const root = this.services.project.root;
-          if (!root) throw new Error("Open or set up a LeanFlow project before choosing source material.");
+          const root = this.services.project.root || service.workspaceRoot();
           const picked = await vscode.window.showOpenDialog({
             canSelectMany: message.sourceKind === "file", canSelectFolders: message.sourceKind === "folder", canSelectFiles: message.sourceKind === "file",
             filters: message.sourceKind === "file" ? { "Source documents": ["tex", "pdf"] } : undefined,
@@ -139,6 +181,12 @@ export class FormalizationHost {
         this.post({ type: "formalizationList", documents: [], error: reason });
       } else if (message.type === "showFormalization" || message.type === "formalizationAction") {
         this.post({ type: "formalizationState", documentId: message.documentId, snapshot: null, error: reason });
+      } else if (message.type === "listFormalizationConflicts" || message.type === "openFormalizationConflictVersion" || message.type === "resolveFormalizationConflict") {
+        this.post({ type: "formalizationConflicts", snapshot: null, error: reason });
+      } else if (message.type === "planFormalizationPreparation" || message.type === "prepareFormalization") {
+        this.post({ type: "formalizationPreparation", documentId: message.documentId, revisionId: message.revisionId, status: "failed", message: reason, error: reason });
+      } else if (message.type === "listFormalizationPreparationRecovery" || message.type === "recoverFormalizationPreparation" || message.type === "resolveFormalizationPreparation") {
+        this.post({ type: "formalizationPreparationRecovery", snapshot: null, error: reason, busy: false });
       } else {
         this.post({ type: "notify", level: "error", message: reason });
       }

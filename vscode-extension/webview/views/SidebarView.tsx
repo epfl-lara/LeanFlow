@@ -26,6 +26,10 @@ export function SidebarView() {
     return (
       <div className="sidebar">
         <CliNotice cli={app.cli} compact />
+        <button className="btn" onClick={() => post({ type: "openDashboard" })}>
+          Dashboard
+        </button>
+        <p className="muted">Open Formalization in the Dashboard to inspect TeX or PDF sources before preparing a Lean project.</p>
         {app.cli.ok && <ProjectSetupCard sidebar />}
       </div>
     );

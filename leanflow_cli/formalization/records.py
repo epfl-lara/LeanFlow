@@ -197,6 +197,10 @@ def create_document(
     root: Path, source: Path, *, companion_pdf: Path | None = None
 ) -> dict[str, Any]:
     """Freeze a complete source inventory without modifying any project source."""
+    from leanflow_cli.formalization.extraction_actions import (
+        has_user_extraction_work,
+        should_refresh_raw_extraction,
+    )
     from leanflow_cli.formalization.source_inventory import inventory_source
 
     root = root.resolve()
@@ -222,9 +226,14 @@ def create_document(
             files[relative] = put_blob(directory / "blobs", data)
         bundle = identity(files)
         if previous:
-            if previous["source_bundle"] == bundle and previous["inventory"].get(
-                "extraction_version"
-            ) == inventory.get("extraction_version"):
+            if previous["source_bundle"] == bundle and (
+                has_user_extraction_work(previous)
+                or (
+                    previous["inventory"].get("extraction_version")
+                    == inventory.get("extraction_version")
+                    and not should_refresh_raw_extraction(previous, inventory)
+                )
+            ):
                 rehydrate_document(previous, directory)
                 return {**previous, "_directory": str(directory)}
         return save_revision(

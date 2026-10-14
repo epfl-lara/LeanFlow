@@ -7,12 +7,13 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any
+from urllib.request import Request, urlopen
 
 import pytest
 
 from agent.runtime.harness import HarnessResult
 from core.campaign_limits import CampaignLimits
-from leanflow_cli.formalization import environment, handoff, proposal, publish, review
+from leanflow_cli.formalization import environment, freshness, handoff, proposal, publish, review
 from leanflow_cli.formalization.evidence import digest, identity
 from leanflow_cli.formalization.lean_layout import resolve_layout
 from leanflow_cli.formalization.records import (
@@ -28,6 +29,61 @@ from leanflow_cli.workflows.prover.native_snapshot import create_snapshot
 from leanflow_cli.workflows.prover.source import SourceDocument
 
 AXIOMS = ("propext", "Classical.choice", "Quot.sound")
+
+
+def _review_dossier(request: Any, assignment: dict[str, Any]) -> dict[str, Any]:
+    """Read a complete large dossier through the live authenticated bounded review transport."""
+    if "dossier" in assignment:
+        return dict(assignment["dossier"])
+    config = json.loads(Path(request.mcp_config).read_text())
+    server = next(iter(config["mcpServers"].values()))["env"]
+    assert server["LEANFLOW_BRIDGE_URL"].startswith("http://127.0.0.1:")
+    offset, chunks = 0, []
+    while True:
+        request_id = "fixture-dossier-page-" + str(offset)
+        query = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "tools/call",
+            "params": {
+                "name": "read_evidence",
+                "arguments": {"id": assignment["dossier_ref"], "offset": offset},
+            },
+        }
+        with urlopen(
+            Request(
+                server["LEANFLOW_BRIDGE_URL"],
+                data=json.dumps(query).encode("utf-8"),
+                headers={
+                    "Authorization": "Bearer " + server["LEANFLOW_BRIDGE_TOKEN"],
+                    "Content-Type": "application/json",
+                },
+            ),
+            timeout=5,
+        ) as response:
+            wire = response.read(16001)
+        assert len(wire) <= 16000
+        envelope = json.loads(wire)
+        assert envelope["jsonrpc"] == "2.0" and envelope["id"] == request_id
+        assert not envelope["result"]["isError"]
+        page = json.loads(envelope["result"]["content"][0]["text"])
+        assert page["id"] == assignment["dossier_ref"]
+        assert page["sha256"] == assignment["sha256"]
+        assert page["offset"] == offset
+        assert page["complete_length"] == assignment["characters"]
+        chunks.append(page["text"])
+        offset += len(page["text"])
+        if page["next_offset"] is None:
+            assert offset == assignment["characters"]
+            break
+        assert page["text"] and page["next_offset"] == offset
+    content = "".join(chunks)
+    assert len(content.encode("utf-8")) == assignment["utf8_bytes"]
+    dossier = json.loads(content)
+    assert identity(dossier) == assignment["sha256"]
+    assert len(dossier["units"]) == assignment["unit_count"]
+    assert len(dossier["regions"]) == assignment["region_count"]
+    return dict(dossier)
 
 
 @pytest.fixture
@@ -69,7 +125,7 @@ def cheap_persistent_identity(monkeypatch: pytest.MonkeyPatch) -> None:
             }
         )
 
-    for module in (proposal, publish, handoff):
+    for module in (proposal, publish, handoff, freshness):
         monkeypatch.setattr(module, "environment_identity", configuration_identity)
 
 
@@ -83,7 +139,7 @@ def fresh_review_transport(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
         assert request.session_id == "" and request.restricted_tools and not request.tools
         request.on_started()
         assignment = json.loads(request.prompt[len(review._CONTRACT) + 1 :])
-        dossier = assignment["dossier"]
+        dossier = _review_dossier(request, assignment)
         return HarnessResult(
             status="completed",
             session_id=f"independent-{len(calls)}",
@@ -118,7 +174,7 @@ def fresh_review_transport(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
                         for source_id in sorted(
                             {
                                 key
-                                for unit in assignment["dossier"]["units"]
+                                for unit in dossier["units"]
                                 for key in unit["required_source_ids"]
                             }
                         )
@@ -134,8 +190,21 @@ def fresh_review_transport(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     return calls
 
 
-def _write_proposal(snapshot: Path, record: dict[str, Any], units: list[dict[str, Any]]) -> None:
+def _write_proposal(
+    snapshot: Path,
+    record: dict[str, Any],
+    units: list[dict[str, Any]],
+    *,
+    phase: str = "complete",
+) -> None:
     """Save exact source-unit mappings and the complete region denominator."""
+    from leanflow_cli.formalization.slice_gate import slice_regions
+
+    selected_regions = (
+        slice_regions(record)
+        if phase == "representative_slice"
+        else {row["id"] for row in record["inventory"]["regions"]}
+    )
     target = snapshot / ".leanflow-job/formalization-proposal.json"
     target.parent.mkdir(exist_ok=True)
     target.write_text(
@@ -143,6 +212,7 @@ def _write_proposal(snapshot: Path, record: dict[str, Any], units: list[dict[str
             {
                 "schema_version": 1,
                 "base_revision_id": record["revision_id"],
+                "phase": phase,
                 "setup_notes": "Use natural numbers, addition, and a named existence obligation for choice.",
                 "units": units,
                 "coverage": [
@@ -153,6 +223,7 @@ def _write_proposal(snapshot: Path, record: dict[str, Any], units: list[dict[str
                         "reason": region["reason"] or "Exact fixture region inspected.",
                     }
                     for region in record["inventory"]["regions"]
+                    if region["id"] in selected_regions
                 ],
             }
         )
@@ -411,12 +482,213 @@ def test_direct_library_reuse_publishes_without_new_modules_or_obligations(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("file_reference", [False, True])
+def test_direct_existing_project_reuse_with_custom_root_is_readonly_and_navigable(
+    formalization_project: Path,
+    cheap_persistent_identity: None,
+    fresh_review_transport: list[Any],
+    file_reference: bool,
+) -> None:
+    """Reuse both meanings from a built local module without wrapper declarations."""
+    root = formalization_project
+    relative = "src/Main/Existing.lean"
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "namespace Existing\n"
+        "def double (n : Nat) : Nat := n + n\n"
+        "theorem identity_nat (n : Nat) : n = n := rfl\n"
+        "theorem unrelated_pending : True := by sorry\n"
+        "end Existing\n"
+    )
+    (root / "paper.tex").write_text(
+        "\\begin{definition}For a natural number $n$, define $d(n)=n+n$.\\end{definition}\n"
+        "\\begin{theorem}Every natural number $n$ equals itself.\\end{theorem}\n"
+    )
+    baseline = source_files(root)
+    record = create_document(root, root / "paper.tex")
+    snapshot = create_snapshot(root, root / ".leanflow/author")
+    units = []
+    for item, name in zip(
+        record["inventory"]["items"], ["Existing.double", "Existing.identity_nat"], strict=True
+    ):
+        unit = _unit(item["id"], [name], relative if file_reference else "")
+        unit["declarations"][0].update(
+            declaration_origin="existing_project", imports=["Main.Existing"]
+        )
+        units.append(unit)
+    _write_proposal(snapshot, record, units)
+    checked, receipt = _check_and_publish(root, record, snapshot)
+    after = source_files(root)
+    assert checked["files"] == {} and all(after[name] == data for name, data in baseline.items())
+    assert {name for name in after if name.endswith(".lean")} == {
+        name for name in baseline if name.endswith(".lean")
+    }
+    assert receipt["handoff"]["modules"] == {} and receipt["handoff"]["obligations"] == []
+    profiles = checked["record"]["checks"]["profiles"]
+    assert set(profiles) == {"Existing.double", "Existing.identity_nat"}
+    for row in profiles.values():
+        assert row["declaration_origin"] == "existing_project"
+        assert row["file"] == relative and row["module"] == "Main.Existing"
+        assert row["source_sha256"] == digest(baseline[relative])
+        assert row["line_start"] in {2, 3}
+        assert not row["pending"] and not row["conditional"]
+    for unit in checked["record"]["units"]:
+        ref = unit["declarations"][0]
+        assert ref["file"] == relative and ref["declaration_origin"] == "existing_project"
+    assert handoff.authorized_holes(receipt["handoff"]) == {}
+    view = show_document(root, record["document_id"])
+    artifact = next(row for row in view["artifacts"] if row["path"] == relative)
+    resolved = resolve_artifact(root, record["document_id"], checked["revision_id"], artifact["id"])
+    assert Path(resolved["path"]).read_bytes() == baseline[relative]
+    assert view["handoff"]["obligations"] == [] and not view["can_prove"]
+
+
+@pytest.mark.integration
 def test_real_persistent_compiler_identity(formalization_project: Path) -> None:
     root = formalization_project
     manifest = environment.environment_manifest(root)
     assert manifest["contents"] and "lean-toolchain" in manifest["configuration"]
     assert any("lib/lean" in key or key.endswith("/lean") for key in manifest["contents"])
     assert identity(manifest) == environment.environment_identity(root)
+
+
+@pytest.mark.integration
+def test_direct_existing_root_definition_reuse_preserves_original_bytes(
+    formalization_project: Path,
+    cheap_persistent_identity: None,
+    fresh_review_transport: list[Any],
+) -> None:
+    """Accept root declaration reuse when no generated-module registration modifies that root."""
+    root = formalization_project
+    main = root / "src/Main.lean"
+    main.write_text(
+        "def root_double (n : Nat) : Nat := n + n\n"
+        "theorem unrelated_in_root : True := by sorry\n"
+    )
+    before = main.read_bytes()
+    (root / "paper.tex").write_text(
+        "\\begin{definition}For a natural number $n$, define $d(n)=n+n$.\\end{definition}\n"
+    )
+    record = create_document(root, root / "paper.tex")
+    snapshot = create_snapshot(root, root / ".leanflow/root-reuse")
+    unit = _unit(record["inventory"]["items"][0]["id"], ["root_double"])
+    unit["declarations"][0].update(declaration_origin="existing_project", imports=["Main"])
+    _write_proposal(snapshot, record, [unit])
+    checked, receipt = _check_and_publish(root, record, snapshot)
+    assert checked["files"] == {} and receipt["handoff"]["obligations"] == []
+    assert main.read_bytes() == before
+    row = checked["record"]["checks"]["profiles"]["root_double"]
+    assert row["file"] == "src/Main.lean" and row["source_sha256"] == digest(before)
+
+
+@pytest.mark.integration
+def test_new_protocol_generation_after_publication_reviews_slice_before_full(
+    formalization_project: Path,
+    cheap_persistent_identity: None,
+    fresh_review_transport: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compile a fresh generation while retaining older published files and exact proof scope."""
+    from leanflow_cli.formalization import preparation, slice_gate
+    from leanflow_cli.formalization.lean_layout import generation_layout
+    from leanflow_cli.formalization.records import document_directory, save_revision
+
+    root = formalization_project
+    source = root / "paper.tex"
+    source.write_text("\\begin{theorem}Every natural number $n$ equals itself.\\end{theorem}\n")
+    original_source = source.read_bytes()
+    old = create_document(root, source)
+    layout = resolve_layout(root, old["document_id"])
+    snapshot = create_snapshot(root, root / ".leanflow/old-author")
+    file = layout["owned_prefix"] + "/Statement.lean"
+    (snapshot / file).parent.mkdir(parents=True)
+    (snapshot / file).write_text("theorem previous_identity (n : Nat) : n = n := rfl\n")
+    (snapshot / layout["aggregator"]).write_text(f"import {layout['module_prefix']}.Statement\n")
+    _write_proposal(
+        snapshot,
+        old,
+        [_unit(old["inventory"]["items"][0]["id"], ["previous_identity"], file)],
+    )
+    _, old_receipt = _check_and_publish(root, old, snapshot)
+    assert old_receipt["status"] == "published"
+    previous_bytes = {
+        name: data for name, data in source_files(root).items() if name != "src/Main.lean"
+    }
+    record = create_document(root, source)
+    record.update(
+        workflow_protocol=2,
+        preparation_id="next-prepared-generation",
+        preparation_plan_id="new-plan",
+        slice_source_ids=[record["inventory"]["items"][0]["id"]],
+    )
+    record = save_revision(document_directory(root, record["document_id"]), record)
+    monkeypatch.setattr(
+        preparation,
+        "assert_preparation_current",
+        lambda *args, **kwargs: {"preparation_id": record["preparation_id"]},
+    )
+    fresh_layout = generation_layout(layout, record)
+    assert fresh_layout["owned_prefix"] != layout["owned_prefix"]
+    fresh_file = fresh_layout["owned_prefix"] + "/Statement.lean"
+    name = fresh_layout["module_prefix"] + ".identity_nat"
+    snapshot = create_snapshot(root, root / ".leanflow/new-author")
+    (snapshot / fresh_file).parent.mkdir(parents=True)
+    (snapshot / fresh_file).write_text(
+        f"namespace {fresh_layout['module_prefix']}\n"
+        "theorem identity_nat (n : Nat) : n = n := by sorry\n"
+        f"end {fresh_layout['module_prefix']}\n"
+    )
+    (snapshot / fresh_layout["aggregator"]).write_text(
+        f"import {fresh_layout['module_prefix']}.Statement\n"
+    )
+    units = [_unit(record["slice_source_ids"][0], [name], fresh_file)]
+    baseline = source_files(root)
+    metadata = publish.portable_baseline(root, record["document_id"])
+    budget = CampaignLimits(root / ".leanflow/new-budget.json", {})
+
+    def checked_and_reviewed(phase: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        _write_proposal(snapshot, record, units, phase=phase)
+        checked = proposal.check_proposal(
+            root=root,
+            snapshot=snapshot,
+            baseline=baseline,
+            directory=root / ".leanflow/new-checks",
+            document_id=record["document_id"],
+            base_revision_id=record["revision_id"],
+            selection_token=current_selection_token(root, record["document_id"]),
+            allowed_axioms=AXIOMS,
+        )
+        assert checked["accepted"], checked
+        reviewed = review.review_revision(
+            checked["record"],
+            backend="claude",
+            model="fixture-reviewer",
+            effort="max",
+            environment={"LEANFLOW_PROJECT_ROOT": str(root)},
+            directory=root / ".leanflow/new-reviews",
+            budget=budget,
+        )
+        assert reviewed["accepted"], reviewed
+        return checked, reviewed
+
+    sliced, sliced_review = checked_and_reviewed("representative_slice")
+    with pytest.raises(ValueError, match="representative slice"):
+        publish.publish_checked(root, baseline, metadata, sliced, sliced_review, root / "slice-pub")
+    assert source_files(root) == baseline
+    slice_gate.save_reviewed_slice(root, sliced, sliced_review)
+    complete, complete_review = checked_and_reviewed("complete")
+    receipt = publish.publish_checked(
+        root, baseline, metadata, complete, complete_review, root / ".leanflow/new-publish"
+    )
+    assert receipt["status"] == "published"
+    assert [row["declaration"] for row in receipt["handoff"]["obligations"]] == [name]
+    assert "previous_identity" not in complete["record"]["checks"]["profiles"]
+    assert source.read_bytes() == original_source
+    for relative, data in previous_bytes.items():
+        if not relative.endswith("Blueprint.md"):
+            assert (root / relative).read_bytes() == data
+    assert (root / fresh_file).is_file()
 
 
 @pytest.mark.integration

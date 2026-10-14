@@ -1,11 +1,13 @@
 /** Inspect source coverage, independent review evidence and exact accepted prover scope. */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formalizationCoverage, proofAuthorizationLabel, type FormalizationAction, type FormalizationPdf, type FormalizationSnapshot, type FormalizationSourceRef } from "../../src/core/formalization";
 import type { HostMessage } from "../../src/core/types";
 import { useStore } from "../store";
 import { post } from "../vscodeApi";
 import { FormalizationDiagnostics } from "./FormalizationDiagnostics";
+import { FormalizationConflicts } from "./FormalizationConflicts";
 import { FormalizationPdfView } from "./FormalizationPdf";
+import { FormalizationPreparation } from "./FormalizationPreparation";
 import { FormalizationProofAuthorization } from "./FormalizationProofAuthorization";
 import { FormalizationRegionRepair, FormalizationRepair } from "./FormalizationRepair";
 
@@ -18,11 +20,17 @@ export function FormalizationView() {
   const [pdf, setPdf] = useState<FormalizationPdf | null>(null);
   const [pdfSelection, setPdfSelection] = useState<FormalizationSourceRef | null>(null);
   const [filter, setFilter] = useState("");
+  const [preparationBusy, setPreparationBusy] = useState(false);
   const [sourceSelection, setSourceSelection] = useState<Extract<HostMessage, { type: "formalizationSourceSelection" }> | null>(null);
-  const ready = Boolean(app?.cli.ok && app.project.found);
+  const ready = Boolean(app?.cli.ok);
+  const previousProjectRoot = useRef(app?.project.root ?? "");
 
   useEffect(() => {
-    setSnapshot(null); setDocuments([]); setPdf(null); setSourceSelection(null); setPdfSelection(null); setError("");
+    const nextRoot = app?.project.root ?? "";
+    if (!ready || (previousProjectRoot.current && previousProjectRoot.current !== nextRoot)) {
+      setSnapshot(null); setDocuments([]); setPdf(null); setSourceSelection(null); setPdfSelection(null); setError("");
+    }
+    previousProjectRoot.current = nextRoot;
     const receive = (event: MessageEvent<HostMessage>) => {
       const message = event.data;
       if (message.type === "formalizationList") {
@@ -51,7 +59,7 @@ export function FormalizationView() {
   useEffect(() => { setPdfSelection(null); setSourceSelection(null); }, [snapshot?.document_id, snapshot?.revision_id]);
 
   const selected = snapshot?.items.find(item => item.id === selectedId);
-  const repairBlocked = !!error || !!snapshot?.selection_conflict;
+  const repairBlocked = !!error || preparationBusy || !!snapshot?.selection_conflict;
   const counts = snapshot ? formalizationCoverage(snapshot) : null;
   const sourceCandidates = snapshot && sourceSelection?.documentId === snapshot.document_id && sourceSelection.revisionId === snapshot.revision_id
     ? snapshot.items.filter(item => [...item.source_refs, ...item.lean_refs].some(ref => ref.artifact_id === sourceSelection.artifactId &&
@@ -75,7 +83,8 @@ export function FormalizationView() {
       <button className="btn" disabled={!ready} onClick={refresh}>Refresh inventory</button>
     </div>
     <p className="muted">In the file picker, select a TeX file together with its PDF to inspect the pair. Companion page links remain approximate or unavailable until checked against the page.</p>
-    {!ready && <p className="notice warn">Set up a LeanFlow project and CLI in the Launch view first.</p>}
+    {!ready && <p className="notice warn">Set up the LeanFlow CLI in the Launch view first.</p>}
+    <FormalizationConflicts ready={ready} onResolved={refresh} />
     {error && <p className="notice error" role="alert">{error} Any previous snapshot below is stale; repair and prove actions are disabled until refreshed.</p>}
     <label>Source document<select aria-label="Formalization document" value={snapshot?.document_id ?? ""} onChange={event => {
       setSnapshot(null); setPdf(null); setError("");
@@ -83,6 +92,7 @@ export function FormalizationView() {
     }}><option value="">Choose an inspected source…</option>{documents.map(document => <option key={document.document_id} value={document.document_id}>{document.source.path} · {document.status}</option>)}</select></label>
     {!snapshot && <p>Source inspection freezes an inventory without launching a model. Included and excluded material stay visible throughout review.</p>}
     {snapshot && counts && <>
+      <FormalizationPreparation key={`preparation:${snapshot.document_id}:${snapshot.revision_id}`} snapshot={snapshot} ready={ready} onActiveChange={setPreparationBusy} />
       <section className="card">
         <h3>{snapshot.source.path}</h3>
         <p><strong>{counts.reviewed}/{counts.included} included items reviewed</strong> · {counts.excluded} excluded · {counts.unresolved} unresolved regions</p>
@@ -101,7 +111,7 @@ export function FormalizationView() {
         </div>}
         <p>Reviewer: {snapshot.reviewer ? [snapshot.reviewer.provider, snapshot.reviewer.model, snapshot.reviewer.effort].filter(Boolean).join(" · ") || "not recorded" : "not recorded"} · Cost: {snapshot.costs?.known_usd !== undefined ? `$${snapshot.costs.known_usd.toFixed(2)}` : "unknown"}{snapshot.costs?.unknown_calls ? ` + ${snapshot.costs.unknown_calls} unpriced calls` : ""}{snapshot.costs?.budget_usd !== undefined ? ` · budget $${snapshot.costs.budget_usd}` : ""}</p>
         {snapshot.layout && <details><summary>Project layout</summary><p>{snapshot.layout.summary}</p><ul>{[...snapshot.layout.modules ?? [], ...snapshot.layout.changes ?? []].map((entry, index) => <li key={index}>{entry}</li>)}</ul></details>}
-        <button className="btn" disabled={!ready || repairBlocked} onClick={() => {
+        <button className="btn" disabled={!ready || repairBlocked || !snapshot.preparation?.current} onClick={() => {
           setForm({ kind: "formalize", target: snapshot.source.path, formalization: undefined }); setView({ tab: "launch" });
         }}>Configure or resume formalization</button>
         {snapshot.revisions && snapshot.revisions.length > 1 && <label>Explicit revision selection<select aria-label="Select formalization revision" value={snapshot.revision_id} disabled={!!error} onChange={event => repair({ type: "select_revision", revision_id: event.target.value })}>

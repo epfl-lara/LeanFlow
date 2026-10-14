@@ -162,6 +162,7 @@ def test_cli_pair_option_and_launch_intake_preserve_association(
             "accepted": True,
             "library": "Main",
             "owned_prefix": "Main/Doc",
+            "module_prefix": "Main.Doc",
             "aggregator": "Main/Doc.lean",
         },
     )
@@ -195,19 +196,24 @@ def test_bbox_failure_falls_back_to_all_physical_pages_without_invented_boxes(
 
     monkeypatch.setattr(source_pdf, "_run", run)
     inventory = inventory_source(tmp_path, pdf)
-    assert len(inventory["pages"]) == 3
+    assert len(inventory["pages"]) == page_count
     assert [p["text"] for p in inventory["pages"]] == [
         "Theorem 1. Every result holds.",
         "",
         "Last page.",
-    ]
+    ] + ([""] if page_count == 4 else [])
     assert all(
-        p["boxes"] == [] and p["mapping_method"] == "poppler_layout" for p in inventory["pages"]
+        p["boxes"] == [] and p["mapping_method"] == "poppler_layout" for p in inventory["pages"][:3]
     )
+    if page_count == 4:
+        assert inventory["pages"][3]["mapping_method"] == "unavailable"
+        assert inventory["regions"][3]["repair_required"]
     assert inventory["items"][0]["statement_spans"][0]["mapping_method"] == "poppler_layout"
     warnings = {d["code"]: d for d in inventory["diagnostics"]}
     assert warnings["pdf_layout_fallback"]["blocking"] is False
-    assert warnings["pdf_text_missing"]["page_index"] == 1
+    assert {
+        d["page_index"] for d in inventory["diagnostics"] if d["code"] == "pdf_text_missing"
+    } == ({1, 3} if page_count == 4 else {1})
     assert ("pdf_page_count_mismatch" in warnings) == (page_count == 4)
 
 

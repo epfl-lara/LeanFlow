@@ -7,10 +7,32 @@ import pytest
 
 from leanflow_cli.formalization.compiled_evidence import (
     assert_rebuild_artifacts,
+    assert_reuse_sources_unchanged,
     merge_library_evidence,
     merge_reused_declarations,
 )
+from leanflow_cli.formalization.evidence import digest
 from leanflow_cli.formalization.proposal_schema import bind_declarations
+
+
+@pytest.mark.parametrize("reference", ["file", "fileless"])
+def test_existing_root_reuse_cannot_bind_controller_rewritten_source(reference):
+    baseline = {"src/Main.lean": b"def existing : Nat := 42\n"}
+    changed = {"src/Main.lean": b"import Main.Paper\n" + baseline["src/Main.lean"]}
+    row = {
+        "name": "existing",
+        "file": "src/Main.lean",
+        "declaration_origin": "existing_project",
+        "source_sha256": digest(changed["src/Main.lean"]),
+    }
+    if reference == "fileless":
+        # The controller restores this file from the compiled local artifact,
+        # so file-less author refs must receive the same immutable-source guard.
+        row["source_sha256"] = digest(baseline["src/Main.lean"])
+    with pytest.raises(ValueError, match="unchanged original source bytes"):
+        assert_reuse_sources_unchanged([row], baseline, changed)
+    row["source_sha256"] = digest(baseline["src/Main.lean"])
+    assert_reuse_sources_unchanged([row], baseline, {})
 
 
 def library_row(*, root: bool) -> dict[str, Any]:
@@ -89,6 +111,38 @@ def test_repeated_reuse_with_different_import_groups_has_one_registry_entry():
     merge_reused_declarations(checks, copy.deepcopy(result))
     assert checks["declarations"] == [row]
     assert checks["library_declarations"] == [row]
+
+
+def test_existing_project_reuse_retains_readonly_source_and_no_proof_ownership():
+    row = {
+        **library_row(root=True),
+        "declaration_origin": "existing_project",
+        "file": "src/Main/Existing.lean",
+        "source_sha256": "source-bytes",
+        "line_start": 4,
+        "pending": False,
+    }
+    checks: dict[str, Any] = {"declarations": [], "profiles": {}, "obligations": []}
+    result = {"declarations": [row], "profiles": {row["name"]: row}}
+    merge_reused_declarations(checks, result)
+    merge_reused_declarations(checks, copy.deepcopy(result))
+    assert checks["declarations"] == [row]
+    assert checks["profiles"][row["name"]]["file"] == "src/Main/Existing.lean"
+    assert checks["obligations"] == []
+
+
+@pytest.mark.parametrize("changes", [{"source_sha256": ""}, {"file": ""}, {"pending": True}])
+def test_existing_project_reuse_requires_verified_frozen_source(changes):
+    row = {
+        **library_row(root=True),
+        "declaration_origin": "existing_project",
+        "file": "src/Main/Existing.lean",
+        "source_sha256": "source-bytes",
+        "pending": False,
+        **changes,
+    }
+    with pytest.raises(ValueError, match="immutable verified source evidence"):
+        merge_reused_declarations({"declarations": [], "profiles": {}}, {"declarations": [row]})
 
 
 def test_binding_rejects_duplicate_registry_instead_of_last_row_winning():

@@ -7,12 +7,14 @@ from pathlib import Path
 
 import pytest
 
+from core.campaign_limits import CampaignLimits
 from leanflow_cli.formalization import environment, intake, lean_build
 from leanflow_cli.formalization.formalization_documents import (
     FormalizationDocumentError,
     prepare_formalization_document_context,
 )
-from leanflow_cli.formalization.service import inspect_document, show_document
+from leanflow_cli.formalization.records import load_document, source_artifact_id
+from leanflow_cli.formalization.service import act_document, inspect_document, show_document
 from leanflow_cli.native import harness_workflow
 from tests.leanflow.test_source_inventory import _pdf
 
@@ -40,6 +42,7 @@ def build_admission_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         "library": "Main",
         "libraries": [{"src_dir": ".", "roots": ["Main"]}],
         "owned_prefix": "Main/Document",
+        "module_prefix": "Main.Document",
         "aggregator": "Main/Document.lean",
         "build_dir": ".lake/build",
         "lean_lib_dir": ".lake/build/lib/lean",
@@ -68,6 +71,58 @@ def _dependency(root: Path, name: str, *, kind: str = "pinned", module: str = "L
     value = json.loads(manifest.read_text()) if manifest.exists() else {"packages": []}
     value["packages"].append(entry)
     manifest.write_text(json.dumps(value))
+
+
+def _native_preflight(
+    root: Path, record: dict, monkeypatch: pytest.MonkeyPatch, *, resume: bool
+) -> tuple[dict, dict, dict]:
+    """Exercise monitored dependency admission with genuine resumable authority and accounting."""
+    run_id = "saved-preflight" if resume else "fresh-preflight"
+    directory = root / ".leanflow/native-workflows" / run_id
+    before = {}
+    if resume:
+        directory.mkdir(parents=True)
+        state = {
+            "version": 2,
+            "run_id": run_id,
+            "backend": "codex",
+            "workflow": "formalize",
+            "status": "blocked",
+            "baseline": {
+                path: data.hex() for path, data in harness_workflow.source_files(root).items()
+            },
+            "formalization_selection_token": harness_workflow.current_selection_token(
+                root, record["document_id"], initialize=True
+            ),
+        }
+        (directory / "state.json").write_text(json.dumps(state))
+        limits = CampaignLimits(directory / "limits.json", {})
+        invocation = limits.reserve()
+        limits.finish(invocation, {"input_tokens": 12, "output_tokens": 7}, started=True)
+        before = json.loads((directory / "limits.json").read_text())["invocations"]
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Known dependency blockers must stop before dispatch or call reservation")
+
+    monkeypatch.setattr(CampaignLimits, "reserve", forbidden)
+    result = harness_workflow.run_workflow(
+        {
+            "LEANFLOW_PROJECT_ROOT": str(root),
+            "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
+            "LEANFLOW_WORKFLOW_RUN_ID": run_id,
+            "LEANFLOW_FORMALIZATION_DOCUMENT_ID": record["document_id"],
+            "LEANFLOW_FORMALIZATION_REVISION": record["revision_id"],
+            **({"LEANFLOW_NATIVE_RESUME_RUN_ID": run_id} if resume else {}),
+        }
+    )
+    ledger = json.loads((directory / "limits.json").read_text())
+    persisted = json.loads((directory / "state.json").read_text())
+    assert result == persisted and result["terminal"]
+    assert ledger["invocations"] == before
+    assert not (directory / "project").exists()
+    assert not (directory / "accepted.json").exists()
+    assert not (root / ".leanflow/formalization-publications.json").exists()
+    return result, ledger, before
 
 
 @pytest.mark.parametrize("entrypoint", ["intake", "native", "resume"])
@@ -109,26 +164,20 @@ def test_all_launch_paths_apply_builder_admission_before_paid_work(
     monkeypatch.setattr(harness_workflow, "run_harness", forbidden)
     monkeypatch.setattr(harness_workflow, "prepare_snapshot", forbidden)
     monkeypatch.setattr("leanflow_cli.formalization.publish.publish_checked", forbidden)
-    with pytest.raises(FormalizationDocumentError, match=message):
-        if entrypoint == "intake":
+    if entrypoint == "intake":
+        with pytest.raises(FormalizationDocumentError, match=message):
             prepare_formalization_document_context(
                 project_root=root, cwd=root, workflow_args="paper.tex"
             )
-        else:
-            harness_workflow.run_workflow(
-                {
-                    "LEANFLOW_PROJECT_ROOT": str(root),
-                    "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
-                    "LEANFLOW_FORMALIZATION_DOCUMENT_ID": record["document_id"],
-                    "LEANFLOW_FORMALIZATION_REVISION": record["revision_id"],
-                    **(
-                        {"LEANFLOW_NATIVE_RESUME_RUN_ID": "saved"} if entrypoint == "resume" else {}
-                    ),
-                }
-            )
+        assert not list((root / ".leanflow/native-workflows").glob("*/limits.json"))
+    else:
+        state, ledger, charged = _native_preflight(
+            root, record, monkeypatch, resume=entrypoint == "resume"
+        )
+        assert state["status"] == "error" and message in state["error"]
+        assert len(ledger["invocations"]) == len(charged) == (entrypoint == "resume")
     assert (root / "Main.lean").read_bytes() == original
     assert not (root / "formalization").exists()
-    assert not list((root / ".leanflow/native-workflows").glob("*/limits.json"))
 
 
 def test_admitted_dependencies_allow_companion_backed_draft_without_acceptance(
@@ -179,6 +228,44 @@ def test_intake_blocks_unsupported_dependencies_without_blocking_inspection(
     monkeypatch.setattr(
         intake, "resolve_layout", lambda *args: pytest.fail("Must stop before compiler setup")
     )
+    if extension == "pdf":
+        with pytest.raises(FormalizationDocumentError, match="Source extraction needs repair"):
+            prepare_formalization_document_context(
+                project_root=root, cwd=root, workflow_args=source.name
+            )
+        selected = load_document(root, inspected["document_id"])
+        text = selected["inventory"]["pages"][0]["text"]
+        act_document(
+            root,
+            selected["document_id"],
+            selected["revision_id"],
+            {
+                "type": "replace_page_transcription",
+                "page_index": 0,
+                "text": text,
+                "verified": True,
+                "reason": "Verified every clause on this fixture's physical page",
+            },
+        )
+        selected = load_document(root, inspected["document_id"])
+        for item in selected["inventory"]["items"]:
+            act_document(
+                root,
+                selected["document_id"],
+                selected["revision_id"],
+                {
+                    "type": "update_boundary",
+                    "item_id": item["id"],
+                    "source_refs": [
+                        {
+                            "artifact_id": source_artifact_id(selected, source.name),
+                            "page_index": 0,
+                            "text": text.strip(),
+                        }
+                    ],
+                },
+            )
+            selected = load_document(root, inspected["document_id"])
     with pytest.raises(FormalizationDocumentError, match="unsupported_dependency_inputs: repl"):
         prepare_formalization_document_context(
             project_root=root, cwd=root, workflow_args=source.name
@@ -204,17 +291,9 @@ def test_direct_native_launch_blocks_before_paid_author_or_publication(
     monkeypatch.setattr(harness_workflow, "run_harness", forbidden)
     monkeypatch.setattr(harness_workflow, "prepare_snapshot", forbidden)
     monkeypatch.setattr("leanflow_cli.formalization.publish.publish_checked", forbidden)
-    with pytest.raises(FormalizationDocumentError, match="unsupported_dependency_inputs: repl"):
-        harness_workflow.run_workflow(
-            {
-                "LEANFLOW_PROJECT_ROOT": str(root),
-                "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
-                "LEANFLOW_FORMALIZATION_DOCUMENT_ID": record["document_id"],
-                "LEANFLOW_FORMALIZATION_REVISION": record["revision_id"],
-                **({"LEANFLOW_NATIVE_RESUME_RUN_ID": "saved-run"} if resume else {}),
-            }
-        )
-    assert not list((root / ".leanflow/native-workflows").glob("*/limits.json"))
+    state, ledger, charged = _native_preflight(root, record, monkeypatch, resume=resume)
+    assert state["status"] == "error" and "unsupported_dependency_inputs: repl" in state["error"]
+    assert len(ledger["invocations"]) == len(charged) == resume
     assert not (root / "formalization").exists()
     assert (root / "Main.lean").read_text() == "theorem existing : True := by trivial\n"
 

@@ -8,6 +8,9 @@
 // ---------------------------------------------------------------- CLI shapes
 import type { ProverSnapshot } from "./prover";
 import type { FormalizationAction, FormalizationPdf, FormalizationSnapshot } from "./formalization";
+import type { FormalizationConflictsSnapshot } from "./formalizationConflicts";
+import type { FormalizationPreparationPreset, FormalizationPreparationState } from "./formalizationPreparation";
+import type { FormalizationPreparationRecoverySnapshot } from "./formalizationPreparationRecovery";
 // These mirror the JSON emitted by `leanflow flags`, `leanflow runs`, and
 // `leanflow workflow --dry-run --json`. Keep them in step with
 // leanflow_cli/flags/spec.py and leanflow_cli/cli/runs_command.py.
@@ -786,9 +789,13 @@ export interface AppState {
 // ---------------------------------------------------------- message protocol
 
 export type HostMessage =
+  | { type: "formalizationPreparationRecovery"; snapshot: FormalizationPreparationRecoverySnapshot | null; error: string; message?: string; busy?: boolean; cancellable?: boolean; cancelling?: boolean; refreshed?: boolean }
+  | FormalizationPreparationState
+  | { type: "formalizationConflicts"; snapshot: FormalizationConflictsSnapshot | null; error: string; resolvedTransactionId?: string }
   | { type: "formalizationList"; documents: FormalizationSnapshot[]; error: string }
   | { type: "formalizationState"; documentId: string; snapshot: FormalizationSnapshot | null; error: string }
   | { type: "formalizationPdf"; pdf: FormalizationPdf }
+  | { type: "formalizationConflictPdf"; transactionId: string; observationId: string; versionId: string; pdf: FormalizationPdf }
   | { type: "formalizationSourceSelection"; documentId: string; revisionId: string; artifactId: string; lineStart: number; lineEnd: number }
   | { type: "state"; state: AppState }
   | { type: "events"; runId: string; events: ActivityEvent[]; reset: boolean }
@@ -808,6 +815,15 @@ export type HostMessage =
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
 export type WebviewMessage =
+  | { type: "listFormalizationPreparationRecovery" }
+  | { type: "recoverFormalizationPreparation" }
+  | { type: "cancelFormalizationRecovery" }
+  | { type: "resolveFormalizationPreparation"; transactionId: string; observationId: string; reason: string }
+  | { type: "planFormalizationPreparation" | "prepareFormalization"; documentId: string; revisionId: string; preset: FormalizationPreparationPreset; overrides?: Record<string, unknown> }
+  | { type: "cancelFormalizationPreparation"; documentId: string; revisionId: string }
+  | { type: "listFormalizationConflicts" }
+  | { type: "openFormalizationConflictVersion"; transactionId: string; observationId: string; versionId: string }
+  | { type: "resolveFormalizationConflict"; transactionId: string; observationId: string; reason: string }
   | { type: "listFormalizations" }
   | { type: "inspectFormalization"; sourceKind: "file" | "folder" }
   | { type: "showFormalization"; documentId: string }

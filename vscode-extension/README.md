@@ -6,8 +6,9 @@ settings, proof verification, and recorded run evidence.
 
 ## Inspect and formalize a paper
 
-Open **Formalization** in the dashboard and choose a TeX file, TeX project folder,
-or PDF inside the active project. Inspection freezes the source inventory without
+Open the source folder, choose **Dashboard** in the LeanFlow sidebar, then open
+**Formalization**. This is available before creating a Lean project. Choose a TeX
+file, TeX project folder, or PDF inside the active workspace. Inspection freezes the source inventory without
 launching a model. Review included items, explicit exclusions, and unresolved
 source regions before using **Configure or resume formalization** to select the
 native model and budget in Launch.
@@ -55,9 +56,9 @@ retry through workflow configuration; a rejected Lean draft instead needs correc
 If local work and a newer published revision disagree, choose the intended
 revision explicitly before repairing or launching another workflow.
 
-Formalization currently accepts the pinned compiler and standard library; Mathlib
-and external compiled elaborators await a [reviewed dependency adapter](../docs/formalization.md#supported-input-boundary).
-Ordinary proving is unchanged.
+Formalization supports the pinned compiler, standard library and fully pinned
+Mathlib dependencies through the [compiled-library adapter](../docs/formalization.md#supported-input-boundary).
+Source fidelity, dependency availability and checked proofs remain separate gates.
 
 ## Install and prepare a project
 
@@ -248,3 +249,17 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the repository quality gate.
 Keep `@types/vscode` aligned with the minimum version in `engines.vscode`.
 Major React and TypeScript upgrades require a separate migration and must pass
 the full button audit and extension packaging checks.
+
+Formalization can inspect a TeX/PDF source in an empty workspace. Use **Prepare
+project prerequisites** to check the planned imports, pinned dependencies and Lake
+layout with cancellable progress, then configure translation. The view shows
+representative-slice review separately from complete translation and proof status.
+Cancellation waits for the controller's safe stopping point and then refreshes
+actual readiness, including when the preparation committed before cancellation.
+Verified transcription replacement reopens affected PDF boundaries and mappings;
+**Retry extraction** preserves original source bytes and prior revisions. Recovery
+cards expose preserved publication and setup versions even when normal launches
+are blocked. Missing historical evidence can be acknowledged against the exact
+current observation; affected mathematical acceptance still needs a new review.
+A stale checker or dependency environment requires a new formalization
+review before proving.

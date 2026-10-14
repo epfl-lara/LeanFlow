@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
 import ts from "typescript";
-import { mount, textOf, act, SidebarView, clickedButtons, normalizeProverSnapshot } from "./helpers/webviewFixture.mjs";
+import { mount, textOf, act, SidebarView, FormalizationConflictsFixture, FormalizationPreparationFixture, clickedButtons, normalizeProverSnapshot } from "./helpers/webviewFixture.mjs";
 import { formalizationFixture } from "./helpers/formalizationFixture.mjs";
+import { formalizationConflictFixture } from "./helpers/formalizationConflictFixture.mjs";
 
 function message(ui, type) { return ui.messages.filter(row => row.type === type).at(-1); }
 
@@ -119,6 +120,192 @@ test("companion PDF links stay approximate and cannot replace canonical TeX boun
     assert.match(textOf(ui.root()), /No page match is available/);
     assert.match(textOf(ui.root()), /displayed page is not a claimed match/);
   } finally { ui.dispose(); globalThis.fetch = previousFetch; globalThis.Worker = previousWorker; }
+});
+
+test("PDF transcription replacement requires full-page verification and retains repairable detected claims", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = formalizationFixture();
+    snapshot.source.kind = "pdf";
+    snapshot.source.path = "paper.pdf";
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    ui.click("Doubling");
+    ui.change(ui.input("Repair kind"), "transcribe");
+    ui.change(ui.input("Complete page transcription"), "Theorem: every integer x <= 0 satisfies the bound. Includes all raster clauses.");
+    ui.change(ui.input("Repair reason"), "Checked the complete rendered frozen page");
+    assert.equal(ui.button("Submit repair for revision-1").props.disabled, true);
+    act(() => ui.input("Full transcription checked against frozen page").props.onChange({ target: { checked: true } }));
+    assert.equal(ui.button("Submit repair for revision-1").props.disabled, false);
+    ui.click("Submit repair for revision-1");
+    assert.deepEqual(message(ui, "formalizationAction").action, {
+      type: "replace_page_transcription", page_index: 0,
+      text: "Theorem: every integer x <= 0 satisfies the bound. Includes all raster clauses.",
+      reason: "Checked the complete rendered frozen page", verified: true,
+    });
+    assert.match(textOf(ui.root()), /affected statement boundaries, mappings and proof permission/);
+    ui.change(ui.input("Complete page transcription"), "A later correction");
+    assert.equal(ui.input("Full transcription checked against frozen page").props.checked, false);
+    assert.equal(ui.button("Submit repair for revision-1").props.disabled, true);
+  } finally { ui.dispose(); }
+});
+
+test("mapping repair exposes imported reuse and complete shared source groups", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = formalizationFixture();
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    ui.click("Doubling");
+    ui.change(ui.input("Repair kind"), "mapping");
+    ui.change(ui.input("Corrected Lean mappings"), "imports:Init | Nat.add_comm");
+    ui.change(ui.input("Repair reason"), "Reuse the existing library identity for both statements");
+    const other = snapshot.items.find(item => item.scope !== "excluded" && item.id !== "item-1");
+    act(() => ui.input(`Map source claim ${other.title}`).props.onChange({ target: { checked: true } }));
+    ui.change(ui.input("Mapping review unit ID"), "shared-unit");
+    ui.click("Submit repair for revision-1");
+    const action = message(ui, "formalizationAction").action;
+    assert.equal(action.type, "set_mapping");
+    assert.equal(action.unit_id, "shared-unit");
+    assert.deepEqual(action.source_ids, ["item-1", other.id]);
+    assert.deepEqual(action.lean_refs, [{ file: "", imports: ["Init"], name: "Nat.add_comm" }]);
+  } finally { ui.dispose(); }
+});
+
+test("frozen extraction retry explains reopened authority and requires a recorded reason", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = formalizationFixture();
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    ui.change(ui.input("Repair kind"), "retry");
+    assert.match(textOf(ui.root()), /rereads the unchanged frozen source/);
+    assert.match(textOf(ui.root()), /removes current mappings, reviews and proof permissions/);
+    assert.equal(ui.button("Submit repair for revision-1").props.disabled, true);
+    ui.change(ui.input("Repair reason"), "PDF metadata tools are now installed");
+    ui.click("Submit repair for revision-1");
+    assert.deepEqual(message(ui, "formalizationAction").action, { type: "retry_extraction", reason: "PDF metadata tools are now installed" });
+  } finally { ui.dispose(); }
+});
+
+test("publication recovery inspects exact versions and requires reconciliation before keeping current files", () => {
+  const ui = mount("formalization", {}, FormalizationConflictsFixture);
+  try {
+    assert.ok(message(ui, "listFormalizationConflicts"));
+    const snapshot = formalizationConflictFixture();
+    hostMessage({ type: "formalizationConflicts", snapshot, error: "" });
+    ui.click("Inspect preserved version: Retained concurrent save");
+    assert.deepEqual(message(ui, "openFormalizationConflictVersion"), { type: "openFormalizationConflictVersion", transactionId: "transaction-1", observationId: "observation-1", versionId: "version-retained" });
+    hostMessage({ type: "formalizationConflictPdf", transactionId: "transaction-1", observationId: "observation-1", versionId: "version-retained", pdf: { documentId: "transaction-1", revisionId: "observation-1", artifactId: "version-retained", pageIndex: 0, base64: "" } });
+    assert.match(textOf(ui.root()), /frozen publication version bound to the observed file hash/);
+    assert.equal(ui.button("Keep reconciled current files and archive resolution").props.disabled, true);
+    ui.change(ui.input("Publication reconciliation reason transaction-1"), "Merged concurrent save into current theorem");
+    ui.change(ui.input("Reconciled publication transaction-1"), true);
+    ui.click("Keep reconciled current files and archive resolution");
+    assert.deepEqual(message(ui, "resolveFormalizationConflict"), { type: "resolveFormalizationConflict", transactionId: "transaction-1", observationId: "observation-1", reason: "Merged concurrent save into current theorem" });
+    hostMessage({ type: "formalizationConflicts", snapshot: null, error: "Publication versions changed" });
+    assert.match(textOf(ui.root()), /Refresh and inspect the versions again/);
+    assert.equal(ui.button("Keep reconciled current files and archive resolution").props.disabled, true);
+    ui.click("Refresh preserved publication versions");
+    snapshot.transactions[0].observation_id = "observation-2";
+    hostMessage({ type: "formalizationConflicts", snapshot: structuredClone(snapshot), error: "" });
+    assert.doesNotMatch(textOf(ui.root()), /frozen publication version bound to the observed file hash/);
+    assert.equal(ui.input("Reconciled publication transaction-1").props.checked, false);
+    snapshot.transactions[0].state = "RESOLVED";
+    snapshot.transactions[0].resolutions = [{ reason: "All versions archived", resolution_id: "resolution-1" }];
+    hostMessage({ type: "formalizationConflicts", snapshot: structuredClone(snapshot), error: "", resolvedTransactionId: "transaction-1" });
+    assert.match(textOf(ui.root()), /mathematical acceptance must be re-established/);
+    assert.match(textOf(ui.root()), /All versions archived/);
+  } finally { ui.dispose(); }
+});
+
+test("unavailable publication history is acknowledged without claiming reconstructed versions", () => {
+  const ui = mount("formalization", {}, FormalizationConflictsFixture);
+  try {
+    const snapshot = formalizationConflictFixture();
+    Object.assign(snapshot.transactions[0], {
+      unavailable_journal: true, planned_versions: null, versions: [], version_count: 0,
+      revoked_revision_ids: ["revision-1"], conflicts: ["Publication journal unavailable"],
+    });
+    hostMessage({ type: "formalizationConflicts", snapshot, error: "" });
+    assert.match(textOf(ui.root()), /original write plan cannot be reconstructed/);
+    assert.match(textOf(ui.root()), /acknowledge the unavailable publication history/);
+    assert.equal(ui.buttons().some(button => textOf(button).startsWith("Inspect preserved version:")), false);
+    assert.equal(ui.button("Keep current files and acknowledge unavailable history").props.disabled, true);
+    ui.change(ui.input("Publication reconciliation reason transaction-1"), "Inspected current sources and acknowledged unavailable history");
+    ui.change(ui.input("Reconciled publication transaction-1"), true);
+    ui.click("Keep current files and acknowledge unavailable history");
+    assert.deepEqual(message(ui, "resolveFormalizationConflict"), {
+      type: "resolveFormalizationConflict", transactionId: "transaction-1", observationId: "observation-1",
+      reason: "Inspected current sources and acknowledged unavailable history",
+    });
+  } finally { ui.dispose(); }
+});
+
+test("source-only preparation plans dependencies then starts and cancels an owned setup", () => {
+  const snapshot = formalizationFixture(); snapshot.preparation = { status: "preparation_required", current: false };
+  const ui = mount("formalization", { sourceSnapshot: snapshot }, FormalizationPreparationFixture);
+  try {
+    ui.change(ui.input("Formalization preparation preset"), "lean");
+    ui.click("Inspect dependency and project plan");
+    assert.deepEqual(message(ui, "planFormalizationPreparation"), { type: "planFormalizationPreparation", documentId: "paper-1", revisionId: "revision-1", preset: "lean" });
+    hostMessage({ type: "formalizationPreparation", documentId: "paper-1", revisionId: "revision-1", status: "planned", message: "Plan inspected", error: "", plan: { toolchain: "leanprover/lean4:fixture", layout: { library: "Main", root_file: "Main.lean" }, required_imports: ["Init"], packages: [], slice_source_ids: ["item-1", "item-2"] } });
+    assert.match(textOf(ui.root()), /Representative source claims: 2/);
+    ui.change(ui.input("Formalization preparation plan overrides"), '{"required_imports":["Init"]}');
+    ui.click("Prepare dependencies and project");
+    assert.deepEqual(message(ui, "prepareFormalization").overrides, { required_imports: ["Init"] });
+    assert.equal(ui.button("Cancel project preparation").props.disabled, true);
+    hostMessage({ type: "formalizationPreparation", documentId: "paper-1", revisionId: "revision-1", status: "preparing", cancellable: true, message: "Owned preparation started", error: "" });
+    ui.click("Cancel project preparation");
+    assert.deepEqual(message(ui, "cancelFormalizationPreparation"), { type: "cancelFormalizationPreparation", documentId: "paper-1", revisionId: "revision-1" });
+    assert.equal(ui.button("Cancel project preparation").props.disabled, true);
+    assert.equal(ui.button("Prepare dependencies and project").props.disabled, true);
+    assert.match(textOf(ui.root()), /Waiting for safe cleanup/);
+    hostMessage({ type: "formalizationPreparation", documentId: "paper-1", revisionId: "revision-1", status: "cancelled", message: "Cancelled with history preserved", error: "" });
+    ui.change(ui.input("Formalization preparation plan overrides"), "[");
+    assert.equal(ui.button("Prepare dependencies and project").props.disabled, true);
+  } finally { ui.dispose(); }
+});
+
+test("initializing a source-only workspace retains its prepared document and enables translation", () => {
+  const ui = mount("formalization");
+  try {
+    ui.update(f => { f.app.project = { found: false, root: "", label: "Source folder" }; });
+    assert.equal(ui.button("Choose TeX or PDF").props.disabled, false);
+    ui.click("Choose TeX or PDF");
+    const snapshot = formalizationFixture(); snapshot.preparation.current = false;
+    hostMessage({ type: "formalizationState", documentId: "paper-1", snapshot, error: "" });
+    assert.equal(ui.button("Configure or resume formalization").props.disabled, true);
+    const prepared = structuredClone(snapshot); prepared.preparation.current = true;
+    hostMessage({ type: "formalizationState", documentId: "paper-1", snapshot: prepared, error: "" });
+    ui.update(f => { f.app.project = { found: true, root: "/prepared/source", label: "Prepared source" }; });
+    assert.match(textOf(ui.root()), /1\/2 included items reviewed/);
+    assert.equal(ui.input("Formalization document").props.value, "paper-1");
+    assert.equal(ui.button("Configure or resume formalization").props.disabled, false);
+  } finally { ui.dispose(); }
+});
+
+test("infrastructure recovery remains accessible when document snapshots are blocked", () => {
+  const ui = mount("formalization", {}, FormalizationConflictsFixture);
+  try {
+    assert.ok(message(ui, "listFormalizationPreparationRecovery"));
+    const transaction = { transaction_id: "prep-1", observation_id: "obs-1", history_id: "history-1", state: "CONFLICTED", active: true,
+      destinations: { ".lake": "a".repeat(64) }, retained_slots: { ".leanflow/preparation-transactions/prep-1/displaced/lake": "b".repeat(64) }, conflicts: ["Concurrent infrastructure save"], resolutions: [] };
+    hostMessage({ type: "formalizationPreparationRecovery", snapshot: { schema_version: 1, transactions: [transaction] }, error: "", busy: false });
+    ui.click("Inspect infrastructure recovery");
+    assert.equal(ui.button("Inspect infrastructure recovery").props.disabled, true);
+    assert.equal(ui.button("Cancel infrastructure recovery").props.disabled, true);
+    hostMessage({ type: "formalizationPreparationRecovery", snapshot: { schema_version: 1, transactions: [transaction] }, error: "", busy: false });
+    ui.change(ui.input("Infrastructure reconciliation reason prep-1"), "Inspected directory entries locally and reconciled current configuration");
+    ui.change(ui.input("Inspected infrastructure prep-1"), true);
+    ui.click("Keep current infrastructure and archive resolution");
+    assert.deepEqual(message(ui, "resolveFormalizationPreparation"), { type: "resolveFormalizationPreparation", transactionId: "prep-1", observationId: "obs-1", reason: "Inspected directory entries locally and reconciled current configuration" });
+    hostMessage({ type: "formalizationPreparationRecovery", snapshot: null, error: "", busy: true, cancellable: true, message: "Controller recovery started" });
+    ui.click("Cancel infrastructure recovery");
+    assert.ok(message(ui, "cancelFormalizationRecovery"));
+    assert.equal(ui.button("Cancel infrastructure recovery").props.disabled, true);
+    hostMessage({ type: "formalizationPreparationRecovery", snapshot: null, error: "Preparation versions changed", busy: false });
+    assert.equal(ui.button("Keep current infrastructure and archive resolution").props.disabled, true);
+    ui.click("Recover interrupted project preparation");
+    assert.ok(message(ui, "recoverFormalizationPreparation"));
+  } finally { ui.dispose(); }
 });
 
 test("open claim proof permission is explicit, revocable and tied to the viewed revision", () => {
@@ -589,6 +776,23 @@ test("sidebar quick launch, dashboard, stop and setup recovery buttons work", ()
     ui.click("Set up project"); assert.ok(message(ui, "setupProject"));
     ui.update(f => { f.app.projectSetup = { status: "ready", root: "/fixture", message: "Ready" }; });
     ui.click("Set up provider"); assert.ok(message(ui, "configureProvider"));
+  } finally { ui.dispose(); }
+});
+
+test("source-only sidebar opens the dashboard before creating or preparing a Lean project", () => {
+  const ui = mount("launch", {}, SidebarView);
+  try {
+    ui.update(f => { f.app.project.found = false; });
+    assert.match(textOf(ui.root()), /inspect TeX or PDF sources before preparing a Lean project/);
+    assert.equal(ui.buttons().some(button => textOf(button) === "Prove"), false);
+    ui.click("Dashboard");
+    assert.deepEqual(message(ui, "openDashboard"), { type: "openDashboard" });
+    assert.equal(message(ui, "setupProject"), undefined);
+    assert.equal(message(ui, "launch"), undefined);
+    ui.update(f => { f.app.cli.ok = false; });
+    ui.click("Dashboard");
+    assert.equal(ui.messages.filter(row => row.type === "openDashboard").length, 2);
+    assert.equal(message(ui, "setupProject"), undefined);
   } finally { ui.dispose(); }
 });
 

@@ -77,6 +77,8 @@ def prepare_context(
             remap_project_text(content, root, snapshot)
         )
     if texts:
+        if "MANIFEST" in texts:
+            context["formalization_manifest"] = str(scratch / "formalization-manifest.txt")
         prompt += "\nSource formalization context:\n" + texts.get("CONTEXT", "")
         prompt += "\nRead the complete extracted source at " + str(
             scratch / "formalization-extracted_text.txt"

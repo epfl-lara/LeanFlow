@@ -206,6 +206,17 @@ class NativeBridge:
         ) -> dict[str, Any]:
             return {
                 "name": name,
+                **(
+                    {
+                        "annotations": {
+                            "readOnlyHint": True,
+                            "destructiveHint": False,
+                            "openWorldHint": False,
+                        }
+                    }
+                    if name == "get_assignment"
+                    else {}
+                ),
                 "description": description,
                 "inputSchema": {
                     "type": "object",

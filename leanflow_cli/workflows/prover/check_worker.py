@@ -15,6 +15,18 @@ from typing import Any
 _MAX_MESSAGE = 4 * 1024 * 1024
 
 
+def _worker_probe(module: Any) -> Any:
+    """Keep one retained prefix per pool, evicting through LeanProbe's verified lifecycle."""
+    if module.LeanProbe is not None:
+        module.LeanProbe = functools.partial(
+            module.LeanProbe,
+            max_file_sessions=1,
+            max_code_sessions=1,
+            max_scratch_sessions=1,
+        )
+    return module._probe()
+
+
 def _private_repl(source: Path, private: Path) -> Path:
     """Copy mutable REPL configuration while sharing its prebuilt outputs read-only."""
     target = private / "repl"
@@ -71,7 +83,7 @@ def _configure(project: Path, private: Path) -> Any:
     admission._lock_path = lambda root: gates / "lean-heavy.lock"
     admission._priority_state_lock_path = lambda root: gates / "lean-heavy-priority.lock"
     admission._priority_waiter_root = lambda root: gates / "lean-heavy-foreground-waiters"
-    probe = lean_incremental._probe()
+    probe = _worker_probe(lean_incremental)
     lake = shutil.which("lake")
     if lake is None:
         raise RuntimeError("Lake is unavailable on PATH. Install the project's Lean toolchain.")

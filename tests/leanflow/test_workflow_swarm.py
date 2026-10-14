@@ -7,6 +7,7 @@ import pytest
 from leanflow_cli import workflow as workflow_mod
 from leanflow_cli.cli import loogle_local
 from leanflow_cli.config import save_config
+from leanflow_cli.formalization.evidence import identity
 from leanflow_cli.formalization.formalization_documents import FormalizationDocumentError
 from leanflow_cli.workflow import (
     WORKFLOW_ALIAS_MAP,
@@ -22,6 +23,42 @@ def evaluated_formalization_layout(monkeypatch):
     """Separate launcher behavior from the pinned Lake integration fixture."""
     monkeypatch.setattr(
         "leanflow_cli.formalization.intake.lean_build.validate_build_inputs", lambda *a, **kw: {}
+    )
+
+    def prepared_launch(root, workflow_args, runtime, *, user_goal=""):
+        from leanflow_cli.formalization.formalization_documents import (
+            resolve_formalization_document,
+        )
+        from leanflow_cli.formalization.records import create_document
+
+        source, _, _ = resolve_formalization_document(root, root, workflow_args)
+        record = create_document(root, source)
+        receipt = {
+            "source_bundle": record["source_bundle"],
+            "preparation_id": "prepared-fixture",
+            "preparation_plan_id": "plan-fixture",
+            "plan": {
+                "plan_id": "plan-fixture",
+                "slice_source_ids": [item["id"] for item in record["inventory"]["items"]],
+            },
+        }
+        monkeypatch.setattr(
+            "leanflow_cli.formalization.preparation.assert_preparation_current",
+            lambda root: receipt,
+        )
+        monkeypatch.setattr(
+            "leanflow_cli.formalization.preparation.load_preparation_receipt",
+            lambda root: receipt,
+        )
+        return {
+            "root": root,
+            "receipt": receipt,
+            "budget_path": root / ".leanflow/formalization-campaigns/fixture/budget.json",
+        }
+
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.preparation_launch.prepare_formalization_launch",
+        prepared_launch,
     )
     monkeypatch.setattr(
         "leanflow_cli.formalization.intake.resolve_layout",
@@ -887,7 +924,9 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(
     assert plan.formalization_document is not None
     assert plan.child_env["LEANFLOW_FORMALIZATION_DOCUMENT_RELATIVE"] == "docs/paper.tex"
     assert plan.child_env["LEANFLOW_NATIVE_REQUESTED_TARGET"] == "docs/paper.tex"
-    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == "Main/Formalization/Document.lean"
+    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == (
+        "Main/Formalization/Document/Run_" + identity("prepared-fixture")[:12] + ".lean"
+    )
     assert not plan.formalization_document.target_lean_path.exists()
     assert plan.formalization_document.blueprint_skill_path.is_file()
     assert str(plan.formalization_document.blueprint_skill_path) in plan.additional_skills
@@ -1006,7 +1045,9 @@ def test_resolve_workflow_request_accepts_directory_for_autoformalize(
     assert plan.child_env["LEANFLOW_FORMALIZATION_REQUEST_KIND"] == "directory"
     assert plan.child_env["LEANFLOW_FORMALIZATION_REQUEST_RELATIVE"] == "docs/paper"
     assert plan.child_env["LEANFLOW_FORMALIZATION_SELECTED_SOURCE"] == "docs/paper/main.tex"
-    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == "Main/Formalization/Document.lean"
+    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == (
+        "Main/Formalization/Document/Run_" + identity("prepared-fixture")[:12] + ".lean"
+    )
     summary = describe_launch_plan(plan)
     assert summary["input"] == "docs/paper (directory)"
     assert summary["document"] == "docs/paper/main.tex"

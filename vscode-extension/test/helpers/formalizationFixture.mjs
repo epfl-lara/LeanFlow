@@ -2,6 +2,8 @@
 export function formalizationFixture() {
   return {
     schema_version: 1, document_id: "paper-1", revision_id: "revision-1", status: "draft_ready",
+    preparation: { status: "prepared", current: true, reason: "" },
+    slice: { phase: "complete", required: true, slice_id: "slice-1", slice_source_ids: ["item-1", "item-2"] },
     source: { kind: "latex", path: "paper/main.tex", files: ["paper/main.tex", "paper/results.tex"], pages: 2 },
     items: [
       { id: "item-1", title: "Doubling", kind: "definition", claim_status: "asserted", scope: "included",

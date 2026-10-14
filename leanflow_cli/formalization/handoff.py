@@ -28,11 +28,14 @@ from leanflow_cli.workflows.prover.source import (
 
 
 def _protected_registry(registry: dict[str, Any]) -> dict[str, dict[str, str]]:
-    """Keep exact profiles, marking pinned-library reuse as having no mutable source file."""
+    """Keep exact profiles and distinguish owned proof slots from read-only source reuse."""
     return {
         row["name"]: {
             **{key: row[key] for key in ("module", "kind", "type_hash", "body_hash")},
             "file": row.get("file", ""),
+            "declaration_origin": row.get(
+                "declaration_origin", "generated" if row.get("file") else "dependency"
+            ),
         }
         for row in registry["declarations"]
     }
@@ -58,6 +61,8 @@ def build_handoff(
     obligations = []
     entries: dict[str, list[dict[str, Any]]] = {}
     for row in registry["obligations"]:
+        if row.get("declaration_origin", "generated") != "generated":
+            raise ValueError("Read-only reused declarations cannot authorize proof writes")
         relative = row["file"]
         source = read_source(project_path(root, relative))
         if files.get(relative) != digest(source.encode("utf-8")):
@@ -115,12 +120,20 @@ def authorized_holes(handoff: dict[str, Any]) -> dict[str, list[dict[str, Any]]]
 
 
 def validate_handoff(
-    root: Path, path: Path, revision_id: str, *, check_sources: bool = True
+    root: Path,
+    path: Path,
+    revision_id: str,
+    *,
+    check_sources: bool = True,
+    checked_environment_id: str | None = None,
 ) -> dict[str, Any]:
-    """Authenticate selected published evidence before admitting a prover run."""
+    """Authenticate evidence, reusing a caller's already checked environment only when exact."""
     from leanflow_cli.formalization.publication import assert_no_pending_publication
 
     assert_no_pending_publication(root)
+    from leanflow_cli.formalization.freshness import assert_revision_not_revoked
+
+    assert_revision_not_revoked(root, revision_id)
     path = contained(root, path.relative_to(root).as_posix())
     handoff = json.loads(path.read_text(encoding="utf-8"))
     if handoff.get("schema_version") != 1 or handoff.get("revision_id") != revision_id:
@@ -138,6 +151,9 @@ def validate_handoff(
     if load_document(root, handoff["document_id"])["revision_id"] != revision_id:
         raise ValueError("Formalization handoff is no longer the selected document revision")
     record = load_document(root, handoff["document_id"], revision_id)
+    from leanflow_cli.formalization.inventory_authority import assert_complete_coverage
+
+    assert_complete_coverage(record)
     assert_source_current(root, record)
     registry = record["checks"]
     policy = {
@@ -188,7 +204,10 @@ def validate_handoff(
     for reference in handoff.get("guidance_refs", []):
         if digest(contained(root, reference["artifact"]).read_bytes()) != reference["sha256"]:
             raise ValueError("Formalization proof guidance artifact changed")
-    if environment_identity(root) != handoff["environment_id"]:
+    current_environment = (
+        environment_identity(root) if checked_environment_id is None else checked_environment_id
+    )
+    if current_environment != handoff["environment_id"]:
         raise ValueError("Formalization handoff compiler/dependency environment changed")
     if check_sources:
         for relative, expected in handoff["files"].items():
@@ -288,9 +307,9 @@ def _proof_preservation_locked(
         raise ValueError(f"Proof revision failed compiled policy: {result.get('error')}")
     profiles = result["profiles"]
     for name, before in handoff["protected_declarations"].items():
-        if not before["file"]:
-            # Exact library reuse is protected by the unchanged complete
-            # compiler/dependency identity and all accepted project sources.
+        if before["declaration_origin"] != "generated":
+            # Reuse has no proof-write authority. The exact environment and all
+            # frozen project source hashes protect these read-only declarations.
             continue
         current = profiles.get(name)
         if not current or current["type_hash"] != before["type_hash"]:

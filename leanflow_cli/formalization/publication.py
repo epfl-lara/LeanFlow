@@ -63,19 +63,39 @@ def _directory(root: Path, directory: Path) -> Path:
     return contained(root, relative)
 
 
+def _pointer_journal(root: Path, path: Path, registry: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Retire an acknowledged pointer without trusting reappearing unavailable evidence."""
+    relative = path.relative_to(root).as_posix()
+    for entry in registry["transactions"].values():
+        if entry["journal"] == relative and entry.get("loss"):
+            if entry["loss"]["state"] == "RESOLVED":
+                return None
+            raise PublicationConflict(
+                "Publication evidence unavailable or changed; inspect and acknowledge its exact recovery observation"
+            )
+    return load_journal(path)
+
+
 @contextmanager
 def publication_guard(root: Path) -> Iterator[None]:
     """Hold project ownership while auditing recovery and executing a consumer action."""
     root = root.resolve()
     with publication_lock(root):
         registry = load_registry(root)
+        if registry["active"] is not None:
+            path = contained(root, registry["transactions"][registry["active"]]["journal"])
+            record = registry["transactions"][registry["active"]]
+            journal = load_journal(path) if path.is_file() and not record.get("loss") else None
+            if journal and (
+                journal["state"] == "RESOLVED"
+                or (journal["state"] in {"COMMITTED", "ROLLED_BACK"} and not journal["conflicts"])
+            ):
+                settle_terminal(root, registry, journal)
         audit_retained(root, registry)
         if registry["active"] is not None:
             path = contained(root, registry["transactions"][registry["active"]]["journal"])
             journal = load_journal(path)
-            if journal["state"] in {"COMMITTED", "ROLLED_BACK"} and not journal["conflicts"]:
-                settle_terminal(root, registry, journal)
-            else:
+            if journal["state"] not in {"COMMITTED", "ROLLED_BACK", "RESOLVED"}:
                 raise PublicationConflict(
                     f"Formalization publication requires recovery before further work: {path}"
                 )
@@ -97,10 +117,21 @@ def recover_pending_publication(root: Path) -> dict[str, Any] | None:
     root = root.resolve()
     with publication_lock(root):
         registry = load_registry(root)
-        audit_retained(root, registry)
         if registry["active"] is None:
+            audit_retained(root, registry)
             return None
-        journal_path = contained(root, registry["transactions"][registry["active"]]["journal"])
+        previous_active = registry["transactions"][registry["active"]]
+        audit_retained(root, registry, raise_conflicts=False)
+        if registry["active"] is None:
+            return (
+                load_journal(contained(root, previous_active["journal"]))
+                if not previous_active.get("loss")
+                else None
+            )
+        active = registry["transactions"][registry["active"]]
+        if active.get("loss"):
+            audit_retained(root, registry)
+        journal_path = contained(root, active["journal"])
         recovered = recover_locked(root, journal_path, registry)
         audit_retained(root, registry)
         return recovered
@@ -117,10 +148,13 @@ def recover_publication(
     directory = _directory(root, directory)
     with publication_lock(root):
         registry = load_registry(root)
-        journal_path = current_journal(directory)
+        journal_path = current_journal(directory, root=root)
         if journal_path is None:
             return None
-        journal = load_journal(journal_path)
+        audit_retained(root, registry, raise_conflicts=False)
+        journal = _pointer_journal(root, journal_path, registry)
+        if journal is None:
+            return None
         if registry["active"] not in {None, journal["transaction_id"]}:
             raise PublicationConflict("Another project publication must recover first")
         if journal["transaction_id"] not in registry["transactions"]:
@@ -164,8 +198,8 @@ def publish_revision(
     with publication_lock(root):
         registry = load_registry(root)
         audit_retained(root, registry)
-        previous_path = current_journal(directory)
-        previous = load_journal(previous_path) if previous_path else None
+        previous_path = current_journal(directory, root=root)
+        previous = _pointer_journal(root, previous_path, registry) if previous_path else None
         if registry["active"] is not None:
             if not previous or registry["active"] != previous["transaction_id"]:
                 raise PublicationConflict("An earlier project publication requires recovery")
@@ -198,7 +232,9 @@ def publish_revision(
                     "Publication destination aliases a protected source inode"
                 )
         transaction_id = uuid.uuid4().hex
-        transaction = contained(directory, f"transactions/{transaction_id}")
+        transaction = contained(
+            root, f".leanflow/formalization-publication-transactions/{transaction_id}"
+        )
         mkdir_durable(transaction / "staging")
         mkdir_durable(transaction / "displaced")
         writes = {
@@ -228,19 +264,25 @@ def publish_revision(
             "order": list(writes),
             "created_dirs": [],
             "conflicts": [],
+            "archives_prepared": False,
         }
         journal_path = transaction / "publication.json"
         save_journal(journal_path, journal)
+        mkdir_durable(directory)
         durable_json(
             directory / "publication.json",
             {
                 "schema_version": 1,
                 "transaction_id": transaction_id,
-                "journal": f"transactions/{transaction_id}/publication.json",
+                "journal_scope": "project",
+                "journal": journal_path.relative_to(root).as_posix(),
             },
         )
         registry["transactions"][transaction_id] = {
-            "journal": journal_path.relative_to(root).as_posix()
+            "journal": journal_path.relative_to(root).as_posix(),
+            "revision_id": revision_id,
+            "plan_id": frozen["plan_id"],
+            "write_paths": list(writes),
         }
         registry["active"] = transaction_id
         save_registry(root, registry)
@@ -269,6 +311,7 @@ def publish_revision(
                     entry["staged_inode"] = [info.st_dev, info.st_ino]
                     boundary(f"flushed:{relative}")
             sync_directory(transaction / "staging")
+            journal["archives_prepared"] = True
             journal["state"] = "PREPARED"
             save()
             boundary("prepared")

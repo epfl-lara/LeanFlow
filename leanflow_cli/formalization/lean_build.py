@@ -211,7 +211,7 @@ def build_project(
     parsed = isolated_command(
         project_root=root,
         workspace=workspace,
-        argv=[lean, "--deps-json", *(str(path) for path in local.values())],
+        argv=[lean, "-j1", "--deps-json", *(str(path) for path in local.values())],
         timeout_s=remaining_seconds(deadline),
         cancelled=cancelled,
     )
@@ -272,7 +272,7 @@ def build_project(
         result = isolated_command(
             project_root=root,
             workspace=compile_workspace,
-            argv=[lean, "--setup=" + str(setup), "-o", str(output), str(local[module])],
+            argv=[lean, "-j1", "--setup=" + str(setup), "-o", str(output), str(local[module])],
             timeout_s=remaining_seconds(deadline),
             cancelled=cancelled,
         )

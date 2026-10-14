@@ -279,6 +279,60 @@ def real_project(tmp_path: Path) -> Path:
 
 
 @pytest.mark.integration
+def test_real_existing_reuse_requires_controller_built_local_artifacts(real_project: Path) -> None:
+    """Use the exact local artifact map, retaining custom-root source identity."""
+    from leanflow_cli.formalization.evidence import digest
+
+    root = real_project
+    (root / "src/Main.lean").write_text("theorem unrelated : True := by sorry\n")
+    relative = "src/Main/Existing.lean"
+    path = root / relative
+    path.write_text(
+        "namespace Existing\n"
+        "def double (n : Nat) : Nat := n + n\n"
+        "theorem identity_nat (n : Nat) : n = n := rfl\n"
+        "theorem unrelated_pending : True := by sorry\n"
+        "end Existing\n"
+    )
+    before = path.read_bytes()
+    layout = lean_layout.inspect_layout(root)
+    workspace = root / "build-check"
+    workspace.mkdir()
+    build = lean_policy.build_project(root, layout, workspace)
+    assert build["success"], build
+    args = {
+        "imports": ["Main.Existing"],
+        "allowed_axioms": ("propext", "Classical.choice", "Quot.sound"),
+    }
+    denied = lean_policy.inspect_dependency(
+        root, ["Existing.double", "Existing.identity_nat"], root / "denied", **args
+    )
+    assert not denied["accepted"], "Ambient build outputs must not authorize library reuse"
+    result = lean_policy.inspect_dependency(
+        root,
+        ["Existing.double", "Existing.identity_nat"],
+        root / "checked",
+        local_artifacts=build["local_artifacts"],
+        **args,
+    )
+    assert result["accepted"], result
+    assert result["obligations"] == [] and path.read_bytes() == before
+    assert set(result["profiles"]) == {"Existing.double", "Existing.identity_nat"}
+    for row in result["declarations"]:
+        assert row["declaration_origin"] == "existing_project"
+        assert row["module"] == "Main.Existing" and row["file"] == relative
+        assert row["source_sha256"] == digest(before) and row["line_start"] in {2, 3}
+    unfinished = lean_policy.inspect_dependency(
+        root,
+        ["Existing.unrelated_pending"],
+        root / "pending-reuse",
+        local_artifacts=build["local_artifacts"],
+        **args,
+    )
+    assert not unfinished["accepted"] and "already verified" in unfinished["error"]
+
+
+@pytest.mark.integration
 def test_real_plain_draft_shares_compiled_acceptance(real_project: Path) -> None:
     from leanflow_cli.native import harness_artifacts
 

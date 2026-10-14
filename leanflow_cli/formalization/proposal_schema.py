@@ -6,6 +6,7 @@ import copy
 from typing import Any
 
 from leanflow_cli.formalization.evidence import identifier
+from leanflow_cli.formalization.inventory_authority import complete_inventory
 
 
 def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str, Any]:
@@ -16,6 +17,24 @@ def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str
     ):
         raise ValueError("Proposal must name the current frozen source revision")
     result = copy.deepcopy(record)
+    result["inventory"] = copy.deepcopy(complete_inventory(record))
+    from leanflow_cli.formalization.slice_gate import protocol_enabled, slice_regions
+
+    partial = protocol_enabled(record) and proposal.get("phase") == "representative_slice"
+    if protocol_enabled(record) and proposal.get("phase") not in {
+        "representative_slice",
+        "complete",
+    }:
+        raise ValueError("Preparation workflow proposals require an explicit controller phase")
+    result["proposal_phase"] = proposal.get("phase", "complete")
+    if protocol_enabled(record):
+        result["full_inventory"] = copy.deepcopy(result["inventory"])
+    selected_source_ids = set(record["slice_source_ids"]) if partial else None
+    if partial:
+        selected_regions = slice_regions(record)
+        result["inventory"]["regions"] = [
+            region for region in result["inventory"]["regions"] if region["id"] in selected_regions
+        ]
     items = {item["id"]: item for item in result["inventory"]["items"]}
     regions = {region["id"]: region for region in result["inventory"]["regions"]}
     coverage = proposal.get("coverage")
@@ -78,6 +97,8 @@ def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str
         source_ids = unit.get("required_source_ids")
         if not isinstance(source_ids, list) or any(key not in items for key in source_ids):
             raise ValueError("Translation unit names unknown source items")
+        if selected_source_ids is not None and set(source_ids) - selected_source_ids:
+            raise ValueError("Representative slice units must use only its selected source IDs")
         if any(items[key].get("scope") == "excluded" for key in source_ids):
             raise ValueError("An excluded source item cannot count toward included coverage")
         note = unit.get("representation_note")
@@ -101,7 +122,11 @@ def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str
         ):
             raise ValueError("Unit dependencies must be unit IDs")
         covered.update(source_ids)
-    required = {key for key, item in items.items() if item.get("scope") != "excluded"}
+    required = (
+        selected_source_ids
+        if selected_source_ids is not None
+        else {key for key, item in items.items() if item.get("scope") != "excluded"}
+    )
     if required - covered:
         raise ValueError("Missing source item mappings: " + ", ".join(sorted(required - covered)))
     for unit in units:
@@ -119,9 +144,19 @@ def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str
         remaining = [unit for unit in remaining if unit["id"] not in ready]
     if any(d.get("blocking") for d in result["inventory"].get("diagnostics", [])):
         raise ValueError("Blocking extraction diagnostics require explicit source repair")
+    from leanflow_cli.formalization.source_pdf import assert_pdf_review_ready
+
+    assert_pdf_review_ready(result["inventory"])
     result["units"] = copy.deepcopy(ordered)
     result["setup_notes"] = str(proposal.get("setup_notes", ""))
-    result["inventory"]["audit_complete"] = True
+    result["inventory"]["audit_complete"] = not partial
+    result["inventory"]["slice_audit_complete"] = partial
+    if partial:
+        result["setup_notes"] += (
+            "\nController phase: representative_slice. Review only the selected translation and "
+            "its supporting coverage. Complete original source files remain retrievable; "
+            "unselected mathematics has no acceptance or publication authority."
+        )
     return result
 
 
@@ -134,7 +169,16 @@ def bind_declarations(record: dict[str, Any], checks: dict[str, Any]) -> None:
     for unit in record["units"]:
         for reference in unit["declarations"]:
             row = registry.get(reference["name"])
-            if row is None or reference.get("file") != row.get("file"):
+            origin = (row or {}).get(
+                "declaration_origin", "generated" if (row or {}).get("file") else "dependency"
+            )
+            declared_origin = reference.get("declaration_origin")
+            if (
+                row is None
+                or (declared_origin is not None and declared_origin != origin)
+                or (reference.get("file") and reference["file"] != row.get("file"))
+                or (origin == "generated" and reference.get("file") != row.get("file"))
+            ):
                 raise ValueError(
                     f"Mapping does not identify a compiled declaration: {reference['name']}"
                 )
@@ -143,7 +187,14 @@ def bind_declarations(record: dict[str, Any], checks: dict[str, Any]) -> None:
                 body_hash=row["body_hash"],
                 type=row["type"],
                 conditional=row.get("conditional", False),
+                declaration_origin=origin,
             )
+            if origin == "existing_project":
+                reference.update(
+                    file=row["file"],
+                    module=row["module"],
+                    source_sha256=row["source_sha256"],
+                )
             if row.get("file") and type(row.get("line_start")) is int and row["line_start"] > 0:
                 reference["line_start"] = row["line_start"]
             mapped.add(row["name"])
@@ -162,7 +213,13 @@ def bind_declarations(record: dict[str, Any], checks: dict[str, Any]) -> None:
 
     for row in sorted(registry.values(), key=lambda value: value["name"]):
         parents = row.get("generated_from", [])
-        if not parents or not row.get("generation_kind") or row["name"] in mapped:
+        if (
+            row.get("declaration_origin", "generated" if row.get("file") else "dependency")
+            != "generated"
+            or not parents
+            or not row.get("generation_kind")
+            or row["name"] in mapped
+        ):
             continue
         for unit in record["units"]:
             unit_names = {reference["name"] for reference in unit["declarations"]}
@@ -182,7 +239,11 @@ def bind_declarations(record: dict[str, Any], checks: dict[str, Any]) -> None:
                 unit["declarations"].append(reference)
                 mapped.add(row["name"])
     missing = {
-        row["name"] for row in registry.values() if row.get("file") and row["name"] not in mapped
+        row["name"]
+        for row in registry.values()
+        if row.get("declaration_origin", "generated" if row.get("file") else "dependency")
+        == "generated"
+        and row["name"] not in mapped
     }
     if missing:
         raise ValueError("Unmapped compiled declarations: " + ", ".join(sorted(missing)))

@@ -15,8 +15,10 @@ export interface FormalizationSourceRef {
 
 export interface FormalizationLeanRef {
   artifact_id?: string;
-  file: string;
+  file?: string;
   name: string;
+  imports?: string[];
+  declaration_origin?: "generated" | "existing_project" | "dependency";
   line_start?: number;
   line_end?: number;
 }
@@ -69,7 +71,7 @@ export interface FormalizationDiagnostic {
   source_refs: FormalizationSourceRef[];
   can_resolve_command: boolean;
   resolution_reason?: string;
-  resolution?: "verified_transcription" | "explicit_scope_exclusion" | {
+  resolution?: "verified_transcription" | "explicit_scope_exclusion" | "explicit_source_boundary" | {
     actor: "user";
     interpretation: string;
     reason: string;
@@ -82,6 +84,10 @@ export interface FormalizationSnapshot {
   document_id: string;
   revision_id: string;
   status: string;
+  preparation?: { status: string; current: boolean; reason?: string; receipt?: Record<string, unknown> | null };
+  preparation_result?: { accepted: boolean; status: string; error?: string };
+  slice?: { phase: "representative_slice" | "complete"; required: boolean; slice_id?: string | null; slice_source_ids?: string[] };
+  acceptance_freshness?: { current: boolean; status: "not_published" | "current" | "environment_stale" | "checker_stale" | "acceptance_stale"; reason: string };
   receipt_error?: string | null;
   source: { kind: string; path: string; files?: string[]; pages?: number };
   items: FormalizationItem[];
@@ -107,14 +113,15 @@ export interface FormalizationSnapshot {
 }
 
 export type FormalizationAction =
+  | { type: "retry_extraction"; reason: string }
   | { type: "resolve_command"; diagnostic_id: string; interpretation: string; reason: string; verified: true }
   | { type: "authorize_proof"; item_id: string; authorized: boolean; reason: string }
-  | { type: "transcribe_page"; page_index: number; text: string; reason: string; verified: true }
+  | { type: "transcribe_page" | "replace_page_transcription"; page_index: number; text: string; reason: string; verified: true }
   | { type: "set_scope"; item_id: string; scope: "included" | "excluded"; reason: string }
   | { type: "classify_region"; region_id: string; classification: "non_mathematical" | "excluded" | "supporting_context"; reason: string }
   | { type: "add_item"; title: string; kind: string; source_refs: FormalizationSourceRef[] }
   | { type: "update_boundary"; item_id: string; source_refs: FormalizationSourceRef[] }
-  | { type: "set_mapping"; item_id: string; lean_refs: FormalizationLeanRef[]; rationale: string }
+  | { type: "set_mapping"; item_id?: string; source_ids?: string[]; unit_id?: string; depends_on_units?: string[]; lean_refs: FormalizationLeanRef[]; rationale: string }
   | { type: "select_revision"; revision_id: string };
 
 export interface FormalizationPdf {
@@ -146,10 +153,16 @@ export function parseFormalizationSnapshot(value: unknown): FormalizationSnapsho
       typeof diagnostic.message !== "string" || typeof diagnostic.blocking !== "boolean" ||
       typeof diagnostic.can_resolve_command !== "boolean" || !Array.isArray(diagnostic.source_refs) ||
       diagnostic.resolution != null && (typeof diagnostic.resolution === "string"
-        ? !["verified_transcription", "explicit_scope_exclusion"].includes(diagnostic.resolution)
+        ? !["verified_transcription", "explicit_scope_exclusion", "explicit_source_boundary"].includes(diagnostic.resolution)
         : diagnostic.resolution.actor !== "user" || diagnostic.resolution.verified !== true ||
           typeof diagnostic.resolution.interpretation !== "string" || typeof diagnostic.resolution.reason !== "string")))) {
     throw new Error("The formalization service returned invalid extraction diagnostics.");
+  }
+  if (raw.preparation != null && (typeof raw.preparation !== "object" || typeof raw.preparation.current !== "boolean" || typeof raw.preparation.status !== "string") ||
+      raw.slice != null && (typeof raw.slice !== "object" || typeof raw.slice.required !== "boolean" || !["representative_slice", "complete"].includes(raw.slice.phase)) ||
+      raw.acceptance_freshness != null && (typeof raw.acceptance_freshness !== "object" || typeof raw.acceptance_freshness.current !== "boolean" || typeof raw.acceptance_freshness.reason !== "string" ||
+        !["not_published", "current", "environment_stale", "checker_stale", "acceptance_stale"].includes(raw.acceptance_freshness.status))) {
+    throw new Error("The formalization service returned invalid preparation or acceptance freshness.");
   }
   return {
     ...raw as FormalizationSnapshot,

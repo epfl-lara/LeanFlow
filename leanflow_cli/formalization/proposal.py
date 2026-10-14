@@ -12,6 +12,7 @@ from typing import Any
 from core.deadlines import operation_cancelled, remaining_seconds
 from leanflow_cli.formalization.compiled_evidence import (
     assert_rebuild_artifacts,
+    assert_reuse_sources_unchanged,
     merge_reused_declarations,
 )
 from leanflow_cli.formalization.dependency_snapshot import create_formalization_snapshot
@@ -19,7 +20,11 @@ from leanflow_cli.formalization.environment import LIBRARY_SEMANTICS, environmen
 from leanflow_cli.formalization.evidence import contained, digest, put_blob
 from leanflow_cli.formalization.lean_build import build_project
 from leanflow_cli.formalization.lean_inspector import INSPECTOR
-from leanflow_cli.formalization.lean_layout import resolve_layout
+from leanflow_cli.formalization.lean_layout import (
+    generation_layout,
+    module_for_file,
+    resolve_layout,
+)
 from leanflow_cli.formalization.lean_policy import POLICY_VERSION, inspect_dependency, inspect_draft
 from leanflow_cli.formalization.proposal_schema import apply_proposal, bind_declarations
 from leanflow_cli.formalization.records import (
@@ -31,6 +36,7 @@ from leanflow_cli.formalization.records import (
     save_receipt,
     save_revision,
 )
+from leanflow_cli.formalization.stage_errors import RepreparationRequired
 from leanflow_cli.native.harness_artifacts import source_files
 from leanflow_cli.workflows.prover.lean_environment import lean_environment_generation
 from leanflow_cli.workflows.prover.source import lean_code_mask
@@ -52,6 +58,7 @@ def _operational_failure(result: dict[str, Any]) -> tuple[str, str] | None:
         "check_setup_failed",
         "isolation_unavailable",
         "check_artifact_drift",
+        "needs_reprepare",
     }:
         return str(code), str(result.get("error", code))
     if result.get("timed_out"):
@@ -142,14 +149,22 @@ def check_proposal(
                 return rejected({"accepted": False, "error_code": "check_cancelled"})
             if deadline is not None and remaining_seconds(deadline) == 0:
                 return rejected({"accepted": False, "error_code": "check_timeout"})
-            assert_source_current(root, base)
+            try:
+                assert_source_current(root, base)
+            except (OSError, ValueError) as error:
+                raise RepreparationRequired(str(error)) from error
             proposal_path = contained(snapshot, ".leanflow-job/formalization-proposal.json")
             proposal = json.loads(proposal_path.read_text())
+            from leanflow_cli.formalization.slice_gate import require_stage
+
+            require_stage(root, base, proposal.get("phase"))
             candidate = apply_proposal(base, proposal)
             candidate = new_revision(candidate)
             candidate["author_base_revision"] = base_revision_id
             stage = "environment"
-            candidate["layout"] = layout = resolve_layout(root, document_id)
+            candidate["layout"] = layout = generation_layout(
+                resolve_layout(root, document_id), base
+            )
             if not layout.get("accepted"):
                 return rejected(
                     layout
@@ -167,8 +182,6 @@ def check_proposal(
             if modules and layout["aggregator"] not in modules:
                 raise ValueError("Generated modules require their document import aggregator")
             if modules:
-                from leanflow_cli.formalization.lean_layout import module_for_file
-
                 aggregator_imports: set[str] = set()
                 for line in lean_code_mask(proposed[layout["aggregator"]].decode()).splitlines():
                     if line.strip().startswith("import "):
@@ -213,7 +226,7 @@ def check_proposal(
             candidate = save_revision(store, candidate)
             selected_attempt = candidate
             if source_files(root) != baseline:
-                raise ValueError("Canonical project sources changed during submission")
+                raise RepreparationRequired("Canonical project sources changed during submission")
             generation = lean_environment_generation(root)
             frozen = create_formalization_snapshot(
                 root,
@@ -285,7 +298,20 @@ def check_proposal(
             reused: dict[tuple[str, ...], list[str]] = {}
             for unit in candidate["units"]:
                 for ref in unit["declarations"]:
-                    if not ref.get("file"):
+                    relative = ref.get("file")
+                    if relative and not owned_path(layout, relative):
+                        if relative not in baseline or not relative.endswith(".lean"):
+                            raise ValueError(
+                                "Existing project reuse must identify an unchanged Lean source"
+                            )
+                        module = module_for_file(layout, relative)
+                        imports = ref.get("imports", [module])
+                        if module not in imports:
+                            raise ValueError(
+                                "Existing project reuse must import its recorded source module"
+                            )
+                        ref["imports"] = imports
+                    if not relative or not owned_path(layout, relative):
                         imports = ref.get("imports")
                         if not isinstance(imports, list) or any(
                             not isinstance(name, str) for name in imports
@@ -301,9 +327,18 @@ def check_proposal(
                     allowed_axioms=allowed_axioms,
                     deadline=deadline,
                     cancelled=cancelled,
+                    local_artifacts=build.get("local_artifacts", {}),
                 )
                 if not result.get("accepted"):
                     return rejected({**result, "revision_id": candidate["revision_id"]})
+                if any(
+                    row.get("file") and owned_path(layout, row["file"])
+                    for row in result["declarations"]
+                ):
+                    raise ValueError(
+                        "Generated declarations must retain their owned source mapping"
+                    )
+                assert_reuse_sources_unchanged(result["declarations"], baseline, changed)
                 merge_reused_declarations(checks, result)
                 checks.setdefault("dependency_replays", []).append(
                     {
@@ -314,14 +349,29 @@ def check_proposal(
                     }
                 )
             bind_declarations(candidate, checks)
+            if (
+                candidate.get("workflow_protocol") == 2
+                and candidate["proposal_phase"] == "complete"
+            ):
+                from leanflow_cli.formalization.slice_gate import assert_complete_slice
+
+                candidate["checks"] = checks
+                assert_complete_slice(root, candidate)
             if source_files(root) != baseline or lean_environment_generation(root) != generation:
-                raise ValueError("Project or dependency inputs changed during verification")
+                raise RepreparationRequired(
+                    "Project or dependency inputs changed during verification"
+                )
             if (
                 environment_identity(root) != candidate["environment_id"]
                 or environment_identity(frozen) != candidate["environment_id"]
             ):
-                raise ValueError("Compiled dependency inputs changed during verification")
-            assert_source_current(root, base)
+                raise RepreparationRequired(
+                    "Compiled dependency inputs changed during verification"
+                )
+            try:
+                assert_source_current(root, base)
+            except (OSError, ValueError) as error:
+                raise RepreparationRequired(str(error)) from error
             candidate.pop("revision_id")
             candidate.update(checks=checks, status="awaiting_review")
             candidate = save_revision(store, candidate)
@@ -345,6 +395,7 @@ def check_proposal(
             )
             return {
                 "accepted": True,
+                "proposal_phase": candidate.get("proposal_phase", "complete"),
                 "revision_id": candidate["revision_id"],
                 "document_id": document_id,
                 "files": {name: data.decode() for name, data in owned.items()},
@@ -354,6 +405,8 @@ def check_proposal(
                 "environment_generation": generation,
                 "selection_token": selection_token,
             }
+    except RepreparationRequired as exc:
+        return rejected({"accepted": False, "error_code": exc.error_code, "error": str(exc)})
     except subprocess.SubprocessError as exc:
         return rejected(
             {

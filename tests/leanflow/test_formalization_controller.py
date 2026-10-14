@@ -97,7 +97,14 @@ def formalization_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(candidate, "check_proposal", verify)
     monkeypatch.setattr(publish, "publish_checked", promote)
 
-    def invoke(*, decision="PASS", calls=3, startup_error=False, submit_then_change=False):
+    def invoke(
+        *,
+        decision="PASS",
+        calls=3,
+        startup_error=False,
+        submit_then_change=False,
+        terminal_submission=False,
+    ):
         def native(request, on_event=None):
             requests.append(request)
             assert source.read_text() == original
@@ -108,8 +115,16 @@ def formalization_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 (request.cwd / "Main.lean").write_text(
                     "theorem source_statement : True := by sorry\n"
                 )
-                if submit_then_change:
+                if submit_then_change or terminal_submission:
                     bridges[-1].callbacks["submit_files"]("candidate")
+                    if terminal_submission:
+                        assert request.cancelled()
+                        return HarnessResult(
+                            "cancelled",
+                            "Controller interrupted stale preparation",
+                            "draft-session",
+                            {"input_tokens": 5, "output_tokens": 5},
+                        )
                     (request.cwd / "Main.lean").write_text(
                         "theorem source_statement : False := by sorry\n"
                     )
@@ -239,6 +254,7 @@ def test_final_rejected_snapshot_is_checked_once(formalization_workflow):
         ("isolation_unavailable", "blocked"),
         ("check_setup_failed", "blocked"),
         ("check_artifact_drift", "blocked"),
+        ("needs_reprepare", "needs_reprepare"),
     ],
 )
 def test_checking_error_stops_without_paid_author_repair(
@@ -260,6 +276,31 @@ def test_checking_error_stops_without_paid_author_repair(
     assert result["status"] == status and "infrastructure" in result["error"]
     assert len(requests) == len(accounting["invocations"]) == 1
     assert source.read_text() == "-- Existing project\n"
+
+
+def test_stale_preparation_submission_interrupts_author_before_native_retry(
+    formalization_workflow, monkeypatch
+):
+    from leanflow_cli.formalization import proposal
+
+    checks = []
+
+    def stale(**kwargs):
+        checks.append(kwargs)
+        return {
+            "accepted": False,
+            "status": "check_error",
+            "error_code": "needs_reprepare",
+            "error": "Prepared dependencies changed; check setup again",
+        }
+
+    monkeypatch.setattr(proposal, "check_proposal", stale)
+    result, accounting, requests, source, _ = formalization_workflow(
+        calls=5, terminal_submission=True
+    )
+    assert result["status"] == "needs_reprepare"
+    assert len(checks) == len(requests) == len(accounting["invocations"]) == 1
+    assert source.read_text() == "-- Existing project\n" and "promoted_files" not in result
 
 
 def test_direct_controller_blocks_unresolved_inventory_before_inference(tmp_path, monkeypatch):

@@ -1,5 +1,5 @@
 /** Validate the bounded repair vocabulary; review verdicts and artifact paths cannot be submitted. */
-import type { FormalizationAction, FormalizationSourceRef } from "../core/formalization";
+import type { FormalizationAction, FormalizationLeanRef, FormalizationSourceRef } from "../core/formalization";
 
 export function formalizationId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value);
@@ -51,7 +51,10 @@ export function parseFormalizationAction(value: unknown): FormalizationAction | 
     case "authorize_proof":
       return formalizationId(raw.item_id) && typeof raw.authorized === "boolean" && text(raw.reason) && raw.reason.trim()
         ? { type: raw.type, item_id: raw.item_id, authorized: raw.authorized, reason: raw.reason } : null;
+    case "retry_extraction":
+      return text(raw.reason) && raw.reason.trim() ? { type: "retry_extraction", reason: raw.reason } : null;
     case "transcribe_page":
+    case "replace_page_transcription":
       return positive(raw.page_index, 0) && text(raw.text, 100000) && raw.text.trim() && text(raw.reason) && raw.reason.trim() && raw.verified === true
         ? { type: raw.type, page_index: raw.page_index, text: raw.text, reason: raw.reason, verified: true } : null;
     case "set_scope":
@@ -70,16 +73,38 @@ export function parseFormalizationAction(value: unknown): FormalizationAction | 
       return refs && formalizationId(raw.item_id) ? { type: raw.type, item_id: raw.item_id, source_refs: refs } : null;
     }
     case "set_mapping": {
-      if (!formalizationId(raw.item_id) || !text(raw.rationale) || !raw.rationale.trim() ||
-          !Array.isArray(raw.lean_refs) || raw.lean_refs.length > 128) return null;
-      const refs: { file: string; name: string }[] = [];
+      if ((raw.item_id !== undefined && !formalizationId(raw.item_id)) || !text(raw.rationale) || !raw.rationale.trim() ||
+          !Array.isArray(raw.lean_refs) || raw.lean_refs.length === 0 || raw.lean_refs.length > 128) return null;
+      const ids = (value: unknown): value is string[] => Array.isArray(value) && value.length <= 128 && value.every(formalizationId) && new Set(value).size === value.length;
+      if ((raw.source_ids !== undefined && (!ids(raw.source_ids) || !raw.source_ids.length)) ||
+          raw.item_id === undefined && raw.source_ids === undefined ||
+          raw.unit_id !== undefined && !formalizationId(raw.unit_id) ||
+          raw.depends_on_units !== undefined && !ids(raw.depends_on_units)) return null;
+      const refs: FormalizationLeanRef[] = [];
       for (const value of raw.lean_refs) {
         const row = record(value);
-        if (!row || !text(row.file, 4096) || !row.file.endsWith(".lean") || /^[\\/]|^[A-Za-z]:/.test(row.file) ||
-            row.file.split(/[\\/]/).some(part => part === "..") || !text(row.name, 1024) || !row.name.trim()) return null;
-        refs.push({ file: row.file, name: row.name });
+        if (!row || !text(row.name, 1024) || !row.name.trim()) return null;
+        const ref: FormalizationLeanRef = { name: row.name.trim() };
+        if (row.file !== undefined) {
+          if (!text(row.file, 4096) || row.file && (!row.file.endsWith(".lean") || /^[\\/]|^[A-Za-z]:/.test(row.file) || row.file.split(/[\\/]/).some(part => part === ".."))) return null;
+          ref.file = row.file;
+        }
+        if (row.imports !== undefined) {
+          if (!Array.isArray(row.imports) || !row.imports.length || row.imports.length > 128 || row.imports.some(module => !text(module, 1024) || !/^[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*$/.test(module))) return null;
+          ref.imports = [...new Set(row.imports as string[])];
+        }
+        if (!ref.file && !ref.imports?.length) return null;
+        if (row.declaration_origin !== undefined) {
+          if (!["generated", "existing_project", "dependency"].includes(String(row.declaration_origin)) || row.declaration_origin === "dependency" && ref.file || row.declaration_origin === "generated" && !ref.file) return null;
+          ref.declaration_origin = row.declaration_origin as FormalizationLeanRef["declaration_origin"];
+        }
+        refs.push(ref);
       }
-      return { type: raw.type, item_id: raw.item_id, lean_refs: refs, rationale: raw.rationale };
+      return { type: raw.type, ...(raw.item_id !== undefined ? { item_id: raw.item_id as string } : {}),
+        ...(raw.source_ids !== undefined ? { source_ids: raw.source_ids as string[] } : {}),
+        ...(raw.unit_id !== undefined ? { unit_id: raw.unit_id as string } : {}),
+        ...(raw.depends_on_units !== undefined ? { depends_on_units: raw.depends_on_units as string[] } : {}),
+        lean_refs: refs, rationale: raw.rationale };
     }
     case "select_revision":
       return formalizationId(raw.revision_id) ? { type: raw.type, revision_id: raw.revision_id } : null;

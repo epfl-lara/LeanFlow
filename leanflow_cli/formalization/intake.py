@@ -13,8 +13,17 @@ from leanflow_cli.formalization.formalization_models import (
     FormalizationDocumentError,
     _FormalizationDocumentSelection,
 )
-from leanflow_cli.formalization.lean_layout import resolve_layout
-from leanflow_cli.formalization.records import create_document, document_directory, source_bytes
+from leanflow_cli.formalization.lean_layout import generation_layout, resolve_layout
+from leanflow_cli.formalization.records import (
+    create_document,
+    document_directory,
+    document_lock,
+    load_document,
+    new_revision,
+    rehydrate_document,
+    save_revision,
+    source_bytes,
+)
 
 
 def author_blocking_diagnostics(inventory: dict[str, Any]) -> list[dict[str, Any]]:
@@ -96,6 +105,9 @@ def draft_source_rejection(inventory: dict[str, Any]) -> dict[str, Any] | None:
 def preflight_dependencies(root: Path, document_id: str = "preflight") -> dict[str, Any]:
     """Apply the builder's read-only admission before starting paid formalization work."""
     try:
+        from leanflow_cli.formalization.preparation_transaction import assert_no_pending_preparation
+
+        assert_no_pending_preparation(root)
         inventory = dependency_inputs(root)
         layout = resolve_layout(root, document_id)
         if not layout.get("accepted"):
@@ -109,16 +121,47 @@ def preflight_dependencies(root: Path, document_id: str = "preflight") -> dict[s
 
 
 def prepare_intake(
-    root: Path, selection: _FormalizationDocumentSelection
+    root: Path, selection: _FormalizationDocumentSelection, *, require_preparation: bool = False
 ) -> FormalizationDocumentContext:
     """Freeze source authority and allocate a real Lake-owned prospective module tree."""
     record = create_document(root, selection.source_path)
-    blockers = [row["message"] for row in author_blocking_diagnostics(record["inventory"])]
+    checked_plan: dict[str, Any] | None = None
+    if require_preparation:
+        from leanflow_cli.formalization.preparation import assert_preparation_current
+
+        receipt = assert_preparation_current(root)
+        if receipt["source_bundle"] != record["source_bundle"]:
+            raise FormalizationDocumentError(
+                "Prepared source changed; estimate and check setup again"
+            )
+        fields = {
+            "workflow_protocol": 2,
+            "preparation_id": receipt["preparation_id"],
+            "preparation_plan_id": receipt["preparation_plan_id"],
+            "slice_source_ids": receipt["plan"]["slice_source_ids"],
+        }
+        if any(record.get(key) != value for key, value in fields.items()):
+            with document_lock(root, record["document_id"]) as owner:
+                current = load_document(root, record["document_id"])
+                if current["revision_id"] != record["revision_id"]:
+                    raise FormalizationDocumentError("Source selection changed during preparation")
+                rehydrate_document(current, owner)
+                record = new_revision(current)
+                record.update(fields)
+                record = save_revision(owner, record)
+    from leanflow_cli.formalization.inventory_authority import complete_inventory
+
+    inventory = complete_inventory(record)
+    if record.get("workflow_protocol") == 2:
+        from leanflow_cli.formalization.preparation_assignment import checked_preparation_assignment
+
+        checked_plan = checked_preparation_assignment(root, record)
+    blockers = [row["message"] for row in author_blocking_diagnostics(inventory)]
     if blockers:
         raise FormalizationDocumentError(
             "Source extraction needs repair before starting formalization: " + "; ".join(blockers)
         )
-    layout = preflight_dependencies(root, record["document_id"])
+    layout = generation_layout(preflight_dependencies(root, record["document_id"]), record)
     directory = document_directory(root, record["document_id"]) / "intake" / record["revision_id"]
     directory.mkdir(parents=True, exist_ok=True)
     context_path, manifest_path = directory / "context.md", directory / "manifest.json"
@@ -149,10 +192,21 @@ def prepare_intake(
         "schema_version": 1,
         "document_id": record["document_id"],
         "revision_id": record["revision_id"],
-        "inventory": record["inventory"],
+        "inventory": inventory,
         "layout": layout,
         "units": record.get("units", []),
         "source_bundle": record["source_bundle"],
+        **({"checked_preparation_plan": checked_plan} if checked_plan else {}),
+        **{
+            key: record[key]
+            for key in (
+                "workflow_protocol",
+                "preparation_id",
+                "preparation_plan_id",
+                "slice_source_ids",
+            )
+            if key in record
+        },
     }
     durable_json(manifest_path, manifest)
     guidance = f"""# Formalization assignment
@@ -165,11 +219,18 @@ diagnostics require source repair; never hide uncertainty, omit candidates, or n
 scope. If an unrecognized statement is found, report it for inventory repair.
 
 {draft_source_guidance(record['inventory'])}
+Read the complete source manifest, including checked_preparation_plan when present.
+Its exact package pins and imports have infrastructure checks. Its prerequisite
+candidate names and representation notes are estimates: inspect and compile reuse,
+then obtain independent source review before they can pass a translation gate.
 The evaluated Lake library is {layout['library']}. Put modules only in
 `{layout['owned_prefix']}/` and its aggregator `{layout['aggregator']}`. The aggregator
 must import every generated module. LeanFlow registers the root import after checking.
 Preserve all original project files and dependency configuration. Reuse exact pinned
 library declarations where appropriate; a zero-new-declaration translation is valid.
+Place new declarations in namespace `{layout['module_prefix']}` so a new reviewed
+translation can coexist with preserved earlier generations. Reuse existing complete
+declarations directly where faithful; never overwrite old translation modules.
 Before expanding the whole paper, check a representative slice: a shared definition,
 a dependent statement, a library reuse or bridge, and a named proof obligation where
 applicable. Record the representation choices and the slice's Lean feedback in
@@ -207,7 +268,17 @@ pass each item and the whole document. Author self-approval never satisfies a ga
         "revision_id": record["revision_id"],
         "layout": layout,
         "source_bundle": record["source_bundle"],
-        "inventory": record["inventory"],
+        "inventory": inventory,
+        **{
+            key: record[key]
+            for key in (
+                "workflow_protocol",
+                "preparation_id",
+                "preparation_plan_id",
+                "slice_source_ids",
+            )
+            if key in record
+        },
     }
     return FormalizationDocumentContext(
         source_path=selection.source_path,

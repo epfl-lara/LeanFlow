@@ -7,16 +7,26 @@ from pathlib import Path
 from typing import Any
 
 from leanflow_cli.formalization.evidence import contained, digest, identity
+from leanflow_cli.formalization.freshness import AcceptanceFreshness, published_acceptance_freshness
+from leanflow_cli.formalization.inventory_authority import assert_complete_coverage
 from leanflow_cli.formalization.records import document_directory
 from leanflow_cli.native.harness_artifacts import source_files
 
 
 def current_proof_receipt(
-    root: Path, record: dict[str, Any], receipt: dict[str, Any] | None
+    root: Path,
+    record: dict[str, Any],
+    receipt: dict[str, Any] | None,
+    *,
+    freshness: AcceptanceFreshness | None = None,
 ) -> dict[str, Any] | None:
     """Return only complete controller evidence matching the selected review and live source."""
     if not receipt or receipt.get("status") != "published" or not receipt.get("handoff"):
         return None
+    assert_complete_coverage(record)
+    freshness = freshness or published_acceptance_freshness(root, record, receipt)
+    if not freshness["current"]:
+        raise ValueError(freshness["reason"])
     directory = document_directory(root, record["document_id"], published=True)
     parent = contained(directory, "proof-revisions")
     if not parent.is_dir():
@@ -24,7 +34,11 @@ def current_proof_receipt(
     from leanflow_cli.formalization.handoff import validate_handoff
 
     handoff = validate_handoff(
-        root, directory / "handoff.json", record["revision_id"], check_sources=False
+        root,
+        directory / "handoff.json",
+        record["revision_id"],
+        check_sources=False,
+        checked_environment_id=record["environment_id"],
     )
     if handoff != receipt["handoff"]:
         raise ValueError("Proof preservation belongs to a different source review")
@@ -59,7 +73,7 @@ def current_proof_receipt(
             raise ValueError("Proof preservation differs from reviewed acceptance")
         profiles = checks.get("profiles", {})
         for name, before in handoff["protected_declarations"].items():
-            if not before["file"]:
+            if before["declaration_origin"] != "generated":
                 continue
             current = profiles.get(name, {})
             if current.get("type_hash") != before["type_hash"] or (

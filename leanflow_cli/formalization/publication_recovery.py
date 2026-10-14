@@ -32,10 +32,18 @@ def recover_locked(
     """Recover one owned transaction; the caller must hold project publication ownership."""
     journal = load_journal(journal_path)
     directory = journal_path.parent
-    if journal["state"] in {"COMMITTED", "ROLLED_BACK"}:
-        audit_retained(root, registry)
+    if journal["state"] in {"COMMITTED", "ROLLED_BACK", "RESOLVED"}:
         settle_terminal(root, registry, journal)
+        audit_retained(root, registry)
         return journal
+    if journal["state"] == "CONFLICTED" and journal.get("resolutions"):
+        raise PublicationConflict(
+            "A retained version changed after resolution; inspect and resolve again"
+        )
+    if journal["state"] == "CONFLICTED" and journal.get("retained_conflict_from"):
+        raise PublicationConflict(
+            "A historical retained version changed; inspect and explicitly resolve all versions"
+        )
     if journal["state"] == "PREPARING":
         # No project destination can move before the complete PREPARED journal.
         journal["state"] = "ROLLED_BACK"

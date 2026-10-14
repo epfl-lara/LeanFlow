@@ -18,6 +18,7 @@ from leanflow_cli.workflows.project import (
     initialize_leanflow_project,
     load_leanflow_project,
 )
+from leanflow_cli.workflows.project_setup.execution import SetupExecutionPolicy
 from leanflow_cli.workflows.project_setup.process import (
     Progress,
     SetupCancelled,
@@ -63,6 +64,7 @@ def prepare_project(
     repair: bool = False,
     progress: Progress | None = None,
     cancel: threading.Event | None = None,
+    execution_policy: SetupExecutionPolicy | None = None,
 ) -> dict[str, Any]:
     """Return structured setup errors even when the log or receipt cannot be written."""
     try:
@@ -75,6 +77,7 @@ def prepare_project(
             repair=repair,
             progress=progress,
             cancel=cancel,
+            execution_policy=execution_policy,
         )
     except (OSError, ValueError) as exc:
         return {
@@ -105,9 +108,12 @@ def _prepare_project(
     repair: bool = False,
     progress: Progress | None = None,
     cancel: threading.Event | None = None,
+    execution_policy: SetupExecutionPolicy | None = None,
 ) -> dict[str, Any]:
     """Prepare a project under exclusive ownership and return an actionable receipt."""
     root = project_root(path)
+    if execution_policy is not None and root != execution_policy.isolation.snapshot_root.resolve():
+        raise ValueError("Preparation service must own exactly its bound private stage")
     state = state_directory(root)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     log_path = state / f"{uuid.uuid4().hex}.log"
@@ -133,6 +139,8 @@ def _prepare_project(
 
         def phase(value: str, message: str) -> None:
             check_cancel(cancel)
+            if execution_policy is not None:
+                execution_policy.check(cancel)
             ensure_storage_capacity(root if root.exists() else root.parent)
             result["phase"] = value
             log.write(message + "\n")
@@ -165,6 +173,7 @@ def _prepare_project(
                 phase=str(result["phase"]),
                 input_text=input_text,
                 stdout_only=stdout_only,
+                **({"execution_policy": execution_policy} if execution_policy is not None else {}),
             )
             if exit_code:
                 detail = safe_text(output[-4000:])
@@ -186,7 +195,8 @@ def _prepare_project(
                     and not template_source
                 ):
                     load_leanflow_project(root)
-                    _share_dependencies(root, log)
+                    if execution_policy is None:
+                        _share_dependencies(root, log)
                     message = "Already set up. Existing dependencies and verification results were reused."
                     phase("ready", message)
                     result = {
@@ -276,7 +286,7 @@ def _prepare_project(
                 pins = manifest_revisions(previous)
                 phase("dependencies", "Preparing pinned project dependencies")
                 added = configure_repl(root, run, changed)
-                shared = _restore_dependencies(root, log)
+                shared = _restore_dependencies(root, log) if execution_policy is None else False
                 if (
                     added
                     or not manifest.is_file()
@@ -313,7 +323,8 @@ def _prepare_project(
                         raise
                     if previous != (manifest.read_bytes() if manifest.is_file() else None):
                         changed.append("lake-manifest.json")
-                    shared = _restore_dependencies(root, log) or shared
+                    if execution_policy is None:
+                        shared = _restore_dependencies(root, log) or shared
                 if shared:
                     reuse_installed = installed_environment(root)
                     phase("dependencies", "Reusing private copies of shared pinned dependencies")
@@ -345,7 +356,8 @@ def _prepare_project(
                     "Testing Lean with a small library import; your proofs are not compiled",
                 )
                 binary = protocol_check(root, run, mathlib=mathlib)
-                _share_dependencies(root, log)
+                if execution_policy is None:
+                    _share_dependencies(root, log)
                 diagnostics = source_diagnostics(root)
                 initialize_leanflow_project(root, name=name)
                 result.update(
@@ -397,6 +409,8 @@ def _prepare_project(
         log.write(f"\n{result['status']}: {result['message']}\n")
         log.flush()
     # A rejected attempt must not invalidate the readiness receipt of the active run.
+    if execution_policy is not None:
+        result["execution"] = execution_policy.evidence()
     if result["code"] != "project_busy":
         save_result(root, result)
     return result

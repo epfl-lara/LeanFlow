@@ -14,6 +14,7 @@ from leanflow_cli.formalization.evidence import (
     identity,
     read_blob,
 )
+from leanflow_cli.formalization.inventory_authority import display_inventory
 from leanflow_cli.formalization.records import (
     DocumentSelectionConflict,
     assert_source_current,
@@ -57,6 +58,18 @@ def _artifacts(
         }
         for file, original in record.get("lean_files", {}).items()
         for key in [(proof_receipt or {}).get("after", {}).get(file, original)]
+    )
+    result.extend(
+        {
+            "id": "context-lean-" + identity({"file": file, "sha256": key}),
+            "path": file,
+            "kind": "lean",
+            "sha256": key,
+            "title": Path(file).name,
+            "origin": "context",
+        }
+        for file, key in record.get("context_lean_files", {}).items()
+        if file not in record.get("lean_files", {})
     )
     return result
 
@@ -135,14 +148,17 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
     selection_conflict = record.get("_selection_conflict")
     proof_receipt = None
     proof_error = ""
+    from leanflow_cli.formalization.freshness import published_acceptance_freshness
+
+    freshness = published_acceptance_freshness(root, record, receipt, verify_bytes=False)
     if not selection_conflict:
         try:
             from leanflow_cli.formalization.proof_receipts import current_proof_receipt
 
-            proof_receipt = current_proof_receipt(root, record, receipt)
+            proof_receipt = current_proof_receipt(root, record, receipt, freshness=freshness)
         except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
             proof_error = str(error)
-    inventory = record["inventory"]
+    inventory = display_inventory(record, reviewed=receipt_status == "published")
     verdicts = _verdicts(receipt)
     claims = {
         claim["source_id"]: claim
@@ -157,7 +173,7 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
     lean_artifacts = {
         artifact["path"]: artifact["id"]
         for artifact in artifacts
-        if artifact["origin"] in {"lean", "proof"}
+        if artifact["origin"] in {"lean", "proof", "context"}
     }
     items = []
     for source in inventory["items"]:
@@ -191,6 +207,9 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
             if not rows or any(row.get("pending") for row in rows)
             else "conditional" if any(row.get("conditional") for row in rows) else "checked"
         )
+        acceptance_stale = receipt_status == "published" and not freshness["current"]
+        if acceptance_stale:
+            proof = "stale"
         items.append(
             {
                 "id": source["id"],
@@ -218,12 +237,20 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
                     )
                 ),
                 "elaboration_status": (
-                    "error"
-                    if receipt_status == "check_error"
+                    "stale"
+                    if acceptance_stale
                     else (
-                        "rejected"
-                        if receipt_status == "check_rejected"
-                        else "checked" if references and len(rows) == len(references) else "pending"
+                        "error"
+                        if receipt_status == "check_error"
+                        else (
+                            "rejected"
+                            if receipt_status == "check_rejected"
+                            else (
+                                "checked"
+                                if references and len(rows) == len(references)
+                                else "pending"
+                            )
+                        )
                     )
                 ),
                 "proof_status": proof,
@@ -268,6 +295,9 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
         if selection_conflict
         else (receipt or {}).get("status", record.get("status", "inventory_pending"))
     )
+    if status == "published" and not freshness["current"]:
+        status = freshness["status"]
+        proof_error = freshness["reason"]
     handoff = (receipt or {}).get("handoff")
     lean_stale = bool(proof_error)
     publication_error = proof_error
@@ -321,12 +351,18 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
                         }
                     )
                     seen.add(path.stem)
+    from leanflow_cli.formalization.preparation import preparation_status
+    from leanflow_cli.formalization.slice_gate import slice_status
+
     return {
         "schema_version": 1,
         "document_id": record["document_id"],
         "revision_id": record["revision_id"],
         "status": status,
         "receipt_error": str(receipt_error) if receipt_error else None,
+        "acceptance_freshness": freshness,
+        "preparation": preparation_status(root),
+        "slice": slice_status(root, record),
         "source": {
             "kind": inventory["source_kind"],
             "path": inventory["source_relative"],
@@ -335,7 +371,7 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
         },
         "items": items,
         "regions": regions,
-        "diagnostics": _diagnostics(record)
+        "diagnostics": _diagnostics({**record, "inventory": inventory})
         + (
             [
                 publication_error
@@ -469,7 +505,11 @@ def resolve_artifact(
         record = load_document(root, document_id)
         if record["revision_id"] != identifier(expected_revision):
             raise ValueError("Formalization revision changed; refresh before opening its source")
-        proof_receipt = current_proof_receipt(root, record, load_receipt(record))
+        try:
+            proof_receipt = current_proof_receipt(root, record, load_receipt(record))
+        except (OSError, ValueError, RuntimeError):
+            # Historical frozen source remains inspectable after authority expires.
+            proof_receipt = None
         candidates = [
             artifact
             for artifact in _artifacts(record, proof_receipt)
