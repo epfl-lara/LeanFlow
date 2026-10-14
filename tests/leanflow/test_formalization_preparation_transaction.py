@@ -10,6 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from leanflow_cli.formalization import (
+    preparation_journal,
+    preparation_progress,
+    preparation_resolution_progress,
+)
 from leanflow_cli.formalization import preparation_transaction as transaction
 from leanflow_cli.formalization.preparation_journal import load_journal, load_registry
 
@@ -183,6 +188,248 @@ def test_resolution_rejects_wrong_transaction_or_hash_drift(tmp_path):
     (root / "lakefile.toml").write_text("another save")
     with pytest.raises(transaction.PreparationConflict, match="versions changed"):
         transaction.resolve_preparation_conflict(root, observed, "Reviewed")
+
+
+def test_archive_copy_process_exit_is_visible_and_retry_preserves_independent_partial(tmp_path):
+    root, staged = tmp_path / "root", tmp_path / "stage"
+    managed = _project(root, staged)
+
+    def save(name):
+        if name == "captured:lakefile.toml":
+            (root / "lakefile.toml").write_text("canonical editor version\n")
+
+    with pytest.raises(transaction.PreparationConflict):
+        _commit(root, staged, managed, checkpoint=save)
+    original = _observed(root)
+    source = (root / "User.lean").read_bytes()
+    canonical = transaction.entry_identity(root / ".lake")
+    script = """
+import json, os, sys
+from pathlib import Path
+from leanflow_cli.formalization import preparation_transaction as transaction
+root = Path(sys.argv[1])
+observed = json.loads(sys.argv[2])
+def exit_during_copy(name):
+    if name.startswith('resolution_archive_copy:'):
+        path = root / name.split(':', 1)[1]
+        if path.is_dir():
+            os._exit(89)
+transaction.resolve_preparation_conflict(root, observed, 'Preserve all actual versions', checkpoint=exit_during_copy)
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(root), json.dumps(original)])
+    assert result.returncode == 89
+    journal = transaction.load_preparation_transaction(root)
+    intent = journal["archive_copy_intents"][0]
+    partial = root / intent["path"]
+    assert partial.is_dir() and transaction.entry_identity(partial) != intent["expected"]
+    shown = _observed(root)
+    assert shown["retained_slots"][intent["path"]] == transaction.entry_identity(partial)
+    with pytest.raises(transaction.PreparationConflict, match="versions changed"):
+        transaction.resolve_preparation_conflict(root, original, "Old observation")
+    (partial / "independent.txt").write_text("User reconciliation inside interrupted archive\n")
+    with pytest.raises(transaction.PreparationConflict, match="versions changed"):
+        transaction.resolve_preparation_conflict(root, shown, "Stale partial observation")
+    actual = transaction.entry_identity(partial)
+    resolved = transaction.resolve_preparation_conflict(
+        root, _observed(root), "Reviewed partial and canonical versions"
+    )
+    assert resolved["state"] == "RESOLVED"
+    assert transaction.entry_identity(partial) == actual
+    assert actual in resolved["resolutions"][-1]["archives"]
+    assert transaction.entry_identity(root / ".lake") == canonical
+    assert (root / "User.lean").read_bytes() == source
+    transaction.assert_no_pending_preparation(root)
+    (partial / "independent.txt").write_text("Later edit\n")
+    with pytest.raises(transaction.PreparationConflict):
+        transaction.assert_no_pending_preparation(root)
+    assert any(
+        "archive version changed" in issue
+        for issue in load_journal(root, resolved["transaction_id"])["conflicts"]
+    )
+
+
+def test_legacy_unregistered_partial_archive_is_observed_and_preserved_on_retry(tmp_path):
+    root, staged = tmp_path / "root", tmp_path / "stage"
+    managed = _project(root, staged)
+
+    def save(name):
+        if name == "captured:lakefile.toml":
+            (root / "lakefile.toml").write_text("user version\n")
+
+    with pytest.raises(transaction.PreparationConflict):
+        _commit(root, staged, managed, checkpoint=save)
+    before = _observed(root)
+    expected = before["destinations"][".lake"]
+    legacy = (
+        root / f".leanflow/preparation-transactions/{before['transaction_id']}/versions/{expected}"
+    )
+    legacy.mkdir(parents=True)
+    (legacy / "user.txt").write_text("Preserve legacy interrupted bytes")
+    actual = transaction.entry_identity(legacy)
+    observed = _observed(root)
+    assert observed["retained_slots"][legacy.relative_to(root).as_posix()] == actual
+    with pytest.raises(transaction.PreparationConflict, match="versions changed"):
+        transaction.resolve_preparation_conflict(root, before, "Old observation")
+    result = transaction.resolve_preparation_conflict(
+        root, observed, "Reconciled legacy partial archive"
+    )
+    assert result["state"] == "RESOLVED" and transaction.entry_identity(legacy) == actual
+    assert actual in result["resolutions"][-1]["archives"]
+    transaction.assert_no_pending_preparation(root)
+
+
+def test_resolution_intent_bytes_and_destination_observations_scale_linearly(tmp_path, monkeypatch):
+    measurements = []
+    for count in (8, 16):
+        root, staged = tmp_path / f"root-{count}", tmp_path / f"stage-{count}"
+        for directory in (root, staged):
+            (directory / ".lake").mkdir(parents=True)
+        (root / "lakefile.toml").write_text('name = "old"\n')
+        (staged / "lakefile.toml").write_text('name = "new"\n')
+        names = ["lakefile.toml"]
+        for index in range(count):
+            relative = f".lake/leaf-{index}.bin"
+            names.append(relative)
+            (root / relative).write_text(f"old bytes {index}")
+            (staged / relative).write_text(f"new bytes {index}")
+        managed = {name: transaction.entry_identity(root / name) for name in names}
+
+        def editor(name):
+            if name == "captured:lakefile.toml":
+                (root / "lakefile.toml").write_text("canonical user choice\n")
+
+        with pytest.raises(transaction.PreparationConflict):
+            _commit(root, staged, managed, checkpoint=editor)
+        observed = _observed(root)
+        stats = {"bytes": 0, "snapshots": 0, "intents": 0, "destinations": 0}
+        actual_json = preparation_progress.durable_json
+        actual_publish = preparation_resolution_progress._publish_record
+        actual_identity = preparation_journal.entry_identity
+
+        def write(path, value):
+            stats["bytes"] += len(
+                (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
+            )
+            if path.parent.name == "transactions":
+                stats["snapshots"] += 1
+            else:
+                stats["intents"] += 1
+            if path.parent.name == "transactions":
+                actual_json(path, value)
+            else:
+                actual_publish(path, value)
+
+        def inspect(path):
+            if path.relative_to(root).as_posix() in managed:
+                stats["destinations"] += 1
+            return actual_identity(path)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(preparation_progress, "durable_json", write)
+            patched.setattr(preparation_resolution_progress, "_publish_record", write)
+            patched.setattr(preparation_journal, "entry_identity", inspect)
+            resolved = transaction.resolve_preparation_conflict(
+                root, observed, "Reviewed all leaf versions"
+            )
+        assert resolved["state"] == "RESOLVED"
+        assert stats["snapshots"] == 1 and stats["intents"] == len(
+            resolved["resolutions"][-1]["archives"]
+        )
+        assert stats["destinations"] == 2 * len(managed)
+        measurements.append(stats)
+    assert measurements[1]["bytes"] < 2.3 * measurements[0]["bytes"], measurements
+
+
+def test_lost_full_journal_keeps_archive_intent_bytes_in_exact_loss_observation(tmp_path):
+    root, staged = tmp_path / "root", tmp_path / "stage"
+    managed = _project(root, staged)
+
+    def editor(name):
+        if name == "captured:lakefile.toml":
+            (root / "lakefile.toml").write_text("canonical user choice\n")
+
+    with pytest.raises(transaction.PreparationConflict):
+        _commit(root, staged, managed, checkpoint=editor)
+    observed = _observed(root)
+    journal = load_journal(root, observed["transaction_id"])
+    expected = observed["destinations"][".lake"]
+    payload = {
+        "path": f".leanflow/preparation-transactions/{journal['transaction_id']}/versions/{expected}",
+        "expected": expected,
+        "source": ".lake",
+        "observation_id": observed["observation_id"],
+    }
+    from leanflow_cli.formalization.evidence import identity
+
+    preparation_resolution_progress.save_archive_intent(
+        transaction.preparation_directory(root),
+        journal,
+        {**payload, "intent_id": identity(payload)},
+    )
+    directory = transaction.preparation_directory(root)
+    record = next((directory / "archive-intents").rglob("*.json"))
+    (directory / "transactions" / f"{journal['transaction_id']}.json").unlink()
+    loss = transaction.preparation_conflicts(root)["transactions"][0]
+    assert loss["unavailable_journal"] is True and loss["planned_versions"] is None
+    assert str(record) in loss["retained_slots"]
+    first = {
+        key: loss[key]
+        for key in (
+            "transaction_id",
+            "observation_id",
+            "destinations",
+            "retained_slots",
+            "history_id",
+        )
+    }
+    record.write_bytes(record.read_bytes() + b" ")
+    with pytest.raises(transaction.PreparationConflict, match="versions changed"):
+        transaction.resolve_preparation_conflict(root, first, "Stale intent loss acknowledgment")
+
+
+def test_archive_intent_exclusive_publication_preserves_actual_concurrent_creator(
+    tmp_path, monkeypatch
+):
+    root, staged = tmp_path / "root", tmp_path / "stage"
+    managed = _project(root, staged)
+
+    def editor(name):
+        if name == "captured:lakefile.toml":
+            (root / "lakefile.toml").write_text("canonical user choice\n")
+
+    with pytest.raises(transaction.PreparationConflict):
+        _commit(root, staged, managed, checkpoint=editor)
+    observed = _observed(root)
+    journal = load_journal(root, observed["transaction_id"])
+    expected = observed["destinations"][".lake"]
+    payload = {
+        "path": f".leanflow/preparation-transactions/{journal['transaction_id']}/versions/{expected}",
+        "expected": expected,
+        "source": ".lake",
+        "observation_id": observed["observation_id"],
+    }
+    from leanflow_cli.formalization.evidence import identity
+
+    link = preparation_resolution_progress.os.link
+    winner = []
+
+    def concurrent_creator(source, target, **kwargs):
+        script = "import json, os, sys; from pathlib import Path; Path(sys.argv[1]).write_text(json.dumps({'independent_creator_pid': os.getpid()}))"
+        result = subprocess.run([sys.executable, "-c", script, str(target)])
+        assert result.returncode == 0
+        winner.append((Path(target), Path(target).read_bytes()))
+        return link(source, target, **kwargs)
+
+    monkeypatch.setattr(preparation_resolution_progress.os, "link", concurrent_creator)
+    with pytest.raises(ValueError, match="Existing preparation archive intent changed"):
+        preparation_resolution_progress.save_archive_intent(
+            transaction.preparation_directory(root),
+            journal,
+            {**payload, "intent_id": identity(payload)},
+        )
+    assert len(winner) == 1 and winner[0][0].read_bytes() == winner[0][1]
+    assert json.loads(winner[0][1])["independent_creator_pid"] != os.getpid()
+    assert not (root / payload["path"]).exists()
 
 
 def test_old_committed_descriptor_remains_audited_after_newer_transaction(tmp_path):

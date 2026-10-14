@@ -7,6 +7,8 @@ from typing import Any
 
 from leanflow_cli.formalization.evidence import identifier
 from leanflow_cli.formalization.inventory_authority import complete_inventory
+from leanflow_cli.formalization.lean_origin import imported_origin_owner
+from leanflow_cli.formalization.lean_policy import POLICY_VERSION
 
 
 def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str, Any]:
@@ -203,8 +205,43 @@ def bind_declarations(record: dict[str, Any], checks: dict[str, Any]) -> None:
         if name in active:
             raise ValueError("Compiler-generated declaration ownership has a cycle")
         direct = set(registry[name].get("generated_from", []))
-        if direct - set(registry):
-            raise ValueError("Compiler-generated declaration has an unknown owner")
+        unknown = direct - set(registry)
+        if unknown:
+            # Simplification can inline an imported definition's lazy equation.
+            # Its exact source-backed consumer owns this generated helper; the
+            # borrowed parent remains provenance only, outside authored mappings.
+            row = registry[name]
+            parent = imported_origin_owner(row, checks.get("origin_parent_profiles", {}))
+            origin = checks.get("origin_parent_profiles", {}).get(next(iter(unknown)), {})
+            if (
+                len(direct) != 1
+                or checks.get("accepted") is not True
+                or checks.get("policy_id") != POLICY_VERSION
+                or not isinstance(parent, dict)
+                or parent.get("declaration_origin") != "existing_project"
+                or not parent.get("file")
+                or not parent.get("source_sha256")
+                or checks.get("admitted_project_sources", {}).get(parent["file"])
+                != parent["source_sha256"]
+                or any(
+                    origin.get(key) != parent.get(key)
+                    for key in ("file", "source_sha256", "declaration_origin")
+                )
+            ):
+                raise ValueError("Compiler-generated declaration has an unknown owner")
+            owners = {
+                owner["name"]
+                for owner in registry.values()
+                if owner["name"] in mapped
+                and not owner.get("generated_from")
+                and isinstance(owner.get("source_range"), dict)
+                and owner.get("module") == row.get("module")
+                and owner.get("file") == row.get("file")
+                and {name, parent["name"]} & set(owner.get("direct_dependencies", []))
+            }
+            if not owners:
+                raise ValueError("Imported compiler equation has no exact mapped source consumer")
+            return owners
         return direct | {
             ancestor
             for parent in direct
@@ -221,9 +258,10 @@ def bind_declarations(record: dict[str, Any], checks: dict[str, Any]) -> None:
             or row["name"] in mapped
         ):
             continue
+        ancestors = compiler_ancestors(row["name"])
         for unit in record["units"]:
             unit_names = {reference["name"] for reference in unit["declarations"]}
-            if compiler_ancestors(row["name"]) & unit_names:
+            if ancestors & unit_names:
                 reference = {
                     "name": row["name"],
                     "file": row["file"],
@@ -233,6 +271,7 @@ def bind_declarations(record: dict[str, Any], checks: dict[str, Any]) -> None:
                     "conditional": row.get("conditional", False),
                     "generated_from": parents,
                     "generation_kind": row["generation_kind"],
+                    "compiler_owner_names": sorted(ancestors & unit_names),
                 }
                 if type(row.get("line_start")) is int and row["line_start"] > 0:
                     reference["line_start"] = row["line_start"]

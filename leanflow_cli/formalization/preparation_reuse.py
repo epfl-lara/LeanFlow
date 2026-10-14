@@ -9,7 +9,9 @@ from typing import Any
 
 from leanflow_cli.formalization.environment import environment_identity
 from leanflow_cli.formalization.evidence import identity
+from leanflow_cli.formalization.inspector_readiness import valid_inspector_readiness
 from leanflow_cli.formalization.preparation_transaction import commit_preparation, protected_inputs
+from leanflow_cli.formalization.stage_errors import RepreparationRequired
 
 
 def reuse_preparation(
@@ -23,6 +25,10 @@ def reuse_preparation(
     checkpoint: Callable[[str], None] | None = None,
 ) -> dict[str, Any] | None:
     """Select a new receipt only when the exact project and all requested imports were checked."""
+    if not valid_inspector_readiness(previous.get("inspector_readiness")):
+        raise RepreparationRequired(
+            "Prepared Lean compatibility was not checked by the current inspector; prepare again before reuse"
+        )
     if not set(plan["required_imports"]).issubset(previous["imports"]):
         return None
     if any(
@@ -75,11 +81,18 @@ def reuse_preparation(
         cancelled=cancelled,
         checkpoint=checkpoint,
     )
-    return {
-        "accepted": True,
-        "status": "prepared",
+    stopped = cancelled()
+    result = {
+        "accepted": not stopped,
+        "status": "cancelled" if stopped else "prepared",
+        "committed": True,
         "reused": True,
         "plan": plan,
         "receipt": receipt,
         "transaction_id": transaction["transaction_id"],
     }
+    if stopped:
+        result["error"] = (
+            "Project dependencies committed; preparation reuse stopped afterward: cancellation requested or deadline reached"
+        )
+    return result

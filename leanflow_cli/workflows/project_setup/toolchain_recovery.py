@@ -5,42 +5,46 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from core.home import leanflow_home
-from leanflow_cli.formalization.evidence import digest, durable_json, identity, sync_directory
+from leanflow_cli.formalization.evidence import (
+    digest,
+    durable_json,
+    identity,
+)
 from leanflow_cli.formalization.preparation_fs_inputs import entry_identity
 from leanflow_cli.workflows.project_setup.cleanup import process_states
 from leanflow_cli.workflows.project_setup.process import SetupCancelled, SetupFailure
-
-
-def _failure(message: str) -> SetupFailure:
-    return SetupFailure(
-        "setup_toolchain_recovery_required",
-        message,
-        "Inspect this compiler journal with python -m leanflow_cli.workflows.project_setup.toolchain_recovery inspect; preserve its versions and acknowledge the exact observation after checking stopped processes.",
-    )
-
-
-def _read_journal(path: Path) -> tuple[dict[str, Any], str]:
-    """Read a regular controller journal while retaining unsupported legacy payloads for inspection."""
-    directory = leanflow_home() / "toolchain-installations"
-    if path.parent.resolve() != directory.resolve() or path.is_symlink() or not path.is_file():
-        raise _failure("Compiler recovery requires its regular controller journal.")
-    raw = path.read_bytes()
-    value = json.loads(raw)
-    if not isinstance(value, dict):
-        raise _failure("Compiler publication journal has no supported object payload.")
-    return value, digest(raw)
+from leanflow_cli.workflows.project_setup.toolchain_disposal import (
+    disposal_asset_observation,
+    dispose_compiler_slot,
+)
+from leanflow_cli.workflows.project_setup.toolchain_journal_loss import (
+    _acknowledged_loss,
+    _failure,
+    _journal_bytes,
+    _loss_observation,
+    _parsed_journal,
+    _read_journal,
+    acknowledge_raw_loss,
+    known_owner,
+)
 
 
 def compiler_recovery_observation(path: Path, target: Path) -> dict[str, Any]:
     """Describe exact versions without deleting ambiguous legacy or unbound incoming assets."""
-    journal, checksum = _read_journal(path)
+    raw = _journal_bytes(path)
+    if target.parent.is_symlink():
+        raise _failure("Compiler recovery target parent is aliased.", journal=path, target=target)
+    journal = _parsed_journal(raw)
+    if journal is None:
+        return _loss_observation(path, target, raw)
+    checksum = digest(raw)
     if journal.get("target") != str(target) or target.parent.is_symlink():
         raise _failure("Compiler recovery target differs from the selected journal.")
     attempt = journal.get("attempt_id", "")
@@ -58,11 +62,11 @@ def compiler_recovery_observation(path: Path, target: Path) -> dict[str, Any]:
             }
         else:
             versions["slot"] = None
-    owner = journal.get("owner", {})
+    owner = known_owner(journal)
     table = process_states()
     original_live = bool(
-        isinstance(owner, dict)
-        and owner.get("pid") in table
+        owner is not None
+        and owner["pid"] in table
         and table[owner["pid"]][2] == owner.get("start")
         and owner["pid"] != os.getpid()
     )
@@ -72,6 +76,7 @@ def compiler_recovery_observation(path: Path, target: Path) -> dict[str, Any]:
         "journal_sha256": checksum,
         "state": journal.get("state"),
         "versions": versions,
+        "retained_disposal_slots": disposal_asset_observation(target, journal),
         "original_owner_live": original_live,
         "uninspected_paths_preserved": {
             key: journal.get(key) for key in ("private", "incoming", "slot")
@@ -104,6 +109,8 @@ def _acknowledge_compiler_publication(
         raise _failure(
             "Compiler recovery observation changed; inspect its preserved versions again."
         )
+    if observed.get("kind") == "unreadable_compiler_journal":
+        return acknowledge_raw_loss(path, target, observed)
     journal, checksum = _read_journal(path)
     if checksum != observed["journal_sha256"]:
         raise _failure("Compiler journal changed after inspection; its versions were preserved.")
@@ -123,7 +130,11 @@ def _acknowledge_compiler_publication(
 
 
 def recover_compiler_publications(
-    target: Path, *, deadline: float, cancel: threading.Event | None = None
+    target: Path,
+    *,
+    deadline: float,
+    cancel: threading.Event | None = None,
+    checkpoint: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Dispose verified orphan incoming assets under the caller's installation lock.
 
@@ -141,10 +152,19 @@ def recover_compiler_publications(
     directory = leanflow_home() / "toolchain-installations"
     for path in sorted(directory.glob("*.json")):
         check()
+
+        def failure(message: str) -> SetupFailure:
+            return _failure(message, journal=path, target=target)
+
         try:
-            journal = json.loads(path.read_text())
-        except (OSError, ValueError) as error:
-            raise _failure("Compiler publication journal is unreadable.") from error
+            raw = _journal_bytes(path)
+        except SetupFailure as error:
+            raise failure(str(error)) from error
+        journal = _parsed_journal(raw)
+        if journal is None:
+            if _acknowledged_loss(path, target, raw):
+                continue
+            raise failure("Compiler publication journal is unreadable.")
         if journal.get("target") != str(target):
             continue
         valid_identity = journal.get("record_id") == identity(
@@ -156,14 +176,43 @@ def recover_compiler_publications(
                 disposition.get("manual_preservation") is True
                 and disposition.get("processes_stopped_attested") is True
             ):
+                recorded = disposition.get("observation", {})
+                recorded_versions = recorded.get("versions") if isinstance(recorded, dict) else None
+                current = compiler_recovery_observation(path, target)
+                if (
+                    not isinstance(recorded, dict)
+                    or recorded.get("retained_disposal_slots", {})
+                    != current["retained_disposal_slots"]
+                    or (
+                        journal.get("slot_disposal")
+                        and (
+                            not isinstance(recorded_versions, dict)
+                            or recorded_versions.get("slot") != current["versions"].get("slot")
+                        )
+                    )
+                ):
+                    raise failure(
+                        "Preserved compiler disposal versions changed; inspect them again."
+                    )
                 continue
         if journal.get("state") == "DISPOSED" and valid_identity:
+            if journal.get("slot_disposal"):
+                slot = target.parent / (".leanflow-install-" + journal.get("attempt_id", ""))
+                record = journal["slot_disposal"]
+                if (
+                    journal.get("slot") != str(slot)
+                    or not isinstance(record, dict)
+                    or record.get("state") != "DISPOSED"
+                ):
+                    raise failure("Completed compiler disposal intent is unsupported.")
+                try:
+                    dispose_compiler_slot(path, journal, slot, check=check)
+                except (OSError, ValueError) as error:
+                    raise failure(str(error)) from error
             continue
         slot_value = journal.get("slot")
         if not isinstance(slot_value, str) or not slot_value:
-            raise _failure(
-                "Legacy compiler journal has no bound slot; its versions were preserved."
-            )
+            raise failure("Legacy compiler journal has no bound slot; its versions were preserved.")
         slot = Path(slot_value)
         incoming = Path(journal.get("incoming", ""))
         if (
@@ -176,42 +225,29 @@ def recover_compiler_publications(
             or slot.is_symlink()
             or target.parent.is_symlink()
         ):
-            raise _failure("Compiler incoming ownership or cleanup evidence is unsupported.")
-        if journal.get("state") == "INSTALLED" and not slot.exists():
+            raise failure("Compiler incoming ownership or cleanup evidence is unsupported.")
+        if (
+            journal.get("state") == "INSTALLED"
+            and not slot.exists()
+            and not journal.get("slot_disposal")
+        ):
             continue
-        owner = journal.get("owner", {})
+        owner = known_owner(journal)
         table = process_states()
         if (
-            owner.get("pid") in table
+            owner is not None
+            and owner["pid"] in table
             and table[owner["pid"]][2] == owner.get("start")
             and owner["pid"] != os.getpid()
         ):
-            raise _failure("The earlier compiler publication controller is still alive.")
-        if slot.exists():
-            info = slot.lstat()
-            if journal.get("slot_inode") is None:
-                raise _failure(
-                    "Compiler slot was created before its inode was journaled; preserve and acknowledge its exact observation."
-                )
-            if journal.get("slot_inode") != [info.st_dev, info.st_ino] or any(
-                child.name != "compiler" for child in slot.iterdir()
-            ):
-                raise _failure(
-                    "Compiler incoming slot was replaced or contains an independent version."
-                )
-        actual = entry_identity(incoming, check=check)
-        if (
-            actual is not None
-            and actual != journal.get("after")
-            and journal["state"] != "SLOT_READY"
-        ):
-            raise _failure("Compiler incoming bytes changed; the version was preserved.")
+            raise failure("The earlier compiler publication controller is still alive.")
         installed = entry_identity(target, check=check)
         if installed is not None and installed != journal.get("after"):
-            raise _failure("Another native compiler version exists; both versions were preserved.")
-        if slot.exists():
-            shutil.rmtree(slot)
-            sync_directory(slot.parent)
+            raise failure("Another native compiler version exists; both versions were preserved.")
+        try:
+            dispose_compiler_slot(path, journal, slot, check=check, checkpoint=checkpoint)
+        except (OSError, ValueError) as error:
+            raise failure(str(error)) from error
         journal["state"] = "INSTALLED" if installed is not None else "DISPOSED"
         journal["disposition"] = {
             "incoming_removed": True,
@@ -235,15 +271,34 @@ def main() -> None:
     parser.add_argument("--observation")
     parser.add_argument("--confirm-processes-stopped", action="store_true")
     args = parser.parse_args()
-    if args.action == "inspect":
-        result = compiler_recovery_observation(args.journal, args.target)
-    else:
-        result = acknowledge_compiler_publication(
-            args.journal,
-            args.target,
-            observation_id=args.observation or "",
-            processes_stopped=args.confirm_processes_stopped,
+    try:
+        if args.action == "inspect":
+            result = compiler_recovery_observation(args.journal, args.target)
+        else:
+            result = acknowledge_compiler_publication(
+                args.journal,
+                args.target,
+                observation_id=args.observation or "",
+                processes_stopped=args.confirm_processes_stopped,
+            )
+    except (OSError, ValueError, SetupFailure) as error:
+        print(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "success": False,
+                    "error": str(error),
+                    "journal": str(args.journal),
+                    "target": str(args.target),
+                    "remediation": getattr(
+                        error,
+                        "remediation",
+                        "Inspect the exact journal and target paths before retrying.",
+                    ),
+                }
+            )
         )
+        raise SystemExit(1) from None
     print(json.dumps(result, ensure_ascii=False))
 
 

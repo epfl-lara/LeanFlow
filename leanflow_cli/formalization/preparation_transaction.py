@@ -388,28 +388,41 @@ def resolve_preparation_conflict(
             raise PreparationConflict(
                 "Preparation versions changed; inspect again before resolving"
             )
-        archives = {}
-        for group in ("destinations", "retained_slots"):
-            for path, expected in current[group].items():
-                if expected is None:
-                    continue
-                target_relative = (
-                    f".leanflow/preparation-transactions/{transaction_id}/versions/{expected}"
-                )
-                if (
-                    target_relative in current["retained_slots"]
-                    and current["retained_slots"][target_relative] != expected
-                ):
-                    target_relative += "-" + str(len(journal["resolutions"]))
-                target = entry_path(root, target_relative)
-                if entry_identity(target) is None:
-                    copy_entry(entry_path(root, path), target)
-                if entry_identity(target) != expected:
-                    raise PreparationConflict("Preparation archived resolution version changed")
-                archives[expected] = target_relative
+        from leanflow_cli.formalization.preparation_resolution import archive_resolution_versions
+
+        try:
+            archives = archive_resolution_versions(
+                root,
+                journal,
+                current,
+                directory=preparation_directory(root),
+                checkpoint=checkpoint,
+            )
+        except ValueError as error:
+            raise PreparationConflict(str(error)) from error
         if checkpoint:
             checkpoint("resolution_versions_archived")
-        if observed_versions(root, journal) != current:
+        from leanflow_cli.formalization.preparation_resolution_progress import apply_archive_intents
+
+        try:
+            apply_archive_intents(preparation_directory(root), journal)
+        except ValueError as error:
+            raise PreparationConflict(str(error)) from error
+        actual = observed_versions(root, journal)
+        registered = {row["path"] for row in journal.get("archive_copy_intents", [])}
+        if (
+            actual["destinations"] != current["destinations"]
+            or actual["history_id"] != current["history_id"]
+            or any(
+                actual["retained_slots"].get(path) != expected
+                for path, expected in current["retained_slots"].items()
+            )
+            or set(actual["retained_slots"]) - set(current["retained_slots"]) - registered
+            or any(
+                entry_identity(entry_path(root, path)) != expected
+                for expected, path in archives.items()
+            )
+        ):
             raise PreparationConflict("Preparation versions changed before resolution commitment")
         payload = {
             "observation": current,

@@ -125,7 +125,7 @@ acceptance passes. Model reports never establish proof or disproof.
 | `runtime.py`, `controller.py` | Lifecycle, progress, and deterministic scheduling |
 | `allocation.py`, `role_limits.py`, `usage.py`, `live_progress.py` | Durable call admission, role caps, usage, and active time |
 | `agent_session.py` | Native invocation and same-session submission feedback |
-| `native_snapshot.py` | Atomic filtered snapshots, dependency-view release, and pin restoration |
+| `native_snapshot.py` | Exclusive filtered snapshot publication after durable exclusion provenance, crash-safe scoped resume, dependency-view release and pin restoration |
 | `native_bridge.py`, `mcp_relay.py` | Job capabilities and durable start/poll/cancel operations |
 | `native_command.py` | Snapshot-confined long commands and owned-process cleanup |
 | `session_tools.py`, search/research/compute leaves | Role-scoped deterministic tool services |
@@ -169,21 +169,32 @@ identity before promotion. Source-backed formalization uses dedicated controller
 | `formalization_documents.py`, `formalization_tex_discovery.py`, `formalization_models.py`, `intake.py` | Source path selection, TeX root discovery, frozen intake context and workflow environment; document-tool displays project the same source inventory |
 | `preparation_plan.py`, `preparation_inputs.py`, `preparation_discovery.py`, `preparation_launch.py` | Read-only prerequisite estimates, bounded user/catalog acquisition authority, source-only previews and shared-budget setup before workflow ownership |
 | `preparation.py`, `preparation_run.py`, `preparation_stage.py`, `preparation_layout.py`, `preparation_reuse.py`, `preparation_resources.py`, `preparation_lifecycle.py` | Exact setup authority, private dependency acquisition/build/import checks, measured resource bounds and disposal only after verified process cleanup |
-| `preparation_transaction.py`, `preparation_fs_inputs.py`, `preparation_journal.py`, `preparation_progress.py`, `preparation_loss.py`, `preparation_recovery.py`, `preparation_delta.py`, `preparation_audit.py`, `preparation_disposal.py` | Independent durable infrastructure journals, bounded per-entry progress, exact unavailable-history observations, changed-entry publication and conflict-preserving recovery/disposal |
-| `workflows/project_setup/execution.py`, `execution_process.py`, `cleanup.py`, `toolchain_install.py`, `toolchain_publication.py`, `toolchain_recovery.py` | Scrubbed bounded setup commands, verified descendant shutdown, official compiler acquisition into private Elan state, recoverable exclusive publication and exact-observation acknowledgment of ambiguous versions without replacing existing installations |
+| `preparation_transaction.py`, `preparation_fs_inputs.py`, `preparation_journal.py`, `preparation_progress.py`, `preparation_loss.py`, `preparation_resolution.py`, `preparation_resolution_progress.py`, `preparation_recovery.py`, `preparation_delta.py`, `preparation_audit.py`, `preparation_disposal.py` | Independent durable infrastructure journals, bounded per-entry progress and archive intents, exact unavailable-history observations, changed-entry publication and conflict-preserving recovery/disposal |
+| `workflows/project_setup/execution.py`, `execution_process.py`, `cleanup.py`, `toolchain_install.py`, `toolchain_publication.py`, `toolchain_recovery.py`, `toolchain_journal_loss.py`, `toolchain_disposal.py` | Scrubbed bounded setup commands, verified descendant shutdown, official compiler acquisition into private Elan state, recoverable exclusive publication, registered private disposal captures and exact-observation acknowledgment of ambiguous or unreadable history without replacing existing installations |
 | `slice_gate.py`, `inventory_authority.py`, `preparation_assignment.py`, `stage_errors.py`, `native/harness_formalization_stages.py` | Canonical complete source denominator, checked-plan delivery, controller-selected representative slice, immutable independent review and terminal setup-drift handling before full expansion |
 | `freshness.py`, `environment_display.py`, `conflict_resolution.py`, `pdf_actions.py`, `extraction_actions.py`, `mapping_actions.py`, `review_transport.py` | Current acceptance without proof-certificate lookup, exact version reconciliation/revocation, fidelity-preserving source repairs and UTF-8 bounded evidence envelopes |
 | `records.py`, `receipt_history.py`, `receipt_recovery.py`, `actions.py`, `diagnostic_actions.py`, `service.py` | Immutable selected revisions, explicit repairs, safe artifact IDs and shared CLI/editor snapshots |
-| `lean_layout.py`, `lean_policy.py`, `lean_inspector.py` | Evaluated Lake roots, explicit module builds, complete compiled declaration policy |
+| `lean_layout.py`, `lean_policy.py`, `lean_inspector.py`, `lean_origin.py` | Evaluated Lake roots, explicit module builds, complete compiled declaration policy and exact compiler-helper provenance |
+| `inspector_readiness.py` | Compiler-only declaration-inspector compatibility before translation, empty kernel replay without statement approval and current receipt validation |
 | `proposal.py`, `proposal_schema.py`, `environment.py`, `dependency_inputs.py`, `dependency_files.py` | Owned write set, total region/item coverage, exact mappings, compiled-library/tooling inventory and persistent content identity; no inferred source-to-binary provenance |
 | `dependency_snapshot.py` | Private canonical dependency copies, exact admitted-resource preservation, clean-room refusal and canonical/frozen identity checks without compatibility-cache substitution |
 | `lean_build.py` | Read-only build admission, offline pinned Lean compilation of declared libraries/executables, isolated per-module outputs, exact artifact census and hash evidence without dependency Lake execution |
 | `lean_configuration.py` | Bounded static Lake syntax, ordinary template metadata and typed compiler-option allowlist |
 | `dependency_modules.py` | Compiler/library namespace separation and disjoint top-level module roots matching Lean's first-root loader behavior |
 | `compiled_evidence.py` | Merge scoped library evidence by compiled identity without dropping bodies or relabeling project declarations as reuse |
-| `review.py`, `review_cache.py`, `review_dossier.py`, `review_registry.py` | Fresh per-unit verdicts, whole-document gate, positive/negative cache and frozen read-only retrieval; a complete declaration index links exact mathematical rows and the separate unabridged controller audit |
+| `review.py`, `review_cache.py`, `review_dossier.py`, `review_scope.py`, `review_registry.py` | Fresh per-unit verdicts, whole-document gate, authority-bound review caches and frozen read-only retrieval; controller-derived slice/complete scope preserves the canonical denominator and planned remainder, while a complete declaration index links exact mathematical rows and the separate unabridged controller audit |
 | `publication.py`, `publication_journal.py`, `publication_recovery.py`, `publication_loss.py`, `publish.py`, `evidence.py` | Project-owned durable publication evidence, concurrent-save protection, explicit history-loss revocation and portable records |
 | `handoff.py`, `handoff_slots.py`, `proof_snapshot.py`, `proof_receipts.py` | Exact reviewed proof slots and frozen independent proof-preservation certificates |
+| `workflows/prover/scoped_imports.py` | Private compilation of evaluated local import membership for authenticated formalization handoffs, source/configuration drift guards and controller publication of derived cache entries with retained prior versions; setup readiness grants no proof acceptance |
+| `workflows/prover/scoped_cache.py`, `scoped_cache_barrier.py` | Multipart cache publication, exact rollback without replacing competing versions, retained refresh-pointer captures and full local refresh before renewed admission |
+
+Proposal checks and editor actions acquire project publication ownership before
+document ownership, including nested preparation admission under that project lock.
+The explicit preparation command releases its initial document selection lock before
+setup, then reacquires publication followed by document ownership to check the
+selected revision and report readiness. Blocking OS lock acquisition can defer a
+recorded cancellation until the holder releases ownership; it has no separate
+waiter deadline.
 
 Source, layout, code, checks and scope changes invalidate the selected revision;
 review receipts are separate immutable evidence keyed to that identity. A passing

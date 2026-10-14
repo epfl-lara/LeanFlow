@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -154,3 +157,98 @@ def test_session_release_defers_dependency_pruning_for_live_background_child(
     )
     release_snapshot_dependencies(snapshot)
     assert not (snapshot / ".lake/packages").exists()
+
+
+@pytest.mark.parametrize("checkpoint", ["provenance_flushed", "snapshot_published"])
+def test_real_process_exit_keeps_scoped_snapshot_resume_reachable(tmp_path, checkpoint) -> None:
+    """Resume after either side of exclusive publication without losing old evidence."""
+    from leanflow_cli.workflows.prover import native_snapshot
+
+    root = tmp_path / "canonical"
+    root.mkdir()
+    original = b"theorem target : True := by sorry\n"
+    (root / "Main.lean").write_bytes(original)
+    cached = root / "artifacts/lib/lean/Hidden.olean"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(b"canonical cache must be excluded")
+    destination = tmp_path / "snapshot"
+    code = """
+import os, sys
+from pathlib import Path
+from leanflow_cli.workflows.prover import native_snapshot
+from leanflow_cli.formalization import publication_io
+root, destination, checkpoint = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+publish = native_snapshot._publish_exclusion
+move = publication_io.rename_exclusive
+def published(*args):
+    publish(*args)
+    if checkpoint == 'provenance_flushed':
+        os._exit(91)
+def moved(source, target):
+    move(source, target)
+    if target == destination and checkpoint == 'snapshot_published':
+        os._exit(91)
+native_snapshot._publish_exclusion = published
+publication_io.rename_exclusive = moved
+native_snapshot.prepare_snapshot(root, destination, excluded_build_dir='artifacts')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(root), str(destination), checkpoint],
+        env={**os.environ, "LEANFLOW_HOME": str(tmp_path / "state")},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 91, result.stderr
+    record = native_snapshot._exclusion_record(destination)
+    prior = record.read_bytes()
+    published = destination.exists()
+    inode = destination.stat().st_ino if published else None
+    resumed = prepare_snapshot(root, destination, excluded_build_dir="artifacts")
+    assert resumed == destination and not (resumed / "artifacts").exists()
+    assert (resumed / "Main.lean").read_bytes() == original
+    assert (root / "Main.lean").read_bytes() == original and cached.read_bytes()
+    if published:
+        assert destination.stat().st_ino == inode and record.read_bytes() == prior
+    else:
+        retained = list(record.parent.glob(record.name + ".unpublished-*"))
+        assert len(retained) == 1 and retained[0].read_bytes() == prior
+
+
+def test_partial_unpublished_provenance_is_preserved_before_a_fresh_copy(tmp_path) -> None:
+    """Keep incomplete creation evidence while granting only a newly excluded view."""
+    from leanflow_cli.workflows.prover import native_snapshot
+
+    root = tmp_path / "canonical"
+    root.mkdir()
+    (root / "Main.lean").write_text("theorem target : True := by sorry\n")
+    destination = tmp_path / "snapshot"
+    record = native_snapshot._exclusion_record(destination)
+    record.write_bytes(b"partial original provenance")
+    prepare_snapshot(root, destination, excluded_build_dir="artifacts")
+    retained = list(record.parent.glob(record.name + ".unpublished-*"))
+    assert len(retained) == 1 and retained[0].read_bytes() == b"partial original provenance"
+    native_snapshot._assert_exclusion(destination, "artifacts")
+
+
+def test_competing_snapshot_directory_is_never_replaced(tmp_path, monkeypatch) -> None:
+    """Preserve an independent view created after scoped provenance was registered."""
+    from leanflow_cli.workflows.prover import native_snapshot
+
+    root = tmp_path / "canonical"
+    root.mkdir()
+    (root / "Main.lean").write_text("theorem target : True := by sorry\n")
+    destination = tmp_path / "snapshot"
+    publish = native_snapshot._publish_exclusion
+
+    def competing(*args):
+        publish(*args)
+        destination.mkdir()
+        (destination / "independent.lean").write_bytes(b"independent version")
+
+    monkeypatch.setattr(native_snapshot, "_publish_exclusion", competing)
+    with pytest.raises(FileExistsError):
+        create_snapshot(root, destination, excluded_build_dir="artifacts")
+    assert (destination / "independent.lean").read_bytes() == b"independent version"
+    with pytest.raises(ValueError, match="exact build-exclusion provenance"):
+        prepare_snapshot(root, destination, excluded_build_dir="artifacts")

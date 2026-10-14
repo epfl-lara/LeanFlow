@@ -68,11 +68,21 @@ python -m leanflow_cli.workflows.project_setup.toolchain_recovery acknowledge \
 Inspect the preserved versions and check that acquisition processes stopped before
 acknowledging. A changed observation or a live original owner rejects acknowledgment;
 acknowledgment records the uncertainty and never deletes ambiguous compiler files.
+Unreadable journals have a separate observation of their exact raw bytes and target
+version. Acknowledgment preserves those bytes and does not reconstruct missing
+acquisition authority.
+Preparation also compiles the declaration inspector against the selected compiler
+and checks an empty kernel replay before translation starts. This compiler-only
+compatibility check approves no declarations. Missing or stale inspector readiness
+requires preparation again.
+
 Preparation keeps its immutable plan and receipt in full snapshots, with small
 durable per-entry progress records between transaction state changes. Large
 changed-file sets therefore write journal data in proportion to their size.
 Recovery binds each progress record to its snapshot before checking paths and
 retained versions; progress cannot replace a missing plan or receipt.
+Stopping immediately after infrastructure commits records the committed receipt
+and stops before author launch. A later launch can reuse that checked setup.
 
 The source may be a TeX file, an unambiguous TeX project directory or a PDF. Inspection
 freezes source files and creates a complete region inventory without creating Lean
@@ -190,6 +200,12 @@ then a final review checks the complete project and prior verdicts together. Sma
 projects combine region coverage with that final review. Reviewers can retrieve
 exact region text and unchanged Lean definitions from the frozen project.
 The reviewer can block a dummy definition even if Lean accepts it.
+The reviewer receives the frozen controller scope for the current representative
+slice or complete stage, including preparation identity, selected source/region
+IDs and the full source inventory. Remaining slice items stay planned for later
+expansion; they still require full review before publication. Author-written scope
+notes cannot change that authority. Reviewers assess shared source context and
+block ambiguities that affect the selected statements or representations.
 Large dossiers are paginated without dropping trailing text or other evidence.
 Each tool response is bounded to 16,000 UTF-8 bytes; reviewers can request smaller
 pages. Batches contain their declaration summaries, with complete compiled bodies
@@ -247,6 +263,42 @@ review. Changed statements, definitions, imports or environmental inputs require
 new review. The original acceptance record is never edited to manufacture proof
 completion.
 
+Before checking exact theorem types, the controller privately compiles the required
+local imports from their checked static Lake membership. This also supports custom
+source directories. It publishes only derived cache artifacts after checking source
+and configuration identity, retaining replaced versions and rejecting concurrent
+cache changes. Private prover snapshots repeat this setup as accepted proofs change
+imported modules. These compilation results establish import readiness; independent
+type and proof checks still decide proof acceptance.
+Cache updates publish all compiled parts as a guarded batch and retire obsolete Lake
+trace/hash sidecars. A failed update restores matching prior versions and preserves
+competing versions. The durable refresh warning blocks further checks until every
+admitted local module has been rebuilt from current checked inputs.
+Private compilation inputs and prior cache generations remain retained indefinitely;
+the ordinary compiler runner provides no positive descendant-closure receipt for
+automatic reclamation. Storage-reserve admission runs before another scoped import
+build; reaching the reserve stops the run. Remove an obsolete private generation
+manually only after its owned processes have verifiably stopped and no pending
+transaction, review or resume needs it. Preserve competing versions and recovery
+records until their exact conflict or loss has been resolved. Never manually delete
+`needs-refresh.json`, `barriers/`, `refresh-*` records or batch outcome/progress
+records: they preserve the admission and recovery boundary. Manual reclamation
+applies only to obsolete private compilation input trees, after the checks above.
+Scoped native snapshots exclude the evaluated project build directory, including
+custom paths. The controller durably records exclusion provenance before publishing
+the snapshot. An interruption before publication preserves the unused record and
+permits a fresh snapshot; an interruption after publication can resume the same
+snapshot. Older snapshots without matching provenance remain preserved and cannot
+be used for private checks. If a job encounters unverifiable provenance, resume
+retires that job and allocates a fresh workspace while preserving the old files and
+accounted provider usage. Other view-layout and pinned dependency errors can still
+require restoring the recorded environment before resuming.
+
+Document and publication lock acquisition blocks until the current holder releases
+ownership. When a workflow's signal handler records cancellation, Stop can remain
+pending during that wait; waiters have no separate cancellation deadline. Long
+holders use their operation deadlines and cancellation checks.
+
 ## Supported input boundary
 
 The pinned compiler and its standard library form the kernel base. Fully pinned
@@ -261,6 +313,12 @@ meaning when checking the translation.
 Repeated inspections merge body detail and review scope only when compiled identity
 agrees. Conflicting module attribution or compiled meaning for the same name blocks
 the proposal; use an unambiguous mapping rather than relying on import order.
+An equation theorem generated while importing a definition must bind to that exact
+freshly inspected parent definition, including its kernel body, type and source
+provenance. Imported pattern-match helpers additionally bind to the exact compiled
+matcher and its source definition through an actual kernel-body dependency. These
+parent profiles provide provenance without adding authored mappings or proof slots.
+A user-authored auxiliary receives no compiler-generated exemption.
 
 The compiled statement is the translation authority. Reviewer dossiers prioritize
 its semantic surface: statement types and non-proof definition bodies, with

@@ -11,6 +11,7 @@ from core.campaign_limits import CampaignLimits
 from leanflow_cli import workflow
 from leanflow_cli.formalization import preparation_launch as launch
 from leanflow_cli.runtime.project_operations import project_setup
+from tests.leanflow.preparation_helpers import inspector_readiness_record
 
 
 @pytest.fixture
@@ -210,6 +211,104 @@ def test_actual_launch_prepares_before_discovery_and_stamps_native_intake(
     assert order == ["runtime", "prepare", "project", "intake"]
     assert result.child_env["LEANFLOW_FORMALIZATION_BUDGET_PATH"].endswith("fixture/budget.json")
     assert result.child_env["LEANFLOW_FORMALIZATION_REVISION"] == "rev"
+
+
+def test_stop_after_real_reuse_commit_prevents_native_workflow_continuation(
+    source_folder, monkeypatch
+):
+    from leanflow_cli.formalization import preparation_reuse as reuse
+    from leanflow_cli.formalization.evidence import identity
+    from leanflow_cli.formalization.preparation import load_preparation_receipt
+    from leanflow_cli.formalization.preparation_journal import (
+        load_journal,
+        load_registry,
+        preparation_directory,
+    )
+    from leanflow_cli.formalization.preparation_plan import default_preparation_plan
+    from leanflow_cli.formalization.preparation_transaction import (
+        commit_preparation,
+        protected_inputs,
+    )
+    from leanflow_cli.formalization.records import create_document
+
+    root = source_folder
+    record = create_document(root, root / "paper.tex")
+    plan = default_preparation_plan(root, record, preset="lean")
+    previous = {
+        "schema_version": 1,
+        "status": "prepared",
+        "source_bundle": record["source_bundle"],
+        "imports": plan["required_imports"],
+        "layout": plan["layout"],
+        "resolved_packages": [
+            {"name": item["name"], "url": item["url"], "rev": item["revision"]}
+            for item in plan["packages"]
+        ],
+        "environment_id": "checked-fixture-environment",
+        "project_sources": {},
+        "inspector_readiness": inspector_readiness_record(),
+    }
+    previous["preparation_id"] = "preparation-" + identity(previous)
+    original = commit_preparation(
+        root,
+        root,
+        managed={},
+        protected=protected_inputs(root),
+        receipt=previous,
+        validate=lambda: None,
+        cancelled=lambda: False,
+    )
+    original_path = (
+        preparation_directory(root) / "transactions" / (original["transaction_id"] + ".json")
+    )
+    original_bytes = original_path.read_bytes()
+    results = []
+    monkeypatch.setattr(reuse, "environment_identity", lambda root: previous["environment_id"])
+
+    def prepare(project_root, selected, **kwargs):
+        def committed(name):
+            if name == "journal:COMMITTED":
+                kwargs["cancel"].set()
+
+        result = reuse.reuse_preparation(
+            project_root,
+            selected,
+            kwargs["plan"],
+            previous,
+            budget_path=kwargs["budget_path"],
+            cancelled=kwargs["cancel"].is_set,
+            checkpoint=committed,
+        )
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(launch, "prepare_document_project", prepare)
+    monkeypatch.setattr(
+        workflow,
+        "resolve_runtime_provider",
+        lambda **kwargs: {"provider": "codex", "model": "fixture"},
+    )
+    monkeypatch.setattr(
+        workflow,
+        "discover_leanflow_project",
+        lambda *args: pytest.fail("Stopped preparation continued into native project discovery"),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "prepare_formalization_document_context",
+        lambda **kwargs: pytest.fail("Stopped preparation reached native intake"),
+    )
+    monkeypatch.setenv("LEANFLOW_FORMALIZATION_DISCOVERY", "false")
+    with pytest.raises(ValueError, match="dependencies committed; preparation reuse stopped"):
+        workflow.resolve_workflow_request("/formalize paper.tex", active_cwd=root)
+    result = results[0]
+    assert result["accepted"] is False and result["committed"] is True
+    assert result["status"] == "cancelled"
+    assert load_registry(root)["selected"] == result["transaction_id"]
+    assert load_preparation_receipt(root) == result["receipt"]
+    assert load_journal(root, result["transaction_id"])["writes"] == {}
+    assert original_path.read_bytes() == original_bytes
+    assert load_journal(root, original["transaction_id"])["plan"]["receipt"] == previous
 
 
 def test_fresh_launch_gets_new_budget_and_explicit_resume_keeps_cumulative_usage(

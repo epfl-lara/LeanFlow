@@ -9,8 +9,10 @@ from typing import Any
 
 from leanflow_cli.formalization.environment import LIBRARY_SEMANTICS
 from leanflow_cli.formalization.evidence import digest, identity, read_blob
+from leanflow_cli.formalization.inventory_authority import complete_inventory
 from leanflow_cli.formalization.records import source_bytes
 from leanflow_cli.formalization.review_registry import compiler_base_policy, declaration_index
+from leanflow_cli.formalization.review_scope import review_scope, scope_header
 from leanflow_cli.formalization.review_transport import (
     REVIEW_RESPONSE_BYTES,
     _json_text,
@@ -46,6 +48,8 @@ def evidence_documents(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Keep complete sources, regions, proofs, and compiled declaration evidence available."""
     documents: dict[str, dict[str, Any]] = {
         "inventory": record["inventory"],
+        "full-inventory": complete_inventory(record),
+        "controller-scope": review_scope(record),
         "layout": record["layout"],
         "controller-checks": record["checks"],
         "declarations": declaration_index(record["checks"]),
@@ -100,7 +104,11 @@ def evidence_documents(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 if encoding == "binary"
                 else {"sha256": digest(raw), "text": raw.decode(encoding)}
             )
-    for region in record["inventory"]["regions"]:
+    regions = {
+        region["id"]: region
+        for region in [*complete_inventory(record)["regions"], *record["inventory"]["regions"]]
+    }
+    for region in regions.values():
         relative = region.get("file")
         if relative not in original:
             continue
@@ -152,6 +160,7 @@ def mandatory_dossier(
     return {
         "schema_version": 1,
         "phase": "coherence" if coherence else "translation",
+        "controller_scope": scope_header(documents["controller-scope"]),
         "pdf_evidence_policy": {
             "rendered_page_delivery": "unavailable",
             "source_authority": record["inventory"]["source_kind"],
@@ -269,9 +278,13 @@ def review_assignment(
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Page large assignments instead of silently truncating them or overflowing native prompts."""
     documents = evidence_documents(record)
+    header = scope_header(documents["controller-scope"])
+    if "controller_scope" in dossier and dossier["controller_scope"] != header:
+        raise ValueError("Reviewer assignment differs from frozen controller scope")
     assignment = {
         "revision_id": record["revision_id"],
         "dossier_id": dossier_id,
+        "controller_scope": header,
         "dossier": dossier,
     }
     if _response_size(assignment) <= REVIEW_RESPONSE_BYTES:
@@ -280,6 +293,7 @@ def review_assignment(
     return {
         "revision_id": record["revision_id"],
         "dossier_id": dossier_id,
+        "controller_scope": header,
         "dossier_ref": "assignment-dossier",
         "required_read": "Read every page of assignment-dossier through read_evidence before reviewing; no content was omitted. Its evidence catalog provides full surrounding sources.",
         "unit_count": len(dossier["units"]),

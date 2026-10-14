@@ -169,7 +169,7 @@ def dependency_inputs(root: Path) -> dict[str, Any]:
     return {"policy": POLICY, "packages": result}
 
 
-def compiled_library_paths(root: Path) -> list[Path]:
+def compiled_library_paths(root: Path, *, inventory: dict[str, Any] | None = None) -> list[Path]:
     """Return conventional pinned library roots without running any Lake configuration.
 
     Inventory is not acceptance. The independent checker validates every resolved
@@ -178,7 +178,7 @@ def compiled_library_paths(root: Path) -> list[Path]:
     """
     from leanflow_cli.formalization.environment import _compiler_root
 
-    inventory = dependency_inputs(root)
+    inventory = dependency_inputs(root) if inventory is None else inventory
     libraries = [
         contained(contained(root, record["directory"]), record["library_dir"])
         for _, record in sorted(inventory["packages"].items())

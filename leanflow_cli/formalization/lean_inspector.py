@@ -112,7 +112,7 @@ def replayChecked (env : Environment) (directory library compiler : System.FileP
         let some info := env.find? name | throw <| IO.userError "replay constant missing"
         if fullImports then
           for dependency in info.getUsedConstantsAsSet do
-            if dependency == ``Lean.reduceBool || dependency == ``Lean.reduceNat then
+            if dependency == `Lean.reduceBool || dependency == `Lean.reduceNat then
               throw <| IO.userError s!"noncompiler declaration references native reduction: {name} ({dependency})"
         if info.isUnsafe || info.isPartial then
           if localModule then
@@ -352,12 +352,77 @@ def writeLibraryEvidence (env metadata : Environment) (names : Array Name)
       ("axioms", toJson ((axioms.qsort Name.lt).map Name.toString)),
       ("direct_dependencies", toJson (direct.map Name.toString))]
   report.flush
+def declarationRecord (env metadata : Environment) (axiomCache : NameMap (Array Name))
+    (obligations : NameSet) (name : Name) : IO Json := do
+  let some info := env.find? name | throw <| IO.userError s!"constant missing: {name}"
+  let value := info.value? (allowOpaque := true)
+  let axioms := (axiomCache.find? name).getD #[]
+  let typeAxioms := expressionAxioms axiomCache info.type
+  let deps := if axioms.contains ``sorryAx then
+      value.map (obligationDependencies env obligations name) |>.getD (#[], false)
+    else (#[], false)
+  let typeDeps := if typeAxioms.contains "sorryAx" then
+      obligationDependencies env obligations name info.type
+    else (#[], false)
+  let combinedDeps := (deps.1 ++ typeDeps.1).toList.eraseDups
+  let direct := info.type.getUsedConstants ++ (value.map Expr.getUsedConstants).getD #[]
+  let moduleName := (metadata.getModuleIdxFor? name).map fun idx => metadata.header.moduleNames[idx.toNat]!
+  let origin := generatedOrigin metadata info
+  let parentProfiles := origin.1.filterMap fun parent => do
+    if origin.2 ∉ ["equation", "matcher", "matcher_equation"] then none
+    else do
+      let info ← env.find? parent
+      let idx ← metadata.getModuleIdxFor? parent
+      let ranges := sourceRanges? metadata parent
+      return Json.mkObj [
+        ("name", toJson parent.toString),
+        ("module", toJson metadata.header.moduleNames[idx.toNat]!.toString),
+        ("kind", toJson (kind info)),
+        ("type", toJson (repr info.type).pretty),
+        ("levels", toJson (info.levelParams.map Name.toString)),
+        ("body", toJson (info.value? (allowOpaque := true) |>.map fun value => (repr value).pretty)),
+        ("source_range", toJson (ranges.map fun range => Json.mkObj [
+          ("line_start", toJson range.range.pos.line), ("column_start", toJson range.range.pos.column),
+          ("line_end", toJson range.range.endPos.line), ("column_end", toJson range.range.endPos.column)]))]
+  let ranges := sourceRanges? metadata name
+  return Json.mkObj [
+    ("name", toJson name.toString),
+    ("module", toJson (moduleName.map Name.toString)),
+    ("kind", toJson (kind info)),
+    ("type", toJson (repr info.type).pretty),
+    ("levels", toJson (info.levelParams.map Name.toString)),
+    ("body", toJson (value.map fun v => (repr v).pretty)),
+    ("is_prop", toJson (← propType env info.type name)),
+    ("unsafe", toJson info.isUnsafe),
+    ("internal", toJson info.name.isInternal),
+    ("generated_from", toJson (origin.1.map Name.toString)),
+    ("generation_kind", toJson origin.2),
+    ("generated_parent_profiles", toJson parentProfiles),
+    ("origin_metadata_authority", toJson "untrusted-compiled-navigation-hint"),
+    ("line_start", toJson (ranges.map fun r => r.selectionRange.pos.line)),
+    ("source_range", toJson (ranges.map fun r => Json.mkObj [
+      ("line_start", toJson r.range.pos.line), ("column_start", toJson r.range.pos.column),
+      ("line_end", toJson r.range.endPos.line), ("column_end", toJson r.range.endPos.column)])),
+    ("type_axioms", toJson typeAxioms),
+    ("direct_type_sorry", toJson (info.type.getUsedConstants.contains ``sorryAx)),
+    ("type_depends_on", toJson typeDeps.1),
+    ("type_untracked_sorry", toJson typeDeps.2),
+    ("axioms", toJson ((axioms.qsort Name.lt).map Name.toString)),
+    ("direct_sorry", toJson (directSorry info)),
+    ("data_sorry", toJson (value.any dataSorry)),
+    ("pending", toJson (obligations.contains name)),
+    ("depends_on", toJson combinedDeps),
+    ("untracked_sorry", toJson (deps.2 || typeDeps.2)),
+    ("direct_dependencies", toJson (direct.map Name.toString)),
+    ("direct_body_dependencies", toJson ((value.map Expr.getUsedConstants).getD #[] |>.map Name.toString))]
 def main (args : List String) : IO Unit := do
   let some directory := args[0]? | throw <| IO.userError "inspection directory required"
   let some library := args[1]? | throw <| IO.userError "project library path required"
   let some compiler := args[2]? | throw <| IO.userError "pinned compiler library path required"
   let some scope := args[3]? | throw <| IO.userError "kernel replay scope required"
-  if scope != "closure" && scope != "project" then throw <| IO.userError "unsupported replay scope"
+  let readiness := scope == "readiness"
+  if scope != "closure" && scope != "project" && !readiness then
+    throw <| IO.userError "unsupported replay scope"
   let some pathsFile := args[4]? | throw <| IO.userError "recorded library paths required"
   let config ← IO.ofExcept <| Json.parse (← IO.FS.readFile (System.FilePath.mk pathsFile))
   let paths ← IO.ofExcept <| config.getObjValAs? (Array System.FilePath) "paths"
@@ -365,7 +430,15 @@ def main (args : List String) : IO Unit := do
   let roles ← IO.ofExcept <| config.getObjValAs? (NameMap String) "roles"
   let modules := (args.drop 5).takeWhile (· != "--")
   let requested := ((args.drop 5).dropWhile (· != "--")).drop 1
-  if scope == "closure" then
+  if readiness then
+    let emptyInputs := Json.mkObj [
+      ("paths", Json.arr #[]), ("artifacts", Json.mkObj []), ("roles", Json.mkObj [])]
+    if args.drop 5 != ["Init.Prelude", "--"] || config != emptyInputs then
+      throw <| IO.userError "readiness requires exactly Init.Prelude, no declarations or artifact inputs"
+    if (← IO.FS.realPath (System.FilePath.mk library)) !=
+        (← IO.FS.realPath (System.FilePath.mk compiler)) then
+      throw <| IO.userError "readiness requires the pinned compiler library only"
+  if scope == "closure" || readiness then
     -- Exact recorded artifacts are the only noncompiler import mechanism.
     searchPathRef.set [← IO.FS.realPath (System.FilePath.mk compiler)]
   else
@@ -373,7 +446,7 @@ def main (args : List String) : IO Unit := do
   let metadata ← importModules (modules.toArray.map fun m => { module := m.toName }) {} 0
     (leakEnv := true) (loadExts := false) (arts := arts)
   let mut names : Array Name := #[]
-  if requested.isEmpty then
+  if requested.isEmpty && !readiness then
     for moduleName in modules do
       let some idx := metadata.getModuleIdx? moduleName.toName
         | throw <| IO.userError s!"compiled module missing: {moduleName}"
@@ -385,10 +458,12 @@ def main (args : List String) : IO Unit := do
         throw <| IO.userError s!"exact declaration missing: {name}"
       names := names.push name.toName
   let (env, replayed) ← replayChecked metadata (System.FilePath.mk directory) (System.FilePath.mk library)
-    (System.FilePath.mk compiler) (scope == "closure") arts roles names
+    (System.FilePath.mk compiler) (scope == "closure" || readiness) arts roles names
   IO.FS.writeFile (System.FilePath.mk directory / "kernel-replay.json") (Json.compress replayed)
   let axiomCache ← axiomTable env names
-  if scope == "closure" then
+  if readiness then
+    IO.FS.writeFile (System.FilePath.mk directory / "library-evidence.jsonl") ""
+  else if scope == "closure" then
     writeLibraryEvidence env metadata names roles axiomCache
       (System.FilePath.mk directory / "library-evidence.jsonl")
   let mut obligations : NameSet := {}
@@ -398,48 +473,31 @@ def main (args : List String) : IO Unit := do
       obligations := obligations.insert name
   let report ← IO.FS.Handle.mk (System.FilePath.mk directory / "declarations.jsonl") IO.FS.Mode.write
   for name in names do
-    let some info := env.find? name | throw <| IO.userError s!"constant missing: {name}"
-    let value := info.value? (allowOpaque := true)
-    let axioms := (axiomCache.find? name).getD #[]
-    let typeAxioms := expressionAxioms axiomCache info.type
-    let deps := if axioms.contains ``sorryAx then
-        value.map (obligationDependencies env obligations name) |>.getD (#[], false)
-      else (#[], false)
-    let typeDeps := if typeAxioms.contains "sorryAx" then
-        obligationDependencies env obligations name info.type
-      else (#[], false)
-    let combinedDeps := (deps.1 ++ typeDeps.1).toList.eraseDups
-    let direct := info.type.getUsedConstants ++ (value.map Expr.getUsedConstants).getD #[]
-    let moduleName := (metadata.getModuleIdxFor? name).map fun idx => metadata.header.moduleNames[idx.toNat]!
-    let origin := generatedOrigin metadata info
-    let ranges := sourceRanges? metadata name
-    report.putStrLn <| Json.compress <| Json.mkObj [
-      ("name", toJson name.toString),
-      ("module", toJson (moduleName.map Name.toString)),
-      ("kind", toJson (kind info)),
-      ("type", toJson (repr info.type).pretty),
-      ("levels", toJson (info.levelParams.map Name.toString)),
-      ("body", toJson (value.map fun v => (repr v).pretty)),
-      ("is_prop", toJson (← propType env info.type name)),
-      ("unsafe", toJson info.isUnsafe),
-      ("internal", toJson info.name.isInternal),
-      ("generated_from", toJson (origin.1.map Name.toString)),
-      ("generation_kind", toJson origin.2),
-      ("origin_metadata_authority", toJson "untrusted-compiled-navigation-hint"),
-      ("line_start", toJson (ranges.map fun r => r.selectionRange.pos.line)),
-      ("source_range", toJson (ranges.map fun r => Json.mkObj [
-        ("line_start", toJson r.range.pos.line), ("column_start", toJson r.range.pos.column),
-        ("line_end", toJson r.range.endPos.line), ("column_end", toJson r.range.endPos.column)])),
-      ("type_axioms", toJson typeAxioms),
-      ("direct_type_sorry", toJson (info.type.getUsedConstants.contains ``sorryAx)),
-      ("type_depends_on", toJson typeDeps.1),
-      ("type_untracked_sorry", toJson typeDeps.2),
-      ("axioms", toJson ((axioms.qsort Name.lt).map Name.toString)),
-      ("direct_sorry", toJson (directSorry info)),
-      ("data_sorry", toJson (value.any dataSorry)),
-      ("pending", toJson (obligations.contains name)),
-      ("depends_on", toJson combinedDeps),
-      ("untracked_sorry", toJson (deps.2 || typeDeps.2)),
-      ("direct_dependencies", toJson (direct.map Name.toString))]
+    report.putStrLn <| Json.compress (← declarationRecord env metadata axiomCache obligations name)
   report.flush
+  -- Lazy equations may be emitted in a new module for a definition from an
+  -- unchanged imported module. Inspect those parents independently without
+  -- promoting them into this draft's authored declarations or obligations.
+  let parents ← IO.FS.Handle.mk (System.FilePath.mk directory / "origin-parent-declarations.jsonl") IO.FS.Mode.write
+  let mut seen : NameSet := {}
+  let mut pending := names
+  let mut index := 0
+  while index < pending.size do
+    let name := pending[index]!
+    index := index + 1
+    let some info := env.find? name | continue
+    let origin := generatedOrigin metadata info
+    if origin.2 ∉ ["equation", "matcher", "matcher_equation"] then continue
+    for parent in origin.1 do
+      if names.contains parent || seen.contains parent then continue
+      seen := seen.insert parent
+      parents.putStrLn <| Json.compress (← declarationRecord env metadata axiomCache obligations parent)
+      pending := pending.push parent
+  parents.flush
+  if readiness then
+    IO.FS.writeFile (System.FilePath.mk directory / "inspector-readiness.json")
+      (Json.compress <| Json.mkObj [
+        ("readiness_only", toJson true), ("success", toJson true),
+        ("proof_acceptance", toJson false),
+        ("requested_modules", toJson modules), ("requested_names", toJson requested)])
 """

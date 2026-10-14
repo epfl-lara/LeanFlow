@@ -19,7 +19,7 @@ from leanflow_cli.formalization.dependency_modules import (
 )
 from leanflow_cli.formalization.dependency_snapshot import _package_roots
 from leanflow_cli.formalization.environment import compiler_executable
-from leanflow_cli.formalization.evidence import digest
+from leanflow_cli.formalization.evidence import contained, digest
 from leanflow_cli.formalization.lean_configuration import validate_options
 from leanflow_cli.formalization.lean_layout import build_membership
 from leanflow_cli.workflows.prover.check_process import isolated_command
@@ -37,10 +37,16 @@ def _artifact_parts(path: Path) -> list[list[str]]:
     return [[str(part) for part in group if part.is_file()] for group in (public, code)]
 
 
-def _library_artifacts(root: Path, compiler: Path) -> dict[str, list[list[str]]]:
+def _library_artifacts(
+    root: Path, compiler: Path, *, inventory: dict[str, Any] | None = None
+) -> dict[str, list[list[str]]]:
     """Resolve mathematical library modules without loading package configuration or tooling."""
     artifacts: dict[str, list[list[str]]] = {}
-    libraries = compiled_library_paths(root)
+    libraries = (
+        compiled_library_paths(root)
+        if inventory is None
+        else compiled_library_paths(root, inventory=inventory)
+    )
     validate_library_roots(libraries, compiler)
     for library in libraries:
         paths = sorted(library.rglob("*.olean"))
@@ -127,7 +133,7 @@ def validate_build_inputs(
     build, library = output_paths(root, layout, list(packages))
     lean = compiler_executable(root, "lean")
     compiler = Path(lean).parent.parent / "lib/lean"
-    artifacts = _library_artifacts(root, compiler)
+    artifacts = _library_artifacts(root, compiler, inventory=inventory)
     local: dict[str, Path] = {}
     targets: dict[str, Any] = {}
     excluded: list[str] = []
@@ -181,6 +187,8 @@ def build_project(
     files: list[str] | None = None,
     deadline: float | None = None,
     cancelled: Callable[[], bool] | None = None,
+    output_library: Path | None = None,
+    inventory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compile the requested closure or every local module without executing Lake.
 
@@ -191,10 +199,20 @@ def build_project(
     Independent kernel inspection is a separate later process.
     """
     workspace.mkdir(parents=True, exist_ok=True)
-    admitted = validate_build_inputs(root, layout)
+    admitted = validate_build_inputs(root, layout, inventory=inventory)
     lean, compiler = admitted["lean"], admitted["compiler"]
     local, targets = admitted["local"], admitted["targets"]
     library = admitted["library"]
+    if output_library is not None:
+        relative = output_library.absolute().relative_to(workspace.resolve())
+        library = contained(workspace, relative.as_posix())
+        if library == workspace.resolve() or (
+            library.is_relative_to(root.resolve())
+            and not {".leanflow", ".leanflow-job"}.intersection(
+                library.relative_to(root.resolve()).parts
+            )
+        ):
+            raise ValueError("Scoped import outputs require a separate private build directory")
     if not local:
         return {
             "success": True,
@@ -207,7 +225,17 @@ def build_project(
     if files is not None and any(name not in by_file for name in files):
         raise ValueError("Requested local module has no declared library/executable membership")
     requested = [by_file[name] for name in files] if files is not None else sorted(local)
-    before = {name: digest(path.read_bytes()) for name, path in local.items()}
+    original = dict(local)
+    source_bytes = {name: path.read_bytes() for name, path in original.items()}
+    before = {name: digest(data) for name, data in source_bytes.items()}
+    if output_library is not None:
+        frozen = workspace / "sources"
+        frozen.mkdir()
+        for name, path in original.items():
+            target = frozen / path.relative_to(root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source_bytes[name])
+            local[name] = target
     parsed = isolated_command(
         project_root=root,
         workspace=workspace,
@@ -275,6 +303,19 @@ def build_project(
             argv=[lean, "-j1", "--setup=" + str(setup), "-o", str(output), str(local[module])],
             timeout_s=remaining_seconds(deadline),
             cancelled=cancelled,
+            extra_readable_roots=(
+                (
+                    local[module],
+                    *(
+                        Path(part)
+                        for record in local_artifacts.values()
+                        for group in record["parts"]
+                        for part in group
+                    ),
+                )
+                if output_library is not None
+                else ()
+            ),
         )
         if not result.get("success"):
             return {**result, "module": module}
@@ -325,7 +366,7 @@ def build_project(
             },
         }
         _check_output_census(library, local_artifacts)
-    if {name: digest(path.read_bytes()) for name, path in local.items()} != before:
+    if {name: digest(path.read_bytes()) for name, path in original.items()} != before:
         raise ValueError("Local module source changed during direct compilation")
     return {
         "success": True,
@@ -333,4 +374,7 @@ def build_project(
         "authority": "direct-pinned-lean",
         "local_artifacts": local_artifacts,
         "excluded_sources": admitted["excluded_sources"],
+        "source_sha256": {
+            path.relative_to(root).as_posix(): before[name] for name, path in original.items()
+        },
     }

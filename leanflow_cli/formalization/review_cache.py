@@ -117,7 +117,7 @@ def rejection_key(
     ]
     return identity(
         {
-            "schema": "semantic-rejection-v2",
+            "schema": "semantic-rejection-v3",
             "configuration": configuration,
             "inventory": record["inventory"],
             "source_bundle": record["source_bundle"],
@@ -129,6 +129,9 @@ def rejection_key(
             "declarations": declarations,
             "setup_notes": record.get("setup_notes", ""),
             "phase": dossier["phase"],
+            "controller_scope": dossier.get("controller_scope"),
+            "scope_evidence": documents.get("controller-scope"),
+            "full_inventory": documents.get("full-inventory"),
             "batch": [u["id"] for u in dossier["units"]],
             "regions": [r["id"] for r in dossier["regions"]],
         }

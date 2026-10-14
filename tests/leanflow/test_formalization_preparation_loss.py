@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,8 @@ import pytest
 from leanflow_cli.formalization import preparation_transaction as transaction
 from leanflow_cli.formalization.evidence import durable_json, identity
 from leanflow_cli.formalization.preparation_journal import load_journal, load_registry
+from leanflow_cli.formalization.preparation_progress import save_entry_progress
+from leanflow_cli.formalization.preparation_resolution_progress import save_archive_intent
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +87,68 @@ def test_missing_selected_journal_is_inspectable_acknowledgeable_and_repreparabl
     next_journal = _commit(root, tmp_path / "next-stage", "fresh checked infrastructure")
     assert load_registry(root)["selected"] == next_journal["transaction_id"]
     transaction.assert_no_pending_preparation(root)
+
+
+@pytest.mark.parametrize("failure", [errno.EMFILE, errno.EIO, errno.ESTALE])
+@pytest.mark.parametrize("asset", ["journal", "progress", "intent"])
+def test_temporary_authority_read_error_does_not_persist_loss_or_revoke_receipt(
+    tmp_path, monkeypatch, failure, asset
+):
+    root = tmp_path / "project"
+    committed = _commit(root, tmp_path / "stage", "prepared")
+    directory = transaction.preparation_directory(root)
+    journal_path = _path(root, committed)
+    if asset == "journal":
+        failing = journal_path
+    elif asset == "progress":
+        save_entry_progress(directory, committed, "lakefile.toml")
+        failing = next(
+            (
+                directory
+                / "progress"
+                / committed["transaction_id"]
+                / committed["progress_generation"]
+            ).glob("*.json")
+        )
+    else:
+        expected = committed["writes"]["lakefile.toml"]["after"]
+        payload = {
+            "path": f".leanflow/preparation-transactions/{committed['transaction_id']}/versions/{expected}",
+            "expected": expected,
+            "source": "lakefile.toml",
+            "observation_id": identity("observed version"),
+        }
+        save_archive_intent(directory, committed, {**payload, "intent_id": identity(payload)})
+        failing = next(
+            (directory / "archive-intents" / committed["transaction_id"]).rglob("*.json")
+        )
+    registry_path = directory / "registry.json"
+    receipt_path = directory / "receipt.json"
+    registry_bytes, receipt_bytes = registry_path.read_bytes(), receipt_path.read_bytes()
+    original_bytes = failing.read_bytes()
+    raised = False
+    method = "read_bytes" if asset == "intent" else "read_text"
+    original = getattr(Path, method)
+
+    def unreadable(path, *args, **kwargs):
+        nonlocal raised
+        if path == failing and not raised:
+            raised = True
+            raise OSError(failure, "temporary controller read failure", str(path))
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, method, unreadable)
+        with pytest.raises(OSError) as error:
+            load_registry(root)
+        assert error.value.errno == failure
+    assert raised
+    assert registry_path.read_bytes() == registry_bytes
+    assert receipt_path.read_bytes() == receipt_bytes
+    assert failing.read_bytes() == original_bytes
+    healthy = load_registry(root)
+    assert healthy["selected"] == committed["transaction_id"]
+    assert healthy["journal_losses"] == {}
 
 
 def test_missing_historical_journal_preserves_unrelated_current_receipt(tmp_path):

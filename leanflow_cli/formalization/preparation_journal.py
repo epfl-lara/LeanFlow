@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -19,6 +20,11 @@ from leanflow_cli.formalization.preparation_fs_inputs import (
 )
 from leanflow_cli.formalization.preparation_loss import observe_journal_loss, validate_loss
 from leanflow_cli.formalization.preparation_progress import apply_entry_progress, save_snapshot
+from leanflow_cli.formalization.preparation_resolution import (
+    archive_intents,
+    resolution_archive_paths,
+)
+from leanflow_cli.formalization.preparation_resolution_progress import apply_archive_intents
 from leanflow_cli.formalization.publication_io import entry_path
 
 TERMINAL = {"COMMITTED", "ROLLED_BACK", "RESOLVED"}
@@ -67,10 +73,25 @@ def _read(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text())
     except (OSError, ValueError) as error:
+        _raise_transient_io(error)
         raise PreparationConflict("Preparation authority is unreadable") from error
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise PreparationConflict("Preparation authority is unsupported")
     return value
+
+
+def _raise_transient_io(error: BaseException) -> None:
+    """Keep temporary I/O failures from becoming durable loss through parser wrappers."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError) and not (
+            isinstance(current, (FileNotFoundError, IsADirectoryError))
+            or current.errno in {errno.ENOENT, errno.ENOTDIR, errno.EISDIR}
+        ):
+            raise current
+        current = current.__cause__
 
 
 def load_journal(root: Path, transaction_id: str) -> dict[str, Any]:
@@ -79,6 +100,7 @@ def load_journal(root: Path, transaction_id: str) -> dict[str, Any]:
     value = _read(contained(preparation_directory(root), f"transactions/{transaction_id}.json"))
     try:
         apply_entry_progress(preparation_directory(root), value)
+        apply_archive_intents(preparation_directory(root), value)
     except ValueError as error:
         raise PreparationConflict(str(error)) from error
     plan = value.get("plan", {})
@@ -178,10 +200,27 @@ def load_journal(root: Path, transaction_id: str) -> dict[str, Any]:
             != identity({key: item for key, item in disposal.items() if key != "disposition_id"})
         ):
             raise PreparationConflict("Preparation private incoming disposal identity changed")
+        if disposal is not None and "slot" in disposal:
+            slot = disposal["slot"]
+            if (
+                not isinstance(slot, str)
+                or not re.fullmatch(
+                    re.escape(row["incoming"] + ".disposal-") + r"[a-f0-9]{32}", slot
+                )
+                or slot in slots
+            ):
+                raise PreparationConflict(
+                    "Preparation private incoming disposal slot identity changed"
+                )
+            contained(root, slot)
+            slots.add(slot)
     resolutions = value.get("resolutions", [])
     if not isinstance(resolutions, list) or (value["state"] == "RESOLVED" and not resolutions):
         raise PreparationConflict("Preparation resolution evidence is missing")
     prior_archives: dict[str, str] = {}
+    for intent in archive_intents(value):
+        contained(root, intent["path"])
+        entry_path(root, intent["source"])
     for resolution in resolutions:
         observation = resolution.get("observation", {})
         if (
@@ -255,7 +294,15 @@ def load_registry(root: Path) -> dict[str, Any]:
     for transaction_id in value["transactions"]:
         try:
             journal = load_journal(root, transaction_id)
-        except (PreparationConflict, OSError, ValueError, TypeError, KeyError, AttributeError):
+        except (
+            PreparationConflict,
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+        ) as error:
+            _raise_transient_io(error)
             journal = None
         if journal is None or transaction_id in losses:
             before = identity(value)
@@ -334,10 +381,16 @@ def observed_versions(root: Path, journal: dict[str, Any]) -> dict[str, Any]:
         )
     }
     slots.update(
+        row["incoming_disposal"]["slot"]
+        for row in journal["writes"].values()
+        if row.get("incoming_disposal", {}).get("slot")
+    )
+    slots.update(
         path
         for resolution in journal.get("resolutions", [])
         for path in resolution["archives"].values()
     )
+    slots.update(resolution_archive_paths(root, journal))
     value = {
         "transaction_id": journal["transaction_id"],
         "destinations": {
@@ -383,6 +436,27 @@ def audit_retained(root: Path, registry: dict[str, Any], *, raise_conflicts: boo
                     issues.append(
                         f"Archived preparation resolution version missing or changed: {path}"
                     )
+        completed = {
+            path: expected
+            for resolution in journal["resolutions"]
+            for expected, path in resolution["archives"].items()
+        }
+        for intent in archive_intents(journal):
+            path = intent["path"]
+            actual = retained_identity(root, entry_path(root, path))
+            expected = acknowledged.get(path, completed.get(path, intent["expected"]))
+            if resolved and actual != expected:
+                issues.append(f"Registered preparation archive version changed: {path}")
+        if resolved:
+            versions_prefix = f".leanflow/preparation-transactions/{transaction_id}/versions/"
+            known = set(acknowledged) | set(completed)
+            for path in resolution_archive_paths(root, journal):
+                actual = retained_identity(root, entry_path(root, path))
+                expected = acknowledged.get(path, completed.get(path))
+                if (path not in known and actual is not None) or (
+                    path in known and path.startswith(versions_prefix) and actual != expected
+                ):
+                    issues.append(f"Preserved preparation archive version changed: {path}")
         for relative, row in journal["writes"].items():
             slots = [
                 {"path": row["captured"], "expected": row["before"]},
@@ -399,6 +473,14 @@ def audit_retained(root: Path, registry: dict[str, Any], *, raise_conflicts: boo
                             if row.get("incoming_disposal", {}).get("state") == "DISPOSED"
                             else row["after"]
                         ),
+                    }
+                )
+            disposal = row.get("incoming_disposal", {})
+            if disposal.get("slot"):
+                slots.append(
+                    {
+                        "path": disposal["slot"],
+                        "expected": None if disposal["state"] == "DISPOSED" else row["after"],
                     }
                 )
             for slot in slots:

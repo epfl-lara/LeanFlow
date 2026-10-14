@@ -192,6 +192,152 @@ def test_late_descriptor_edit_after_disposal_intent_is_preserved(rolled_back, mo
     assert load_journal(root, journal["transaction_id"])["state"] == "CONFLICTED"
 
 
+@pytest.mark.parametrize("relative", ["lakefile.toml", ".lake"])
+def test_independent_process_replacement_at_capture_is_never_deleted(
+    rolled_back, monkeypatch, relative
+):
+    root, _, journal = rolled_back
+    incoming = root / journal["writes"][relative]["incoming"]
+    held = incoming.with_name(incoming.name + ".original-held")
+    real_move = preparation_disposal.rename_exclusive
+    raced = []
+
+    def move(source, target):
+        if source == incoming and not raced:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; import sys; p=Path(sys.argv[1]); "
+                    "directory=p.is_dir(); p.rename(p.with_name(p.name+'.original-held')); "
+                    "q=p.with_name(p.name+'.user-save'); "
+                    "q.mkdir() if directory else None; "
+                    "(q/'user' if directory else q).write_bytes(b'independent user saved version'); "
+                    "q.replace(p)",
+                    str(source),
+                ],
+                check=True,
+                timeout=10,
+            )
+            raced.append(True)
+        real_move(source, target)
+
+    monkeypatch.setattr(preparation_disposal, "rename_exclusive", move)
+    results = transaction.dispose_preparation_incoming(root, cleanup_verified=True)
+    assert raced and held.exists()
+    preserved = incoming / "user" if incoming.is_dir() else incoming
+    assert preserved.read_bytes() == b"independent user saved version"
+    assert (
+        next(item for item in results if item["path"] == str(incoming.relative_to(root)))["state"]
+        == "PRESERVED"
+    )
+    assert load_journal(root, journal["transaction_id"])["state"] == "CONFLICTED"
+    assert (root / "lakefile.toml").read_text() == 'name = "original"\n'
+
+
+def test_blocked_unknown_restore_keeps_both_versions_in_exact_observation(rolled_back, monkeypatch):
+    root, _, journal = rolled_back
+    incoming = root / journal["writes"]["lakefile.toml"]["incoming"]
+    real_move = preparation_disposal.rename_exclusive
+    raced = []
+
+    def move(source, target):
+        if source == incoming and not raced:
+            source.rename(source.with_name(source.name + ".original-held"))
+            source.write_bytes(b"first independent version")
+            real_move(source, target)
+            source.write_bytes(b"second independent version")
+            raced.append(True)
+            return
+        real_move(source, target)
+
+    monkeypatch.setattr(preparation_disposal, "rename_exclusive", move)
+    transaction.dispose_preparation_incoming(root, cleanup_verified=True)
+    saved = load_journal(root, journal["transaction_id"])
+    slot = root / saved["writes"]["lakefile.toml"]["incoming_disposal"]["slot"]
+    assert incoming.read_bytes() == b"second independent version"
+    assert slot.read_bytes() == b"first independent version"
+    from leanflow_cli.formalization.preparation_journal import observed_versions
+
+    observed = observed_versions(root, saved)
+    assert observed["retained_slots"][str(slot.relative_to(root))] == transaction.entry_identity(
+        slot
+    )
+    assert transaction.preparation_conflicts(root)["transactions"][0]["resolvable"] is True
+    slot.write_bytes(b"third independently changed captured version")
+    with pytest.raises(transaction.PreparationConflict, match="versions changed"):
+        transaction.resolve_preparation_conflict(root, observed, "Stale captured slot observation")
+    assert slot.read_bytes() == b"third independently changed captured version"
+
+
+def test_interruption_after_exclusive_capture_recovers_registered_slot(rolled_back, monkeypatch):
+    root, _, journal = rolled_back
+    real_move = preparation_disposal.rename_exclusive
+    captured = []
+
+    def move(source, target):
+        real_move(source, target)
+        captured.append(target)
+        raise SystemExit("Captured after durable intent")
+
+    monkeypatch.setattr(preparation_disposal, "rename_exclusive", move)
+    with pytest.raises(SystemExit, match="durable intent"):
+        transaction.dispose_preparation_incoming(root, cleanup_verified=True)
+    saved = load_journal(root, journal["transaction_id"])
+    pending = next(row for row in saved["writes"].values() if row.get("incoming_disposal"))
+    assert pending["incoming_disposal"]["state"] == "DELETE_PENDING"
+    assert captured == [root / pending["incoming_disposal"]["slot"]]
+    assert captured[0].exists() and not (root / pending["incoming"]).exists()
+    monkeypatch.setattr(preparation_disposal, "rename_exclusive", real_move)
+    transaction.dispose_preparation_incoming(root, cleanup_verified=True)
+    assert not captured[0].exists()
+    transaction.assert_no_pending_preparation(root)
+
+
+def test_legacy_pending_disposal_registers_new_capture_before_deletion(rolled_back):
+    root, _, journal = rolled_back
+    row = journal["writes"]["lakefile.toml"]
+    payload = {
+        "path": row["incoming"],
+        "inode": row["incoming_inode"],
+        "expected": row["after"],
+        "state": "DELETE_PENDING",
+    }
+    row["incoming_disposal"] = {**payload, "disposition_id": preparation_disposal.identity(payload)}
+    save_journal(root, journal)
+    transaction.dispose_preparation_incoming(root, cleanup_verified=True)
+    saved = load_journal(root, journal["transaction_id"])
+    disposition = saved["writes"]["lakefile.toml"]["incoming_disposal"]
+    assert disposition["state"] == "DISPOSED"
+    assert disposition["slot"].startswith(row["incoming"] + ".disposal-")
+    assert not (root / disposition["slot"]).exists()
+
+
+def test_recreated_disposed_capture_slot_remains_visible_and_preserved(rolled_back):
+    root, _, journal = rolled_back
+    transaction.dispose_preparation_incoming(root, cleanup_verified=True)
+    saved = load_journal(root, journal["transaction_id"])
+    slot = root / saved["writes"]["lakefile.toml"]["incoming_disposal"]["slot"]
+    slot.write_bytes(b"independent recreated capture history")
+    with pytest.raises(transaction.PreparationConflict, match="Retained user version"):
+        transaction.assert_no_pending_preparation(root)
+    assert slot.read_bytes() == b"independent recreated capture history"
+
+
+def test_capture_metadata_cannot_authorize_a_different_entry(rolled_back):
+    root, _, journal = rolled_back
+    transaction.dispose_preparation_incoming(root, cleanup_verified=True)
+    saved = load_journal(root, journal["transaction_id"])
+    disposition = saved["writes"]["lakefile.toml"]["incoming_disposal"]
+    disposition["slot"] = saved["writes"]["lakefile.toml"]["captured"]
+    disposition["disposition_id"] = preparation_disposal.identity(
+        {key: value for key, value in disposition.items() if key != "disposition_id"}
+    )
+    save_journal(root, saved)
+    with pytest.raises(transaction.PreparationConflict, match="disposal slot identity"):
+        load_journal(root, journal["transaction_id"])
+
+
 def test_recreated_disposed_slot_is_audited_even_when_it_has_identical_bytes(rolled_back):
     root, _, journal = rolled_back
     incoming = root / journal["writes"]["lakefile.toml"]["incoming"]

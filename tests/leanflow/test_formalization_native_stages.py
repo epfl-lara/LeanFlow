@@ -15,6 +15,7 @@ from leanflow_cli.formalization.records import (
     document_directory,
     save_revision,
 )
+from leanflow_cli.formalization.review_scope import bind_review_scope
 from leanflow_cli.native import harness_workflow as native
 from leanflow_cli.workflows.prover.lean_environment import lean_environment_generation
 
@@ -114,6 +115,7 @@ def test_native_corrects_slice_then_expands_all_reuse_without_proof_or_premature
             "obligations": [],
             "modules": {},
         }
+        bind_review_scope(tmp_path, candidate)
         candidate = save_revision(document_directory(tmp_path, base["document_id"]), candidate)
         if candidate["proposal_phase"] == "complete":
             slice_gate.assert_complete_slice(tmp_path, candidate)

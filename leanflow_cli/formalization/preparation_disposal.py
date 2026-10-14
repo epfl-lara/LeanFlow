@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -20,8 +21,115 @@ from leanflow_cli.formalization.preparation_journal import (
     save_registry,
 )
 from leanflow_cli.formalization.preparation_progress import save_entry_progress
-from leanflow_cli.formalization.publication_io import entry_path, publication_lock
+from leanflow_cli.formalization.publication_io import entry_path, publication_lock, rename_exclusive
 from leanflow_cli.workflows.project_setup.cleanup import process_states
+
+
+def _present(path: Path) -> bool:
+    """Recognize unknown aliases without following or removing their destination."""
+    return path.exists() or path.is_symlink()
+
+
+def _exact_owned(
+    path: Path, journal: dict[str, Any], row: dict[str, Any], check: Callable[[], None] | None
+) -> bool:
+    """Require the stopped owner's recorded inode and complete bytes at the captured entry."""
+    if not _present(path) or path.is_symlink():
+        return False
+    info = path.lstat()
+    return (
+        journal.get("incoming_cleanup_verified") is True
+        and journal.get("incoming_cleanup_basis") is not None
+        and row.get("incoming_inode") == [info.st_dev, info.st_ino]
+        and entry_identity(path, check=check) == row["after"]
+    )
+
+
+def _dispose_entry(
+    root: Path, journal: dict[str, Any], relative: str, check: Callable[[], None] | None
+) -> str | None:
+    """Capture into a registered private slot before verifying and deleting stopped inputs."""
+    row = journal["writes"][relative]
+    incoming = entry_path(root, row["incoming"])
+    disposition = row.get("incoming_disposal")
+    slot = (
+        entry_path(root, disposition["slot"]) if disposition and disposition.get("slot") else None
+    )
+
+    def preserve(message: str) -> str:
+        """Retain uncertainty as an inspectable transaction conflict."""
+        if message not in journal["conflicts"]:
+            journal["conflicts"].append(message)
+        return "PRESERVED"
+
+    if disposition and disposition["state"] == "DISPOSED":
+        if _present(incoming) or (slot is not None and _present(slot)):
+            return preserve(f"Recreated private preparation disposal input preserved: {relative}")
+        return None
+    if not _present(incoming) and disposition is None:
+        return None
+    if _present(incoming) and not _exact_owned(incoming, journal, row, check):
+        return preserve(f"Changed or unowned private preparation incoming preserved: {relative}")
+    if slot is None:
+        payload = {
+            "path": row["incoming"],
+            "inode": row["incoming_inode"],
+            "expected": row["after"],
+            "slot": row["incoming"] + ".disposal-" + uuid.uuid4().hex,
+            "state": "DELETE_PENDING",
+        }
+        row["incoming_disposal"] = {**payload, "disposition_id": identity(payload)}
+        save_entry_progress(preparation_directory(root), journal, relative)
+        slot = entry_path(root, payload["slot"])
+    if _present(incoming) and _present(slot):
+        return preserve(
+            f"Independent incoming and disposal slot versions preserved: {relative} ({slot.relative_to(root)})"
+        )
+    if _present(incoming):
+        if check:
+            check()
+        try:
+            rename_exclusive(incoming, slot)
+        except FileExistsError:
+            return preserve(
+                f"Concurrent private disposal slot preserved: {relative} ({slot.relative_to(root)})"
+            )
+        except FileNotFoundError:
+            if _present(incoming) or _present(slot):
+                return preserve(f"Private incoming changed during disposal capture: {relative}")
+    if _present(slot):
+        if not _exact_owned(slot, journal, row, check):
+            # Restore only into an absent original name. Both versions remain
+            # observable when an independent save now occupies that name.
+            try:
+                rename_exclusive(slot, incoming)
+            except FileExistsError:
+                pass
+            return preserve(
+                f"Unknown captured private incoming preserved: {relative} ({slot.relative_to(root)})"
+            )
+        if _present(incoming):
+            return preserve(f"Independent incoming appeared after disposal capture: {relative}")
+        if check:
+            check()
+        if not _exact_owned(slot, journal, row, check):
+            return preserve(f"Private disposal slot changed before deletion: {relative}")
+        if slot.is_dir():
+            shutil.rmtree(slot)
+        else:
+            slot.unlink()
+        sync_directory(slot.parent)
+    if _present(incoming):
+        return preserve(f"Independent incoming appeared during disposal: {relative}")
+    payload = {
+        **{
+            key: value for key, value in row["incoming_disposal"].items() if key != "disposition_id"
+        },
+        "state": "DISPOSED",
+    }
+    row["incoming_disposal"] = {**payload, "disposition_id": identity(payload)}
+    save_entry_progress(preparation_directory(root), journal, relative)
+    return "DISPOSED"
 
 
 def dispose_preparation_incoming(
@@ -73,74 +181,10 @@ def dispose_preparation_incoming(
             for relative, row in journal["writes"].items():
                 if check:
                     check()
-                incoming = entry_path(root, row["incoming"])
-                disposition = row.get("incoming_disposal")
-                actual = entry_identity(incoming, check=check)
-                if actual is None and disposition is None:
-                    continue
-                if actual is None and disposition["state"] == "DISPOSED":
-                    continue
-                if actual is not None:
-                    info = incoming.lstat()
-                    owned = (
-                        journal.get("incoming_cleanup_verified") is True
-                        and journal.get("incoming_cleanup_basis") is not None
-                        and not incoming.is_symlink()
-                        and row.get("incoming_inode") == [info.st_dev, info.st_ino]
-                        and actual == row["after"]
-                    )
-                    if not owned or (disposition and disposition["state"] == "DISPOSED"):
-                        issue = (
-                            f"Changed or unowned private preparation incoming preserved: {relative}"
-                        )
-                        if issue not in journal["conflicts"]:
-                            journal["conflicts"].append(issue)
-                        changed = True
-                        results.append({"path": row["incoming"], "state": "PRESERVED"})
-                        continue
-                if disposition is None:
-                    payload = {
-                        "path": row["incoming"],
-                        "inode": row["incoming_inode"],
-                        "expected": row["after"],
-                        "state": "DELETE_PENDING",
-                    }
-                    row["incoming_disposal"] = {
-                        **payload,
-                        "disposition_id": identity(payload),
-                    }
-                    save_entry_progress(preparation_directory(root), journal, relative)
-                if actual is not None:
-                    if check:
-                        check()
-                    info = incoming.lstat()
-                    if (
-                        incoming.is_symlink()
-                        or row["incoming_inode"] != [info.st_dev, info.st_ino]
-                        or entry_identity(incoming, check=check) != row["after"]
-                    ):
-                        issue = f"Private preparation incoming changed before disposal: {relative}"
-                        if issue not in journal["conflicts"]:
-                            journal["conflicts"].append(issue)
-                        changed = True
-                        results.append({"path": row["incoming"], "state": "PRESERVED"})
-                        continue
-                    if incoming.is_dir():
-                        shutil.rmtree(incoming)
-                    else:
-                        incoming.unlink()
-                    sync_directory(incoming.parent)
-                payload = {
-                    **{
-                        key: value
-                        for key, value in row["incoming_disposal"].items()
-                        if key != "disposition_id"
-                    },
-                    "state": "DISPOSED",
-                }
-                row["incoming_disposal"] = {**payload, "disposition_id": identity(payload)}
-                save_entry_progress(preparation_directory(root), journal, relative)
-                results.append({"path": row["incoming"], "state": "DISPOSED"})
+                outcome = _dispose_entry(root, journal, relative, check)
+                if outcome is not None:
+                    results.append({"path": row["incoming"], "state": outcome})
+                    changed = changed or outcome == "PRESERVED"
             if changed:
                 journal["state"] = "CONFLICTED"
                 save_journal(root, journal)

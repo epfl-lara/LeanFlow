@@ -442,6 +442,16 @@ def invoke(
     except Exception as error:
         from agent.runtime.harness import BackendError
         from agent.runtime.harness.isolation import IsolationUnavailable
+        from leanflow_cli.workflows.prover.native_snapshot import SnapshotProvenanceError
+
+        if isinstance(error, SnapshotProvenanceError):
+            return {
+                "status": "environment_error",
+                "fresh_workspace_required": True,
+                "error_code": "snapshot_provenance_changed",
+                "final_response": str(error),
+                "api_calls": job.get("api_calls", 0),
+            }
 
         return {
             "status": (
@@ -609,6 +619,15 @@ def finish_job(runtime: ProverRuntime, job: dict[str, Any], result: dict[str, An
             job["error_details"] = copy.deepcopy(error_details)
         else:
             job.pop("error_details", None)
+        if (
+            result.get("status") == "environment_error"
+            and result.get("fresh_workspace_required") is True
+            and result.get("error_code") == "snapshot_provenance_changed"
+        ):
+            job["fresh_workspace_required"] = True
+            # No new provider ran in this unverifiable view. Keep its files but
+            # do not promote or resume its saved scratch as the current job.
+            job["result_processed"] = True
         report_path = Path(job["workspace"]) / "result.json"
         from leanflow_cli.workflows.prover.stop_reason import job_stop_reason
 

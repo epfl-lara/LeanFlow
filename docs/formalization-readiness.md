@@ -27,6 +27,10 @@ project under exclusive setup ownership, OS isolation, cancellation and bounded
 process resources. Original mathematics remains protected. A separate preparation
 journal records infrastructure selection, preserves every displaced version,
 recovers interrupted work and revokes readiness after a conflict resolution.
+Preparation also checks the declaration inspector against the selected compiler
+without exporting or approving any declarations. Compiler compatibility failures
+stop before a translation author starts; a stale or missing check requires
+preparation again.
 Setup completes before normal translation ownership begins; an active author
 cannot upgrade its lock or run dependency hooks against the canonical project.
 

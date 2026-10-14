@@ -688,3 +688,335 @@ def test_mathematical_source_admission_excludes_executable_and_unrelated_script(
     }
     admitted = lean_policy._admitted_project_sources(tmp_path, layout=layout)
     assert set(admitted) == {"Math.lean"}
+
+
+def _imported_equation_rows() -> list[dict[str, Any]]:
+    parent = _row(
+        "Main.d",
+        module="Main.Base",
+        kind="definition",
+        is_prop=False,
+        body="Nat.add n n",
+        direct_sorry=False,
+        pending=False,
+        axioms=[],
+        source_range={"line_start": 1, "column_start": 0, "line_end": 1, "column_end": 30},
+    )
+    equation = _row(
+        "Main.d.eq_1",
+        module="Main.Goal",
+        body="Eq.refl (d n)",
+        direct_sorry=False,
+        pending=False,
+        axioms=[],
+        generated_from=["Main.d"],
+        generation_kind="equation",
+        source_range=None,
+        line_start=None,
+        direct_dependencies=["Main.d", "Eq.refl"],
+        generated_parent_profiles=[
+            {
+                key: parent[key]
+                for key in ("name", "module", "kind", "type", "levels", "body", "source_range")
+            }
+        ],
+    )
+    return [parent, equation]
+
+
+def test_imported_lazy_equation_binds_exact_inspected_source_parent() -> None:
+    result = lean_policy.evaluate_policy(_imported_equation_rows(), ())
+    assert result["accepted"]
+    assert result["profiles"]["Main.d.eq_1"]["origin"] == "compiler_generated"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "body",
+        "module",
+        "levels",
+        "source_range",
+        "user_source",
+        "no_evidence",
+        "wrong_kind",
+        "unreferenced",
+        "missing_parent",
+    ],
+)
+def test_imported_equation_rejects_forged_or_stale_parent_authority(fault: str) -> None:
+    rows = _imported_equation_rows()
+    parent, equation = rows
+    if fault in {"body", "module", "levels", "source_range"}:
+        parent[fault] = [] if fault == "levels" else "changed"
+        if fault == "levels":
+            parent[fault] = ["u"]
+    elif fault == "user_source":
+        equation["source_range"] = parent["source_range"]
+    elif fault == "no_evidence":
+        equation.pop("generated_parent_profiles")
+    elif fault == "wrong_kind":
+        equation["generation_kind"] = "elaborator_dependency"
+    elif fault == "unreferenced":
+        equation["direct_dependencies"] = ["Eq.refl"]
+    else:
+        rows = [equation]
+    with pytest.raises(ValueError, match="no inspected parent"):
+        lean_policy.evaluate_policy(rows, ())
+
+
+@pytest.mark.integration
+def test_real_lazy_imported_equation_authenticates_parent_and_user_aux_keeps_ownership(
+    real_project: Path,
+) -> None:
+    root = real_project
+    base, goal = root / "src/Main/Base.lean", root / "src/Main/Goal.lean"
+    base.write_text("namespace Sample\ndef d (n : Nat) : Nat := n + n\nend Sample\n")
+    goal.write_text(
+        "import Main.Base\nnamespace Sample\ntheorem goal (n : Nat) : d n = 2 * n := by simpa only [d] using (Nat.two_mul n).symm\nend Sample\n"
+    )
+    result = lean_policy.inspect_draft(
+        root, ["src/Main/Base.lean", "src/Main/Goal.lean"], root / "checks", ()
+    )
+    assert result["accepted"], result
+    parent, equation = result["profiles"]["Sample.d"], result["profiles"]["Sample.d.eq_1"]
+    assert parent["module"] == "Main.Base" and equation["module"] == "Main.Goal"
+    assert equation["generation_kind"] == "equation" and equation["source_range"] is None
+    assert equation["generated_parent_profiles"][0]["body"] == parent["body"]
+    assert equation["axioms"] == [] and result["obligations"] == []
+    imported = lean_policy.inspect_draft(root, ["src/Main/Goal.lean"], root / "imported-checks", ())
+    assert imported["accepted"], imported
+    assert "Sample.d" not in imported["profiles"]
+    assert "Sample.d" not in {row["name"] for row in imported["declarations"]}
+    origin_parent = imported["origin_parent_profiles"]["Sample.d"]
+    assert origin_parent["file"] == "src/Main/Base.lean"
+    assert (
+        origin_parent["source_sha256"] == lean_policy.hashlib.sha256(base.read_bytes()).hexdigest()
+    )
+    assert origin_parent["body_hash"] == parent["body_hash"]
+    assert imported["obligations"] == []
+    from leanflow_cli.formalization.proposal_schema import bind_declarations
+
+    assert "Sample.d" in imported["profiles"]["Sample.goal"]["direct_dependencies"]
+    proposal = {
+        "units": [
+            {
+                "id": "goal",
+                "required_source_ids": ["source-goal"],
+                "declarations": [{"name": "Sample.goal", "file": "src/Main/Goal.lean"}],
+            }
+        ]
+    }
+    bind_declarations(proposal, imported)
+    assert {row["name"] for row in proposal["units"][0]["declarations"]} == {
+        "Sample.goal",
+        "Sample.d.eq_1",
+    }
+    assert proposal["units"][0]["required_source_ids"] == ["source-goal"]
+    assert proposal["units"][0]["declarations"][1]["compiler_owner_names"] == ["Sample.goal"]
+    # A user-written auxiliary-looking name retains its source authority and does
+    # not receive the compiler-origin exception merely because of its spelling.
+    goal.write_text(
+        "import Main.Base\nnamespace Sample\ntheorem d.eq_1 (n : Nat) : d n = n + n := by rfl\nend Sample\n"
+    )
+    user = lean_policy.inspect_draft(
+        root, ["src/Main/Base.lean", "src/Main/Goal.lean"], root / "user-checks", ()
+    )
+    assert not user["accepted"] and "reserved name" in user["build"]["stdout"], user
+    goal.write_text(
+        "import Main.Base\nnamespace Sample\ntheorem d.user_aux (n : Nat) : d n = n + n := by rfl\nend Sample\n"
+    )
+    ordinary = lean_policy.inspect_draft(
+        root, ["src/Main/Base.lean", "src/Main/Goal.lean"], root / "ordinary-checks", ()
+    )
+    assert ordinary["accepted"], ordinary
+    authored = ordinary["profiles"]["Sample.d.user_aux"]
+    assert authored["source_range"] and authored["generated_from"] == []
+    assert authored["origin"] == "declaration"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("case", ["valid", "invalid", "sorry", "native_decide", "native_reference"])
+def test_real_compiler_compatibility_preserves_kernel_native_reduction_policy(
+    real_project: Path, tmp_path: Path, case: str
+) -> None:
+    """Exercise current Name guards on the selected installed compiler without fake acceptance."""
+    import time
+
+    from leanflow_cli.formalization.preparation_resources import supervise_preparation
+    from leanflow_cli.workflows.project_setup.execution import build_setup_execution_policy
+
+    root = real_project
+    toolchain = (root / "lean-toolchain").read_text()
+    source = {
+        "valid": "theorem valid : 1 + 1 = 2 := by decide\n",
+        "invalid": "theorem invalid : False := by trivial\n",
+        "sorry": "theorem pending : True := by sorry\n",
+        "native_decide": "theorem nativeProof : 1 + 1 = 2 := by native_decide\n",
+        "native_reference": (
+            "namespace Lean\ndef reduceBool : Nat := 0\nend Lean\n" if "v4.35" in toolchain else ""
+        )
+        + "def nativeReference := Lean.reduceBool\n",
+    }[case]
+    target = root / "src/Main/Goal.lean"
+    target.write_text(source)
+    stage = tmp_path.parent / (tmp_path.name + "-supervision")
+    stage.mkdir()
+    policy = build_setup_execution_policy(
+        stage,
+        canonical_root=root,
+        toolchain=toolchain,
+        network_allowed=False,
+        deadline=time.monotonic() + 120,
+        max_owned_rss_bytes=16 * 1024**3,
+    )
+    with supervise_preparation(policy) as cancelled:
+        result = lean_policy.inspect_draft(
+            root,
+            ["src/Main/Goal.lean"],
+            root / ".leanflow/checks",
+            ("propext", "Classical.choice", "Quot.sound"),
+            deadline=policy.deadline,
+            cancelled=cancelled.is_set,
+        )
+        assert target.read_text() == source
+        if case == "valid":
+            assert result["accepted"] and result["obligations"] == [], result
+        elif case == "sorry":
+            assert result["accepted"] and len(result["obligations"]) == 1, result
+            assert result["profiles"]["pending"]["pending"]
+            assert "sorryAx" in result["profiles"]["pending"]["axioms"]
+        elif case == "invalid":
+            assert not result["accepted"] and not result["build"]["success"], result
+            assert "False" in result["build"]["stdout"]
+        else:
+            assert (
+                not result["accepted"] and result["error"] == "Independent kernel inspection failed"
+            ), result
+            diagnostic = result["details"]["stderr"]
+            assert (
+                "unapproved noncompiler axiom" in diagnostic
+                if case == "native_decide"
+                else "references native reduction" in diagnostic
+            ), diagnostic
+            assert result["details"]["timed_out"] is False
+            assert "unknown constant" not in diagnostic
+    assert policy.usage.cleanup_verified
+
+
+def test_imported_equation_origin_only_parent_never_becomes_an_authored_declaration() -> None:
+    parent, equation = _imported_equation_rows()
+    result = lean_policy.evaluate_policy([equation], (), origin_parents=[parent])
+    assert set(result["profiles"]) == {"Main.d.eq_1"}
+    assert [row["name"] for row in result["declarations"]] == ["Main.d.eq_1"]
+    assert result["obligations"] == []
+    assert set(result["origin_parent_profiles"]) == {"Main.d"}
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        {"unsafe": True},
+        {"data_sorry": True},
+        {"axioms": ["sorryAx"]},
+        {"source_range": None},
+        {"type_axioms": ["sorryAx"]},
+    ],
+)
+def test_origin_only_parent_keeps_axiom_placeholder_and_source_admission(
+    fault: dict[str, Any],
+) -> None:
+    parent, equation = _imported_equation_rows()
+    parent.update(fault)
+    with pytest.raises(ValueError):
+        lean_policy.evaluate_policy([equation], (), origin_parents=[parent])
+
+
+def _origin_only_proposal() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build a policy-admitted equation with a separate frozen source parent."""
+    parent, equation = _imported_equation_rows()
+    consumer = _row(
+        "Main.goal",
+        module=equation["module"],
+        direct_sorry=False,
+        pending=False,
+        axioms=[],
+        body="Eq.refl (d n)",
+        source_range=parent["source_range"],
+        direct_dependencies=[parent["name"]],
+    )
+    checks = lean_policy.evaluate_policy([consumer, equation], (), origin_parents=[parent])
+    for row in checks["declarations"]:
+        row.update(file="Main/Goal.lean", declaration_origin="generated")
+    checks["origin_parent_profiles"][parent["name"]].update(
+        file="Main/Base.lean", source_sha256="a" * 64, declaration_origin="existing_project"
+    )
+    checks["admitted_project_sources"] = {"Main/Base.lean": "a" * 64}
+    record = {
+        "units": [
+            {
+                "id": "goal",
+                "required_source_ids": ["source-goal"],
+                "declarations": [{"name": consumer["name"], "file": "Main/Goal.lean"}],
+            }
+        ]
+    }
+    return record, checks
+
+
+@pytest.mark.parametrize("dependency", ["Main.d", "Main.d.eq_1"])
+def test_origin_only_equation_binding_keeps_borrowed_parent_out_of_authored_units(dependency):
+    from leanflow_cli.formalization.proposal_schema import bind_declarations
+
+    record, checks = _origin_only_proposal()
+    checks["profiles"]["Main.goal"]["direct_dependencies"] = [dependency]
+    bind_declarations(record, checks)
+    references = record["units"][0]["declarations"]
+    assert {row["name"] for row in references} == {"Main.goal", "Main.d.eq_1"}
+    assert references[1]["compiler_owner_names"] == ["Main.goal"]
+    assert record["units"][0]["required_source_ids"] == ["source-goal"]
+    assert "Main.d" not in checks["profiles"] and checks["obligations"] == []
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "unconsumed",
+        "consumer_file",
+        "consumer_module",
+        "consumer_source",
+        "child_source",
+        "parent_body",
+        "parent_source_hash",
+        "ordinary_auxiliary",
+        "unknown_matcher",
+    ],
+)
+def test_origin_only_equation_binding_refuses_missing_or_changed_source_authority(fault):
+    from leanflow_cli.formalization.proposal_schema import bind_declarations
+
+    record, checks = _origin_only_proposal()
+    consumer, equation = checks["declarations"]
+    parent = checks["origin_parent_profiles"]["Main.d"]
+    if fault == "unconsumed":
+        consumer["direct_dependencies"] = []
+    elif fault == "consumer_file":
+        consumer["file"] = record["units"][0]["declarations"][0]["file"] = "Main/Other.lean"
+    elif fault == "consumer_module":
+        consumer["module"] = "Main.Other"
+    elif fault == "consumer_source":
+        consumer["source_range"] = None
+    elif fault == "child_source":
+        equation["source_range"] = consumer["source_range"]
+    elif fault == "parent_body":
+        parent["body"] = "Nat.zero"
+    elif fault == "parent_source_hash":
+        parent["source_sha256"] = "b" * 64
+    elif fault == "ordinary_auxiliary":
+        equation.update(
+            generated_from=[], generation_kind="", source_range=consumer["source_range"]
+        )
+    else:
+        equation["generation_kind"] = "matcher"
+    with pytest.raises(ValueError, match="owner|consumer|Unmapped"):
+        bind_declarations(record, checks)

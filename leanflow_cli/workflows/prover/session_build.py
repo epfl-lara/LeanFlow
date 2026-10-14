@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from core.deadlines import operation_cancelled, remaining_seconds
+from leanflow_cli.formalization.publication import PublicationUnsupported
 from leanflow_cli.lean.lean_module_paths import _lean_imports_from_text
 from leanflow_cli.runtime.project_build_cache import ProjectBuildCache
 from leanflow_cli.runtime.storage import (
@@ -58,6 +59,7 @@ def build_session_imports(
     deadline: float | None,
     cancelled: Callable[[], bool] | None,
     cache_fresh_snapshot: bool = False,
+    static_bound: bool = False,
 ) -> dict[str, Any]:
     """Build only imported local modules into private outputs under the campaign deadline.
 
@@ -78,6 +80,16 @@ def build_session_imports(
         modules = _local_imports(project, source_file)
         if not modules:
             return {"success": True, "modules": [], "skipped": True}
+        if static_bound:
+            from leanflow_cli.workflows.prover.scoped_imports import prepare_scoped_imports
+
+            return prepare_scoped_imports(
+                project_root=project,
+                workspace=work,
+                modules=modules,
+                deadline=deadline,
+                cancelled=cancelled,
+            )
         build = project / ".lake/build"
         if (project / ".lake").is_symlink() or build.is_symlink():
             raise ValueError("Private project build outputs cannot be linked to another directory.")
@@ -144,7 +156,17 @@ def build_session_imports(
             "skipped": False,
             "artifact_cache": cache_metadata,
         }
-    except (OSError, ValueError, StoragePressure) as exc:
+    except InterruptedError as exc:
+        return {"success": False, "ok": False, "error_code": "check_cancelled", "error": str(exc)}
+    except TimeoutError as exc:
+        return {
+            "success": False,
+            "ok": False,
+            "timed_out": True,
+            "error_code": "check_timeout",
+            "error": str(exc),
+        }
+    except (OSError, ValueError, StoragePressure, PublicationUnsupported) as exc:
         return {
             "success": False,
             "ok": False,

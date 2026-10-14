@@ -169,7 +169,13 @@ def run_session(
                 atomic_json_write(ledger_path, previous)
 
     fresh_snapshot = not snapshot.exists() and not snapshot.is_symlink()
-    prepare_snapshot(project_root, snapshot)
+    if context.get("formalization_proof_scope"):
+        excluded_build_dir = context.get("formalization_build_dir")
+        if not isinstance(excluded_build_dir, str) or not excluded_build_dir:
+            raise ValueError("Authenticated proof imports have no evaluated build directory")
+        prepare_snapshot(project_root, snapshot, excluded_build_dir=excluded_build_dir)
+    else:
+        prepare_snapshot(project_root, snapshot)
     scratch = snapshot / ".leanflow-job"
     scratch.mkdir(exist_ok=True)
     for name in ("Scratch.lean", "PLAN_job.md", "candidate.txt"):

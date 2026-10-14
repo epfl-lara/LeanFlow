@@ -14,6 +14,7 @@ from leanflow_cli.formalization.preparation_fs_inputs import (
     protected_inputs,
 )
 from leanflow_cli.formalization.preparation_progress import progress_assets
+from leanflow_cli.formalization.preparation_resolution_progress import archive_intent_assets
 from leanflow_cli.formalization.publication_io import entry_path
 
 
@@ -115,6 +116,12 @@ def _retained_observation(
         {
             str(directory / path): checksum
             for path, checksum in progress_assets(directory, transaction_id).items()
+        }
+    )
+    slots.update(
+        {
+            str(directory / path): checksum
+            for path, checksum in archive_intent_assets(directory, transaction_id).items()
         }
     )
     retained = entry_path(root, f".leanflow/preparation-transactions/{transaction_id}")

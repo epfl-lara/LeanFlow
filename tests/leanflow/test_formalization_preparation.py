@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +24,7 @@ from leanflow_cli.formalization.evidence import identity
 from leanflow_cli.formalization.preparation_plan import default_preparation_plan
 from leanflow_cli.formalization.preparation_stage import add_packages, copy_stage
 from leanflow_cli.formalization.records import create_document
+from tests.leanflow.preparation_helpers import inspector_readiness_record
 
 
 def _paper(root: Path) -> dict[str, Any]:
@@ -161,6 +163,7 @@ def test_preparation_receipt_binds_infrastructure_not_published_aggregator_bytes
         "status": "prepared",
         "environment_id": "checked-env",
         "project_sources": {"Main.lean": "old-imports"},
+        "inspector_readiness": inspector_readiness_record(),
     }
     receipt["preparation_id"] = "preparation-" + identity(receipt)
     (state / "receipt.json").write_text(json.dumps(receipt))
@@ -200,6 +203,7 @@ def test_reuse_rebinds_only_checked_imports_and_creates_no_canonical_writes(tmp_
         "environment_id": "env",
         "preparation_id": "previous",
         "project_sources": {},
+        "inspector_readiness": inspector_readiness_record(),
     }
     captured = []
     monkeypatch.setattr(reuse, "environment_identity", lambda root: "env")
@@ -233,8 +237,9 @@ def test_reuse_rebinds_only_checked_imports_and_creates_no_canonical_writes(tmp_
     assert len(captured) == 1
 
 
+@pytest.mark.parametrize("stop_after_commit", [False, True])
 def test_second_controller_reuses_infrastructure_without_claiming_original_cleanup(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, stop_after_commit
 ):
     from leanflow_cli.formalization import preparation_reuse as reuse
     from leanflow_cli.formalization.preparation_journal import (
@@ -257,6 +262,7 @@ def test_second_controller_reuses_infrastructure_without_claiming_original_clean
         "resolved_packages": [],
         "environment_id": "env",
         "project_sources": {},
+        "inspector_readiness": inspector_readiness_record(),
     }
     script = """
 import json, sys
@@ -287,11 +293,27 @@ print(json.dumps(receipt))
     original_bytes = original_path.read_bytes()
     monkeypatch.setattr(reuse, "environment_identity", lambda root: "env")
 
+    cancel = threading.Event()
+
+    def committed(name):
+        if name == "journal:COMMITTED" and stop_after_commit:
+            cancel.set()
+
     result = reuse.reuse_preparation(
-        tmp_path, record, plan, previous, budget_path=None, cancelled=lambda: False
+        tmp_path,
+        record,
+        plan,
+        previous,
+        budget_path=None,
+        cancelled=cancel.is_set,
+        checkpoint=committed,
     )
 
-    assert result["accepted"] and result["reused"]
+    assert result["accepted"] is (not stop_after_commit)
+    assert result["reused"] and result["committed"]
+    assert result["status"] == ("cancelled" if stop_after_commit else "prepared")
+    assert load_registry(tmp_path)["selected"] == result["transaction_id"]
+    assert preparation.load_preparation_receipt(tmp_path) == result["receipt"]
     assert "precommit_cleanup" not in result["receipt"]
     assert result["receipt"]["reused_preparation_id"] == previous["preparation_id"]
     assert load_journal(tmp_path, result["transaction_id"])["writes"] == {}
@@ -325,9 +347,14 @@ def test_preparation_display_requires_current_local_sources_without_rehashing_de
     assert calls == [False, False]
 
 
-def test_ready_private_stage_publishes_receipt_and_disposes_inputs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("post_commit_stop", [None, "cancel", "deadline", "disk", "checkpoint"])
+def test_ready_private_stage_publishes_receipt_and_disposes_inputs(
+    tmp_path, monkeypatch, post_commit_stop
+):
     from leanflow_cli.formalization.preparation_plan import DEFAULT_TOOLCHAIN
+    from leanflow_cli.runtime.storage import StoragePressure
     from leanflow_cli.workflows.project_setup import state
+    from leanflow_cli.workflows.project_setup.process import SetupCancelled, SetupFailure
 
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path.parent / (tmp_path.name + "-home")))
     record = _paper(tmp_path)
@@ -384,13 +411,43 @@ def test_ready_private_stage_publishes_receipt_and_disposes_inputs(tmp_path, mon
     monkeypatch.setattr(preparation_run, "build_project", lambda *a, **k: {"success": True})
     monkeypatch.setattr(preparation_run, "check_scratch", lambda **k: {"ok": True})
     monkeypatch.setattr(preparation_run, "close_check_workers", lambda *a, **k: None)
+    monkeypatch.setattr(
+        preparation_run, "check_inspector_runtime", lambda *a, **k: inspector_readiness_record()
+    )
     monkeypatch.setattr(preparation_run, "environment_identity", lambda root: "checked-env")
     monkeypatch.setattr(preparation, "ensure_storage_capacity", lambda root: None)
     monkeypatch.setattr(state, "fingerprint", lambda root: "checked-state")
     saved = []
     monkeypatch.setattr(state, "save_result", lambda root, value: saved.append(value))
-    result = preparation.prepare_document_project(tmp_path, record, plan=plan)
-    assert result["accepted"] and result["receipt"]["environment_id"] == "checked-env"
+    cancel = threading.Event()
+
+    def committed_checkpoint(name):
+        if name != "journal:COMMITTED" or post_commit_stop is None:
+            return
+        if post_commit_stop == "cancel":
+            cancel.set()
+            raise SetupCancelled("Author requested Stop")
+        if post_commit_stop == "deadline":
+            raise SetupFailure(
+                "setup_deadline", "Deadline reached after commit", "Inspect readiness"
+            )
+        if post_commit_stop == "disk":
+            raise StoragePressure(1, 2)
+        raise RuntimeError("Observer checkpoint failed after commit")
+
+    result = preparation.prepare_document_project(
+        tmp_path, record, plan=plan, cancel=cancel, checkpoint=committed_checkpoint
+    )
+    assert result["accepted"] is (post_commit_stop is None)
+    assert result["committed"] is True
+    if post_commit_stop is not None:
+        assert result["status"] == (
+            "cancelled" if post_commit_stop == "cancel" else "preparation_stopped"
+        )
+        assert "Project dependencies committed; preparation stopped afterward" in result["error"]
+        assert cancel.is_set() is (post_commit_stop == "cancel")
+    assert result["receipt"]["environment_id"] == "checked-env"
+    assert result["receipt"]["inspector_readiness"] == inspector_readiness_record()
     assert (tmp_path / "Main.lean").read_text() == "import Init\n"
     assert (tmp_path / ".lake/packages/repl/.lake/build/bin/repl").is_file()
     assert (

@@ -13,6 +13,7 @@ from typing import Any
 
 from leanflow_cli.formalization.environment import environment_identity
 from leanflow_cli.formalization.evidence import identity
+from leanflow_cli.formalization.inspector_readiness import valid_inspector_readiness
 from leanflow_cli.formalization.preparation_lifecycle import private_stage
 from leanflow_cli.formalization.preparation_plan import (
     default_preparation_plan,
@@ -25,6 +26,7 @@ from leanflow_cli.formalization.preparation_transaction import (
     preparation_directory,
     recover_preparation,
 )
+from leanflow_cli.formalization.stage_errors import RepreparationRequired
 from leanflow_cli.runtime.project_operations import project_setup
 from leanflow_cli.runtime.storage import ensure_storage_capacity
 from leanflow_cli.workflows.project_setup.process import Progress
@@ -62,6 +64,10 @@ def assert_preparation_current(
     receipt = load_preparation_receipt(root)
     if receipt is None:
         raise ValueError("Prepare this project before source translation")
+    if not valid_inspector_readiness(receipt.get("inspector_readiness")):
+        raise RepreparationRequired(
+            "Prepared Lean compatibility was not checked by the current inspector; prepare again before translation"
+        )
     if expected_id is not None and receipt["preparation_id"] != expected_id:
         raise ValueError("Selected project preparation changed; restart the translation")
     if check_project_sources:

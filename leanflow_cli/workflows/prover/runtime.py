@@ -168,6 +168,7 @@ class ProverRuntime:
                 by_name = {node.name: node for node in self.dag.nodes}
                 for item in self.formalization_handoff["obligations"]:
                     node = by_name[item["declaration"]]
+                    node.module = item["module"]
                     node.dependencies = [by_name[name].id for name in item["depends_on"]]
                     node.notes = "Source items: " + ", ".join(item["source_ids"])
             else:
@@ -223,6 +224,10 @@ class ProverRuntime:
                 raise ValueError(f"unknown signature scheme: {scheme}")
             self.verifier.signature_scheme = scheme
             self.verifier.artifact_root = self.store.directory / "artifacts"
+            if self.formalization_handoff is not None:
+                self.verifier.scoped_modules = {
+                    file: module for module, file in self.formalization_handoff["modules"].items()
+                }
 
     def _remaining_verification_time(self) -> float | None:
         """Enforce the global deadline before starting another deterministic check."""
@@ -346,10 +351,16 @@ class ProverRuntime:
                 "context_limit",
             }:
                 workspace = Path(job["workspace"])
+                fresh_workspace_required = job.get("fresh_workspace_required") is True
                 ledger_path = workspace.parent / ".runtime" / workspace.name / "request-count.json"
                 if ledger_path.is_file():
                     ledger = json.loads(ledger_path.read_text())
-                    job["api_calls"] = int(ledger["used"])
+                    used = int(ledger["used"])
+                    job["api_calls"] = (
+                        max(int(job.get("api_calls", 0)), used)
+                        if fresh_workspace_required
+                        else used
+                    )
                     for field in (
                         "input_tokens",
                         "output_tokens",
@@ -359,8 +370,11 @@ class ProverRuntime:
                     ):
                         if field in ledger.get("usage", {}):
                             job[field] = ledger["usage"][field]
-                elif job.get("status") != "context_limit":
+                elif job.get("status") != "context_limit" and not fresh_workspace_required:
                     job["api_calls"] = int(job["api_budget"])
+                if fresh_workspace_required:
+                    job.update(status="stale", phase="finished", result_processed=True)
+                    continue
                 node = self.dag.by_id().get(job.get("node_id", ""))
                 if job.get("role") == "prover" and node is not None and node.status == "proved":
                     job.update(status="interrupted", phase="finished")
@@ -652,6 +666,12 @@ class ProverRuntime:
                 if self.formalization_handoff is not None
                 else ""
             ),
+            "formalization_build_dir": (
+                self.verifier.scoped_build_dir
+                if self.formalization_handoff is not None
+                and isinstance(self.verifier, LeanVerifier)
+                else None
+            ),
             "permitted_dependencies": list(node.dependencies) if node else [],
             "resources": resource_inventory(
                 self.state["jobs"], project_root=self.root, run_directory=self.store.directory
@@ -804,6 +824,8 @@ class ProverRuntime:
 
     def _retain_candidate(self, job: dict[str, Any], result: dict[str, Any]) -> None:
         """Preserve a completed current-revision proof for independent zero-model resume."""
+        if job.get("fresh_workspace_required") is True:
+            return
         node = self.dag.by_id().get(job.get("node_id", ""))
         if (
             job.get("role") != "prover"
@@ -1615,9 +1637,23 @@ class ProverRuntime:
                     raise InfrastructureFailure(
                         str(preflight.get("error", preflight)), status="environment_error"
                     )
-            if hasattr(self.verifier, "capture_signatures") and any(
+            needs_signatures = any(
                 node.original and not node.signature_sha256 for node in self.dag.nodes
+            )
+            if (
+                isinstance(self.verifier, LeanVerifier)
+                and self.verifier.scoped_modules is not None
+                and not needs_signatures
             ):
+                readiness = self.verifier.prepare_imports(
+                    self.dag, self.documents, self.store.directory / "checks" / "imports"
+                )
+                if readiness.get("accepted") is not True:
+                    self._ensure_active()
+                    raise InfrastructureFailure(
+                        str(readiness.get("error", readiness)), status="environment_error"
+                    )
+            if hasattr(self.verifier, "capture_signatures") and needs_signatures:
                 if any(
                     document.imports
                     or document.proof_imports

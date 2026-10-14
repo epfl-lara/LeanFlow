@@ -62,7 +62,10 @@ def _require_sandbox() -> None:
         pytest.skip("Real compiler acquisition sandbox unavailable")
 
 
-def test_existing_complete_compiler_is_reused_without_network_or_installer(acquisition):
+@pytest.mark.parametrize("corrupt_journal", [False, True])
+def test_existing_complete_compiler_is_reused_without_network_or_installer(
+    acquisition, corrupt_journal
+):
     _, _, elan = acquisition
     compiler = elan / "toolchains" / DIRECTORY / "bin"
     compiler.mkdir(parents=True)
@@ -71,10 +74,18 @@ def test_existing_complete_compiler_is_reused_without_network_or_installer(acqui
         binary.write_text('#!/bin/sh\nprintf "Lean (version 4.99.0, fake compiler, Release)\\n"\n')
         binary.chmod(0o755)
     before = (elan / "settings.toml").read_bytes()
+    if corrupt_journal:
+        journal = toolchain_install.leanflow_home() / "toolchain-installations/broken.json"
+        journal.parent.mkdir(parents=True)
+        journal.write_text("{")
     result = _ensure(acquisition, network_allowed=False)
     assert result["status"] == "reused" and result["resources"]["commands"] == 1
     assert (elan / "settings.toml").read_bytes() == before
     assert not (elan / "bin/elan").exists()
+    if corrupt_journal:
+        assert result["recovery"]["status"] == "retained"
+        assert str(journal) in result["recovery"]["reason"]
+        assert str(compiler.parent) in result["recovery"]["reason"]
 
 
 def test_offline_missing_pin_and_invalid_model_versions_block_without_replacement(acquisition):

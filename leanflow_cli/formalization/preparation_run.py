@@ -13,6 +13,10 @@ from typing import Any
 
 from leanflow_cli.formalization.environment import environment_identity
 from leanflow_cli.formalization.evidence import identity
+from leanflow_cli.formalization.inspector_readiness import (
+    check_inspector_runtime,
+    valid_inspector_readiness,
+)
 from leanflow_cli.formalization.intake import preflight_dependencies
 from leanflow_cli.formalization.lean_build import build_project
 from leanflow_cli.formalization.preparation_delta import infrastructure_baseline, managed_delta
@@ -32,7 +36,12 @@ from leanflow_cli.formalization.preparation_transaction import (
     protected_inputs,
 )
 from leanflow_cli.workflows.project_setup.execution import build_setup_execution_policy
-from leanflow_cli.workflows.project_setup.process import Progress, SetupFailure, run_command
+from leanflow_cli.workflows.project_setup.process import (
+    Progress,
+    SetupCancelled,
+    SetupFailure,
+    run_command,
+)
 from leanflow_cli.workflows.project_setup.service import prepare_project
 from leanflow_cli.workflows.project_setup.toolchain_install import ensure_official_toolchain
 from leanflow_cli.workflows.prover.check_process import check_scratch, close_check_workers
@@ -178,6 +187,29 @@ def prepare_private_stage(
                     "Required mathematical imports are unavailable: "
                     + str(checked.get("error", checked))
                 )
+            policy.check(cancel)
+            if progress:
+                progress(
+                    {
+                        "type": "progress",
+                        "phase": "checking_lean_compatibility",
+                        "message": "Checking Lean compatibility",
+                    }
+                )
+            inspector_readiness = check_inspector_runtime(
+                stage,
+                checking / "inspector-runtime",
+                deadline=deadline,
+                cancelled=cancelled,
+            )
+            if not valid_inspector_readiness(inspector_readiness):
+                policy.check(cancel)
+                raise SetupFailure(
+                    "setup_inspector_incompatible",
+                    "The pinned compiler could not run the formalization inspector: "
+                    + json.dumps(inspector_readiness, ensure_ascii=False),
+                    "Check LeanFlow compatibility with the pinned compiler and prepare again before translation.",
+                )
             environment = environment_identity(stage)
     finally:
         lease.verify_cleanup(policy.evidence())
@@ -193,6 +225,7 @@ def prepare_private_stage(
         "imports": imports,
         "project_build": {key: value for key, value in build.items() if key != "local_artifacts"},
         "import_check": checked,
+        "inspector_readiness": inspector_readiness,
         "resources": policy.evidence(),
         "precommit_cleanup": lease.precommit_cleanup(),
         "resource_scope": "private preparation through verified descendant cleanup",
@@ -211,11 +244,21 @@ def prepare_private_stage(
         if environment_identity(root) != environment:
             raise ValueError("Prepared authority changed before infrastructure commitment")
 
+    post_commit_stop: Exception | None = None
+
     def guarded_checkpoint(name: str) -> None:
-        policy.check(cancel)
-        policy.observe_disk()
-        if checkpoint:
-            checkpoint(name)
+        """Record post-commit stops without disguising selected infrastructure as rollback."""
+        nonlocal post_commit_stop
+        try:
+            policy.check(cancel)
+            policy.observe_disk()
+            if checkpoint:
+                checkpoint(name)
+        except Exception as error:
+            if name not in {"journal:COMMITTED", "committed", "settled"}:
+                raise
+            if post_commit_stop is None:
+                post_commit_stop = error
 
     selected = managed_delta(root, stage, baseline, check=lambda: policy.check(cancel))
     selected.update(import_roots)
@@ -264,10 +307,23 @@ def prepare_private_stage(
             },
         },
     )
-    return {
-        "accepted": True,
-        "status": "prepared",
+    stopped = post_commit_stop is not None or cancelled()
+    explicit_cancel = cancel.is_set() or isinstance(
+        post_commit_stop, (SetupCancelled, InterruptedError)
+    )
+    result = {
+        "accepted": not stopped,
+        "status": (
+            "cancelled" if explicit_cancel else "preparation_stopped" if stopped else "prepared"
+        ),
+        "committed": True,
         "plan": plan,
         "receipt": receipt,
         "transaction_id": transaction["transaction_id"],
     }
+    if stopped:
+        reason = str(post_commit_stop or "") or (
+            "Cancellation requested" if explicit_cancel else "Preparation deadline reached"
+        )
+        result["error"] = "Project dependencies committed; preparation stopped afterward: " + reason
+    return result

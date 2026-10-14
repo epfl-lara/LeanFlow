@@ -22,11 +22,15 @@ from leanflow_cli.formalization.lean_build import (
 )
 from leanflow_cli.formalization.lean_inspector import INSPECTOR
 from leanflow_cli.formalization.lean_layout import build_membership, inspect_layout, module_for_file
+from leanflow_cli.formalization.lean_origin import (
+    authenticated_imported_equation as authenticated_imported_equation,
+)
+from leanflow_cli.formalization.lean_origin import imported_origin_owner, provenance_parent_allowed
 from leanflow_cli.workflows.prover.check_process import isolated_command
 from leanflow_cli.workflows.prover.source import lean_code_mask, project_path, project_sources
 from leanflow_cli.workflows.prover.type_profile import _shadow_package_root
 
-POLICY_VERSION = "formalization-exact-artifact-kernel-proofs-v3"
+POLICY_VERSION = "formalization-exact-artifact-kernel-proofs-v5"
 DEFAULT_INSPECTION_TIMEOUT_SECONDS = 600.0
 _EFFECTFUL = re.compile(
     r"(?<![\w'])"
@@ -97,7 +101,11 @@ def _admitted_project_sources(
 
 
 def evaluate_policy(
-    rows: list[dict[str, Any]], allowed_axioms: tuple[str, ...], *, dependency: bool = False
+    rows: list[dict[str, Any]],
+    allowed_axioms: tuple[str, ...],
+    *,
+    dependency: bool = False,
+    origin_parents: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Validate complete inspector records and derive conditional proof status."""
     permitted = set(allowed_axioms) - {"sorryAx"}
@@ -180,10 +188,31 @@ def evaluate_policy(
     if any(set(row["depends_on"]) - pending for row in declarations):
         raise ValueError("Obligation dependencies escape the inspected declaration set")
     profiles = {row["name"]: row for row in declarations}
+    origin_profiles = (
+        evaluate_policy(origin_parents, allowed_axioms)["profiles"] if origin_parents else {}
+    )
+    if set(origin_profiles) & set(profiles):
+        raise ValueError("Origin parent evidence duplicates an authored declaration")
+    if any(
+        not provenance_parent_allowed(parent, origin_profiles)
+        for parent in origin_profiles.values()
+    ):
+        raise ValueError(
+            "Origin parents require complete source-backed definitions or exact matchers"
+        )
+    inspected_parents = {**origin_profiles, **profiles}
     if not dependency:
         for row in declarations:
             if any(
-                parent not in profiles or profiles[parent]["module"] != row["module"]
+                parent not in inspected_parents
+                or (
+                    (
+                        parent in origin_profiles
+                        or inspected_parents[parent]["module"] != row["module"]
+                    )
+                    and not authenticated_imported_equation(row, inspected_parents[parent])
+                    and imported_origin_owner(row, inspected_parents) is None
+                )
                 for parent in row["generated_from"]
             ):
                 raise ValueError(
@@ -213,6 +242,7 @@ def evaluate_policy(
         "allowed_axioms": sorted(permitted),
         "declarations": declarations,
         "profiles": profiles,
+        "origin_parent_profiles": origin_profiles,
         "obligations": [row for row in declarations if row["pending"]],
     }
 
@@ -324,7 +354,17 @@ def _inspect(
         raise ValueError("Invalid kernel declaration report")
     if names and {row.get("name") for row in rows} != set(names):
         raise ValueError("Kernel report does not contain every exact requested declaration")
-    checked = evaluate_policy(rows, allowed_axioms, dependency=dependency)
+    parent_report = workspace / "origin-parent-declarations.jsonl"
+    origin_parents = (
+        [json.loads(line) for line in parent_report.read_text().split("\n") if line.strip()]
+        if parent_report.is_file() and not dependency
+        else []
+    )
+    if any(not isinstance(row, dict) for row in origin_parents):
+        raise ValueError("Invalid origin parent declaration report")
+    checked = evaluate_policy(
+        rows, allowed_axioms, dependency=dependency, origin_parents=origin_parents
+    )
     # Existing project reuse is read-only, but its compiler ranges still identify
     # the frozen local source. Dependency ranges have no such source authority.
     if dependency and local_artifacts:
@@ -488,6 +528,22 @@ def inspect_draft(
                 local_artifacts=built["local_artifacts"] if require_closed_inputs else None,
             )
             if result.get("accepted"):
+                for row in result.get("origin_parent_profiles", {}).values():
+                    if row["module"] in built.get("local_artifacts", {}):
+                        candidates = [
+                            file
+                            for file in admitted_sources
+                            if module_for_file(layout, file) == row["module"]
+                        ]
+                        if len(candidates) != 1:
+                            raise ValueError("Origin parent has no exact admitted project source")
+                        row.update(
+                            file=candidates[0],
+                            source_sha256=admitted_sources[candidates[0]],
+                            declaration_origin="existing_project",
+                        )
+                    else:
+                        row["declaration_origin"] = "dependency"
                 for row in result["declarations"]:
                     row["file"] = mapping[row["module"]]
                     row["declaration_origin"] = "generated"

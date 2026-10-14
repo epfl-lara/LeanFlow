@@ -47,6 +47,7 @@ def begin_proof(
         ),
         "before_sha256": digest(before.render()),
         "after_sha256": digest(after),
+        "scoped_cache": getattr(runtime.verifier, "scoped_modules", None) is not None,
     }
     atomic_json_write(runtime.store.directory / "source-transaction.json", journal)
     return journal
@@ -86,13 +87,22 @@ def _recover_proof_locked(runtime: ProverRuntime) -> None:
             )
         path.unlink()
         return
+    scoped = (
+        journal.get("scoped_cache") is True
+        or getattr(runtime.verifier, "scoped_modules", None) is not None
+    )
+    if scoped:
+        from leanflow_cli.workflows.prover.scoped_cache import mark_cache_refresh_needed
+
+        mark_cache_refresh_needed(runtime.root, "Proof source rolled back: " + document.path)
     replace_source(source, document.render().encode("utf-8"))
     runtime.documents[document.path] = document
-    artifact = project_path(
-        runtime.root,
-        str(Path(".lake/build/lib/lean") / Path(document.path).with_suffix(".olean")),
-    )
-    artifact.unlink(missing_ok=True)
+    if not scoped:
+        artifact = project_path(
+            runtime.root,
+            str(Path(".lake/build/lib/lean") / Path(document.path).with_suffix(".olean")),
+        )
+        artifact.unlink(missing_ok=True)
     node = runtime.dag.by_id()[journal["node_id"]]
     node.candidate = list(journal["candidate"])
     node.status = "candidate"

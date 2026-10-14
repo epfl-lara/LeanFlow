@@ -383,3 +383,119 @@ def test_real_root_module_profile_with_published_child(real_project: Path) -> No
         assert not any(path.is_symlink() for path in workspace.rglob("*"))
     finally:
         verifier.close(workspace)
+
+
+def test_scoped_profile_freezes_fresh_parts_and_never_shadows_stale_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from leanflow_cli.workflows.prover import check_process, type_profile
+
+    library = tmp_path / "derived/lib/lean"
+    stem = library / "Main/Goal.olean"
+    stem.parent.mkdir(parents=True)
+    for suffix in (".olean", ".olean.server", ".olean.private", ".ir", ".ir.sig"):
+        stem.with_suffix(suffix).write_bytes(b"stale:" + suffix.encode())
+    sibling = library / "Main/Base.olean"
+    sibling.write_bytes(b"sibling")
+    seen = []
+
+    def command(**kwargs: Any) -> dict[str, Any]:
+        argv, work = kwargs["argv"], kwargs["workspace"]
+        if "--run" not in argv:
+            target = Path(argv[argv.index("-o") + 1])
+            target.write_bytes(b"fresh-public")
+            target.with_suffix(".olean.server").write_bytes(b"fresh-server")
+            assert "-j1" in argv
+        else:
+            current = work / "Main/Goal.olean"
+            assert current.read_bytes() == b"fresh-public"
+            assert current.with_suffix(".olean.server").read_bytes() == b"fresh-server"
+            assert not current.with_suffix(".olean.private").exists()
+            assert not current.with_suffix(".ir").exists()
+            assert not current.with_suffix(".ir.sig").exists()
+            assert (work / "Main/Base.olean").read_bytes() == b"sibling"
+            seen.append(True)
+            (work / "profile.jsonl").write_text(
+                json.dumps(
+                    {"name": "goal", "type": "True", "levels": [], "dependencies": [], "axioms": []}
+                )
+                + "\n"
+            )
+        return {"success": True}
+
+    monkeypatch.setattr(check_process, "isolated_command", command)
+    result = type_profile.compiled_type_profiles(
+        root=tmp_path,
+        source="module\npublic theorem goal : True := by trivial\n",
+        names=["goal"],
+        workspace=tmp_path / "work",
+        timeout_s=30,
+        module="Main.Goal",
+        published_library=library,
+        freeze_artifact_parts=True,
+    )
+    assert result["accepted"] and seen == [True]
+
+
+def test_final_scoped_build_uses_only_authenticated_custom_build_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from leanflow_cli.workflows.prover import check_process
+
+    calls = []
+    monkeypatch.setattr(
+        check_process,
+        "isolated_command",
+        lambda **kwargs: calls.append(kwargs) or {"success": True, "returncode": 0},
+    )
+    verifier = LeanVerifier(tmp_path, ())
+    verifier.scoped_modules = {"src/Main.lean": "Main"}
+    with pytest.raises(ValueError, match="authenticated scoped layout"):
+        verifier.final([])
+    verifier.scoped_build_dir = "derived-cache"
+    assert verifier.final([])["accepted"]
+    assert calls[0]["extra_writable_roots"] == (tmp_path / "derived-cache",)
+    assert not (tmp_path / ".lake/build").exists()
+
+
+def test_real_scoped_module_header_inspects_all_fresh_split_parts(real_project: Path) -> None:
+    from core.file_copy import copy_tree
+    from leanflow_cli.workflows.prover.type_profile import compiled_type_profiles
+
+    root = real_project
+    packages = root / ".lake/packages"
+    dependency_source = packages.resolve()
+    packages.unlink()
+    copy_tree(dependency_source, packages)
+    old = "module\npublic section\ntheorem goal : False := by sorry\n"
+    fresh = "module\npublic section\ntheorem goal : True := by trivial\n"
+    (root / "Main.lean").write_text(old)
+    built = subprocess.run(
+        ["lake", "build", "+Main:olean"], cwd=root, capture_output=True, text=True, timeout=60
+    )
+    assert built.returncode == 0, built.stderr
+    library = root / ".lake/build/lib/lean"
+    stem = library / "Main.olean"
+    prior = {
+        path: path.read_bytes()
+        for suffix in (".olean", ".olean.server", ".olean.private", ".ir", ".ir.sig")
+        if (path := stem.with_suffix(suffix)).is_file()
+    }
+    assert len(prior) == 5
+    checked = compiled_type_profiles(
+        root=root,
+        source=fresh,
+        names=["goal"],
+        workspace=root / ".leanflow/checks",
+        timeout_s=60,
+        module="Main",
+        published_library=library,
+        freeze_artifact_parts=True,
+    )
+    assert checked["accepted"] and checked["profiles"]["goal"]["axioms"] == [], checked
+    assert all(path.read_bytes() == content for path, content in prior.items())
+    assert (root / "Main.lean").read_text() == old

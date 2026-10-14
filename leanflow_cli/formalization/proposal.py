@@ -27,6 +27,8 @@ from leanflow_cli.formalization.lean_layout import (
 )
 from leanflow_cli.formalization.lean_policy import POLICY_VERSION, inspect_dependency, inspect_draft
 from leanflow_cli.formalization.proposal_schema import apply_proposal, bind_declarations
+from leanflow_cli.formalization.publication import publication_guard
+from leanflow_cli.formalization.publication_io import PublicationConflict
 from leanflow_cli.formalization.records import (
     assert_source_current,
     document_lock,
@@ -36,6 +38,7 @@ from leanflow_cli.formalization.records import (
     save_receipt,
     save_revision,
 )
+from leanflow_cli.formalization.review_scope import bind_review_scope
 from leanflow_cli.formalization.stage_errors import RepreparationRequired
 from leanflow_cli.native.harness_artifacts import source_files
 from leanflow_cli.workflows.prover.lean_environment import lean_environment_generation
@@ -114,7 +117,9 @@ def check_proposal(
         return result
 
     try:
-        with document_lock(root, document_id) as store:
+        # Editor actions acquire project ownership first; match that order before
+        # stage admission reenters the project lock while this document is owned.
+        with publication_guard(root), document_lock(root, document_id) as store:
             from leanflow_cli.formalization.records import current_selection_token
 
             if current_selection_token(root, document_id) != selection_token:
@@ -374,6 +379,7 @@ def check_proposal(
                 raise RepreparationRequired(str(error)) from error
             candidate.pop("revision_id")
             candidate.update(checks=checks, status="awaiting_review")
+            bind_review_scope(root, candidate)
             candidate = save_revision(store, candidate)
             selected_attempt = candidate
             from leanflow_cli.formalization.handoff import build_handoff
@@ -405,8 +411,8 @@ def check_proposal(
                 "environment_generation": generation,
                 "selection_token": selection_token,
             }
-    except RepreparationRequired as exc:
-        return rejected({"accepted": False, "error_code": exc.error_code, "error": str(exc)})
+    except (PublicationConflict, RepreparationRequired) as exc:
+        return rejected({"accepted": False, "error_code": "needs_reprepare", "error": str(exc)})
     except subprocess.SubprocessError as exc:
         return rejected(
             {

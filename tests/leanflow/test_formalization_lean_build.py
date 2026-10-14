@@ -58,7 +58,7 @@ def build_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, d
         return {"success": True, "returncode": 0, "stdout": "", "stderr": ""}
 
     monkeypatch.setattr(lean_build, "compiler_executable", lambda *args: str(compiler / "bin/lean"))
-    monkeypatch.setattr(lean_build, "compiled_library_paths", lambda root: [])
+    monkeypatch.setattr(lean_build, "compiled_library_paths", lambda root, **kwargs: [])
     monkeypatch.setattr(lean_build, "dependency_inputs", lambda root: {"packages": {}})
     monkeypatch.setattr(lean_build, "isolated_command", command)
     return root, layout, calls
@@ -118,7 +118,7 @@ def test_compilation_uses_exact_prebuilt_library_without_git_or_loading_lake(
     for suffix in ("olean", "olean.server", "olean.private", "ir.sig", "ir"):
         (library / f"Library.{suffix}").write_bytes(b"recorded dependency part")
     (root / "src/Paper/Base.lean").write_text("import Library\n")
-    monkeypatch.setattr(lean_build, "compiled_library_paths", lambda root: [library])
+    monkeypatch.setattr(lean_build, "compiled_library_paths", lambda root, **kwargs: [library])
     result = lean_build.build_project(root, layout, root.parent / "check")
     assert result["success"]
     setup = json.loads(
@@ -139,7 +139,7 @@ def test_duplicate_or_shadowing_libraries_are_rejected(
     artifact = library.joinpath(*module.split(".")).with_suffix(".olean")
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_bytes(b"shadow")
-    monkeypatch.setattr(lean_build, "compiled_library_paths", lambda root: [library])
+    monkeypatch.setattr(lean_build, "compiled_library_paths", lambda root, **kwargs: [library])
     with pytest.raises(ValueError, match="shadow|Ambiguous module root"):
         lean_build.build_project(root, layout, root.parent / "check")
 

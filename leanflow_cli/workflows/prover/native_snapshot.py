@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -41,6 +42,46 @@ _EXCLUDED = {
 _RELEASED = ".leanflow-dependencies-released"
 
 
+class SnapshotProvenanceError(ValueError):
+    """Require a fresh job workspace while preserving a view with unverifiable provenance."""
+
+
+def _exclusion_record(destination: Path) -> Path:
+    """Keep snapshot provenance outside the native agent's writable project."""
+    return destination.parent / (".leanflow-snapshot-" + destination.name + "-build-exclusion.json")
+
+
+def _exclusion_identity(
+    destination: Path, build_dir: str, *, staged: Path | None = None
+) -> dict[str, object]:
+    """Bind evaluated cache exclusion to the controller-created directory inode."""
+    observed = (staged or destination).stat()
+    return {
+        "schema_version": 1,
+        "project": str(destination.resolve()),
+        "excluded_build_dir": build_dir,
+        "device": observed.st_dev,
+        "inode": observed.st_ino,
+    }
+
+
+def _assert_exclusion(destination: Path, build_dir: str) -> None:
+    """Refuse an old view whose own-cache exclusion was never recorded."""
+    record = _exclusion_record(destination)
+    try:
+        if record.is_symlink():
+            raise ValueError("Snapshot exclusion provenance is aliased")
+        value = json.loads(record.read_text())
+        if value != _exclusion_identity(destination, build_dir):
+            raise ValueError(
+                "Snapshot exclusion provenance differs from the evaluated build directory"
+            )
+    except (OSError, ValueError) as error:
+        raise SnapshotProvenanceError(
+            "Existing native snapshot lacks exact build-exclusion provenance; preserve it and start a fresh proof job"
+        ) from error
+
+
 def remap_project_text(
     text: str,
     source_root: Path,
@@ -61,33 +102,111 @@ def remap_project_text(
     return re.sub(f"(?:{prefixes}){boundary}", lambda match: paths[match.group()], text)
 
 
-def create_snapshot(project_root: Path, destination: Path) -> Path:
+def create_snapshot(
+    project_root: Path, destination: Path, *, excluded_build_dir: str | None = None
+) -> Path:
     """Copy permitted files without links to canonical sources or controller state.
 
     Dependencies retain their compiled artifacts; the project's own build products
     are excluded so previously compiled target proofs cannot bypass source filtering.
     """
+    if excluded_build_dir is not None:
+        # Serialize provenance publication and retry of a stopped pre-publication
+        # copy; nested prepare_snapshot ownership is explicitly reentrant.
+        with storage_lock():
+            return _create_snapshot(
+                project_root, destination, excluded_build_dir=excluded_build_dir
+            )
+    return _create_snapshot(project_root, destination)
+
+
+def _publish_exclusion(destination: Path, build_dir: str, staged: Path) -> None:
+    """Flush exact staged-inode provenance before the project directory becomes visible."""
+    from leanflow_cli.formalization.evidence import sync_directory
+
+    record = _exclusion_record(destination)
+    value = _exclusion_identity(destination, build_dir, staged=staged)
+    with tempfile.NamedTemporaryFile(dir=record.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write((json.dumps(value, sort_keys=True) + "\n").encode())
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        os.link(temporary, record, follow_symlinks=False)
+        sync_directory(record.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _preserve_unpublished_exclusion(destination: Path) -> None:
+    """Retain orphan provenance before retrying a copy whose destination never appeared."""
+    from leanflow_cli.formalization.evidence import sync_directory
+    from leanflow_cli.formalization.publication_io import rename_exclusive
+
+    record = _exclusion_record(destination)
+    if not record.exists() and not record.is_symlink():
+        return
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError("Existing native view must be preserved")
+    retained = record.with_name(record.name + ".unpublished-" + uuid.uuid4().hex)
+    rename_exclusive(record, retained)
+    sync_directory(record.parent)
+
+
+def _create_snapshot(
+    project_root: Path, destination: Path, *, excluded_build_dir: str | None = None
+) -> Path:
+    """Copy one owned view, preserving any competing directory or exclusion record."""
     _validate_destination(destination)
     source = project_root.resolve(strict=True)
+    if excluded_build_dir is not None:
+        from leanflow_cli.formalization.evidence import contained
+
+        build = contained(source, excluded_build_dir)
+        packages = source / ".lake/packages"
+        if (
+            build == source
+            or build == packages
+            or build in packages.parents
+            or packages in build.parents
+        ):
+            raise ValueError("Private snapshot build exclusion overlaps dependency inputs")
     target = destination.resolve()
     if target == source:
         raise ValueError("A native agent snapshot must differ from the canonical project")
     if target.exists():
         raise FileExistsError(str(target))
     target.parent.mkdir(parents=True, exist_ok=True)
+    if excluded_build_dir is not None:
+        _preserve_unpublished_exclusion(target)
     ensure_storage_capacity(target.parent)
     with tempfile.TemporaryDirectory(prefix=".snapshot-", dir=target.parent) as temporary:
         staged = Path(temporary) / "project"
         staged.mkdir()
         shared = _shared_dependencies(source, staged / ".lake/packages")
-        _copy_filtered(source, staged, target, skip_packages=shared)
-        staged.rename(target)
+        _copy_filtered(
+            source, staged, target, skip_packages=shared, excluded_build_dir=excluded_build_dir
+        )
+        if excluded_build_dir is not None:
+            from leanflow_cli.formalization.evidence import sync_directory
+            from leanflow_cli.formalization.publication_io import rename_exclusive
+
+            _publish_exclusion(target, excluded_build_dir, staged)
+            rename_exclusive(staged, target)
+            sync_directory(target.parent)
+        else:
+            staged.rename(target)
     register_workspace(target)
     return target
 
 
 def _copy_filtered(
-    source: Path, target: Path, destination: Path, *, skip_packages: bool = False
+    source: Path,
+    target: Path,
+    destination: Path,
+    *,
+    skip_packages: bool = False,
+    excluded_build_dir: str | None = None,
 ) -> None:
     """Clone permitted source and dependency bytes while excluding private controller paths."""
     minimum = storage_policy().min_free_bytes
@@ -103,6 +222,7 @@ def _copy_filtered(
             and not target.is_relative_to((current / name).resolve())
             and not clean_room_path_block_reason(str(current / name), cwd=source)
             and not (relative == Path(".lake") and name == "build")
+            and (relative / name).as_posix() != excluded_build_dir
             and not (skip_packages and relative == Path(".lake") and name == "packages")
         ]
         output = target / relative
@@ -121,20 +241,26 @@ def _copy_filtered(
             copy_file(item, output / name)
 
 
-def prepare_snapshot(project_root: Path, destination: Path) -> Path:
+def prepare_snapshot(
+    project_root: Path, destination: Path, *, excluded_build_dir: str | None = None
+) -> Path:
     """Create a private project or restore released dependencies before a resumed session."""
     _validate_destination(destination)
     # Ownership must change before stale-owner collection can inspect this view.
     with storage_lock():
-        return _prepare_snapshot(project_root, destination)
+        return _prepare_snapshot(project_root, destination, excluded_build_dir=excluded_build_dir)
 
 
-def _prepare_snapshot(project_root: Path, destination: Path) -> Path:
+def _prepare_snapshot(
+    project_root: Path, destination: Path, *, excluded_build_dir: str | None = None
+) -> Path:
     """Prepare a view while holding the storage ownership lock."""
     if destination.is_symlink() or (destination / ".lake").is_symlink():
         raise ValueError("A private snapshot cannot link its project or cache to another directory")
     if not destination.exists():
-        return create_snapshot(project_root, destination)
+        return create_snapshot(project_root, destination, excluded_build_dir=excluded_build_dir)
+    if excluded_build_dir is not None:
+        _assert_exclusion(destination, excluded_build_dir)
     register_workspace(destination)
     marker = destination / _RELEASED
     if not marker.exists():
