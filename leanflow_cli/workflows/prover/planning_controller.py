@@ -81,6 +81,18 @@ def research_plan(
     refinement: bool = False,
 ) -> bool:
     """Run fresh planning and critique contexts, then materialize only reviewed proposals."""
+    if getattr(runtime, "formalization_handoff", None) is not None:
+        # The published source review authorizes literal proof slots, so graph
+        # setup changes need a new formalization revision before planning runs.
+        runtime.state.pop("planning_request", None)
+        runtime.state.update(
+            phase="proving",
+            design_plan_complete=True,
+            proposal_status="scope_restricted",
+            proposal_critique="Reviewed formalization proof scope permits existing proof slots only. New helpers, imports, and libraries require a revised formalization and source review.",
+        )
+        runtime._persist()
+        return False
     checkpoint = runtime.state.get("planning_request")
     if not isinstance(checkpoint, dict):
         checkpoint = {
@@ -353,6 +365,8 @@ def _planning_call(
 
 def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
     """Apply only reviewed, immutable library requests and record exact configuration diffs."""
+    if entries and getattr(runtime, "formalization_handoff", None) is not None:
+        raise ValueError("Reviewed formalization proof scope forbids library installation")
     if not entries:
         return
     if not runtime.config.allow_internet:
@@ -422,6 +436,8 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
 
 def materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) -> None:
     """Serialize the controller's helper and import source mutations."""
+    if getattr(runtime, "formalization_handoff", None) is not None:
+        raise ValueError("Reviewed formalization proof scope forbids helper materialization")
     with runtime.lock:
         previous_changes = copy.deepcopy(runtime.state["changes"])
         runtime.progress.call(
@@ -440,6 +456,21 @@ def _materialize(
     previous_changes: list[dict[str, Any]],
 ) -> None:
     """Compile reviewed helper skeletons before making them dependencies of user goals."""
+    from leanflow_cli.formalization.publication import publication_guard
+
+    with publication_guard(runtime.root):
+        _materialize_locked(runtime, dag, skeletons, previous_changes)
+
+
+def _materialize_locked(
+    runtime: ProverRuntime,
+    dag: Dag,
+    skeletons: dict[str, str],
+    previous_changes: list[dict[str, Any]],
+) -> None:
+    """Keep one coherent project generation throughout helper installation and rollback."""
+    if getattr(runtime, "formalization_handoff", None) is not None:
+        raise ValueError("Reviewed formalization proof scope forbids helper materialization")
     runtime._assert_sources()
     index = dag.by_id()
     documents = copy.deepcopy(runtime.documents)

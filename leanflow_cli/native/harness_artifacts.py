@@ -89,8 +89,10 @@ def verify_proposal(
     cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Verify frozen bytes in a second workspace the native agent cannot mutate."""
+    from leanflow_cli.formalization.publication import assert_no_pending_publication
     from leanflow_cli.workflows.prover.check_process import isolated_command
 
+    assert_no_pending_publication(root)
     _check_active(deadline, cancelled)
     proposed = source_files(snapshot)
     if any(
@@ -134,8 +136,6 @@ def verify_proposal(
         return {"accepted": False, "error": "Submitted Lean sources still contain sorry/admit"}
     for relative, content in lean_changes.items():
         definitions = _protected_definitions(content.decode())
-        if statement_draft and any(sorry_spans(value) for value in definitions.values()):
-            return {"accepted": False, "error": f"Construction placeholders remain in {relative}"}
         if relative in baseline:
             protected = _protected_definitions(baseline[relative].decode())
             if any(definitions.get(name) != text for name, text in protected.items()):
@@ -166,17 +166,39 @@ def verify_proposal(
         lake = frozen / ".lake"
         lake.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="leanflow-verify-") as check_tmp:
+            draft_registry = None
+            if statement_draft:
+                from leanflow_cli.native.harness_draft import inspect_statement_draft
+
+                draft_registry = inspect_statement_draft(
+                    root=root,
+                    frozen=frozen,
+                    baseline=baseline,
+                    changes=lean_changes,
+                    workspace=Path(check_tmp),
+                    allowed_axioms=allowed_axioms,
+                    deadline=deadline,
+                    cancelled=cancelled,
+                )
+                if not draft_registry.get("accepted"):
+                    return draft_registry
+                build = frozen / draft_registry["layout"]["build_dir"]
             checked = isolated_command(
                 project_root=frozen,
                 workspace=Path(check_tmp),
                 argv=["lake", "build"],
-                timeout_s=remaining_seconds(deadline),
+                timeout_s=(
+                    remaining_seconds(deadline)
+                    if deadline is not None
+                    else 300.0 if statement_draft else None
+                ),
                 cancelled=cancelled,
                 extra_writable_roots=(
                     build,
                     *(
                         lake / name
                         for name in (
+                            "config",
                             "lakefile.olean",
                             "lakefile.olean.trace",
                             "lakefile.olean.lock",
@@ -193,6 +215,13 @@ def verify_proposal(
                 }
             profiles: dict[str, Any] = {}
             for relative, content in lean_changes.items():
+                if draft_registry is not None:
+                    profiles[relative] = {
+                        row["name"]: row
+                        for row in draft_registry["declarations"]
+                        if row["file"] == relative
+                    }
+                    continue
                 names = declaration_names(content.decode())
                 if not names:
                     return {
@@ -246,6 +275,7 @@ def verify_proposal(
                         }
                 profiles[relative] = result["profiles"]
         _check_active(deadline, cancelled)
+        assert_no_pending_publication(root)
         if lean_environment_generation(root) != environment_generation:
             return {
                 "accepted": False,
@@ -257,6 +287,7 @@ def verify_proposal(
             "files": {path: data.decode() for path, data in changed.items()},
             "sha256": {path: hashlib.sha256(data).hexdigest() for path, data in changed.items()},
             "profiles": profiles,
+            **({"compiled_draft": draft_registry} if draft_registry is not None else {}),
         }
 
 
@@ -271,9 +302,11 @@ def promote(
     """Publish only accepted frozen bytes after rechecking canonical source identity."""
     if receipt.get("accepted") is not True:
         raise ValueError("A successful independent receipt is required")
+    from leanflow_cli.formalization.publication import publication_guard
+
     lock = root / ".leanflow" / "native-promotion.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
-    with lock.open("a") as handle:
+    with publication_guard(root), lock.open("a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         _check_active(deadline, cancelled)
         if source_files(root) != baseline:

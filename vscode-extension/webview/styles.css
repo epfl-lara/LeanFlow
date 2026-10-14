@@ -1726,3 +1726,32 @@ body.vscode-high-contrast-light {
 .job-card-open .spread { gap: 8px; }
 .job-card-open .muted { display: block; font-size: 11px; margin-top: 4px; }
 .job-stop { margin: 0 10px 10px; }
+
+/* Formalization evidence stays separate from prover completion. */
+.formalization-view { max-width: 1440px; margin: 0 auto; padding: 20px; }
+.formalization-view > * + * { margin-top: 16px; }
+.formalization-view .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.formalization-view label { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.formalization-view input, .formalization-view select, .formalization-view textarea { max-width: 100%; box-sizing: border-box; }
+.formalization-view textarea { min-height: 80px; width: 100%; }
+.formalization-view summary { cursor: pointer; padding: 6px 0; }
+.formalization-table { overflow: auto; }
+.formalization-table table { width: 100%; border-collapse: collapse; text-align: left; }
+.formalization-table th, .formalization-table td { padding: 8px; border-bottom: 1px solid var(--vscode-panel-border); vertical-align: top; }
+.formalization-table tr.selected { background: var(--vscode-list-inactiveSelectionBackground); }
+.formalization-source-pair, .formalization-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.formalization-source-ref { margin: 10px 0; }
+.formalization-source-ref pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow: auto; }
+.formalization-region { border-top: 1px solid var(--vscode-panel-border); padding: 8px 0; }
+.formalization-pdf { border: 1px solid var(--vscode-panel-border); padding: 16px; border-radius: 6px; }
+.formalization-pdf input[type=number] { width: 80px; }
+.formalization-pdf-scroll { overflow: auto; max-height: 760px; background: #777; }
+.formalization-pdf-page { position: relative; background: white; color: black; margin: 0 auto; }
+.formalization-pdf-page canvas { display: block; }
+/* TextLayer layout follows PDF.js (Mozilla Foundation, Apache-2.0). */
+.formalization-pdf-page .textLayer { color-scheme: only light; position: absolute; inset: 0; overflow: clip; opacity: 1; line-height: 1; letter-spacing: normal; word-spacing: normal; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; caret-color: CanvasText; --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)); }
+.formalization-pdf-page .textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; user-select: text; }
+.formalization-pdf-page .textLayer > :not(.markedContent), .formalization-pdf-page .textLayer .markedContent span:not(.markedContent) { z-index: 1; --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height)); --scale-x: 1; --rotate: 0deg; transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)); }
+.formalization-pdf-page .textLayer .markedContent { display: contents; }
+.formalization-pdf-page .textLayer ::selection { background: #0066ff66; color: transparent; }
+@media (max-width: 800px) { .formalization-source-pair, .formalization-fields { grid-template-columns: minmax(0, 1fr); } }

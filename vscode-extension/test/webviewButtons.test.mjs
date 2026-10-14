@@ -4,8 +4,273 @@ import { after, test } from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
 import ts from "typescript";
 import { mount, textOf, act, SidebarView, clickedButtons, normalizeProverSnapshot } from "./helpers/webviewFixture.mjs";
+import { formalizationFixture } from "./helpers/formalizationFixture.mjs";
 
 function message(ui, type) { return ui.messages.filter(row => row.type === type).at(-1); }
+
+function hostMessage(value) {
+  act(() => { const event = new Event("message"); event.data = value; window.dispatchEvent(event); });
+}
+
+test("formalization inventory exposes distinct evidence and revision-bound repair and prove controls", () => {
+  const ui = mount("formalization");
+  try {
+    assert.ok(message(ui, "listFormalizations"));
+    ui.click("Choose TeX or PDF"); assert.equal(message(ui, "inspectFormalization").sourceKind, "file");
+    ui.click("Choose TeX project"); assert.equal(message(ui, "inspectFormalization").sourceKind, "folder");
+    ui.click("Refresh inventory");
+    const snapshot = formalizationFixture();
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.match(textOf(ui.root()), /1\/2 included items reviewed · 1 excluded · 1 unresolved regions/);
+    assert.match(textOf(ui.root()), /correction_needed/); assert.match(textOf(ui.root()), /conditional/);
+    ui.click(ui.buttons().find(button => textOf(button) === "Doubling"));
+    ui.click("paper/main.tex · line 2"); assert.equal(message(ui, "openFormalizationArtifact").artifactId, "source-tex");
+    ui.click("Paper.double"); assert.equal(message(ui, "openFormalizationArtifact").artifactId, "lean-1");
+    ui.click("Open PDF: paper.pdf"); assert.equal(message(ui, "openFormalizationArtifact").artifactId, "source-pdf");
+    hostMessage({ type: "formalizationSourceSelection", documentId: "paper-1", revisionId: "revision-1", artifactId: "source-tex", lineStart: 3, lineEnd: 3 });
+    const candidate = ui.buttons().find(button => textOf(button) === "Doubling" && button.props.className === "btn");
+    ui.click(candidate);
+    ui.change(ui.input("New source item title"), "Missed statement");
+    ui.click("Submit repair for revision-1");
+    assert.equal(message(ui, "formalizationAction").action.type, "add_item");
+    ui.change(ui.input("Repair kind"), "scope");
+    ui.change(ui.input("Repair reason"), "Open problem excluded by author");
+    ui.click("Submit repair for revision-1");
+    assert.deepEqual(message(ui, "formalizationAction").action, { type: "set_scope", item_id: "item-1", scope: "excluded", reason: "Open problem excluded by author" });
+    ui.change(ui.input("Repair kind"), "boundary");
+    ui.click("Submit repair for revision-1");
+    assert.equal(message(ui, "formalizationAction").action.type, "update_boundary");
+    ui.change(ui.input("Repair kind"), "mapping");
+    ui.change(ui.input("Corrected Lean mappings"), "Main/Paper.lean | Paper.double");
+    ui.click("Submit repair for revision-1");
+    assert.equal(message(ui, "formalizationAction").action.type, "set_mapping");
+    ui.change(ui.input("Reason for region-1"), "Paragraph supplies notation");
+    ui.click("Record region disposition");
+    assert.equal(message(ui, "formalizationAction").action.classification, "supporting_context");
+    ui.click("Start proving accepted statements");
+    assert.equal(message(ui, "proveFormalization").revisionId, "revision-1");
+    ui.click("Configure or resume formalization");
+    assert.equal(ui.view.tab, "launch"); assert.equal(ui.view.form.target, snapshot.source.path);
+    act(() => ui.setView({ tab: "formalization" }));
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot: null, error: "Revision changed" });
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+  } finally { ui.dispose(); }
+});
+
+test("local PDF page and text selections navigate to candidate items and keep missing matches visible", async () => {
+  const ui = mount("formalization");
+  const previousFetch = globalThis.fetch;
+  const previousWorker = globalThis.Worker;
+  try {
+    window.__LEANFLOW_PDF__ = { worker: "vscode-resource:worker", fonts: "vscode-resource:fonts/", cmaps: "vscode-resource:cmaps/", iccs: "vscode-resource:iccs/" };
+    globalThis.fetch = async uri => { assert.equal(uri, "vscode-resource:worker"); return { ok: true, text: async () => "// Local fixture worker" }; };
+    globalThis.Worker = class { terminate() {} };
+    const snapshot = formalizationFixture();
+    snapshot.source.kind = "pdf";
+    snapshot.source.path = "paper.pdf";
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    await act(async () => {
+      hostMessage({ type: "formalizationPdf", pdf: { documentId: "paper-1", revisionId: "revision-1", artifactId: "source-pdf", pageIndex: 0, base64: "JVBERg==" } });
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    assert.equal(ui.pdfOptions.useWorkerFetch, false);
+    assert.equal(ui.pdfOptions.enableXfa, false);
+    await act(async () => { ui.click("Next page"); await Promise.resolve(); });
+    assert.equal(ui.input("Physical PDF page").props.value, 2);
+    await act(async () => { ui.click("Previous page"); await Promise.resolve(); });
+    window.getSelection = () => ({ toString: () => "Define doubling" });
+    act(() => ui.root().findByProps({ className: "formalization-pdf-page" }).props.onMouseUp());
+    assert.match(textOf(ui.root()), /Selected passage candidates/);
+    const pdfCandidate = ui.root().findByProps({ "aria-label": "Frozen PDF source" }).findAllByType("button").find(button => textOf(button) === "Doubling");
+    ui.click(pdfCandidate);
+    ui.click("Show all page items");
+    window.getSelection = () => ({ toString: () => "A missing statement" });
+    act(() => ui.root().findByProps({ className: "formalization-pdf-page" }).props.onMouseUp());
+    assert.match(textOf(ui.root()), /No linked items match this passage/);
+    assert.equal(ui.input("Source passage").props.value, "A missing statement");
+  } finally { ui.dispose(); globalThis.fetch = previousFetch; globalThis.Worker = previousWorker; }
+});
+
+test("companion PDF links stay approximate and cannot replace canonical TeX boundaries", async () => {
+  const ui = mount("formalization");
+  const previousFetch = globalThis.fetch;
+  const previousWorker = globalThis.Worker;
+  try {
+    window.__LEANFLOW_PDF__ = { worker: "vscode-resource:worker", fonts: "vscode-resource:fonts/", cmaps: "vscode-resource:cmaps/", iccs: "vscode-resource:iccs/" };
+    globalThis.fetch = async () => ({ ok: true, text: async () => "// Local fixture worker" });
+    globalThis.Worker = class { terminate() {} };
+    const snapshot = formalizationFixture();
+    snapshot.items[2].source_refs = [{ artifact_id: "source-pdf", file: "paper.pdf", precision: "unavailable", text: "" }];
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    await act(async () => {
+      hostMessage({ type: "formalizationPdf", pdf: { documentId: "paper-1", revisionId: "revision-1", artifactId: "source-pdf", pageIndex: 0, base64: "JVBERg==" } });
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    assert.match(textOf(ui.root()), /PDF is a visual companion/);
+    assert.match(textOf(ui.root()), /approximate/);
+    const artifacts = ui.input("Repair source artifact").findAllByType("option").map(option => option.props.value);
+    assert.deepEqual(artifacts, ["source-tex"]);
+    window.getSelection = () => ({ toString: () => "Define doubling" });
+    act(() => ui.root().findByProps({ className: "formalization-pdf-page" }).props.onMouseUp());
+    assert.match(textOf(ui.root()), /Selected passage candidates/);
+    assert.equal(ui.root().findAllByProps({ "aria-label": "Source passage" }).length, 0);
+    ui.click("Open problem");
+    assert.match(textOf(ui.root()), /No page match is available/);
+    assert.match(textOf(ui.root()), /displayed page is not a claimed match/);
+  } finally { ui.dispose(); globalThis.fetch = previousFetch; globalThis.Worker = previousWorker; }
+});
+
+test("open claim proof permission is explicit, revocable and tied to the viewed revision", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = formalizationFixture();
+    snapshot.can_prove = false;
+    snapshot.items[2].claim_status = "open_question";
+    snapshot.items[2].extracted_claim_status = "unknown";
+    snapshot.items[2].claim_status_rationale = "The source asks whether this claim holds.";
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    ui.click("Open problem");
+    assert.match(textOf(ui.root()), /Source claim: open_question · extraction: unknown/);
+    assert.match(textOf(ui.root()), /The source asks whether this claim holds/);
+    assert.equal(ui.button("Allow proof attempt for this open claim").props.disabled, true);
+    ui.change(ui.input("Proof permission reason"), "Try this open problem as explicit research");
+    ui.click("Allow proof attempt for this open claim");
+    assert.deepEqual(message(ui, "formalizationAction"), { type: "formalizationAction", documentId: "paper-1", revisionId: "revision-1", action: { type: "authorize_proof", item_id: "item-3", authorized: true, reason: "Try this open problem as explicit research" } });
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+    const next = structuredClone(snapshot);
+    next.revision_id = "revision-3";
+    next.items[2].proof_authorization = { actor: "user", authorized: true, reason: "Try this open problem as explicit research" };
+    hostMessage({ type: "formalizationState", documentId: next.document_id, snapshot: next, error: "" });
+    assert.equal(ui.input("Proof permission reason").props.value, "");
+    assert.match(textOf(ui.root()), /Explicitly allowed/);
+    assert.match(textOf(ui.root()), /Source claim: open_question/);
+    ui.change(ui.input("Proof permission reason"), "Withdraw this research request");
+    ui.click("Revoke proof attempt permission");
+    assert.deepEqual(message(ui, "formalizationAction"), { type: "formalizationAction", documentId: "paper-1", revisionId: "revision-3", action: { type: "authorize_proof", item_id: "item-3", authorized: false, reason: "Withdraw this research request" } });
+    hostMessage({ type: "formalizationState", documentId: next.document_id, snapshot: null, error: "Revision changed" });
+    assert.equal(ui.button("Revoke proof attempt permission").props.disabled, true);
+  } finally { ui.dispose(); }
+});
+
+test("unknown command reconciliation exposes all frozen occurrences and records only an explicit verified interpretation", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = formalizationFixture();
+    snapshot.can_prove = false;
+    snapshot.diagnostics = [
+      { id: "diagnostic-1", code: "unresolved_command", message: "Unknown command \\transfer", blocking: true, can_resolve_command: true,
+        source_refs: [{ artifact_id: "source-tex", file: "paper/main.tex", line_start: 2 }, { artifact_id: "source-tex", file: "paper/main.tex", line_start: 10 }] },
+      { id: "diagnostic-2", code: "missing_include", message: "Missing included source", blocking: true, can_resolve_command: false, source_refs: [] },
+    ];
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    ui.click("Occurrence 1: paper/main.tex · line 2");
+    assert.equal(message(ui, "openFormalizationArtifact").line, 2);
+    ui.click("Occurrence 2: paper/main.tex · line 10");
+    assert.equal(message(ui, "openFormalizationArtifact").line, 10);
+    assert.equal(ui.button("Record command interpretation").props.disabled, true);
+    assert.match(textOf(ui.root()), /cannot be cleared by recording a command interpretation/);
+    ui.change(ui.input("Command interpretation for diagnostic-1"), "Transfer is the named operation on the following argument.");
+    ui.change(ui.input("Command evidence for diagnostic-1"), "Checked the definition and both rendered occurrences.");
+    assert.equal(ui.button("Record command interpretation").props.disabled, true);
+    act(() => ui.input("Verified all occurrences for diagnostic-1").props.onChange({ target: { checked: true } }));
+    ui.change(ui.input("Command interpretation for diagnostic-1"), "Transfer is the same named operation at both occurrences.");
+    assert.equal(ui.input("Verified all occurrences for diagnostic-1").props.checked, false);
+    act(() => ui.input("Verified all occurrences for diagnostic-1").props.onChange({ target: { checked: true } }));
+    ui.click("Record command interpretation");
+    assert.deepEqual(message(ui, "formalizationAction"), { type: "formalizationAction", documentId: "paper-1", revisionId: "revision-1", action: { type: "resolve_command", diagnostic_id: "diagnostic-1", interpretation: "Transfer is the same named operation at both occurrences.", reason: "Checked the definition and both rendered occurrences.", verified: true } });
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+    const refreshed = structuredClone(snapshot);
+    refreshed.revision_id = "revision-3";
+    hostMessage({ type: "formalizationState", documentId: refreshed.document_id, snapshot: refreshed, error: "" });
+    assert.equal(ui.input("Command interpretation for diagnostic-1").props.value, "");
+    assert.equal(ui.input("Verified all occurrences for diagnostic-1").props.checked, false);
+    refreshed.diagnostics[0].resolution = { actor: "user", interpretation: "Named operation", reason: "Both occurrences verified", verified: true };
+    refreshed.diagnostics[0].blocking = false;
+    refreshed.revision_id = "revision-4";
+    refreshed.diagnostics.push({ id: "diagnostic-3", code: "pdf_text_missing", message: "Page transcription repaired", blocking: false, can_resolve_command: false, source_refs: [], resolution: "verified_transcription", resolution_reason: "Checked full page" });
+    hostMessage({ type: "formalizationState", documentId: refreshed.document_id, snapshot: refreshed, error: "" });
+    assert.match(textOf(ui.root()), /User interpretation: Named operation/);
+    assert.match(textOf(ui.root()), /Source repair: verified page transcription · Checked full page/);
+    assert.equal(ui.buttons().some(button => textOf(button) === "Record command interpretation"), false);
+    assert.equal(ui.button("Update command interpretation").props.disabled, true);
+    ui.change(ui.input("Command interpretation for diagnostic-1"), "Corrected named operation");
+    ui.change(ui.input("Command evidence for diagnostic-1"), "Rechecked all occurrences after reviewer feedback.");
+    act(() => ui.input("Verified all occurrences for diagnostic-1").props.onChange({ target: { checked: true } }));
+    ui.click("Update command interpretation");
+    assert.equal(message(ui, "formalizationAction").revisionId, "revision-4");
+    assert.equal(message(ui, "formalizationAction").action.interpretation, "Corrected named operation");
+  } finally { ui.dispose(); }
+});
+
+test("checked proof certificate is displayed separately from source review and disables further handoff", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = formalizationFixture();
+    snapshot.proof_completion = "checked";
+    snapshot.proof_revision_id = "proof-revision-1";
+    snapshot.items[1].proof_status = "checked";
+    snapshot.items[1].review_status = "pass";
+    snapshot.can_prove = false;
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.match(textOf(ui.root()), /Proof completion: checked · proof certificate revision proof-revision-1/);
+    assert.match(textOf(ui.root()), /All obligations in this handoff have checked proofs/);
+    assert.equal(snapshot.items[1].review_status, "pass");
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+  } finally { ui.dispose(); }
+});
+
+test("a private versus published revision conflict permits explicit selection before repairs or launch", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = formalizationFixture();
+    snapshot.status = "selection_conflict";
+    snapshot.selection_conflict = { message: "A newer published selection conflicts with local work.", private_revision_id: "revision-1", published_revision_id: "revision-2" };
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.match(textOf(ui.root()), /Local working revision revision-1 · published revision revision-2/);
+    ui.change(ui.input("New source item title"), "A missed claim");
+    assert.equal(ui.button("Submit repair for revision-1").props.disabled, true);
+    assert.equal(ui.button("Configure or resume formalization").props.disabled, true);
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+    assert.equal(ui.input("Select formalization revision").props.disabled, false);
+    ui.change(ui.input("Select formalization revision"), "revision-2");
+    assert.deepEqual(message(ui, "formalizationAction"), { type: "formalizationAction", documentId: "paper-1", revisionId: "revision-1", action: { type: "select_revision", revision_id: "revision-2" } });
+  } finally { ui.dispose(); }
+});
+
+test("terminal check and reviewer errors expose the repair reason without making fresh snapshots stale", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = formalizationFixture();
+    snapshot.status = "review_error";
+    snapshot.receipt_error = "Reviewer authentication unavailable";
+    snapshot.can_prove = false;
+    snapshot.items[0].review_status = "error";
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.match(textOf(ui.root()), /Review could not finish/);
+    assert.match(textOf(ui.root()), /Reviewer authentication unavailable/);
+    assert.equal(ui.button("Configure or resume formalization").props.disabled, false);
+    ui.change(ui.input("New source item title"), "Corrected source interpretation");
+    assert.equal(ui.button("Submit repair for revision-1").props.disabled, false);
+    snapshot.status = "check_rejected";
+    snapshot.receipt_error = "Unfinished definition: supply its complete construction";
+    snapshot.items[0].elaboration_status = "rejected";
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.match(textOf(ui.root()), /Lean draft needs correction/);
+    assert.match(textOf(ui.root()), /Unfinished definition: supply its complete construction/);
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+    snapshot.status = "check_error";
+    snapshot.receipt_error = "Lean checking process timed out";
+    snapshot.items[0].elaboration_status = "error";
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.match(textOf(ui.root()), /Lean checking could not finish/);
+    assert.match(textOf(ui.root()), /Lean checking process timed out/);
+    assert.match(textOf(ui.root()), /configure or resume formalization to retry/);
+    assert.doesNotMatch(textOf(ui.root()), /Lean draft needs correction/);
+    assert.equal(ui.button("Configure or resume formalization").props.disabled, false);
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+  } finally { ui.dispose(); }
+});
 
 test("external live jobs expose Stop in the dashboard and sidebar, but stale history does not", () => {
   for (const component of [undefined, SidebarView]) {

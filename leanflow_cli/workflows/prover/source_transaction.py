@@ -54,6 +54,14 @@ def begin_proof(
 
 def recover_proof(runtime: ProverRuntime) -> None:
     """Roll back an uncommitted install and retain its candidate for fresh verification."""
+    from leanflow_cli.formalization.publication import publication_guard
+
+    with publication_guard(runtime.root):
+        _recover_proof_locked(runtime)
+
+
+def _recover_proof_locked(runtime: ProverRuntime) -> None:
+    """Recover source bytes only while formalization cannot publish another generation."""
     path = runtime.store.directory / "source-transaction.json"
     if not path.is_file():
         return
@@ -179,6 +187,14 @@ def materialized_write(
 
 def recover_materialization(runtime: ProverRuntime, journal: dict[str, Any]) -> None:
     """Recover only journaled bytes, validating every file before changing any of them."""
+    from leanflow_cli.formalization.publication import publication_guard
+
+    with publication_guard(runtime.root):
+        _recover_materialization_locked(runtime, journal)
+
+
+def _recover_materialization_locked(runtime: ProverRuntime, journal: dict[str, Any]) -> None:
+    """Retain the publication lock across every rollback write and validation."""
     entries = journal["writes"]
     committed = runtime.state.get("source_transaction") == journal["id"]
     compiled_artifacts: list[tuple[str, bytes | None]] = []

@@ -25,6 +25,10 @@ export function buildWorkflowArgs(
   const boundedMode = request.kind === "prove" && ["", "standard", "research"].includes(mode);
 
   const target = request.target.trim();
+  if (request.formalization) {
+    if (request.kind !== "prove" || target) throw new Error("A formalization handoff requires prove with its exact accepted scope.");
+    args.push("--from-formalization", request.formalization.documentId, "--formalization-revision", request.formalization.revisionId);
+  }
   if (target) {
     // A target beginning with `-` would be parsed as a workflow option rather
     // than a file, silently changing what the run does.
@@ -478,11 +482,14 @@ function overlongFieldProblems(request: LaunchRequest): string[] {
 /** Validation the form can show before the user commits to a run. */
 export function validateLaunch(request: LaunchRequest): string[] {
   const problems: string[] = overlongFieldProblems(request);
+  if (request.formalization && (request.kind !== "prove" || request.target.trim())) {
+    problems.push("A formalization handoff requires prove with its exact accepted scope.");
+  }
   if (request.target.trim().startsWith("-")) {
     problems.push('A target may not begin with "-" because the CLI would parse it as an option.');
   }
   if (request.kind === "formalize" && !request.target.trim()) {
-    problems.push("formalize needs a source document (.tex or .pdf) as its target.");
+    problems.push("formalize needs a source document (.tex or .pdf) or TeX project folder as its target.");
   }
   if (request.research && request.kind !== "prove") {
     problems.push("--research is only supported for prove.");

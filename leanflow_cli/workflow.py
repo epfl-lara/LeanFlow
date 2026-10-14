@@ -80,6 +80,12 @@ class NativeWorkflowSpec:
     research_workers: int = 0
     no_parallel: bool = False
     human_review: bool = False
+    formalization_document_id: str = ""
+    formalization_revision: str = ""
+    review_provider: str = ""
+    review_model: str = ""
+    review_effort: str = ""
+    correction_rounds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +221,17 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
     }
     if plan.runtime.get("reasoning_effort"):
         summary["reasoning_effort"] = str(plan.runtime.get("reasoning_effort", "") or "")
+    if plan.workflow.formalization_document_id:
+        summary["formalization_document_id"] = plan.workflow.formalization_document_id
+        summary["formalization_revision"] = plan.workflow.formalization_revision
+    if plan.workflow.workflow_kind == "formalize":
+        for field in ("PROVIDER", "MODEL", "EFFORT"):
+            summary[f"review_{field.lower()}"] = plan.child_env.get(
+                f"LEANFLOW_FORMALIZATION_REVIEW_{field}", ""
+            )
+        summary["correction_rounds"] = plan.child_env.get(
+            "LEANFLOW_FORMALIZATION_CORRECTION_ROUNDS", "2"
+        )
     if plan.formalization_document is not None:
         request_relative = str(
             plan.formalization_document.metadata.get(
@@ -575,10 +592,32 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     research_mode = False
     research_workers: int | None = None
     human_review = False
+    formalization_options: dict[str, str] = {}
+    option_fields = {
+        "--from-formalization": "formalization_document_id",
+        "--formalization-revision": "formalization_revision",
+        "--review-provider": "review_provider",
+        "--review-model": "review_model",
+        "--review-effort": "review_effort",
+        "--correction-rounds": "correction_rounds",
+    }
     workflow_tokens: list[str] = []
     idx = 0
     while idx < len(remaining):
         token = remaining[idx]
+        if token in option_fields:
+            if (
+                idx + 1 >= len(remaining)
+                or remaining[idx + 1].startswith("--")
+                or not remaining[idx + 1].strip()
+            ):
+                raise ValueError(f"{token} requires a value")
+            field = option_fields[token]
+            if field in formalization_options:
+                raise ValueError(f"{token} was specified more than once")
+            formalization_options[field] = remaining[idx + 1].strip()
+            idx += 2
+            continue
         if token in PREVIEW_OPTION_TOKENS:
             # A misplaced preview option used to be folded into the target path and
             # the run started anyway; fail before any plan or run exists.
@@ -678,6 +717,37 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         parallel_agents = 1
     workflow_args = " ".join(workflow_tokens).strip()
     workflow_kind, canonical_command, backend_command = WORKFLOW_ALIAS_MAP[command_name]
+    handoff_document = formalization_options.get("formalization_document_id", "")
+    handoff_revision = formalization_options.get("formalization_revision", "")
+    if bool(handoff_document) != bool(handoff_revision):
+        raise ValueError(
+            "--from-formalization and --formalization-revision must be supplied together"
+        )
+    if handoff_document:
+        from leanflow_cli.formalization.evidence import identifier
+
+        identifier(handoff_document)
+        identifier(handoff_revision)
+        if workflow_kind != "prove" or workflow_args:
+            raise ValueError(
+                "A formalization handoff requires prove with no additional target file"
+            )
+    review_fields = {"review_provider", "review_model", "review_effort", "correction_rounds"}
+    if formalization_options.keys() & review_fields and workflow_kind != "formalize":
+        raise ValueError("Reviewer settings and correction rounds apply only to formalize")
+    correction_rounds = None
+    if "correction_rounds" in formalization_options:
+        try:
+            correction_rounds = int(formalization_options["correction_rounds"])
+        except ValueError as exc:
+            raise ValueError("--correction-rounds must be an integer") from exc
+        if not 0 <= correction_rounds <= 8:
+            raise ValueError("--correction-rounds must be between 0 and 8")
+    if "review_effort" in formalization_options:
+        from leanflow_cli.formalization.launch_options import REVIEW_EFFORTS
+
+        if formalization_options["review_effort"] not in REVIEW_EFFORTS:
+            raise ValueError("Unsupported --review-effort")
     if research_mode and workflow_kind != "prove":
         raise ValueError("--research is supported only for prove/autoprove workflows")
     if clean_room and workflow_kind != "prove":
@@ -719,6 +789,12 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         research_mode=research_mode,
         research_workers=effective_research_workers,
         human_review=human_review,
+        formalization_document_id=handoff_document,
+        formalization_revision=handoff_revision,
+        review_provider=formalization_options.get("review_provider", ""),
+        review_model=formalization_options.get("review_model", ""),
+        review_effort=formalization_options.get("review_effort", ""),
+        correction_rounds=correction_rounds,
     )
 
 
@@ -821,9 +897,8 @@ def resolve_workflow_request(
     formalization_document: FormalizationDocumentContext | None = None
     normalized_workflow_args = _normalize_workflow_args(project.root, cwd, workflow.workflow_args)
     if workflow.workflow_kind == "formalize" and not preview:
-        # Document intake scaffolds the state directory, writes manifests, and
-        # initializes the target Lean file. A preview must not create any of
-        # that, so it reports the plan without the intake and leaves the
+        # Document intake freezes private inventory and layout records. A
+        # preview must not create any of that, so it reports the plan and leaves the
         # document fields unresolved until the real launch.
         with project_activity(project.root):
             formalization_document = prepare_formalization_document_context(
@@ -856,6 +931,8 @@ def resolve_workflow_request(
     )
     if formalization_document is not None:
         normalized_active_file = formalization_document.target_lean_relative
+    if workflow.formalization_document_id:
+        normalized_active_file = ""
     selected_skill = (active_skill or "").strip() or default_workflow_skill(workflow.workflow_kind)
     if workflow.workflow_kind == "prove" and not active_skill:
         selected_skill = "lean-bounded-prover"
@@ -876,6 +953,8 @@ def resolve_workflow_request(
         toolset_name = "leanflow-native"
 
     child_env = dict(os.environ)
+    for key in ("LEANFLOW_FORMALIZATION_HANDOFF", "LEANFLOW_FORMALIZATION_REVISION"):
+        child_env.pop(key, None)
     from leanflow_cli.config import DEFAULT_CONFIG, load_config
 
     limits = load_config().get("limits", {})
@@ -946,6 +1025,26 @@ def resolve_workflow_request(
                 )
     if workflow.allowed_axioms:
         child_env["LEANFLOW_NATIVE_ALLOWED_AXIOMS"] = workflow.allowed_axioms
+    if workflow.formalization_document_id:
+        from leanflow_cli.formalization.records import document_directory
+
+        child_env["LEANFLOW_FORMALIZATION_HANDOFF"] = str(
+            document_directory(project.root, workflow.formalization_document_id, published=True)
+            / "handoff.json"
+        )
+        child_env["LEANFLOW_FORMALIZATION_REVISION"] = workflow.formalization_revision
+    if workflow.workflow_kind == "formalize":
+        from leanflow_cli.formalization.launch_options import reviewer_settings
+
+        child_env.update(
+            reviewer_settings(
+                runtime,
+                provider=workflow.review_provider,
+                model=workflow.review_model,
+                effort=workflow.review_effort,
+                correction_rounds=workflow.correction_rounds,
+            )
+        )
     if workflow.workflow_kind != "prove" and (workflow.research_mode or plan_state_enabled()):
         # Every deployed agent can discover live plan artifacts through the
         # environment, independent of prompt injection. Paths are

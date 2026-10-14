@@ -14,6 +14,8 @@ const bundle = await build({
     builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: `
       const f = () => globalThis.hostFixture;
       export const Uri = { file: fsPath => ({ fsPath }), parse: value => value };
+      export const ViewColumn = { Beside: 2 };
+      export const workspace = { openTextDocument: async value => value };
       export class Range { constructor(...args) { this.args = args; } }
       export const commands = { executeCommand: async (...args) => f().calls.push(['command', ...args]) };
       export const env = { clipboard: { writeText: async text => { if (f().clipboardError) throw new Error('Clipboard unavailable'); f().calls.push(['clipboard', text]); } } };

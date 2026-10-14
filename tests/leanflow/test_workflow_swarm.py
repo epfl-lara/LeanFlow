@@ -17,6 +17,26 @@ from leanflow_cli.workflow import (
 )
 
 
+@pytest.fixture
+def evaluated_formalization_layout(monkeypatch):
+    """Separate launcher behavior from the pinned Lake integration fixture."""
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.intake.lean_build.validate_build_inputs", lambda *a, **kw: {}
+    )
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.intake.resolve_layout",
+        lambda root, document_id: {
+            "accepted": True,
+            "library": "Main",
+            "owned_prefix": "Main/Formalization/Document",
+            "aggregator": "Main/Formalization/Document.lean",
+            "module_prefix": "Main.Formalization.Document",
+            "root_file": "Main.lean",
+            "src_dir": ".",
+        },
+    )
+
+
 def _write_formalization_source(project: Path, relative: str = "docs/paper.tex") -> Path:
     path = project / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -840,7 +860,7 @@ def test_parse_workflow_command_no_workflow_args_when_only_command():
 
 
 def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, evaluated_formalization_layout
 ):
     _write_formalization_source(tmp_path)
     monkeypatch.setattr(
@@ -852,7 +872,7 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "local",
+            "provider": "codex",
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
@@ -867,7 +887,8 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(
     assert plan.formalization_document is not None
     assert plan.child_env["LEANFLOW_FORMALIZATION_DOCUMENT_RELATIVE"] == "docs/paper.tex"
     assert plan.child_env["LEANFLOW_NATIVE_REQUESTED_TARGET"] == "docs/paper.tex"
-    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == "Demo/Paper/Main.lean"
+    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == "Main/Formalization/Document.lean"
+    assert not plan.formalization_document.target_lean_path.exists()
     assert plan.formalization_document.blueprint_skill_path.is_file()
     assert str(plan.formalization_document.blueprint_skill_path) in plan.additional_skills
     assert plan.child_env["LEANFLOW_NATIVE_ADDITIONAL_SKILLS"] == str(
@@ -952,7 +973,9 @@ def test_resolve_workflow_request_rejects_retired_formalization_swarm(monkeypatc
         resolve_workflow_request("/autoformalize docs/paper.tex --agents 3", active_cwd=tmp_path)
 
 
-def test_resolve_workflow_request_accepts_directory_for_autoformalize(monkeypatch, tmp_path):
+def test_resolve_workflow_request_accepts_directory_for_autoformalize(
+    monkeypatch, tmp_path, evaluated_formalization_layout
+):
     project = tmp_path / "Demo"
     _write_formalization_source(project, "docs/paper/main.tex")
     monkeypatch.setattr(
@@ -964,7 +987,7 @@ def test_resolve_workflow_request_accepts_directory_for_autoformalize(monkeypatc
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "local",
+            "provider": "codex",
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
@@ -983,7 +1006,7 @@ def test_resolve_workflow_request_accepts_directory_for_autoformalize(monkeypatc
     assert plan.child_env["LEANFLOW_FORMALIZATION_REQUEST_KIND"] == "directory"
     assert plan.child_env["LEANFLOW_FORMALIZATION_REQUEST_RELATIVE"] == "docs/paper"
     assert plan.child_env["LEANFLOW_FORMALIZATION_SELECTED_SOURCE"] == "docs/paper/main.tex"
-    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == "Demo/Main/Main.lean"
+    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == "Main/Formalization/Document.lean"
     summary = describe_launch_plan(plan)
     assert summary["input"] == "docs/paper (directory)"
     assert summary["document"] == "docs/paper/main.tex"

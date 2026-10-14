@@ -203,7 +203,7 @@ def test_lock_conflict_does_not_steal_existing_live_observer(launch, monkeypatch
     original_flock = entrypoint.fcntl.flock
 
     def busy(handle, flags):
-        if Path(handle.name).name == "controller.lock":
+        if not isinstance(handle, int) and Path(handle.name).name == "controller.lock":
             raise BlockingIOError("owned")
         return original_flock(handle, flags)
 

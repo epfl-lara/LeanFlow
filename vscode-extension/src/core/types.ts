@@ -7,6 +7,7 @@
 
 // ---------------------------------------------------------------- CLI shapes
 import type { ProverSnapshot } from "./prover";
+import type { FormalizationAction, FormalizationPdf, FormalizationSnapshot } from "./formalization";
 // These mirror the JSON emitted by `leanflow flags`, `leanflow runs`, and
 // `leanflow workflow --dry-run --json`. Keep them in step with
 // leanflow_cli/flags/spec.py and leanflow_cli/cli/runs_command.py.
@@ -473,6 +474,8 @@ export interface LaunchRequest {
   profile: string;
   /** One-off knob overrides layered over the profile. */
   overrides: Record<string, string>;
+  /** Explicit accepted-revision handoff; the controller validates exact named obligations. */
+  formalization?: { documentId: string; revisionId: string };
 }
 
 export function emptyLaunchRequest(): LaunchRequest {
@@ -783,6 +786,10 @@ export interface AppState {
 // ---------------------------------------------------------- message protocol
 
 export type HostMessage =
+  | { type: "formalizationList"; documents: FormalizationSnapshot[]; error: string }
+  | { type: "formalizationState"; documentId: string; snapshot: FormalizationSnapshot | null; error: string }
+  | { type: "formalizationPdf"; pdf: FormalizationPdf }
+  | { type: "formalizationSourceSelection"; documentId: string; revisionId: string; artifactId: string; lineStart: number; lineEnd: number }
   | { type: "state"; state: AppState }
   | { type: "events"; runId: string; events: ActivityEvent[]; reset: boolean }
   | { type: "preview"; requestId: string; plan: LaunchPlanPreview | null; error: string }
@@ -801,6 +808,12 @@ export type HostMessage =
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
 export type WebviewMessage =
+  | { type: "listFormalizations" }
+  | { type: "inspectFormalization"; sourceKind: "file" | "folder" }
+  | { type: "showFormalization"; documentId: string }
+  | { type: "formalizationAction"; documentId: string; revisionId: string; action: FormalizationAction }
+  | { type: "openFormalizationArtifact"; documentId: string; revisionId: string; artifactId: string; itemId?: string; pageIndex?: number; line?: number }
+  | { type: "proveFormalization"; documentId: string; revisionId: string; request: LaunchRequest }
   | { type: "refreshStorage" }
   | { type: "cleanStorage" }
   | { type: "configureProvider" }

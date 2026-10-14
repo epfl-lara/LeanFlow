@@ -16,6 +16,7 @@ import { useStore, type TabId } from "./store";
 import { KnobsView } from "./views/KnobsView";
 import { ProvidersView } from "./views/ProvidersView";
 import { LaunchView } from "./views/LaunchView";
+import { FormalizationView } from "./views/FormalizationView";
 import { LiveView } from "./views/LiveView";
 import { LogsView } from "./views/LogsView";
 import { SidebarView } from "./views/SidebarView";
@@ -24,6 +25,7 @@ import { mode, post } from "./vscodeApi";
 
 const TABS: { id: TabId; label: string; Icon: typeof PlayIcon }[] = [
   { id: "launch", label: "Launch", Icon: PlayIcon },
+  { id: "formalization", label: "Formalization", Icon: LogsIcon },
   { id: "providers", label: "Providers", Icon: KnobsIcon },
   { id: "live", label: "Live", Icon: PulseIcon },
   { id: "logs", label: "Logs", Icon: LogsIcon },
@@ -106,6 +108,8 @@ export function App() {
         return <ProvidersView />;
       case "launch":
         return <LaunchView />;
+      case "formalization":
+        return <FormalizationView />;
       case "live":
         return <LiveView />;
       case "logs":

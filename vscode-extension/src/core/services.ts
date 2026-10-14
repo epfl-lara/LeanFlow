@@ -7,7 +7,8 @@
  */
 import * as vscode from "vscode";
 
-import { checkCli, cliPath, fetchFlagCatalog, fetchProfiles } from "./cli";
+import { checkCli, cliPath, fetchFlagCatalog, fetchProfiles, runCli } from "./cli";
+import { FormalizationService } from "./formalizationService";
 import { CliHealth } from "./cliHealth";
 import { ExperimentEngine } from "./experiments";
 import {
@@ -46,6 +47,7 @@ export class LeanFlowServices implements vscode.Disposable {
   readonly experiments: ExperimentEngine;
   /** Cached, change-gated reads of exact-run prover state. */
   readonly prover: ProverService;
+  readonly formalizations: FormalizationService;
 
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changed.event;
@@ -63,6 +65,7 @@ export class LeanFlowServices implements vscode.Disposable {
     this.storage = new StorageService();
     this.runs = new RunManager(context, this.project, () => this.providers.credentials.environment(), root => this.setup.assertLaunchReady(root));
     this.prover = new ProverService(this.runs);
+    this.formalizations = new FormalizationService(() => this.project.root, runCli);
     this.setup = new ProjectSetup({
       projectRoot: () => this.project.root,
       activeRun: (root) => this.runs.launchBlocker(root) !== null,

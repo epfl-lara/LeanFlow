@@ -30,6 +30,10 @@ from leanflow_cli.cli.cli_handlers import (
 from leanflow_cli.cli.commands import build_workflow_command_set
 from leanflow_cli.cli.doctor import run_doctor
 from leanflow_cli.cli.flags_command import handle_flags, register_flags_parser
+from leanflow_cli.cli.formalization_command import (
+    handle_formalization,
+    register_formalization_parser,
+)
 from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp, repair_managed_mcp_patches
 from leanflow_cli.cli.project_command import handle_project, register_project_parser
 from leanflow_cli.cli.runs_command import handle_runs, register_runs_parser
@@ -154,6 +158,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_repair.add_argument("--json", action="store_true", dest="json_output")
 
     register_project_parser(subparsers)
+    register_formalization_parser(subparsers)
     register_storage_parser(subparsers)
 
     workflow_parser = subparsers.add_parser(
@@ -340,6 +345,8 @@ def _main(argv: list[str] | None = None) -> int:
         return 0 if not issues else 1
     if args.command == "project":
         return _handle_project(args)
+    if args.command == "formalization":
+        return handle_formalization(args)
     if args.command == "storage":
         return handle_storage(args)
     if args.command == "sandbox":

@@ -5,6 +5,19 @@ include features and settings from the former direct-provider runtime.
 
 ## Unreleased
 
+- Add a backend-owned formalization inventory with explicit source-region
+  accounting, revision-bound repairs, and separate review, elaboration, and proof states.
+- Inspect TeX roots, project folders, and PDFs before model launch. Open verified
+  frozen source and Lean references, and navigate PDF pages and text with packaged PDF.js.
+- Select a TeX file and companion PDF together, with visibly approximate or
+  unavailable page links and canonical statement-boundary repairs kept in TeX.
+- Hand the exact accepted revision and named obligations to the existing prover;
+  stale evidence and empty proof scopes cannot launch unrelated work.
+- Show source claim status and explicit proof-attempt permission separately. Open
+  claims require a reasoned opt-in, and permission can be revoked before re-review.
+- Resolve unknown TeX commands with an explicit interpretation checked against
+  every frozen occurrence; display checked proof certificate revisions separately.
+
 - Obtain the reviewed LeanProbe source automatically during installation; build
   Lemex only when requested or selected, and repair MCP backends in fresh environments.
 - Harden WSL2 selection, unattended installation, and existing checkout preservation.

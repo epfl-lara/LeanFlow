@@ -161,11 +161,35 @@ accounting, settings, and bounded activity through the status API.
 
 `harness_artifacts.py` freezes proposed bytes in an independent verification copy,
 checks declarations and original types/definitions, and rechecks canonical
-identity before promotion. `harness_formalization.py` runs a fresh source reviewer
-and stores a strict PASS/BLOCK receipt bound to source/proposal hashes.
-`formalization/` owns TeX/PDF intake, extraction, and blueprints. Formalization
-allows theorem proof holes but requires complete definitions and source coverage;
-a `draft_ready` outcome requires a separately started `prove` run for proofs.
+identity before promotion. Source-backed formalization uses dedicated controller leaves:
+
+| Module | Authority |
+| --- | --- |
+| `formalization/source_*` | Unabridged source bundles, original spans, include/macro provenance, complete regions and optional parser comparison; `source_companion` binds explicitly selected PDF evidence and approximate navigation without granting correspondence or coverage |
+| `formalization_documents.py`, `formalization_tex_discovery.py`, `formalization_models.py`, `intake.py` | Source path selection, TeX root discovery, frozen intake context and workflow environment; document-tool displays project the same source inventory |
+| `records.py`, `receipt_history.py`, `receipt_recovery.py`, `actions.py`, `diagnostic_actions.py`, `service.py` | Immutable selected revisions, explicit repairs, safe artifact IDs and shared CLI/editor snapshots |
+| `lean_layout.py`, `lean_policy.py`, `lean_inspector.py` | Evaluated Lake roots, explicit module builds, complete compiled declaration policy |
+| `proposal.py`, `proposal_schema.py`, `environment.py`, `dependency_inputs.py`, `dependency_files.py` | Owned write set, total region/item coverage, exact mappings, compiled-library/tooling inventory and persistent content identity; no inferred source-to-binary provenance |
+| `dependency_snapshot.py` | Private canonical dependency copies, exact admitted-resource preservation, clean-room refusal and canonical/frozen identity checks without compatibility-cache substitution |
+| `lean_build.py` | Read-only build admission, offline pinned Lean compilation of declared libraries/executables, isolated per-module outputs, exact artifact census and hash evidence without dependency Lake execution |
+| `lean_configuration.py` | Bounded static Lake syntax, ordinary template metadata and typed compiler-option allowlist |
+| `dependency_modules.py` | Compiler/library namespace separation and disjoint top-level module roots matching Lean's first-root loader behavior |
+| `compiled_evidence.py` | Merge scoped library evidence by compiled identity without dropping bodies or relabeling project declarations as reuse |
+| `review.py`, `review_cache.py`, `review_dossier.py` | Fresh per-unit verdicts, whole-document gate, positive/negative cache and frozen read-only retrieval |
+| `publication.py`, `publish.py`, `evidence.py` | Durable recoverable publication, concurrent-save protection and portable records |
+| `handoff.py`, `handoff_slots.py`, `proof_snapshot.py`, `proof_receipts.py` | Exact reviewed proof slots and frozen independent proof-preservation certificates |
+
+Source, layout, code, checks and scope changes invalidate the selected revision;
+review receipts are separate immutable evidence keyed to that identity. A passing
+translation does not imply completed proofs. Named Prop proof slots are allowed,
+complete definitions and opaque bodies are valid, and conditional constructions
+expose their pending dependencies. Published source bundles, blueprint, receipts
+and handoff live in `formalization/<document-id>/`; private author/reviewer state
+and continuation logs stay under `.leanflow/`. Unsupported publication primitives
+produce `accepted_staged`, never a published readiness claim. The extension calls
+the shared formalization CLI service and does not infer acceptance from badges or
+parse statements itself. Native source-backed formalization uses the revision gate;
+Markdown blueprints are generated evidence displays, never acceptance authority.
 
 `workflows/project_setup/` owns scaffolding, compatible REPL preparation, real
 protocol checks, cancellable processes, readiness receipts, and invalidation.
@@ -282,12 +306,15 @@ observers, settings, and metrics. Focused host modules own these boundaries:
 | Run manager/catalog/ownership/selection modules | Durable identity, exact job navigation, external discovery, and validated Stop |
 | `workflowTerminal.ts` | Private tmux job execution, reattachment, and terminal fallback |
 | Prover snapshot/graph/progress/cache modules | Exact-run views, shared statuses, dependencies, operations, and coherent refresh |
+| Formalization service/artifact/message modules | Backend revision snapshots, verified frozen source navigation, typed inventory repairs, and exact prover handoff |
 | `proverModelSettings.ts`, `agentActivity.ts` | Per-call setting evidence and bounded native activity |
 | Event buffer and storage-security modules | Bounded tails and realpath/no-symlink checks |
 | Experiment isolation/scoring/matrix modules | Frozen clean baselines, private cells, and evidence-based aggregates |
 
 Webviews provide setup, provider controls, launch, graph/tree, plan, jobs, limits,
-changes, guidance, activity, model history, storage, and experiment views. Host
+changes, guidance, activity, model history, storage, and experiment views. The
+formalization view exposes coverage, command interpretations, independent review,
+proof certificates, and explicit revision conflicts from backend evidence. Host
 messages are validated before filesystem/process actions. Webview bundles may
 import host types, never host runtime code. Workspace Trust and virtual-workspace
 restrictions require a trusted real filesystem. Credential values do not enter

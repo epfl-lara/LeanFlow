@@ -36,6 +36,16 @@ def _isolate_leanflow_home(tmp_path, monkeypatch):
     (fake_leanflow_home / "local-models").mkdir()
     monkeypatch.setenv("LEANFLOW_HOME", str(fake_leanflow_home))
     monkeypatch.setenv("LEANFLOW_QUEUE_INVARIANT_CHECKS", "1")
+    # A launched workflow's project path overrides LEANFLOW_HOME for run state.
+    # Clear it and its routing context before every test, including after a test
+    # that invokes an observer which writes os.environ directly.
+    for key in (
+        "LEANFLOW_PROJECT_ROOT",
+        "LEANFLOW_NATIVE_WORKFLOW_KIND",
+        "LEANFLOW_FORMALIZATION_HANDOFF",
+        "LEANFLOW_FORMALIZATION_REVISION",
+    ):
+        monkeypatch.delenv(key, raising=False)
     # Tests should not inherit the agent's current gateway/messaging surface.
     # Individual tests that need gateway behavior set these explicitly.
     monkeypatch.delenv("LEANFLOW_SESSION_PLATFORM", raising=False)
@@ -49,9 +59,9 @@ def _isolate_leanflow_home(tmp_path, monkeypatch):
     monkeypatch.delenv("LEANFLOW_RCP_PREFIX_CACHE", raising=False)
     # Native runner construction enables its contextual queue guard by setting
     # this process-global escape hatch directly.  Pytest workers reuse the
-    # process, so register the key with monkeypatch for every test; teardown
-    # then removes a value written by _build_agent instead of leaking it into
-    # unrelated file-tool statement-guard tests.
+    # process, so clear the key before every test. If it was initially absent,
+    # delenv has no teardown entry; the next test's deletion removes a direct
+    # write by _build_agent before file-tool statement guards can observe it.
     monkeypatch.delenv("LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS", raising=False)
     # workflow_state._workflow_run_id() mints a run id and writes it straight to
     # os.environ when the variable is unset. Same process-reuse hazard: a test that

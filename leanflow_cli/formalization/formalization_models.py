@@ -27,6 +27,8 @@ class FormalizationDocumentContext:
 
     def to_env(self) -> dict[str, str]:
         return {
+            "LEANFLOW_FORMALIZATION_DOCUMENT_ID": str(self.metadata.get("document_id", "")),
+            "LEANFLOW_FORMALIZATION_REVISION": str(self.metadata.get("revision_id", "")),
             "LEANFLOW_FORMALIZATION_DOCUMENT": str(self.source_path),
             "LEANFLOW_FORMALIZATION_DOCUMENT_RELATIVE": self.source_relative,
             "LEANFLOW_FORMALIZATION_REQUEST_KIND": str(

@@ -13,6 +13,17 @@ const bundle = await build({
   bundle: true, write: false, format: "esm", platform: "node", jsx: "automatic", jsxDev: true,
   external: ["react", "react-dom"],
   plugins: [{ name: "inert-webview-host", setup(builder) {
+    builder.onLoad({ filter: /pdfjs-dist\/legacy\/build\/pdf\.mjs$/ }, () => ({ contents: `
+      export class PDFWorker { static create() { return {destroy(){}}; } }
+      export class TextLayer { render() { return Promise.resolve(); } cancel() {} }
+      export function getDocument(options) {
+        globalThis.webviewFixture.pdfOptions = options;
+        return { destroy(){}, promise: Promise.resolve({numPages:2, getPageLabels:async()=>['i','1'], getPage:async()=>({
+          rotate:0, view:[0,0,100,100], getViewport:({scale})=>({width:100*scale,height:100*scale,scale}),
+          render:()=>({promise:Promise.resolve(),cancel(){}}),getTextContent:async()=>({items:[]})
+        })}) };
+      }
+    ` }));
     builder.onResolve({ filter: /^react-dom$/ }, () => ({ path: "react-dom", namespace: "portal-fixture" }));
     // React's test renderer has no DOM. Preserve portal children in its logical
     // tree; the real browser audit checks the detached DOM placement.
@@ -46,7 +57,7 @@ export function mount(tab = "launch", patch = {}, component = App) {
   listener.innerWidth = 800;
   listener.innerHeight = 600;
   const effects = [];
-  const node = { style: {}, getBoundingClientRect: () => ({ left: 30, top: 40, bottom: 60, height: 120 }), contains: () => false, querySelector: () => ({ focus() {} }), clientWidth: 800, scrollHeight: 900, scrollTop: 0, scrollTo: (...args) => effects.push(["scroll", ...args]), scrollIntoView: () => effects.push(["focus"]) };
+  const node = { style: { setProperty() {} }, replaceChildren() {}, getContext: () => ({}), getBoundingClientRect: () => ({ left: 30, top: 40, bottom: 60, height: 120 }), contains: () => false, querySelector: () => ({ focus() {} }), clientWidth: 800, scrollHeight: 900, scrollTop: 0, scrollTo: (...args) => effects.push(["scroll", ...args]), scrollIntoView: () => effects.push(["focus"]) };
   globalThis.document = { getElementById: () => node };
   globalThis.ResizeObserver = class { observe() {} disconnect() {} };
   const now = new Date().toISOString();

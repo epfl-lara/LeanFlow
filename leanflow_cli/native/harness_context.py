@@ -22,10 +22,11 @@ ready, and poll_operation for acceptance or actionable rejection. Continue in th
 conversation after rejection. Stop after acceptance or an honest external blocker.
 For a blocker, return exactly {\"status\":\"blocked\",\"reason\":\"concrete blocker\"}.
 For review, return your findings without modifying project sources. For draft and
-formalize, create elaborating statement skeletons with sorry only in theorem proofs.
-Implement definitions and constructions fully. Preserve the supplied mathematical
-scope and source mappings in Blueprint.md. An independent fresh reviewer checks
-source fidelity before promotion. Proving is a separate user-started workflow.
+formalize, implement definitions and constructions fully. Named Prop theorem proofs
+may remain pending; completed proofs and exact library reuse are valid. Formalization
+uses the complete frozen source inventory and structured proposal specified in the
+assignment. Independent item and document reviews gate publication. Do not edit
+canonical files or write approval prose as evidence. Proving is a separate action.
 """
 
 

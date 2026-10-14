@@ -47,7 +47,7 @@ COMMAND_REGISTRY: tuple[WorkflowCommandSpec, ...] = (
         "/formalize",
         "formalize",
         "/formalize",
-        "Formalize a project-local .tex/.pdf document; add --agents N for explicit swarm mode",
+        "Formalize TeX/PDF sources with audited coverage and an independent source reviewer",
         aliases=("/autoformalize",),
     ),
 )

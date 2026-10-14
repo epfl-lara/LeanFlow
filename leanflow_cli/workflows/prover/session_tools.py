@@ -161,7 +161,12 @@ class SessionTools:
                 ),
                 _schema(
                     "lean_check",
-                    "Check the scratch file with warm LeanProbe. For a temporary declaration replacement give its COMPLETE signature and body. This check does NOT save the replacement to disk. After success, submit candidate.txt or the requested JSON with the exact text replacing the literal sorry. Only the controller can accept a proof.",
+                    (
+                        "Check a file in the private formalization project with warm LeanProbe. Relative file paths start at project_root. "
+                        if self.context.get("workflow") == "formalize"
+                        else "Check the scratch file with warm LeanProbe. "
+                    )
+                    + "For a temporary declaration replacement give its COMPLETE signature and body. This check does NOT save the replacement to disk. After success, submit candidate.txt or the requested JSON with the exact text replacing the literal sorry. Only the controller can accept a proof.",
                     {
                         "file": TEXT,
                         "declaration": {
@@ -379,7 +384,10 @@ class SessionTools:
         if name == "lean_check":
             from leanflow_cli.workflows.prover.check_process import check_scratch
 
-            path = self._path(str(args.get("file") or self.context.get("scratch_file", "")))
+            candidate = Path(str(args.get("file") or self.context.get("scratch_file", "")))
+            if self.context.get("workflow") == "formalize" and not candidate.is_absolute():
+                candidate = self.project_root / candidate
+            path = self._path(str(candidate))
             declaration = str(args.get("declaration") or "")
             return check_scratch(
                 project_root=self.project_root,

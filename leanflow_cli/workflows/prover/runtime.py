@@ -16,6 +16,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from core.deadlines import deadline_after
 from leanflow_cli.runtime.storage import StoragePressure
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.config import ProverConfig
@@ -97,11 +98,22 @@ class ProverRuntime:
         goal: str = "",
         resume: bool = False,
         observer: Any = None,
+        formalization_handoff: dict[str, Any] | None = None,
     ) -> None:
         self.root = root.resolve()
         project_path(self.root, ".leanflow")
         self.targets = [path.resolve() for path in targets]
         config = restrict_config(config)
+        if formalization_handoff is not None:
+            reviewed_axioms = formalization_handoff.get("acceptance_policy", {}).get(
+                "allowed_axioms"
+            )
+            if not isinstance(reviewed_axioms, list) or set(reviewed_axioms) != set(
+                config.allowed_axioms
+            ):
+                raise ValueError(
+                    "Prover axiom policy differs from the reviewed formalization policy"
+                )
         self.config = config
         self.run_id = run_id or uuid.uuid4().hex[:16]
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", self.run_id):
@@ -133,6 +145,7 @@ class ProverRuntime:
         self.resume_role_jobs: dict[tuple[str, str], dict[str, Any]] = {}
         self.goal = goal
         self.observer = observer
+        self.formalization_handoff = copy.deepcopy(formalization_handoff)
         self.store.on_event = observer.event if observer is not None else None
         if resume:
             self._restore()
@@ -143,9 +156,24 @@ class ProverRuntime:
         else:
             if (self.store.directory / "state.json").exists():
                 raise ValueError("run ID already exists; explicitly request resume")
-            self.dag, self.documents = discover(
-                self.root, self.targets, fill_definitions=config.fill_definitions
-            )
+            if self.formalization_handoff is not None:
+                from leanflow_cli.formalization.handoff import authorized_holes
+
+                self.dag, self.documents = discover(
+                    self.root,
+                    self.targets,
+                    fill_definitions=False,
+                    authorized_holes=authorized_holes(self.formalization_handoff),
+                )
+                by_name = {node.name: node for node in self.dag.nodes}
+                for item in self.formalization_handoff["obligations"]:
+                    node = by_name[item["declaration"]]
+                    node.dependencies = [by_name[name].id for name in item["depends_on"]]
+                    node.notes = "Source items: " + ", ".join(item["source_ids"])
+            else:
+                self.dag, self.documents = discover(
+                    self.root, self.targets, fill_definitions=config.fill_definitions
+                )
             self.dag.validate(config.max_nodes)
             scheme = os.getenv("LEANFLOW_PROVER_SIGNATURE_SCHEME", "").strip() or "module"
             if scheme not in SIGNATURE_SCHEMES:
@@ -168,6 +196,7 @@ class ProverRuntime:
                 "jobs": [],
                 "changes": [],
                 "targets": [str(path.relative_to(self.root)) for path in self.targets],
+                "formalization_handoff": self.formalization_handoff,
                 "plan_markdown": self._initial_plan(),
                 # Written on rejection, unlike plan_markdown which is only
                 # rewritten on acceptance; see plan_journal for why.
@@ -237,6 +266,8 @@ class ProverRuntime:
             raise ValueError(
                 "This run used the retired API engine. Its artifacts are preserved; start a new native-backend run."
             )
+        if self.state.get("formalization_handoff") != self.formalization_handoff:
+            raise ValueError("resume formalization handoff differs from the saved proof scope")
         self.config = restore_research_config(self.config, self.state)
         self.state["config"] = self.config.to_mapping()
         self.state["research_policy"] = (
@@ -267,6 +298,20 @@ class ProverRuntime:
         else:
             documents = json.loads((self.store.directory / "source.json").read_text())
         self.documents = {key: SourceDocument(**value) for key, value in documents.items()}
+        if self.formalization_handoff is not None:
+            if any(
+                document.imports or document.proof_imports or document.generated
+                for document in self.documents.values()
+            ):
+                raise ValueError("Retained formalization proof setup exceeds reviewed scope")
+            transaction = self.store.directory / "source-transaction.json"
+            if (
+                transaction.is_file()
+                and json.loads(transaction.read_text()).get("kind") == "materialization"
+            ):
+                raise ValueError(
+                    "Retained helper materialization exceeds reviewed formalization scope"
+                )
         from leanflow_cli.workflows.prover.source_transaction import recover_proof
 
         recover_proof(self)
@@ -471,8 +516,34 @@ class ProverRuntime:
         return self.elapsed_before + time.monotonic() - self.started
 
     def _assert_sources(self) -> None:
-        for document in self.documents.values():
-            document.assert_current(self.root)
+        from leanflow_cli.formalization.publication import publication_guard
+
+        with publication_guard(self.root):
+            for document in self.documents.values():
+                document.assert_current(self.root)
+
+    def _final_verification(self, targets: list[Path]) -> dict[str, Any]:
+        """Keep a stable publication generation through the final build and proof receipt."""
+        from leanflow_cli.formalization.publication import publication_guard
+
+        with publication_guard(self.root):
+            self._assert_sources()
+            result = self.verifier.final(targets)
+            if result.get("accepted") and self.formalization_handoff:
+                from leanflow_cli.formalization.handoff import proof_preservation_certificate
+
+                certificate = proof_preservation_certificate(
+                    self.root,
+                    self.formalization_handoff,
+                    self.documents,
+                    self.store.directory / "formalization-checks",
+                    self.config.allowed_axioms,
+                    deadline=deadline_after(self._remaining_verification_time()),
+                    cancelled=self.cancelled.is_set,
+                )
+                self.state["formalization_proof_revision"] = certificate
+            self._assert_sources()
+            return dict(result)
 
     def _reserve(self, requested: int) -> int:
         with self.lock:
@@ -566,6 +637,21 @@ class ProverRuntime:
             ],
             "notes": node.notes if node else "",
             "goal": self.goal,
+            "formalization_guidance": (
+                self.formalization_handoff.get("guidance", "") if self.formalization_handoff else ""
+            ),
+            "formalization_guidance_refs": copy.deepcopy(
+                (self.formalization_handoff or {}).get("guidance_refs", [])
+            ),
+            "formalization_definition_refs": copy.deepcopy(
+                (self.formalization_handoff or {}).get("definition_refs", [])
+            ),
+            "formalization_proof_scope": (
+                "Replace only the assigned literal proof slots using the existing setup. "
+                "New imports, libraries, and helper declarations require a new formalization revision and source review; decomposition is unavailable."
+                if self.formalization_handoff is not None
+                else ""
+            ),
             "permitted_dependencies": list(node.dependencies) if node else [],
             "resources": resource_inventory(
                 self.state["jobs"], project_root=self.root, run_directory=self.store.directory
@@ -743,7 +829,9 @@ class ProverRuntime:
 
     def _accept(self, node: Node, candidate: list[str], job_id: str) -> bool:
         """Serialize independent source verification and its canonical installation."""
-        with self.lock:
+        from leanflow_cli.formalization.publication import publication_guard
+
+        with self.lock, publication_guard(self.root):
             return self._accept_locked(node, candidate, job_id)
 
     def _accept_locked(self, node: Node, candidate: list[str], job_id: str) -> bool:
@@ -1183,6 +1271,13 @@ class ProverRuntime:
                     rec["charged"] = True
                     self._persist()
                 decision = recovery.recovery_decision(self, node, dict(rec.get("report") or {}))
+                if self.formalization_handoff is not None and decision["action"] == "decompose":
+                    decision = {
+                        "action": "invalid",
+                        "rejected_action": "decompose",
+                        "fallback": True,
+                        "rationale": "Reviewed formalization proof scope permits only existing proof slots. Choose retry, continue, or negate; adding helpers requires a new formalization revision and source review.",
+                    }
                 if node.status == "false" and decision["action"] != "decompose":
                     decision = {
                         "action": "invalid",
@@ -1228,7 +1323,13 @@ class ProverRuntime:
                             "rejected_action": decision.get("rejected_action", decision["action"]),
                             "message": decision.get("rationale", "Choose an actionable recovery."),
                             "allowed_actions": (
-                                ["decompose"] if node.status == "false" else list(recovery.ACTIONS)
+                                ["decompose"]
+                                if node.status == "false"
+                                else [
+                                    action
+                                    for action in recovery.ACTIONS
+                                    if action != "decompose" or self.formalization_handoff is None
+                                ]
                             ),
                         },
                     }
@@ -1712,8 +1813,10 @@ class ProverRuntime:
                 final = self.progress.call(
                     "final_build",
                     "Verifying the complete project",
-                    lambda: self.verifier.final(
-                        list(
+                    lambda: self._final_verification(
+                        []
+                        if self.formalization_handoff
+                        else list(
                             dict.fromkeys(
                                 [
                                     *self.targets,

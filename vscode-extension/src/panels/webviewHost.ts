@@ -39,6 +39,7 @@ import {
   writeProjectStorageFile,
 } from "../core/storageSecurity";
 import { parseWebviewMessage } from "./messageSchema";
+import { FormalizationHost } from "./formalizationHost";
 import type { FlagProfile, HostMessage, WebviewMessage } from "../core/types";
 
 export type WebviewMode = "panel" | "sidebar";
@@ -74,13 +75,17 @@ export function buildWebviewHtml(
   const styleUri = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, "dist", "webview.css"),
   );
+  const pdfAsset = (name: string) => webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "dist", "pdfjs", name)).toString();
+  const pdfResources = { worker: pdfAsset("pdf.worker.mjs"), fonts: `${pdfAsset("standard_fonts")}/`, cmaps: `${pdfAsset("cmaps")}/`, iccs: `${pdfAsset("iccs")}/` };
   // Strict CSP: no remote loads, and only the nonce'd bundle may execute.
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data:`,
     `style-src ${webview.cspSource} 'unsafe-inline'`,
     `script-src 'nonce-${nonce}'`,
-    `font-src ${webview.cspSource}`,
+    `font-src ${webview.cspSource} data: blob:`,
+    `connect-src ${webview.cspSource}`,
+    "worker-src blob:",
   ].join("; ");
 
   return `<!DOCTYPE html>
@@ -94,7 +99,7 @@ export function buildWebviewHtml(
   </head>
   <body data-mode="${mode}">
     <div id="root"></div>
-    <script nonce="${nonce}">window.__LEANFLOW_MODE__ = ${JSON.stringify(mode)};</script>
+    <script nonce="${nonce}">window.__LEANFLOW_MODE__ = ${JSON.stringify(mode)}; window.__LEANFLOW_PDF__ = ${JSON.stringify(pdfResources)};</script>
     <script nonce="${nonce}" src="${scriptUri}"></script>
   </body>
 </html>`;
@@ -104,11 +109,13 @@ export class WebviewHost implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private ready = false;
   private readonly proverLoads = new Set<string>();
+  private readonly formalizations: FormalizationHost;
 
   constructor(
     private readonly webview: vscode.Webview,
     private readonly services: LeanFlowServices,
   ) {
+    this.formalizations = new FormalizationHost(services, message => this.post(message), request => this.dispatch({ type: "launch", request }));
     this.disposables.push(
       webview.onDidReceiveMessage((raw: unknown) => {
         // The webview is a separate document; nothing it posts is trusted until
@@ -139,6 +146,7 @@ export class WebviewHost implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.formalizations.dispose();
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -169,6 +177,7 @@ export class WebviewHost implements vscode.Disposable {
   }
 
   private async dispatch(message: WebviewMessage): Promise<void> {
+    if (await this.formalizations.handle(message)) return;
     const { services } = this;
     switch (message.type) {
       case "configureProvider": {
@@ -558,6 +567,8 @@ export class WebviewHost implements vscode.Disposable {
         : { "Lean files": ["lean"] };
     const picked = await vscode.window.showOpenDialog({
       canSelectMany: false,
+      canSelectFolders: kind === "formalize",
+      canSelectFiles: true,
       defaultUri: vscode.Uri.file(services.project.root),
       filters,
       openLabel: "Use as target",

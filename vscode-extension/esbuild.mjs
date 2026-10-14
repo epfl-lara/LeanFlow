@@ -2,6 +2,15 @@
 // and the webview UI (browser IIFE, React inlined). Keeping both here means the
 // build stays a single dependency and one `npm run build`.
 import esbuild from "esbuild";
+import { cp, mkdir } from "node:fs/promises";
+
+/** Keep the PDF worker, font tables and license local to the extension package. */
+async function copyPdfAssets() {
+  await mkdir("dist/pdfjs", { recursive: true });
+  for (const [source, target] of [["legacy/build/pdf.worker.mjs", "pdf.worker.mjs"], ["LICENSE", "LICENSE"], ["standard_fonts", "standard_fonts"], ["cmaps", "cmaps"], ["iccs", "iccs"]]) {
+    await cp(`node_modules/pdfjs-dist/${source}`, `dist/pdfjs/${target}`, { recursive: true });
+  }
+}
 
 const production = process.argv.includes("--production");
 const watch = process.argv.includes("--watch");
@@ -83,6 +92,9 @@ if (tests) {
       proverProgress: "src/core/proverProgress.ts",
       proverModelSettings: "src/core/proverModelSettings.ts",
       proverCache: "src/core/proverCache.ts",
+      formalization: "src/core/formalization.ts",
+      formalizationService: "src/core/formalizationService.ts",
+      formalizationArtifact: "src/core/formalizationArtifact.ts",
       idleDiscovery: "src/core/idleDiscovery.ts",
       profileSurfaces: "src/core/profileSurfaces.ts",
     },
@@ -90,6 +102,7 @@ if (tests) {
     outExtension: { ".js": ".mjs" },
   });
 } else if (watch) {
+  await copyPdfAssets();
   const contexts = await Promise.all([
     esbuild.context(hostConfig),
     esbuild.context(webviewConfig),
@@ -97,5 +110,6 @@ if (tests) {
   await Promise.all(contexts.map((context) => context.watch()));
   console.log("[leanflow] watching for changes…");
 } else {
+  await copyPdfAssets();
   await Promise.all([esbuild.build(hostConfig), esbuild.build(webviewConfig)]);
 }

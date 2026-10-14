@@ -4,6 +4,61 @@ Launch and inspect LeanFlow workflows without leaving the editor. The extension
 uses the `leanflow` CLI, so the editor and terminal share project setup, launch
 settings, proof verification, and recorded run evidence.
 
+## Inspect and formalize a paper
+
+Open **Formalization** in the dashboard and choose a TeX file, TeX project folder,
+or PDF inside the active project. Inspection freezes the source inventory without
+launching a model. Review included items, explicit exclusions, and unresolved
+source regions before using **Configure or resume formalization** to select the
+native model and budget in Launch.
+
+To inspect a TeX source with a rendered companion, select both the `.tex` and
+`.pdf` files together. The PDF is frozen explicitly; text matching provides
+approximate page candidates or a visible missing match. Pairing does not certify
+that the two files have identical content, and PDF pages remain part of coverage review.
+
+The inventory displays source review, Lean elaboration, and proof state separately.
+Open or unclassified claims also show **Proof attempt permission**. Select the item,
+enter a reason, and choose **Allow proof attempt for this open claim** to opt in;
+the same control lets you revoke permission. Each change creates a new working
+revision for review. Source claim status and proof completion remain independent.
+Use **Repair inventory or mapping** to add a missed item, correct its source range
+or Lean declaration mapping, or change scope with a reason. Region dispositions
+remain auditable; neither an exclusion nor an extraction warning counts as an
+independently reviewed mathematical statement. PDF-only sources also support
+manual full-page transcription, which still needs item accounting and review.
+
+Unknown TeX commands list every frozen occurrence under **Extraction diagnostics**.
+Open those source links, record the command's meaning and supporting evidence, and
+confirm each rendered occurrence before submitting an interpretation. This creates
+a new revision for coverage and translation review. Missing includes and other
+source errors require repairing the source and inspecting it again.
+
+Source links open hash-checked frozen text beside the dashboard. Selecting lines
+in that source or Lean view shows candidate source items back in the inventory.
+The packaged PDF.js viewer works without LaTeX Workshop or an external website:
+select an item to open its physical page, or select PDF text to find linked items.
+PDF-only sources can prefill a source-boundary repair; paired sources keep their
+statement boundaries in TeX. Approximate, absent, and stale mappings stay
+visible. The editor limits a single artifact preview to 64 MiB and reports larger
+files explicitly. Source access and the CLI stay on the owning Remote SSH/WSL host.
+
+**Start proving accepted statements** shows and hands over only the exact named
+obligations of the selected accepted revision. The backend revalidates the
+revision, environment, and files before launching the existing prover. A handoff
+with no pending obligations launches no model. Refresh the inventory after
+external changes; stale snapshots disable repair and proving actions.
+Completed proofs show the controller's checked proof certificate revision
+separately from source review.
+If checking cannot run, the editor reports the operational error and offers a
+retry through workflow configuration; a rejected Lean draft instead needs correction.
+If local work and a newer published revision disagree, choose the intended
+revision explicitly before repairing or launching another workflow.
+
+Formalization currently accepts the pinned compiler and standard library; Mathlib
+and external compiled elaborators await a [reviewed dependency adapter](../docs/formalization.md#supported-input-boundary).
+Ordinary proving is unchanged.
+
 ## Install and prepare a project
 
 Install [LeanFlow](../README.md#install) on the workspace host, then install the

@@ -14,6 +14,7 @@ import {
   MAX_EXPERIMENT_CELLS,
 } from "../core/experimentMatrix";
 import { LAUNCH_FIELD_LIMITS, WORKFLOW_KINDS } from "../core/types";
+import { formalizationId, parseFormalizationAction } from "./formalizationMessages";
 
 const MAX_STRING = 8192;
 const MAX_LIST = LAUNCH_FIELD_LIMITS.additionalSkillCount;
@@ -100,6 +101,12 @@ function launchRequest(value: unknown): LaunchRequestResult {
     return { ok: false, field: "request" };
   }
   const raw = value as Record<string, unknown>;
+  let formalization: LaunchRequest["formalization"];
+  if (raw.formalization !== undefined) {
+    const bound = raw.formalization as Record<string, unknown> | null;
+    if (!bound || !formalizationId(bound.documentId) || !formalizationId(bound.revisionId)) return { ok: false, field: "formalization" };
+    formalization = { documentId: bound.documentId, revisionId: bound.revisionId };
+  }
   const kind = str(raw.kind, 32);
   if (kind === null || !KINDS.has(kind)) {
     return { ok: false, field: "kind" };
@@ -183,6 +190,7 @@ function launchRequest(value: unknown): LaunchRequestResult {
       additionalSkills,
       profile,
       overrides,
+      ...(formalization ? { formalization } : {}),
     },
   };
 }
@@ -207,6 +215,31 @@ export function parseWebviewMessage(
   const reject = (field: string) => ({ ok: false as const, reason: `${type}: bad ${field}` });
 
   switch (type) {
+    case "listFormalizations":
+      return { ok: true, message: { type } };
+    case "inspectFormalization":
+      return raw.sourceKind === "file" || raw.sourceKind === "folder"
+        ? { ok: true, message: { type, sourceKind: raw.sourceKind } } : reject("sourceKind");
+    case "showFormalization":
+      return formalizationId(raw.documentId) ? { ok: true, message: { type, documentId: raw.documentId } } : reject("documentId");
+    case "formalizationAction": {
+      const action = parseFormalizationAction(raw.action);
+      return formalizationId(raw.documentId) && formalizationId(raw.revisionId) && action
+        ? { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId, action } } : reject("repair");
+    }
+    case "openFormalizationArtifact": {
+      if (!formalizationId(raw.documentId) || !formalizationId(raw.revisionId) || !formalizationId(raw.artifactId) ||
+          (raw.itemId !== undefined && !formalizationId(raw.itemId)) ||
+          (raw.line !== undefined && strictInt(raw.line, 1, 10_000_000) === null) ||
+          (raw.pageIndex !== undefined && strictInt(raw.pageIndex, 0, 1_000_000) === null)) return reject("artifact reference");
+      return { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId, artifactId: raw.artifactId,
+        itemId: raw.itemId as string | undefined, line: raw.line as number | undefined, pageIndex: raw.pageIndex as number | undefined } };
+    }
+    case "proveFormalization": {
+      const parsed = launchRequest(raw.request);
+      return formalizationId(raw.documentId) && formalizationId(raw.revisionId) && parsed.ok
+        ? { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId, request: parsed.request } } : reject("handoff");
+    }
     case "copyText": {
       const text = str(raw.text, 4 * 1024 * 1024);
       return text === null ? reject("text") : { ok: true, message: { type, text } };

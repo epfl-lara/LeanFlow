@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from leanflow_cli.runtime.storage.process_views import ProcessViews
 from leanflow_cli.workflows.prover.native_snapshot import (
     create_snapshot,
     prepare_snapshot,
@@ -15,8 +16,14 @@ from leanflow_cli.workflows.prover.native_snapshot import (
 
 
 @pytest.fixture
-def project(tmp_path: Path) -> tuple[Path, Path]:
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     """Create a small pinned library and a filtered private proof workspace."""
+    # These fixtures own no native child processes. A concurrently incomplete
+    # host ps/lsof inventory correctly defers cleanup, but is not a pin test.
+    monkeypatch.setattr(
+        "leanflow_cli.workflows.prover.native_snapshot.process_views",
+        lambda: ProcessViews((), (), True),
+    )
     root = tmp_path / "canonical"
     root.mkdir()
     (root / "lake-manifest.json").write_text(

@@ -168,6 +168,13 @@ def _run_project(root: Path) -> int:
     config: ProverConfig | None = None
     publish_live = True
     try:
+        from leanflow_cli.formalization.publication import (
+            assert_no_pending_publication,
+            recover_pending_publication,
+        )
+
+        recover_pending_publication(root)
+        assert_no_pending_publication(root)
         if requested_id and not _IDENTIFIER.fullmatch(requested_id):
             raise ValueError("invalid execution run ID")
         existing = project_path(root, f".leanflow/workflow-state/prover/{run_id}")
@@ -177,6 +184,63 @@ def _run_project(root: Path) -> int:
         config = ProverConfig.from_env()
         active = os.environ.get("LEANFLOW_NATIVE_ACTIVE_FILE", "").strip()
         targets = [root / active] if active else project_sources(root)
+        handoff: dict[str, Any] | None = None
+        handoff_path = os.environ.get("LEANFLOW_FORMALIZATION_HANDOFF", "").strip()
+        handoff_revision = os.environ.get("LEANFLOW_FORMALIZATION_REVISION", "").strip()
+        if bool(handoff_path) != bool(handoff_revision):
+            raise ValueError("Formalization proving requires both a handoff and its exact revision")
+        if handoff_path:
+            from leanflow_cli.formalization.handoff import authorized_holes, validate_handoff
+
+            path = Path(handoff_path)
+            handoff = validate_handoff(
+                root,
+                path if path.is_absolute() else root / path,
+                handoff_revision,
+                check_sources=not bool(previous),
+            )
+            reviewed_axioms = handoff.get("acceptance_policy", {}).get("allowed_axioms")
+            if not isinstance(reviewed_axioms, list) or set(reviewed_axioms) != set(
+                config.allowed_axioms
+            ):
+                raise ValueError(
+                    "Prover axiom policy differs from the reviewed formalization policy"
+                )
+            targets = [project_path(root, relative) for relative in authorized_holes(handoff)]
+            if active and {root / active} != set(targets):
+                raise ValueError(
+                    "An active file cannot override the exact formalization proof scope"
+                )
+            if not targets:
+                state = {
+                    "version": 2,
+                    "run_id": run_id,
+                    "mode": config.mode,
+                    "status": "no_proof_obligations",
+                    "phase": "no_proof_obligations",
+                    "terminal": True,
+                    "started_at": now(),
+                    "finished_at": now(),
+                    "formalization_handoff": handoff,
+                    "targets": [],
+                    "dag": {"nodes": [], "roots": [], "revision": 0},
+                    "metrics": {"api_calls": 0, "cost_usd": None},
+                    "config": config.to_mapping(),
+                }
+                atomic_json_write(existing / "state.json", state)
+                observer = RunObserver(root, run_id)
+                observer.start(state)
+                observer.finish(state)
+                print(
+                    json.dumps(
+                        {
+                            "run_id": run_id,
+                            "status": "no_proof_obligations",
+                            "metrics": state["metrics"],
+                        }
+                    )
+                )
+                return 0
         lock_path = project_path(root, ".leanflow/workflow-state/prover/controller.lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a") as handle:
@@ -190,21 +254,39 @@ def _run_project(root: Path) -> int:
                 snapshot = json.loads(
                     (root / f".leanflow/workflow-state/prover/{run_id}/state.json").read_text()
                 )
+                saved_handoff = snapshot.get("formalization_handoff")
+                if saved_handoff and handoff is None:
+                    from leanflow_cli.formalization.handoff import validate_handoff
+                    from leanflow_cli.formalization.records import document_directory
+
+                    handoff = validate_handoff(
+                        root,
+                        document_directory(root, saved_handoff["document_id"], published=True)
+                        / "handoff.json",
+                        saved_handoff["revision_id"],
+                        check_sources=False,
+                    )
+                if saved_handoff != handoff:
+                    raise ValueError("Resume formalization handoff differs from the saved run")
                 saved_targets = [project_path(root, path) for path in snapshot["targets"]]
                 if active and {path.resolve() for path in targets} != set(saved_targets):
                     raise ValueError(
                         "resume target scope differs from the saved run; launch a new run to change targets"
                     )
                 targets = saved_targets
-            runtime = ProverRuntime(
-                root=root,
-                targets=targets,
-                config=config,
-                run_id=run_id,
-                resume=bool(previous),
-                goal=os.environ.get("LEANFLOW_NATIVE_EXPLICIT_GOAL", ""),
-                observer=RunObserver(root, run_id),
-            )
+            from leanflow_cli.formalization.publication import publication_guard
+
+            with publication_guard(root):
+                runtime = ProverRuntime(
+                    root=root,
+                    targets=targets,
+                    config=config,
+                    run_id=run_id,
+                    resume=bool(previous),
+                    goal=os.environ.get("LEANFLOW_NATIVE_EXPLICIT_GOAL", ""),
+                    observer=RunObserver(root, run_id),
+                    formalization_handoff=handoff,
+                )
             if (
                 active
                 and not runtime.dag.roots

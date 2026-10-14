@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,12 +41,12 @@ def project_path(root: Path, relative: str) -> Path:
     return path
 
 
-def lean_code_mask(source: str) -> str:
-    """Blank comments, strings, and quoted names while preserving byte-position indices."""
-    chars = list(source)
+def lean_lexical_regions(source: str) -> Iterator[tuple[int, int, bool]]:
+    """Yield literal/comment spans, rejecting unsupported executable interpolations."""
     index = 0
     while index < len(source):
         end = index
+        comment = source.startswith(("--", "/-"), index)
         if source.startswith("--", index):
             newline = source.find("\n", index)
             end = len(source) if newline < 0 else newline
@@ -62,6 +63,22 @@ def lean_code_mask(source: str) -> str:
                     end += 1
             if depth:
                 raise ValueError("unterminated Lean block comment")
+        elif source.startswith('s!"', index) or re.match(r's!r#*"', source[index:]):
+            # Interpolation contains executable Lean terms; treating it as an
+            # ordinary string would hide commands and proof holes from surgery.
+            raise ValueError("Lean string interpolation requires a syntax-aware source adapter")
+        elif source[index] == "r" and (raw := re.match(r'r(#+)?"', source[index:])):
+            closing = '"' + (raw.group(1) or "")
+            finish = source.find(closing, index + len(raw.group()))
+            if finish < 0:
+                raise ValueError("unterminated Lean raw string")
+            end = finish + len(closing)
+        elif source[index] == "'" and (
+            character := re.match(
+                r"'(?:[^'\\\n]|\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.))'", source[index:]
+            )
+        ):
+            end = index + len(character.group())
         elif source[index] in {'"', "«"}:
             closing = '"' if source[index] == '"' else "»"
             end = index + 1
@@ -76,12 +93,21 @@ def lean_code_mask(source: str) -> str:
             else:
                 raise ValueError("unterminated Lean string or quoted name")
         if end > index:
-            for position in range(index, min(end, len(chars))):
-                if chars[position] != "\n":
-                    chars[position] = " "
+            yield index, min(end, len(source)), comment
             index = end
         else:
             index += 1
+
+
+def lean_code_mask(source: str, *, preserve_literals: bool = False) -> str:
+    """Blank literals and comments without hiding executable interpolation syntax."""
+    chars = list(source)
+    for start, end, comment in lean_lexical_regions(source):
+        if preserve_literals and not comment:
+            continue
+        for position in range(start, end):
+            if chars[position] != "\n":
+                chars[position] = " "
     return "".join(chars)
 
 
@@ -118,7 +144,7 @@ def validate_hole_replacement(replacement: str) -> None:
         r"instance|class|structure|inductive|coinductive|mutual|namespace|section|"
         r"end|import|prelude|universe|universes|variable|variables|include|omit|"
         r"attribute|export|syntax|macro|macro_rules|elab|elab_rules|initialize|"
-        r"builtin_initialize|run_cmd|deriving)(?![\w'])|#[A-Za-z_]",
+        r"builtin_initialize|run_cmd|run_meta|simproc|dsimproc|deriving)(?![\w'])|#[A-Za-z_]",
         mask,
     )
     if command:
@@ -186,7 +212,11 @@ def project_sources(root: Path) -> list[Path]:
 
 
 def discover(
-    root: Path, targets: list[Path], *, fill_definitions: bool
+    root: Path,
+    targets: list[Path],
+    *,
+    fill_definitions: bool,
+    authorized_holes: dict[str, list[dict[str, Any]]] | None = None,
 ) -> tuple[Dag, dict[str, SourceDocument]]:
     """Snapshot all original Lean source and enumerate authorized holes in requested files."""
     documents = {
@@ -194,6 +224,10 @@ def discover(
         for path in project_sources(root)
     }
     dag = Dag()
+    if authorized_holes is not None and set(authorized_holes) != {
+        str(path.resolve().relative_to(root)) for path in targets
+    }:
+        raise ValueError("formalization handoff file scope differs from its authorized holes")
     for path in targets:
         relative = str(path.resolve().relative_to(root))
         document = documents.get(relative)
@@ -201,6 +235,19 @@ def discover(
             raise ValueError(f"target is not a regular project Lean file: {relative}")
         source = document.baseline
         spans = sorry_spans(source)
+        authorization = authorized_holes.get(relative, []) if authorized_holes is not None else []
+        authorized_indexes: set[int] = set()
+        for item in authorization:
+            indexes = item.get("holes", [])
+            if not indexes or any(
+                type(index) is not int or index < 0 or index >= len(spans) for index in indexes
+            ):
+                raise ValueError("formalization handoff contains an invalid hole index")
+            if authorized_indexes.intersection(indexes):
+                raise ValueError("formalization handoff authorizes a hole more than once")
+            if item.get("hole_spans") != [list(spans[index]) for index in indexes]:
+                raise ValueError("formalization handoff hole positions changed")
+            authorized_indexes.update(indexes)
         line_offsets = [0]
         for line in source.splitlines(keepends=True):
             line_offsets.append(line_offsets[-1] + len(line))
@@ -212,12 +259,36 @@ def discover(
             holes = [index for index, (position, _) in enumerate(spans) if start <= position < end]
             if not holes:
                 continue
+            selected: dict[str, Any] | None = None
+            if authorized_holes is not None:
+                if not authorized_indexes.intersection(holes):
+                    continue
+                matches = [
+                    item
+                    for item in authorization
+                    if set(item["holes"]).issubset(holes) and item["source_name"] == entry["name"]
+                ]
+                if len(matches) != 1:
+                    raise ValueError("formalization handoff declaration/hole identity differs")
+                selected = matches[0]
+                selected_range = selected.get("declaration_span", [start, end])
+                if (
+                    not isinstance(selected_range, list)
+                    or len(selected_range) != 2
+                    or any(type(position) is not int for position in selected_range)
+                    or not 0 <= selected_range[0] < selected_range[1] <= end
+                ):
+                    raise ValueError("formalization handoff declaration range differs")
+                start, end = selected_range
+                holes = [index for index, (a, b) in enumerate(spans) if start <= a < b <= end]
+                if holes != selected["holes"]:
+                    raise ValueError("formalization handoff declaration range contains other holes")
             kind = str(entry["kind"])
             if kind not in {"theorem", "lemma", "example"} and not fill_definitions:
                 raise ValueError(
                     f"definition {entry['name']} contains sorry; enable fill_definitions explicitly"
                 )
-            name = str(entry["name"])
+            name = str(selected["declaration"] if selected else entry["name"])
             if name.startswith("[anonymous"):
                 raise ValueError(
                     f"anonymous declaration at {relative}:{entry['line']} requires a name before proving"
@@ -231,16 +302,17 @@ def discover(
                     name=name,
                     statement=declaration_statement_text(declaration),
                     file=relative,
-                    module=relative[:-5].replace("/", "."),
+                    module=str(selected["module"]) if selected else relative[:-5].replace("/", "."),
                     kind=kind,
                     original=True,
                     holes=holes,
-                    line_start=entry["line"],
-                    line_end=entry["end_line"],
+                    line_start=source.count("\n", 0, start) + 1 if selected else entry["line"],
+                    line_end=source.count("\n", 0, end) + 1 if selected else entry["end_line"],
                 )
             )
             dag.roots.append(node_id)
-        if len(assigned) != len(spans):
+        expected = authorized_indexes if authorized_holes is not None else set(range(len(spans)))
+        if assigned != expected:
             raise ValueError(
                 f"cannot safely associate every sorry with a named declaration in {relative}"
             )

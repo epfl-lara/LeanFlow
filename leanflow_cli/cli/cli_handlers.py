@@ -60,6 +60,17 @@ def workflow_run_help_text(workflow: str) -> str:
                 "  --clean-room              Block benchmark solution research and sibling tasks",
                 "  --clean-room-label VALUE  Add a protected task spelling (repeatable)",
                 "  --human-review            Allow explicit human-review pauses",
+                "  --from-formalization ID   Prove only the accepted document obligations",
+                "  --formalization-revision REV  Exact reviewed revision (required with ID)",
+            ]
+        )
+    if name in {"formalize", "autoformalize"}:
+        lines.extend(
+            [
+                "  --review-provider PROVIDER  Independent source reviewer backend",
+                "  --review-model MODEL      Reviewer model override",
+                "  --review-effort EFFORT    Reviewer effort; auto uses its native default",
+                "  --correction-rounds N    Correction rounds within budget (0..8, default 2)",
             ]
         )
     lines.append("  -h, --help                Show this help and exit")

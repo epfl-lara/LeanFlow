@@ -147,9 +147,14 @@ search, and excludes prior native session context. Native model connections
 remain available. Clean-room checkpoints can resume; online or legacy runs
 cannot be converted into clean-room tests.
 
-`formalize` has a separate completion gate: a buildable statement draft reviewed
-against its source, with intentional theorem proof holes. Review the draft, then
-run `prove` to complete it. `autoprove` and `autoformalize` are compatibility
+`formalize` freezes a complete source inventory, checks the generated Lean project,
+and requires independent item and document reviews. Definitions must be complete;
+named theorem proofs may remain pending. The editor links source/PDF and Lean
+locations and shows coverage, review and proof status separately. Launch proving
+from the exact published handoff. Formalization supports pinned Mathlib through
+independent kernel replay of compiled library declarations and keeps REPL tooling
+separate from mathematical imports. See the [supported input boundary](docs/formalization.md#supported-input-boundary);
+ordinary proving is unchanged. `autoprove` and `autoformalize` are compatibility
 aliases of `prove` and `formalize`.
 
 See the [prover workflow](docs/prover-workflow.md) for settings, verification,

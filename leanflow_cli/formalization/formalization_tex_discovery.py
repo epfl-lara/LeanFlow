@@ -5,11 +5,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from leanflow_cli.formalization.document_extraction import _extract_braced_commands
 from leanflow_cli.formalization.formalization_models import (
     FormalizationDocumentError,
     _FormalizationDocumentSelection,
 )
+from leanflow_cli.formalization.source_provenance import COMMAND, SourceText, group, scan_tex
 
 TEX_PROJECT_SKIPPED_DIRS = {
     ".leanflow",
@@ -257,23 +257,29 @@ def _directory_relative_list(paths: list[Path], directory: Path) -> list[str]:
 
 
 def _extract_bibliography_asset_refs(text: str) -> tuple[list[str], list[str]]:
+    """Collect literal bibliography and asset arguments from the shared TeX scanner."""
     bibliography: list[str] = []
     assets: list[str] = []
-    for command in ("bibliography", "addbibresource"):
-        for value in _extract_braced_commands(text, command):
-            for part in value.split(","):
+    visible = scan_tex(SourceText("entrypoint", text.encode())).visible
+    for command in COMMAND.finditer(visible):
+        option = group(visible, command.end(), "[")
+        argument = group(visible, option[1] if option else command.end())
+        if not argument:
+            continue
+        if command[1] in {"bibliography", "addbibresource"}:
+            for part in argument[0].split(","):
                 normalized = _normalize_tex_reference(part, ".bib")
                 if normalized and normalized not in bibliography:
                     bibliography.append(normalized)
-    for value in _extract_braced_commands(text, "bibliographystyle"):
-        normalized = _normalize_tex_reference(value, ".bst")
-        if normalized and normalized not in assets:
-            assets.append(normalized)
+        elif command[1] == "bibliographystyle":
+            normalized = _normalize_tex_reference(argument[0], ".bst")
+            if normalized and normalized not in assets:
+                assets.append(normalized)
     graphics_pattern = re.compile(
         r"\\(?:includegraphics|epsfig)\s*(?:\[[^\]]*\])?\s*\{(?P<path>[^{}]+)\}",
         re.IGNORECASE,
     )
-    for match in graphics_pattern.finditer(text or ""):
+    for match in graphics_pattern.finditer(visible):
         normalized = _normalize_tex_reference(match.group("path"), "")
         if normalized and normalized not in assets:
             assets.append(normalized)

@@ -41,7 +41,7 @@ def read_pdf_tool(
     project_root: str = "",
     max_chars: int = PDF_READ_DEFAULT_MAX_CHARS,
 ) -> str:
-    """Extract and return text from a project-local PDF file with bounded output. Validates input is a PDF, truncates extracted text to max_chars (bounded 1k–120k), and returns metadata including section structure, extraction quality, and truncation flags."""
+    """Return the shared PDF inventory with a bounded text display and explicit truncation."""
     root = project_root or os.getenv("LEANFLOW_PROJECT_ROOT", "") or cwd or os.getcwd()
     payload = inspect_formalization_document(
         path,
@@ -73,21 +73,24 @@ def read_pdf_tool(
 FORMALIZATION_DOCUMENT_INSPECT_SCHEMA = {
     "name": "formalization_document_inspect",
     "description": (
-        "Inspect a project-local .tex or .pdf source document for formalization planning. "
-        "For project-local PDFs, this uses local pdftotext/pdfinfo/pdfimages when installed. "
-        "Returns sections, theorem-like LaTeX blocks, labels/references/citations, PDF extraction "
-        "metadata, text excerpts, and degraded extraction reasons. Use read_pdf when the immediate "
+        "Inspect a project-local .tex file, TeX project directory, or .pdf for formalization planning. "
+        "For project-local PDFs, this uses local pdftotext/pdfinfo when installed. "
+        "Returns the complete source inventory, original spans, unresolved regions, display sections, "
+        "labels/references/citations, page metadata, a bounded text excerpt, and extraction diagnostics. Use read_pdf when the immediate "
         "task is simply to read/extract text from a PDF."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Project-local .tex or .pdf path"},
+            "path": {
+                "type": "string",
+                "description": "Project-local TeX file/directory or PDF path",
+            },
             "cwd": {"type": "string", "description": "Optional working directory"},
             "project_root": {"type": "string", "description": "Optional LeanFlow project root"},
             "include_text": {
                 "type": "boolean",
-                "description": "Include the bounded extracted text cache in addition to the excerpt",
+                "description": "Include complete extracted source text in addition to the bounded display excerpt",
                 "default": False,
             },
         },
@@ -102,7 +105,7 @@ READ_PDF_SCHEMA = {
         "Read/extract text from a project-local PDF file. Use this whenever the model needs to read "
         "a local PDF paper, source document, or formalization reference. Requires local PDF utilities "
         "such as pdftotext; reports degraded reasons when extraction tools are missing or fail. "
-        "Returns PDF metadata, detected sections, extracted text, and whether the text was truncated."
+        "Returns page metadata, source coverage regions, extracted text, and whether the text display was truncated."
     ),
     "parameters": {
         "type": "object",
