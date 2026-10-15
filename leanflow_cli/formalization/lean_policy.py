@@ -28,7 +28,7 @@ from leanflow_cli.formalization.lean_origin import imported_origin_owner, proven
 from leanflow_cli.workflows.prover.check_process import isolated_command
 from leanflow_cli.workflows.prover.source import lean_code_mask, project_path, project_sources
 
-POLICY_VERSION = "formalization-exact-artifact-kernel-proofs-v5"
+POLICY_VERSION = "formalization-exact-artifact-kernel-proofs-v6"
 DEFAULT_INSPECTION_TIMEOUT_SECONDS = 600.0
 _EFFECTFUL = re.compile(
     r"(?<![\w'])"
@@ -46,12 +46,17 @@ def validate_source(source: str) -> None:
 
     This is an admission restriction, not declaration discovery. The pinned
     imported environment remains a trusted input; all declaration policy below
-    is based on independently imported kernel constants.
+    is based on independently imported kernel constants. Literal autoImplicit
+    false only disables implicit binder creation; other source options remain
+    restricted to the existing positive resource limits.
     """
     masked = lean_code_mask(source)
     masked = re.sub(r"\bset_option\s+(?:maxHeartbeats|maxRecDepth)\s+[1-9]\d*\b", "", masked)
+    masked = re.sub(r"\bset_option\s+autoImplicit\s+false(?=\s|$)", "", masked)
     if re.search(r"\bset_option\b", masked):
-        raise ValueError("Only bounded resource options are supported in reviewed drafts")
+        raise ValueError(
+            "Only bounded resource options and literal autoImplicit false are supported in reviewed drafts"
+        )
     if re.search(r"#\s*eval\b", masked):
         raise ValueError("Unsupported effectful elaboration or external input: #eval")
     if match := _EFFECTFUL.search(masked):

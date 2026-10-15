@@ -342,6 +342,13 @@ are fingerprinted and passed to each compiler invocation. The option allowlist i
 remain blocked. The whole-project gate elaborates executable roots; it does not
 link or run native executables, and mathematical libraries cannot import them.
 
+Generated Lean source has a narrower option policy: positive numeric
+`maxHeartbeats` and `maxRecDepth`, plus literal `set_option autoImplicit false`,
+including its scoped `in` form. Disabling auto-implicit variables requires explicit
+binders; it does not relax kernel inspection. Other source option names or values,
+including `autoImplicit true`, remain unsupported. Changing this admission policy
+invalidates earlier acceptance receipts until the current checker reviews them again.
+
 Snapshots exclude configured build directories. Each module compiles in fresh
 scratch storage, with earlier artifacts read-only. The controller copies only the
 expected compiled artifacts into a clean library directory and checks their exact
