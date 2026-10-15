@@ -125,6 +125,62 @@ def test_preview_tokens_inside_prompt_text_stay_prompt_text(cli, capsys):
     assert parsed.workflow_args == "Main.lean"
 
 
+@pytest.mark.parametrize("kind", ["formalize", "prove"])
+def test_actual_cli_launch_reuses_the_displayed_plan_and_its_single_campaign_budget(
+    monkeypatch, tmp_path, kind
+):
+    """Exercise the real CLI/run/spawn path without a native model or duplicated setup."""
+    import leanflow_cli.workflow as workflow
+
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    resolved = []
+    spawned = []
+    plan = _plan(tmp_path, {"LEANFLOW_FORMALIZATION_BUDGET_PATH": "campaign-1/budget.json"})
+
+    def resolve(command, **kwargs):
+        resolved.append((command, kwargs))
+        if len(resolved) != 1:
+            pytest.fail("Paid discovery/preparation must not be resolved twice")
+        return plan
+
+    class Child:
+        returncode = 23
+
+        def wait(self):
+            return self.returncode
+
+    def popen(argv, **kwargs):
+        spawned.append((argv, kwargs))
+        assert kwargs["env"]["LEANFLOW_FORMALIZATION_BUDGET_PATH"] == "campaign-1/budget.json"
+        assert kwargs["cwd"] == str(tmp_path)
+        return Child()
+
+    monkeypatch.setattr("leanflow_cli.main.resolve_workflow_request", resolve)
+    monkeypatch.setattr(workflow, "resolve_workflow_request", resolve)
+    monkeypatch.setattr(workflow.subprocess, "Popen", popen)
+    assert main(["workflow", kind, "paper.tex" if kind == "formalize" else "Main.lean"]) == 23
+    assert len(resolved) == len(spawned) == 1
+    assert resolved[0][1]["preview"] is False
+    assert plan.child_env == {"LEANFLOW_FORMALIZATION_BUDGET_PATH": "campaign-1/budget.json"}
+
+
+def test_workflow_history_displays_the_latest_twelve_checkpoints(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("leanflow_cli.main.load_workflow_live_status", lambda: None)
+    monkeypatch.setattr(
+        "leanflow_cli.main.load_workflow_checkpoints",
+        lambda: [{"label": str(number)} for number in range(15)],
+    )
+    captured = []
+    monkeypatch.setattr(
+        "leanflow_cli.main.render_workflow_status_panel",
+        lambda console, *, status, activities: captured.extend(activities),
+    )
+    assert main(["workflow", "history"]) == 0
+    assert [row["message"] for row in captured] == [str(number) for number in range(14, 2, -1)]
+
+
 def test_workflow_status_json_is_not_treated_as_a_launch(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.setattr("leanflow_cli.main.load_workflow_live_status", lambda: {})
@@ -206,11 +262,11 @@ def test_non_prove_preview_has_no_prover_section(tmp_path):
     plan = replace(
         _plan(tmp_path),
         workflow=NativeWorkflowSpec(
-            workflow_kind="review",
-            frontend_command="/review",
-            canonical_command="/review",
-            backend_command="/review Main.lean",
-            workflow_args="Main.lean",
+            workflow_kind="formalize",
+            frontend_command="/formalize",
+            canonical_command="/formalize",
+            backend_command="/formalize paper.tex",
+            workflow_args="paper.tex",
         ),
     )
 

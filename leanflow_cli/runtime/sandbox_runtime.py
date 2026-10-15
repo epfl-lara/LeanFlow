@@ -34,10 +34,6 @@ DEFAULT_SANDBOX_IMAGE = "leanflow/sandbox:local"
 DEFAULT_CONTAINERFILE = "containers/leanflow-sandbox.Containerfile"
 SANDBOX_BASE_IMAGE_ENV = "LEANFLOW_SANDBOX_BASE_IMAGE"
 WORKFLOW_ALIASES = {
-    "draft",
-    "review",
-    "refactor",
-    "golf",
     "prove",
     "formalize",
     "autoprove",

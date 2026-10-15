@@ -365,24 +365,30 @@ def _planning_call(
 
 def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
     """Apply only reviewed, immutable library requests and record exact configuration diffs."""
-    if entries and getattr(runtime, "formalization_handoff", None) is not None:
-        raise ValueError("Reviewed formalization proof scope forbids library installation")
     if not entries:
         return
+    if getattr(runtime, "formalization_handoff", None) is not None:
+        raise ValueError("Reviewed formalization proof scope forbids library installation")
     if not runtime.config.allow_internet:
         from leanflow_cli.workflows.prover.installed_libraries import require_installed_libraries
 
         require_installed_libraries(runtime.root, entries)
         return
+    with runtime.lock, runtime._publication_guard():
+        _install_planned_libraries_locked(runtime, entries)
+
+
+def _install_planned_libraries_locked(runtime: ProverRuntime, entries: Any) -> None:
+    """Keep dependency publication and its source checkpoint under the owning generation."""
     if not isinstance(entries, list):
         raise ValueError("planning libraries must be a list")
     from leanflow_cli.workflows.prover.installed_libraries import libraries_already_installed
-    from leanflow_cli.workflows.prover.libraries import install_libraries
+    from leanflow_cli.workflows.prover.libraries import _configuration_bytes, install_libraries
 
     if libraries_already_installed(runtime.root, entries):
         return
     before = {
-        name: (runtime.root / name).read_bytes()
+        name: _configuration_bytes(runtime.root / name)
         for name in ("lakefile.toml", "lakefile.lean", "lake-manifest.json", "lean-toolchain")
         if (runtime.root / name).is_file()
     }
@@ -390,7 +396,19 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
         runtime.root, entries, timeout_s=runtime._remaining_verification_time()
     )
     runtime.store.event("libraries_installed", result)
+    retained = runtime.state.setdefault("retained_source_mutations", [])
+    for identifier in result.get("retained_source_mutations", []):
+        if identifier not in retained:
+            retained.append(identifier)
     if result.get("accepted") is not True:
+        if result.get("status") == "source_conflict":
+            from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
+
+            raise InfrastructureFailure(
+                str(result.get("recovery_error") or result.get("error", result)),
+                status="source_conflict",
+                error_details=result,
+            )
         if result.get("status") == "configuration_error":
             from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
 
@@ -410,7 +428,7 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
         raise RuntimeError(f"library installation rejected: {result}")
     for name, original in before.items():
         path = runtime.root / name
-        if path.read_bytes() == original:
+        if _configuration_bytes(path) == original:
             continue
         baseline = runtime.store.directory / "baselines" / name
         baseline.parent.mkdir(parents=True, exist_ok=True)
@@ -456,9 +474,7 @@ def _materialize(
     previous_changes: list[dict[str, Any]],
 ) -> None:
     """Compile reviewed helper skeletons before making them dependencies of user goals."""
-    from leanflow_cli.formalization.publication import publication_guard
-
-    with publication_guard(runtime.root):
+    with runtime._publication_guard():
         _materialize_locked(runtime, dag, skeletons, previous_changes)
 
 

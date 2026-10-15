@@ -47,13 +47,15 @@ function ConflictTransaction({ transaction, disabled, resolve }: {
   const [reason, setReason] = useState("");
   const [checked, setChecked] = useState(false);
   const resolved = transaction.state === "RESOLVED";
-  const unavailableJournal = transaction.unavailable_journal === true;
+  const unavailableRegistry = transaction.unavailable_registry === true;
+  const unavailableJournal = transaction.unavailable_journal === true || unavailableRegistry;
   const unavailableVersions = Object.keys(transaction.unavailable_versions ?? {});
   const complete = transaction.versions.length === transaction.version_count && transaction.next_version_offset === null;
   return <details className="formalization-region" open={!resolved}>
     <summary>Publication {transaction.transaction_id} · {transaction.state}</summary>
     <p>Mathematical revision <code>{transaction.revision_id}</code> · {transaction.version_count} recorded versions</p>
-    {unavailableJournal && <p className="notice warn">The publication journal is unavailable. Historical versions and the original write plan cannot be reconstructed. Inspect the current workspace files locally; acknowledgment records this loss and requires new mathematical acceptance.</p>}
+    {unavailableRegistry && <p className="notice warn">The publication registry is unavailable while publication evidence survives. Historical acceptance remains blocked. Acknowledgment preserves available evidence and requires a fresh independently accepted publication; restoring old source bytes cannot restore approval.</p>}
+    {unavailableJournal && !unavailableRegistry && <p className="notice warn">The publication journal is unavailable. Historical versions and the original write plan cannot be reconstructed. Inspect the current workspace files locally; acknowledgment records this loss and requires new mathematical acceptance.</p>}
     {unavailableVersions.length > 0 && <p className="notice warn">{unavailableVersions.length} historical archive {unavailableVersions.length === 1 ? "version is" : "versions are"} unavailable or changed. Their expected identities remain recorded; acknowledgment does not restore missing bytes.</p>}
     <ul>{transaction.conflicts.map((issue, index) => <li key={index}>{issue}</li>)}</ul>
     <ol>{transaction.versions.map(version => <li key={version.version_id}>

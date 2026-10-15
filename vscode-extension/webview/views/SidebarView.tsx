@@ -13,10 +13,11 @@ import { ProjectSetupCard } from "./ProjectSetupCard";
 import { projectSetupBlocksLaunch } from "../../src/core/projectSetupTypes";
 import { post } from "../vscodeApi";
 import { CliNotice } from "../CliNotice";
+import { workflowForm } from "../workflowForms";
 
 export function SidebarView() {
   const { app, view, setForm } = useStore();
-  const form = view.form;
+  const form = workflowForm(view, "prove");
 
   if (!app) {
     return <div className="sidebar muted">Loading…</div>;
@@ -26,8 +27,8 @@ export function SidebarView() {
     return (
       <div className="sidebar">
         <CliNotice cli={app.cli} compact />
-        <button className="btn" onClick={() => post({ type: "openDashboard" })}>
-          Dashboard
+        <button className="btn" onClick={() => post({ type: "openDashboard", workflow: "formalize" })}>
+          Open Dashboard
         </button>
         <p className="muted">Open Formalization in the Dashboard to inspect TeX or PDF sources before preparing a Lean project.</p>
         {app.cli.ok && <ProjectSetupCard sidebar />}
@@ -58,9 +59,11 @@ export function SidebarView() {
 
       <CliNotice cli={app.cli} compact />
       {app.cli.ok && <ProjectSetupCard sidebar />}
+      {view.workflowSelectionRequired && <Notice tone="warn">The saved workflow is retired. Open Prove or Formalization to choose a new configuration.</Notice>}
+      {view.workflowSelectionRequired && <button className="btn ghost" onClick={() => post({ type: "openDashboard", workflow: "prove" })}>Configure Prove</button>}
       {app.runDiscoveryError && <Notice tone="warn">{app.runDiscoveryError}</Notice>}
       {app.cli.ok && <section className="card" style={{ margin: 0 }}>
-        <div className="card-title">Quick launch</div>
+        <div className="card-title">Prove</div>
         <label className="field" style={{ marginBottom: 8 }}>
           <span className="label">Target</span>
           <input
@@ -69,7 +72,7 @@ export function SidebarView() {
             maxLength={LAUNCH_FIELD_LIMITS.target}
             placeholder="Main.lean (optional)"
             value={form.target}
-            onChange={(event) => setForm({ target: event.target.value })}
+            onChange={(event) => setForm({ kind: "prove", target: event.target.value })}
           />
           <datalist id="leanflow-sidebar-files">
             {app.leanFiles.map((file) => (
@@ -81,7 +84,7 @@ export function SidebarView() {
           <input
             type="checkbox"
             checked={form.research}
-            onChange={(event) => setForm({ research: event.target.checked })}
+            onChange={(event) => setForm({ kind: "prove", research: event.target.checked })}
           />
           <span className="body">
             <span>Research mode</span>
@@ -90,14 +93,14 @@ export function SidebarView() {
         <div className="row tight" style={{ marginTop: 8 }}>
           <button
             className="btn"
-            disabled={projectSetupBlocksLaunch(app.projectSetup, app.project.root)}
+            disabled={!!view.workflowSelectionRequired || projectSetupBlocksLaunch(app.projectSetup, app.project.root)}
             onClick={() => post({ type: "launch", request: { ...form, kind: "prove" } })}
           >
             <PlayIcon size={12} />
             Prove
           </button>
-          <button className="btn ghost" onClick={() => post({ type: "openDashboard" })}>
-            Dashboard
+          <button className="btn ghost" onClick={() => post({ type: "openDashboard", workflow: "formalize" })}>
+            Formalization
           </button>
         </div>
       </section>}

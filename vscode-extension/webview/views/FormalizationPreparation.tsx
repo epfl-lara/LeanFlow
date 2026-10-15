@@ -61,14 +61,14 @@ export function FormalizationPreparation({ snapshot, ready, onActiveChange }: {
     </div>
     {state?.message && <p role={active ? "status" : undefined}>{state.phase ? `${state.phase}: ` : ""}{state.message}</p>}
     {state?.error && <p className="notice error" role="alert">{state.error}</p>}
-    {state?.plan && <details open><summary>Controller preparation plan</summary>
+    {state?.plan && <details open><summary>Checked infrastructure and unreviewed mathematical estimates</summary>
       <p>Library {state.plan.layout?.library ?? "pending"} · root {state.plan.layout?.root_file ?? "pending"} · Lean {state.plan.toolchain ?? "pending"}</p>
       <p>Existing packages: {state.plan.existing_packages?.map(item => item.name).join(", ") || "none"}</p>
       <ul>{state.plan.packages?.map(item => <li key={item.name}>{item.name} · {item.revision} · {item.reason}</li>)}</ul>
       <p>Required imports: {state.plan.required_imports?.join(", ") || "none"}</p>
       <p>Representative source claims: {state.plan.slice_source_ids?.length ?? 0}</p>
       <ul>{state.plan.slice_source_ids?.map(id => <li key={id}>{snapshot.items.find(item => item.id === id)?.title ?? id}</li>)}</ul>
-      {state.plan.mathematical_prerequisites?.length ? <details><summary>Mathematical prerequisites</summary><ul>{state.plan.mathematical_prerequisites.map((entry, index) => <li key={index}>{typeof entry === "string" ? entry : entry && typeof entry === "object" && "description" in entry ? String(entry.description) : "Inspect the structured prerequisite in the plan"}</li>)}</ul></details> : null}
+      {state.plan.mathematical_prerequisites?.length ? <details><summary>Unreviewed mathematical prerequisite estimates</summary><ul>{state.plan.mathematical_prerequisites.map((entry, index) => <li key={index}>{typeof entry === "string" ? entry : entry && typeof entry === "object" && "description" in entry ? String(entry.description) : "Inspect the structured prerequisite in the plan"}</li>)}</ul></details> : null}
       {state.plan.representation_notes?.length ? <ul>{state.plan.representation_notes.map((note, index) => <li key={index}>{note}</li>)}</ul> : null}
       {state.plan.blockers?.length ? <ul className="notice warn">{state.plan.blockers.map((reason, index) => <li key={index}>{reason}</li>)}</ul> : null}
       <p className="muted">This plan prepares infrastructure. Independent source review determines mathematical fidelity.</p>

@@ -1,30 +1,35 @@
 /** Recover owned setup transactions independently of blocked mathematical document reads. */
 import { cliPath } from "../core/cli";
 import { startFormalizationJsonProcess, type FormalizationPreparationProcess } from "../core/formalizationPreparationProcess";
-import type { LeanFlowServices } from "../core/services";
+import { sameFormalizationScope, type FormalizationWorkspaceScope } from "../core/formalizationScope";
+import type { FormalizationOperation } from "./formalizationOperation";
 import type { HostMessage, WebviewMessage } from "../core/types";
 import { redactSensitiveText } from "../core/runPrivacy";
 
 export class FormalizationRecoveryHost {
-  private active: { process: FormalizationPreparationProcess<Record<string, unknown>>; cancelled: boolean } | undefined;
-  constructor(private readonly services: LeanFlowServices, private readonly post: (message: HostMessage) => void) {}
+  private active: { process: FormalizationPreparationProcess<Record<string, unknown>>; cancelled: boolean; scope: FormalizationWorkspaceScope; post: (message: HostMessage) => void } | undefined;
   dispose(): void { this.active?.process.cancel(); }
-  cancel(): void {
-    if (!this.active || this.active.cancelled) return;
+  cancelOtherWorkspace(scope: FormalizationWorkspaceScope): void {
+    if (this.active && !this.active.cancelled && !sameFormalizationScope(this.active.scope, scope)) { this.active.cancelled = true; this.active.process.cancel(); }
+  }
+  cancel(scope: FormalizationWorkspaceScope): void {
+    if (!sameFormalizationScope(this.active?.scope, scope) || !this.active || this.active.cancelled) return;
     this.active.cancelled = true;
     this.active.process.cancel();
-    this.post({ type: "formalizationPreparationRecovery", snapshot: null, error: "", busy: true, cancellable: false, cancelling: true,
+    this.active.post({ type: "formalizationPreparationRecovery", snapshot: null, error: "", busy: true, cancellable: false, cancelling: true,
       message: "Cancellation requested. Waiting for the controller to safely preserve infrastructure and recovery evidence…" });
   }
 
   /** Bind resolution to freshly fetched identities and refresh readiness after every owned attempt. */
-  async handle(message: Extract<WebviewMessage, { type: "listFormalizationPreparationRecovery" | "recoverFormalizationPreparation" | "resolveFormalizationPreparation" }>): Promise<void> {
-    const service = this.services.formalizations;
+  async handle(message: Extract<WebviewMessage, { type: "listFormalizationPreparationRecovery" | "recoverFormalizationPreparation" | "resolveFormalizationPreparation" }>, operation: FormalizationOperation): Promise<void> {
+    const services = operation.services;
+    const post = operation.post;
+    const service = services.formalizations;
     const mutating = message.type !== "listFormalizationPreparationRecovery";
     let error = "";
     let resultMessage = "";
     let refreshed = false;
-    this.post({ type: "formalizationPreparationRecovery", snapshot: null, error: "", busy: true, cancellable: false,
+    post({ type: "formalizationPreparationRecovery", snapshot: null, error: "", busy: true, cancellable: false,
       message: "Inspecting current infrastructure and recovery observations…" });
     try {
       if (mutating) {
@@ -32,14 +37,15 @@ export class FormalizationRecoveryHost {
         const args = message.type === "resolveFormalizationPreparation"
           ? await service.preparationResolutionArgs(message.transactionId, message.observationId, message.reason)
           : ["formalization", "recover-preparation", "--json"];
+        operation.assertCurrent();
         const process = startFormalizationJsonProcess(cliPath(), args, service.workspaceRoot(),
-          (_phase, text) => this.post({ type: "formalizationPreparationRecovery", snapshot: null, error: "", busy: true,
+          (_phase, text) => post({ type: "formalizationPreparationRecovery", snapshot: null, error: "", busy: true,
             cancellable: !this.active?.cancelled, cancelling: this.active?.cancelled,
             message: this.active?.cancelled ? `Waiting for safe cleanup: ${redactSensitiveText(text)}` : redactSensitiveText(text) }),
           value => { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The controller returned no infrastructure recovery record."); return value as Record<string, unknown>; });
-        const active = { process, cancelled: false };
+        const active = { process, cancelled: false, scope: operation.scope, post };
         this.active = active;
-        this.post({ type: "formalizationPreparationRecovery", snapshot: null, error: "", busy: true, cancellable: true,
+        post({ type: "formalizationPreparationRecovery", snapshot: null, error: "", busy: true, cancellable: true,
           message: "Recovering infrastructure. Cancellation waits for a safe stopping point…" });
         try {
           const result = await process.result;
@@ -53,14 +59,14 @@ export class FormalizationRecoveryHost {
       error = redactSensitiveText(failure instanceof Error ? failure.message : String(failure));
     } finally {
       if (mutating) {
-        try { await this.services.reload(); refreshed = true; }
+        try { await services.reload(); refreshed = true; }
         catch (failure) { error = [error, `Readiness refresh failed: ${redactSensitiveText(failure instanceof Error ? failure.message : String(failure))}`].filter(Boolean).join(" "); }
       }
       try {
         const snapshot = await service.preparationRecovery();
-        this.post({ type: "formalizationPreparationRecovery", snapshot, error, busy: false, cancellable: false, refreshed, message: resultMessage });
+        post({ type: "formalizationPreparationRecovery", snapshot, error, busy: false, cancellable: false, refreshed, message: resultMessage });
       } catch (failure) {
-        this.post({ type: "formalizationPreparationRecovery", snapshot: null, busy: false, cancellable: false, refreshed,
+        post({ type: "formalizationPreparationRecovery", snapshot: null, busy: false, cancellable: false, refreshed,
           error: [error, redactSensitiveText(failure instanceof Error ? failure.message : String(failure))].filter(Boolean).join(" ") });
       }
     }

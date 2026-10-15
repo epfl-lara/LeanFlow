@@ -147,12 +147,11 @@ def test_parse_workflow_command_extracts_research_profile():
     assert sequential.research_workers == 0
 
 
-def test_parse_workflow_command_human_review_is_explicit():
+def test_parse_workflow_command_refuses_retired_human_review_pauses():
     assert parse_workflow_command("/prove Main.lean").human_review is False
-    assert parse_workflow_command("/prove Main.lean --human-review").human_review is True
-
-    with pytest.raises(ValueError, match="only for prove"):
-        parse_workflow_command("/formalize notes.tex --human-review")
+    for kind in ("prove", "autoprove", "formalize", "autoformalize"):
+        with pytest.raises(ValueError, match="pauses are no longer supported"):
+            parse_workflow_command(f"/{kind} source --human-review")
 
 
 def test_parse_research_workers_implies_research_and_validates():
@@ -224,7 +223,7 @@ def test_resolve_prover_agents_select_research_without_legacy_swarm(monkeypatch,
     assert swarm.child_env["LEANFLOW_PROVER_MODE"] == "research"
     assert swarm.child_env["LEANFLOW_PROVER_PARALLELISM"] == "3"
     assert swarm.active_skill == "lean-bounded-prover"
-    with pytest.raises(ValueError, match="DAG review is automatic"):
+    with pytest.raises(ValueError, match="pauses are no longer supported"):
         resolve_workflow_request("/autoprove Main.lean --human-review", active_cwd=tmp_path)
 
 
@@ -481,13 +480,14 @@ def test_inherited_research_identity_does_not_leak_into_non_prove_workflow(monke
         lambda project_root: builds.append(Path(project_root)),
     )
 
-    plan = resolve_workflow_request("/review Main.lean", active_cwd=tmp_path)
+    (tmp_path / "paper.tex").write_text(r"\begin{theorem}True.\end{theorem}")
+    plan = resolve_workflow_request("/formalize paper.tex", active_cwd=tmp_path, preview=True)
 
-    assert plan.workflow.workflow_kind == "review"
+    assert plan.workflow.workflow_kind == "formalize"
     assert plan.workflow.research_mode is False
     assert plan.child_env["LEANFLOW_RESEARCH_MODE"] == "0"
     assert plan.child_env["LEANFLOW_PLAN_STATE"] == "1"
-    assert builds == [Path(tmp_path)]
+    assert builds == []
 
 
 def test_explicit_research_workers_override_stale_inherited_capacity(monkeypatch, tmp_path):
@@ -749,14 +749,6 @@ def test_file_scoped_prover_accepts_explicit_research_parallelism(monkeypatch, t
         ('/autoformalize "theorem"', "formalize"),
         ('autoformalize "theorem"', "formalize"),
         ('formalize "theorem"', "formalize"),
-        ("/draft Main.lean", "draft"),
-        ("draft Main.lean", "draft"),
-        ("/review Main.lean", "review"),
-        ("review Main.lean", "review"),
-        ("/refactor Main.lean", "refactor"),
-        ("refactor Main.lean", "refactor"),
-        ("/golf Main.lean", "golf"),
-        ("golf Main.lean", "golf"),
     ],
 )
 def test_parse_workflow_command_maps_all_aliases_to_correct_kind(command, expected_kind):
@@ -773,10 +765,6 @@ def test_parse_workflow_command_maps_all_aliases_to_correct_kind(command, expect
         ("/autoprove", "/prove"),
         ("/formalize", "/formalize"),
         ("/autoformalize", "/formalize"),
-        ("/draft", "/draft"),
-        ("/review", "/review"),
-        ("/refactor", "/refactor"),
-        ("/golf", "/golf"),
     ],
 )
 def test_parse_workflow_command_sets_correct_backend_command(command, expected_backend):
@@ -794,10 +782,6 @@ def test_parse_workflow_command_sets_correct_backend_command(command, expected_b
         ("prove Main.lean", "/prove Main.lean"),
         ('autoformalize "x"', '/formalize "x"'),
         ('formalize "x"', '/formalize "x"'),
-        ("draft Main.lean", "/draft Main.lean"),
-        ("review Main.lean", "/review Main.lean"),
-        ("refactor Main.lean", "/refactor Main.lean"),
-        ("golf Main.lean", "/golf Main.lean"),
     ],
 )
 def test_rewrite_forgiving_workflow_command_maps_bare_aliases(raw, expected_start):
@@ -968,6 +952,11 @@ def test_prover_does_not_inject_stale_formalization_blueprint(monkeypatch, tmp_p
 
 
 def test_resolve_workflow_request_requires_document_for_formalize(monkeypatch, tmp_path):
+    # Isolate source selection after the manual project-tools prerequisite.
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.preparation_launch.inspect_project",
+        lambda root: {"root": str(root), "ready": True, "configured": True},
+    )
     monkeypatch.setattr(
         workflow_mod,
         "discover_leanflow_project",
@@ -1054,7 +1043,7 @@ def test_resolve_workflow_request_accepts_directory_for_autoformalize(
 
 
 def test_all_workflow_aliases_are_covered_by_alias_map():
-    forgiving_kinds = {"prove", "formalize", "draft", "review", "refactor", "golf"}
+    forgiving_kinds = {"prove", "formalize"}
     mapped_kinds = {v[0] for v in WORKFLOW_ALIAS_MAP.values()}
     assert forgiving_kinds == mapped_kinds
 
@@ -1072,4 +1061,11 @@ def test_all_workflow_aliases_are_covered_by_alias_map():
 )
 def test_retired_model_lanes_require_native_backend_selection(option):
     with pytest.raises(ValueError, match="was removed.*codex, claude, or lemex"):
-        parse_workflow_command(f"/review Main.lean {option} old-route")
+        parse_workflow_command(f"/prove Main.lean {option} old-route")
+
+
+@pytest.mark.parametrize("kind", ["draft", "review", "refactor", "golf"])
+@pytest.mark.parametrize("prefix", ["", "/"])
+def test_retired_top_level_workflows_are_rejected(kind, prefix):
+    with pytest.raises(ValueError, match="unsupported workflow command"):
+        parse_workflow_command(f"{prefix}{kind} Main.lean")

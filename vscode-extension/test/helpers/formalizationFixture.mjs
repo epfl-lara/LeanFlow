@@ -28,3 +28,28 @@ export function formalizationFixture() {
     revisions: [{ revision_id: "revision-1", status: "accepted" }, { revision_id: "revision-2", status: "rejected" }],
   };
 }
+
+/** Frozen previews expose files without adding mappings or accepting source uncertainty. */
+export function sourceDraftFixture() {
+  const snapshot = formalizationFixture();
+  snapshot.status = "source_draft_blocked";
+  snapshot.can_prove = false;
+  delete snapshot.handoff;
+  for (const item of snapshot.items) {
+    item.review_status = "unreviewed";
+    item.elaboration_status = "unchecked";
+    item.lean_refs = [];
+  }
+  const artifacts = [
+    { id: "draft-lean", path: "/frozen/blobs/draft.lean", kind: "lean", title: "Unaccepted definitions", sha256: "d".repeat(64) },
+    { id: "draft-report", path: "/frozen/blobs/report.txt", kind: "source", title: "Draft report", sha256: "e".repeat(64) },
+  ];
+  snapshot.artifacts.push(...artifacts);
+  snapshot.draft_preview = {
+    schema_version: 1, preview_id: "draft-preview-1", run_id: "run-1", base_revision_id: snapshot.revision_id,
+    source_bundle: "f".repeat(64), preparation_id: "preparation-1", source_diagnostics: ["loader-1"],
+    status: "unaccepted_source_uncertain", accepted: false, publication_authority: false, proof_authority: false,
+    artifacts, model_report_artifact_id: "draft-report",
+  };
+  return snapshot;
+}

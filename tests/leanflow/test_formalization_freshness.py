@@ -39,7 +39,7 @@ def _published(root: Path, zero_obligations: bool) -> dict:
     record["checks"] = registry
     record["project_source_hashes"]["src/Main.lean"] = digest(path.read_bytes())
     record["lean_files"]["src/Main.lean"] = digest(path.read_bytes())
-    directory = document_directory(root, "paper", published=True)
+    directory = document_directory(root, "paper")
     record = save_revision(directory, record)
     result = handoff.build_handoff(
         root,
@@ -65,6 +65,7 @@ def _published(root: Path, zero_obligations: bool) -> dict:
             ],
         },
     )
+    handoff_tests._publish_fixture_controls(root, "paper", record["revision_id"], staged=directory)
     return record
 
 
@@ -157,11 +158,18 @@ def test_zero_obligation_completion_requires_complete_coverage_without_certifica
     record = new_revision(published)
     record["checks"] = copy.deepcopy(published["checks"])
     record.update(workflow_protocol=2, proposal_phase="complete", slice_source_ids=["source-1"])
-    directory = document_directory(root, "paper", published=True)
+    directory = document_directory(root, "paper")
     record["source_files"] = {
         "src/Main.lean": put_blob(directory / "blobs", (root / "src/Main.lean").read_bytes())
     }
     record["inventory"].update(
+        files={
+            "src/Main.lean": {
+                "size": (root / "src/Main.lean").stat().st_size,
+                "sha256": record["source_files"]["src/Main.lean"],
+                "encoding": "utf-8",
+            }
+        },
         audit_complete=True,
         regions=[
             {
@@ -203,6 +211,7 @@ def test_zero_obligation_completion_requires_complete_coverage_without_certifica
         record,
         {"status": "published", "revision_id": record["revision_id"], "handoff": result},
     )
+    handoff_tests._publish_fixture_controls(root, "paper", record["revision_id"], staged=directory)
     assert not (directory / "proof-revisions").exists()
     snapshot = show_document(root, "paper")
     assert not snapshot["can_prove"]
@@ -225,4 +234,8 @@ def test_zero_obligation_completion_requires_complete_coverage_without_certifica
         with pytest.raises(ValueError, match="Complete source coverage"):
             current_proof_receipt(root, record, load_receipt(record))
         with pytest.raises(ValueError, match="Complete source coverage"):
-            handoff.validate_handoff(root, directory / "handoff.json", record["revision_id"])
+            handoff.validate_handoff(
+                root,
+                document_directory(root, "paper", published=True) / "handoff.json",
+                record["revision_id"],
+            )

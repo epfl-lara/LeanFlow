@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import shlex
 import signal
+import subprocess
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -14,6 +17,9 @@ from core.deadlines import deadline_after
 from leanflow_cli.config import load_config
 from leanflow_cli.formalization.evidence import contained
 from leanflow_cli.formalization.formalization_documents import _select_formalization_document
+from leanflow_cli.formalization.formalization_models import FormalizationDocumentError
+from leanflow_cli.formalization.intake import author_blocking_diagnostics, draft_source_rejection
+from leanflow_cli.formalization.inventory_authority import complete_inventory
 from leanflow_cli.formalization.preparation import (
     assert_preparation_current,
     load_preparation_receipt,
@@ -21,7 +27,16 @@ from leanflow_cli.formalization.preparation import (
 )
 from leanflow_cli.formalization.preparation_discovery import discover_preparation_plan
 from leanflow_cli.formalization.preparation_plan import default_preparation_plan
-from leanflow_cli.formalization.records import create_document
+from leanflow_cli.formalization.records import (
+    assert_author_selection,
+    create_document,
+    current_selection_token,
+)
+from leanflow_cli.formalization.source_draft import assert_unaccepted_draft
+from leanflow_cli.formalization.source_draft_recovery import (
+    assert_resume_draft_mode,
+    completed_draft_state,
+)
 from leanflow_cli.runtime.project_operations import project_activity
 from leanflow_cli.workflows.project import (
     LeanFlowProject,
@@ -29,6 +44,19 @@ from leanflow_cli.workflows.project import (
     discover_leanflow_project,
     find_lean_project_root,
 )
+from leanflow_cli.workflows.project_setup.process import safe_text
+from leanflow_cli.workflows.project_setup.state import inspect_project
+
+
+def _report_preparation_progress(event: dict[str, Any]) -> None:
+    """Show automatic setup phases on stderr without flooding terminals with protocol output."""
+    if event.get("type") == "output":
+        return
+    phase = safe_text(str(event.get("phase", "setup")))[:120]
+    message = safe_text(str(event.get("message", "")))[:2000]
+    print(f"[Formalization setup: {phase}] {message}", file=sys.stderr, flush=True)
+    if event.get("log_path"):
+        print(f"Log: {safe_text(str(event['log_path']))[:2000]}", file=sys.stderr, flush=True)
 
 
 def source_project_root(cwd: Path) -> Path:
@@ -36,30 +64,53 @@ def source_project_root(cwd: Path) -> Path:
     return find_lean_project_root(cwd) or cwd
 
 
-def preview_source_project(cwd: Path) -> LeanFlowProject:
-    """Represent a source-only preview without creating manifests, inventory, or dependencies."""
+def _require_project_baseline(root: Path) -> None:
+    """Require checked tools before planning, retaining stronger current preparation authority."""
     try:
-        return discover_leanflow_project(cwd)
-    except ProjectNotFoundError:
-        root = source_project_root(cwd)
-        state = root / ".leanflow"
-        return LeanFlowProject(
-            root=root,
-            leanflow_dir=state,
-            manifest_path=state / "project.yaml",
-            name=root.name,
-            kind="source_only",
-            schema_version=1,
-            lean_root=root,
-            runtime_dir=state / "runtime",
-            cache_dir=state / "cache",
-            workflows_dir=state / "workflows",
-            created_at="",
-            source_mode="source_only",
-            template_source="",
-            blueprint_markers=(),
-            manifest={},
-        )
+        setup = inspect_project(root)
+        if setup.get("ready") is True and setup.get("configured") is True:
+            return
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        pass
+    try:
+        assert_preparation_current(root)
+        return
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError):
+        command = shlex.join(["leanflow", "project", "setup", str(root), "--preset", "mathlib"])
+        raise FormalizationDocumentError(
+            "Set up project tools before formalization planning. "
+            "In the VS Code Formalization tab, click Set up project, or run "
+            f"`{command}`. Setup checks Lean, installed dependencies and the REPL; "
+            "formalization can then estimate and add missing dependencies in its checked transaction."
+        ) from None
+
+
+def preview_source_project(cwd: Path, *, historical: bool = False) -> LeanFlowProject:
+    """Represent a source-only preview without creating manifests, inventory, or dependencies."""
+    if not historical:
+        try:
+            return discover_leanflow_project(cwd)
+        except ProjectNotFoundError:
+            pass
+    root = source_project_root(cwd)
+    state = root / ".leanflow"
+    return LeanFlowProject(
+        root=root,
+        leanflow_dir=state,
+        manifest_path=state / "project.yaml",
+        name=root.name,
+        kind="source_only",
+        schema_version=1,
+        lean_root=root,
+        runtime_dir=state / "runtime",
+        cache_dir=state / "cache",
+        workflows_dir=state / "workflows",
+        created_at="",
+        source_mode="source_only",
+        template_source="",
+        blueprint_markers=(),
+        manifest={},
+    )
 
 
 def prepare_formalization_launch(
@@ -69,13 +120,38 @@ def prepare_formalization_launch(
     *,
     environment: dict[str, str] | None = None,
     user_goal: str = "",
+    source_draft_only: bool = False,
 ) -> dict[str, Any]:
     """Own one source preparation campaign and return its checked infrastructure and shared budget."""
     root = source_project_root(cwd)
+    env = dict(os.environ if environment is None else environment)
+    completed = completed_draft_state(
+        root, env, explicit=source_draft_only, backend=str(runtime["provider"])
+    )
+    if completed is not None:
+        return {"root": root, "completed_source_draft": completed}
+    _require_project_baseline(root)
     selected = _select_formalization_document(root, cwd, workflow_args)
     with project_activity(root):
         record = create_document(root, selected.source_path)
-    env = dict(os.environ if environment is None else environment)
+        assert_author_selection(
+            record,
+            env.get("LEANFLOW_NATIVE_RESUME_RUN_ID") or env.get("LEANFLOW_WORKFLOW_RUN_ID", ""),
+            current_selection_token(root, record["document_id"]),
+        )
+        inventory = complete_inventory(record)
+        effective_draft = (
+            draft_source_rejection(inventory, source_draft_only=source_draft_only) is not None
+        )
+        assert_resume_draft_mode(root, env, explicit=source_draft_only, effective=effective_draft)
+        if effective_draft:
+            assert_unaccepted_draft(record)
+        blockers = author_blocking_diagnostics(inventory, source_draft_only=source_draft_only)
+        if blockers:
+            raise FormalizationDocumentError(
+                "Source extraction needs repair before project preparation: "
+                + "; ".join(row["message"] for row in blockers)
+            )
     limits = load_config().get("limits", {})
     configured = {
         name: env.get("LEANFLOW_PROVER_" + name.upper(), limits.get(name))
@@ -133,6 +209,12 @@ def prepare_formalization_launch(
             "off",
         }
         if discovery_enabled:
+            _report_preparation_progress(
+                {
+                    "phase": "dependency_plan",
+                    "message": "Estimating mathematical dependencies with the selected native backend…",
+                }
+            )
             discovered = discover_preparation_plan(
                 root,
                 record,
@@ -161,10 +243,17 @@ def prepare_formalization_launch(
         remaining = budget.remaining()
         if cancelled.is_set() or (remaining is not None and remaining <= 0):
             raise ValueError("Formalization preparation campaign was cancelled or exhausted")
+        _report_preparation_progress(
+            {
+                "phase": "project_setup",
+                "message": "Preparing and checking pinned dependencies in a private project…",
+            }
+        )
         prepared = prepare_document_project(
             root,
             record,
             plan=plan,
+            progress=_report_preparation_progress,
             cancel=cancelled,
             timeout_s=min(1800.0, remaining) if remaining is not None else 1800.0,
             budget_path=budget_path,
@@ -176,6 +265,9 @@ def prepare_formalization_launch(
                 "Formalization project preparation failed: "
                 + str(prepared.get("error", prepared.get("status")))
             )
+        _report_preparation_progress(
+            {"phase": "ready", "message": "Project setup passed; continuing to formalization."}
+        )
         return {"root": root, "receipt": prepared["receipt"], "budget_path": budget_path}
     finally:
         budget.persist()

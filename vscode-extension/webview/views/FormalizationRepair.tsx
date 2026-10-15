@@ -26,6 +26,7 @@ export function FormalizationRepair({ snapshot, item, disabled, submit, pdfSelec
     }
   }, [pdfSelection, snapshot.source.kind, mode]);
   const artifacts = snapshot.artifacts.filter(artifact => {
+    if (snapshot.draft_preview?.artifacts.some(preview => preview.id === artifact.id)) return false;
     const pdf = artifact.kind === "pdf" || artifact.path.toLowerCase().endsWith(".pdf");
     return snapshot.source.kind === "pdf" ? pdf : !pdf && (["tex", "source"].includes(artifact.kind) || artifact.path.toLowerCase().endsWith(".tex"));
   });

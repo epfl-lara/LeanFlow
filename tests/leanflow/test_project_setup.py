@@ -21,7 +21,19 @@ def fake_tools(monkeypatch, tmp_path):
     calls = []
     failure = {"command": None, "protocol": None}
 
-    def run(command, *, cwd, log, cancel, progress, phase, input_text=None, stdout_only=False):
+    def run(
+        command,
+        *,
+        cwd,
+        log,
+        cancel,
+        progress,
+        phase,
+        input_text=None,
+        stdout_only=False,
+        stdout_limit_bytes=None,
+        execution_policy=None,
+    ):
         calls.append(command)
         if command == failure["command"]:
             return 1, "network unavailable"

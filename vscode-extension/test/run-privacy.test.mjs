@@ -110,6 +110,23 @@ test("scrubbing a restored tracked record is idempotent", () => {
   assert.deepEqual(trackedRunForPersistence(once), once);
 });
 
+test("formalization runtime persistence retains only credential-free identity fields", () => {
+  const identity = { provider: "lemex", model: "original-model", sourceDraftOnly: true, apiKey: "opaque-key", endpoint: "https://private.example" };
+  const safe = trackedRunForPersistence(tracked({ formalizationRuntime: identity }));
+  assert.deepEqual(safe.formalizationRuntime, { provider: "lemex", model: "original-model", sourceDraftOnly: true });
+  assert.equal(JSON.stringify(safe).includes("opaque-key"), false);
+  assert.equal(JSON.stringify(safe).includes("private.example"), false);
+  assert.equal(trackedRunForPersistence(tracked({ formalizationRuntime: { ...identity, model: "sk-proj-abcdefghijklmnopqrstuvwxyz012345" } })).formalizationRuntime, undefined);
+  assert.equal(trackedRunForPersistence(tracked({ formalizationRuntime: { ...identity, provider: "untrusted-backend" } })).formalizationRuntime, undefined);
+  assert.equal(trackedRunForPersistence(tracked({ formalizationRuntime: { ...identity, model: "" } })).formalizationRuntime.model, "");
+});
+
+test("native model identity rejects credentials, control characters and oversized input", () => {
+  for (const model of ["model\n--prompt", "model\rname", "model\u001bname", "x".repeat(257), "sk-proj-abcdefghijklmnopqrstuvwxyz012345[1m]"]) {
+    assert.equal(trackedRunForPersistence(tracked({ formalizationRuntime: { provider: "claude", model, sourceDraftOnly: false } })).formalizationRuntime, undefined);
+  }
+});
+
 test("legacy empty and flat override records upgrade without crashing activation", () => {
   const empty = tracked({ appliedOverrides: {} });
   assert.deepEqual(trackedRunForPersistence(empty).appliedOverrides, {

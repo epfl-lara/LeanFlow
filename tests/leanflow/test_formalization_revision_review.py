@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from agent.runtime.harness import HarnessResult
-from core.campaign_limits import CampaignLimits
+from agent.runtime.harness.models import NativeCleanupUnverified, NativeLaunchFailure
+from core.campaign_limits import CampaignLimits, LimitReached
 from leanflow_cli.formalization import proposal, review
 from leanflow_cli.formalization.evidence import digest, put_blob
 from leanflow_cli.formalization.proposal_schema import apply_proposal, bind_declarations
@@ -141,6 +142,7 @@ def test_exact_positive_and_negative_reviews_are_reused_without_reroll(
                 assignment["dossier_id"],
                 decision=decision,
             ),
+            cleanup_verified=True,
         )
 
     monkeypatch.setattr(review, "run_harness", invoke)
@@ -164,6 +166,164 @@ def test_exact_positive_and_negative_reviews_are_reused_without_reroll(
     changed["environment_id"] = "changed-transitive-import"
     review.review_revision(changed, **kwargs)
     assert len(calls) == 2 * count
+
+
+def test_unverified_native_completion_cannot_pass_or_cache_a_source_review(
+    source_record, tmp_path, monkeypatch
+):
+    calls = []
+
+    def invoke(request):
+        calls.append(request)
+        request.on_started()
+        assignment = json.loads(request.prompt[len(review._CONTRACT) + 1 :])
+        return HarnessResult(
+            "completed",
+            answer(assignment["dossier"], assignment["revision_id"], assignment["dossier_id"]),
+            cleanup_verified=False,
+        )
+
+    monkeypatch.setattr(review, "run_harness", invoke)
+    monkeypatch.setattr(review, "build_runtime_isolation", lambda *args, **kwargs: object())
+    result = review.review_revision(
+        source_record,
+        backend="claude",
+        model="fixture",
+        effort="max",
+        environment={"LEANFLOW_PROJECT_ROOT": str(tmp_path)},
+        directory=tmp_path / "review",
+        budget=CampaignLimits(tmp_path / "limits.json", {}),
+    )
+    assert len(calls) == 1 and not result["accepted"] and result["status"] == "cleanup_unverified"
+    assert not list((Path(source_record["_directory"]) / "review-cache").glob("*.json"))
+    assert list((tmp_path / "review").iterdir())
+
+
+@pytest.mark.parametrize("observed_usage", [False, True])
+def test_cleanup_exception_charges_exact_observed_review_usage_without_acceptance_or_cache(
+    source_record, tmp_path, monkeypatch, observed_usage
+):
+    calls = []
+    budget = CampaignLimits(tmp_path / "limits.json", {"agent_calls": 2, "tokens": 30})
+    original = source_files(tmp_path)
+
+    def invoke(request):
+        calls.append(request)
+        request.on_started()
+        assignment = json.loads(request.prompt[len(review._CONTRACT) + 1 :])
+        (request.cwd / "retained-review-input.txt").write_text(
+            "Retain while native cleanup is uncertain"
+        )
+        observed = (
+            HarnessResult(
+                "completed",
+                answer(assignment["dossier"], assignment["revision_id"], assignment["dossier_id"]),
+                session_id="observed-review",
+                usage={"input_tokens": 17, "output_tokens": 13},
+                usage_total={"input_tokens": 1017, "output_tokens": 2013},
+            )
+            if observed_usage
+            else None
+        )
+        raise NativeCleanupUnverified(
+            "Reviewer process closure could not be verified", result=observed
+        )
+
+    monkeypatch.setattr(review, "run_harness", invoke)
+    monkeypatch.setattr(review, "build_runtime_isolation", lambda *args, **kwargs: object())
+    result = review.review_revision(
+        source_record,
+        backend="claude",
+        model="fixture",
+        effort="max",
+        environment={"LEANFLOW_PROJECT_ROOT": str(tmp_path)},
+        directory=tmp_path / "review",
+        budget=budget,
+    )
+    assert len(calls) == 1 and not result["accepted"] and result["status"] == "cleanup_unverified"
+    assert result["reviews"] == [] and "could not be verified" in result["error"]
+    invocations = list(json.loads(budget.path.read_text())["invocations"].values())
+    assert invocations == [
+        {
+            "status": "finished",
+            "usage": {"input_tokens": 17, "output_tokens": 13} if observed_usage else None,
+        }
+    ]
+    with pytest.raises(
+        LimitReached, match="reported-token limit" if observed_usage else "usage is unavailable"
+    ):
+        budget.reserve()
+    assert (
+        calls[0].cwd / "retained-review-input.txt"
+    ).read_text() == "Retain while native cleanup is uncertain"
+    assert calls[0].mcp_config.is_file()
+    assert not list((Path(source_record["_directory"]) / "review-cache").glob("*.json"))
+    assert source_files(tmp_path) == original
+
+
+@pytest.mark.parametrize("launch_status", ["startup_error", "cancelled", "deadline_exceeded"])
+def test_verified_review_prelaunch_failure_is_uncharged_and_can_retry_with_fresh_inputs(
+    source_record, tmp_path, monkeypatch, launch_status
+):
+    calls = []
+    budget = CampaignLimits(tmp_path / "limits.json", {"agent_calls": 1, "tokens": 20})
+
+    def invoke(request):
+        calls.append(request)
+        assert request.session_id == "" and request.previous_usage is None
+        if len(calls) == 1:
+            raise NativeLaunchFailure(
+                "Reviewer author process did not launch", status=launch_status
+            )
+        request.on_started()
+        assignment = json.loads(request.prompt[len(review._CONTRACT) + 1 :])
+        return HarnessResult(
+            "completed",
+            answer(
+                assignment["dossier"],
+                assignment["revision_id"],
+                assignment["dossier_id"],
+                decision="BLOCK",
+            ),
+            session_id="new-review-session",
+            usage={"input_tokens": 3, "output_tokens": 2},
+            cleanup_verified=True,
+        )
+
+    monkeypatch.setattr(review, "run_harness", invoke)
+    monkeypatch.setattr(review, "build_runtime_isolation", lambda *args, **kwargs: object())
+    kwargs = dict(
+        backend="claude",
+        model="fixture",
+        effort="max",
+        environment={"LEANFLOW_PROJECT_ROOT": str(tmp_path)},
+        directory=tmp_path / "review",
+        budget=budget,
+    )
+    first = review.review_revision(source_record, **kwargs)
+    assert not first["accepted"] and first["status"] == launch_status and len(calls) == 1
+    assert list(budget.state["invocations"].values()) == [{"status": "not_started", "usage": None}]
+    assert not list((Path(source_record["_directory"]) / "review-cache").glob("*.json"))
+    first_inputs = {
+        path.relative_to(calls[0].cwd).as_posix(): path.read_bytes()
+        for path in calls[0].cwd.rglob("*")
+        if path.is_file()
+    }
+    second = review.review_revision(source_record, **kwargs)
+    assert not second["accepted"] and second["status"] == "completed" and len(calls) == 2
+    assert calls[0].cwd != calls[1].cwd
+    assert list(budget.state["invocations"].values()) == [
+        {"status": "not_started", "usage": None},
+        {"status": "finished", "usage": {"input_tokens": 3, "output_tokens": 2}},
+    ]
+    third = review.review_revision(source_record, **kwargs)
+    assert not third["accepted"] and all(row["cache_reused"] for row in third["reviews"])
+    assert len(calls) == 2
+    assert {
+        path.relative_to(calls[0].cwd).as_posix(): path.read_bytes()
+        for path in calls[0].cwd.rglob("*")
+        if path.is_file()
+    } == first_inputs
 
 
 def test_frozen_reviewer_reads_complete_paginated_text_and_cannot_execute(source_record, tmp_path):
@@ -418,7 +578,7 @@ def _review_transport(source_record, tmp_path, monkeypatch, *, decision="PASS", 
         )
         if malformed and len(calls) == 1:
             result = "not a review response"
-        return HarnessResult(status="completed", final_response=result)
+        return HarnessResult(status="completed", final_response=result, cleanup_verified=True)
 
     monkeypatch.setattr(review, "run_harness", invoke)
     monkeypatch.setattr(review, "EvidenceBridge", evidence_bridge)

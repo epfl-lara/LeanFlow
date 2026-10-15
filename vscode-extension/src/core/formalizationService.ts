@@ -8,18 +8,51 @@ import {
 import { parseFormalizationConflicts, type FormalizationConflictsSnapshot } from "./formalizationConflicts";
 import type { FormalizationPreparationPlan, FormalizationPreparationPreset } from "./formalizationPreparation";
 import { parseFormalizationPreparationRecovery, type FormalizationPreparationRecoverySnapshot } from "./formalizationPreparationRecovery";
+import { randomUUID } from "node:crypto";
+import { sameFormalizationScope, type FormalizationWorkspaceScope } from "./formalizationScope";
 
 type Transport = (args: string[], options: { cwd: string; timeoutMs?: number }) => Promise<string>;
 const INSPECTION_TIMEOUT_MS = 60_000;
 const INSPECTION_COMMANDS = new Set(["list", "show", "plan", "preparation-conflicts", "conflicts", "artifact", "conflict-artifact"]);
 
 export class FormalizationService {
-  private sourceRoot = "";
+  private readonly workspaceId = randomUUID();
+  private generation = 0;
+  private observedRoot = "";
+  private readonly previews = new Map<string, FormalizationWorkspaceScope>();
   constructor(private readonly projectRoot: () => string, private readonly transport: Transport) {}
 
-  /** Bind a host-validated source workspace before a Lean project exists. */
-  bindSourceRoot(root: string): void { this.sourceRoot = root; }
-  workspaceRoot(): string { return this.projectRoot() || this.sourceRoot; }
+  invalidateWorkspace(): void { this.previews.clear(); this.generation += 1; }
+
+  /** Preserve only a verified frozen preview's host-recorded originating workspace. */
+  registerPreview(uri: string, scope: FormalizationWorkspaceScope): void { this.assertWorkspace(scope); this.previews.set(uri, scope); }
+  previewRoot(uri: string | undefined): string {
+    const scope = uri && this.previews.get(uri);
+    return scope && scope.id === this.workspaceId && scope.generation === this.generation ? scope.root : "";
+  }
+  workspaceRoot(): string { return this.projectRoot(); }
+
+  /** Issue identity from host state; webview roots never select a filesystem target. */
+  workspaceScope(): FormalizationWorkspaceScope {
+    const root = this.workspaceRoot();
+    if (root !== this.observedRoot) { this.observedRoot = root; this.generation += 1; }
+    return { id: this.workspaceId, generation: this.generation, root };
+  }
+
+  assertWorkspace(scope: FormalizationWorkspaceScope): void {
+    if (!sameFormalizationScope(scope, this.workspaceScope())) throw new Error("The formalization workspace changed. Refresh before continuing.");
+  }
+
+  /** Freeze all calls and continuations of one operation to its original host workspace. */
+  forWorkspace(scope: FormalizationWorkspaceScope, root = scope.root): FormalizationService {
+    this.assertWorkspace(scope);
+    return new FormalizationService(() => { this.assertWorkspace(scope); return root; }, async (args, options) => {
+      this.assertWorkspace(scope);
+      const result = await this.transport(args, { ...options, cwd: root });
+      this.assertWorkspace(scope);
+      return result;
+    });
+  }
 
   private async call(args: string[]): Promise<unknown> {
     const cwd = this.workspaceRoot();

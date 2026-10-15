@@ -400,12 +400,16 @@ def test_process_inspection_failure_still_stops_native_group(monkeypatch: pytest
             process.wait()
 
 
-def test_missing_executable_is_explicit(tmp_path: Path):
+@pytest.mark.parametrize("session_id", ["", "preserved-native-resume"])
+def test_missing_executable_is_explicit(tmp_path: Path, session_id: str):
     result = run_harness(
-        HarnessRequest("lemex", "hello", tmp_path, executable="/no/such/native/backend")
+        HarnessRequest(
+            "lemex", "hello", tmp_path, executable="/no/such/native/backend", session_id=session_id
+        )
     )
     assert result.status == "startup_error"
-    assert result.returncode is None
+    assert result.returncode is None and result.cleanup_verified is True
+    assert result.session_id == session_id
 
 
 def test_resume_usage_requires_baseline():

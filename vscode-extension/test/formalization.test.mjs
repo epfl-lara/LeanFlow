@@ -10,8 +10,42 @@ import { FormalizationService } from "../dist/test/formalizationService.mjs";
 import { readFormalizationArtifact } from "../dist/test/formalizationArtifact.mjs";
 import { parseWebviewMessage } from "../dist/test/messageSchema.mjs";
 import { buildWorkflowArgs } from "../dist/test/launch.mjs";
-import { formalizationFixture } from "./helpers/formalizationFixture.mjs";
+import { formalizationFixture, sourceDraftFixture } from "./helpers/formalizationFixture.mjs";
 import { formalizationConflictFixture } from "./helpers/formalizationConflictFixture.mjs";
+
+test("source drafts reject proof or publication authority and unbound artifact bytes", () => {
+  const snapshot = sourceDraftFixture();
+  const parsed = parseFormalizationSnapshot(snapshot);
+  assert.equal(parsed.can_prove, false);
+  assert.ok(parsed.items.every(item => item.lean_refs.length === 0));
+  for (const flag of ["accepted", "publication_authority", "proof_authority"]) {
+    const changed = structuredClone(snapshot);
+    changed.draft_preview[flag] = true;
+    assert.throws(() => parseFormalizationSnapshot(changed), /invalid unaccepted draft/);
+  }
+  assert.throws(() => parseFormalizationSnapshot({ ...snapshot, can_prove: true }), /invalid unaccepted draft/);
+  for (const changed of [{ base_revision_id: "other-revision" }, { model_report_artifact_id: "other-artifact" }]) {
+    assert.throws(() => parseFormalizationSnapshot({ ...snapshot, draft_preview: { ...snapshot.draft_preview, ...changed } }), /invalid unaccepted draft/);
+  }
+  assert.equal(parseFormalizationSnapshot({ ...snapshot, draft_preview: { ...snapshot.draft_preview, preparation_id: "" } }).can_prove, false);
+  for (const changed of [{ id: "other-artifact" }, { sha256: "0".repeat(64) }]) {
+    const bad = structuredClone(snapshot);
+    bad.draft_preview.artifacts = bad.draft_preview.artifacts.map(artifact => ({ ...artifact }));
+    Object.assign(bad.draft_preview.artifacts[0], changed);
+    assert.throws(() => parseFormalizationSnapshot(bad), /invalid unaccepted draft/);
+  }
+});
+
+test("source draft intent is an explicit boolean formalize option before the trailing prompt", () => {
+  const request = { kind: "formalize", target: "paper/main.tex", provider: "", model: "", agents: 1,
+    noParallel: false, research: false, researchWorkers: null, cleanRoom: false, humanReview: false,
+    sourceDraftOnly: true, axioms: "", additionalSkills: [], profile: "", prompt: "Preserve source", overrides: {} };
+  assert.deepEqual(buildWorkflowArgs(request), ["formalize", "paper/main.tex", "--source-draft-only", "--prompt", "Preserve source"]);
+  assert.equal(parseWebviewMessage({ type: "launch", request }).message.request.sourceDraftOnly, true);
+  for (const value of ["true", 1, null]) assert.equal(parseWebviewMessage({ type: "launch", request: { ...request, sourceDraftOnly: value } }).ok, false);
+  assert.equal(parseWebviewMessage({ type: "launch", request: { ...request, kind: "prove" } }).ok, false);
+  assert.throws(() => buildWorkflowArgs({ ...request, kind: "prove" }), /requires formalize/);
+});
 
 test("coverage never equates an excluded claim, checked shell, or conditional construction with a reviewed proof", () => {
   const snapshot = parseFormalizationSnapshot(formalizationFixture());
@@ -115,12 +149,11 @@ test("conflict service retains unavailable history and rejects fabricated recons
 test("source workspace planning and infrastructure resolution stay bound to controller identities", async () => {
   const calls = [];
   const transaction = { transaction_id: "prep-1", observation_id: "obs-1", history_id: "history-1", destinations: { ".lake": "a".repeat(64) }, retained_slots: { "retained/lake": "b".repeat(64) }, state: "CONFLICTED", active: true, conflicts: ["Changed infrastructure"], resolutions: [] };
-  const service = new FormalizationService(() => "", async (args, options) => {
+  const service = new FormalizationService(() => "/source folder", async (args, options) => {
     calls.push({ args, options });
     if (args[1] === "plan") return JSON.stringify({ schema_version: 1, plan: { preset: "lean", required_imports: ["Init"] }, semantic_approval: false });
     return JSON.stringify({ schema_version: 1, transactions: [transaction] });
   });
-  service.bindSourceRoot("/source folder");
   assert.equal((await service.preparationPlan("paper-1", "revision-1", "lean")).preset, "lean");
   assert.deepEqual(calls[0], { args: ["formalization", "plan", "paper-1", "--expected-revision", "revision-1", "--preset", "lean", "--json"], options: { cwd: "/source folder", timeoutMs: 60_000 } });
   const args = await service.preparationResolutionArgs("prep-1", "obs-1", "Checked retained dependency directories locally");
@@ -190,6 +223,18 @@ test("command reconciliation requires verified meaning and evidence without acce
     assert.equal(parseFormalizationSnapshot(snapshot).diagnostics[1].resolution, resolution);
   }
   snapshot.diagnostics[1].resolution = "silently_ignore";
+  assert.throws(() => parseFormalizationSnapshot(snapshot), /invalid extraction diagnostics/);
+});
+
+test("conditional interpretation accepts checked evidence only and cannot select a branch", () => {
+  const action = { type: "resolve_conditional", diagnostic_id: "diagnostic-1", interpretation: "Retain both alternatives for review", reason: "Checked original TeX and PDF", verified: true };
+  const repair = candidate => parseWebviewMessage({ type: "formalizationAction", documentId: "paper-1", revisionId: "revision-1", action: candidate });
+  assert.deepEqual(repair({ ...action, selected_branch: "then", excluded_regions: ["region"], reviewed: true }).message.action, action);
+  for (const change of [{ verified: false }, { verified: "true" }, { reason: "" }, { interpretation: " " }]) assert.equal(repair({ ...action, ...change }).ok, false);
+  const snapshot = formalizationFixture();
+  snapshot.diagnostics.push({ id: "diagnostic-1", code: "unresolved_conditional", message: "Unknown conditional", blocking: true, can_resolve_command: false, can_resolve_conditional: true, source_refs: [] });
+  assert.equal(parseFormalizationSnapshot(snapshot).diagnostics[1].can_resolve_conditional, true);
+  snapshot.diagnostics[1].can_resolve_conditional = "true";
   assert.throws(() => parseFormalizationSnapshot(snapshot), /invalid extraction diagnostics/);
 });
 

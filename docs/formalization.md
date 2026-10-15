@@ -6,21 +6,32 @@ are separate results. A green build alone does not establish a faithful translat
 
 For supported boundaries and release evidence, see [formalization readiness and review scope](formalization-readiness.md).
 
-Start in a source folder or an existing Lean project:
+Start in a source folder or an existing Lean project. Check the project baseline
+before launching translation:
 
 ```bash
 leanflow formalization inspect docs/paper.tex --json
 leanflow formalization inspect docs/paper.tex --companion-pdf docs/paper.pdf --json
+leanflow project setup --preset mathlib
 leanflow workflow formalize docs/paper.tex
 leanflow formalization list --json
 leanflow formalization show <document-id> --json
 ```
 
-Before translation, LeanFlow estimates representations and dependencies in a
-read-only native session, prepares pinned infrastructure privately, and checks a
-representative slice with a fresh reviewer. An existing project keeps its package
-pins and mathematical files. The prover receives a checked setup and reviewed
-statements after complete translation acceptance.
+In VS Code, **Set up project** is the first step in the Formalization tab. It
+checks Lean, the installed dependencies and the REPL without launching a model.
+An existing core-only project can remain core-only; use `--preset lean` for a new
+minimal baseline. Existing source files, toolchains and package pins are preserved.
+
+Translation requires a current setup checkpoint or stronger current formalization
+preparation before any planning call or campaign budget is created. The native
+planner then estimates representations, existing declarations and missing
+dependencies. The controller privately prepares any approved expansion and checks
+a representative slice with a fresh reviewer. This expansion uses the same setup
+service as `leanflow project setup` and its `project init` alias. The terminal
+reports setup phases and log paths; verbose dependency output remains in those logs.
+The prover receives checked infrastructure and reviewed statements after complete
+translation acceptance. Baseline setup alone grants no source or proof approval.
 
 For deterministic inspection and explicit setup without launching a model:
 
@@ -29,8 +40,8 @@ leanflow formalization plan <document-id> --expected-revision <revision-id> --js
 leanflow formalization prepare <document-id> --expected-revision <revision-id> --json
 ```
 
-Automatic native launch starts with Lean core and selects the shipped Mathlib version
-when discovery requires it. Explicit `plan` and `prepare` commands default to Mathlib;
+New baseline projects use Mathlib by default. A later native plan can recommend
+adding compatible Mathlib to an existing minimal project. Explicit `plan` and `prepare` commands default to Mathlib;
 `--preset lean` prepares a core-only project. `--plan-json` accepts explicit pinned packages and imports;
 `--offline` forbids acquisition. A model recommendation cannot authorize a new
 package source. Setup runs privately and selects infrastructure only after checking
@@ -40,8 +51,19 @@ recovery or explicit reconciliation before another launch.
 Preparation publishes only changed infrastructure entries and preserves existing
 dependency Git settings. Exact checked infrastructure can be reused for a new source
 revision when its layout, pins and requested imports match the checked receipt.
+Root dependency pins take precedence over deeper package manifests. New transitive
+pins follow Lake's reverse root-requirement order and breadth-first priority; later
+build outputs cannot replace those independently checked selections.
 Private stages and unused incoming entries are removed only after controller-owned
 process cleanup is verified; uncertain ownership retains the files for recovery.
+New Lake file-hash caches outside the build directory are independently verified
+against unchanged inputs using the pinned Lake API after process quiescence.
+Only those exact verified additions are retained as prepared infrastructure and
+published with their input, pin and cache identities. The original dependency
+source inventory remains unchanged; validation admits its exact bytes plus the
+explicit verified caches. Keeping these caches allows later read-only Lake builds
+to reuse them. Tracked files, preexisting caches and unrelated additions remain
+protected, and complete environment fingerprints include the retained caches.
 Retained transaction history has its own identity audit, while current environment
 acceptance still checks complete dependency bytes.
 
@@ -109,12 +131,111 @@ coverage, publication and prover handoff are not approved. No source material is
 silently excluded and the original TeX is unchanged. Missing included TeX files,
 uncertain macros, parse failures and PDF extraction errors still stop before author launch.
 
+For TeX execution uncertainty with an explicitly paired original PDF, request an
+unaccepted preview explicitly:
+
+```bash
+leanflow formalization inspect docs/paper.tex --companion-pdf docs/paper.pdf --json
+leanflow workflow formalize docs/paper.tex --source-draft-only
+```
+
+This mode admits only structured source diagnostics with frozen byte spans and
+known uncertainty codes. Missing included TeX files, unreadable PDFs and unsupported
+project or dependency setup remain hard blockers. It prepares and checks dependencies,
+runs one author turn, and retains bounded files from the assigned module tree plus
+the author report as frozen preview artifacts. Original source files, candidate
+scopes and blockers remain unchanged. The snapshot labels the preview unaccepted;
+it adds no translation mappings, review receipt, publication or proof authority.
+Even a complete author proposal cannot pass the gate in this mode. Resuming a
+completed draft campaign exposes its retained result without another author call.
+In VS Code, choose **Configure unaccepted source draft** after pairing and setup,
+review its settings, and start the run separately. Inspect the resulting preview
+files beside their source links.
+
+The selected candidate belongs to its author campaign until an explicit revision
+selection or source repair changes that ownership. A new campaign cannot silently
+adopt another campaign's candidate, including by naming it as a new base revision.
+Resume the original run or explicitly select the intended source revision first.
+Published and accepted staged revisions cannot be converted into source drafts.
+
+Published acceptance requires a matching committed publication transaction for
+that document's current pointer, handoff, revision and receipt. Case-only control
+renames cannot turn retained authority into an ordinary project or authenticate
+through a case-insensitive alias. An ordinary Lean library with a similar name
+remains usable; a colliding publication destination leaves acceptance staged and
+reports the collision before writing controls.
+
+Draft retention uses a short local deadline after verified closure of the native
+leader, its process group, observed descendants and bridge. A campaign budget or
+storage stop still attempts this local save; an explicit user cancellation before
+the save defers it until resume. A saved preview remains labelled as saved if
+cancellation arrives afterward. A durably observed successful author turn is never
+rerun on resume. If a crash leaves process
+closure unknown, retain the private files and resolve that ownership before recovery.
+Process-table sampling cannot certify a descendant that escaped and was reparented
+before it was observed; the closure verdict covers the owned group and recorded identities.
+Transient process-table errors are retried; five consecutive failed samples stop
+the invocation, while final cleanup verification remains strict.
+An invocation records possible live ownership before harness preflight and MCP
+discovery. `NativeLaunchFailure` supplies explicit verified no-launch evidence
+after its owned helpers have closed. Normal formalization clears possible live
+ownership after verified native cleanup, bridge operation drainage and checker
+closure, before independent Lean checks, source reviews and publication. Draft
+capture still requires full bridge closure. `NativeCleanupUnverified` preserves
+known observed usage without granting cleanup or acceptance authority; missing
+usage remains unknown. Resume refuses to start another writer in the same private
+project while ownership is uncertain;
+the retained history and inputs remain available for inspection.
+Failed checker shutdown preserves its registry entry and private files for a
+verified retry, including when an output pipe remains open after the tracked
+processes exit. Local stream closure never substitutes for physical EOF. A closing
+bridge refuses new operations; only successful cleanup
+clears the corresponding ownership warning.
+Each run loads its own immutable preview even if another run is currently selected;
+recovery binds it to the frozen source blobs rather than the author's editable
+source copy. This binding does not certify what the author actually read. Current
+source attachment is checked and reported separately. A corrupt optional preview
+produces a diagnostic without blocking original source inspection. Oversized author
+reports retain a marked summary with the original size and hash rather than dropping
+the Lean draft files.
+
 ## Inventory and source navigation
 
 The provenance scanner records original UTF-8 byte spans, labels, complete statements
 and proofs, include occurrences and macro context. Regions include prose outside
 recognized theorem environments. Counts of detected statements are useful for
 navigation; they are never the denominator for claiming complete source coverage.
+
+Scanner policy v9 additionally recognizes bounded decimal `\ifnum` comparisons
+using literal parameter-free `\def` constants. It tracks local groups and direct
+redefinitions, retains inactive branches at their original byte offsets, and keeps
+numeric operands requiring recursive, parameterized, effectful or otherwise
+unsupported expansion unresolved.
+Required-argument rendering helpers receive only a bounded effect check of literal
+brace arguments; they never become numeric constants. Optional/delimited arguments,
+hidden scope changes and external reads refuse numeric selection. Assignments in
+math and redefinitions of scanner controls require explicit reconciliation.
+It does not execute TeX or package code. Standard rendering commands and frozen
+`\DeclareMathOperator` bodies provide lexical context, never coverage or translation
+approval.
+Every class or package loader revokes numeric and structural selection authority,
+including standard distribution packages. Included files inherit unknown executable
+meanings, and the caller retains that uncertainty after an include. The scanner
+preserves all later candidates and reports blocking diagnostics instead of assuming
+that conditional, environment or document-end commands retain their meanings.
+Inactive branches are skipped token by token using only known conditional primitives;
+an arbitrary command beginning with `if` does not create nesting. Generated environment
+end hooks and theorem-number meanings invalidate earlier literal definitions. Comment
+sensitive helpers and paragraph breaks in operands remain unsupported. A known
+`\endinput` finishes the current physical line before excluding subsequent lines.
+Any raw `^^` notation is refused before lexical masking because TeX preprocesses it
+before tokenization; the scanner never partially decodes it. Percent text remains
+visible after tokenizer authority is lost. `\includeonly` can exclude an occurrence
+only from one direct, literal, unscoped directive whose execution is known before
+that include. Unknown meanings, conditional or macro-generated directives, multiple
+assignments and intervening unknown execution retain every literal include candidate.
+These are conservative extraction rules, not verification of TeX execution or rendered
+correspondence; independent source review still owns fidelity.
 
 The deterministic scanner is the initial default. The optional plasTeX comparison
 adapter is a measurement and compatibility seam, not an installed runtime requirement
@@ -128,7 +249,12 @@ Lean mapping. Each action names the visible revision and fails if it changed. Ex
 a revision also revokes a running author’s authority to replace that selection.
 An unknown command can be repaired by inspecting all its frozen occurrences and
 recording a verified interpretation. This reopens affected coverage for review; it
-does not waive missing files or approve a translation. The host resolves artifact IDs and verifies content before opening it; webviews do not
+does not waive missing files or approve a translation. Unknown conditional predicates
+also support a checked user interpretation with exact source occurrences and a reason.
+This action retains both branches, every original byte region and candidate scope;
+it selects no branch and grants no coverage, translation or proof approval. Loader
+effects and inherited meanings keep separate blockers. Verification checkboxes reset
+when the selected revision changes. The host resolves artifact IDs and verifies content before opening it; webviews do not
 choose arbitrary host paths. PDF.js is packaged locally and needs no LaTeX extension.
 PDF links identify physical pages and distinguish approximate from exact locations.
 If coordinate extraction fails but complete page text is available, intake reports
@@ -239,6 +365,25 @@ is unavailable, publication recovery can acknowledge its exact observed loss
 while keeping current workspace files. This permits fresh work and revokes the
 affected acceptance; missing versions and write plans are never reconstructed.
 
+Dependency acquisition preserves existing immutable pins and the reverse priority
+of direct Lake requirements. Supported dependency roots use clean, committed,
+complete flattened manifests; newly inherited descendants must be named in those
+root locks. Incomplete or stale inherited manifests block setup with a repair reason.
+An explicit root override owns its independently checked pin and descendant closure.
+An existing requirement without a manifest must supply its original exact Git URL,
+full 40-character commit and conventional root checkout. Symbolic references require
+a restored immutable manifest or an explicit full pin before preparation.
+
+Publication control files must be regular files of at most 8 MiB. Reads reject
+nonregular files without waiting on them. Automatic authority-loss recovery supports
+at most 16,384 owned entries, 262,144 directory probes and 32 MiB total control bytes. Unrelated
+native runs do not consume the owned-entry budget. Above a limit, recovery remains
+unsupported and no truncated acknowledgment can grant authority. Retain the complete
+history and restore a complete consistent registry backup, or retain a full project
+archive and begin fresh source acceptance in a new project. Do not delete retained
+history to make the gate pass. Healthy registry checks scale with the known index;
+these recovery bounds do not cap ordinary project size.
+
 The transaction records its exact write set before mutation, refuses overwriting a
 concurrent save and retains displaced files for recovery, including writes through
 already-open editor handles. Pending transactions and conflicts block cooperating
@@ -262,6 +407,11 @@ independently checked preservation certificate that inherits the original source
 review. Changed statements, definitions, imports or environmental inputs require a
 new review. The original acceptance record is never edited to manufacture proof
 completion.
+
+Acceptance includes the checker implementation fingerprint. Upgrading to changed
+checker code requires rechecking the translation before proving or resuming a
+formalization-backed prover run. Historical receipts and source review remain
+available; an upgrade does not silently transfer their authority to new code.
 
 Before checking exact theorem types, the controller privately compiles the required
 local imports from their checked static Lake membership. This also supports custom
@@ -294,10 +444,13 @@ retires that job and allocates a fresh workspace while preserving the old files 
 accounted provider usage. Other view-layout and pinned dependency errors can still
 require restoring the recorded environment before resuming.
 
-Document and publication lock acquisition blocks until the current holder releases
-ownership. When a workflow's signal handler records cancellation, Stop can remain
-pending during that wait; waiters have no separate cancellation deadline. Long
-holders use their operation deadlines and cancellation checks.
+Document and publication lock callers that supply a cancellation check or deadline
+poll ownership nonblockingly, checking before and after acquisition. A stopped or
+expired waiter can exit while an unrelated holder continues working. Legacy callers
+without these options still block until ownership is available; some startup and
+recovery paths use that behavior. Long holders use their own operation deadlines
+and cancellation checks. This does not guarantee immediate Stop at every startup
+boundary.
 
 ## Supported input boundary
 
@@ -393,3 +546,28 @@ then confirm the exact observed versions with a reason. Resolution archives ever
 version and revokes old acceptance. Infrastructure has its own
 `preparation-conflicts`, `recover-preparation` and `resolve-preparation` operations;
 normal launches remain blocked until every pending conflict is resolved.
+
+### Workspace and publication authority
+
+Editor operations carry a host-issued workspace identity and generation. The host
+freezes the owning root across pickers, paged reads, preparation, recovery and prover
+launch; a workspace switch stops further continuations and suppresses stale replies.
+Request identities also prevent older replies from replacing a newer selection.
+Document and revision identities alone do not identify a workspace.
+
+A missing publication registry with surviving journals, publication pointers or
+proof evidence is authority loss, not a new project. Inspect the explicit recovery
+observation and acknowledge the loss while preserving current files and available
+history. The recovery index grants no selected acceptance. A fresh independently
+accepted publication is required before proving, including for a portable project
+imported into another workspace. Restoring old source bytes cannot restore approval.
+
+Preparation independently rechecks the authorized pins, requirements, configuration,
+layout and clean checkout inputs after effectful work and at commitment. Hashing a
+build's resulting environment does not authorize changes made by that build.
+
+Ordinary prover installation and rollback retain the actual displaced source inode
+in a durable bounded transaction. Unexpected editor versions and late writes through
+open descriptors remain preserved; a conflict prevents successful integration or
+restart from silently overwriting them. Retained inodes require explicit ownership
+and reconciliation and are not ordinary disposable caches.

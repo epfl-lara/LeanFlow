@@ -27,3 +27,19 @@ test("selecting history keeps the project's live owner available in the menu", (
   assert.equal(selectedRunChoice(choices,"past").status,"stopped");
   assert.equal(choices.filter(row=>row.active).length,1);
 });
+
+
+test("a resumed campaign selects its live newest editor attempt regardless of input order", () => {
+  const old = tracked("formalize-vscode-run-a", { id: "old-attempt", status: "stopped", startedAt: "2026-10-01T00:00:00Z", finishedAt: "2026-10-01T00:01:00Z" });
+  const resumed = tracked(old.runId, { id: "new-attempt", startedAt: "2026-10-02T00:00:00Z" });
+  for (const runs of [[resumed, old], [old, resumed]]) {
+    const choices = runChoices(runs, [history(old.runId, { terminal: true, exit_code: 130 })], null);
+    assert.equal(choices.length, 1);
+    assert.equal(choices[0].active, true);
+    assert.equal(choices[0].id, "new-attempt");
+    assert.equal(selectedRunChoice(choices, "new-attempt").runId, old.runId);
+    assert.equal(selectedRunChoice(choices, old.runId).id, "new-attempt");
+  }
+  resumed.status = "finished";
+  for (const runs of [[resumed, old], [old, resumed]]) assert.equal(runChoices(runs, [], null)[0].id, "new-attempt");
+});

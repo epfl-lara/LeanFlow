@@ -52,7 +52,11 @@ def _launch(root: Path, monkeypatch: pytest.MonkeyPatch, kind: str, calls: list[
 
         monkeypatch.setattr(harness_workflow, "_run_controller", controller)
         return harness_workflow.run_workflow(
-            {"LEANFLOW_PROJECT_ROOT": str(root), "LEANFLOW_WORKFLOW_RUN_ID": "restart"}
+            {
+                "LEANFLOW_PROJECT_ROOT": str(root),
+                "LEANFLOW_WORKFLOW_RUN_ID": "restart",
+                "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
+            }
         )
 
     def run(instance):

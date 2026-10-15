@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
+from agent.runtime.harness.models import NativeCleanupUnverified, NativeLaunchFailure
 from agent.runtime.harness.network_policy import restricted_research
 from agent.runtime.harness.observation_stream import NativeObservationStream
 from core.utils import atomic_json_write
@@ -94,6 +95,10 @@ def run_session(
     previous: dict[str, Any] = (
         json.loads(ledger_path.read_text()) if ledger_path.exists() else {"used": 0}
     )
+    if previous.get("native_cleanup_unverified"):
+        raise ValueError(
+            "Prior native process closure is unverified; retain this job's private inputs and start a separate campaign"
+        )
     backend = str(config.get("provider") or os.getenv("LEANFLOW_NATIVE_PROVIDER") or "codex")
     policy_changed = previous.get("research_policy") != research_policy
     registry = config.get("_bridge_registry")
@@ -168,14 +173,40 @@ def run_session(
                 previous["session_id"] = session_id
                 atomic_json_write(ledger_path, previous)
 
+    remaining = config.get("wall_time_s")
+    deadline = None if remaining is None else time.monotonic() + max(0.0, float(remaining))
+    cancelled = config.get("_cancelled")
+    cancelled = cancelled if callable(cancelled) else None
     fresh_snapshot = not snapshot.exists() and not snapshot.is_symlink()
-    if context.get("formalization_proof_scope"):
-        excluded_build_dir = context.get("formalization_build_dir")
-        if not isinstance(excluded_build_dir, str) or not excluded_build_dir:
-            raise ValueError("Authenticated proof imports have no evaluated build directory")
-        prepare_snapshot(project_root, snapshot, excluded_build_dir=excluded_build_dir)
-    else:
-        prepare_snapshot(project_root, snapshot)
+    from leanflow_cli.formalization.publication import PublicationCancelled
+
+    try:
+        if context.get("formalization_proof_scope"):
+            excluded_build_dir = context.get("formalization_build_dir")
+            if not isinstance(excluded_build_dir, str) or not excluded_build_dir:
+                raise ValueError("Authenticated proof imports have no evaluated build directory")
+            prepare_snapshot(
+                project_root,
+                snapshot,
+                excluded_build_dir=excluded_build_dir,
+                cancelled=cancelled,
+                deadline=deadline,
+            )
+        else:
+            prepare_snapshot(project_root, snapshot, cancelled=cancelled, deadline=deadline)
+    except PublicationCancelled as snapshot_error:
+        timed_out = deadline is not None and time.monotonic() >= deadline
+        outcome = {
+            "status": "timeout" if timed_out else "interrupted",
+            "error_code": "snapshot_timeout" if timed_out else "snapshot_cancelled",
+            "error": str(snapshot_error),
+            "final_response": str(snapshot_error),
+            "api_calls": previous_calls,
+            "agent_calls": previous_calls,
+            "usage_known": False,
+        }
+        emit("job-session-end", outcome)
+        return outcome
     scratch = snapshot / ".leanflow-job"
     scratch.mkdir(exist_ok=True)
     for name in ("Scratch.lean", "PLAN_job.md", "candidate.txt"):
@@ -192,10 +223,6 @@ def run_session(
         with event_lock:
             return {"messages": inbox.poll(), "retained_guidance": inbox.contract()}
 
-    remaining = config.get("wall_time_s")
-    deadline = None if remaining is None else time.monotonic() + max(0.0, float(remaining))
-    cancelled = config.get("_cancelled")
-    cancelled = cancelled if callable(cancelled) else None
     toolset = SessionTools(
         role=role,
         project_root=snapshot,
@@ -316,53 +343,81 @@ def run_session(
                 previous.pop("usage_total", None)
             previous["database_home"] = database_home
             atomic_json_write(ledger_path, previous)
-        result = run_harness(
-            HarnessRequest(
-                backend=backend,
-                prompt=_CONTRACT
-                + "\n"
-                + (_RESTRICTED_CONTRACT if restricted else "")
-                + skill_guidance(project_root, role)
-                + "\n"
-                + _map_paths(prompt, project_root, workspace, snapshot)
-                + "\nASSIGNMENT\n"
-                + json.dumps(assignment, ensure_ascii=False),
-                cwd=snapshot,
-                model=str(config.get("model") or ""),
-                effort=str(config.get("reasoning_effort") or ""),
-                session_id="" if restricted else str(previous.get("session_id") or ""),
-                deadline=deadline,
-                cancelled=cancelled,
-                mcp_config=mcp_path,
-                log_path=runtime_dir / "harness.jsonl",
-                previous_usage=None if restricted else previous.get("usage_total"),
-                isolation=policy,
-                restricted_tools=restricted,
-                on_admitting=admitting,
-                on_started=admitted,
-                executable=executable,
-            ),
-            on_event=native_event,
-        )
+        try:
+            previous["native_cleanup_unverified"] = True
+            atomic_json_write(ledger_path, previous)
+            result = run_harness(
+                HarnessRequest(
+                    backend=backend,
+                    prompt=_CONTRACT
+                    + "\n"
+                    + (_RESTRICTED_CONTRACT if restricted else "")
+                    + skill_guidance(project_root, role)
+                    + "\n"
+                    + _map_paths(prompt, project_root, workspace, snapshot)
+                    + "\nASSIGNMENT\n"
+                    + json.dumps(assignment, ensure_ascii=False),
+                    cwd=snapshot,
+                    model=str(config.get("model") or ""),
+                    effort=str(config.get("reasoning_effort") or ""),
+                    session_id="" if restricted else str(previous.get("session_id") or ""),
+                    deadline=deadline,
+                    cancelled=cancelled,
+                    mcp_config=mcp_path,
+                    log_path=runtime_dir / "harness.jsonl",
+                    previous_usage=None if restricted else previous.get("usage_total"),
+                    isolation=policy,
+                    restricted_tools=restricted,
+                    on_admitting=admitting,
+                    on_started=admitted,
+                    executable=executable,
+                ),
+                on_event=native_event,
+            )
+        except NativeLaunchFailure as error:
+            result = error.result
+        except NativeCleanupUnverified as error:
+            observed = error.result
+            previous.update(
+                native_cleanup_unverified=True,
+                used=previous_calls + int(started),
+                usage=observed.usage if observed is not None else None,
+                usage_total=(
+                    observed.usage_total
+                    if observed is not None and observed.usage_total is not None
+                    else previous.get("usage_total")
+                ),
+                error=str(error),
+            )
+            atomic_json_write(ledger_path, previous)
+            raise
         for kind, details in observations.flush():
             emit(kind, details)
         bridge.drain()
-        response = bridge.submitted_response or result.final_response
+        response = (
+            bridge.submitted_response or result.final_response
+            if result.cleanup_verified is True
+            else ""
+        )
         # Only scratch outputs used by the independent controller cross the boundary.
         for name in ("Scratch.lean", "PLAN_job.md", "candidate.txt"):
             source = scratch / name
-            if source.is_file() and not source.is_symlink():
+            if result.cleanup_verified is True and source.is_file() and not source.is_symlink():
                 shutil.copy2(source, workspace / name)
     usage = result.usage or {}
     calls = previous_calls + int(started)
     output = {
-        "status": {
-            "cancelled": "interrupted",
-            "deadline_exceeded": "timeout",
-            "failed": "provider_error",
-            "startup_error": "provider_error",
-            "malformed_output": "provider_error",
-        }.get(result.status, result.status),
+        "status": (
+            {
+                "cancelled": "interrupted",
+                "deadline_exceeded": "timeout",
+                "failed": "provider_error",
+                "startup_error": "provider_error",
+                "malformed_output": "provider_error",
+            }.get(result.status, result.status)
+            if result.cleanup_verified is True or result.status != "completed"
+            else "provider_error"
+        ),
         "final_response": response,
         "api_calls": calls,
         "agent_calls": calls,
@@ -371,8 +426,14 @@ def run_session(
         "usage_known": result.usage is not None,
         "input_tokens": usage.get("input_tokens"),
         "output_tokens": usage.get("output_tokens"),
-        "error": result.error,
-        "artifacts": sorted(bridge.toolset.artifacts),
+        "error": result.error
+        or (
+            "Native process closure is unverified; retain private inputs and dependency leases"
+            if result.cleanup_verified is not True
+            else ""
+        ),
+        "cleanup_verified": result.cleanup_verified,
+        "artifacts": sorted(bridge.toolset.artifacts) if result.cleanup_verified is True else [],
     }
     atomic_json_write(
         ledger_path,
@@ -391,12 +452,21 @@ def run_session(
             "usage": usage,
             "unit": "agent_invocations",
             "model_settings": list(result.model_settings),
+            "native_cleanup_unverified": result.cleanup_verified is not True,
         },
     )
     emit("job-session-end", output)
-    try:
-        release_snapshot_dependencies(snapshot)
-    except (OSError, ValueError) as exc:
-        # Cache cleanup must not turn a durably recorded proof response into a lost result.
-        emit("job-cache-cleanup-error", {"error": str(exc)})
+    if result.cleanup_verified is True:
+        try:
+            release_snapshot_dependencies(snapshot)
+        except (OSError, ValueError) as exc:
+            # Cache cleanup must not turn a durably recorded proof response into a lost result.
+            emit("job-cache-cleanup-error", {"error": str(exc)})
+    else:
+        emit(
+            "job-cache-cleanup-error",
+            {
+                "error": "Native process closure is unverified; retain private dependency views and pins"
+            },
+        )
     return output

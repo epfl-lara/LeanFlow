@@ -14,6 +14,7 @@ const bundle = await build({
     builder.onLoad({filter:/.*/,namespace:"fixture"},()=>({contents:`
       const f=()=>globalThis.discoveryFixture;
       export const env={get remoteName(){return f().remoteName;}};
+      export const Uri={file:fsPath=>({fsPath,scheme:"file",authority:""})};
       export class RelativePattern{constructor(base,pattern){this.base=base;this.pattern=pattern;}}
       export const workspace={
         getConfiguration:()=>({get:(_,fallback)=>fallback}),
@@ -64,4 +65,22 @@ test("Remote SSH host-local file URIs discover the existing project",async()=>{
     f.active=f.uri(path.join(project,"Main.lean"));
     assert.equal(discoverProject().root,project);
   }finally{await f.dispose();}
+});
+
+
+test("a host-owned source-only preview stays in B when A is the only Lean project", async () => {
+  const f = await fixture();
+  try {
+    const a = await f.project("Lean-A");
+    const b = path.join(f.root, "Sources-B"); await mkdir(b);
+    f.folders.push({ uri: f.uri(b), name: "B" });
+    f.active = f.uri(path.join(b, "paper.tex"));
+    assert.equal((await discoverProjectIncludingNested()).found, false);
+    f.active = { scheme: "untitled", authority: "", fsPath: "preview" };
+    assert.equal(discoverProject().root, a);
+    assert.equal((await discoverProjectIncludingNested("", b)).found, false);
+    await mkdir(path.join(b, ".leanflow"));
+    await writeFile(path.join(b, ".leanflow/project.yaml"), "name: B\n");
+    assert.equal((await discoverProjectIncludingNested("", b)).root, b);
+  } finally { await f.dispose(); }
 });

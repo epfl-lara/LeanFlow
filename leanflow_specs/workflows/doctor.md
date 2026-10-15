@@ -1,6 +1,6 @@
 ---
 id: doctor
-kind: workflow
+kind: helper
 title: Doctor
 summary: Native Lean environment diagnostic covering project validity, MCP/LSP tools, search providers, worker availability, legacy migrations, and cleanup hints.
 skills: [lean-diagnostics]

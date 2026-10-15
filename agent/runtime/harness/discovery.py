@@ -7,8 +7,8 @@ import subprocess
 import time
 from collections.abc import Mapping, Sequence
 
-from .models import BackendError, HarnessRequest
-from .processes import cleanup_group
+from .models import BackendError, HarnessRequest, NativeCleanupUnverified
+from .processes import ProcessSampler, ProcessTree, cleanup_group
 
 
 def discover_mcp_servers(
@@ -28,14 +28,19 @@ def discover_mcp_servers(
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
+    tree = ProcessTree(process.pid)
+    sampler = ProcessSampler(tree)
+    outputs_closed = False
     try:
         while True:
+            sampler.sample()
             if (request.cancelled is not None and request.cancelled()) or (
                 request.deadline is not None and time.monotonic() >= request.deadline
             ):
                 raise BackendError("Native configuration discovery was cancelled by the campaign.")
             try:
                 stdout, _ = process.communicate(timeout=0.1)
+                outputs_closed = True
                 break
             except subprocess.TimeoutExpired:
                 continue
@@ -70,8 +75,19 @@ def discover_mcp_servers(
                 "Native MCP configuration discovery returned an unsupported response."
             ) from exc
     finally:
-        cleanup_group(process)
-        if process.stdout is not None:
-            process.stdout.close()
-        if process.stderr is not None:
-            process.stderr.close()
+        try:
+            cleanup_group(process, tree)
+            if not outputs_closed:
+                try:
+                    process.communicate(timeout=2)
+                    outputs_closed = True
+                except subprocess.TimeoutExpired as error:
+                    raise NativeCleanupUnverified(
+                        "Native configuration descendants did not close output channels; "
+                        "retain invocation inputs"
+                    ) from error
+        finally:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()

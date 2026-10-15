@@ -1,3 +1,5 @@
+"""Keep shipped workflow, helper, worker and phase specifications consistent."""
+
 from __future__ import annotations
 
 import pytest
@@ -10,17 +12,9 @@ from leanflow_cli.lean.lean_workflow_specs import (
     validate_lean_specs,
 )
 
-SHIPPED_WORKFLOW_SPECS = {
-    "prove",
-    "formalize",
-    "draft",
-    "review",
-    "refactor",
-    "golf",
-    "doctor",
-}
+SHIPPED_WORKFLOW_SPECS = {"prove", "formalize"}
 
-SHIPPED_HELPER_SPECS = {"search"}
+SHIPPED_HELPER_SPECS = {"search", "doctor"}
 
 SHIPPED_PHASE_SPECS = {
     "phase-search",
@@ -210,30 +204,6 @@ def test_phase_review_vocabulary_matches_orchestrator_routes():
         assert retired not in actions
 
 
-def test_deferring_specs_deliver_their_fragments():
-    """A spec that defers to a fragment must carry it into the prompt: the
-    prover/search/draft/review skill prompts embed the fragments their
-    specs point at (finding: pointing at an invisible contract is worse
-    than inlining it)."""
-    from leanflow_cli.runtime.skill_core import build_skill_prompt
-
-    for spec_id, phase_id in (
-        ("prove", "phase-search"),
-        ("prove", "phase-draft"),
-        ("search", "phase-search"),
-        ("draft", "phase-draft"),
-        ("review", "phase-review"),
-    ):
-        record = get_lean_spec(spec_id)
-        assert record is not None and phase_id in record.phases, (spec_id, phase_id)
-
-    prompt = build_skill_prompt("lean-proof-loop")
-    assert "[PHASE SPEC: phase-search]" in prompt
-    assert "[PHASE SPEC: phase-draft]" in prompt
-    # Deduped: prove and formalize share the skill; fragments appear once.
-    assert prompt.count("[PHASE SPEC: phase-search]") == 1
-
-
 def test_phases_field_validates_against_known_fragments(tmp_path, monkeypatch):
     import leanflow_cli.lean.lean_workflow_specs as specs_mod
 
@@ -296,3 +266,37 @@ def test_duplicate_spec_ids_are_refused_loudly(tmp_path, monkeypatch):
             specs_mod.load_lean_specs()
     finally:
         specs_mod.load_lean_specs.cache_clear()
+
+
+def test_only_prove_and_formalize_are_workflow_specs():
+    assert {record.spec_id for record in list_specs("workflow")} == {"prove", "formalize"}
+    for retired in ("draft", "review", "refactor", "golf"):
+        assert get_lean_spec(retired) is None
+
+
+def test_prover_phase_fragments_remain_available_to_actual_consumers():
+    from leanflow_cli.lean.lean_workflow_specs import phase_fragment_text
+
+    prove = get_lean_spec("prove")
+    assert prove is not None
+    for phase_id in prove.phases:
+        assert phase_fragment_text(phase_id).startswith(f"[PHASE SPEC: {phase_id}]")
+    assert "phase-review" in {item.spec_id for item in list_specs("phase")}
+
+
+def test_source_formalization_contract_keeps_translation_and_review_stages():
+    formalize = get_lean_spec("formalize")
+    assert formalize is not None
+    assert "lean-theorem-queue-worker" not in formalize.skills
+    summary = formalize.to_summary_dict()
+    assert summary["route_actions"] == [
+        "prepare",
+        "representative-slice",
+        "complete-translation",
+        "publish",
+        "prover-handoff",
+    ]
+    assert summary["review_actions"] == ["item-review", "coherence-review", "correct-translation"]
+    assert (
+        "published" in summary["stop_conditions"] and "verified" not in summary["stop_conditions"]
+    )

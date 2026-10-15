@@ -4,7 +4,7 @@ import { after, test } from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
 import ts from "typescript";
 import { mount, textOf, act, SidebarView, FormalizationConflictsFixture, FormalizationPreparationFixture, clickedButtons, normalizeProverSnapshot } from "./helpers/webviewFixture.mjs";
-import { formalizationFixture } from "./helpers/formalizationFixture.mjs";
+import { formalizationFixture, sourceDraftFixture } from "./helpers/formalizationFixture.mjs";
 import { formalizationConflictFixture } from "./helpers/formalizationConflictFixture.mjs";
 
 function message(ui, type) { return ui.messages.filter(row => row.type === type).at(-1); }
@@ -12,6 +12,168 @@ function message(ui, type) { return ui.messages.filter(row => row.type === type)
 function hostMessage(value) {
   act(() => { const event = new Event("message"); event.data = value; window.dispatchEvent(event); });
 }
+
+for (const status of ["published", "accepted_staged"]) {
+  test(`accepted ${status} revision cannot configure an unaccepted draft`, () => {
+    const ui = mount("formalization");
+    try {
+      const snapshot = sourceDraftFixture();
+      snapshot.draft_preview = null;
+      snapshot.status = status;
+      snapshot.can_prove = status === "published";
+      hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+      assert.equal(ui.button("Configure unaccepted source draft").props.disabled, true);
+      assert.match(textOf(ui.root()), /Select or create a source revision first/);
+      assert.equal(ui.view.form.sourceDraftOnly, false);
+      ui.click("Configure formalization");
+      ui.setForm({ kind: "formalize", sourceDraftOnly: true });
+      const option = ui.root().findAllByType("label").find(node => textOf(node).startsWith("Unaccepted source draft")).findByType("input");
+      assert.equal(option.props.checked, false);
+      assert.equal(option.props.disabled, true);
+      ui.click("Start formalization");
+      assert.equal(message(ui, "launchFormalization").request.sourceDraftOnly, false);
+    } finally { ui.dispose(); }
+  });
+}
+
+test("unaccepted preview opens exact frozen artifacts and keeps proving disabled", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = sourceDraftFixture();
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.match(textOf(ui.root()), /no coverage, translation, publication or proof approval/);
+    assert.deepEqual(ui.input("Repair source artifact").findAllByType("option").map(option => option.props.value), ["source-tex"]);
+    ui.click("Unaccepted definitions");
+    assert.deepEqual(message(ui, "openFormalizationArtifact"), { type: "openFormalizationArtifact", documentId: "paper-1", revisionId: "revision-1", artifactId: "draft-lean", itemId: undefined, pageIndex: undefined, line: undefined });
+    ui.click("Draft report");
+    assert.equal(message(ui, "openFormalizationArtifact").artifactId, "draft-report");
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+    ui.click("Configure unaccepted source draft");
+    assert.equal(ui.view.tab, "formalization");
+    assert.equal(ui.view.form.sourceDraftOnly, true);
+    const option = () => ui.root().findAllByType("label").find(node => textOf(node).startsWith("Unaccepted source draft")).findByType("input");
+    assert.equal(option().props.checked, true);
+    ui.click("Prove");
+    assert.equal(ui.view.form.sourceDraftOnly, false);
+    act(() => ui.setView({ tab: "formalization" }));
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    ui.click("Configure formalization");
+    assert.equal(ui.view.form.sourceDraftOnly, false);
+    assert.equal(option().props.checked, false);
+  } finally { ui.dispose(); }
+});
+
+test("Formalization launches its frozen source and resumes only the matching stopped tracked run", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = sourceDraftFixture();
+    const runId = "formalize-vscode-run-1234";
+    ui.update(f => {
+      f.app.formalizationWorkspace = { id: "workspace-1", generation: 1, root: "/fixture" };
+      const stopped = { ...f.app.runs[0], id: "stopped-1", runId, projectRoot: "/fixture", status: "stopped",
+        request: { ...f.view.form, kind: "formalize", target: snapshot.source.path, sourceDraftOnly: true },
+        formalizationSource: { documentId: snapshot.document_id, path: snapshot.source.path } };
+      f.app.runs = [stopped, { ...stopped, id: "wrong-root", projectRoot: "/another" }, { ...stopped, id: "active", status: "running" },
+        { ...stopped, id: "wrong-document", formalizationSource: { ...stopped.formalizationSource, documentId: "another-paper" } },
+        { ...stopped, id: "wrong-target", request: { ...stopped.request, target: "another.tex" } }];
+    });
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    ui.click("Configure unaccepted source draft");
+    assert.equal(ui.input("Frozen source target").props.readOnly, true);
+    assert.equal(ui.button("Create unaccepted source draft").props.disabled, true);
+    assert.equal(ui.button(`Resume ${runId}`).props.disabled, true);
+    ui.update(f => { f.app.runs = f.app.runs.filter(run => run.id !== "active"); });
+    ui.click("Create unaccepted source draft");
+    const launch = message(ui, "launchFormalization");
+    assert.equal(launch.documentId, snapshot.document_id);
+    assert.equal(launch.revisionId, snapshot.revision_id);
+    assert.equal(launch.request.kind, "formalize");
+    assert.equal(launch.request.target, snapshot.source.path);
+    assert.equal(launch.request.sourceDraftOnly, true);
+    assert.equal(ui.buttons().filter(button => textOf(button).startsWith("Resume formalize-vscode-")).length, 1);
+    ui.click(`Resume ${runId}`);
+    const resume = message(ui, "resumeFormalization");
+    assert.equal(resume.trackedRunId, "stopped-1");
+    assert.equal(resume.documentId, snapshot.document_id);
+    assert.equal(resume.revisionId, snapshot.revision_id);
+    assert.equal(resume.request.sourceDraftOnly, true);
+    ui.click("Prove");
+    assert.equal(ui.view.form.sourceDraftOnly, false);
+    assert.equal(ui.view.form.target, "");
+    assert.equal(message(ui, "launch"), undefined);
+  } finally { ui.dispose(); }
+});
+
+test("the Prove tab requires an explicit selection after restoring a retired workflow", () => {
+  const ui = mount("launch", { view: { tab: "launch", form: { kind: "golf", target: "Old.lean", provider: "lemex", model: "fixture-model", prompt: "Old intent" } } });
+  try {
+    assert.match(textOf(ui.root()), /saved golf workflow is no longer available/);
+    assert.equal(ui.button("Start proving").props.disabled, true);
+    assert.equal(ui.view.form.target, "");
+    ui.click("Prove");
+    assert.equal(ui.view.workflowSelectionRequired, false);
+    assert.equal(ui.button("Start proving").props.disabled, false);
+    ui.click("Start proving");
+    assert.equal(message(ui, "launch").request.kind, "prove");
+    assert.equal(message(ui, "launch").request.target, "");
+    assert.equal(message(ui, "launch").request.prompt, "");
+  } finally { ui.dispose(); }
+});
+
+test("a retired sidebar intent cannot quick-launch before explicit workflow configuration", () => {
+  const ui = mount("launch", { view: { tab: "launch", form: { kind: "review", target: "Old.lean", prompt: "Review only" } } }, SidebarView);
+  try {
+    assert.equal(ui.button("Prove").props.disabled, true);
+    ui.click("Configure Prove");
+    assert.deepEqual(message(ui, "openDashboard"), { type: "openDashboard", workflow: "prove" });
+    assert.equal(message(ui, "launch"), undefined);
+    assert.equal(ui.view.form.target, "");
+    assert.equal(ui.view.form.prompt, "");
+  } finally { ui.dispose(); }
+});
+
+test("sidebar quick proving uses its saved Prove configuration while Formalization is active", () => {
+  const ui = mount("formalization", {}, SidebarView);
+  try {
+    ui.setForm({ kind: "prove", target: "Proofs/Goal.lean", provider: "claude", model: "claude-model", cleanRoom: true });
+    ui.setForm({ kind: "formalize", target: "paper/main.tex", provider: "codex", model: "codex-model", sourceDraftOnly: true });
+    ui.click("Prove");
+    const request = message(ui, "launch").request;
+    assert.equal(request.kind, "prove");
+    assert.equal(request.target, "Proofs/Goal.lean");
+    assert.equal(request.provider, "claude");
+    assert.equal(request.model, "claude-model");
+    assert.equal(request.cleanRoom, true);
+    assert.equal(request.sourceDraftOnly, false);
+    assert.equal(ui.view.form.kind, "formalize");
+    assert.equal(ui.view.form.target, "paper/main.tex");
+    assert.equal(ui.view.form.sourceDraftOnly, true);
+  } finally { ui.dispose(); }
+});
+
+test("conditional interpretation retains a closed handoff and resets verification on revision change", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = formalizationFixture();
+    snapshot.can_prove = false;
+    snapshot.diagnostics = [{ id: "conditional-1", code: "unresolved_conditional", message: "Unknown conditional", blocking: true, can_resolve_command: false, can_resolve_conditional: true, source_refs: [{ artifact_id: "source-tex", file: "paper/main.tex", line_start: 1, line_end: 2 }] }];
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.equal(ui.button("Record conditional interpretation").props.disabled, true);
+    ui.change(ui.input("Conditional interpretation for conditional-1"), "Both alternatives remain for independent review");
+    ui.change(ui.input("Conditional evidence for conditional-1"), "Compared original TeX and PDF");
+    ui.change(ui.input("Verified all occurrences for conditional-1"), true);
+    ui.click("Record conditional interpretation");
+    const sent = message(ui, "formalizationAction");
+    assert.equal(sent.revisionId, "revision-1");
+    assert.equal(sent.action.type, "resolve_conditional");
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+    const changed = { ...snapshot, revision_id: "revision-new" };
+    hostMessage({ type: "formalizationState", documentId: changed.document_id, snapshot: changed, error: "" });
+    assert.equal(ui.input("Verified all occurrences for conditional-1").props.checked, false);
+    assert.equal(ui.button("Record conditional interpretation").props.disabled, true);
+    assert.match(textOf(ui.root()), /does not select or exclude a branch/);
+  } finally { ui.dispose(); }
+});
 
 test("formalization inventory exposes distinct evidence and revision-bound repair and prove controls", () => {
   const ui = mount("formalization");
@@ -50,8 +212,8 @@ test("formalization inventory exposes distinct evidence and revision-bound repai
     assert.equal(message(ui, "formalizationAction").action.classification, "supporting_context");
     ui.click("Start proving accepted statements");
     assert.equal(message(ui, "proveFormalization").revisionId, "revision-1");
-    ui.click("Configure or resume formalization");
-    assert.equal(ui.view.tab, "launch"); assert.equal(ui.view.form.target, snapshot.source.path);
+    ui.click("Configure formalization");
+    assert.equal(ui.view.tab, "formalization"); assert.equal(ui.view.form.target, snapshot.source.path);
     act(() => ui.setView({ tab: "formalization" }));
     hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
     hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot: null, error: "Revision changed" });
@@ -119,6 +281,41 @@ test("companion PDF links stay approximate and cannot replace canonical TeX boun
     ui.click("Open problem");
     assert.match(textOf(ui.root()), /No page match is available/);
     assert.match(textOf(ui.root()), /displayed page is not a claimed match/);
+  } finally { ui.dispose(); globalThis.fetch = previousFetch; globalThis.Worker = previousWorker; }
+});
+
+test("PDF pane resize rerenders canvas and text at one fitted scale without changing source selection", async () => {
+  const ui = mount("formalization");
+  const previousFetch = globalThis.fetch;
+  const previousWorker = globalThis.Worker;
+  try {
+    window.__LEANFLOW_PDF__ = { worker: "vscode-resource:worker", fonts: "vscode-resource:fonts/", cmaps: "vscode-resource:cmaps/", iccs: "vscode-resource:iccs/" };
+    globalThis.fetch = async () => ({ ok: true, text: async () => "// Local fixture worker" });
+    globalThis.Worker = class { terminate() {} };
+    const snapshot = formalizationFixture(); snapshot.source.kind = "pdf";
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    await act(async () => {
+      hostMessage({ type: "formalizationPdf", pdf: { documentId: "paper-1", revisionId: "revision-1", artifactId: "source-pdf", pageIndex: 0, base64: "JVBERg==" } });
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    assert.equal(ui.pdfRenderedViewports.at(-1).width, 800);
+    await act(async () => {
+      ui.pdfNodes.scroll.clientWidth = 280;
+      for (const observer of ui.resizeObservers) if (!observer.disconnected && observer.targets.includes(ui.pdfNodes.scroll)) observer.callback([]);
+      await new Promise(resolve => setTimeout(resolve, 10));
+    });
+    const rendered = ui.pdfRenderedViewports.at(-1);
+    assert.equal(rendered.width, 280);
+    assert.equal(rendered.height, 420);
+    assert.equal(ui.pdfTextViewports.at(-1), rendered);
+    assert.equal(ui.pdfNodes.canvas.style.width, "280px");
+    assert.equal(ui.pdfNodes.canvas.style.height, "420px");
+    assert.equal(ui.pdfNodes.page.style.width, "280px");
+    window.getSelection = () => ({ toString: () => "Define doubling" });
+    act(() => ui.root().findByProps({ className: "formalization-pdf-page" }).props.onMouseUp());
+    assert.equal(ui.input("Physical PDF page").props.value, 1);
+    assert.equal(ui.input("Source passage").props.value, "Define doubling");
+    assert.match(textOf(ui.root()), /Selected passage candidates/);
   } finally { ui.dispose(); globalThis.fetch = previousFetch; globalThis.Worker = previousWorker; }
 });
 
@@ -264,7 +461,7 @@ test("source-only preparation plans dependencies then starts and cancels an owne
   } finally { ui.dispose(); }
 });
 
-test("initializing a source-only workspace retains its prepared document and enables translation", () => {
+test("a source-only workspace can inspect before baseline setup and retains its document when preparation finishes", () => {
   const ui = mount("formalization");
   try {
     ui.update(f => { f.app.project = { found: false, root: "", label: "Source folder" }; });
@@ -272,13 +469,17 @@ test("initializing a source-only workspace retains its prepared document and ena
     ui.click("Choose TeX or PDF");
     const snapshot = formalizationFixture(); snapshot.preparation.current = false;
     hostMessage({ type: "formalizationState", documentId: "paper-1", snapshot, error: "" });
-    assert.equal(ui.button("Configure or resume formalization").props.disabled, true);
+    assert.equal(ui.button("Configure formalization").props.disabled, false);
+    ui.click("Configure formalization");
+    assert.match(textOf(ui.root()), /Complete Project setup above before starting native dependency planning/);
+    assert.equal(ui.button("Start formalization").props.disabled, true);
     const prepared = structuredClone(snapshot); prepared.preparation.current = true;
     hostMessage({ type: "formalizationState", documentId: "paper-1", snapshot: prepared, error: "" });
+    assert.equal(ui.button("Start formalization").props.disabled, false);
     ui.update(f => { f.app.project = { found: true, root: "/prepared/source", label: "Prepared source" }; });
     assert.match(textOf(ui.root()), /1\/2 included items reviewed/);
     assert.equal(ui.input("Formalization document").props.value, "paper-1");
-    assert.equal(ui.button("Configure or resume formalization").props.disabled, false);
+    assert.equal(ui.button("Configure formalization").props.disabled, false);
   } finally { ui.dispose(); }
 });
 
@@ -417,7 +618,7 @@ test("a private versus published revision conflict permits explicit selection be
     assert.match(textOf(ui.root()), /Local working revision revision-1 · published revision revision-2/);
     ui.change(ui.input("New source item title"), "A missed claim");
     assert.equal(ui.button("Submit repair for revision-1").props.disabled, true);
-    assert.equal(ui.button("Configure or resume formalization").props.disabled, true);
+    assert.equal(ui.button("Configure formalization").props.disabled, true);
     assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
     assert.equal(ui.input("Select formalization revision").props.disabled, false);
     ui.change(ui.input("Select formalization revision"), "revision-2");
@@ -436,7 +637,7 @@ test("terminal check and reviewer errors expose the repair reason without making
     hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
     assert.match(textOf(ui.root()), /Review could not finish/);
     assert.match(textOf(ui.root()), /Reviewer authentication unavailable/);
-    assert.equal(ui.button("Configure or resume formalization").props.disabled, false);
+    assert.equal(ui.button("Configure formalization").props.disabled, false);
     ui.change(ui.input("New source item title"), "Corrected source interpretation");
     assert.equal(ui.button("Submit repair for revision-1").props.disabled, false);
     snapshot.status = "check_rejected";
@@ -454,7 +655,7 @@ test("terminal check and reviewer errors expose the repair reason without making
     assert.match(textOf(ui.root()), /Lean checking process timed out/);
     assert.match(textOf(ui.root()), /configure or resume formalization to retry/);
     assert.doesNotMatch(textOf(ui.root()), /Lean draft needs correction/);
-    assert.equal(ui.button("Configure or resume formalization").props.disabled, false);
+    assert.equal(ui.button("Configure formalization").props.disabled, false);
     assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
   } finally { ui.dispose(); }
 });
@@ -513,9 +714,9 @@ test("launch names the inherited provider and keeps setup outside the control la
 test("all dashboard tabs, refresh and dismiss controls respond", () => {
   const ui = mount();
   try {
-    for (const label of ["Providers", "Live", "Logs", "Knobs", "Sweeps", "Launch"]) {
+    for (const label of ["Providers", "Live", "Logs", "Knobs", "Sweeps", "Formalization", "Prove"]) {
       ui.click(new RegExp(`^${label}\\d*$`));
-      assert.equal(ui.view.tab, label.toLowerCase());
+      assert.equal(ui.view.tab, label === "Prove" ? "launch" : label.toLowerCase());
     }
     ui.click("Refresh");
     assert.ok(message(ui, "refresh"));
@@ -534,10 +735,10 @@ test("launch preview, browse and start send the current form; invalid launches s
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 380)); });
     assert.equal(message(ui, "preview").request.provider, "lemex");
     ui.click("Hide plan");
-    ui.click("Start run");
+    ui.click("Start proving");
     assert.equal(message(ui, "launch").request.model, "fixture-model");
     ui.update(f => { f.app.project.found = false; });
-    assert.equal(ui.button("Start run").props.disabled, true);
+    assert.equal(ui.button("Start proving").props.disabled, true);
     ui.update(f => { f.app.cli = { ok: false, error: "Missing CLI" }; });
     for (const [label, type] of [["Open install guide", "openExternalDoc"], ["Configure CLI path", "openCliSettings"], ["Check again", "refresh"]]) {
       ui.click(label); assert.ok(message(ui, type));
@@ -597,7 +798,7 @@ test("launch override removal and compatible profile copy preserve allowed setti
       f.view.form.profile = "custom";
       f.view.form.overrides = { LEANFLOW_INTERNAL_TEST: "1" };
     });
-    assert.equal(ui.button("Start run").props.disabled, true);
+    assert.equal(ui.button("Start proving").props.disabled, true);
     ui.click("Drop refused one-off overrides"); assert.deepEqual(ui.view.form.overrides, {});
     ui.click(/^Save a VS Code copy/);
     assert.deepEqual(message(ui, "saveProfile").profile.overrides, { LEANFLOW_PROVER_PARALLELISM: "2" });
@@ -729,6 +930,42 @@ test("live graph, job artifacts, file diffs and guidance controls act on the sel
   } finally { ui.dispose(); }
 });
 
+test("empty active formalization logs point to terminal without inventing a preparation phase", () => {
+  const ui = mount("logs");
+  try {
+    ui.update(f => {
+      f.app.runs[0].request.kind = "formalize";
+      f.events = { ...f.events, "run-1": [], "another-run": [{ type: "agent-output", event_id: "other", run_id: "another-run" }] };
+    });
+    const hint = /Project preparation and dependency planning may still be running/;
+    assert.match(textOf(ui.root()), hint);
+    assert.match(textOf(ui.root()), /Check this run’s terminal for setup output; author events appear when the author starts/);
+    assert.doesNotMatch(textOf(ui.root()), /No events match this filter|A run that finished before this window opened/);
+    ui.update(f => {
+      f.events = { ...f.events, "run-1": [{ type: "agent-output", event_id: "recorded", run_id: "run-1", timestamp: "2026-10-15T08:00:00Z", message: "Recorded output" }] };
+    });
+    ui.click("Reasoning");
+    assert.match(textOf(ui.root()), /No events match this filter/);
+    assert.match(textOf(ui.root()), /1 events are buffered/);
+    assert.doesNotMatch(textOf(ui.root()), hint);
+
+    ui.update(f => { f.events = { ...f.events, "run-1": [] }; f.app.runs[0].status = "stopped"; });
+    assert.match(textOf(ui.root()), /No events match this filter/);
+    assert.match(textOf(ui.root()), /A run that finished before this window opened/);
+    assert.doesNotMatch(textOf(ui.root()), hint);
+
+    ui.update(f => { f.app.runs[0].status = "running"; f.app.runs[0].request.kind = "prove"; });
+    assert.match(textOf(ui.root()), /No events match this filter/);
+    assert.doesNotMatch(textOf(ui.root()), hint);
+
+    ui.update(f => { f.app.runs[0].request.kind = "formalize"; });
+    assert.match(textOf(ui.root()), hint);
+    ui.click("Raw log");
+    assert.match(textOf(ui.root()), /fixture log/);
+    assert.doesNotMatch(textOf(ui.root()), hint);
+  } finally { ui.dispose(); }
+});
+
 test("logs filter, collapse, expand, retry, copy and switch to raw output", () => {
   const ui = mount("logs");
   try {
@@ -768,7 +1005,8 @@ test("agent output expands and the reasoning toggle only hides reasoning", () =>
 test("sidebar quick launch, dashboard, stop and setup recovery buttons work", () => {
   const ui = mount("launch", {}, SidebarView);
   try {
-    for (const [label, type] of [["Refresh", "refresh"], ["Prove", "launch"], ["Dashboard", "openDashboard"], ["stop", "stopRun"]]) { ui.click(label); assert.ok(message(ui, type)); }
+    for (const [label, type] of [["Refresh", "refresh"], ["Prove", "launch"], ["Formalization", "openDashboard"], ["stop", "stopRun"]]) { ui.click(label); assert.ok(message(ui, type)); }
+    assert.deepEqual(message(ui, "openDashboard"), { type: "openDashboard", workflow: "formalize" });
     ui.update(f => { f.app.cli.ok = false; });
     ui.click("Install guide"); assert.ok(message(ui, "openExternalDoc"));
     ui.click("CLI path"); assert.ok(message(ui, "openCliSettings"));
@@ -779,18 +1017,18 @@ test("sidebar quick launch, dashboard, stop and setup recovery buttons work", ()
   } finally { ui.dispose(); }
 });
 
-test("source-only sidebar opens the dashboard before creating or preparing a Lean project", () => {
+test("source-only Open Dashboard selects Formalization before creating or preparing a Lean project", () => {
   const ui = mount("launch", {}, SidebarView);
   try {
     ui.update(f => { f.app.project.found = false; });
     assert.match(textOf(ui.root()), /inspect TeX or PDF sources before preparing a Lean project/);
     assert.equal(ui.buttons().some(button => textOf(button) === "Prove"), false);
-    ui.click("Dashboard");
-    assert.deepEqual(message(ui, "openDashboard"), { type: "openDashboard" });
+    ui.click("Open Dashboard");
+    assert.deepEqual(message(ui, "openDashboard"), { type: "openDashboard", workflow: "formalize" });
     assert.equal(message(ui, "setupProject"), undefined);
     assert.equal(message(ui, "launch"), undefined);
     ui.update(f => { f.app.cli.ok = false; });
-    ui.click("Dashboard");
+    ui.click("Open Dashboard");
     assert.equal(ui.messages.filter(row => row.type === "openDashboard").length, 2);
     assert.equal(message(ui, "setupProject"), undefined);
   } finally { ui.dispose(); }
@@ -941,7 +1179,7 @@ test("project setup buttons expose progress, retry, readiness and provider setup
   try {
     ui.click("Check setup"); assert.ok(message(ui, "setupProject"));
     ui.update(f => { f.app.projectSetup = { status: "running", root: "/fixture", phase: "dependencies", message: "Downloading Mathlib", recentOutput: ["Reusing existing downloads"], canRetry: false }; });
-    assert.equal(ui.button("Start run").props.disabled, true);
+    assert.equal(ui.button("Start proving").props.disabled, true);
     ui.click("Cancel setup"); assert.ok(message(ui, "cancelProjectSetup"));
     ui.click("Show setup log"); assert.ok(message(ui, "showProjectSetupLog"));
     assert.match(textOf(ui.root().findByProps({"aria-label":"Project setup log"})), /Reusing existing downloads/);
@@ -954,12 +1192,12 @@ test("project setup buttons expose progress, retry, readiness and provider setup
     assert.match(textOf(ui.root()), /Check your network and retry/);
     ui.click("Retry setup"); assert.ok(message(ui, "retryProjectSetup"));
     ui.update(f => { f.app.projectSetup = { ...f.app.projectSetup, status: "ready", canRetry: false, message: "Verification ready." }; });
-    assert.equal(ui.button("Start run").props.disabled, false);
+    assert.equal(ui.button("Start proving").props.disabled, false);
     assert.match(textOf(ui.root()), /Ready to prove/);
     ui.update(f => { f.app.projectSetup.sourceDiagnostics = ["Problem.lean: unknown module PrivateLibrary"]; });
     assert.match(textOf(ui.root()), /Source files need attention \(1\)/);
     assert.match(textOf(ui.root()), /unknown module PrivateLibrary/);
-    assert.equal(ui.button("Start run").props.disabled, false);
+    assert.equal(ui.button("Start proving").props.disabled, false);
     ui.click("Repair dependencies"); assert.ok(message(ui, "repairProjectSetup"));
     ui.update(f => { f.app.projectSetup.activeRun = true; });
     assert.equal(ui.button("Repair dependencies").props.disabled, true);
@@ -1017,6 +1255,43 @@ test("transient CLI failures retain job navigation and offer retry without insta
   } finally { ui.dispose(); }
 });
 
+test("Formalization baseline is manual, workspace scoped, and required before native Start", () => {
+  const ui = mount("formalization");
+  try {
+    const scope = { id: "setup-host", generation: 2, root: "/paper-B" };
+    ui.update(f => {
+      f.app.formalizationWorkspace = scope;
+      f.app.projectSetup = { status: "ready", root: "/wrong-A", phase: "", message: "A only secret", recentOutput: ["A log secret"] };
+    });
+    assert.doesNotMatch(textOf(ui.root()), /A only secret|A log secret|wrong-A/);
+    ui.click("Set up project");
+    assert.deepEqual(message(ui, "formalizationProjectSetup"), { type: "formalizationProjectSetup", action: "start" });
+    ui.click("Refresh tools status");
+    assert.equal(message(ui, "formalizationProjectSetup").action, "inspect");
+    const snapshot = formalizationFixture(); snapshot.preparation.current = false; snapshot.can_prove = false;
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    ui.click("Configure formalization");
+    assert.equal(ui.button("Start formalization").props.disabled, true);
+    const state = { status: "ready", root: scope.root, phase: "", message: "Project is ready to prove.", code: "", remediation: "", logPath: "", activeRun: false, canRetry: false, sourceDiagnostics: [], recentOutput: ["B log"] };
+    hostMessage({ type: "formalizationProjectSetupState", formalizationWorkspace: { ...scope, generation: 1 }, state, error: "" });
+    assert.equal(ui.button("Start formalization").props.disabled, true);
+    hostMessage({ type: "formalizationProjectSetupState", formalizationWorkspace: scope, state, error: "" });
+    assert.equal(ui.button("Start formalization").props.disabled, false);
+    assert.doesNotMatch(textOf(ui.root()), /Project is ready to prove/);
+    ui.click("Show setup log"); assert.equal(message(ui, "formalizationProjectSetup").action, "log");
+    assert.match(textOf(ui.root()), /B log/);
+    ui.click("Repair dependencies"); assert.equal(message(ui, "formalizationProjectSetup").action, "repair");
+    hostMessage({ type: "formalizationProjectSetupState", formalizationWorkspace: scope, state: { ...state, status: "running" }, error: "" });
+    assert.equal(ui.button("Start formalization").props.disabled, true);
+    ui.click("Cancel setup"); assert.equal(message(ui, "formalizationProjectSetup").action, "cancel");
+    hostMessage({ type: "formalizationProjectSetupState", formalizationWorkspace: scope, state: { ...state, status: "failed", canRetry: true }, error: "" });
+    ui.click("Retry setup"); assert.equal(message(ui, "formalizationProjectSetup").action, "retry");
+    ui.update(f => { f.app.formalizationWorkspace = { ...scope, root: "/paper-C", generation: 3 }; });
+    assert.doesNotMatch(textOf(ui.root()), /B log/);
+    assert.equal(ui.messages.some(row => row.type === "setupProject" || row.type === "launchFormalization"), false);
+  } finally { ui.dispose(); }
+});
+
 after(() => {
   const files = ["webview/App.tsx", "webview/CliNotice.tsx", ...readdirSync("webview/views").filter(name => name.endsWith(".tsx")).map(name => `webview/views/${name}`)];
   const buttons = [];
@@ -1032,4 +1307,49 @@ after(() => {
   }
   assert.deepEqual(buttons.filter(key => !clickedButtons.has(key)), [], "Every button must be exercised in a reachable state");
   console.log(`Exercised all ${buttons.length} webview button definitions.`);
+});
+
+
+test("normal configuration is primary and the unaccepted draft is a separated explanatory option", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = sourceDraftFixture();
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    const primary = ui.button("Configure formalization");
+    const secondary = ui.button("Configure unaccepted source draft");
+    assert.equal(primary.props.className, "btn primary");
+    assert.equal(primary.parent.props.className, "formalization-run-actions");
+    assert.equal(secondary.props.className, "btn secondary");
+    assert.equal(secondary.parent.type, "details");
+    assert.equal(secondary.parent.props.className, "formalization-draft-option");
+    assert.match(textOf(secondary.parent), /Translation acceptance, publication and proving stay blocked/);
+    assert.match(textOf(secondary.parent), /does not start a run/);
+    ui.click(primary);
+    assert.equal(ui.messages.some(row => row.type === "launchFormalization" || row.type === "resumeFormalization"), false);
+    ui.click(secondary);
+    assert.equal(ui.messages.some(row => row.type === "launchFormalization" || row.type === "resumeFormalization"), false);
+  } finally { ui.dispose(); }
+});
+
+
+test("returning to Formalization restores its selected source through a fresh scoped controller read", () => {
+  const ui = mount("formalization");
+  try {
+    ui.update(f => { f.app.formalizationWorkspace = { id: "retained-host", generation: 1, root: "/fixture" }; });
+    const snapshot = sourceDraftFixture();
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    ui.click("Configure unaccepted source draft");
+    ui.change(ui.input("Agent backend"), "codex");
+    const saved = structuredClone(ui.view.form);
+    ui.click("Prove");
+    ui.click("Formalization");
+    assert.equal(message(ui, "showFormalization").documentId, snapshot.document_id);
+    assert.equal(ui.input("Formalization document").props.value, snapshot.document_id);
+    assert.match(textOf(ui.root()), /Restoring the selected source from current controller evidence/);
+    assert.equal(ui.buttons().some(button => textOf(button) === "Create unaccepted source draft"), false);
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.deepEqual(ui.view.form, saved);
+    assert.equal(ui.input("Frozen source target").props.value, snapshot.source.path);
+    assert.equal(ui.view.form.sourceDraftOnly, true);
+  } finally { ui.dispose(); }
 });

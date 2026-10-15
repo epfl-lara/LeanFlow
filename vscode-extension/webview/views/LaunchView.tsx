@@ -1,4 +1,4 @@
-/** The launcher: pick a workflow, a target, a model, and a knob profile. */
+/** Configure the fixed workflow belonging to the current tab. */
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -14,7 +14,7 @@ import {
 } from "../../src/core/profileSurfaces";
 import { BACKEND_IDS, BACKEND_LABELS, isBackend } from "../../src/core/providerCredentials";
 import { changeNativeSelection, launchModelProblems, nativeSelections } from "../../src/core/providerModels";
-import { LAUNCH_FIELD_LIMITS, WORKFLOW_KINDS } from "../../src/core/types";
+import { LAUNCH_FIELD_LIMITS, WORKFLOW_KINDS, type LaunchRequest, type WorkflowKind } from "../../src/core/types";
 import { Card, Check, Field, Notice } from "../components";
 import { PlayIcon } from "../icons";
 import { HELP } from "../help";
@@ -26,10 +26,18 @@ import { NativeModelControl } from "./NativeModelControls";
 import { ProjectSetupCard } from "./ProjectSetupCard";
 import { projectSetupBlocksLaunch } from "../../src/core/projectSetupTypes";
 import { ProverSettings } from "./ProverSettings";
+import { workflowForm } from "../workflowForms";
 
-export function LaunchView() {
-  const { app, view, setView, setForm, preview, requestPreview } = useStore();
-  const form = view.form;
+export function LaunchView({ kind = "prove", source, blocked = false }: {
+  kind?: WorkflowKind;
+  source?: { target: string; allowDraft?: boolean; launch: (request: LaunchRequest) => void };
+  blocked?: boolean;
+} = {}) {
+  const { app, view, setView, setForm: patchForm, preview, requestPreview } = useStore();
+  const savedForm = workflowForm(view, kind);
+  const form = { ...savedForm, ...(source ? { target: source.target } : {}),
+    ...(source?.allowDraft === false ? { sourceDraftOnly: false } : {}) };
+  const setForm = (patch: Partial<LaunchRequest>) => patchForm({ ...patch, kind });
   const [showPlan, setShowPlan] = useState(false);
   const defaultProvider = app?.providers?.error ? "" : app?.providers?.selected;
   const defaultProviderLabel = isBackend(defaultProvider)
@@ -74,12 +82,18 @@ export function LaunchView() {
   const overrideCount = Object.keys(form.overrides).length;
   const boundedProver = form.kind === "prove" && Boolean(app?.catalog?.groups.some((group) => group.flags.some((flag) => flag.name === "LEANFLOW_PROVER_MODE")));
   useEffect(() => {
-    if (form.kind === "prove" && form.humanReview) setForm({ humanReview: false });
+    if (form.humanReview) setForm({ humanReview: false });
   }, [form.kind, form.humanReview, setForm]);
+  useEffect(() => {
+    if (form.kind !== "formalize" && form.sourceDraftOnly) setForm({ sourceDraftOnly: false });
+  }, [form.kind, form.sourceDraftOnly, setForm]);
+  useEffect(() => {
+    if (source?.allowDraft === false && savedForm.sourceDraftOnly) setForm({ sourceDraftOnly: false });
+  }, [source?.allowDraft, savedForm.sourceDraftOnly, setForm]);
   const canLaunch = Boolean(
-    app?.project.found &&
-      app?.cli.ok &&
-      !projectSetupBlocksLaunch(app.projectSetup, app.project.root) &&
+    (kind === "formalize" ? !!source : app?.project.found) &&
+      app?.cli.ok && !blocked && !view.workflowSelectionRequired &&
+      (kind === "formalize" || !projectSetupBlocksLaunch(app.projectSetup, app.project.root)) &&
       restrictedKnobs.length === 0 &&
       problems.length === 0,
   );
@@ -89,26 +103,27 @@ export function LaunchView() {
   // host would reject is never sent: it would be dropped without a reply and
   // leave this panel resolving forever.
   useEffect(() => {
-    if (!showPlan || !canLaunch) {
+    if (!showPlan || !canLaunch || source) {
       return;
     }
     const handle = setTimeout(() => requestPreview(form), 350);
     return () => clearTimeout(handle);
-  }, [showPlan, canLaunch, form, requestPreview]);
+  }, [showPlan, canLaunch, form, requestPreview, source]);
 
   const leanFileOptions = app?.leanFiles ?? [];
 
   return (
     <div className="launch-view">
       <CliNotice cli={app?.cli} />
-      {app?.cli.ok && <ProjectSetupCard />}
+      {app?.cli.ok && kind === "prove" && <ProjectSetupCard />}
 
       <Card
-        title="Workflow"
+        title={kind === "prove" ? "Prove" : "Formalization run"}
         subtitle={kindInfo?.hint}
         actions={
           <>
             <button
+              hidden={!!source}
               className="btn secondary"
               onClick={() => setShowPlan((value) => !value)}
               disabled={!canLaunch}
@@ -118,35 +133,15 @@ export function LaunchView() {
             <button
               className="btn"
               disabled={!canLaunch}
-              onClick={() => post({ type: "launch", request: form })}
+              onClick={() => source ? source.launch(form) : post({ type: "launch", request: form })}
             >
               <PlayIcon size={12} />
-              Start run
+              {kind === "prove" ? "Start proving" : form.sourceDraftOnly ? "Create unaccepted source draft" : "Start formalization"}
             </button>
           </>
         }
       >
         <div className="launch-fields">
-          <Field label="Workflow">
-            <select
-              aria-label="Workflow"
-              value={form.kind}
-              onChange={(event) => {
-                const kind = event.target.value as typeof form.kind;
-                setForm(kind === "prove" ? { kind } : {
-                  kind, research: false, researchWorkers: null, agents: 1,
-                  cleanRoom: false, noParallel: false,
-                });
-              }}
-            >
-              {WORKFLOW_KINDS.map((kind) => (
-                <option key={kind.id} value={kind.id}>
-                  {kind.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-
           <Field
             label="Target"
             help={HELP.target}
@@ -163,14 +158,16 @@ export function LaunchView() {
                 maxLength={LAUNCH_FIELD_LIMITS.target}
                 placeholder={form.kind === "formalize" ? "paper.tex" : "Main.lean (optional)"}
                 value={form.target}
+                readOnly={!!source}
+                aria-label={source ? "Frozen source target" : "Prove target"}
                 onChange={(event) => setForm({ target: event.target.value })}
               />
-              <button
+              {!source && <button
                 className="btn ghost"
                 onClick={() => post({ type: "pickTarget", kind: form.kind })}
               >
                 Browse
-              </button>
+              </button>}
             </div>
             <datalist id="leanflow-lean-files">
               {leanFileOptions.map((file) => (
@@ -199,6 +196,7 @@ export function LaunchView() {
             onChange={model => setForm(changeNativeSelection(form, { model: model ?? "" }, app?.providers, activeProfile?.overrides))}
           />
         </div>
+        {kind === "formalize" && <p className="muted">Author reasoning effort: {selections.launch.effort || "native default"}. Configure the LeanFlow agent effort or native provider settings before launch.</p>}
         <div className="row native-model-status">
           <button className="btn ghost" disabled={app?.providers?.checking} onClick={() => post({ type: "refreshProviders" })}>{app?.providers?.checking ? "Checking models…" : "Refresh models"}</button>
           <span className="muted">{selections.launch.catalog?.status === "ready" && isBackend(selections.launch.provider) ? `Model list from ${BACKEND_LABELS[selections.launch.provider]}. Refresh after changing native settings.` : "Open Providers to check login, API key, or endpoint."}</span>
@@ -207,9 +205,14 @@ export function LaunchView() {
 
       <GlobalLimits />
       <ProverSettings />
-      <Card title="Workflow options">
+      <Card title={kind === "prove" ? "Prove options" : "Formalization options"}>
         <div className="launch-options">
-          <div>
+          {form.kind === "formalize" && <div>
+            <Check label="Unaccepted source draft" checked={form.sourceDraftOnly === true} disabled={source?.allowDraft === false}
+              hint="Prepare dependencies and save one draft using the explicitly paired PDF. Source uncertainty keeps review, publication and proving blocked."
+              onChange={sourceDraftOnly => setForm({ sourceDraftOnly })} />
+          </div>}
+          {kind === "prove" && <div>
             <Check
               label="Clean room"
               help={HELP.cleanRoom}
@@ -219,7 +222,7 @@ export function LaunchView() {
               onChange={(cleanRoom) => setForm({ cleanRoom })}
             />
             {form.cleanRoom && <p className="muted">Existing online sessions cannot be reused. Clean-room checkpoints can resume.</p>}
-          </div>
+          </div>}
 
           <div>
             {form.kind === "prove" && <Check

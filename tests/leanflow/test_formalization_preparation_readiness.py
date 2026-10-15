@@ -8,11 +8,12 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from leanflow_cli.formalization import preparation, preparation_run
+from leanflow_cli.formalization import preparation, preparation_run, preparation_stage
 from leanflow_cli.formalization.evidence import identity
 from leanflow_cli.formalization.inspector_readiness import valid_inspector_readiness
 from leanflow_cli.formalization.preparation_plan import DEFAULT_TOOLCHAIN, default_preparation_plan
@@ -20,7 +21,10 @@ from leanflow_cli.formalization.preparation_resources import supervise_preparati
 from leanflow_cli.formalization.records import create_document
 from leanflow_cli.formalization.stage_errors import RepreparationRequired
 from leanflow_cli.workflows.project_setup import state
-from leanflow_cli.workflows.project_setup.execution import build_setup_execution_policy
+from leanflow_cli.workflows.project_setup.execution import (
+    SetupExecutionPolicy,
+    build_setup_execution_policy,
+)
 from leanflow_cli.workflows.project_setup.process import SetupCancelled, SetupFailure
 from tests.leanflow.preparation_helpers import inspector_readiness_record
 
@@ -96,8 +100,16 @@ def staged_preparation(tmp_path, monkeypatch):
         lambda *a, **k: {"resources": {"cleanup_verified": True}},
     )
     monkeypatch.setattr(preparation_run, "prepare_project", ready)
-    monkeypatch.setattr(preparation_run, "run_command", lambda *a, **k: (0, ""))
+    monkeypatch.setattr(preparation_stage, "run_command", lambda *a, **k: (0, ""))
     monkeypatch.setattr(preparation_run, "build_prepared_dependencies", lambda *a, **k: None)
+    # This fixture deliberately mocks acquisition; package authority has separate
+    # real-checkout and sandboxed-build regressions.
+    monkeypatch.setattr(
+        preparation_run.PreparationAuthorization, "acquire", lambda self, *a, **k: self
+    )
+    monkeypatch.setattr(
+        preparation_run.PreparationAuthorization, "validate", lambda self, *a, **k: None
+    )
     monkeypatch.setattr(
         preparation_run,
         "preflight_dependencies",
@@ -107,6 +119,18 @@ def staged_preparation(tmp_path, monkeypatch):
         },
     )
     monkeypatch.setattr(preparation_run, "build_project", lambda *a, **k: {"success": True})
+
+    # Acquisition and compiler work above deliberately provide no Git authority
+    # or generated Lake caches; hash derivation is exercised by its real fixtures.
+    def verify_hash_caches(
+        stage: Path, _authority: Any, policy: SetupExecutionPolicy, lease: Any, **_options: Any
+    ) -> Any:
+        """Substitute only the fully mocked stage's absent hash-cache derivation."""
+        assert policy.usage.cleanup_verified and lease.cleanup_verified
+        assert not list(stage.rglob("*.hash"))
+        return _authority
+
+    monkeypatch.setattr(preparation_run, "verify_generated_hash_caches", verify_hash_caches)
     monkeypatch.setattr(preparation_run, "check_scratch", imports)
     monkeypatch.setattr(
         preparation_run,
@@ -133,11 +157,11 @@ def test_private_readiness_shares_budget_and_closes_failure_children(
 
     def check(stage, workspace, *, deadline, cancelled):
         context["events"].append("inspector")
-        assert context["events"] == ["imports", "workers_closed", "inspector"]
+        assert context["events"] == ["inspector"]
         assert context["inside_supervisor"]
         selected = context["policies"][0]
         assert deadline == selected.deadline
-        assert cancelled is context["cancelled"]
+        context["inspector_cancelled"] = cancelled
         assert selected.max_owned_rss_bytes == 16 * 1024**3
         assert selected.max_disk_growth_bytes == 12 * 1024**3
         assert workspace.is_relative_to(stage) and stage != root
@@ -173,6 +197,8 @@ def test_private_readiness_shares_budget_and_closes_failure_children(
         readiness = result["receipt"]["inspector_readiness"]
         assert valid_inspector_readiness(readiness) and readiness["proof_acceptance"] is False
         assert preparation.assert_preparation_current(root)["inspector_readiness"] == readiness
+        assert context["events"] == ["inspector", "imports", "workers_closed"]
+        assert context["inspector_cancelled"] is context["cancelled"]
     else:
         with pytest.raises(SetupCancelled if outcome == "cancelled" else SetupFailure) as raised:
             preparation.prepare_document_project(
@@ -187,6 +213,7 @@ def test_private_readiness_shares_budget_and_closes_failure_children(
             assert raised.value.code == "setup_inspector_incompatible"
         assert context["commits"] == [] and preparation.load_preparation_receipt(root) is None
         assert not (root / "Main.lean").exists() and not (root / ".lake").exists()
+        assert context["events"] == ["inspector"]
     assert any(row["message"] == "Checking Lean compatibility" for row in progress)
     assert (root / "paper.tex").read_bytes() == before
     assert context["policies"][0].usage.cleanup_verified
@@ -244,6 +271,13 @@ def test_failed_readiness_blocks_formalization_intake_and_paid_retry(
         preparation_launch,
         "load_config",
         lambda: {"limits": {"agent_calls": 3, "tokens": None, "wall_time_s": 30}},
+    )
+    # This case tests a later private inspector failure, after manual baseline
+    # readiness; the fixture already substitutes all compiler/tool acquisition.
+    monkeypatch.setattr(
+        preparation_launch,
+        "inspect_project",
+        lambda root: {"root": str(root), "ready": True, "configured": True},
     )
     monkeypatch.setattr(
         preparation_launch,

@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 
+from leanflow_cli.formalization.records import create_document
 from leanflow_cli.native import harness_workflow
 from leanflow_cli.runtime.storage import StoragePressure
 from leanflow_cli.workflows.prover.config import ProverConfig
@@ -44,14 +45,20 @@ def test_prover_pressure_keeps_source_checkpoint_and_prevents_dispatch(tmp_path,
     assert saved["metrics"]["api_calls"] == 0
 
 
-def test_nonprover_pressure_saves_state_and_keeps_source(tmp_path, monkeypatch):
+def test_formalization_pressure_saves_state_and_keeps_source(tmp_path, monkeypatch):
     target = tmp_path / "Main.lean"
     target.write_text("theorem target : True := by sorry\n")
+    paper = tmp_path / "paper.tex"
+    source = r"\begin{theorem}True holds.\end{theorem}"
+    paper.write_text(source)
+    record = create_document(tmp_path, paper)
     monkeypatch.setattr(StorageAdmission, "check", _pressure)
     result = harness_workflow.run_workflow(
         {
             "LEANFLOW_PROJECT_ROOT": str(tmp_path),
-            "LEANFLOW_NATIVE_WORKFLOW_KIND": "refactor",
+            "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
+            "LEANFLOW_FORMALIZATION_DOCUMENT_ID": record["document_id"],
+            "LEANFLOW_FORMALIZATION_REVISION": record["revision_id"],
             "LEANFLOW_NATIVE_PROVIDER": "codex",
             "LEANFLOW_WORKFLOW_RUN_ID": "storage-native-test",
         }
@@ -59,6 +66,7 @@ def test_nonprover_pressure_saves_state_and_keeps_source(tmp_path, monkeypatch):
     assert result["status"] == "storage_pressure"
     assert "resume" in result["next_step"]
     assert target.read_text().endswith("sorry\n")
+    assert paper.read_text() == source
     saved = json.loads(
         (tmp_path / ".leanflow/native-workflows/storage-native-test/state.json").read_text()
     )

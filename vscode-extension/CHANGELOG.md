@@ -3,6 +3,69 @@
 User-visible changes to the LeanFlow VS Code extension. Entries before 0.1.20
 include features and settings from the former direct-provider runtime.
 
+## 0.1.46
+
+- Point active formalization runs with no recorded events to their terminal for
+  setup and dependency-planning output, without inferring the current phase.
+
+## 0.1.45
+
+- Open verified frozen TeX, Lean and Markdown artifacts as named read-only
+  documents, with source-line navigation and bounded viewer storage.
+- Fit PDF pages to a resized dashboard pane, keeping rendered text and selection
+  on the same scale.
+
+## 0.1.44
+
+- Make manual project setup the first step in Formalization, before paid native
+  dependency planning. Source inspection stays available before setup.
+- Bind setup progress, cancellation, retries and logs to the selected workspace;
+  preserve that selection when an older workspace finishes setup.
+- Reuse current formalization preparation authority without requiring a stale
+  general setup checkpoint, while blocking launches during active setup.
+
+
+## 0.1.43
+
+- Name the source-only sidebar entry “Open Dashboard”; open its Formalization tab
+  without starting project setup or translation.
+
+- Preserve native model identifiers with version tags and context suffixes during
+  formalization launch and resume.
+- Resume formalization with the original provider, model and source-draft intent;
+  report missing legacy identity instead of silently switching providers.
+- Clear source-draft mode for accepted revisions and require a bound source
+  document before any editor formalization launch.
+- Hide retired human-review launch controls while preserving historical records.
+
+## 0.1.42
+
+- Separate the primary formalization configuration action from an optional source
+  draft disclosure; explain that draft previews keep acceptance and proving blocked.
+
+## 0.1.41
+
+- Give Prove and Formalization separate tabs and persisted configurations; retire
+  other workflow choices without reinterpreting old saved intents.
+- Configure and start source translation beside its inventory, project setup,
+  PDF, review gates and frozen previews. Resume only exact stopped editor-tracked
+  campaigns; keep untracked CLI history explicit.
+
+## 0.1.40
+
+- Bind formalization requests, asynchronous results and prover launch to the owning
+  workspace generation; discard stale replies after project or request changes.
+- Display publication registry loss as an explicit recovery blocker.
+- Label mathematical preparation estimates as unreviewed and reject inconsistent
+  empty prover-launch requests.
+- Record checked conditional interpretations against frozen source occurrences
+  without excluding branches or approving translation and proof gates.
+- Inspect frozen unaccepted source drafts beside paired PDF and TeX evidence;
+  keep publication and proving blocked while source execution is uncertain.
+- Keep the selected project and active preparation when opening external
+  toolchain or dependency references through editor navigation.
+
+
 ## Unreleased
 
 - Open the dashboard from a source-only sidebar and inspect TeX/PDF sources before

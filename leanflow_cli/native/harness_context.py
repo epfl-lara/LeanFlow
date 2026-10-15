@@ -21,12 +21,15 @@ their own behavior. Call submit_files with a short JSON report once your changes
 ready, and poll_operation for acceptance or actionable rejection. Continue in this
 conversation after rejection. Stop after acceptance or an honest external blocker.
 For a blocker, return exactly {\"status\":\"blocked\",\"reason\":\"concrete blocker\"}.
-For review, return your findings without modifying project sources. For draft and
-formalize, implement definitions and constructions fully. Named Prop theorem proofs
-may remain pending; completed proofs and exact library reuse are valid. Formalization
-uses the complete frozen source inventory and structured proposal specified in the
-assignment. Independent item and document reviews gate publication. Do not edit
+Implement definitions and constructions fully. Named Prop theorem proofs
+may remain pending; completed proofs and exact library reuse are valid. Do not edit
 canonical files or write approval prose as evidence. Proving is a separate action.
+"""
+
+_FORMALIZATION_CONTRACT = """Formalization uses the complete frozen source inventory and
+structured proposal specified in the assignment. Follow the checked preparation
+plan and representative-slice receipt before full expansion. Independent item and
+document reviews gate publication.
 """
 
 
@@ -37,9 +40,11 @@ def prepare_context(
     scratch: Path,
     environment: dict[str, str],
     allowed: tuple[str, ...],
-) -> tuple[dict[str, Any], str, str]:
+) -> tuple[dict[str, Any], str]:
     """Load selected guidance and expose only copied source inputs to the native job."""
-    kind = environment.get("LEANFLOW_NATIVE_WORKFLOW_KIND", "review")
+    kind = environment.get("LEANFLOW_NATIVE_WORKFLOW_KIND", "")
+    if kind != "formalize":
+        raise ValueError("Native formalization context requires the formalize workflow")
     context = {
         "workflow": kind,
         "active_file": environment.get("LEANFLOW_NATIVE_ACTIVE_FILE", ""),
@@ -49,6 +54,7 @@ def prepare_context(
         "allowed_axioms": list(allowed),
     }
     prompt = _CONTRACT.replace("{workflow}", kind) + "\n" + json.dumps(context, ensure_ascii=False)
+    prompt += "\n" + _FORMALIZATION_CONTRACT
     selected = [environment.get("LEANFLOW_NATIVE_ACTIVE_SKILL", "")]
     selected.extend(environment.get("LEANFLOW_NATIVE_ADDITIONAL_SKILLS", "").split(os.pathsep))
     for name in dict.fromkeys(selected):
@@ -85,5 +91,4 @@ def prepare_context(
         )
     for before, after in replacements.items():
         prompt = prompt.replace(before, after)
-    source_context = "\n\n".join(f"{name}:\n{text}" for name, text in texts.items())
-    return context, remap_project_text(prompt, root, snapshot), source_context
+    return context, remap_project_text(prompt, root, snapshot)

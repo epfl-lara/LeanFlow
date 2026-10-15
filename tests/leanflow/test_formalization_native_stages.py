@@ -185,6 +185,7 @@ def test_native_corrects_slice_then_expands_all_reuse_without_proof_or_premature
                 "Draft submitted",
                 "author-session",
                 {"input_tokens": 1, "output_tokens": 1},
+                cleanup_verified=True,
             )
         reviewers.append(request)
         assert not request.session_id and request.restricted_tools
@@ -239,6 +240,7 @@ def test_native_corrects_slice_then_expands_all_reuse_without_proof_or_premature
             ),
             "fresh-reviewer",
             {"input_tokens": 1, "output_tokens": 1},
+            cleanup_verified=True,
         )
 
     monkeypatch.setattr(native, "run_harness", invoke)

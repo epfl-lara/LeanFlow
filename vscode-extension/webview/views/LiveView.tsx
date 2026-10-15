@@ -38,7 +38,7 @@ export function LiveView() {
       <Empty>
         Nothing running.
         <br />
-        Start a workflow from the Launch tab.
+        Start a run from Prove or Formalization.
       </Empty>
     );
   }

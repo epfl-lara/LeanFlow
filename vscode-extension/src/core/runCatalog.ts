@@ -28,11 +28,18 @@ export function runChoices(runs: readonly TrackedRun[], history: readonly RunSum
       active: false, startedAt: row.started_at, updatedAt: row.updated_at, workflowKind: row.workflow_kind,
     });
   }
-  for (const run of runs) choices.set(run.runId || run.id, {
-    id: run.id, runId: run.runId, label: run.label, status: run.status,
-    active: run.status === "running" || run.status === "starting",
-    startedAt: run.startedAt, updatedAt: run.finishedAt || run.startedAt, workflowKind: run.request.kind, tracked: run,
-  });
+  for (const run of runs) {
+    const key = run.runId || run.id;
+    const active = run.status === "running" || run.status === "starting";
+    const known = choices.get(key);
+    // Resumes retain the controller id but have distinct editor attempts. Input
+    // order must never let an older stopped attempt hide the live/newest one.
+    if (known?.tracked && (Number(known.active) > Number(active) || known.active === active && known.startedAt >= run.startedAt)) continue;
+    choices.set(key, {
+      id: run.id, runId: run.runId, label: run.label, status: run.status, active,
+      startedAt: run.startedAt, updatedAt: run.finishedAt || run.startedAt, workflowKind: run.request.kind, tracked: run,
+    });
+  }
   const liveId = String(live?.run_id || "");
   if (liveId && isActiveLiveStatus(live)) {
     const known = choices.get(liveId);

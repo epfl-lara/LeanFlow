@@ -135,6 +135,9 @@ def validate_handoff(
 
     assert_revision_not_revoked(root, revision_id)
     path = contained(root, path.relative_to(root).as_posix())
+    from leanflow_cli.formalization.publication_case_paths import assert_exact_control_path
+
+    assert_exact_control_path(root, path.relative_to(root).as_posix())
     handoff = json.loads(path.read_text(encoding="utf-8"))
     if handoff.get("schema_version") != 1 or handoff.get("revision_id") != revision_id:
         raise ValueError("Formalization handoff revision does not match the requested revision")
@@ -145,6 +148,7 @@ def validate_handoff(
     directory = document_directory(root, handoff["document_id"], published=True)
     if path != directory / "handoff.json":
         raise ValueError("Formalization handoff must be the portable published projection")
+    assert_exact_control_path(root, f"formalization/{handoff['document_id']}/current.json")
     selected = json.loads((directory / "current.json").read_text(encoding="utf-8"))
     if selected.get("revision_id") != revision_id:
         raise ValueError("Formalization handoff is not the selected committed revision")
@@ -216,6 +220,9 @@ def validate_handoff(
                     f"Formalization handoff source changed: {relative}; "
                     "resume the original scoped prover run or re-review before starting a new run"
                 )
+    from leanflow_cli.formalization.publication_membership import require_committed_publication
+
+    require_committed_publication(root, handoff["document_id"], revision_id)
     return handoff
 
 

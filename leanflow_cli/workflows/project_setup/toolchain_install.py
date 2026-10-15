@@ -333,6 +333,15 @@ def _ensure_official_toolchain(
         )
         with log_path.open("x", encoding="utf-8") as log:
             log_path.chmod(0o600)
+            if progress:
+                progress(
+                    {
+                        "type": "progress",
+                        "phase": "acquiring_toolchain",
+                        "message": "Installing the exact pinned Lean compiler",
+                        "log_path": str(log_path),
+                    }
+                )
             try:
                 status, output = run_command(
                     ["elan", "toolchain", "install", toolchain],

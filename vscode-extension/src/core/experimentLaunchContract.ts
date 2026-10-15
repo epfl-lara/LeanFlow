@@ -18,7 +18,6 @@ const MAX_ENVIRONMENT_KEY_LENGTH = 256;
 const TARGET_ENV_KEY = "LEANFLOW_NATIVE_REQUESTED_TARGET";
 const ADDITIONAL_SKILLS_ENV_KEY = "LEANFLOW_NATIVE_ADDITIONAL_SKILLS";
 const PARALLEL_AGENTS_ENV_KEY = "LEANFLOW_NATIVE_PARALLEL_AGENTS";
-const USER_APPROVED_SWARM_ENV_KEY = "LEANFLOW_NATIVE_USER_APPROVED_SWARM";
 const RESEARCH_MODE_ENV_KEY = "LEANFLOW_RESEARCH_MODE";
 const RESEARCH_WORKERS_ENV_KEY = "LEANFLOW_RESEARCH_WORKERS";
 const CLEAN_ROOM_ENV_KEY = "LEANFLOW_DISABLE_SOLUTION_RESEARCH";
@@ -131,10 +130,6 @@ export function freezeExperimentLaunchContract(
   }
 
   force(PARALLEL_AGENTS_ENV_KEY, String(preview.workflow.parallel_agents));
-  force(
-    USER_APPROVED_SWARM_ENV_KEY,
-    preview.workflow.parallel_agents > 1 ? "1" : "0",
-  );
   force(HUMAN_REVIEW_ENV_KEY, preview.workflow.human_review ? "1" : "0");
   force(ACTIVE_SKILL_ENV_KEY, preview.active_skill);
   force(TOOLSET_ENV_KEY, preview.toolset);

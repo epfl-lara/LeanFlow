@@ -105,7 +105,11 @@ def test_includes_custom_environments_local_packages_and_macro_context(tmp_path:
     assert item["title"] == "A result"
     assert item["claim_status"] == "proved_in_source"
     assert len(item["context_refs"]) == 2
-    assert not inventory["diagnostics"]
+    assert {row["code"] for row in inventory["diagnostics"]} == {
+        "unresolved_loader_effect",
+        "inherited_tex_meanings",
+    }
+    assert item["scope"] == "candidate"
     assert _reconstruct(tmp_path, item["statement_spans"]) == item["text"]
     _assert_regions_partition_sources(tmp_path, inventory)
 
@@ -194,8 +198,8 @@ def test_standard_layout_and_math_commands_do_not_hide_unknown_commands(tmp_path
         r"\endgroup\ActualUnknownCommand",
     )
     inventory = inventory_source(tmp_path, source)
-    assert len(inventory["diagnostics"]) == 1
-    assert "ActualUnknownCommand" in inventory["diagnostics"][0]["message"]
+    assert {row["code"] for row in inventory["diagnostics"]} == {"unresolved_command"}
+    assert all("ActualUnknownCommand" in row["message"] for row in inventory["diagnostics"])
 
 
 def test_includeonly_repeated_occurrences_and_duplicate_labels(tmp_path: Path) -> None:
@@ -223,6 +227,7 @@ def test_cycles_missing_includes_and_external_symlinks_do_not_disappear(tmp_path
     assert {diagnostic["code"] for diagnostic in inventory["diagnostics"]} == {
         "include_cycle",
         "missing_include",
+        "inherited_tex_meanings",
     }
     assert inventory["extraction_status"] == "blocked"
 
@@ -260,7 +265,8 @@ def test_ignored_tail_unknown_commands_and_dynamic_includeonly_are_visible(tmp_p
         r"\includeonly{\chosen}\begin{document}\begin{theorem}Uses \mystery.\end{theorem}\end{document}\begin{lemma}Ignored tail.\end{lemma}",
     )
     inventory = inventory_source(tmp_path, source)
-    assert len(inventory["items"]) == 1
+    assert len(inventory["items"]) == 2
+    assert {item["scope"] for item in inventory["items"]} == {"candidate"}
     assert {diagnostic["code"] for diagnostic in inventory["diagnostics"]} >= {
         "unresolved_includeonly",
         "unresolved_command",
@@ -269,7 +275,7 @@ def test_ignored_tail_unknown_commands_and_dynamic_includeonly_are_visible(tmp_p
         reference["name"] == "mystery" and reference["resolution"] == "unresolved"
         for reference in inventory["command_references"]
     )
-    assert inventory["regions"][-1]["disposition"] == "excluded"
+    assert inventory["regions"][-1]["disposition"] == "unresolved"
     _assert_regions_partition_sources(tmp_path, inventory)
 
 

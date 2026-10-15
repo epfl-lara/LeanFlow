@@ -8,6 +8,7 @@ from typing import Any
 
 from leanflow_cli.formalization.evidence import contained, digest, identifier
 from leanflow_cli.formalization.publication_journal import load_journal, load_registry
+from leanflow_cli.formalization.publication_registry_loss import PublicationAuthorityLoss
 from leanflow_cli.formalization.receipt_history import (
     copy_receipts,
     load_receipt,
@@ -54,7 +55,12 @@ def reconcile_committed_receipt(root: Path, record: dict[str, Any]) -> None:
         ),
         f"formalization/{document}/current.json": digest((portable / "current.json").read_bytes()),
     }
-    registry = load_registry(root)
+    try:
+        registry = load_registry(root)
+    except PublicationAuthorityLoss:
+        # A lost index is inspectable through publication recovery. Reading a
+        # document may preserve the staged projection, never promote its receipt.
+        return
     if any(item.get("revision_id") == revision for item in registry.get("revoked_revisions", [])):
         return
     if any(

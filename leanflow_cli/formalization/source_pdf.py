@@ -161,7 +161,9 @@ def _layout_pages(text: str) -> list[dict[str, Any]]:
 
 def inventory_pdf(source: Path, relative: str, document_id: str) -> dict[str, Any]:
     """Inventory frozen PDF bytes and require page-level audits even after text extraction."""
-    raw = source.read_bytes()
+    from core.regular_files import read_regular_bytes
+
+    raw = read_regular_bytes(source, source.lstat().st_size)
     file_hash = digest(raw)
     diagnostics: list[dict[str, Any]] = []
     pages: list[dict[str, Any]] = []

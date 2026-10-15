@@ -19,7 +19,7 @@ from leanflow_cli.cli.formalization_command import (
     handle_formalization,
     register_formalization_parser,
 )
-from leanflow_cli.formalization import preparation, preparation_run
+from leanflow_cli.formalization import preparation, preparation_run, preparation_stage
 from leanflow_cli.formalization.evidence import identity
 from leanflow_cli.formalization.preparation_plan import default_preparation_plan
 from leanflow_cli.formalization.preparation_stage import add_packages, copy_stage
@@ -134,7 +134,14 @@ def test_failed_setup_never_changes_source_only_canonical_files(tmp_path, monkey
     )
     monkeypatch.setattr(preparation_run, "supervise_preparation", lambda *a, **k: nullcontext())
     monkeypatch.setattr(preparation, "ensure_storage_capacity", lambda root: None)
-    monkeypatch.setattr(preparation_run, "run_command", lambda *a, **k: (0, ""))
+    monkeypatch.setattr(preparation_stage, "run_command", lambda *a, **k: (0, ""))
+    monkeypatch.setattr(
+        preparation_run, "check_inspector_runtime", lambda *a, **k: inspector_readiness_record()
+    )
+
+    monkeypatch.setattr(
+        preparation_run.PreparationAuthorization, "acquire", lambda self, *a, **k: self
+    )
 
     def failed(stage, **kwargs):
         calls.append(stage)
@@ -360,6 +367,7 @@ def test_ready_private_stage_publishes_receipt_and_disposes_inputs(
     record = _paper(tmp_path)
     plan = default_preparation_plan(tmp_path, record, preset="lean")
     stages = []
+    hash_cache_checks = []
 
     class Policy:
         usage = SimpleNamespace()
@@ -388,6 +396,14 @@ def test_ready_private_stage_publishes_receipt_and_disposes_inputs(
         )
         return {"status": "ready"}
 
+    def hash_cache_check(stage, authority, policy, lease, **kwargs):
+        assert stage == policy.stage == lease.path
+        assert lease.cleanup_verified and lease.cleanup_observed
+        assert not (tmp_path / "Main.lean").exists()
+        assert not list((stage / ".lake/packages").rglob("*.hash"))
+        hash_cache_checks.append(stage)
+        return authority
+
     monkeypatch.setattr(
         preparation_run, "build_setup_execution_policy", lambda stage, **k: Policy(stage)
     )
@@ -398,8 +414,17 @@ def test_ready_private_stage_publishes_receipt_and_disposes_inputs(
     )
     monkeypatch.setattr(preparation_run, "supervise_preparation", lambda *a, **k: nullcontext())
     monkeypatch.setattr(preparation_run, "prepare_project", ready)
-    monkeypatch.setattr(preparation_run, "run_command", lambda *a, **k: (0, ""))
+    monkeypatch.setattr(preparation_stage, "run_command", lambda *a, **k: (0, ""))
     monkeypatch.setattr(preparation_run, "build_prepared_dependencies", lambda *a, **k: None)
+    # Package acquisition is mocked here; the authorization tests exercise real
+    # checkout identities and the hash-cache tests verify actual sidecar admission.
+    monkeypatch.setattr(preparation_run, "verify_generated_hash_caches", hash_cache_check)
+    monkeypatch.setattr(
+        preparation_run.PreparationAuthorization, "acquire", lambda self, *a, **k: self
+    )
+    monkeypatch.setattr(
+        preparation_run.PreparationAuthorization, "validate", lambda self, *a, **k: None
+    )
     monkeypatch.setattr(
         preparation_run,
         "preflight_dependencies",
@@ -456,3 +481,4 @@ def test_ready_private_stage_publishes_receipt_and_disposes_inputs(
     )
     assert saved[0]["status"] == "ready" and saved[0]["fingerprint"] == "checked-state"
     assert stages and not stages[0].parent.exists()
+    assert hash_cache_checks == stages

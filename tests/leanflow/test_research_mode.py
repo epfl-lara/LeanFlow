@@ -118,19 +118,6 @@ def test_environment_profile_respects_feature_overrides_without_surrender(monkey
     assert research_mode.suppress_terminal_stop("blocked", orchestrator_on=False)
 
 
-def test_research_local_loogle_requires_explicit_opt_in(monkeypatch):
-    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
-    monkeypatch.delenv("LEANFLOW_RESEARCH_LOCAL_LOOGLE", raising=False)
-    assert research_mode.research_local_loogle_enabled() is False
-
-    monkeypatch.setenv("LEANFLOW_RESEARCH_LOCAL_LOOGLE", "1")
-    assert research_mode.research_local_loogle_enabled() is True
-
-    monkeypatch.delenv("LEANFLOW_RESEARCH_MODE", raising=False)
-    monkeypatch.delenv("LEANFLOW_RESEARCH_LOCAL_LOOGLE", raising=False)
-    assert research_mode.research_local_loogle_enabled() is True
-
-
 def test_planner_parallelism_shares_research_worker_capacity(research_on, monkeypatch):
     monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "2")
     assert research_mode.planner_lane_parallelism(3) == 2

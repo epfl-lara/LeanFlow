@@ -7,12 +7,17 @@ import { redactSensitiveText } from "../core/runPrivacy";
 import type { LeanFlowServices } from "../core/services";
 import { resolveExistingProjectPath } from "../core/storageSecurity";
 import type { HostMessage, LaunchRequest, WebviewMessage } from "../core/types";
+import { sameFormalizationScope, type FormalizationWorkspaceScope } from "../core/formalizationScope";
+import { formalizationOperation, type FormalizationOperation } from "./formalizationOperation";
 import { FormalizationPreparationHost } from "./formalizationPreparationHost";
 import { FormalizationRecoveryHost } from "./formalizationRecoveryHost";
+import { FormalizationProjectSetupHost } from "./formalizationProjectSetupHost";
+import { FrozenArtifactDocuments } from "./frozenArtifactDocuments";
 
 const MESSAGE_TYPES = new Set([
+  "formalizationProjectSetup",
   "listFormalizations", "inspectFormalization", "showFormalization", "formalizationAction",
-  "openFormalizationArtifact", "proveFormalization",
+  "openFormalizationArtifact", "proveFormalization", "launchFormalization", "resumeFormalization",
   "listFormalizationConflicts", "openFormalizationConflictVersion", "resolveFormalizationConflict",
   "planFormalizationPreparation", "prepareFormalization", "cancelFormalizationPreparation",
   "listFormalizationPreparationRecovery", "recoverFormalizationPreparation", "resolveFormalizationPreparation", "cancelFormalizationRecovery",
@@ -20,90 +25,119 @@ const MESSAGE_TYPES = new Set([
 
 export class FormalizationHost {
   private queue: Promise<void> = Promise.resolve();
-  private readonly openedSources = new Map<string, { documentId: string; revisionId: string; artifactId: string }>();
+  private readonly openedSources = new Map<string, { documentId: string; revisionId: string; artifactId: string; formalizationWorkspace: FormalizationWorkspaceScope }>();
   private readonly selectionListener: vscode.Disposable | undefined;
+  private readonly workspaceListener: vscode.Disposable | undefined;
   private readonly preparation: FormalizationPreparationHost;
   private readonly recovery: FormalizationRecoveryHost;
+  private readonly setup: FormalizationProjectSetupHost;
+  private readonly frozenDocuments = new FrozenArtifactDocuments();
 
   constructor(
     private readonly services: LeanFlowServices,
     private readonly post: (message: HostMessage) => void,
-    private readonly launch: (request: LaunchRequest) => Promise<void>,
+    private readonly launch: (request: LaunchRequest, operation: FormalizationOperation) => Promise<void>,
   ) {
-    this.preparation = new FormalizationPreparationHost(services, post);
-    this.recovery = new FormalizationRecoveryHost(services, post);
+    this.preparation = new FormalizationPreparationHost();
+    this.recovery = new FormalizationRecoveryHost();
+    this.setup = new FormalizationProjectSetupHost(services, post);
+    this.workspaceListener = services.onDidChange?.(() => {
+      const scope = services.formalizations.workspaceScope();
+      this.preparation.cancelOtherWorkspace(scope);
+      this.recovery.cancelOtherWorkspace(scope);
+    });
     this.selectionListener = vscode.window.onDidChangeTextEditorSelection?.(event => {
       const source = this.openedSources.get(event.textEditor.document.uri.toString());
       const selection = event.selections[0];
-      if (source && selection) this.post({ type: "formalizationSourceSelection", ...source,
+      if (source && selection && sameFormalizationScope(source.formalizationWorkspace, this.services.formalizations.workspaceScope())) this.post({ type: "formalizationSourceSelection", ...source,
         lineStart: selection.start.line + 1, lineEnd: selection.end.line + 1 });
     });
   }
 
-  dispose(): void { this.preparation.dispose(); this.recovery.dispose(); this.selectionListener?.dispose(); this.openedSources.clear(); }
+  dispose(): void { this.frozenDocuments.dispose(); this.setup.dispose(); this.preparation.dispose(); this.recovery.dispose(); this.selectionListener?.dispose(); this.workspaceListener?.dispose(); this.openedSources.clear(); }
 
   /** Serialize requests within this webview; the controller also checks cross-client revisions. */
   async handle(message: WebviewMessage): Promise<boolean> {
     if (!MESSAGE_TYPES.has(message.type)) return false;
-    if (message.type === "cancelFormalizationPreparation") { this.preparation.cancel(message); return true; }
-    if (message.type === "cancelFormalizationRecovery") { this.recovery.cancel(); return true; }
-    const request = this.queue.then(() => this.dispatch(message));
+    const scope = this.services.formalizations.workspaceScope();
+    const bootstrap = ["listFormalizations", "listFormalizationConflicts", "listFormalizationPreparationRecovery"].includes(message.type);
+    if (!sameFormalizationScope(message.formalizationWorkspace, scope) && !(bootstrap && !message.formalizationWorkspace)) {
+      this.post({ type: "notify", level: "warn", message: "The formalization workspace changed. Refresh before continuing." });
+      return true;
+    }
+    if (message.type === "cancelFormalizationPreparation") { this.preparation.cancel(message, scope); return true; }
+    if (message.type === "cancelFormalizationRecovery") { this.recovery.cancel(scope); return true; }
+    if (message.type === "formalizationProjectSetup") { await this.setup.handle(message, scope); return true; }
+    const request = this.queue.then(() => this.dispatch(message, scope));
     this.queue = request.catch(() => undefined);
     await request;
     return true;
   }
 
-  private async dispatch(message: WebviewMessage): Promise<void> {
-    const service = this.services.formalizations;
+  private async dispatch(message: WebviewMessage, scope: FormalizationWorkspaceScope): Promise<void> {
+    let post = (response: HostMessage) => {
+      if (sameFormalizationScope(scope, this.services.formalizations.workspaceScope())) this.post({ ...response, formalizationWorkspace: scope, formalizationRequest: message.formalizationRequest });
+    };
+    let service = this.services.formalizations;
     try {
-      if (!this.services.project.root) service.bindSourceRoot(await formalizationWorkspaceRoot(""));
+      service.assertWorkspace(scope);
+      const root = await formalizationWorkspaceRoot(scope.root);
+      service.assertWorkspace(scope);
+      const operation = formalizationOperation(this.services, scope, root, this.post, message.formalizationRequest);
+      service = operation.services.formalizations;
+      post = operation.post;
       switch (message.type) {
         case "listFormalizationPreparationRecovery":
         case "recoverFormalizationPreparation":
         case "resolveFormalizationPreparation":
-          await this.recovery.handle(message);
+          await this.recovery.handle(message, operation);
           return;
         case "planFormalizationPreparation":
         case "prepareFormalization":
-          await this.preparation.handle(message);
+          await this.preparation.handle(message, operation);
           return;
         case "listFormalizationConflicts":
-          this.post({ type: "formalizationConflicts", snapshot: await service.conflicts(), error: "" });
+          post({ type: "formalizationConflicts", snapshot: await service.conflicts(), error: "" });
           return;
         case "openFormalizationConflictVersion": {
           const artifact = await service.conflictArtifact(message.transactionId, message.observationId, message.versionId);
           const bytes = await readFormalizationArtifact(artifact);
+          operation.assertCurrent();
           if (artifact.kind === "pdf" || artifact.path.toLowerCase().endsWith(".pdf")) {
-            this.post({ type: "formalizationConflictPdf", transactionId: message.transactionId, observationId: message.observationId, versionId: message.versionId,
+            post({ type: "formalizationConflictPdf", transactionId: message.transactionId, observationId: message.observationId, versionId: message.versionId,
               pdf: { documentId: message.transactionId, revisionId: message.observationId, artifactId: message.versionId, pageIndex: 0, base64: bytes.toString("base64") } });
             return;
           }
           if (bytes.includes(0)) throw new Error("This preserved version requires local binary inspection on the owning host.");
-          const document = await vscode.workspace.openTextDocument({ content: bytes.toString("utf8"), language: artifact.kind === "lean" || artifact.path.endsWith(".lean") ? "lean4" : "plaintext" });
+          const uri = this.frozenDocuments.uriFor({ scope, documentId: message.transactionId, revisionId: message.observationId, artifactId: message.versionId, name: path.basename(artifact.path) }, bytes);
+          const document = await vscode.languages.setTextDocumentLanguage(await vscode.workspace.openTextDocument(uri), artifact.kind === "lean" || artifact.path.endsWith(".lean") ? "lean4" : artifact.path.endsWith(".md") ? "markdown" : "plaintext");
+          operation.assertCurrent();
+          this.services.formalizations.registerPreview(document.uri.toString(), scope);
+          this.openedSources.delete(document.uri.toString());
           await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.Beside, preview: true });
           return;
         }
         case "resolveFormalizationConflict":
           await service.resolveConflict(message.transactionId, message.observationId, message.reason);
-          this.post({ type: "formalizationConflicts", snapshot: await service.conflicts(), error: "", resolvedTransactionId: message.transactionId });
-          this.post({ type: "notify", level: "info", message: "Current workspace files retained. Available versions and any unavailable publication history were recorded with the resolution. Revalidate the mathematical translation before proving." });
+          post({ type: "formalizationConflicts", snapshot: await service.conflicts(), error: "", resolvedTransactionId: message.transactionId });
+          post({ type: "notify", level: "info", message: "Current workspace files retained. Available versions and any unavailable publication history were recorded with the resolution. Revalidate the mathematical translation before proving." });
           return;
         case "listFormalizations":
-          this.post({ type: "formalizationList", documents: await service.list(), error: "" });
+          post({ type: "formalizationList", documents: await service.list(), error: "" });
           return;
         case "showFormalization": {
           const snapshot = await service.show(message.documentId);
-          this.post({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+          post({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
           return;
         }
         case "inspectFormalization": {
-          const root = this.services.project.root || service.workspaceRoot();
           const picked = await vscode.window.showOpenDialog({
             canSelectMany: message.sourceKind === "file", canSelectFolders: message.sourceKind === "folder", canSelectFiles: message.sourceKind === "file",
             filters: message.sourceKind === "file" ? { "Source documents": ["tex", "pdf"] } : undefined,
             defaultUri: vscode.Uri.file(root), openLabel: "Inspect source coverage",
             title: message.sourceKind === "file" ? "Select TeX or PDF, or one TeX file with its companion PDF" : "Select a TeX project",
           });
+          operation.assertCurrent();
           if (!picked?.[0]) return;
           if (picked.length > 2 || message.sourceKind === "folder" && picked.length !== 1) throw new Error("Choose one TeX file and optionally one companion PDF, or one PDF source.");
           const selected = await Promise.all(picked.map(async entry => {
@@ -116,19 +150,21 @@ export class FormalizationHost {
           if (selected.length === 2 && (tex.length !== 1 || pdf.length !== 1)) throw new Error("A source pair must contain exactly one TeX file and one companion PDF.");
           const source = selected.length === 2 ? tex[0] : selected[0];
           const companion = selected.length === 2 ? path.relative(root, pdf[0]) : undefined;
+          operation.assertCurrent();
           const snapshot = await service.inspect(path.relative(root, source) || ".", companion);
-          this.post({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+          post({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
           return;
         }
         case "formalizationAction": {
           const snapshot = await service.action(message.documentId, message.revisionId, message.action);
-          this.post({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+          post({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
           return;
         }
         case "openFormalizationArtifact": {
           const snapshot = await service.show(message.documentId);
           if (snapshot.revision_id !== message.revisionId) throw new Error("The source revision changed. Refresh before opening this mapping.");
-          if (!snapshot.artifacts.some(artifact => artifact.id === message.artifactId)) throw new Error("This artifact is not part of the selected revision.");
+          const listedArtifact = snapshot.artifacts.find(artifact => artifact.id === message.artifactId);
+          if (!listedArtifact) throw new Error("This artifact is not part of the selected revision.");
           if (message.itemId) {
             const item = snapshot.items.find(item => item.id === message.itemId);
             if (!item || ![...item.source_refs, ...item.lean_refs].some(ref => ref.artifact_id === message.artifactId)) {
@@ -137,24 +173,58 @@ export class FormalizationHost {
           }
           const artifact = await service.artifact(message.documentId, message.revisionId, message.artifactId);
           const bytes = await readFormalizationArtifact(artifact);
+          operation.assertCurrent();
           if (artifact.kind === "pdf" || artifact.path.toLowerCase().endsWith(".pdf")) {
-            this.post({ type: "formalizationPdf", pdf: {
+            post({ type: "formalizationPdf", pdf: {
               documentId: message.documentId, revisionId: message.revisionId, artifactId: message.artifactId,
               pageIndex: message.pageIndex ?? 0, base64: bytes.toString("base64"),
             } });
             return;
           }
           if (bytes.includes(0)) throw new Error("This artifact cannot be displayed as source text.");
-          // A content document shows the exact frozen bytes on local and remote hosts.
-          // Opening it never grants the webview a path or a writable canonical source file.
-          const document = await vscode.workspace.openTextDocument({
-            content: bytes.toString("utf8"),
-            language: artifact.path.endsWith(".lean") ? "lean4" : artifact.path.endsWith(".tex") ? "latex" : "plaintext",
-          });
-          this.openedSources.set(document.uri.toString(), { documentId: message.documentId, revisionId: message.revisionId, artifactId: message.artifactId });
+          const uri = this.frozenDocuments.uriFor({ scope, documentId: message.documentId, revisionId: message.revisionId, artifactId: message.artifactId, name: path.basename(listedArtifact.path) }, bytes);
+          const document = await vscode.languages.setTextDocumentLanguage(await vscode.workspace.openTextDocument(uri), listedArtifact.path.endsWith(".lean") ? "lean4" : listedArtifact.path.endsWith(".tex") ? "latex" : listedArtifact.path.endsWith(".md") ? "markdown" : "plaintext");
+          operation.assertCurrent();
+          this.services.formalizations.registerPreview(document.uri.toString(), scope);
+          this.openedSources.delete(document.uri.toString());
+          if (artifact.kind !== "lean" && !message.artifactId.startsWith("draft-")) {
+            this.openedSources.set(document.uri.toString(), { documentId: message.documentId, revisionId: message.revisionId, artifactId: message.artifactId, formalizationWorkspace: scope });
+          }
           const line = Math.min(Math.max(0, (message.line ?? 1) - 1), Math.max(0, document.lineCount - 1));
+          operation.assertCurrent();
           await vscode.window.showTextDocument(document, {
             viewColumn: vscode.ViewColumn.Beside, preview: true, selection: new vscode.Range(line, 0, line, 0),
+          });
+          return;
+        }
+        case "launchFormalization":
+        case "resumeFormalization": {
+          const snapshot = await service.show(message.documentId);
+          if (snapshot.revision_id !== message.revisionId || snapshot.selection_conflict || snapshot.source_stale) {
+            throw new Error("The selected source revision changed or has a conflict. Refresh the inventory before launching.");
+          }
+          const setup = this.services.setup?.stateForRoot(root);
+          if (setup?.status === "running") throw new Error("Project setup is still running. Wait for project tools before starting or resuming formalization.");
+          if (snapshot.preparation?.current !== true && setup?.status !== "ready") {
+            throw new Error("Set up project tools in the Formalization tab before starting or resuming native planning.");
+          }
+          const source = await resolveExistingProjectPath(root, snapshot.source.path);
+          if (!source) throw new Error("The source is no longer available inside this workspace.");
+          if (message.request.kind !== "formalize") throw new Error("Use the Formalization tab to configure this source.");
+          let request = { ...message.request, target: snapshot.source.path };
+          if (message.type === "resumeFormalization") {
+            request = await this.services.runs.bindFormalizationResumeRequest(message.trackedRunId, request, root, snapshot.document_id);
+            operation.assertCurrent();
+          }
+          if (request.sourceDraftOnly && (snapshot.can_prove || ["published", "accepted_staged"].includes(snapshot.status))) {
+            throw new Error("An accepted revision cannot become an unaccepted source draft. Select a source revision first.");
+          }
+          operation.assertCurrent();
+          await this.launch({ ...request, kind: "formalize", target: snapshot.source.path,
+            formalization: undefined, research: false, researchWorkers: null, agents: 1,
+            noParallel: false, cleanRoom: false, humanReview: false }, {
+            ...operation, sourceDocumentId: snapshot.document_id,
+            resumeTrackedId: message.type === "resumeFormalization" ? message.trackedRunId : undefined,
           });
           return;
         }
@@ -164,31 +234,29 @@ export class FormalizationHost {
               snapshot.handoff?.revision_id !== message.revisionId) {
             throw new Error("This revision is not ready for proving. Refresh and resolve the controller's blockers.");
           }
-          if (!snapshot.handoff.obligations.length) {
-            this.post({ type: "notify", level: "info", message: "No proof obligations remain in this accepted formalization. No model was launched." });
-            return;
-          }
+          if (!snapshot.handoff.obligations.length) throw new Error("The controller returned an inconsistent empty prover handoff. Refresh before proving.");
+          operation.assertCurrent();
           await this.launch({
-            ...message.request, kind: "prove", target: "", prompt: "", additionalSkills: [],
+            ...message.request, kind: "prove", target: "", prompt: "", additionalSkills: [], sourceDraftOnly: false,
             formalization: { documentId: message.documentId, revisionId: message.revisionId },
-          });
+          }, operation);
           return;
         }
       }
     } catch (error) {
       const reason = redactSensitiveText(error instanceof Error ? error.message : String(error));
       if (message.type === "listFormalizations") {
-        this.post({ type: "formalizationList", documents: [], error: reason });
+        post({ type: "formalizationList", documents: [], error: reason });
       } else if (message.type === "showFormalization" || message.type === "formalizationAction") {
-        this.post({ type: "formalizationState", documentId: message.documentId, snapshot: null, error: reason });
+        post({ type: "formalizationState", documentId: message.documentId, snapshot: null, error: reason });
       } else if (message.type === "listFormalizationConflicts" || message.type === "openFormalizationConflictVersion" || message.type === "resolveFormalizationConflict") {
-        this.post({ type: "formalizationConflicts", snapshot: null, error: reason });
+        post({ type: "formalizationConflicts", snapshot: null, error: reason });
       } else if (message.type === "planFormalizationPreparation" || message.type === "prepareFormalization") {
-        this.post({ type: "formalizationPreparation", documentId: message.documentId, revisionId: message.revisionId, status: "failed", message: reason, error: reason });
+        post({ type: "formalizationPreparation", documentId: message.documentId, revisionId: message.revisionId, status: "failed", message: reason, error: reason });
       } else if (message.type === "listFormalizationPreparationRecovery" || message.type === "recoverFormalizationPreparation" || message.type === "resolveFormalizationPreparation") {
-        this.post({ type: "formalizationPreparationRecovery", snapshot: null, error: reason, busy: false });
+        post({ type: "formalizationPreparationRecovery", snapshot: null, error: reason, busy: false });
       } else {
-        this.post({ type: "notify", level: "error", message: reason });
+        post({ type: "notify", level: "error", message: reason });
       }
     }
   }

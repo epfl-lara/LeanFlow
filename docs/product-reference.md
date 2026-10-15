@@ -226,9 +226,6 @@ start a new native run instead of resuming a direct-provider conversation.
 | --- | --- |
 | `prove` | Independently accepted replacements for existing proof holes |
 | `formalize` | A buildable statement draft reviewed against its TeX/PDF source |
-| `draft` | Lean declarations and proof skeletons |
-| `review` | Findings about diagnostics, goals, and remaining holes |
-| `refactor` / `golf` | Verified Lean proof simplification |
 
 `autoprove` and `autoformalize` are aliases of `prove` and `formalize`.
 
@@ -236,7 +233,6 @@ start a new native run instead of resuming a direct-provider conversation.
 leanflow workflow prove Main.lean
 leanflow workflow prove Main.lean --research-workers 3
 leanflow workflow formalize docs/paper.tex
-leanflow workflow review Main.lean --provider claude
 leanflow workflow --dry-run --json prove Main.lean
 ```
 

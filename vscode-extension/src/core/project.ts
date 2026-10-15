@@ -21,6 +21,9 @@ export const NO_PROJECT: ProjectInfo = { found: false, root: "", label: "", stat
 
 function ascendToProject(start: string): string | null {
   let current = path.resolve(start);
+  // A folder alias can hide a project manifest in its real parent. Walk the
+  // owning host's ancestry rather than the spelling of the workspace alias.
+  try { current = fs.realpathSync(current); } catch { /* Discovery may race a folder move. */ }
   // Walk to the filesystem root; `path.dirname` is its own fixed point there.
   for (;;) {
     if (fs.existsSync(path.join(current, MANIFEST))) {
@@ -90,7 +93,11 @@ export function discoverProject(): ProjectInfo {
 }
 
 /** Resolve one nested project when the workspace folder is its parent. */
-export async function discoverProjectIncludingNested(preferredRoot = ""): Promise<ProjectInfo> {
+export async function discoverProjectIncludingNested(preferredRoot = "", ownedPreviewRoot = ""): Promise<ProjectInfo> {
+  const previewUri = vscode.window.activeTextEditor?.document.uri;
+  if (ownedPreviewRoot && !configuredProjectRoot() && (!previewUri || !isHostFileUri(previewUri))) {
+    return fs.existsSync(path.join(ownedPreviewRoot, MANIFEST)) ? describe(ownedPreviewRoot) : NO_PROJECT;
+  }
   const immediate = discoverProject();
   if (immediate.found || configuredProjectRoot()) {
     return immediate;

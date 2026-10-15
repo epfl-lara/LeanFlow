@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import math
 import os
 import stat
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -53,9 +55,50 @@ def mkdir_durable(path: Path) -> None:
         sync_directory(entry.parent)
 
 
+def _check_wait(cancelled: Callable[[], bool] | None, deadline: float | None) -> None:
+    """Refuse optional queued work without changing source or caller cancellation state."""
+    if cancelled is not None and cancelled():
+        raise PublicationCancelled("Publication ownership wait was cancelled")
+    if deadline is not None and time.monotonic() >= deadline:
+        raise PublicationCancelled("Publication ownership wait exhausted its deadline")
+
+
+def _lock_identity(info: os.stat_result) -> tuple[int, int]:
+    """Refuse special files and aliases before treating an inode as project ownership."""
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise PublicationConflict("Publication lock must be a regular file with one link")
+    return info.st_dev, info.st_ino
+
+
+def _assert_lock_entry(
+    path: Path, descriptor: int, expected: tuple[int, int] | None = None
+) -> tuple[int, int]:
+    """Keep ownership on the exact regular inode still named by the controller lock entry."""
+    opened = _lock_identity(os.fstat(descriptor))
+    try:
+        current = _lock_identity(path.lstat())
+    except FileNotFoundError as error:
+        raise PublicationConflict("Publication lock entry disappeared before ownership") from error
+    if current != opened or (expected is not None and expected != opened):
+        raise PublicationConflict("Publication lock entry changed before ownership")
+    return opened
+
+
 @contextmanager
-def publication_lock(root: Path) -> Iterator[None]:
-    """Serialize host mutations, allowing nested checks by the owning thread."""
+def publication_lock(
+    root: Path,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    deadline: float | None = None,
+) -> Iterator[None]:
+    """Serialize mutation; optionally poll bounded cancellation during ownership waits.
+
+    Default callers retain blocking and same-thread reentrant ownership. Recovery
+    can therefore finish an already owned source transaction after cancellation.
+    """
+    if deadline is not None and not math.isfinite(deadline):
+        raise ValueError("Publication wait requires a finite absolute deadline")
+    _check_wait(cancelled, deadline)
     if fcntl is None:
         raise PublicationUnsupported(
             "Native host lacks publication locking; revision remains staged"
@@ -69,13 +112,39 @@ def publication_lock(root: Path) -> Iterator[None]:
             os.close(inherited)
             del held[name]
     if identity in held:
+        _check_wait(cancelled, deadline)
+        _assert_lock_entry(
+            contained(root, ".leanflow/formalization-publication.lock"), held[identity][1]
+        )
         yield
         return
     lock = contained(root, ".leanflow/formalization-publication.lock")
     mkdir_durable(lock.parent)
-    descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        previous = _lock_identity(lock.lstat())
+    except FileNotFoundError:
+        previous = None
+    descriptor = os.open(
+        lock,
+        os.O_WRONLY | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        opened = _assert_lock_entry(lock, descriptor, previous)
+        if cancelled is None and deadline is None:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        else:
+            while True:
+                _check_wait(cancelled, deadline)
+                _assert_lock_entry(lock, descriptor, opened)
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic() if deadline is not None else 0.05
+                    time.sleep(max(0.0, min(0.05, remaining)))
+            _check_wait(cancelled, deadline)
+        _assert_lock_entry(lock, descriptor, opened)
         held[identity] = (os.getpid(), descriptor)
         yield
     finally:

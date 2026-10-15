@@ -7,11 +7,19 @@ See [the workflow guide](formalization.md) for commands and editor use.
 
 ## Preparation and translation
 
-A real formalization launch starts by freezing its source and estimating the
+A real translation launch requires a current project setup checkpoint before any
+paid planning call. The Formalization tab exposes **Set up project** first;
+the matching CLI command is `leanflow project setup`. A current formalization
+preparation can also establish this infrastructure prerequisite. Source inspection
+and viewing completed unaccepted drafts remain available without initializing tools.
+
+After this baseline, formalization freezes its source and estimates the
 mathematical prerequisites, useful existing declarations, imports, representation
 choices and a representative slice. The estimate comes from a fresh read-only
 native session. It can propose dependencies; it cannot authorize an unlisted
 source, replace an existing package pin or approve its own mathematics.
+Missing approved dependencies can therefore be added after initial setup, while
+the baseline and dependency expansion remain visible separate checkpoints.
 
 The controller validates a bounded plan. Existing compatible dependencies are
 reused. The shipped catalog pins Mathlib and REPL for the default Lean version. Missing
@@ -54,6 +62,12 @@ The deterministic provenance scanner partitions all source regions, including
 prose outside theorem environments. Optional plasTeX comparison adds candidates;
 neither parser certifies that all mathematics was found. Explicit item, boundary,
 shared-mapping and region repairs remain revision-bound.
+Class/package execution, character preprocessing and inherited token meanings can
+make structural extraction uncertain, even for ordinary article sources. These
+diagnostics stop normal translation before model discovery. An explicitly paired
+PDF permits `--source-draft-only` for checked setup and one retained unaccepted
+author preview; this does not discharge source blockers or permit publication and
+proving. Resuming a completed preview campaign makes no new author call.
 
 PDF-only extraction never passes fidelity because a page has selectable text.
 A page with raster mathematics requires verified full-page transcription, or

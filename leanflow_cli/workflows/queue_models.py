@@ -95,12 +95,6 @@ class QueueItem:
     def has_diagnostic_reason(self) -> bool:
         return any("diagnostic" in r.lower() or "error" in r.lower() for r in self.reasons)
 
-    def has_golf_reason(self) -> bool:
-        """Golf candidates (managed /golf, Phase 6) — their own bucket:
-        prove queues never emit this reason, so prove selection is
-        byte-identical."""
-        return any("golf candidate" in str(reason).lower() for reason in self.reasons)
-
     def has_sorry_reason(self) -> bool:
         return "contains sorry" in {r.lower() for r in self.reasons}
 
@@ -431,9 +425,6 @@ def select_next_item(
         for item in queue:
             if item.label and is_present_in_file(item.label) and item.has_sorry_reason():
                 return item
-        for item in queue:
-            if item.label and is_present_in_file(item.label) and item.has_golf_reason():
-                return item
         return None
     rank_fn = precedence
 
@@ -455,12 +446,7 @@ def select_next_item(
         for item in queue
         if item.label and is_present_in_file(item.label) and item.has_sorry_reason()
     ]
-    golf = [
-        item
-        for item in queue
-        if item.label and is_present_in_file(item.label) and item.has_golf_reason()
-    ]
-    ranks = {id(item): _rank(item) for item in (*diagnostic, *sorry, *golf)}
+    ranks = {id(item): _rank(item) for item in (*diagnostic, *sorry)}
 
     order = {id(item): index for index, item in enumerate(queue)}
 
@@ -494,7 +480,7 @@ def select_next_item(
         best = min(ranks[id(item)] for item in bucket)
         return _curriculum_pick([item for item in bucket if ranks[id(item)] == best])
 
-    return _pick(diagnostic) or _pick(sorry) or _pick(golf)
+    return _pick(diagnostic) or _pick(sorry)
 
 
 def classify_check(check: ManagerCheck) -> Classification:

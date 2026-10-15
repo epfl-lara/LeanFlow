@@ -19,7 +19,13 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from agent.runtime.harness.processes import ProcessTree
+from agent.runtime.harness.models import NativeCleanupUnverified
+from agent.runtime.harness.processes import (
+    ProcessTree,
+    _cleanup_states,
+    signal_group,
+    verify_owned_stopped,
+)
 from core.deadlines import deadline_after, operation_cancelled, remaining_seconds, wait_slice
 from leanflow_cli.workflows.prover.check_sandbox import (
     IsolationUnavailable,
@@ -36,25 +42,63 @@ _WORKSPACE_LOCKS: dict[tuple[Path, Path], threading.Lock] = {}
 _LOCK = threading.RLock()
 
 
+def _group_has_owned_member(process: subprocess.Popen[bytes], tree: ProcessTree | None) -> bool:
+    """Require a cached live identity before signaling a reaped leader's former group."""
+    if tree is None or not tree.descendants:
+        return False
+    table = _cleanup_states(2.0)
+    return any(
+        pid in table
+        and table[pid][0] == process.pid
+        and not table[pid][1].startswith("Z")
+        and table[pid][2] == " ".join(identity.split())
+        for pid, identity in tree.descendants.items()
+    )
+
+
 def _kill(process: subprocess.Popen[bytes], tree: ProcessTree | None = None) -> None:
-    """Kill the owned group and tracked detached descendants, then reap the leader."""
-    if tree is not None:
-        tree.refresh()
-        tree.signal(signal.SIGKILL)
+    """Stop owned identities without adopting descendants from an already reaped PID."""
+    failures: list[Exception] = []
     try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except PermissionError:
-        # macOS can report EPERM for the empty group during child exit before
-        # waitpid reaps it. A live owned leader still needs an explicit kill.
-        if process.poll() is None:
-            process.kill()
+        # An unreaped child reserves its PID. After wait/poll, only a matching
+        # tracked member can establish ownership of the former group.
+        if process.returncode is None or _group_has_owned_member(process, tree):
+            signal_group(process, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        failures.append(error)
+    if tree is not None:
+        actions = [lambda: tree.signal(signal.SIGKILL)]
+        if process.returncode is None:
+            actions.insert(0, tree.refresh)
+        for action in actions:
+            try:
+                action()
+            except (OSError, subprocess.SubprocessError, ValueError) as error:
+                failures.append(error)
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         process.kill()
-        process.wait(timeout=5)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            raise NativeCleanupUnverified(
+                "Lean checker leader remains live; retain its inputs"
+            ) from error
+    if failures:
+        raise NativeCleanupUnverified(
+            "Lean checker descendant cleanup is unverified; retain its inputs: " + str(failures[0])
+        ) from failures[0]
+    try:
+        verified = verify_owned_stopped(tree, group=process.pid)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        raise NativeCleanupUnverified(
+            "Lean checker closure evidence is unavailable; retain its inputs"
+        ) from error
+    if not verified:
+        raise NativeCleanupUnverified(
+            "Lean checker group or tracked descendants remain live; retain its inputs"
+        )
 
 
 def _failure(code: str, error: str, *, timed_out: bool = False) -> dict[str, Any]:
@@ -65,6 +109,34 @@ def _failure(code: str, error: str, *, timed_out: bool = False) -> dict[str, Any
         "error": error[:_MAX_ERROR],
         "timed_out": timed_out,
     }
+
+
+def _require_output_eof(process: subprocess.Popen[bytes]) -> None:
+    """Require physical pipe closure rather than hiding an unobserved writer locally."""
+    deadline = time.monotonic() + 2.0
+    try:
+        with selectors.DefaultSelector() as selector:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    os.set_blocking(stream.fileno(), False)
+                    selector.register(stream, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise NativeCleanupUnverified(
+                        "Lean checker output pipes remain open; retain its inputs"
+                    )
+                for key, _ in selector.select(min(0.05, remaining)):
+                    try:
+                        chunk = os.read(key.fd, 65536)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+    except (OSError, ValueError) as error:
+        raise NativeCleanupUnverified(
+            "Lean checker output closure is unverified; retain its inputs"
+        ) from error
 
 
 class _CheckWorker:
@@ -80,6 +152,10 @@ class _CheckWorker:
         self.buffer = bytearray()
         self.errors = bytearray()
         self.closed = False
+        self._close_lock = threading.Lock()
+        self._closing = False
+        self._processes_verified = False
+        self._output_eof_verified = False
         self.has_checked = False
         try:
             script = Path(__file__).with_name("check_worker.py").resolve()
@@ -118,16 +194,36 @@ class _CheckWorker:
             raise
 
     def close(self) -> None:
-        """Stop checker descendants and remove only private checker caches."""
-        if self.closed:
-            return
-        self.closed = True
-        if self.process is not None:
-            _kill(self.process, self.tree)
-            for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
-                if stream is not None:
-                    stream.close()
-        shutil.rmtree(self.private, ignore_errors=True)
+        """Keep ownership retryable until every checker process has verifiably stopped."""
+        with self._close_lock:
+            if self.closed:
+                return
+            self._closing = True
+            if self.process is not None:
+                if not self._processes_verified:
+                    _kill(self.process, self.tree)
+                    self._processes_verified = True
+                if not self._output_eof_verified:
+                    _require_output_eof(self.process)
+                    self._output_eof_verified = True
+                for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+                    if stream is not None:
+                        stream.close()
+            shutil.rmtree(self.private, ignore_errors=True)
+            self.closed = True
+            self._closing = False
+
+    def _require_open(self, *, refresh: bool = False) -> None:
+        """Serialize root sampling with close and refuse retired or uncertain workers."""
+        with self._close_lock:
+            assert self.process is not None
+            if self.closed or self._closing or self.process.returncode is not None:
+                self._closing = not self.closed
+                raise NativeCleanupUnverified(
+                    "Lean checker is closing or already reaped; complete its cleanup before reuse"
+                )
+            if refresh and self.tree is not None:
+                self.tree.refresh()
 
     def request(
         self,
@@ -140,6 +236,7 @@ class _CheckWorker:
         assert self.process is not None and self.process.stdin is not None
         process = self.process
         assert process.stdin is not None
+        self._require_open()
         payload = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
         if len(payload) > _MAX_MESSAGE:
             return _failure("check_request_too_large", "Lean checker request exceeds 4 MiB.")
@@ -154,8 +251,7 @@ class _CheckWorker:
                 selector.register(process.stdout, selectors.EVENT_READ, "output")
                 selector.register(process.stderr, selectors.EVENT_READ, "error")
                 while True:
-                    if self.tree is not None:
-                        self.tree.refresh()
+                    self._require_open(refresh=True)
                     if operation_cancelled() or (cancelled is not None and cancelled()):
                         self.close()
                         return _failure(
@@ -213,6 +309,8 @@ class _CheckWorker:
                                 self.buffer.extend(chunk)
                                 if len(self.buffer) > _MAX_MESSAGE:
                                     raise ValueError("Lean checker response exceeds 4 MiB.")
+        except NativeCleanupUnverified:
+            raise
         except TimeoutError as exc:
             self.close()
             return _failure("check_timeout", str(exc), timed_out=True)
@@ -273,7 +371,10 @@ def check_scratch(
                 )
             with _LOCK:
                 worker = _WORKERS.get(key)
-                if worker is not None and worker.environment_generation != generation:
+                if worker is not None and (
+                    worker.environment_generation != generation
+                    or getattr(worker, "_closing", False)
+                ):
                     worker.close()
                 if worker is None or worker.closed:
                     worker = _CheckWorker(project, work)
@@ -329,7 +430,8 @@ def close_check_workers(workspace: Path) -> None:
     work = workspace.resolve()
     with _LOCK:
         for key in [key for key in _WORKERS if key[1] == work]:
-            _WORKERS.pop(key).close()
+            _WORKERS[key].close()
+            _WORKERS.pop(key)
 
 
 def preflight_check(
@@ -502,7 +604,8 @@ def _capture_command(
             selector.register(stream, selectors.EVENT_READ, name)
         while selector.get_map():
             if tree is not None:
-                tree.refresh()
+                if process.returncode is None:
+                    tree.refresh()
                 if process.poll() is not None:
                     # A background child may retain our pipes after the compiler
                     # exits. End its authority before trusting produced artifacts.

@@ -75,6 +75,8 @@ class NativeBridge:
         self.persistent = persistent
         self.started = False
         self.closed = False
+        self.closing = False
+        self._close_lock = threading.Lock()
         self.stop_events: dict[str, threading.Event] = {}
         self.toolset = toolset
         self.context = copy.deepcopy(dict(context))
@@ -166,21 +168,25 @@ class NativeBridge:
                 thread.join()
 
     def close(self) -> None:
-        """Cancel operations and join their cleanup when the owning controller stops."""
-        with self.lock:
-            if self.closed:
-                return
-            self.closed = True
-            for event in self.stop_events.values():
-                event.set()
-        self.drain()
-        from leanflow_cli.workflows.prover.check_process import close_check_workers
+        """Refuse new operations while retaining retryable ownership until cleanup succeeds."""
+        with self._close_lock:
+            with self.lock:
+                if self.closed:
+                    return
+                self.closing = True
+                for event in self.stop_events.values():
+                    event.set()
+            self.drain()
+            from leanflow_cli.workflows.prover.check_process import close_check_workers
 
-        close_check_workers(self.toolset.workspace)
-        if self.started:
-            self.server.shutdown()
-            self.thread.join()
-        self.server.server_close()
+            close_check_workers(self.toolset.workspace)
+            if self.started:
+                self.server.shutdown()
+                self.thread.join()
+            self.server.server_close()
+            with self.lock:
+                self.closed = True
+                self.closing = False
 
     def mcp_config(self) -> dict[str, Any]:
         """Return a native stdio server specification with this job's capability."""
@@ -353,7 +359,7 @@ class NativeBridge:
         _validate_arguments(arguments, schema["inputSchema"])
         arguments = copy.deepcopy(arguments)
         with self.lock:
-            if self.closed:
+            if self.closed or self.closing:
                 raise ValueError("This job bridge is closed")
         if name == "get_assignment":
             return copy.deepcopy(self.context)
@@ -443,7 +449,7 @@ class NativeBridge:
         # Publish and start under the same lock as close/drain so cleanup cannot
         # miss an admitted operation whose worker has not started yet.
         with self.lock:
-            if self.closed:
+            if self.closed or self.closing:
                 raise ValueError("This job bridge is closed")
             self.operations[operation["id"]] = operation
             self.stop_events[operation["id"]] = threading.Event()

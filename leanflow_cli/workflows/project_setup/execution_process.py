@@ -14,7 +14,12 @@ from agent.runtime.harness.models import BackendError
 from agent.runtime.harness.processes import ProcessTree, cleanup_group
 from leanflow_cli.workflows.project_setup.cleanup import verify_owned_stopped
 from leanflow_cli.workflows.project_setup.execution import SetupExecutionPolicy, owned_rss_bytes
-from leanflow_cli.workflows.project_setup.process import Progress, SetupFailure, safe_text
+from leanflow_cli.workflows.project_setup.process import (
+    Progress,
+    SetupFailure,
+    safe_text,
+    validate_stdout_limit,
+)
 
 CHUNK_BYTES = 4096
 TAIL_BYTES = 64000
@@ -32,8 +37,10 @@ def run_restricted_command(
     execution_policy: SetupExecutionPolicy,
     input_text: str | None = None,
     stdout_only: bool = False,
+    stdout_limit_bytes: int | None = None,
 ) -> tuple[int, str]:
     """Execute only bound tools, sampling owned-tree resources and preserving protocol stdout."""
+    validate_stdout_limit(stdout_only, stdout_limit_bytes)
     policy = execution_policy
     cwd = cwd.resolve()
     if not cwd.is_relative_to(policy.isolation.snapshot_root.resolve()):
@@ -65,7 +72,7 @@ def run_restricted_command(
     tree: ProcessTree | None = None
     workers: list[threading.Thread] = []
     stopped = threading.Event()
-    lines: queue.Queue[tuple[bool, bytes | None]] = queue.Queue(maxsize=64)
+    lines: queue.Queue[tuple[bool, bytes | Exception | None]] = queue.Queue(maxsize=64)
     try:
         policy.check(cancel)
         try:
@@ -94,7 +101,7 @@ def run_restricted_command(
         policy.usage.commands += 1
         tree = ProcessTree(process.pid)
 
-        def enqueue(channel: bool, content: bytes | None) -> None:
+        def enqueue(channel: bool, content: bytes | Exception | None) -> None:
             while not stopped.is_set():
                 try:
                     lines.put((channel, content), timeout=0.05)
@@ -109,6 +116,8 @@ def run_restricted_command(
                     if not block:
                         break
                     enqueue(channel, block)
+            except Exception as error:
+                enqueue(channel, error)
             finally:
                 enqueue(channel, None)
 
@@ -139,6 +148,7 @@ def run_restricted_command(
             writer.start()
         tail = b""
         stdout_tail = b""
+        protocol_stdout = bytearray()
         pending = {False: b"", True: b""}
         preceding_cr = {False: False, True: False}
 
@@ -179,6 +189,14 @@ def run_restricted_command(
                     pending[channel] = b""
                 ended += 1
                 continue
+            if isinstance(content, Exception):
+                if stdout_limit_bytes is not None:
+                    raise SetupFailure(
+                        "setup_protocol_read_failed",
+                        "Complete preparation protocol output could not be read.",
+                        "Retry the readiness query; incomplete output cannot establish readiness.",
+                    ) from content
+                continue
             policy.usage.output_bytes += len(content)
             if policy.usage.output_bytes > policy.max_output_bytes:
                 raise SetupFailure(
@@ -189,6 +207,14 @@ def run_restricted_command(
             tail = (tail + content)[-TAIL_BYTES:]
             if channel:
                 stdout_tail = (stdout_tail + content)[-TAIL_BYTES:]
+                if stdout_limit_bytes is not None:
+                    if len(protocol_stdout) + len(content) > stdout_limit_bytes:
+                        raise SetupFailure(
+                            "setup_protocol_output_limit",
+                            "Complete preparation protocol output exceeds its byte bound.",
+                            "Reduce or page the protocol query; truncated output cannot establish readiness.",
+                        )
+                    protocol_stdout.extend(content)
             # Treat terminal progress updates as bounded logical records while
             # preserving the exact raw protocol bytes in the tails above.
             if preceding_cr[channel] and content.startswith(b"\n"):
@@ -215,7 +241,8 @@ def run_restricted_command(
             if len(pending[channel]) > LINE_BYTES:
                 emit(pending[channel])
         code = process.wait()
-        return code, (stdout_tail if stdout_only and code == 0 else tail).decode(
+        stdout = bytes(protocol_stdout) if stdout_limit_bytes is not None else stdout_tail
+        return code, (stdout if stdout_only and code == 0 else tail).decode(
             "utf-8", errors="replace"
         )
     except (OSError, subprocess.SubprocessError) as error:

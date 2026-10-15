@@ -212,12 +212,12 @@ export function SweepsView() {
           <label className="field">
             <span className="label">Workflow</span>
             <input type="text" value={frozenBase.kind} readOnly />
-            <span className="hint">Change this on the Launch tab before creating.</span>
+            <span className="hint">Change this on the selected workflow tab before creating.</span>
           </label>
         </div>
 
         <Notice tone="info">
-          <strong>Base settings frozen from the Launch tab when you create.</strong>
+          <strong>Base settings frozen from the selected workflow tab when you create.</strong>
           <div style={{ marginTop: 4 }}>{baseSummary}</div>
         </Notice>
 
@@ -230,7 +230,7 @@ export function SweepsView() {
               onChange={(event) => setTargets(event.target.value)}
             />
             <span className="hint">
-              Empty uses the Launch target: {frozenBase.target || "whole project"}.
+              Empty uses the selected workflow target: {frozenBase.target || "whole project"}.
             </span>
           </label>
           <label className="field">
@@ -241,7 +241,7 @@ export function SweepsView() {
               onChange={(event) => setModels(event.target.value)}
             />
             <span className="hint">
-              Empty uses the Launch model: {frozenBase.model || "configured default"}.
+              Empty uses the selected workflow model: {frozenBase.model || "configured default"}.
             </span>
           </label>
         </div>
@@ -283,7 +283,7 @@ export function SweepsView() {
         )}
         {selectedProfiles.length === 0 && (
           <div className="hint" style={{ marginTop: 6 }}>
-            No axis profile selected; this uses the Launch profile: {frozenBase.profile || "declared defaults"}.
+            No axis profile selected; this uses the selected workflow profile: {frozenBase.profile || "declared defaults"}.
           </div>
         )}
 

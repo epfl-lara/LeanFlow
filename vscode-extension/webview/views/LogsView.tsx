@@ -148,6 +148,7 @@ export function LogsView() {
   // so a run started from a terminal is still readable here.
   const runId = run?.runId || "";
   const stream: ActivityEvent[] = useMemo(() => (events[runId] ?? []).filter(event => event.run_id === runId), [events, runId]);
+  const awaitingFormalizationEvents = Boolean(run?.active && run.workflowKind === "formalize" && stream.length === 0);
   const activity = useMemo(() => coalesceActivity(stream), [stream]);
   const lastEventId = stream[stream.length - 1]?.event_id || "";
   const agents = useMemo(
@@ -353,8 +354,13 @@ export function LogsView() {
           <div className="log-list" ref={listRef}>
             {filtered.length === 0 ? (
               <div className="empty">
-                No events match this filter.
-                {stream.length > 0 && <> {stream.length} events are buffered.</>}
+                {awaitingFormalizationEvents ? (
+                  <>Project preparation and dependency planning may still be running. Check this run’s terminal for setup output; author events appear when the author starts.</>
+                ) : (
+                  <>No events match this filter.
+                    {stream.length > 0 && <> {stream.length} events are buffered.</>}
+                  </>
+                )}
               </div>
             ) : (
               segments.map((segment) => {
@@ -435,7 +441,7 @@ export function LogsView() {
         </div>
       )}
 
-      {!view.logRaw && stream.length === 0 && runId && (
+      {!view.logRaw && stream.length === 0 && runId && !awaitingFormalizationEvents && (
         <Notice tone="info">
           Buffered events are read incrementally while a run is active. A run that finished
           before this window opened shows its events after the next refresh.

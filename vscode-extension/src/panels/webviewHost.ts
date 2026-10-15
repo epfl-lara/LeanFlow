@@ -5,10 +5,13 @@
  * bundle and speak the same message protocol, so the handling lives once here
  * and each surface only supplies its own `vscode.Webview`.
  */
+import type { FormalizationOperation } from "./formalizationOperation";
+
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { assertWorkflowProjectReady } from "../core/projectSetupTypes";
 
 import {
   CliError,
@@ -115,7 +118,7 @@ export class WebviewHost implements vscode.Disposable {
     private readonly webview: vscode.Webview,
     private readonly services: LeanFlowServices,
   ) {
-    this.formalizations = new FormalizationHost(services, message => this.post(message), request => this.dispatch({ type: "launch", request }));
+    this.formalizations = new FormalizationHost(services, message => this.post(message), (request, operation) => this.dispatch({ type: "launch", request }, operation));
     this.disposables.push(
       webview.onDidReceiveMessage((raw: unknown) => {
         // The webview is a separate document; nothing it posts is trusted until
@@ -176,7 +179,7 @@ export class WebviewHost implements vscode.Disposable {
     }
   }
 
-  private async dispatch(message: WebviewMessage): Promise<void> {
+  private async dispatch(message: WebviewMessage, operation?: FormalizationOperation): Promise<void> {
     if (await this.formalizations.handle(message)) return;
     const { services } = this;
     switch (message.type) {
@@ -237,9 +240,18 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "launch": {
-        services.setup.assertLaunchReady(services.project.root);
+        operation?.assertCurrent();
+        if (message.request.kind === "formalize" && !operation?.sourceDocumentId) {
+          this.notify("error", "Choose a source in the Formalization tab before launching its translation.");
+          return;
+        }
+        const launchRoot = operation?.services.project.root ?? services.project.root;
+        assertWorkflowProjectReady(services.setup, launchRoot, message.request.kind);
         const profile = services.profiles?.profiles.find(row => row.name === message.request.profile);
-        const problems = [...validateLaunch(message.request), ...launchModelProblems(message.request, services.providers.state(), profile?.overrides)];
+        // Resume uses its original trusted native selection. The CLI decides
+        // whether paid continuation needs authentication; local draft recovery
+        // must remain available after today's catalog or login changes.
+        const problems = [...validateLaunch(message.request), ...(operation?.resumeTrackedId ? [] : launchModelProblems(message.request, services.providers.state(), profile?.overrides))];
         if (problems.length > 0) {
           this.notify("error", problems.join(" "));
           return;
@@ -251,7 +263,9 @@ export class WebviewHost implements vscode.Disposable {
           message.request,
           services.profiles,
           services.catalog,
+          operation ? { projectRoot: launchRoot, assertCurrent: operation.assertCurrent, sourceDocumentId: operation.sourceDocumentId, resumeTrackedId: operation.resumeTrackedId } : {},
         );
+        operation?.assertCurrent();
         services.selectRun(run.id);
         // The run id is minted at launch, so this is the first place it exists.
         this.notify(run.status === "failed" ? "error" : "info", run.status === "failed" ? run.error || "The workflow could not start." : `Started ${run.label}. ${run.launchNotice || ""}`);
@@ -467,6 +481,7 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "openDashboard": {
+        if (message.workflow) services.openWorkflow(message.workflow);
         await vscode.commands.executeCommand("leanflow.openDashboard");
         return;
       }
@@ -555,7 +570,7 @@ export class WebviewHost implements vscode.Disposable {
     }
   }
 
-  private async pickTarget(kind: string): Promise<void> {
+  private async pickTarget(kind: import("../core/types").WorkflowKind): Promise<void> {
     const { services } = this;
     if (!services.project.found) {
       this.notify("error", "No LeanFlow project is open.");
@@ -585,7 +600,7 @@ export class WebviewHost implements vscode.Disposable {
       return;
     }
     const realRoot = await fs.promises.realpath(services.project.root);
-    this.post({ type: "targetPicked", path: path.relative(realRoot, realTarget) });
+    this.post({ type: "targetPicked", path: path.relative(realRoot, realTarget), kind });
   }
 
   private async saveProfile(profile: FlagProfile): Promise<void> {

@@ -45,6 +45,7 @@ export function parseFormalizationAction(value: unknown): FormalizationAction | 
   if (!raw) return null;
   switch (raw.type) {
     case "resolve_command":
+    case "resolve_conditional":
       return formalizationId(raw.diagnostic_id) && text(raw.interpretation) && raw.interpretation.trim() &&
         text(raw.reason) && raw.reason.trim() && raw.verified === true
         ? { type: raw.type, diagnostic_id: raw.diagnostic_id, interpretation: raw.interpretation, reason: raw.reason, verified: true } : null;

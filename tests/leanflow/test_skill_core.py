@@ -1,10 +1,11 @@
+"""Exercise curated skill overlays and supported workflow defaults."""
+
 from __future__ import annotations
 
 import pytest
 
 from leanflow_cli.runtime.skill_core import (
     CURATED_BUILTIN_SKILLS,
-    build_skill_prompt,
     default_workflow_skill,
     discover_skill_commands,
     discover_skills,
@@ -143,12 +144,6 @@ def test_load_skill_accepts_direct_skill_path(monkeypatch, tmp_path):
         ("prove", "lean-proof-loop"),
         ("autoformalize", "lean-formalization"),
         ("formalize", "lean-formalization"),
-        ("draft", "lean-formalization"),
-        ("review", "lean-diagnostics"),
-        ("refactor", "lean-refactor-golf"),
-        ("golf", "lean-refactor-golf"),
-        ("unknown-kind", "lean-proof-loop"),
-        ("", "lean-proof-loop"),
     ],
 )
 def test_default_workflow_skill_covers_all_workflow_kinds(workflow_kind, expected_skill):
@@ -158,62 +153,6 @@ def test_default_workflow_skill_covers_all_workflow_kinds(workflow_kind, expecte
 def test_default_workflow_skill_is_case_insensitive():
     assert default_workflow_skill("AUTOPROVE") == "lean-proof-loop"
     assert default_workflow_skill("AutoFormalize") == "lean-formalization"
-    assert default_workflow_skill("GOLF") == "lean-refactor-golf"
-
-
-def test_build_skill_prompt_includes_name_source_header(monkeypatch, tmp_path):
-    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(tmp_path)
-
-    prompt = build_skill_prompt("lean-proof-loop", tmp_path)
-
-    assert "[LEANFLOW SKILL: lean-proof-loop (builtin)]" in prompt
-
-
-def test_build_skill_prompt_includes_skill_content(monkeypatch, tmp_path):
-    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(tmp_path)
-
-    prompt = build_skill_prompt("lean-proof-loop", tmp_path)
-
-    assert len(prompt) > 50, "Prompt should contain meaningful skill content"
-
-
-def test_build_skill_prompt_includes_linked_workflow_spec_bodies(monkeypatch, tmp_path):
-    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(tmp_path)
-
-    prompt = build_skill_prompt("lean-proof-loop", tmp_path)
-
-    assert "[LINKED WORKFLOW SPECS FOLLOW." in prompt.upper()
-    assert "[WORKFLOW SPEC: prove]".upper() in prompt.upper()
-    assert "## Tool Order" in prompt
-
-
-def test_build_skill_prompt_returns_empty_for_unknown_skill(monkeypatch, tmp_path):
-    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(tmp_path)
-
-    prompt = build_skill_prompt("no-such-skill-xyz", tmp_path)
-
-    assert prompt == ""
-
-
-def test_build_skill_prompt_uses_project_override_source(monkeypatch, tmp_path):
-    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(tmp_path)
-
-    skill_dir = tmp_path / ".leanflow" / "skills" / "lean-proof-loop"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: lean-proof-loop\ndescription: Custom project loop\n---\n# Project Proof Loop\n",
-        encoding="utf-8",
-    )
-
-    prompt = build_skill_prompt("lean-proof-loop", tmp_path)
-
-    assert "(project)" in prompt
-    assert "Project Proof Loop" in prompt
 
 
 def test_builtin_search_skill_is_loadable(monkeypatch, tmp_path):
@@ -222,20 +161,22 @@ def test_builtin_search_skill_is_loadable(monkeypatch, tmp_path):
 
     # The merged lean-search skill must surface both former roles: local-project
     # context and Mathlib/semantic discovery.
-    prompt = build_skill_prompt("lean-search", tmp_path)
+    payload = load_skill("lean-search", tmp_path)
 
+    assert payload is not None
+    prompt = payload["content"]
     assert "Mathlib" in prompt
     assert "local Lean project" in prompt
-    # search.md (kind: helper) links to lean-search, so the spec body must be inlined.
-    assert "[HELPER SPEC: search]".upper() in prompt.upper()
 
 
 def test_theorem_queue_worker_skill_is_loadable(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
 
-    prompt = build_skill_prompt("lean-theorem-queue-worker", tmp_path)
+    payload = load_skill("lean-theorem-queue-worker", tmp_path)
 
+    assert payload is not None
+    prompt = payload["content"]
     assert "external workflow manager" in prompt
     assert "Focus only on solving the assigned declaration" in prompt
     assert "adding and iterating on new helper declarations" in prompt
@@ -262,10 +203,11 @@ def test_proof_loop_skill_mentions_helper_decomposition(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
 
-    prompt = build_skill_prompt("lean-proof-loop", tmp_path)
+    payload = load_skill("lean-proof-loop", tmp_path)
 
-    assert "lean_decompose_helpers" in prompt
-    assert "checked sublemma plan" in prompt
+    assert payload is not None
+    assert "lean_decompose_helpers" in payload["content"]
+    assert "checked sublemma plan" in payload["content"]
 
 
 def test_all_curated_builtin_skills_are_discoverable(monkeypatch, tmp_path):
@@ -310,3 +252,15 @@ def test_skill_with_linked_files_reports_them(monkeypatch, tmp_path):
     assert payload is not None
     assert payload["linked_files"] is not None
     assert any("tactics.md" in f for f in payload["linked_files"].get("references", []))
+
+
+@pytest.mark.parametrize("kind", ["draft", "review", "refactor", "golf", "unknown", ""])
+def test_retired_workflows_have_no_default_skill(kind):
+    with pytest.raises(ValueError, match="prove and formalize"):
+        default_workflow_skill(kind)
+
+
+def test_retired_builtin_workflow_skills_are_not_discoverable(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    names = {item.name for item in discover_skills(tmp_path) if item.source == "builtin"}
+    assert not names & {"lean-statement-draft", "lean-refactor-golf", "lean-autonomous-swarm"}

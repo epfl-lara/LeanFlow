@@ -1,5 +1,6 @@
 /** Typed access to the webview↔host channel and the persisted view state. */
-import type { WebviewMessage } from "../src/core/types";
+import { FormalizationMessageGate } from "../src/core/formalizationScope";
+import type { HostMessage, WebviewMessage } from "../src/core/types";
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
@@ -12,8 +13,15 @@ declare function acquireVsCodeApi(): VsCodeApi;
 // acquireVsCodeApi may only be called once per webview document.
 const api: VsCodeApi = acquireVsCodeApi();
 
+const formalizationGate = new FormalizationMessageGate();
+window.addEventListener("message", (event: MessageEvent<HostMessage>) => {
+  if (event.data.type === "state" && !formalizationGate.acceptWorkspace(event.data.state.formalizationWorkspace)) { event.stopImmediatePropagation(); return; }
+  if (!formalizationGate.accepts(event.data)) event.stopImmediatePropagation();
+}, true);
+
 export function post(message: WebviewMessage): void {
-  api.postMessage(message);
+  const formalization = /Formalization|formalization/.test(message.type);
+  api.postMessage(formalization ? { ...message, formalizationWorkspace: formalizationGate.scope(), formalizationRequest: formalizationGate.request(message.type) } : message);
 }
 
 /**

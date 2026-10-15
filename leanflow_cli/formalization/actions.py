@@ -291,6 +291,10 @@ def _apply_action(record: dict[str, Any], action: dict[str, Any]) -> None:
         from leanflow_cli.formalization.diagnostic_actions import resolve_command
 
         resolve_command(record, action)
+    elif kind == "resolve_conditional":
+        from leanflow_cli.formalization.diagnostic_actions import resolve_conditional
+
+        resolve_conditional(record, action)
     elif kind in {"transcribe_page", "replace_page_transcription"}:
         _transcribe(record, action)
     elif kind == "retry_extraction":

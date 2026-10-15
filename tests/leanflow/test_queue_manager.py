@@ -569,3 +569,21 @@ def test_peek_assignment_does_not_mutate_current_assignment(tmp_path) -> None:
 
     assert mgr.current.key.target_symbol == "first"
     assert view.current.key.target_symbol == "second"
+
+
+def test_legacy_golf_reason_never_assigns_a_completed_declaration() -> None:
+    """Keep retired candidate metadata from reopening a clean proof on checkpoint reuse."""
+    queue = [QueueItem(label="finished", reasons=("golf candidate",))]
+    present = lambda _label: True
+    assert select_next_item(queue, is_present_in_file=present) is None
+    assert select_next_item(queue, is_present_in_file=present, precedence=lambda _label: 0) is None
+    assert select_next_item(queue, is_present_in_file=present, order_key=lambda _label: 0) is None
+    assert (
+        select_next_item(
+            queue,
+            is_present_in_file=present,
+            precedence=lambda _label: 0,
+            order_key=lambda _label: 0,
+        )
+        is None
+    )

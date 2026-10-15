@@ -7,18 +7,30 @@ from typing import Any
 
 def resolve_command(record: dict[str, Any], action: dict[str, Any]) -> None:
     """Bind verified command semantics to every frozen occurrence and reopen its coverage audit."""
+    _resolve_interpretation(record, action, code="unresolved_command", subject="command")
+
+
+def resolve_conditional(record: dict[str, Any], action: dict[str, Any]) -> None:
+    """Record a user interpretation without selecting branches or narrowing candidate coverage."""
+    _resolve_interpretation(record, action, code="unresolved_conditional", subject="conditional")
+
+
+def _resolve_interpretation(
+    record: dict[str, Any], action: dict[str, Any], *, code: str, subject: str
+) -> None:
+    """Bind a checked interpretation to immutable occurrences and retain all review obligations."""
     matches = [
         row
         for row in record["inventory"]["diagnostics"]
         if row["id"] == action.get("diagnostic_id")
     ]
-    if len(matches) != 1 or matches[0]["code"] != "unresolved_command":
+    if len(matches) != 1 or matches[0]["code"] != code:
         raise ValueError(
-            "Only an uncertain TeX command can receive a manual semantic interpretation"
+            f"Only an uncertain TeX {subject} can receive a manual semantic interpretation"
         )
     diagnostic = matches[0]
     if action.get("verified") is not True:
-        raise ValueError("Verify the command meaning against every frozen source occurrence")
+        raise ValueError(f"Verify the {subject} meaning against every frozen source occurrence")
     interpretation = action.get("interpretation")
     reason = action.get("reason")
     if (
@@ -27,10 +39,14 @@ def resolve_command(record: dict[str, Any], action: dict[str, Any]) -> None:
         or not isinstance(reason, str)
         or not reason.strip()
     ):
-        raise ValueError("Command reconciliation needs its complete meaning and a reason")
-    spans = diagnostic.get("spans", [])
+        raise ValueError(
+            f"{subject.capitalize()} reconciliation needs its complete meaning and a reason"
+        )
+    spans = diagnostic.get("spans") or ([diagnostic["span"]] if "span" in diagnostic else [])
     if not spans:
-        raise ValueError("Command reconciliation requires exact frozen source occurrences")
+        raise ValueError(
+            f"{subject.capitalize()} reconciliation requires exact frozen source occurrences"
+        )
     resolution = {
         "actor": "user",
         "verified": True,
@@ -50,7 +66,7 @@ def resolve_command(record: dict[str, Any], action: dict[str, Any]) -> None:
             and span["byte_start"] < region["byte_end"]
         ]
         if not regions:
-            raise ValueError("An uncertain command occurrence has no frozen coverage region")
+            raise ValueError(f"An uncertain {subject} occurrence has no frozen coverage region")
         for region in regions:
             notes = [
                 old
@@ -64,7 +80,7 @@ def resolve_command(record: dict[str, Any], action: dict[str, Any]) -> None:
             ):
                 region.update(
                     disposition="unresolved",
-                    reason="User command interpretation requires independent source coverage review",
+                    reason=f"User {subject} interpretation requires independent source coverage review",
                 )
     for item in record["inventory"]["items"]:
         if item["id"] in affected_items:

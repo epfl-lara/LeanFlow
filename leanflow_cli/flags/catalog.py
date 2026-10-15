@@ -75,7 +75,7 @@ FLAG_CATALOG: tuple[FlagSpec, ...] = (
             "default in research mode because the index costs multiple gigabytes on top of "
             "the foreground Lean language server; non-research runs use local Loogle anyway."
         ),
-        read_in=("leanflow_cli/workflows/research_mode.py",),
+        read_in=("tools/mcp/mcp_transport.py",),
         ablatable=True,
     ),
     FlagSpec(
@@ -434,18 +434,6 @@ FLAG_CATALOG: tuple[FlagSpec, ...] = (
         ),
         read_in=("leanflow_cli/native/diagnostic_loop_guard.py",),
         minimum=0,
-    ),
-    FlagSpec(
-        name="LEANFLOW_HUMAN_REVIEW_ENABLED",
-        kind="feature",
-        value_type="bool",
-        default="0",
-        group=_QUEUE,
-        summary=(
-            "Pause at review points for a human verdict instead of routing autonomously. "
-            "Set by the --human-review launch flag."
-        ),
-        read_in=("leanflow_cli/workflows/orchestrator.py",),
     ),
     # ------------------------------------------------------------ lean backend
     FlagSpec(

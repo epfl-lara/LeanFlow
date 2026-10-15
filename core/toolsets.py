@@ -153,11 +153,6 @@ TOOLSETS: dict[str, dict[str, Any]] = {
         "tools": [],
         "includes": ["file", "web", "terminal", "skills", "coordination", "lean"],
     },
-    "leanflow-native-swarm": {
-        "description": "LeanFlow native workflow toolset (runtime-owned agents)",
-        "tools": _LEANFLOW_CORE_TOOLS,
-        "includes": [],
-    },
 }
 
 

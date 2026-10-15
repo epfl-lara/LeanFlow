@@ -463,6 +463,11 @@ def test_published_snapshot_disables_handoff_on_code_drift_or_pending_publicatio
 
 
 def test_portable_evidence_survives_private_deletion_and_can_be_revised(tmp_path: Path) -> None:
+    from leanflow_cli.formalization.conflict_resolution import (
+        publication_conflicts,
+        resolve_publication_conflict,
+    )
+
     initial = inspect_document(tmp_path, _source(tmp_path))
     private = document_directory(tmp_path, initial["document_id"])
     portable = document_directory(tmp_path, initial["document_id"], published=True)
@@ -470,6 +475,20 @@ def test_portable_evidence_survives_private_deletion_and_can_be_revised(tmp_path
     shutil.rmtree(private)
     shown = show_document(tmp_path, initial["document_id"])
     assert shown["revision_id"] == initial["revision_id"]
+    # Portable evidence remains readable, but importing authority into a fresh
+    # workspace needs an explicit loss/trust observation before mutating it.
+    observed = publication_conflicts(tmp_path)["transactions"][0]
+    resolve_publication_conflict(
+        tmp_path,
+        {
+            **{
+                name: observed[name]
+                for name in ("transaction_id", "observation_id", "destinations", "retained_slots")
+            },
+            "choice": "keep_current",
+            "reason": "Inspected imported evidence; any accepted translation will require a fresh review",
+        },
+    )
     opened = resolve_artifact(
         tmp_path, initial["document_id"], initial["revision_id"], initial["artifacts"][0]["id"]
     )

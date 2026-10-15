@@ -77,12 +77,19 @@ leanflow workflow prove Main.lean
 `project setup` creates a Mathlib project in an empty folder, prepares a folder
 containing Lean files, or checks an existing Lake project while preserving its
 source, toolchain, and dependency pins. It checks the Lean verification protocol
-before reporting readiness. Use `--preset lean` for a minimal project or
+before reporting readiness. `project init` is an alias for this same setup.
+Use `--preset lean` for a minimal project or
 `--repair` to recheck dependencies and rebuild verification tools.
 
 The VS Code sidebar provides the same flow through **Set up project**, with
 progress, logs, retry, and cancellation. Provider login is separate from Lean
 project readiness.
+
+Formalization starts with that checked project baseline. Use **Set up project**
+in its tab before starting translation. The native planner then inspects the
+existing environment and can add missing approved dependencies through a checked
+transaction. Source inspection remains available before setup and makes no model
+calls; setup readiness does not approve mathematical statements.
 
 Choose the scope and workflow:
 
@@ -149,8 +156,9 @@ cannot be converted into clean-room tests.
 
 `formalize` freezes a complete source inventory, estimates and prepares pinned
 dependencies, and requires a reviewed representative slice before translating the
-whole document. It checks the resulting Lean project and requires independent item
-and document reviews. Definitions must be complete;
+whole document. Automatic preparation uses the shared project setup service and
+reports its phases and log paths in the workflow terminal. It checks the resulting
+Lean project and requires independent item and document reviews. Definitions must be complete;
 named theorem proofs may remain pending. The editor links source/PDF and Lean
 locations and shows coverage, review and proof status separately. Launch proving
 from the exact published handoff. Formalization supports pinned Mathlib through
@@ -158,6 +166,11 @@ independent kernel replay of compiled library declarations and keeps REPL toolin
 separate from mathematical imports. See the [supported input boundary](docs/formalization.md#supported-input-boundary);
 ordinary proving is unchanged. `autoprove` and `autoformalize` are compatibility
 aliases of `prove` and `formalize`.
+
+TeX package or macro effects can block source acceptance. With an explicitly paired
+PDF, `leanflow workflow formalize docs/paper.tex --source-draft-only` prepares dependencies and retains
+one clearly unaccepted draft for inspection. It grants no review, publication or
+proving authority; see the [source draft boundary](docs/formalization.md).
 
 See the [prover workflow](docs/prover-workflow.md) for settings, verification,
 limits, outcomes, and resume behavior.
@@ -246,7 +259,8 @@ cache mounts, and update options.
 - [Architecture](ARCHITECTURE.md) — module ownership and runtime invariants.
 - [Agent guide](AGENTS.md) — repository coding standards.
 
-LeanFlow also includes `draft`, `review`, `refactor`, and `golf` workflows.
+LeanFlow exposes two workflows: `prove` and `formalize`. Statement drafting,
+project setup and independent source review are stages within these workflows.
 Its curated guidance lives in `leanflow_skills/`; workflow specifications live in
 `leanflow_specs/`. Built-in examples and evaluation fixtures are described in
 [testdata/workflow_projects](testdata/workflow_projects/README.md).

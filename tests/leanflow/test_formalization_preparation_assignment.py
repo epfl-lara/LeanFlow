@@ -96,6 +96,7 @@ def test_intake_and_native_stage_deliver_plan_through_copied_manifest(estimated,
     selection = _select_formalization_document(root, root, "paper.tex")
     context = intake.prepare_intake(root, selection, require_preparation=True)
     environment = context.to_env()
+    environment["LEANFLOW_NATIVE_WORKFLOW_KIND"] = "formalize"
     frozen = json.loads(Path(environment["LEANFLOW_FORMALIZATION_MANIFEST"]).read_text())
     assert frozen["checked_preparation_plan"]["plan"] == receipt["plan"]
     snapshot, scratch = root / ".leanflow/author", root / ".leanflow/author/.leanflow-job"
@@ -103,7 +104,7 @@ def test_intake_and_native_stage_deliver_plan_through_copied_manifest(estimated,
     monkeypatch.setattr(
         "leanflow_cli.native.harness_context.load_skill", lambda *args, **kwargs: None
     )
-    assignment, prompt, _ = prepare_context(
+    assignment, prompt = prepare_context(
         root=root, snapshot=snapshot, scratch=scratch, environment=environment, allowed=()
     )
     assignment, prompt = stage_assignment(root, environment, assignment, prompt)

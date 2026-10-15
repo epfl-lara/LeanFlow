@@ -6,17 +6,24 @@ settings, proof verification, and recorded run evidence.
 
 ## Inspect and formalize a paper
 
-Open the source folder, choose **Dashboard** in the LeanFlow sidebar, then open
-**Formalization**. This is available before creating a Lean project. Choose a TeX
+Open the source folder and choose **Formalization** in the LeanFlow sidebar. This is available before creating a Lean project. Start with **1. Project setup → Set up project** to prepare Lean, Mathlib and the REPL in that tab's selected workspace. Existing projects keep their configuration and toolchain. Setup is a separate, reusable tools checkpoint and does not call a model or approve the paper's statements.
+
+You can inspect sources before setup finishes. Choose a TeX
 file, TeX project folder, or PDF inside the active workspace. Inspection freezes the source inventory without
 launching a model. Review included items, explicit exclusions, and unresolved
-source regions before using **Configure or resume formalization** to select the
-native model and budget in Launch.
+source regions before using **Configure formalization** to select the native
+model and budget in the same Formalization tab. Configuring does not launch work;
+review the settings and choose **Start formalization** after project tools are ready. Native planning inspects that baseline and can add missing pinned dependencies through the checked private preparation transaction. A current formalization preparation receipt also satisfies the tools prerequisite when an older general setup checkpoint has become stale.
 
 To inspect a TeX source with a rendered companion, select both the `.tex` and
 `.pdf` files together. The PDF is frozen explicitly; text matching provides
 approximate page candidates or a visible missing match. Pairing does not certify
 that the two files have identical content, and PDF pages remain part of coverage review.
+
+Source and draft text links open named, read-only frozen documents beside the
+dashboard, preserving the selected source line. They do not open editable Untitled
+buffers or the canonical project file. The PDF rerenders to fit the available
+pane width; its text selection layer uses the same page scale.
 
 The inventory displays source review, Lean elaboration, and proof state separately.
 Open or unclassified claims also show **Proof attempt permission**. Select the item,
@@ -34,6 +41,11 @@ Open those source links, record the command's meaning and supporting evidence, a
 confirm each rendered occurrence before submitting an interpretation. This creates
 a new revision for coverage and translation review. Missing includes and other
 source errors require repairing the source and inspecting it again.
+
+Unresolved conditional predicates support the same checked interpretation form.
+Both original branches and all candidate items remain visible; recording an
+interpretation selects no branch or proof permission. Loader and inherited-source
+uncertainty retain separate gates. The checkbox resets when the revision changes.
 
 Source links open hash-checked frozen text beside the dashboard. Selecting lines
 in that source or Lean view shows candidate source items back in the inventory.
@@ -113,11 +125,28 @@ Prover and orchestrator can select separate backends and models. Leave overrides
 empty to preserve native defaults. **Refresh models** reloads metadata after
 native configuration changes. Unknown metadata stays visibly unknown.
 
-## Launch a workflow
+## Prove and Formalization
 
-**Launch** provides workflow, target, backend, model, prompt, skills, and axiom
-settings. **Preview plan** resolves the command and effective settings without
-starting work.
+**Prove** and **Formalization** are separate workflow tabs. Each keeps its own
+source or Lean target, backend, model, prompt, limits and knob profile. **Prove**
+repairs existing Lean proofs; **Preview plan** resolves its command without
+starting work. **Formalization** selects TeX/PDF evidence, estimates and prepares
+required dependencies, translates statements, and exposes the source and Lean
+review gates before an accepted handoff can start proving.
+
+In **Formalization**, inspect a source and choose **Configure formalization**.
+The model and limits appear beside its inventory, PDF, setup and review evidence.
+Complete the manual **Project setup** step before native planning. Starting the run then checks and expands required project dependencies before translation; setup
+readiness alone does not approve coverage or mathematical fidelity. The scoped setup card keeps its progress, Retry, Cancel and log bound to the selected workspace. Switching workspaces cannot reuse another folder's ready status, retry target or log, and a late completion does not change the selected folder. A stopped
+run launched by this extension can resume from the same source configuration.
+The host checks its recorded document, source, workspace and exact runtime ID.
+Resume restores that run's trusted original provider, resolved model and draft
+intent, even if the current form has changed. Runs discovered only from CLI history,
+or legacy runs without sufficient trusted launch identity, must resume through the
+CLI with that ID; the editor does not substitute current settings.
+
+Saved configurations for retired workflows require explicitly selecting Prove or
+Formalization. Their old target and prompt are not reused as a new proof run.
 
 New proof runs default to **Research**, **bottom-up**, and two concurrent prover
 jobs. Research adds planning and review around a theorem dependency graph.
@@ -250,9 +279,8 @@ Keep `@types/vscode` aligned with the minimum version in `engines.vscode`.
 Major React and TypeScript upgrades require a separate migration and must pass
 the full button audit and extension packaging checks.
 
-Formalization can inspect a TeX/PDF source in an empty workspace. Use **Prepare
-project prerequisites** to check the planned imports, pinned dependencies and Lake
-layout with cancellable progress, then configure translation. The view shows
+Formalization can inspect a TeX/PDF source in an empty workspace. First use **Set up project** at the top of the tab for the baseline Lean and REPL check; source extraction diagnostics do not disable this action. The subsequent **Prepare dependencies and project** action checks planned imports, pinned dependencies and Lake
+layout with cancellable progress. Native planning can expand this setup when translation needs additional dependencies. The view shows
 representative-slice review separately from complete translation and proof status.
 Cancellation waits for the controller's safe stopping point and then refreshes
 actual readiness, including when the preparation committed before cancellation.
@@ -263,3 +291,23 @@ are blocked. Missing historical evidence can be acknowledged against the exact
 current observation; affected mathematical acceptance still needs a new review.
 A stale checker or dependency environment requires a new formalization
 review before proving.
+
+Formalization requests are bound to a host-issued workspace generation and a request
+identity. Switching projects discards stale inventories and stops subsequent steps
+of an older picker, repair, preparation or prover-launch operation. Identical
+document/revision IDs in copied projects do not allow actions to cross workspaces.
+Publication-registry loss is shown in recovery and requires explicit acknowledgment
+and fresh mathematical acceptance. Preparation estimates are labeled unreviewed;
+checked infrastructure does not establish source fidelity.
+Opening an external toolchain or dependency reference retains the selected project
+and its active preparation. Selecting another project's editor or an explicit
+source TeX/PDF file still changes the owner.
+
+After explicitly pairing a TeX source with its PDF and preparing prerequisites,
+**Configure unaccepted source draft** sets the launch option for one author turn.
+This secondary action configures the form; **Create unaccepted source draft**
+starts the run separately.
+Frozen preview files and the author report appear beside source navigation, with
+source uncertainty still blocking publication and proving. The option stays in
+the Formalization configuration and never applies to Prove. It does not mark items reviewed or mapped;
+resuming the completed campaign makes no new author call.

@@ -133,6 +133,7 @@ def formalization_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                     "Draft ready.",
                     "draft-session",
                     {"input_tokens": 5, "output_tokens": 5},
+                    cleanup_verified=True,
                 )
             assert checks
             assignment = json.loads(request.prompt[len(strict_review._CONTRACT) + 1 :])
@@ -183,6 +184,7 @@ def formalization_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 json.dumps(response),
                 "review-session",
                 {"input_tokens": 7, "output_tokens": 3},
+                cleanup_verified=True,
             )
 
         monkeypatch.setattr(workflow, "run_harness", native)

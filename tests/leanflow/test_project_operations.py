@@ -191,9 +191,6 @@ def test_formalization_intake_shares_project_ownership(
     monkeypatch.setattr(
         workflow, "resolve_runtime_provider", lambda **kwargs: {"provider": "codex"}
     )
-    monkeypatch.setattr(
-        "leanflow_cli.workflows.research_mode.research_local_loogle_enabled", lambda **kwargs: False
-    )
 
     def intake(**kwargs):
         assert not setup_already_running, "Formalization wrote into a setup-owned project"

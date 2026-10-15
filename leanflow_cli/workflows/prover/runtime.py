@@ -11,7 +11,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -147,6 +147,23 @@ class ProverRuntime:
         self.observer = observer
         self.formalization_handoff = copy.deepcopy(formalization_handoff)
         self.store.on_event = observer.event if observer is not None else None
+        from leanflow_cli.workflows.prover.library_transaction import (
+            pending_path,
+            recover_pending,
+        )
+
+        recovered_libraries: list[str] = []
+        if pending_path(self.root).exists() or pending_path(self.root).is_symlink():
+            from leanflow_cli.formalization.publication import publication_guard
+
+            with publication_guard(
+                self.root,
+                cancelled=self.cancelled.is_set,
+                deadline=(
+                    self.started + config.wall_time_s if config.wall_time_s is not None else None
+                ),
+            ):
+                recovered_libraries = recover_pending(self.root)
         if resume:
             self._restore()
             if verifier is None:
@@ -213,6 +230,10 @@ class ProverRuntime:
                     "decompositions": 0,
                 },
             }
+            self._persist()
+
+        if recovered_libraries:
+            self.state.setdefault("retained_source_mutations", []).extend(recovered_libraries)
             self._persist()
 
         if isinstance(self.verifier, LeanVerifier):
@@ -530,17 +551,16 @@ class ProverRuntime:
         return self.elapsed_before + time.monotonic() - self.started
 
     def _assert_sources(self) -> None:
-        from leanflow_cli.formalization.publication import publication_guard
+        from leanflow_cli.workflows.prover.source_transaction import audit_retained_sources
 
-        with publication_guard(self.root):
+        with self._publication_guard():
+            audit_retained_sources(self)
             for document in self.documents.values():
                 document.assert_current(self.root)
 
     def _final_verification(self, targets: list[Path]) -> dict[str, Any]:
         """Keep a stable publication generation through the final build and proof receipt."""
-        from leanflow_cli.formalization.publication import publication_guard
-
-        with publication_guard(self.root):
+        with self._publication_guard():
             self._assert_sources()
             result = self.verifier.final(targets)
             if result.get("accepted") and self.formalization_handoff:
@@ -614,6 +634,30 @@ class ProverRuntime:
             self.state["stop_status"] = "timeout"
             raise BudgetExhausted("campaign wall-clock budget exhausted", code="campaign_wall_time")
         self._check_storage()
+
+    @contextlib.contextmanager
+    def _publication_guard(self) -> Iterator[None]:
+        """Cancel queued ownership so stopped worker threads can drain before holder release."""
+        from leanflow_cli.formalization.publication import (
+            PublicationCancelled,
+            publication_guard,
+        )
+
+        deadline = (
+            self.started + self.config.wall_time_s - self.elapsed_before
+            if self.config.wall_time_s is not None
+            else None
+        )
+        try:
+            with publication_guard(
+                self.root,
+                cancelled=lambda: self.cancelled.is_set() or self.stopping,
+                deadline=deadline,
+            ):
+                yield
+        except PublicationCancelled as error:
+            self._ensure_active()
+            raise InfrastructureFailure(str(error), status="interrupted") from error
 
     def _check_storage(self, *, force: bool = False) -> None:
         """Stop with resumable state when cleanup cannot restore the free-space reserve."""
@@ -851,9 +895,7 @@ class ProverRuntime:
 
     def _accept(self, node: Node, candidate: list[str], job_id: str) -> bool:
         """Serialize independent source verification and its canonical installation."""
-        from leanflow_cli.formalization.publication import publication_guard
-
-        with self.lock, publication_guard(self.root):
+        with self.lock, self._publication_guard():
             return self._accept_locked(node, candidate, job_id)
 
     def _accept_locked(self, node: Node, candidate: list[str], job_id: str) -> bool:
@@ -930,8 +972,9 @@ class ProverRuntime:
         path = self.root / node.file
         from leanflow_cli.workflows.prover.source_transaction import (
             begin_proof,
+            finish_proof,
+            install_proof,
             recover_proof,
-            replace_source,
         )
 
         transaction = begin_proof(self, node, candidate, previous_document, document.render())
@@ -942,7 +985,7 @@ class ProverRuntime:
                     f"protected source changed before proof installation: {node.file}",
                     status="source_conflict",
                 )
-            replace_source(path, document.render().encode("utf-8"))
+            install_proof(self, transaction, document.render().encode("utf-8"))
             self._change(document, job_id)
             staged_change = next(
                 item for item in self.state["changes"] if item["path"] == str(path)
@@ -968,6 +1011,7 @@ class ProverRuntime:
                     status="environment_error",
                 )
             self._assert_sources()
+            finish_proof(self, transaction)
         except Exception as error:
             document.replacements = previous
             try:
@@ -1930,9 +1974,12 @@ class ProverRuntime:
                 self.verifier.close(self.store.directory / "checks")
             if status == "source_conflict":
                 self.state["next_step"] = (
-                    "Compare current source with this run's saved baselines and resolve the conflict before resuming. "
-                    "No external source edits were overwritten. Preserve source-transaction.json "
-                    "and source checkpoints; resume needs them to recover the interrupted transaction."
+                    "Compare canonical source with this run's saved baselines and the retained paths in the source-conflict error. "
+                    "Keep source-transaction.json and every original, candidate and rollback inode. "
+                    "A conflicted source-mutation journal permanently blocks this run, even if canonical bytes are restored; "
+                    "after reconciling the preserved versions, start a fresh run for new verification. "
+                    "A pending conflicted library promotion also blocks fresh runs; its journal must become safely recoverable before any proving can restart. "
+                    "There is currently no command to reconcile a conflicted prover journal for same-run resume."
                 )
             elif status == "context_limit":
                 self.state["next_step"] = (

@@ -24,6 +24,7 @@ export interface FormalizationConflictTransaction {
   version_offset: number;
   next_version_offset: number | null;
   unavailable_journal?: boolean;
+  unavailable_registry?: boolean;
   unavailable_versions?: Record<string, string>;
   revoked_revision_ids?: string[];
 }
@@ -56,6 +57,7 @@ export function parseFormalizationConflicts(value: unknown): FormalizationConfli
         typeof row.state !== "string" || typeof row.active !== "boolean" || !observedMap(row.destinations) || !observedMap(row.retained_slots) ||
         !Array.isArray(row.conflicts) || row.conflicts.some(issue => typeof issue !== "string") ||
         !Array.isArray(row.resolutions) || row.resolutions.some(value => !record(value) || typeof value.reason !== "string" || !identity(value.resolution_id)) || !Array.isArray(row.versions) ||
+        row.unavailable_registry !== undefined && typeof row.unavailable_registry !== "boolean" ||
         row.unavailable_journal !== undefined && typeof row.unavailable_journal !== "boolean" ||
         row.unavailable_versions !== undefined && (!observedMap(row.unavailable_versions) || Object.values(row.unavailable_versions).some(value => value === null || value === "nonregular")) ||
         row.revoked_revision_ids !== undefined && (!Array.isArray(row.revoked_revision_ids) || row.revoked_revision_ids.some(value => !identity(value))) ||
@@ -63,7 +65,7 @@ export function parseFormalizationConflicts(value: unknown): FormalizationConfli
         !Number.isSafeInteger(row.version_offset) || Number(row.version_offset) < 0 ||
         row.next_version_offset !== null && (!Number.isSafeInteger(row.next_version_offset) || Number(row.next_version_offset) <= Number(row.version_offset)) ||
         Number(row.version_offset) + row.versions.length > Number(row.version_count)) throw new Error("Invalid formalization conflict observation.");
-    if (row.unavailable_journal === true && (Number(row.version_count) !== 0 || row.versions.length !== 0 || row.next_version_offset !== null)) throw new Error("Unavailable publication history cannot contain reconstructed versions.");
+    if ((row.unavailable_journal === true || row.unavailable_registry === true) && (Number(row.version_count) !== 0 || row.versions.length !== 0 || row.next_version_offset !== null)) throw new Error("Unavailable publication history cannot contain reconstructed versions.");
     for (const value of row.versions) {
       const version = record(value);
       if (!version || !identity(version.version_id) || !["destinations", "retained_slots", "planned_before", "planned_after"].includes(String(version.group)) ||

@@ -16,19 +16,22 @@ const bundle = await build({
     builder.onResolve({ filter: /^vscode$/ }, () => ({ path: "vscode", namespace: "fixture" }));
     builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: `
       const f = () => globalThis.formalizationHostFixture;
-      export const Uri = { file: fsPath => ({ fsPath }) };
+      export const Uri = { file: fsPath => ({ fsPath }), from: parts => ({ ...parts, toString: () => parts.scheme + '://' + parts.authority + parts.path }) };
+      export const languages = { setTextDocumentLanguage: async (document, language) => { f().opened.language = language; return { ...document, languageId: language }; } };
       export const env = {remoteName:undefined};
       export const ViewColumn = { Beside: 2 };
       export class Range { constructor(...args) { this.args = args; } }
+      export class RelativePattern { constructor(base, pattern) { this.base = base; this.pattern = pattern; } }
       export const workspace = {
         get workspaceFolders(){ return f().folders ?? []; },
         getWorkspaceFolder(){ return f().folders?.[0]; },
         getConfiguration(){ return {get:(name, fallback)=>name==='cliPath' ? f().executable ?? fallback : fallback}; },
-        openTextDocument: async options => { f().opened = options; return { uri: { toString: () => 'untitled:frozen' }, lineCount: options.content.split('\\n').length }; },
+        registerTextDocumentContentProvider: (scheme, provider) => { (f().documentProviders ??= new Map()).set(scheme, provider); return { dispose() { f().documentProviders.delete(scheme); } }; },
+        openTextDocument: async uri => { const content = f().documentProviders.get(uri.scheme).provideTextDocumentContent(uri); f().opened = { uri, content }; return { uri, lineCount: content.split('\\n').length }; },
       };
       export const window = {
         onDidChangeTextEditorSelection: callback => { f().selection = callback; return {dispose(){}}; },
-        showOpenDialog: async options => { f().dialog = options; return f().picked; },
+        showOpenDialog: async options => { f().dialog = options; f().onDialog?.(); return f().pickerResult ? await f().pickerResult : f().picked; },
         showTextDocument: async (...args) => f().shown = args,
       };
     ` }));
@@ -43,8 +46,7 @@ async function fixture() {
   await writeFile(source, content);
   const f = globalThis.formalizationHostFixture = { snapshot: formalizationFixture(), calls: [], replies: [], picked: [{ fsPath: source }], root };
   const service = {
-    bindSourceRoot(root) { f.boundRoot = root; },
-    workspaceRoot() { return f.boundRoot || root; },
+    workspaceRoot() { return root; },
     async list() { return [f.snapshot]; },
     async show(id) { f.calls.push(["show", id]); return f.snapshot; },
     async inspect(source, companion) { f.calls.push(["inspect", source, ...companion ? [companion] : []]); return f.snapshot; },
@@ -65,9 +67,40 @@ async function fixture() {
     async preparationRecovery() { f.calls.push(["preparationRecovery"]); return f.recovery ?? { schema_version: 1, transactions: [] }; },
     async preparationResolutionArgs(...args) { f.calls.push(["preparationResolutionArgs", ...args]); return ["formalization", "resolve-preparation", "--json"]; },
   };
-  const services = { project: { root }, formalizations: service, async reload() { f.calls.push(["reload"]); if (f.afterReload) f.snapshot = f.afterReload; } };
+  const setupListeners = new Set();
+  const setupState = root => ({ status: "ready", root, phase: "", message: "Project tools checked", code: "", remediation: "", logPath: "", activeRun: false, canRetry: false, sourceDiagnostics: [], recentOutput: [], ...f.setupState });
+  f.setupChanged = () => { for (const callback of setupListeners) callback(); };
+  const services = { onDidChange(callback) { f.changed = callback; return {dispose(){}}; }, project: { root }, formalizations: service, cli: { ok: true },
+    setup: { onDidChange(callback) { setupListeners.add(callback); return {dispose: () => setupListeners.delete(callback)}; },
+      state: () => setupState(f.setupState?.root ?? root), stateForRoot: selectedRoot => f.setupState?.root && f.setupState.root !== selectedRoot ? { ...setupState(selectedRoot), root: selectedRoot, status: "idle", message: "", recentOutput: [] } : setupState(selectedRoot),
+      async refresh(available, selectedRoot, current) { assert.equal(available, true); assert.equal(current(), true); f.calls.push(["baselineInspect", selectedRoot]); },
+      async startForRoot(selectedRoot, options) { f.calls.push(["baselineStart", selectedRoot, options]); f.setupState = { status: "running", root: selectedRoot }; f.setupChanged(); f.setupStarted?.(); await f.setupPending; f.setupState = { status: "ready", root: selectedRoot }; f.setupChanged(); },
+      cancelForRoot(selectedRoot) { f.calls.push(["baselineCancel", selectedRoot]); f.setupRelease?.(); },
+      async showLogForRoot(selectedRoot) { f.calls.push(["baselineLog", selectedRoot]); },
+    },
+    runs: { async bindFormalizationResumeRequest(...args) { f.calls.push(["bindResume", ...args]); if (f.resumeError) throw new Error(f.resumeError); return f.resumeRequest ?? args[1]; } },
+    async reload() { f.calls.push(["reload"]); if (f.afterReload) f.snapshot = f.afterReload; } };
   f.services = services;
-  const host = new FormalizationHost(services, message => { f.replies.push(message); f.onReply?.(message); }, async request => f.calls.push(["launch", request]));
+  let scope = { id: "fixture-host", generation: 1, root };
+  service.workspaceScope = () => {
+    const current = services.project.root || f.folders?.[0]?.uri.fsPath || root;
+    if (current !== scope.root) scope = { ...scope, generation: scope.generation + 1, root: current };
+    return { ...scope };
+  };
+  service.registerPreview = (uri, scope) => { service.assertWorkspace(scope); f.registeredPreview = { uri, scope }; };
+  service.assertWorkspace = expected => {
+    if (JSON.stringify(expected) !== JSON.stringify(service.workspaceScope())) throw new Error("The formalization workspace changed. Refresh before continuing.");
+  };
+  service.forWorkspace = (expected, cwd) => new Proxy(service, { get(target, property) {
+    if (property === "workspaceRoot") return () => { service.assertWorkspace(expected); return cwd; };
+    const value = target[property];
+    if (typeof value !== "function") return value;
+    return async (...args) => { service.assertWorkspace(expected); const result = await value.apply(target, args); service.assertWorkspace(expected); return result; };
+  } });
+  const host = new FormalizationHost(services, message => { f.replies.push(message); f.onReply?.(message); }, async (request, operation) => f.calls.push(["launch", request, operation]));
+  const originalHandle = host.handle.bind(host);
+  let requestSequence = 0;
+  host.handle = message => originalHandle({ formalizationWorkspace: service.workspaceScope(), formalizationRequest: { channel: "fixture", id: ++requestSequence }, ...message });
   return { f, host, last: type => f.replies.filter(message => message.type === type).at(-1), dispose: async () => { host.dispose(); await rm(root, { recursive: true, force: true }); } };
 }
 
@@ -99,7 +132,7 @@ test("source-only workspaces can inspect and prepare before LeanFlow project dis
     ui.f.services.project.root = "";
     ui.f.folders = [{ uri: { scheme: "file", fsPath: ui.f.root } }];
     await ui.host.handle({ type: "inspectFormalization", sourceKind: "file" });
-    assert.equal(ui.f.boundRoot, ui.f.root);
+    assert.equal(ui.f.services.formalizations.workspaceScope().root, ui.f.root);
     assert.deepEqual(ui.f.calls.at(-1), ["inspect", "paper.tex"]);
     await ui.host.handle({ type: "planFormalizationPreparation", documentId: "paper-1", revisionId: "revision-1", preset: "lean" });
     assert.equal(ui.last("formalizationPreparation").status, "planned");
@@ -110,6 +143,90 @@ test("source-only workspaces can inspect and prepare before LeanFlow project dis
     assert.equal(ui.last("formalizationPreparation").status, "prepared");
     assert.equal(ui.last("formalizationState").snapshot.document_id, "paper-1");
     assert.deepEqual(ui.f.calls.slice(-2), [["reload"], ["show", "paper-1"]]);
+  } finally { await ui.dispose(); }
+});
+
+test("baseline setup binds the canonical scoped root without source selection or client paths", async () => {
+  const ui = await fixture();
+  try {
+    ui.f.services.project.root = "";
+    ui.f.folders = [{ uri: { scheme: "file", fsPath: ui.f.root } }];
+    ui.f.snapshot.selection_conflict = { message: "Unresolved source" };
+    await ui.host.handle({ type: "formalizationProjectSetup", action: "inspect", root: "/untrusted/client" });
+    assert.deepEqual(ui.f.calls.at(-1), ["baselineInspect", ui.f.root]);
+    await ui.host.handle({ type: "formalizationProjectSetup", action: "retry" });
+    const request = ui.f.calls.find(row => row[0] === "baselineStart");
+    assert.equal(request[1], ui.f.root);
+    assert.equal(request[2].retry, true);
+    assert.equal(request[2].isCurrent(), true);
+    assert.equal(ui.f.calls.some(row => ["show", "inspect", "preparationPlan", "launch"].includes(row[0])), false);
+    assert.equal(ui.last("formalizationProjectSetupState").state.root, ui.f.root);
+  } finally { await ui.dispose(); }
+});
+
+test("baseline cancellation bypasses a pending setup and source-operation queue", { timeout: 2000 }, async () => {
+  const ui = await fixture();
+  try {
+    let releaseSource;
+    const sourceWaiting = new Promise(resolve => { releaseSource = resolve; });
+    const sourceStarted = new Promise(resolve => { ui.f.services.formalizations.show = async () => { resolve(); await sourceWaiting; return ui.f.snapshot; }; });
+    const source = ui.host.handle({ type: "showFormalization", documentId: "paper-1" });
+    await sourceStarted;
+    ui.f.setupPending = new Promise(resolve => { ui.f.setupRelease = resolve; });
+    const started = new Promise(resolve => { ui.f.setupStarted = resolve; });
+    const setup = ui.host.handle({ type: "formalizationProjectSetup", action: "start" });
+    await started;
+    await ui.host.handle({ type: "formalizationProjectSetup", action: "cancel" });
+    assert.deepEqual(ui.f.calls.find(row => row[0] === "baselineCancel"), ["baselineCancel", ui.f.root]);
+    await setup;
+    releaseSource();
+    await source;
+    assert.equal(ui.last("formalizationProjectSetupState").state.status, "ready");
+  } finally { await ui.dispose(); }
+});
+
+test("old scoped setup progress and completion cannot install A status after switching to B", async () => {
+  const ui = await fixture();
+  try {
+    const rootA = ui.f.root;
+    const rootB = path.join(rootA, "B");
+    await (await import("node:fs/promises")).mkdir(rootB);
+    const oldScope = ui.f.services.formalizations.workspaceScope();
+    ui.f.setupPending = new Promise(resolve => { ui.f.setupRelease = resolve; });
+    const started = new Promise(resolve => { ui.f.setupStarted = resolve; });
+    const setup = ui.host.handle({ type: "formalizationProjectSetup", action: "start" });
+    await started;
+    ui.f.services.project.root = rootB;
+    const scopeB = ui.f.services.formalizations.workspaceScope();
+    await ui.host.handle({ type: "formalizationProjectSetup", action: "inspect" });
+    const count = ui.f.replies.length;
+    ui.f.setupRelease();
+    await setup;
+    assert.equal(ui.f.replies.length, count);
+    assert.equal(ui.last("formalizationProjectSetupState").formalizationWorkspace.generation, scopeB.generation);
+    await ui.host.handle({ type: "formalizationProjectSetup", action: "retry", formalizationWorkspace: oldScope });
+    assert.match(ui.last("notify").message, /workspace changed/);
+    assert.equal(ui.f.calls.filter(row => row[0] === "baselineStart").length, 1);
+  } finally { await ui.dispose(); }
+});
+
+test("current formalization preparation supersedes generic stale setup but not an active setup", async () => {
+  const ui = await fixture();
+  try {
+    const request = { kind: "formalize", target: "ignored.tex", sourceDraftOnly: false };
+    ui.f.snapshot.source.path = "paper.tex";
+    ui.f.setupState = { status: "failed", code: "readiness_stale" };
+    await ui.host.handle({ type: "launchFormalization", documentId: "paper-1", revisionId: "revision-1", request });
+    assert.equal(ui.f.calls.filter(row => row[0] === "launch").length, 1);
+    ui.f.setupState = { status: "running" };
+    await ui.host.handle({ type: "launchFormalization", documentId: "paper-1", revisionId: "revision-1", request });
+    assert.match(ui.last("notify").message, /setup is still running/);
+    assert.equal(ui.f.calls.filter(row => row[0] === "launch").length, 1);
+    ui.f.setupState = { status: "idle" };
+    ui.f.snapshot.preparation.current = false;
+    await ui.host.handle({ type: "launchFormalization", documentId: "paper-1", revisionId: "revision-1", request });
+    assert.match(ui.last("notify").message, /Set up project tools/);
+    assert.equal(ui.f.calls.filter(row => row[0] === "launch").length, 1);
   } finally { await ui.dispose(); }
 });
 
@@ -219,9 +336,14 @@ test("source links open verified frozen bytes and selection maps back without ex
     const message = { type: "openFormalizationArtifact", documentId: "paper-1", revisionId: "revision-1", artifactId: "source-tex", itemId: "item-1", line: 2 };
     await ui.host.handle(message);
     assert.equal(ui.f.opened.content, "Source\nDefine doubling.\n");
+    assert.match(ui.f.opened.uri.scheme, /^leanflow-frozen-/);
+    assert.equal(path.basename(ui.f.opened.uri.path), "main.tex");
+    assert.equal(ui.f.opened.language, "latex");
     assert.equal(ui.f.shown[1].viewColumn, 2);
-    ui.f.selection({ textEditor: { document: { uri: { toString: () => "untitled:frozen" } } }, selections: [{ start: { line: 1 }, end: { line: 2 } }] });
-    assert.deepEqual(ui.last("formalizationSourceSelection"), { type: "formalizationSourceSelection", documentId: "paper-1", revisionId: "revision-1", artifactId: "source-tex", lineStart: 2, lineEnd: 3 });
+    assert.deepEqual(ui.f.shown[1].selection.args, [1, 0, 1, 0]);
+    assert.equal(ui.f.shown[0].languageId, "latex");
+    ui.f.selection({ textEditor: { document: { uri: ui.f.opened.uri } }, selections: [{ start: { line: 1 }, end: { line: 2 } }] });
+    assert.deepEqual(ui.last("formalizationSourceSelection"), { type: "formalizationSourceSelection", documentId: "paper-1", revisionId: "revision-1", artifactId: "source-tex", formalizationWorkspace: ui.f.services.formalizations.workspaceScope(), lineStart: 2, lineEnd: 3 });
     await ui.host.handle({ ...message, artifactId: "unknown" });
     assert.match(ui.last("notify").message, /not part/);
     await ui.host.handle({ ...message, revisionId: "stale" });
@@ -232,6 +354,22 @@ test("source links open verified frozen bytes and selection maps back without ex
     assert.equal(pdf.pageIndex, 1);
     assert.equal("path" in pdf, false);
     assert.equal(Buffer.from(pdf.base64, "base64").toString(), ui.f.opened.content);
+  } finally { await ui.dispose(); }
+});
+
+test("draft notes remain workspace previews and never become repair source selections", async () => {
+  const ui = await fixture();
+  try {
+    const base = { type: "openFormalizationArtifact", documentId: "paper-1", revisionId: "revision-1" };
+    await ui.host.handle({ ...base, artifactId: "source-tex" });
+    ui.f.snapshot.artifacts.push({ id: "draft-report", kind: "source", path: "Model-report.md", sha256: "a".repeat(64) });
+    await ui.host.handle({ ...base, artifactId: "draft-report" });
+    assert.equal(ui.last("notify"), undefined);
+    assert.equal(ui.f.opened.language, "markdown");
+    const count = ui.f.replies.filter(reply => reply.type === "formalizationSourceSelection").length;
+    ui.f.selection({ textEditor: { document: { uri: ui.f.opened.uri } }, selections: [{ start: { line: 1 }, end: { line: 2 } }] });
+    assert.equal(ui.f.replies.filter(reply => reply.type === "formalizationSourceSelection").length, count);
+    assert.deepEqual(ui.f.registeredPreview, { uri: ui.f.opened.uri.toString(), scope: ui.f.services.formalizations.workspaceScope() });
   } finally { await ui.dispose(); }
 });
 
@@ -246,10 +384,132 @@ test("proving binds the selected accepted handoff and zero obligations cause zer
     ui.f.snapshot.handoff.obligations = [];
     await ui.host.handle(message);
     assert.equal(ui.f.calls.filter(row => row[0] === "launch").length, 1);
-    assert.match(ui.last("notify").message, /No model was launched/);
+    assert.match(ui.last("notify").message, /inconsistent empty prover handoff/);
     ui.f.snapshot.can_prove = false;
     await ui.host.handle(message);
     assert.match(ui.last("notify").message, /not ready/);
     assert.equal(ui.f.calls.filter(row => row[0] === "launch").length, 1);
   } finally { await ui.dispose(); }
 });
+
+
+test("a delayed picker cannot inspect or mutate the newly selected workspace", async () => {
+  const ui = await fixture();
+  try {
+    let release, opened;
+    ui.f.pickerResult = new Promise(resolve => { release = resolve; });
+    const dialog = new Promise(resolve => { opened = resolve; });
+    ui.f.onDialog = opened;
+    const scopeA = ui.f.services.formalizations.workspaceScope();
+    const pending = ui.host.handle({ type: "inspectFormalization", sourceKind: "file" });
+    await dialog;
+    ui.f.services.project.root = path.join(ui.f.root, "copy-B");
+    release(ui.f.picked);
+    await pending;
+    assert.equal(ui.f.calls.some(row => row[0] === "inspect"), false);
+    assert.equal(ui.last("formalizationState"), undefined);
+    await ui.host.handle({ type: "formalizationAction", documentId: "paper-1", revisionId: "revision-1",
+      action: { type: "set_scope", item_id: "item-1", scope: "excluded", reason: "old view" }, formalizationWorkspace: scopeA });
+    assert.equal(ui.f.calls.some(row => row[0] === "action"), false);
+    assert.match(ui.last("notify").message, /workspace changed/);
+  } finally { await ui.dispose(); }
+});
+
+test("a delayed A snapshot cannot install accepted status for B with identical IDs", async () => {
+  const ui = await fixture();
+  try {
+    let release, entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const result = new Promise(resolve => { release = resolve; });
+    ui.f.services.formalizations.show = async () => { entered(); return result; };
+    const pending = ui.host.handle({ type: "showFormalization", documentId: "paper-1" });
+    await started;
+    ui.f.services.project.root = path.join(ui.f.root, "copy-B");
+    release(ui.f.snapshot);
+    await pending;
+    assert.equal(ui.last("formalizationState"), undefined);
+  } finally { await ui.dispose(); }
+});
+
+
+test("switching workspace cancels an owned preparation and releases the queue after safe cleanup", { timeout: 5000 }, async () => {
+  const ui = await fixture();
+  try {
+    await writeFile(path.join(ui.f.root, "formalization"), "process.on('SIGINT',()=>setTimeout(()=>process.exit(0),50));process.stderr.write('old workspace preparation ready\\n');setInterval(()=>{},100);");
+    ui.f.executable = process.execPath;
+    let ready;
+    const started = new Promise(resolve => { ready = resolve; });
+    ui.f.onReply = reply => { if (reply.type === "formalizationPreparation" && reply.message === "old workspace preparation ready") ready(); };
+    const preparing = ui.host.handle({ type: "prepareFormalization", documentId: "paper-1", revisionId: "revision-1", preset: "lean" });
+    await started;
+    ui.f.services.project.root = path.join(ui.f.root, "B");
+    ui.f.changed();
+    const showingB = ui.host.handle({ type: "showFormalization", documentId: "paper-1" });
+    await Promise.all([preparing, showingB]);
+    assert.equal(ui.last("formalizationState").formalizationWorkspace.root, ui.f.services.project.root);
+    assert.equal(ui.f.calls.some(row => row[0] === "reload"), false);
+  } finally { await ui.dispose(); }
+});
+
+
+test("source launch binds controller-selected target and workspace without approving source gates", async () => {
+  const ui = await fixture();
+  try {
+    ui.f.snapshot.source.path = "paper.tex";
+    ui.f.snapshot.can_prove = false;
+    ui.f.snapshot.status = "inventory";
+    ui.f.snapshot.preparation = undefined;
+    const request = { kind: "formalize", target: "/wrong/old.tex", provider: "codex", model: "gpt-6.1-sol", prompt: "Translate the frozen source", overrides: {} };
+    await ui.host.handle({ type: "launchFormalization", documentId: "paper-1", revisionId: "revision-1", request });
+    const launch = ui.f.calls.find(call => call[0] === "launch");
+    assert.equal(launch[1].target, "paper.tex");
+    assert.equal(launch[1].kind, "formalize");
+    assert.equal(launch[1].formalization, undefined);
+    assert.equal(launch[2].services.project.root, ui.f.root);
+    assert.equal(launch[2].sourceDocumentId, "paper-1");
+    assert.equal(launch[2].resumeTrackedId, undefined);
+    assert.equal(ui.f.snapshot.can_prove, false);
+    assert.equal(ui.f.calls.some(call => call[0] === "action"), false);
+    await ui.host.handle({ type: "resumeFormalization", documentId: "paper-1", revisionId: "revision-1", trackedRunId: "owned-stopped", request });
+    assert.equal(ui.f.calls.filter(call => call[0] === "launch").at(-1)[2].resumeTrackedId, "owned-stopped");
+  } finally { await ui.dispose(); }
+});
+
+test("resume uses the trusted original provider and draft intent before accepted-revision checks", async () => {
+  const ui = await fixture();
+  try {
+    ui.f.snapshot.source.path = "paper.tex";
+    ui.f.snapshot.status = "published";
+    ui.f.snapshot.can_prove = true;
+    const changed = { kind: "formalize", target: "paper.tex", provider: "claude", model: "changed-model", sourceDraftOnly: true, overrides: {} };
+    ui.f.resumeRequest = { ...changed, provider: "codex", model: "original-model", sourceDraftOnly: false };
+    await ui.host.handle({ type: "resumeFormalization", documentId: "paper-1", revisionId: "revision-1", trackedRunId: "owned-stopped", request: changed });
+    const launch = ui.f.calls.find(call => call[0] === "launch");
+    assert.equal(launch[1].provider, "codex");
+    assert.equal(launch[1].model, "original-model");
+    assert.equal(launch[1].sourceDraftOnly, false);
+    assert.deepEqual(ui.f.calls.find(call => call[0] === "bindResume").slice(3), [ui.f.root, "paper-1"]);
+    ui.f.resumeError = "Original native identity is unknown; resume with the CLI.";
+    await ui.host.handle({ type: "resumeFormalization", documentId: "paper-1", revisionId: "revision-1", trackedRunId: "unknown", request: changed });
+    assert.equal(ui.f.calls.filter(call => call[0] === "launch").length, 1);
+    assert.match(ui.last("notify").message, /Original native identity is unknown/);
+  } finally { await ui.dispose(); }
+});
+
+for (const mutation of ["revision", "stale", "conflict", "acceptedDraft", "retired"]) {
+  test(`source launch refuses ${mutation} before dispatch`, async () => {
+    const ui = await fixture();
+    try {
+      ui.f.snapshot.source.path = "paper.tex";
+      const request = { kind: "formalize", target: "paper.tex", sourceDraftOnly: false, overrides: {} };
+      if (mutation === "revision") ui.f.snapshot.revision_id = "changed";
+      if (mutation === "stale") ui.f.snapshot.source_stale = true;
+      if (mutation === "conflict") ui.f.snapshot.selection_conflict = { message: "Choose revision" };
+      if (mutation === "acceptedDraft") { request.sourceDraftOnly = true; ui.f.snapshot.can_prove = true; }
+      if (mutation === "retired") request.kind = "draft";
+      await ui.host.handle({ type: "launchFormalization", documentId: "paper-1", revisionId: "revision-1", request });
+      assert.equal(ui.f.calls.filter(call => call[0] === "launch").length, 0);
+      assert.equal(ui.last("notify").level, "error");
+    } finally { await ui.dispose(); }
+  });
+}

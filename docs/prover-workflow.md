@@ -61,6 +61,24 @@ authorized literal `sorry` spans. It checks protected bytes, original elaborated
 target types, and referenced fixed definitions before integration. Reviewed
 helper modules, imports, and additive Lake requirements are recorded separately.
 Concurrent outside edits cause a source conflict rather than being overwritten.
+Proof and helper installation capture the actual destination inode and keep its
+original, candidate and rollback versions under
+`.leanflow/prover-source-transactions/<mutation-id>/`. The bounded journal is
+flushed before each source move. No-replace filesystem operations install only
+into an empty destination; an editor save is retained and reported as a conflict.
+An already-open editor descriptor can still change a retained version, so these
+inodes remain available for inspection and are checked before further integration.
+They are recovery evidence, not disposable build caches.
+
+Automatic source mutation requires a supported filesystem on one device and a
+successful no-replace capability probe before displacing source. Unsupported hosts
+or filesystems fail before that displacement; there is no overwriting rename
+fallback. Each protected source is limited to 8 MiB, mutation metadata to 64 KiB,
+and rollback captures to 64 versions. An oversized captured editor version is
+restored to the canonical path when that name is empty and otherwise remains at
+the reported retained path. These guarantees cover process interruption with
+flushed journals; independently tested power-loss durability is not claimed.
+
 Provers can request additional installed modules with an `imports` list in their
 submission JSON or scratch header. The controller checks that these imports
 preserve protected kernel types and installs them only with an accepted proof.
@@ -221,6 +239,55 @@ configuration, spent calls, active time, notes, and scratch work. A different
 explicit target is rejected. Interrupted source transactions are reconciled
 against recorded before/after images; outside conflicts are never replaced with
 an assumed new baseline.
+
+A source-conflict error identifies the canonical file and its retained journal;
+`conflict_paths` in that journal lists the original, candidate and rollback paths.
+Rollback filenames are relative to its recorded `rollback_directory` so long
+project paths do not multiply the bounded metadata size.
+Compare those versions with the run's saved baselines and preserve them while
+reconciling the intended source. A journal marked `conflicted` permanently blocks
+that run, including after canonical bytes are restored. There is currently no
+prover command to reconcile such a journal for same-run resume. Once ordinary
+proof/helper source versions have been reconciled, start a fresh campaign so its
+source and proofs are independently checked again.
+
+Reviewed library additions resolve and execute dependency hooks in a private copy
+of the compiler inputs and existing dependencies. Canonical configuration and
+existing package caches are excluded from those writes. The controller preserves
+existing pins, validates the requested immutable pins, publishes only absent
+package directories, and installs validated configuration through source captures.
+Private copying prefers distinct copy-on-write inodes; its ordinary-copy fallback
+preserves a disk reserve and fails when space is insufficient. Existing checkouts
+receive private Git configuration reconstructed from their locked remote identity;
+original Git credentials and hooks are excluded. Configuration reads are bounded
+before parsing or effectful Lake admission.
+Both installation and an `already_installed` result require the actual ordinary
+Git checkout at the immutable requested commit; matching manifest bytes alone do
+not establish readiness. Missing staged packages fail before promotion. A missing
+locked checkout can be reacquired privately and installed without changing the
+configuration. Git worktree pointers, shared/aliased metadata and nonregular Git
+controls are unsupported. Owned infrastructure/package directory aliases are
+rejected before private metadata rewrite; copied file links must remain relative
+and contained in the private tree. Portable contained package file links remain
+supported.
+
+Library promotion has a separate bounded journal at
+`.leanflow/prover-library-transactions/pending.json`. A partial install is recovered
+before fresh or resumed source discovery. Recovery restores protected configuration
+without overwriting editor versions; added package directories are retained because
+another compiler may be using them. A conflicting **pending library promotion**
+blocks fresh campaigns too. Inspect its mutation references and retained source
+paths before reconciling the configuration transaction; a new run cannot bypass
+it, and there is currently no automatic command to reconcile a conflicted library
+journal. Do not delete that pending journal or its source captures as cache cleanup.
+
+Stop and campaign deadlines cancel queued ordinary-prover publication ownership
+with bounded polling, so worker threads can drain while an unrelated process still
+holds that lock. Cancellation is checked before and after acquisition and admits
+no new integration. Recovery already owned by a transaction still preserves its
+journal and source versions; cancellation does not authorize abandoning rollback
+or deleting recovery evidence. Default callers without cancellation or a deadline
+retain blocking, same-thread reentrant ownership.
 
 Accepted reports are reused, and retained candidates can be checked before more
 model work. A `planning_stalled` checkpoint requires inspecting its saved

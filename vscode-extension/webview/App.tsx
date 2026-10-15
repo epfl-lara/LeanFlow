@@ -24,7 +24,7 @@ import { SweepsView } from "./views/SweepsView";
 import { mode, post } from "./vscodeApi";
 
 const TABS: { id: TabId; label: string; Icon: typeof PlayIcon }[] = [
-  { id: "launch", label: "Launch", Icon: PlayIcon },
+  { id: "launch", label: "Prove", Icon: PlayIcon },
   { id: "formalization", label: "Formalization", Icon: LogsIcon },
   { id: "providers", label: "Providers", Icon: KnobsIcon },
   { id: "live", label: "Live", Icon: PulseIcon },
@@ -109,7 +109,7 @@ export function App() {
       case "launch":
         return <LaunchView />;
       case "formalization":
-        return <FormalizationView />;
+        return <FormalizationView key={`${app?.formalizationWorkspace?.id ?? "unbound"}:${app?.formalizationWorkspace?.generation ?? 0}`} />;
       case "live":
         return <LiveView />;
       case "logs":
@@ -153,6 +153,8 @@ export function App() {
       </header>
 
       <Toasts />
+
+      {view.workflowSelectionRequired && <div className="notice warn" role="alert">The saved {view.retiredWorkflow || "previous"} workflow is no longer available. Choose Prove or Formalization to configure a new run.</div>}
 
       <div className="app-body">
         <nav aria-label="LeanFlow dashboard" className="nav">

@@ -26,77 +26,67 @@ from leanflow_cli.formalization.records import (
 )
 
 
-def author_blocking_diagnostics(inventory: dict[str, Any]) -> list[dict[str, Any]]:
+def author_blocking_diagnostics(
+    inventory: dict[str, Any], *, source_draft_only: bool = False
+) -> list[dict[str, Any]]:
     """Permit preparatory drafting with a frozen companion, never source acceptance.
 
-    Only missing figure/bibliography assets can be deferred. Their original
-    blocking diagnostics and all coverage remain unchanged for the final gate.
+    Explicit drafting also admits known source uncertainty with authentic frozen
+    spans. Every original blocker and coverage region remains pending for the final gate.
     """
-    companion = inventory.get("companion_pdf") or {}
-    file = companion.get("file", "")
-    metadata = inventory.get("files", {}).get(file, {})
-    paired = (
-        inventory.get("source_kind") == "latex"
-        and companion.get("selection") == "explicit"
-        and isinstance(file, str)
-        and file.lower().endswith(".pdf")
-        and metadata.get("encoding") == "binary"
-        and bool(companion.get("sha256"))
-        and companion["sha256"] == metadata.get("sha256")
-    )
-    return [
-        row
-        for row in inventory.get("diagnostics", [])
-        if row.get("blocking")
-        and not (
-            paired
-            and row.get("code") == "missing_support_file"
-            and row.get("support_command") in {"includegraphics", "bibliography", "addbibresource"}
-            and isinstance(row.get("support_target"), str)
-            and row["support_target"].strip()
-        )
-    ]
+    from leanflow_cli.formalization.source_draft import draft_policy
+
+    return list(draft_policy(inventory, explicit=source_draft_only)["strict"])
 
 
-def draft_source_guidance(inventory: dict[str, Any]) -> str:
+def draft_source_guidance(inventory: dict[str, Any], *, source_draft_only: bool = False) -> str:
     """Describe unresolved companion-backed assets without granting a repair or waiver."""
-    strict = author_blocking_diagnostics(inventory)
-    deferred = [
-        row for row in inventory.get("diagnostics", []) if row.get("blocking") and row not in strict
-    ]
-    if not deferred:
+    from leanflow_cli.formalization.source_draft import draft_policy
+
+    policy = draft_policy(inventory, explicit=source_draft_only)
+    deferred = policy["deferred"]
+    if not policy["draft_only"]:
         return ""
     issues = "\n".join(f"- {row['id']}: {row['message']}" for row in deferred)
-    return f"""DRAFT PREPARATION ONLY — unresolved source assets
-The explicitly paired frozen PDF permits preparatory work despite these missing
-figure or bibliography files. It does not resolve them or verify correspondence:
+    return f"""DRAFT PREPARATION ONLY — source uncertainty and unresolved assets
+The explicitly paired frozen PDF permits preparatory work. It does not resolve
+TeX execution or asset uncertainty, or verify correspondence with the source:
 {issues}
 All source diagnostics and coverage remain pending. Acceptance, publication and
 prover handoff are blocked until the source issues are repaired and independently
 reviewed. Read the complete TeX and companion pages; record ambiguities and do not
 invent figure content, omit mathematics, exclude regions, or claim user approval.
+Loader or inherited execution uncertainty affects the complete source interpretation;
+do not claim that any extracted candidate is certainly active or complete.
+Keep both conditional branches and all candidate scopes. Save a useful representative
+draft only; do not expand beyond the prepared representative slice. Write provisional
+setup notes to `.leanflow-job/setup-notes.md` and source blockers to
+`.leanflow-job/blockers.md`. These files and the model report remain unaccepted.
 If these gaps prevent a faithful complete proposal, save a useful representative
 draft in the allocated module subtree and setup/blocker notes in scratch, then
 return exactly {{"status":"blocked","reason":"concrete unresolved source issues"}}.
 Do not submit a falsely complete proposal or keep retrying unchanged source gaps.
-The controller ends this draft-only run after one completed author turn; repairing
-the original source and restarting is required before any acceptance attempt.
+The controller ends this draft-only campaign after one completed author turn; resume
+only displays the retained preview. Source reconciliation and a fresh ordinary
+formalization campaign are required before any acceptance attempt.
 """
 
 
-def draft_source_rejection(inventory: dict[str, Any]) -> dict[str, Any] | None:
+def draft_source_rejection(
+    inventory: dict[str, Any], *, source_draft_only: bool = False
+) -> dict[str, Any] | None:
     """Return controller-owned rejection for the narrow companion-backed draft exception."""
-    strict = author_blocking_diagnostics(inventory)
-    deferred = [
-        row for row in inventory.get("diagnostics", []) if row.get("blocking") and row not in strict
-    ]
-    if not deferred:
+    from leanflow_cli.formalization.source_draft import draft_policy
+
+    policy = draft_policy(inventory, explicit=source_draft_only)
+    deferred = policy["deferred"]
+    if not policy["draft_only"]:
         return None
     return {
         "accepted": False,
         "status": "source_blocked",
         "error_code": "source_repair_required",
-        "error": "Unresolved source assets prevent formalization acceptance: "
+        "error": "Unresolved source assets or explicit draft-only intent prevent formalization acceptance: "
         + "; ".join(row["message"] for row in deferred),
         "source_diagnostics": [row["id"] for row in deferred],
     }
@@ -121,10 +111,18 @@ def preflight_dependencies(root: Path, document_id: str = "preflight") -> dict[s
 
 
 def prepare_intake(
-    root: Path, selection: _FormalizationDocumentSelection, *, require_preparation: bool = False
+    root: Path,
+    selection: _FormalizationDocumentSelection,
+    *,
+    require_preparation: bool = False,
+    source_draft_only: bool = False,
 ) -> FormalizationDocumentContext:
     """Freeze source authority and allocate a real Lake-owned prospective module tree."""
     record = create_document(root, selection.source_path)
+    from leanflow_cli.formalization.source_draft import assert_unaccepted_draft
+
+    if draft_source_rejection(record["inventory"], source_draft_only=source_draft_only) is not None:
+        assert_unaccepted_draft(record)
     checked_plan: dict[str, Any] | None = None
     if require_preparation:
         from leanflow_cli.formalization.preparation import assert_preparation_current
@@ -156,7 +154,10 @@ def prepare_intake(
         from leanflow_cli.formalization.preparation_assignment import checked_preparation_assignment
 
         checked_plan = checked_preparation_assignment(root, record)
-    blockers = [row["message"] for row in author_blocking_diagnostics(inventory)]
+    blockers = [
+        row["message"]
+        for row in author_blocking_diagnostics(inventory, source_draft_only=source_draft_only)
+    ]
     if blockers:
         raise FormalizationDocumentError(
             "Source extraction needs repair before starting formalization: " + "; ".join(blockers)
@@ -218,7 +219,7 @@ must be audited, including prose outside theorem environments. Blocking extracti
 diagnostics require source repair; never hide uncertainty, omit candidates, or narrow
 scope. If an unrecognized statement is found, report it for inventory repair.
 
-{draft_source_guidance(record['inventory'])}
+{draft_source_guidance(inventory, source_draft_only=source_draft_only)}
 Read the complete source manifest, including checked_preparation_plan when present.
 Its exact package pins and imports have infrastructure checks. Its prerequisite
 candidate names and representation notes are estimates: inspect and compile reuse,
@@ -269,6 +270,7 @@ pass each item and the whole document. Author self-approval never satisfies a ga
         "layout": layout,
         "source_bundle": record["source_bundle"],
         "inventory": inventory,
+        "source_draft_only": source_draft_only,
         **{
             key: record[key]
             for key in (

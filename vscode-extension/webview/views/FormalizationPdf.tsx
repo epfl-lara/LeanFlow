@@ -15,12 +15,26 @@ export function FormalizationPdfView({ pdf, items, selectedId, selectItem, onSel
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [pageInfo, setPageInfo] = useState("");
+  const [availableWidth, setAvailableWidth] = useState(0);
   const canvas = useRef<HTMLCanvasElement>(null);
   const layer = useRef<HTMLDivElement>(null);
   const pageContainer = useRef<HTMLDivElement>(null);
+  const scrollContainer = useRef<HTMLDivElement>(null);
   const selected = items.find(item => item.id === selectedId)?.source_refs.find(ref => ref.artifact_id === pdf.artifactId);
 
   useEffect(() => { setPageIndex(pdf.pageIndex); }, [pdf.pageIndex]);
+  useEffect(() => {
+    const container = scrollContainer.current;
+    if (!container) return;
+    const measure = () => {
+      const width = Math.floor(container.clientWidth);
+      if (width > 0) setAvailableWidth(width);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     let disposed = false;
     let cleanup: (() => void) | undefined;
@@ -51,7 +65,7 @@ export function FormalizationPdfView({ pdf, items, selectedId, selectItem, onSel
   }, [pdf.base64]);
 
   useEffect(() => {
-    if (!document || !canvas.current || !layer.current || !pageContainer.current) return;
+    if (!document || !canvas.current || !layer.current || !pageContainer.current || availableWidth <= 0) return;
     let disposed = false;
     let render: RenderTask | undefined;
     let textLayer: TextLayer | undefined;
@@ -61,12 +75,14 @@ export function FormalizationPdfView({ pdf, items, selectedId, selectItem, onSel
       const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
       if (disposed || !canvas.current || !layer.current || !pageContainer.current) return;
       const unscaled = page.getViewport({ scale: 1 });
-      const width = Math.min(1000, Math.max(320, pageContainer.current.parentElement?.clientWidth ?? 700));
+      const width = Math.min(1000, availableWidth);
       const viewport = page.getViewport({ scale: width / unscaled.width });
       const context = canvas.current.getContext("2d");
       if (!context) throw new Error("The PDF canvas could not be created.");
       canvas.current.width = Math.ceil(viewport.width);
       canvas.current.height = Math.ceil(viewport.height);
+      canvas.current.style.width = `${viewport.width}px`;
+      canvas.current.style.height = `${viewport.height}px`;
       pageContainer.current.style.width = `${viewport.width}px`;
       pageContainer.current.style.height = `${viewport.height}px`;
       pageContainer.current.style.setProperty("--total-scale-factor", String(viewport.scale));
@@ -83,7 +99,7 @@ export function FormalizationPdfView({ pdf, items, selectedId, selectItem, onSel
       setLoading(false);
     })().catch(reason => { if (!disposed) { setError(String(reason)); setLoading(false); } });
     return () => { disposed = true; render?.cancel(); textLayer?.cancel(); };
-  }, [document, pageIndex]);
+  }, [document, pageIndex, availableWidth]);
 
   useEffect(() => {
     if (selected?.page_index !== undefined && document) setPageIndex(Math.max(0, Math.min(selected.page_index, document.numPages - 1)));
@@ -105,7 +121,7 @@ export function FormalizationPdfView({ pdf, items, selectedId, selectItem, onSel
     {companion && selected?.page_index === undefined && <p className="notice warn">No page match is available for this source item. Browse the PDF to check it; the displayed page is not a claimed match.</p>}
     {loading && <p role="status">Rendering frozen page…</p>}
     {error && <p className="notice error" role="alert">{error}</p>}
-    <div className="formalization-pdf-scroll">
+    <div className="formalization-pdf-scroll" ref={scrollContainer}>
       <div className="formalization-pdf-page" ref={pageContainer} onMouseUp={() => {
         const selectedText = window.getSelection()?.toString().trim() ?? "";
         setSelection(selectedText.slice(0, 16000));

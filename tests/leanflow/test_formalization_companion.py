@@ -101,8 +101,41 @@ def test_companion_does_not_repair_missing_tex_assets(sources, tmp_path: Path) -
     tex, pdf = sources
     tex.write_text(tex.read_text() + r"\includegraphics{missing.png}\bibliography{missing}")
     inventory = inventory_source(tmp_path, tex, companion_pdf=pdf)
-    assert [d["code"] for d in inventory["diagnostics"]] == ["missing_support_file"] * 2
+    codes = [d["code"] for d in inventory["diagnostics"]]
+    assert codes.count("missing_support_file") == 2
+    assert codes.count("unsupported_tex_effect") == 1
+    assert all(d["blocking"] for d in inventory["diagnostics"])
     assert inventory["extraction_status"] == "blocked"
+
+
+def test_preparation_launch_retains_narrow_companion_draft_exception(
+    sources, tmp_path: Path, monkeypatch
+) -> None:
+    from leanflow_cli.formalization import preparation_launch as launch
+
+    tex, pdf = sources
+    tex.write_text(tex.read_text() + r"\includegraphics{missing.png}")
+    record = create_document(tmp_path, tex, companion_pdf=pdf)
+    original = tex.read_bytes()
+    monkeypatch.setattr(launch, "load_config", lambda: {"limits": {}})
+    monkeypatch.setattr(launch, "inspect_project", lambda root: {"ready": True, "configured": True})
+
+    def discover(root, selected, plan, **kwargs):
+        assert selected["inventory"]["companion_pdf"] == record["inventory"]["companion_pdf"]
+        assert intake.author_blocking_diagnostics(selected["inventory"]) == []
+        assert intake.draft_source_rejection(selected["inventory"])["status"] == "source_blocked"
+        return {"accepted": False, "error": "Draft exception reached discovery"}
+
+    monkeypatch.setattr(launch, "discover_preparation_plan", discover)
+    monkeypatch.setattr(
+        launch, "prepare_document_project", lambda *args, **kwargs: pytest.fail("Unapproved setup")
+    )
+    with pytest.raises(ValueError, match="Draft exception reached discovery"):
+        launch.prepare_formalization_launch(
+            tmp_path, tex.name, {"provider": "claude"}, environment={}
+        )
+    assert tex.read_bytes() == original
+    assert load_document(tmp_path, record["document_id"])["revision_id"] == record["revision_id"]
 
 
 def test_companion_path_must_be_project_contained_and_non_symlink(sources, tmp_path: Path) -> None:

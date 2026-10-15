@@ -16,7 +16,12 @@ from core.utils import atomic_json_write
 from leanflow_cli.runtime.project_operations import ProjectBusyError, project_activity
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.observer import RunObserver, exit_code
-from leanflow_cli.workflows.prover.source import import_only_source, project_path, project_sources
+from leanflow_cli.workflows.prover.source import (
+    SourceConflictError,
+    import_only_source,
+    project_path,
+    project_sources,
+)
 from leanflow_cli.workflows.prover.store import now
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")
@@ -89,14 +94,30 @@ def _startup_failure(
     publish_live: bool,
 ) -> int:
     """Record a failed execution without resnapshotting source or rewriting prior runs."""
+    from leanflow_cli.workflows.prover.runtime import BudgetExhausted
+
     message = redact_sensitive_text(str(error))[:16000]
-    conflict = "protected source changed" in message
-    status = "source_conflict" if conflict else "environment_error" if not publish_live else "error"
-    guidance = (
-        "Compare current source with this run's saved baselines and resolve the conflict before resuming. "
-        "The original snapshot was preserved; no source was automatically reaccepted."
+    conflict = isinstance(error, SourceConflictError) or "protected source changed" in message
+    timed_out = isinstance(error, BudgetExhausted) and error.code == "campaign_wall_time"
+    status = (
+        "source_conflict"
         if conflict
-        else "Correct the reported startup problem, then resume the saved run or launch again."
+        else "timeout" if timed_out else "environment_error" if not publish_live else "error"
+    )
+    guidance = (
+        "Compare canonical source with this run's saved baselines and the retained version paths in the error. "
+        "The original snapshot was preserved; no source was automatically reaccepted. "
+        "A conflicted prover source journal cannot be cleared by restoring canonical bytes for same-run resume. "
+        "Preserve its original, candidate, rollback and journal files; reconcile ordinary source versions and start a fresh run. "
+        "A pending library configuration promotion also blocks fresh runs until its transaction can recover. "
+        "There is currently no automatic prover journal reconciliation command."
+        if conflict
+        else (
+            "The resumed campaign has exhausted its total active-time budget; its prior checkpoint and source are preserved. "
+            "Review the saved progress and budget settings before another launch."
+            if timed_out
+            else "Correct the reported startup problem, then resume the saved run or launch again."
+        )
     )
     try:
         directory = project_path(root, f".leanflow/workflow-state/prover/{run_id}")
@@ -130,6 +151,15 @@ def _startup_failure(
         state.setdefault("metrics", {"api_calls": 0, "cost_usd": None})
         if previous:
             state.update(resumed_from=previous, parent_run_id=previous)
+        if timed_out:
+            state["stop_reason"] = {
+                "code": "campaign_wall_time",
+                "scope": "campaign",
+                "message": message,
+                "used": state.get("metrics", {}).get("elapsed_s"),
+                "limit": config.wall_time_s if config else None,
+                "next_step": guidance,
+            }
         if config and "config" not in state:
             state["config"] = config.to_mapping()
         atomic_json_write(state_file, state)

@@ -34,6 +34,7 @@ def source_folder(tmp_path: Path, monkeypatch):
         "assert_preparation_current",
         lambda root: (_ for _ in ()).throw(ValueError("Not prepared")),
     )
+    monkeypatch.setattr(launch, "inspect_project", lambda root: {"ready": True, "configured": True})
     return tmp_path
 
 
@@ -54,8 +55,35 @@ def test_source_only_preview_never_prepares_or_calls_native(source_folder, monke
     assert not (root / ".leanflow").exists() and not (root / "lean-toolchain").exists()
 
 
+@pytest.mark.parametrize(
+    "unsupported",
+    [r"\unknownmath{A}", r"\ifdim 1pt<2pt Hidden mathematics.\fi"],
+)
+def test_source_blocker_precedes_discovery_budget_and_project_effects(
+    source_folder, monkeypatch, unsupported
+):
+    root = source_folder
+    source = root / "paper.tex"
+    source.write_text(source.read_text() + unsupported)
+    original = source.read_bytes()
+    monkeypatch.setattr(
+        launch, "discover_preparation_plan", lambda *args, **kwargs: pytest.fail("Paid discovery")
+    )
+    monkeypatch.setattr(
+        launch, "prepare_document_project", lambda *args, **kwargs: pytest.fail("Project setup")
+    )
+    monkeypatch.setattr(launch, "load_config", lambda: pytest.fail("Campaign admitted"))
+    with pytest.raises(
+        ValueError, match="Source extraction needs repair before project preparation"
+    ):
+        launch.prepare_formalization_launch(root, "paper.tex", {"provider": "claude"})
+    assert source.read_bytes() == original
+    assert not (root / ".leanflow/formalization-campaigns").exists()
+    assert not (root / "lean-toolchain").exists()
+
+
 def test_preparation_owns_setup_before_activity_and_shares_discovery_budget(
-    source_folder, monkeypatch
+    source_folder, monkeypatch, capsys
 ):
     root = source_folder
     calls = []
@@ -75,6 +103,17 @@ def test_preparation_owns_setup_before_activity_and_shares_discovery_budget(
             pass
         assert kwargs["budget_path"] == calls[0][2]
         assert not (root / "Main.lean").exists()
+        kwargs["progress"](
+            {
+                "type": "progress",
+                "phase": "dependencies",
+                "message": "Downloading Mathlib",
+                "log_path": "/private/setup.log",
+            }
+        )
+        kwargs["progress"](
+            {"type": "output", "phase": "dependencies", "message": "H tracked/source.lean"}
+        )
         calls.append(("preparation", record, kwargs["budget_path"]))
         return {
             "accepted": True,
@@ -93,6 +132,26 @@ def test_preparation_owns_setup_before_activity_and_shares_discovery_budget(
     assert [row[0] for row in calls] == ["discovery", "preparation"]
     assert result["budget_path"].is_file() and result["receipt"]["preparation_id"] == "prepared"
     assert result["root"] == root and not (root / "lean-toolchain").exists()
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "dependency_plan" in output.err
+    assert "Downloading Mathlib" in output.err and "Log: /private/setup.log" in output.err
+    assert "Project setup passed" in output.err
+    assert "H tracked/source.lean" not in output.err
+
+
+def test_automatic_preparation_progress_redacts_and_bounds_messages(capsys):
+    launch._report_preparation_progress(
+        {
+            "phase": "dependencies",
+            "message": "Fetching https://user:secret@example.test/repo " + "x" * 10000,
+            "log_path": "/private/setup.log",
+        }
+    )
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "user:secret" not in output.err and "[REDACTED]@example.test" in output.err
+    assert len(output.err) < 2200
 
 
 def test_unauthorized_discovery_package_cannot_reach_setup(source_folder, monkeypatch):
@@ -197,9 +256,6 @@ def test_actual_launch_prepares_before_discovery_and_stamps_native_intake(
     monkeypatch.setattr(launch, "prepare_formalization_launch", prepare)
     monkeypatch.setattr(workflow, "discover_leanflow_project", project)
     monkeypatch.setattr(workflow, "prepare_formalization_document_context", intake)
-    monkeypatch.setattr(
-        "leanflow_cli.workflows.research_mode.research_local_loogle_enabled", lambda **kwargs: True
-    )
     monkeypatch.setattr(
         "leanflow_cli.cli.loogle_local.ensure_local_loogle_for_project_async",
         lambda *args: pytest.fail("Unexpected additional resident index"),

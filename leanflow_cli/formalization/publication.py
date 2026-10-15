@@ -7,10 +7,12 @@ import stat
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from leanflow_cli.formalization.evidence import contained, durable_json, put_blob, sync_directory
+from leanflow_cli.formalization.publication_case_paths import assert_exact_control_path
 from leanflow_cli.formalization.publication_io import (
     PublicationCancelled,
     PublicationConflict,
@@ -27,6 +29,7 @@ from leanflow_cli.formalization.publication_journal import (
     current_journal,
     load_journal,
     load_registry,
+    registry_path,
     save_journal,
     save_registry,
     settle_terminal,
@@ -36,6 +39,7 @@ from leanflow_cli.formalization.publication_plan import (
     validate_publication_plan,
 )
 from leanflow_cli.formalization.publication_recovery import recover_locked
+from leanflow_cli.formalization.publication_registry_inventory import EFFECT_HISTORY
 
 __all__ = [
     "PublicationCancelled",
@@ -77,10 +81,20 @@ def _pointer_journal(root: Path, path: Path, registry: Mapping[str, Any]) -> dic
 
 
 @contextmanager
-def publication_guard(root: Path) -> Iterator[None]:
+def publication_guard(
+    root: Path,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    deadline: float | None = None,
+) -> Iterator[None]:
     """Hold project ownership while auditing recovery and executing a consumer action."""
     root = root.resolve()
-    with publication_lock(root):
+    owner = (
+        publication_lock(root)
+        if cancelled is None and deadline is None
+        else publication_lock(root, cancelled=cancelled, deadline=deadline)
+    )
+    with owner:
         registry = load_registry(root)
         if registry["active"] is not None:
             path = contained(root, registry["transactions"][registry["active"]]["journal"])
@@ -197,7 +211,22 @@ def publish_revision(
 
     with publication_lock(root):
         registry = load_registry(root)
+        initial_registration = not registry_path(root).exists()
         audit_retained(root, registry)
+        for relative in frozen["writes"]:
+            if relative.startswith("formalization/"):
+                try:
+                    assert_exact_control_path(root, relative)
+                    ancestor = root
+                    for component in relative.split("/")[:-1]:
+                        ancestor /= component
+                        if ancestor.is_symlink() or (ancestor.exists() and not ancestor.is_dir()):
+                            raise PublicationConflict(
+                                "Publication control namespace collides with an existing non-directory or alias: "
+                                + ancestor.relative_to(root).as_posix()
+                            )
+                except PublicationConflict as error:
+                    raise PublicationUnsupported(str(error)) from error
         previous_path = current_journal(directory, root=root)
         previous = _pointer_journal(root, previous_path, registry) if previous_path else None
         if registry["active"] is not None:
@@ -235,23 +264,19 @@ def publish_revision(
         transaction = contained(
             root, f".leanflow/formalization-publication-transactions/{transaction_id}"
         )
-        mkdir_durable(transaction / "staging")
-        mkdir_durable(transaction / "displaced")
-        writes = {
-            relative: {
+        writes: dict[str, Any] = {}
+        no_effect_inodes: dict[str, list[int] | None] = {}
+        for index, (relative, row) in enumerate(frozen["writes"].items()):
+            original = entry_path(root, relative).lstat() if row["before"] is not None else None
+            no_effect_inodes[relative] = [original.st_dev, original.st_ino] if original else None
+            writes[relative] = {
                 **row,
                 "captured": f"displaced/{index}.before",
                 "staged": f"staging/{index}.after",
                 "rollback_slots": [],
                 "stage": "staged",
-                "mode": (
-                    stat.S_IMODE(entry_path(root, relative).stat().st_mode)
-                    if row["before"] is not None
-                    else 0o644
-                ),
+                "mode": stat.S_IMODE(original.st_mode) if original else 0o644,
             }
-            for index, (relative, row) in enumerate(frozen["writes"].items())
-        }
         journal = {
             "schema_version": 1,
             "transaction_id": transaction_id,
@@ -267,6 +292,24 @@ def publish_revision(
             "archives_prepared": False,
         }
         journal_path = transaction / "publication.json"
+        registry["transactions"][transaction_id] = {
+            "journal": journal_path.relative_to(root).as_posix(),
+            "revision_id": revision_id,
+            "plan_id": frozen["plan_id"],
+            "write_paths": list(writes),
+            # This authority permits abandonment only, never mathematical acceptance.
+            "no_effect_journal": deepcopy(journal),
+            "no_effect_inodes": no_effect_inodes,
+        }
+        registry["active"] = transaction_id
+        save_registry(
+            root,
+            registry,
+            initial_transaction=transaction_id if initial_registration else None,
+        )
+        boundary("registration_saved")
+        mkdir_durable(transaction / "staging")
+        mkdir_durable(transaction / "displaced")
         save_journal(journal_path, journal)
         mkdir_durable(directory)
         durable_json(
@@ -278,14 +321,6 @@ def publish_revision(
                 "journal": journal_path.relative_to(root).as_posix(),
             },
         )
-        registry["transactions"][transaction_id] = {
-            "journal": journal_path.relative_to(root).as_posix(),
-            "revision_id": revision_id,
-            "plan_id": frozen["plan_id"],
-            "write_paths": list(writes),
-        }
-        registry["active"] = transaction_id
-        save_registry(root, registry)
 
         def save() -> None:
             save_journal(
@@ -314,6 +349,18 @@ def publish_revision(
             journal["archives_prepared"] = True
             journal["state"] = "PREPARED"
             save()
+            # Survives restoration of an older index containing the no-effect snapshot.
+            # A missing journal after this point always requires explicit loss recovery.
+            effect_marker = contained(root, f"{EFFECT_HISTORY}/{transaction_id}.json")
+            mkdir_durable(effect_marker.parent)
+            durable_json(
+                effect_marker,
+                {key: journal[key] for key in ("transaction_id", "revision_id", "plan_id")},
+            )
+            record = registry["transactions"][transaction_id]
+            record.pop("no_effect_journal")
+            record.pop("no_effect_inodes")
+            save_registry(root, registry)
             boundary("prepared")
             journal["state"] = "PUBLISHING"
             save()

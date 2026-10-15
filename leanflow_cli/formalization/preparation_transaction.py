@@ -145,11 +145,14 @@ def commit_preparation(
     cancelled: Callable[[], bool],
     checkpoint: Callable[[str], None] | None = None,
     check: Callable[[], None] | None = None,
+    authorize: Callable[[Path], None] | None = None,
 ) -> dict[str, Any]:
     """Select checked infrastructure and absent import roots with no-clobber recovery."""
     root, staged = root.resolve(), staged.resolve()
     with publication_lock(root):
         assert_no_pending_preparation(root)
+        if authorize:
+            authorize(staged)
         registry = load_registry(root)
         transaction_id = uuid.uuid4().hex
         slots_relative = f".leanflow/preparation-transactions/{transaction_id}"
@@ -317,6 +320,8 @@ def commit_preparation(
                 save_entry(relative)
                 boundary("installed:" + relative)
             boundary("before_commit")
+            if authorize:
+                authorize(root)
             validate()
             current_protected = protected_inputs(root, source_paths=protected)
             for relative, row in writes.items():

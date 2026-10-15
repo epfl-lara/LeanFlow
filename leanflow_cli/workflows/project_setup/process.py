@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from leanflow_cli.workflows.project_setup.execution import SetupExecutionPolicy
 
 Progress = Callable[[dict[str, Any]], None]
+MAX_PROTOCOL_STDOUT_BYTES = 8 * 1024**2
 
 
 class SetupFailure(RuntimeError):
@@ -34,6 +35,17 @@ class SetupFailure(RuntimeError):
 
 class SetupCancelled(Exception):
     """Report explicit cancellation without treating it as an installation error."""
+
+
+def validate_stdout_limit(stdout_only: bool, limit: int | None) -> None:
+    """Require a bounded complete-protocol request rather than a diagnostic tail."""
+    if limit is not None and (
+        not stdout_only
+        or isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 0 < limit <= MAX_PROTOCOL_STDOUT_BYTES
+    ):
+        raise ValueError("Complete protocol stdout requires a positive bound of at most 8 MiB")
 
 
 def find_executable(name: str) -> str | None:
@@ -108,9 +120,11 @@ def run_command(
     phase: str,
     input_text: str | None = None,
     stdout_only: bool = False,
+    stdout_limit_bytes: int | None = None,
     execution_policy: SetupExecutionPolicy | None = None,
 ) -> tuple[int, str]:
-    """Stream both channels, keeping successful protocol stdout separate on request."""
+    """Stream diagnostics; optionally retain complete bounded stdout or reject its overflow."""
+    validate_stdout_limit(stdout_only, stdout_limit_bytes)
     if execution_policy is not None:
         from leanflow_cli.workflows.project_setup.execution_process import run_restricted_command
 
@@ -123,6 +137,7 @@ def run_command(
             phase=phase,
             input_text=input_text,
             stdout_only=stdout_only,
+            stdout_limit_bytes=stdout_limit_bytes,
             execution_policy=execution_policy,
         )
     check_cancel(cancel)
@@ -144,14 +159,30 @@ def run_command(
         errors="replace",
         start_new_session=os.name != "nt",
     )
-    lines: queue.Queue[tuple[bool, str | None]] = queue.Queue()
+    lines: queue.Queue[tuple[bool, str | Exception | None]] = queue.Queue(
+        maxsize=64 if stdout_limit_bytes is not None else 0
+    )
+    stopped = threading.Event()
+
+    def enqueue(item: tuple[bool, str | Exception | None]) -> None:
+        while not stopped.is_set():
+            try:
+                lines.put(item, timeout=0.05)
+                return
+            except queue.Full:
+                pass
 
     def read_output(stream: TextIO, is_stdout: bool) -> None:
         try:
-            for line in stream:
-                lines.put((is_stdout, line))
+            while not stopped.is_set():
+                line = stream.readline(4096 if stdout_limit_bytes is not None else -1)
+                if not line:
+                    break
+                enqueue((is_stdout, line))
+        except Exception as error:
+            enqueue((is_stdout, error))
         finally:
-            lines.put((is_stdout, None))
+            enqueue((is_stdout, None))
 
     assert process.stdout is not None and process.stderr is not None
     readers = [
@@ -164,6 +195,8 @@ def run_command(
         reader.start()
     tail = ""
     stdout_tail = ""
+    protocol_parts: list[str] = []
+    protocol_bytes = 0
     try:
         if input_text is not None:
             assert process.stdin is not None
@@ -179,17 +212,36 @@ def run_command(
             if line is None:
                 ended += 1
                 continue
+            if isinstance(line, Exception):
+                if stdout_limit_bytes is not None:
+                    raise SetupFailure(
+                        "setup_protocol_read_failed",
+                        "Complete preparation protocol output could not be read.",
+                        "Retry the readiness query; incomplete output cannot establish readiness.",
+                    ) from line
+                continue
             sanitized = safe_text(line)
             log.write(sanitized + "\n")
             log.flush()
             tail = (tail + line)[-64000:]
             if is_stdout:
                 stdout_tail = (stdout_tail + line)[-64000:]
+                if stdout_limit_bytes is not None:
+                    protocol_bytes += len(line.encode("utf-8"))
+                    if protocol_bytes > stdout_limit_bytes:
+                        raise SetupFailure(
+                            "setup_protocol_output_limit",
+                            "Complete preparation protocol output exceeds its byte bound.",
+                            "Reduce or page the protocol query; truncated output cannot establish readiness.",
+                        )
+                    protocol_parts.append(line)
             if progress:
                 progress({"type": "output", "phase": phase, "message": sanitized})
         exit_code = process.wait()
-        return exit_code, stdout_tail if stdout_only and exit_code == 0 else tail
+        output = "".join(protocol_parts) if stdout_limit_bytes is not None else stdout_tail
+        return exit_code, output if stdout_only and exit_code == 0 else tail
     finally:
+        stopped.set()
         _stop(process)
         for reader in readers:
             reader.join(timeout=2)

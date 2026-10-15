@@ -183,6 +183,7 @@ def fresh_review_transport(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
                     "feedback": "All fixture source items, shared definitions, and regions are accounted for.",
                 }
             ),
+            cleanup_verified=True,
         )
 
     monkeypatch.setattr(review, "run_harness", invoke)
@@ -734,7 +735,9 @@ def test_rejected_translation_corrected_and_published_with_durable_prior_decisio
                 decision="BLOCK", issues=["Associativity does not translate commutativity"]
             )
         response.update(coherence_decision="BLOCK", feedback="Use the commutativity declaration")
-        return HarnessResult(status="completed", final_response=json.dumps(response))
+        return HarnessResult(
+            status="completed", final_response=json.dumps(response), cleanup_verified=True
+        )
 
     monkeypatch.setattr(review, "run_harness", reject_wrong_mapping)
     reviewed = review.review_revision(

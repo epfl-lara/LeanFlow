@@ -15,6 +15,7 @@ from leanflow_cli.formalization.evidence import (
     read_blob,
 )
 from leanflow_cli.formalization.inventory_authority import display_inventory
+from leanflow_cli.formalization.publication_case_paths import assert_receipt_control_path
 from leanflow_cli.formalization.records import (
     DocumentSelectionConflict,
     assert_source_current,
@@ -33,7 +34,9 @@ from leanflow_cli.formalization.records import (
 
 
 def _artifacts(
-    record: dict[str, Any], proof_receipt: dict[str, Any] | None = None
+    record: dict[str, Any],
+    proof_receipt: dict[str, Any] | None = None,
+    draft_preview: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     result = [
         {
@@ -71,7 +74,18 @@ def _artifacts(
         for file, key in record.get("context_lean_files", {}).items()
         if file not in record.get("lean_files", {})
     )
+    result.extend({**row, "origin": "draft"} for row in (draft_preview or {}).get("artifacts", []))
     return result
+
+
+def _display_preview(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """Isolate optional preview corruption so original source and other documents stay inspectable."""
+    from leanflow_cli.formalization.source_draft import load_preview
+
+    try:
+        return load_preview(root, record), ""
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        return None, "Draft preview unavailable: " + str(error)
 
 
 def _ref(record: dict[str, Any], span: dict[str, Any], text: str = "") -> dict[str, Any]:
@@ -135,6 +149,7 @@ def _diagnostics(record: dict[str, Any]) -> list[dict[str, Any]]:
                 )
             ],
             "can_resolve_command": diagnostic["code"] == "unresolved_command",
+            "can_resolve_conditional": diagnostic["code"] == "unresolved_conditional",
         }
         for diagnostic in record["inventory"]["diagnostics"]
     ]
@@ -169,7 +184,9 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
     declarations = {row["name"]: row for row in checks.get("declarations", [])}
     if proof_receipt:
         declarations.update(proof_receipt["checks"]["profiles"])
-    artifacts = _artifacts(record, proof_receipt)
+
+    draft_preview, draft_preview_error = _display_preview(root, record)
+    artifacts = _artifacts(record, proof_receipt, draft_preview)
     lean_artifacts = {
         artifact["path"]: artifact["id"]
         for artifact in artifacts
@@ -328,6 +345,7 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
         and not blocked
         and not unresolved
         and not selection_conflict
+        and not draft_preview_error
     )
     can_prove = bool(accepted_handoff and (handoff or {}).get("obligations") and not proof_receipt)
     revisions = []
@@ -356,6 +374,8 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "schema_version": 1,
+        "draft_preview": draft_preview,
+        "draft_preview_error": draft_preview_error or None,
         "document_id": record["document_id"],
         "revision_id": record["revision_id"],
         "status": status,
@@ -372,6 +392,7 @@ def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
         "items": items,
         "regions": regions,
         "diagnostics": _diagnostics({**record, "inventory": inventory})
+        + ([draft_preview_error] if draft_preview_error else [])
         + (
             [
                 publication_error
@@ -446,8 +467,12 @@ def show_document(root: Path, document_id: str) -> dict[str, Any]:
 
 def list_documents(root: Path) -> dict[str, Any]:
     """List controller-owned documents through the public snapshot protocol."""
+    from leanflow_cli.formalization.publication_case_paths import exact_control_path
+
     ids: set[str] = set()
     for prefix in (".leanflow/formalizations", "formalization"):
+        if not exact_control_path(root, prefix):
+            continue
         directory = contained(root.resolve(), prefix)
         if directory.exists():
             for path in directory.iterdir():
@@ -512,21 +537,35 @@ def resolve_artifact(
             proof_receipt = None
         candidates = [
             artifact
-            for artifact in _artifacts(record, proof_receipt)
+            for artifact in _artifacts(record, proof_receipt, _display_preview(root, record)[0])
             if artifact["id"] == artifact_id
         ]
         if len(candidates) != 1:
             raise ValueError("Artifact does not belong to this selected revision")
         artifact = candidates[0]
+        artifact_directory = (
+            document_directory(root, document_id)
+            if artifact["origin"] == "draft"
+            else Path(record["_directory"])
+        )
+        if artifact["origin"] != "proof":
+            assert_receipt_control_path(artifact_directory, f"blobs/{artifact['sha256']}")
         data = (
             contained(root, artifact["path"]).read_bytes()
             if artifact["origin"] == "proof"
-            else read_blob(contained(Path(record["_directory"]), "blobs"), artifact["sha256"])
+            else read_blob(
+                contained(
+                    artifact_directory,
+                    "blobs",
+                ),
+                artifact["sha256"],
+            )
         )
         if digest(data) != artifact["sha256"]:
             raise ValueError("Certified proof source changed before opening")
         suffix = Path(artifact["path"]).suffix
         target = contained(directory, f"viewer/{identifier(artifact_id)}{suffix}")
+        assert_receipt_control_path(directory, f"viewer/{identifier(artifact_id)}{suffix}")
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             if not target.is_file() or digest(target.read_bytes()) != artifact["sha256"]:

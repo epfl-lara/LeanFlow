@@ -61,20 +61,8 @@ def test_layout_and_inspector_use_absolute_pinned_executables(
     assert not lean_policy._inspect(root, [], workspace, [], (), deadline_after(5), None, root)[
         "accepted"
     ]
-    assert not lean_policy._inspect(
-        root,
-        [],
-        workspace,
-        [],
-        (),
-        deadline_after(5),
-        None,
-        root,
-        full_import_replay=False,
-    )["accepted"]
     assert calls[0][0] == str(prefix / "bin/lean")
     assert calls[1][:2] == [str(prefix / "bin/lean"), "--run"]
-    assert calls[2][:3] == [str(prefix / "bin/lake"), "env", str(prefix / "bin/lean")]
 
 
 def test_compiler_executable_alias_cannot_escape_hashed_prefix(

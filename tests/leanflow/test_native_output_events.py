@@ -66,7 +66,12 @@ def test_native_output_is_joined_by_exact_evidence_and_never_marks_a_proof_accep
                 },
             }
         )
-        return HarnessResult("completed", final_response="A candidate", session_id="native-session")
+        return HarnessResult(
+            "completed",
+            final_response="A candidate",
+            session_id="native-session",
+            cleanup_verified=True,
+        )
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", native)
     monkeypatch.setattr(

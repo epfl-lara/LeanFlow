@@ -70,6 +70,7 @@ export interface FormalizationDiagnostic {
   blocking: boolean;
   source_refs: FormalizationSourceRef[];
   can_resolve_command: boolean;
+  can_resolve_conditional?: boolean;
   resolution_reason?: string;
   resolution?: "verified_transcription" | "explicit_scope_exclusion" | "explicit_source_boundary" | {
     actor: "user";
@@ -96,6 +97,21 @@ export interface FormalizationSnapshot {
   counts: Record<string, number>;
   layout?: { summary?: string; modules?: string[]; changes?: string[] };
   artifacts: FormalizationArtifact[];
+  draft_preview?: {
+    schema_version: 1;
+    preview_id: string;
+    run_id: string;
+    base_revision_id: string;
+    source_bundle: string;
+    preparation_id: string;
+    source_diagnostics: string[];
+    status: "unaccepted_source_uncertain";
+    accepted: false;
+    publication_authority: false;
+    proof_authority: false;
+    artifacts: FormalizationArtifact[];
+    model_report_artifact_id: string;
+  } | null;
   can_prove: boolean;
   source_stale?: boolean;
   selection_conflict?: { message: string; private_revision_id: string; published_revision_id: string } | null;
@@ -114,7 +130,7 @@ export interface FormalizationSnapshot {
 
 export type FormalizationAction =
   | { type: "retry_extraction"; reason: string }
-  | { type: "resolve_command"; diagnostic_id: string; interpretation: string; reason: string; verified: true }
+  | { type: "resolve_command" | "resolve_conditional"; diagnostic_id: string; interpretation: string; reason: string; verified: true }
   | { type: "authorize_proof"; item_id: string; authorized: boolean; reason: string }
   | { type: "transcribe_page" | "replace_page_transcription"; page_index: number; text: string; reason: string; verified: true }
   | { type: "set_scope"; item_id: string; scope: "included" | "excluded"; reason: string }
@@ -152,6 +168,7 @@ export function parseFormalizationSnapshot(value: unknown): FormalizationSnapsho
       typeof diagnostic.id !== "string" || typeof diagnostic.code !== "string" ||
       typeof diagnostic.message !== "string" || typeof diagnostic.blocking !== "boolean" ||
       typeof diagnostic.can_resolve_command !== "boolean" || !Array.isArray(diagnostic.source_refs) ||
+      diagnostic.can_resolve_conditional !== undefined && typeof diagnostic.can_resolve_conditional !== "boolean" ||
       diagnostic.resolution != null && (typeof diagnostic.resolution === "string"
         ? !["verified_transcription", "explicit_scope_exclusion", "explicit_source_boundary"].includes(diagnostic.resolution)
         : diagnostic.resolution.actor !== "user" || diagnostic.resolution.verified !== true ||
@@ -163,6 +180,22 @@ export function parseFormalizationSnapshot(value: unknown): FormalizationSnapsho
       raw.acceptance_freshness != null && (typeof raw.acceptance_freshness !== "object" || typeof raw.acceptance_freshness.current !== "boolean" || typeof raw.acceptance_freshness.reason !== "string" ||
         !["not_published", "current", "environment_stale", "checker_stale", "acceptance_stale"].includes(raw.acceptance_freshness.status))) {
     throw new Error("The formalization service returned invalid preparation or acceptance freshness.");
+  }
+  if (raw.draft_preview != null) {
+    const preview = raw.draft_preview;
+    const artifacts = raw.artifacts;
+    if (typeof preview !== "object" || preview.schema_version !== 1 || preview.status !== "unaccepted_source_uncertain" ||
+        preview.accepted !== false || preview.publication_authority !== false || preview.proof_authority !== false || raw.can_prove === true ||
+        [preview.preview_id, preview.run_id, preview.base_revision_id, preview.source_bundle, preview.model_report_artifact_id].some(value => typeof value !== "string" || !value) ||
+        typeof preview.preparation_id !== "string" || preview.base_revision_id !== raw.revision_id ||
+        !Array.isArray(preview.source_diagnostics) || preview.source_diagnostics.some(value => typeof value !== "string") ||
+        !Array.isArray(preview.artifacts) || preview.artifacts.some(artifact => !artifact || typeof artifact !== "object" ||
+          [artifact.id, artifact.path, artifact.kind, artifact.sha256].some(value => typeof value !== "string" || !value) ||
+          !["lean", "source"].includes(artifact.kind) || !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
+          !artifacts.some(existing => existing.id === artifact.id && existing.sha256 === artifact.sha256)) ||
+        !preview.artifacts.some(artifact => artifact.id === preview.model_report_artifact_id && artifact.kind === "source")) {
+      throw new Error("The formalization service returned an invalid unaccepted draft preview.");
+    }
   }
   return {
     ...raw as FormalizationSnapshot,

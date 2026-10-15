@@ -7,20 +7,20 @@ import React from "react";
 import Renderer, { act } from "react-test-renderer";
 import { build } from "esbuild";
 
-const output = path.resolve("dist/test/webviewFixture.mjs");
+const output = path.resolve(`dist/test/webviewFixture-${process.pid}.mjs`);
 const bundle = await build({
-  stdin: { contents: `export { App } from './webview/App'; export { SidebarView } from './webview/views/SidebarView'; export { emptyLaunchRequest } from './src/core/types'; export { normalizeProverSnapshot } from './src/core/prover'; export { parseWebviewMessage } from './src/panels/messageSchema'; import { FormalizationConflicts } from './webview/views/FormalizationConflicts'; import { FormalizationPreparation } from './webview/views/FormalizationPreparation'; import { formalizationFixture } from './test/helpers/formalizationFixture.mjs'; export function FormalizationConflictsFixture() { return <FormalizationConflicts ready={true} />; } export function FormalizationPreparationFixture() { return <FormalizationPreparation snapshot={globalThis.webviewFixture.sourceSnapshot ?? formalizationFixture()} ready={true} />; }`, resolveDir: process.cwd(), loader: "tsx" },
+  stdin: { contents: `export { App } from './webview/App'; export { SidebarView } from './webview/views/SidebarView'; export { emptyLaunchRequest } from './src/core/types'; export { restoreWorkflowView, patchWorkflowForm, selectWorkflowTab } from './webview/workflowForms'; export { normalizeProverSnapshot } from './src/core/prover'; export { parseWebviewMessage } from './src/panels/messageSchema'; import { FormalizationConflicts } from './webview/views/FormalizationConflicts'; import { FormalizationPreparation } from './webview/views/FormalizationPreparation'; import { formalizationFixture } from './test/helpers/formalizationFixture.mjs'; export function FormalizationConflictsFixture() { return <FormalizationConflicts ready={true} />; } export function FormalizationPreparationFixture() { return <FormalizationPreparation snapshot={globalThis.webviewFixture.sourceSnapshot ?? formalizationFixture()} ready={true} />; }`, resolveDir: process.cwd(), loader: "tsx" },
   bundle: true, write: false, format: "esm", platform: "node", jsx: "automatic", jsxDev: true,
   external: ["react", "react-dom"],
   plugins: [{ name: "inert-webview-host", setup(builder) {
     builder.onLoad({ filter: /pdfjs-dist\/legacy\/build\/pdf\.mjs$/ }, () => ({ contents: `
       export class PDFWorker { static create() { return {destroy(){}}; } }
-      export class TextLayer { render() { return Promise.resolve(); } cancel() {} }
+      export class TextLayer { constructor(options) { (globalThis.webviewFixture.pdfTextViewports ??= []).push(options.viewport); } render() { return Promise.resolve(); } cancel() {} }
       export function getDocument(options) {
         globalThis.webviewFixture.pdfOptions = options;
         return { destroy(){}, promise: Promise.resolve({numPages:2, getPageLabels:async()=>['i','1'], getPage:async()=>({
-          rotate:0, view:[0,0,100,100], getViewport:({scale})=>({width:100*scale,height:100*scale,scale}),
-          render:()=>({promise:Promise.resolve(),cancel(){}}),getTextContent:async()=>({items:[]})
+          rotate:0, view:[0,0,100,150], getViewport:({scale})=>({width:100*scale,height:150*scale,scale}),
+          render:options=>{(globalThis.webviewFixture.pdfRenderedViewports ??= []).push(options.viewport);return {promise:Promise.resolve(),cancel(){}};},getTextContent:async()=>({items:[]})
         })}) };
       }
     ` }));
@@ -41,7 +41,7 @@ const bundle = await build({
 });
 await mkdir(path.dirname(output), { recursive: true });
 await writeFile(output, bundle.outputFiles[0].text);
-export const { App, SidebarView, FormalizationConflictsFixture, FormalizationPreparationFixture, emptyLaunchRequest, normalizeProverSnapshot, parseWebviewMessage } = await import(pathToFileURL(output));
+export const { App, SidebarView, FormalizationConflictsFixture, FormalizationPreparationFixture, emptyLaunchRequest, normalizeProverSnapshot, parseWebviewMessage, restoreWorkflowView, patchWorkflowForm, selectWorkflowTab } = await import(pathToFileURL(output));
 export { act };
 export const clickedButtons = new Set();
 
@@ -59,7 +59,7 @@ export function mount(tab = "launch", patch = {}, component = App) {
   const effects = [];
   const node = { style: { setProperty() {} }, replaceChildren() {}, getContext: () => ({}), getBoundingClientRect: () => ({ left: 30, top: 40, bottom: 60, height: 120 }), contains: () => false, querySelector: () => ({ focus() {} }), clientWidth: 800, scrollHeight: 900, scrollTop: 0, scrollTo: (...args) => effects.push(["scroll", ...args]), scrollIntoView: () => effects.push(["focus"]) };
   globalThis.document = { getElementById: () => node };
-  globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+  globalThis.ResizeObserver = class { constructor(callback) { this.callback = callback; this.targets = []; (globalThis.webviewFixture.resizeObservers ??= []).push(this); } observe(target) { this.targets.push(target); } disconnect() { this.disconnected = true; } };
   const now = new Date().toISOString();
   const flags = [
     { name: "LEANFLOW_PROVER_MODE", value_type: "enum", default: "research", choices: ["standard", "research"], ablatable: true },
@@ -103,8 +103,8 @@ export function mount(tab = "launch", patch = {}, component = App) {
     eventDetails: {}, proverStates: { "run-1": { snapshot, error: "" } }, runLog: "fixture log", runLogRunId: "run-1",
     messages: [], effects,
     post(message) { assert.equal(parseWebviewMessage(message).ok, true, `Rejected UI message: ${JSON.stringify(message)}`); fixture.messages.push(message); },
-    setForm(value) { fixture.view = { ...fixture.view, form: { ...fixture.view.form, ...value } }; fixture.refresh(); },
-    setView(value) { fixture.view = { ...fixture.view, ...value }; fixture.refresh(); },
+    setForm(value) { fixture.view = patchWorkflowForm(fixture.view, value); fixture.refresh(); },
+    setView(value) { fixture.view = value.tab ? selectWorkflowTab({ ...fixture.view, ...value }, value.tab) : { ...fixture.view, ...value }; fixture.refresh(); },
     dismissToast(id) { fixture.toasts = fixture.toasts.filter(row => row.id !== id); fixture.refresh(); },
     requestPreview(request) { fixture.post({ type: "preview", requestId: "preview-1", request }); },
     requestDiff(left, right) { fixture.post({ type: "diffProfiles", requestId: "diff-1", left, right }); },
@@ -112,8 +112,13 @@ export function mount(tab = "launch", patch = {}, component = App) {
     refresh() { renderer?.update(React.createElement(component)); },
     ...patch,
   };
+  fixture.view = restoreWorkflowView(fixture.view);
   globalThis.webviewFixture = fixture;
-  act(() => { renderer = Renderer.create(React.createElement(component), { createNodeMock: () => node }); });
+  act(() => { renderer = Renderer.create(React.createElement(component), { createNodeMock: element => {
+    const key = element.type === "canvas" ? "canvas" : ({ "formalization-pdf-scroll": "scroll", "formalization-pdf-page": "page", textLayer: "text" })[element.props.className];
+    if (!key) return node;
+    return (fixture.pdfNodes ??= {})[key] ??= { ...node, style: { ...node.style } };
+  } }); });
   fixture.renderer = renderer;
   fixture.root = () => renderer.root;
   fixture.buttons = () => renderer.root.findAllByType("button");

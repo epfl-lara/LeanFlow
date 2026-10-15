@@ -13,6 +13,20 @@ def _git_metadata(relative: str) -> bool:
     return ".git" in relative.split("/")
 
 
+def _baseline_prefixes(
+    baseline: Mapping[str, str | None], check: Callable[[], None] | None
+) -> set[str]:
+    """Index exact baseline names and slash-delimited ancestors without sibling-prefix matches."""
+    prefixes: set[str] = set()
+    for relative in baseline:
+        if check:
+            check()
+        while relative and relative not in prefixes:
+            prefixes.add(relative)
+            relative = relative.rpartition("/")[0]
+    return prefixes
+
+
 def infrastructure_baseline(
     root: Path, *, check: Callable[[], None] | None = None
 ) -> dict[str, str | None]:
@@ -42,6 +56,7 @@ def managed_delta(
     baseline: Mapping[str, str | None],
     *,
     check: Callable[[], None] | None = None,
+    authorize: Callable[[Path], None] | None = None,
 ) -> dict[str, str | None]:
     """Return changed leaves and absent subtrees, preserving canonical package Git configuration.
 
@@ -49,6 +64,8 @@ def managed_delta(
     save cannot be adopted. Missing staged entries are left untouched. The legacy
     whole-tree baseline is supported with one independent baseline check.
     """
+    if authorize:
+        authorize(staged)
     original = dict(baseline)
     if original.get(".lake") is not None:
         if entry_identity(root / ".lake", check=check) != original[".lake"]:
@@ -61,6 +78,7 @@ def managed_delta(
         if (staged / name).exists()
         and entry_identity(staged / name, check=check) != original.get(name)
     }
+    prefixes = _baseline_prefixes(original, check)
 
     def visit(path: Path) -> None:
         if check:
@@ -78,7 +96,7 @@ def managed_delta(
                 return
             raise ValueError("Preparation delta cannot publish aliased infrastructure")
         if path.is_dir():
-            existed = any(key == relative or key.startswith(relative + "/") for key in original)
+            existed = relative in prefixes
             if not existed and not canonical.exists() and not canonical.is_symlink():
                 result[relative] = None
                 return

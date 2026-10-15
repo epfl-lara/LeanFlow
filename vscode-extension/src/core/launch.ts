@@ -20,6 +20,7 @@ export function buildWorkflowArgs(
   request: LaunchRequest,
   environment: Readonly<Record<string, string>> = {},
 ): string[] {
+  if (!["prove", "formalize"].includes(request.kind)) throw new Error("Choose Prove or Formalization; this workflow is no longer available.");
   const args: string[] = [request.kind];
   const mode = environment.LEANFLOW_PROVER_MODE ?? request.overrides.LEANFLOW_PROVER_MODE;
   const boundedMode = request.kind === "prove" && ["", "standard", "research"].includes(mode);
@@ -59,8 +60,10 @@ export function buildWorkflowArgs(
   if (request.cleanRoom) {
     args.push("--clean-room");
   }
-  if (request.humanReview && request.kind !== "prove") {
-    args.push("--human-review");
+  if (request.humanReview) throw new Error("Human-review launch pauses are no longer supported.");
+  if (request.sourceDraftOnly) {
+    if (request.kind !== "formalize") throw new Error("Source draft mode requires formalize.");
+    args.push("--source-draft-only");
   }
   if (request.axioms.trim()) {
     args.push("--axioms", request.axioms.trim());
@@ -359,7 +362,7 @@ export function launchRequestForViewState(request: LaunchRequest): LaunchRequest
   return {
     ...request,
     target: safeText(request.target),
-    humanReview: request.kind === "prove" ? false : request.humanReview,
+    humanReview: false,
     provider: safeText(request.provider),
     model: safeText(request.model),
     axioms: safeText(request.axioms),
@@ -482,6 +485,10 @@ function overlongFieldProblems(request: LaunchRequest): string[] {
 /** Validation the form can show before the user commits to a run. */
 export function validateLaunch(request: LaunchRequest): string[] {
   const problems: string[] = overlongFieldProblems(request);
+  if (!["prove", "formalize"].includes(request.kind)) problems.push("Choose Prove or Formalization; this workflow is no longer available.");
+  if (request.sourceDraftOnly && request.kind !== "formalize") {
+    problems.push("Source draft mode is only supported for formalize.");
+  }
   if (request.formalization && (request.kind !== "prove" || request.target.trim())) {
     problems.push("A formalization handoff requires prove with its exact accepted scope.");
   }
@@ -497,9 +504,7 @@ export function validateLaunch(request: LaunchRequest): string[] {
   if (request.cleanRoom && request.kind !== "prove") {
     problems.push("--clean-room is only supported for prove.");
   }
-  if (request.humanReview && request.kind !== "prove") {
-    problems.push("--human-review is only supported for prove.");
-  }
+  if (request.humanReview) problems.push("Human-review launch pauses are no longer supported.");
   if (request.researchWorkers !== null && request.researchWorkers < 0) {
     problems.push("Research workers cannot be negative.");
   }

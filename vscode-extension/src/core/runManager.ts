@@ -14,7 +14,9 @@ import {
   fetchEvents,
   fetchLiveStatus,
   fetchRunLog,
+  fetchRunMetrics,
   fetchRuns,
+  previewLaunch,
   spawnWorkflow,
   stopWorkflow,
 } from "./cli";
@@ -39,6 +41,7 @@ import {
 } from "./runOwnership";
 import {
   liveStatusForDisplay,
+  formalizationRuntimeForPersistence,
   redactSensitiveText,
   runSummaryForDisplay,
   trackedRunForPersistence,
@@ -77,6 +80,7 @@ export interface RunManagerSnapshot {
 export class RunManager implements vscode.Disposable {
   private runs = new Map<string, TrackedRun>();
   private handles = new Map<string, LiveHandle>();
+  private terminalReleases = new Map<string, Promise<boolean>>();
   private events = new Map<string, ActivityEvent[]>();
   private cursors = new Map<string, string>();
   private history: RunSummary[] = [];
@@ -119,7 +123,7 @@ export class RunManager implements vscode.Disposable {
     private readonly context: vscode.ExtensionContext,
     project: ProjectInfo,
     private readonly nativeEnvironment: () => Promise<NodeJS.ProcessEnv> = async () => ({}),
-    private readonly assertProjectReady: (root: string) => void = () => {},
+    private readonly assertProjectReady: (root: string, kind?: LaunchRequest["kind"]) => void = () => {},
   ) {
     this.project = project;
     this.restore();
@@ -236,6 +240,48 @@ export class RunManager implements vscode.Disposable {
 
   // ----------------------------------------------------------------- launch
 
+  /** Rebind resume to its exact original identity before any form/model validation. */
+  async bindFormalizationResumeRequest(
+    trackedId: string, request: LaunchRequest, projectRoot: string, sourceDocumentId: string,
+  ): Promise<LaunchRequest> {
+    const run = this.runs.get(trackedId);
+    if (!run || request.kind !== "formalize" || run.request.kind !== "formalize" ||
+        ["starting", "running"].includes(run.status) || !sameProjectRoot(run.projectRoot, projectRoot) ||
+        !sourceDocumentId || run.formalizationSource?.documentId !== sourceDocumentId ||
+        run.formalizationSource.path !== request.target || run.request.target !== request.target ||
+        !/^formalize-vscode-run-[A-Za-z0-9-]+$/.test(run.runId)) {
+      throw new Error("Resume requires a stopped extension-tracked formalization of this exact source and workspace. Use the CLI for untracked history.");
+    }
+    let identity = formalizationRuntimeForPersistence(run.formalizationRuntime);
+    if (!identity?.model) {
+      // Older requests may have inherited both fields. Only the CLI's exact,
+      // verified original launch can recover them; today's defaults cannot.
+      const metrics = await fetchRunMetrics(projectRoot, run.runId).catch(() => null);
+      const values = metrics?.launch?.environment.values;
+      const draft = values?.LEANFLOW_FORMALIZATION_SOURCE_DRAFT_ONLY;
+      if (metrics?.scope.exact && metrics.scope.requested_run_id === run.runId &&
+          metrics.scope.resolved_run_id === run.runId && metrics.run.run_id === run.runId &&
+          metrics.run.workflow_kind === "formalize" && values?.LEANFLOW_WORKFLOW_RUN_ID === run.runId &&
+          values.LEANFLOW_NATIVE_WORKFLOW_KIND === "formalize" &&
+          sameProjectRoot(values.LEANFLOW_PROJECT_ROOT ?? "", projectRoot) &&
+          values.LEANFLOW_FORMALIZATION_DOCUMENT_ID === sourceDocumentId &&
+          values.LEANFLOW_NATIVE_REQUESTED_TARGET === run.formalizationSource.path &&
+          (draft === "true" || draft === "false")) {
+        identity = formalizationRuntimeForPersistence({
+          provider: metrics.launch?.environment.runtime.provider,
+          model: metrics.launch?.environment.runtime.model,
+          sourceDraftOnly: draft === "true",
+        });
+      }
+      if (!identity?.model) {
+        throw new Error("This run has no verified original provider and model for editor resume. Resume its exact run id with the CLI using its original provider, model and source-draft mode; current form defaults cannot recover that identity.");
+      }
+      run.formalizationRuntime = identity;
+      await this.persist();
+    }
+    return { ...request, provider: identity.provider, model: identity.model, sourceDraftOnly: identity.sourceDraftOnly };
+  }
+
   /**
    * Start a run and begin tracking it.
    *
@@ -250,14 +296,30 @@ export class RunManager implements vscode.Disposable {
       experimentId?: string;
       experimentCell?: string;
       projectRoot?: string;
+      assertCurrent?: () => void;
+      sourceDocumentId?: string;
+      resumeTrackedId?: string;
     } = {},
   ): Promise<TrackedRun> {
     if (!this.project.found && !options.projectRoot) {
       throw new Error("No LeanFlow project is open.");
     }
     const projectRoot = options.projectRoot ?? this.project.root;
+    let resume: TrackedRun | undefined;
+    if (options.resumeTrackedId) {
+      request = await this.bindFormalizationResumeRequest(options.resumeTrackedId, request, projectRoot, options.sourceDocumentId ?? "");
+      resume = this.runs.get(options.resumeTrackedId);
+      if (!resume || request.kind !== "formalize" || resume.request.kind !== "formalize" ||
+          ["starting", "running"].includes(resume.status) || !sameProjectRoot(resume.projectRoot, projectRoot) ||
+          !options.sourceDocumentId || resume.formalizationSource?.documentId !== options.sourceDocumentId ||
+          resume.formalizationSource.path !== request.target || resume.request.target !== request.target ||
+          !/^formalize-vscode-run-[A-Za-z0-9-]+$/.test(resume.runId)) {
+        throw new Error("Resume requires a stopped extension-tracked formalization of this exact source and workspace. Use the CLI for untracked history.");
+      }
+    }
+    options.assertCurrent?.();
     const rootKey = this.rootKey(projectRoot);
-    this.assertProjectReady(projectRoot);
+    this.assertProjectReady(projectRoot, request.kind);
     await validateLaunchProjectInputs(
       projectRoot,
       request.target,
@@ -265,7 +327,8 @@ export class RunManager implements vscode.Disposable {
     );
     // Setup can start while the asynchronous path check is pending. Recheck
     // before reserving launch ownership so the two operations cannot overlap.
-    this.assertProjectReady(projectRoot);
+    this.assertProjectReady(projectRoot, request.kind);
+    options.assertCurrent?.();
     const researchConflict = researchConflictDescription(
       this.runs.values(),
       options.experimentId,
@@ -287,12 +350,25 @@ export class RunManager implements vscode.Disposable {
     let durableStatus: LiveStatus | null;
     try {
       durableStatus = await fetchLiveStatus(projectRoot);
+      options.assertCurrent?.();
       this.statusesByRoot.set(rootKey, durableStatus);
       const durableBlocker = durableOwnerDescription(durableStatus);
       if (durableBlocker !== null) {
         throw new Error(
           `${durableBlocker} Stop it before starting another run in this project.`,
         );
+      }
+      if (resume) {
+        // Every attempt shares the controller run id and its private tmux server.
+        // Await old retirement before spawning so a delayed cleanup cannot delete
+        // the resumed pane or a leftover exited pane masquerade as a new launch.
+        for (const attempt of this.runs.values()) {
+          if (attempt.runId !== resume.runId) continue;
+          if (["starting", "running"].includes(attempt.status)) throw new Error("This campaign still has an active editor attempt.");
+          await this.releaseTerminal(attempt);
+          if (attempt.connection?.kind === "tmux") throw new Error("The previous formalization pane is still live or its closure cannot be confirmed. Wait for it to stop before resuming.");
+        }
+        options.assertCurrent?.();
       }
     } catch (error) {
       this.launchingRoots.delete(rootKey);
@@ -311,6 +387,23 @@ export class RunManager implements vscode.Disposable {
         );
       }
       argv = buildWorkflowArgs(request, resolved.env.set);
+      if (request.kind === "formalize" && !resume) {
+        const preview = await previewLaunch(projectRoot, argv, resolved.env);
+        options.assertCurrent?.();
+        const identity = formalizationRuntimeForPersistence({
+          provider: preview.runtime.provider, model: preview.runtime.model,
+          sourceDraftOnly: preview.workflow.source_draft_only,
+        });
+        if (preview.version !== 1 || preview.workflow.kind !== "formalize" ||
+            !sameProjectRoot(preview.project.root, projectRoot) || !identity ||
+            identity.sourceDraftOnly !== Boolean(request.sourceDraftOnly) ||
+            (request.provider && request.provider !== identity.provider) ||
+            (request.model && request.model !== identity.model)) {
+          throw new Error("The CLI preview did not resolve this formalization's exact original native selection.");
+        }
+        request = { ...request, provider: identity.provider, model: identity.model };
+        argv = buildWorkflowArgs(request, resolved.env.set);
+      }
     } catch (error) {
       this.launchingRoots.delete(rootKey);
       throw error;
@@ -322,8 +415,9 @@ export class RunManager implements vscode.Disposable {
     // so every later lookup — logs, stop, experiment scoring — can key on an
     // identity we chose, instead of guessing which recorded stream belongs to
     // which launch.
-    const runId = `${request.kind}-vscode-${id}`;
+    const runId = resume?.runId ?? `${request.kind}-vscode-${id}`;
     env.set.LEANFLOW_WORKFLOW_RUN_ID = runId;
+    if (resume) env.set.LEANFLOW_NATIVE_RESUME_RUN_ID = runId;
 
     // Keep the raw request/argv/env local to this method. The tracked object is
     // both durable workspace state and a webview payload, so it receives only
@@ -340,6 +434,11 @@ export class RunManager implements vscode.Disposable {
       request,
       command: "",
       projectRoot,
+      formalizationSource: options.sourceDocumentId ? { documentId: options.sourceDocumentId, path: request.target } : undefined,
+      formalizationRuntime: request.kind === "formalize" ? {
+        provider: request.provider as "codex" | "claude" | "lemex", model: request.model,
+        sourceDraftOnly: Boolean(request.sourceDraftOnly),
+      } : undefined,
       appliedOverrides: env,
       experimentId: options.experimentId ?? null,
       experimentCell: options.experimentCell ?? null,
@@ -362,9 +461,12 @@ export class RunManager implements vscode.Disposable {
       // Secrets cross only the process boundary, never tracked/persisted overrides.
       // Include all configured native backends because planner and prover can differ.
       const nativeEnv = await this.nativeEnvironment();
+      options.assertCurrent?.();
       const child = await spawnWorkflow(projectRoot, argv, env, nativeEnv, async connection => {
+        options.assertCurrent?.();
         run.connection = connection;
         await this.persist();
+        options.assertCurrent?.();
       });
       run.pid = child.pid;
       run.status = child.pending ? "starting" : "running";
@@ -941,7 +1043,13 @@ export class RunManager implements vscode.Disposable {
   /** Reclaim only finished owned panes, including cleanup interrupted by a reload. */
   private async releaseTerminal(run: TrackedRun): Promise<void> {
     if (run.connection?.kind !== "tmux" || run.status === "starting" || run.status === "running") return;
-    if (!await releaseWorkflowTerminal(run.runId)) return;
+    let pending = this.terminalReleases.get(run.runId);
+    if (!pending) {
+      pending = releaseWorkflowTerminal(run.runId);
+      this.terminalReleases.set(run.runId, pending);
+      void pending.finally(() => { if (this.terminalReleases.get(run.runId) === pending) this.terminalReleases.delete(run.runId); }).catch(() => {});
+    }
+    if (!await pending) return;
     run.connection = undefined;
     await this.persist();
   }

@@ -7,6 +7,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .source_builtins import LATEX_BUILTINS
+from .source_numeric_conditionals import (
+    LITERAL_ENVIRONMENTS,
+    SCANNER_CONTROL_NAMES,
+    LiteralTexNumbers,
+)
+
 
 def digest(data: bytes | str) -> str:
     """Return a qualified content identity independent of source item identity."""
@@ -86,6 +93,9 @@ class TexScan:
     marks: list[tuple[int, int, str, str]]
     definitions: list[dict[str, Any]]
     diagnostics: list[dict[str, Any]]
+    includeonly_definitions: list[tuple[int, int, frozenset[str] | None]] = field(
+        default_factory=list
+    )
 
 
 COMMAND = re.compile(r"\\([a-zA-Z@]+\*?|.)", re.DOTALL)
@@ -107,6 +117,7 @@ DEFINITION_COMMANDS = {
     "gdef",
     "edef",
     "xdef",
+    "DeclareMathOperator",
 }
 
 
@@ -148,14 +159,16 @@ def _definition(text: str, command: str, start: int) -> tuple[int, str, str] | N
     return cursor, name.strip().lstrip("\\"), body[0]
 
 
-def scan_tex(source: SourceText) -> TexScan:
+def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexScan:
     """Mask comments, literal blocks, definitions, and definitely inactive branches."""
     text, visible = source.text, list(source.text)
     marks: list[tuple[int, int, str, str]] = []
     definitions: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
+    includeonly_definitions: list[tuple[int, int, frozenset[str] | None]] = []
     stack: list[tuple[bool | None, bool, int]] = []
-    boolean_setters: set[str] = set()
+    numbers = LiteralTexNumbers()
+    structural_uncertain = inherited_uncertain
 
     def mark(start: int, end: int, disposition: str, reason: str, mask: bool = True) -> None:
         marks.append((start, end, disposition, reason))
@@ -175,17 +188,46 @@ def scan_tex(source: SourceText) -> TexScan:
             }
         )
 
+    def lose_structure(
+        code: str, message: str, start: int, end: int, *, report: bool = True
+    ) -> None:
+        """Retain all later candidates once executable control meanings are unknown."""
+        nonlocal structural_uncertain
+        structural_uncertain = True
+        numbers.trusted = False
+        for index, (_, otherwise, begin) in enumerate(stack):
+            stack[index] = None, otherwise, begin
+        if report:
+            diagnostic(code, message, start, end)
+        mark(start, len(text), "unresolved", message, False)
+
+    if inherited_uncertain:
+        lose_structure(
+            "inherited_tex_meanings",
+            "Included source inherits executable TeX meanings which require reconciliation",
+            0,
+            len(text),
+        )
+    caret = text.find("^^")
+    if caret >= 0:
+        lose_structure(
+            "unsupported_tex_preprocessing",
+            "TeX caret preprocessing precedes tokenization; preserve source without guessed decoding",
+            caret,
+            caret + 2,
+        )
+
     pos = 0
     while pos < len(text):
-        if text[pos] == "%":
-            end = text.find("\n", pos)
-            end = len(text) if end < 0 else end
+        if text[pos] == "%" and not structural_uncertain:
+            line_end = re.search(r"\r\n|\r|\n", text[pos:])
+            end = pos + line_end.start() if line_end else len(text)
             mark(pos, end, "non_mathematical", "TeX comment")
             pos = end
             continue
         command = COMMAND.match(text, pos)
         inactive = any(value is not None and value == otherwise for value, otherwise, _ in stack)
-        uncertain = any(value is None for value, _, _ in stack)
+        uncertain = structural_uncertain or any(value is None for value, _, _ in stack)
         if command is None:
             end = pos + 1
             while end < len(text) and text[end] not in "%\\":
@@ -194,11 +236,44 @@ def scan_tex(source: SourceText) -> TexScan:
                 mark(pos, end, "excluded", "Definitely inactive conditional branch")
             elif uncertain:
                 mark(pos, end, "unresolved", "Conditional branch requires evaluation", False)
+            if not inactive:
+                numbers.text_groups(text[pos:end], uncertain=uncertain)
             pos = end
             continue
         name = command.group(1).rstrip("*")
         end = command.end()
+        if inactive:
+            # TeX's skipped-token loop does not execute definitions or consume
+            # their replacement arguments. Only known conditional tokens nest.
+            if numbers.is_conditional(name):
+                stack.append((None, False, pos))
+            elif name == "else" and stack:
+                value, _, begin = stack[-1]
+                stack[-1] = value, True, begin
+            elif name == "fi" and stack:
+                stack.pop()
+            mark(pos, end, "excluded", "Definitely inactive conditional branch")
+            pos = end
+            continue
+        if name in SCANNER_CONTROL_NAMES and name in numbers.macros and not inactive:
+            numbers.command(name, text, end)
+            mark(
+                pos,
+                end,
+                "unresolved",
+                "Source-redefined scanner control requires reconciliation",
+                False,
+            )
+            pos = end
+            continue
         if name == "newif":
+            if uncertain and not structural_uncertain:
+                lose_structure(
+                    "unresolved_definition_effect",
+                    "Conditional declaration may be executed or skipped; retain all later candidates",
+                    pos,
+                    end,
+                )
             cursor = end
             while cursor < len(text) and text[cursor].isspace():
                 cursor += 1
@@ -208,6 +283,15 @@ def scan_tex(source: SourceText) -> TexScan:
                 if not inactive:
                     base = declared[1][2:]
                     for macro in (declared[1], base + "true", base + "false"):
+                        numbers.define(
+                            macro,
+                            "",
+                            "newif",
+                            "",
+                            uncertain=uncertain,
+                            conditional_token=macro == declared[1],
+                            boolean_setter=macro != declared[1],
+                        )
                         definitions.append(
                             {
                                 "id": identity("macro", source.file + ":" + macro + ":" + str(pos)),
@@ -218,7 +302,6 @@ def scan_tex(source: SourceText) -> TexScan:
                                 "uncertain": uncertain,
                             }
                         )
-                    boolean_setters.update({base + "true", base + "false"})
                 mark(
                     pos,
                     end,
@@ -226,8 +309,8 @@ def scan_tex(source: SourceText) -> TexScan:
                     "Definitely inactive conditional branch" if inactive else "Boolean declaration",
                 )
             else:
-                diagnostic("unparsed_definition", "Cannot bound \\newif declaration", pos, end)
-        elif name in boolean_setters:
+                lose_structure("unparsed_definition", "Cannot bound \\newif declaration", pos, end)
+        elif numbers.is_boolean_setter(name):
             # Recognize declarations/setters without pretending to execute TeX scoping
             # or macro expansion. A later custom conditional still needs reconciliation.
             mark(
@@ -236,6 +319,20 @@ def scan_tex(source: SourceText) -> TexScan:
                 "excluded" if inactive else "supporting_context",
                 "Definitely inactive conditional branch" if inactive else "Boolean assignment",
             )
+        elif numbers.is_conditional(name):
+            value = (
+                {"iftrue": True, "iffalse": False}.get(name) if not structural_uncertain else None
+            )
+            if name == "ifnum" and not inactive:
+                comparison = numbers.conditional(text, end)
+                if comparison is not None:
+                    value, end = comparison
+            stack.append((value, False, pos))
+            mark(pos, end, "supporting_context", "Conditional delimiter")
+            if value is None and not inactive:
+                diagnostic(
+                    "unresolved_conditional", f"Cannot evaluate \\{name} lexically", pos, end
+                )
         elif name.startswith("if") and name not in {
             "iff",
             "ifthenelse",
@@ -243,24 +340,56 @@ def scan_tex(source: SourceText) -> TexScan:
             "ifstrempty",
             "ifstrequal",
         }:
-            value = {"iftrue": True, "iffalse": False}.get(name)
-            stack.append((value, False, pos))
-            mark(pos, end, "supporting_context", "Conditional delimiter")
-            if value is None and not inactive:
-                diagnostic(
-                    "unresolved_conditional", f"Cannot evaluate \\{name} lexically", pos, end
-                )
+            lose_structure(
+                "unresolved_conditional",
+                f"Unknown command \\{name} cannot be assumed to be a conditional token",
+                pos,
+                end,
+            )
         elif name == "else" and stack:
-            value, _, begin = stack[-1]
+            value, previous_else, begin = stack[-1]
+            if previous_else:
+                value = None
+                diagnostic(
+                    "duplicate_conditional_else",
+                    "Conditional contains more than one else",
+                    pos,
+                    end,
+                )
             stack[-1] = value, True, begin
             mark(pos, end, "supporting_context", "Conditional delimiter")
         elif name == "fi" and stack:
             stack.pop()
             mark(pos, end, "supporting_context", "Conditional delimiter")
         elif name in DEFINITION_COMMANDS:
+            if uncertain and not structural_uncertain:
+                lose_structure(
+                    "unresolved_definition_effect",
+                    "Definition may be executed or skipped; retain all later candidates",
+                    pos,
+                    end,
+                )
             definition = _definition(text, name, end)
             if definition:
                 end, macro, body = definition
+                if not inactive:
+                    brace = text.find("{", command.end())
+                    head = text[command.end() : brace] if brace >= 0 else ""
+                    numbers.define(
+                        macro,
+                        body,
+                        name,
+                        head,
+                        uncertain=uncertain,
+                        declaration=text[command.end() : end],
+                    )
+                    if macro in SCANNER_CONTROL_NAMES:
+                        lose_structure(
+                            "redefined_scanner_control",
+                            f"Source redefines scanner control \\{macro}; structural interpretation is uncertain",
+                            pos,
+                            end,
+                        )
                 definitions.append(
                     {
                         "id": identity(
@@ -275,21 +404,42 @@ def scan_tex(source: SourceText) -> TexScan:
                 )
                 if inactive:
                     definitions.pop()
-                mark(pos, end, "supporting_context", "Macro or environment definition")
+                mark(
+                    pos,
+                    end,
+                    "supporting_context",
+                    "Macro or environment definition",
+                    not structural_uncertain,
+                )
                 if inactive:
                     mark(pos, end, "excluded", "Definitely inactive conditional branch")
             else:
-                diagnostic("unparsed_definition", f"Cannot bound \\{name} declaration", pos, end)
+                lose_structure(
+                    "unparsed_definition", f"Cannot bound \\{name} declaration", pos, end
+                )
         elif inactive:
             mark(pos, end, "excluded", "Definitely inactive conditional branch")
-        elif name in {"verb", "lstinline"} and end < len(text):
+        elif name in {"verb", "lstinline"} and end < len(text) and not uncertain:
             delimiter = text[end]
             closing = text.find(delimiter, end + 1)
             end = len(text) if closing < 0 else closing + 1
             mark(pos, end, "unresolved", "Literal inline material requires scope audit")
         elif name == "begin":
             env = group(text, end)
-            if env and env[0] in {"comment", "verbatim", "Verbatim", "lstlisting", "minted"}:
+            if (
+                env
+                and env[0] in LITERAL_ENVIRONMENTS
+                and (env[0] in numbers.macros or "end" + env[0] in numbers.macros)
+            ):
+                mark(
+                    pos,
+                    env[1],
+                    "unresolved",
+                    "Source-redefined literal environment requires reconciliation",
+                    False,
+                )
+                end = env[1]
+            elif env and env[0] in LITERAL_ENVIRONMENTS and not uncertain:
                 closing_match = re.search(r"\\end\s*\{" + re.escape(env[0]) + r"\}", text[env[1] :])
                 end = env[1] + closing_match.end() if closing_match else len(text)
                 disposition = "non_mathematical" if env[0] == "comment" else "unresolved"
@@ -305,12 +455,65 @@ def scan_tex(source: SourceText) -> TexScan:
                 )
                 if closing_match is None:
                     diagnostic("unclosed_environment", f"Unclosed {env[0]} environment", pos, end)
+            elif env:
+                if env[0] in numbers.macros:
+                    numbers.command(env[0])
+                numbers.enter("environment:" + env[0], uncertain=uncertain)
+        elif name == "begingroup":
+            numbers.enter("explicit", uncertain=uncertain)
+        elif name == "endgroup":
+            numbers.leave("explicit", uncertain=uncertain)
+        elif name in {"(", "["}:
+            numbers.enter("math:" + name, uncertain=uncertain)
+        elif name in {")", "]"}:
+            numbers.leave("math:" + {")": "(", "]": "["}[name], uncertain=uncertain)
+        elif name in {"documentclass", "usepackage", "RequirePackage"}:
+            numbers.loader()
+            lose_structure(
+                "unresolved_loader_effect",
+                f"\\{name} loads executable TeX meanings; later structure requires reconciliation",
+                pos,
+                end,
+            )
+        elif name == "includeonly":
+            selection = group(text, end)
+            allowed = (
+                frozenset(value.strip().removesuffix(".tex") for value in selection[0].split(","))
+                if selection
+                and not uncertain
+                and not numbers.groups
+                and name not in numbers.macros
+                and re.fullmatch(r"[A-Za-z0-9_./, \t\r\n-]*", selection[0])
+                else None
+            )
+            includeonly_definitions.append((pos, selection[1] if selection else end, allowed))
+        elif name in {"input", "include", "subfile"}:
+            lose_structure(
+                "inherited_tex_meanings",
+                f"\\{name} can change caller TeX meanings; resumed source requires reconciliation",
+                pos,
+                end,
+            )
         elif name == "endinput":
-            mark(pos, len(text), "excluded", "Material after endinput is not processed")
-            end = len(text)
-        elif name == "end" and not uncertain:
+            if not uncertain:
+                line_end = re.search(r"\r\n|\r|\n", text[end:])
+                if line_end:
+                    following_line = end + line_end.end()
+                    mark(
+                        following_line,
+                        len(text),
+                        "excluded",
+                        "Material after endinput's current line is not processed",
+                    )
+                    text = text[:following_line]
+                mark(pos, end, "supporting_context", "Endinput finishes the current physical line")
+        elif name == "end":
             env = group(text, end)
-            if env and env[0] == "document":
+            if env:
+                if "end" + env[0] in numbers.macros:
+                    numbers.command("end" + env[0])
+                numbers.leave("environment:" + env[0], uncertain=uncertain)
+            if env and env[0] == "document" and not uncertain:
                 mark(
                     env[1],
                     len(text),
@@ -328,6 +531,7 @@ def scan_tex(source: SourceText) -> TexScan:
             "futurelet",
             "unless",
         }:
+            numbers.command(name)
             diagnostic(
                 "unsupported_expansion",
                 f"\\{name} requires structural or manual reconciliation",
@@ -336,9 +540,24 @@ def scan_tex(source: SourceText) -> TexScan:
             )
         elif name in {"else", "fi"}:
             diagnostic("unmatched_conditional", f"Unmatched \\{name}", pos, end)
+        else:
+            numbers.command(name, text, end)
+        if not numbers.trusted and not structural_uncertain:
+            lose_structure(
+                "unsupported_tex_effect",
+                f"\\{name} has unsupported TeX effects; later structure requires reconciliation",
+                pos,
+                end,
+                # Unknown commands already get one aggregate, source-bound
+                # diagnostic from command_references. Local/builtin effects
+                # need a separate blocker because those references are known.
+                report=name in numbers.macros or name in LATEX_BUILTINS or not name.isalpha(),
+            )
         if uncertain and not inactive and not any(a <= pos and end <= b for a, b, _, _ in marks):
             mark(pos, end, "unresolved", "Conditional branch requires evaluation", False)
         pos = end
     for _, _, start in stack:
         diagnostic("unclosed_conditional", "Conditional is not closed", start, len(text))
-    return TexScan(source, "".join(visible), marks, definitions, diagnostics)
+    return TexScan(
+        source, "".join(visible), marks, definitions, diagnostics, includeonly_definitions
+    )

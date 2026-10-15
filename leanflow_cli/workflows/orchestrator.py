@@ -4,8 +4,7 @@ This pure leaf applies an ordered route table to a frozen ``RouteContext``.
 Stalls, budget breakpoints, and retry exhaustion become route decisions; the
 execution layer and runner own every side effect.
 
-The floor consumes the existing classifier output from
-``route_workflow_step`` and extends it without duplicating classification.
+The floor consumes the bounded prover controller's frozen classification and target state.
 The optional LLM layer may refine eligible routes separately. Easy runs retain
 the no-op ``direct-prove`` path.
 

@@ -2,7 +2,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
-import { mount, textOf } from "./helpers/webviewFixture.mjs";
+import { mount, textOf, act } from "./helpers/webviewFixture.mjs";
+import { formalizationFixture } from "./helpers/formalizationFixture.mjs";
+
+function showFormalization(ui) {
+  ui.click("Formalization");
+  act(() => {
+    const event = new Event("message");
+    event.data = { type: "formalizationState", documentId: "paper-1", snapshot: formalizationFixture(), error: "" };
+    window.dispatchEvent(event);
+  });
+  ui.click("Configure formalization");
+}
 
 const bundle = await build({
   stdin: {
@@ -261,13 +272,13 @@ test("clearing structural limits masks profiles while zero stays explicit", () =
   }
 });
 
-for (const kind of ["prove", "formalize", "review", "refactor", "golf", "draft"]) {
+for (const kind of ["prove", "formalize"]) {
   test(`${kind} launch displays global limits and preserves profile limits when edited`, () => {
     const ui = mount();
     try {
+      if (kind === "formalize") showFormalization(ui);
       ui.update(state => {
-        state.view.form.kind = kind;
-        state.view.form.target = "Main.lean";
+        state.view.form.target = kind === "prove" ? "Main.lean" : "paper/main.tex";
         state.view.form.profile = "custom";
         state.app.profiles.profiles[1].overrides = { [prefix + "AGENT_CALLS"]: "7" };
         state.app.catalog.groups[0].flags.push(...flags.filter(flag => ["AGENT_CALLS", "TOKENS", "WALL_TIME_S"].some(suffix => flag.name === prefix + suffix)));
@@ -312,12 +323,11 @@ test("role session limits are independent, inherited, and explicitly clearable",
 });
 
 
-for (const kind of ["formalize", "review", "refactor", "golf", "draft"]) {
-  test(`switching from research proving to ${kind} clears unsupported switches and preserves profile choices`, () => {
+test("Prove and Formalization retain independent settings while utility tabs preserve the active form", () => {
     const ui = mount();
     try {
       ui.update(state => {
-        state.view.form.target = kind === "formalize" ? "paper.tex" : "Main.lean";
+        state.view.form.target = "Main.lean";
         state.view.form.profile = "custom";
         state.view.form.research = true;
         state.view.form.researchWorkers = 3;
@@ -326,29 +336,38 @@ for (const kind of ["formalize", "review", "refactor", "golf", "draft"]) {
         state.view.form.noParallel = true;
         state.view.form.overrides = { [prefix + "MODE"]: "research", [prefix + "MODEL"]: "fixture-model" };
       });
-      const savedOverrides = { ...ui.view.form.overrides };
-      ui.change(ui.input("Workflow"), kind);
-      assert.equal(ui.view.form.kind, kind);
+      const savedProve = structuredClone(ui.view.form);
+      showFormalization(ui);
+      assert.equal(ui.view.form.kind, "formalize");
+      assert.equal(ui.view.tab, "formalization");
       assert.equal(ui.view.form.research, false);
       assert.equal(ui.view.form.researchWorkers, null);
       assert.equal(ui.view.form.agents, 1);
       assert.equal(ui.view.form.cleanRoom, false);
       assert.equal(ui.view.form.noParallel, false);
-      assert.equal(ui.view.form.profile, "custom");
-      assert.deepEqual(ui.view.form.overrides, savedOverrides);
+      assert.equal(ui.view.form.profile, "");
+      assert.deepEqual(ui.view.form.overrides, {});
+      assert.equal(ui.view.form.target, formalizationFixture().source.path);
       assert.doesNotMatch(textOf(ui.root()), /Research workers|Swarm agents|Force single lane|Plan, retrieval, orchestration, dispatch/);
-      assert.equal(ui.button("Start run").props.disabled, false);
-      ui.click("Start run");
-      assert.equal(ui.messages.at(-1).request.kind, kind);
+      assert.equal(ui.root().findAll(node => node.props["aria-label"] === "Workflow").length, 0);
+      assert.equal(ui.button("Start formalization").props.disabled, false);
+      ui.click("Start formalization");
+      assert.equal(ui.messages.at(-1).type, "launchFormalization");
+      assert.equal(ui.messages.at(-1).request.kind, "formalize");
       assert.equal(ui.messages.at(-1).request.cleanRoom, false);
-      ui.change(ui.input("Workflow"), "prove");
+      ui.change(ui.input("Agent backend"), "codex");
+      ui.change(ui.input("Launch model"), "codex-model");
+      const savedFormalize = structuredClone(ui.view.form);
+      ui.click("Providers");
+      assert.deepEqual(ui.view.form, savedFormalize);
+      ui.click("Prove");
       assert.equal(ui.input(prefix + "MODE").props.value, "research");
-      assert.equal(ui.view.form.profile, "custom");
-      assert.deepEqual(ui.view.form.overrides, savedOverrides);
+      assert.deepEqual(ui.view.form, savedProve);
       assert.match(textOf(ui.root()), /Force single lane/);
+      showFormalization(ui);
+      assert.deepEqual(ui.view.form, savedFormalize);
     } finally { ui.dispose(); }
-  });
-}
+});
 
 
 test("Research, bottom-up and role call defaults come from the current catalog", () => {

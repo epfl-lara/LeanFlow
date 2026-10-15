@@ -45,8 +45,9 @@ def _select_formalization_document(
     raw_suffix = Path(raw).suffix.lower()
     if raw_suffix == ".lean":
         raise FormalizationDocumentError(
-            "formalize now expects a source document (.tex or .pdf) or TeX project directory. Use `/prove` for an existing Lean file "
-            "or `/draft` for statement-only skeleton work."
+            "formalize expects a source document (.tex or .pdf) or TeX project directory. "
+            "Use `/prove` for an existing Lean file, or select its informal source with `/formalize` "
+            "to translate statements before proving."
         )
     try:
         requested_path, requested_relative = _project_local_existing_path(root, base, raw)
@@ -134,8 +135,8 @@ def prepare_formalization_document_context(
     project_root: str | Path,
     cwd: str | Path,
     workflow_args: str,
-    project_label: str = "",
     require_preparation: bool = False,
+    source_draft_only: bool = False,
 ) -> FormalizationDocumentContext:
     """Freeze source intake and allocate prospective modules without editing project sources."""
     from leanflow_cli.formalization.intake import prepare_intake
@@ -144,4 +145,9 @@ def prepare_formalization_document_context(
     selection = _select_formalization_document(
         root, Path(cwd).expanduser().resolve(), workflow_args
     )
-    return prepare_intake(root, selection, require_preparation=require_preparation)
+    return prepare_intake(
+        root,
+        selection,
+        require_preparation=require_preparation,
+        source_draft_only=source_draft_only,
+    )

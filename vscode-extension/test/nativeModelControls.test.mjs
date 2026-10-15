@@ -76,9 +76,9 @@ test("unavailable discovery explains next steps and saved invalid reasoning disa
   try {
     ui.update(f => { f.view.form.overrides[prefix + "REASONING_EFFORT"] = "ultra"; });
     assert.match(textOf(ui.root()), /ultra \(unsupported\)/);
-    assert.equal(ui.button("Start run").props.disabled, true);
+    assert.equal(ui.button("Start proving").props.disabled, true);
     ui.change(ui.input(prefix + "REASONING_EFFORT"), "__default__");
-    assert.equal(ui.button("Start run").props.disabled, false);
+    assert.equal(ui.button("Start proving").props.disabled, false);
     ui.update(f => { f.app.providers.backends.find(row => row.id === "lemex").model_catalog = { status: "unavailable", source: "", models: [], default_model: "", default_reasoning_effort: "", error: "Endpoint unavailable. Check Providers." }; });
     assert.match(textOf(ui.root()), /Endpoint unavailable/);
     assert.equal(options(ui.input("Launch model"))[0].label, "Native default (not reported)");
@@ -92,9 +92,9 @@ test("stale model choices are visible and cannot launch against a ready catalog"
   try {
     ui.update(f => { f.view.form.model = "retired-model"; });
     assert.ok(options(ui.input("Launch model")).some(row => row.label === "retired-model (not listed)"));
-    assert.equal(ui.button("Start run").props.disabled, true);
+    assert.equal(ui.button("Start proving").props.disabled, true);
     ui.change(ui.input("Launch model"), "");
-    assert.equal(ui.button("Start run").props.disabled, false);
+    assert.equal(ui.button("Start proving").props.disabled, false);
   } finally { ui.dispose(); }
 });
 
@@ -170,19 +170,21 @@ test("clean room can be selected for native proof runs and preserves the choice"
     assert.equal(checkbox().props.disabled, false);
     ui.change(checkbox(), true);
     assert.equal(ui.view.form.cleanRoom, true);
-    assert.equal(ui.button("Start run").props.disabled, false);
+    assert.equal(ui.button("Start proving").props.disabled, false);
     assert.match(textOf(ui.root()), /Block external research/);
     assert.match(textOf(ui.root()), /Existing online sessions cannot be reused/);
     ui.change(checkbox(), false);
     assert.equal(ui.view.form.cleanRoom, false);
-    assert.equal(ui.button("Start run").props.disabled, false);
-    ui.update(f => { f.view.form.kind = "golf"; });
-    assert.equal(checkbox().props.disabled, true);
-    ui.update(f => { f.view.form.cleanRoom = true; });
-    assert.equal(checkbox().props.disabled, false);
-    assert.equal(ui.button("Start run").props.disabled, true);
+    assert.equal(ui.button("Start proving").props.disabled, false);
+    ui.change(checkbox(), true);
+    ui.click("Formalization");
+    assert.equal(ui.root().findAllByType("label").filter(node => textOf(node).startsWith("Clean room")).length, 0);
+    assert.equal(ui.view.form.cleanRoom, false);
+    ui.click("Prove");
+    assert.equal(checkbox().props.checked, true);
+    assert.equal(ui.view.form.cleanRoom, true);
     ui.change(checkbox(), false);
-    assert.equal(ui.button("Start run").props.disabled, false);
+    assert.equal(ui.button("Start proving").props.disabled, false);
   } finally { ui.dispose(); }
 });
 

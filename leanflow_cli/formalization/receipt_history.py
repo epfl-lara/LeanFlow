@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from leanflow_cli.formalization.evidence import contained, durable_json, identifier, identity
+from leanflow_cli.formalization.publication_case_paths import assert_receipt_control_path
 
 
 def _event_path(directory: Path, revision: str, receipt_id: str) -> Path:
@@ -19,6 +20,7 @@ def _event_path(directory: Path, revision: str, receipt_id: str) -> Path:
 
 def _event(directory: Path, revision: str, receipt_id: str) -> dict[str, Any]:
     """Authenticate a stored receipt event independently of its mutable projection."""
+    assert_receipt_control_path(directory, f"receipt-history/{revision}/{receipt_id}.json")
     value = json.loads(_event_path(directory, revision, receipt_id).read_text())
     if not isinstance(value, dict) or set(value) != {
         "schema_version",
@@ -70,6 +72,7 @@ def _projection(directory: Path, revision: str) -> dict[str, Any] | None:
     path = contained(directory, f"receipts/{revision}.json")
     if not path.is_file():
         return None
+    assert_receipt_control_path(directory, f"receipts/{revision}.json")
     value = json.loads(path.read_text())
     if (
         not isinstance(value, dict)
@@ -96,6 +99,7 @@ def load_receipt(record: dict[str, Any]) -> dict[str, Any] | None:
 @contextmanager
 def _receipt_lock(directory: Path) -> Iterator[None]:
     """Serialize receipt appends without requiring or reentering the document lock."""
+    assert_receipt_control_path(directory, "receipt-history.lock")
     directory.mkdir(parents=True, exist_ok=True)
     with contained(directory, "receipt-history.lock").open("a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
@@ -103,6 +107,9 @@ def _receipt_lock(directory: Path) -> Iterator[None]:
 
 
 def _store_event(directory: Path, event: dict[str, Any]) -> None:
+    assert_receipt_control_path(
+        directory, f"receipt-history/{event['revision_id']}/{event['receipt_id']}.json"
+    )
     path = _event_path(directory, event["revision_id"], event["receipt_id"])
     if path.exists():
         if json.loads(path.read_text()) != event:
@@ -160,6 +167,9 @@ def copy_receipts(original: Path, destination: Path) -> None:
     Private selections may have advanced since publication. A committed staged
     projection is reconciled separately with transaction evidence and a CAS.
     """
+    for name in ("receipt-history", "receipts"):
+        assert_receipt_control_path(original, name)
+        assert_receipt_control_path(destination, name)
     history = contained(original, "receipt-history")
     if history.exists():
         for revision_path in sorted(history.iterdir()):

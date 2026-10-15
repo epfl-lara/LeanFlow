@@ -174,6 +174,8 @@ def test_real_wheel_excludes_retired_formalization_modules_from_stale_build(inpu
         "leanflow_cli/formalization/formalization_markdown.py",
         "leanflow_cli/formalization/formalization_document_runner.py",
         "leanflow_cli/native/harness_formalization.py",
+        "leanflow_cli/native/support_module_materialization.py",
+        "leanflow_cli/native/harness_draft.py",
     }
     assert not any((repository / name).exists() for name in removed)
     for original in source_package_files(repository):
@@ -213,6 +215,7 @@ def test_real_wheel_excludes_retired_formalization_modules_from_stale_build(inpu
         "leanflow_cli/formalization/source_inventory.py",
         "leanflow_cli/formalization/review.py",
         "leanflow_cli/formalization/publication.py",
+        "leanflow_skills/lean-formalization/SKILL.md",
     } <= clean
 
 

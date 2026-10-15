@@ -12,6 +12,7 @@ from leanflow_cli.formalization.evidence import contained, digest, identity
 from leanflow_cli.formalization.lean_inspector import INSPECTOR
 from leanflow_cli.formalization.lean_policy import POLICY_VERSION
 from leanflow_cli.formalization.publication_journal import load_journal, load_registry
+from leanflow_cli.formalization.publication_membership import require_committed_publication
 from leanflow_cli.formalization.records import document_directory
 
 
@@ -34,6 +35,27 @@ def assert_revision_not_revoked(root: Path, revision_id: str) -> None:
         raise ValueError(
             "Publication conflict resolved; a new mathematical acceptance revision is required; prepare and run formalization again"
         )
+    loss = registry.get("registry_loss_acknowledgment")
+    if loss:
+        historical = loss["discovered_transactions"]
+        fresh_commit = False
+        for key, entry in registry["transactions"].items():
+            if key in historical or entry.get("loss"):
+                continue
+            journal = load_journal(contained(root, entry["journal"]))
+            if (
+                journal["revision_id"] == revision_id
+                and journal["state"] == "COMMITTED"
+                and not journal.get("conflicts")
+            ):
+                fresh_commit = True
+                break
+        if not fresh_commit:
+            # Unavailable history cannot enumerate every formerly accepted ID.
+            # Only a newly checked publication after acknowledgment can proceed.
+            raise ValueError(
+                "Publication registry unavailable; a new mathematical acceptance revision is required; prepare and run formalization again"
+            )
     # The durable journal precedes registry settlement. It remains authoritative
     # after a process exits before the redundant registry revocation is written.
     for entry in registry["transactions"].values():
@@ -70,6 +92,7 @@ def published_acceptance_freshness(
         }
     try:
         assert_revision_not_revoked(root, record["revision_id"])
+        require_committed_publication(root, record["document_id"], record["revision_id"])
         handoff = receipt["handoff"]
         directory = document_directory(root, record["document_id"], published=True)
         stored = json.loads(contained(directory, "handoff.json").read_text(encoding="utf-8"))

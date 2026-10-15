@@ -4,23 +4,25 @@ kind: workflow
 title: Formalize
 summary: Autonomous Lean formalization that drafts source-backed declarations and proof plans, verifies source fidelity, and hands the result to proving.
 aliases: [autoformalize]
-skills: [lean-formalization, lean-proof-loop, lean-theorem-queue-worker]
+skills: [lean-formalization, lean-proof-loop]
 tools: [formalization_document_inspect, lean_capabilities, lean_inspect, lean_search, lean_verify, lean_sorries, lean_axioms]
 workers: []
-review_actions: [continue, decompose, plan, negate, re-state, park]
-stop_conditions: [verified, blocked, interrupted, stalled]
-route_actions: [queue-worker, final-sweep]
+review_actions: [item-review, coherence-review, correct-translation]
+stop_conditions: [published, accepted_staged, blocked, interrupted]
+route_actions: [prepare, representative-slice, complete-translation, publish, prover-handoff]
 ---
 
 # Source-backed formalization
 
-Use `/formalize docs/paper.tex`, a TeX project directory, or a PDF in a source-only workspace or an existing Lean project. Proving is a separate explicit action after source review.
+Inspect a TeX file, TeX project directory or PDF without model calls. Before `/formalize docs/paper.tex`, check the project baseline with `leanflow project setup` or **Set up project** in the VS Code Formalization tab. A current formalization preparation is also sufficient infrastructure. Proving is a separate explicit action after source review.
 
 ## Source and project setup
 
-Intake freezes original files, include occurrences, macro context, source items, and a complete region inventory. A fresh read-only session estimates the required imports, existing declarations, dependencies, representation and representative slice. The controller validates this bounded preparation plan, prepares missing approved dependencies privately and independently checks the project before recording its preparation receipt. A source-only workspace receives an import-only library root; existing projects retain their source files and package pins. The controller allocates a document subtree under the checked library root, including `Main` when that is the actual library. Unsupported dynamic configuration is a visible blocker.
+Intake freezes original files, include occurrences, macro context, source items, and a complete region inventory. A checked project baseline precedes native planning. A fresh read-only session estimates the required imports, existing declarations, missing dependencies, representation and representative slice. The controller validates this bounded preparation plan, expands approved dependencies privately and independently checks the project before recording its preparation receipt. Existing projects retain their source files and package pins. The controller allocates a document subtree under the checked library root, including `Main` when that is the actual library. Unsupported dynamic configuration is a visible blocker.
 
 Read the complete manifest and source bundle. The inventory includes prose outside recognized environments; extraction is a starting point for audit, not evidence that nothing was missed. Unknown macros, missing includes and unreadable PDF pages stay visible. Request inventory repair for missing items or uncertain boundaries. Only the user may narrow mathematical scope. Preserved inactive source branches remain explicitly classified.
+
+An explicit `--source-draft-only` assignment with a frozen paired PDF permits one preparatory author turn despite structured TeX execution uncertainty. Follow its narrower instructions and save only assigned draft files and allowlisted notes. Report source and mathematical blockers explicitly. It cannot submit accepted mappings, pass review, expand to the complete document or authorize publication and proving. Even a compiling draft remains unaccepted; the controller retains frozen preview artifacts after native process cleanup and does not reroll a completed campaign on resume.
 
 ## Drafting and submission
 

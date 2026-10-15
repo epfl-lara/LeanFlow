@@ -11,6 +11,8 @@ transactions, and persistent evidence.
 Dependencies flow from `core/` to `agent/` and `tools/`, then to `leanflow_cli/`.
 The shared core has no imports from higher layers. Top-level `model_tools`,
 `toolsets`, and `utils` preserve historical imports through thin core re-exports.
+`core/regular_files.py` supplies bounded, nonblocking reads with inode/version
+checks; source intake and currentness use them before hashing or freezing bytes.
 
 | Entry point | Implementation |
 | --- | --- |
@@ -29,9 +31,9 @@ direct tests in their owning modules. New execution features use the harness.
 
 | Module | Responsibility |
 | --- | --- |
-| `models.py` | Typed invocation/result/session/usage contracts |
+| `models.py` | Typed invocation/result/session/usage contracts; explicit verified prelaunch failure and uncertain-cleanup outcomes |
 | `commands.py`, `discovery.py` | Native executable resolution and command construction |
-| `runner.py`, `processes.py` | Structured process I/O, resume, cancellation, and process-tree cleanup |
+| `runner.py`, `processes.py` | Structured process I/O, resume and cancellation; bounded cleanup with explicit verification of the owned process group and observed descendant identities |
 | `events.py` | Native event parsing and cumulative-usage normalization |
 | `observations.py` | Public messages, reasoning, plans, tool descriptions, and settings observations |
 | `observation_stream.py` | Bounded live snapshots, throttling, invocation identity, and measured tool duration |
@@ -49,6 +51,13 @@ previews; each persisted observation keeps a unique evidence ID. The editor
 coalesces only its visible timeline by invocation, native item and reasoning kind.
 Completed native messages remain authoritative; summaries and reported traces
 are labelled separately. Unreported or encrypted reasoning is never reconstructed.
+
+`NativeLaunchFailure` carries a result with verified no-launch evidence only after
+owned preflight helpers have closed. `NativeCleanupUnverified` can carry observed
+usage without granting cleanup or acceptance authority; known usage remains charged,
+and unavailable usage remains unknown. Process tracking retries transient metadata
+failures and stops the invocation after five consecutive failed samples. Final
+process-group, tracked-identity and output-pipe closure checks remain strict.
 
 `runtime/runtime_provider.py` selects exactly `codex`, `claude`, or `lemex`.
 `env_loader.py` preserves native environment variables and excludes legacy
@@ -125,17 +134,20 @@ acceptance passes. Model reports never establish proof or disproof.
 | `runtime.py`, `controller.py` | Lifecycle, progress, and deterministic scheduling |
 | `allocation.py`, `role_limits.py`, `usage.py`, `live_progress.py` | Durable call admission, role caps, usage, and active time |
 | `agent_session.py` | Native invocation and same-session submission feedback |
-| `native_snapshot.py` | Exclusive filtered snapshot publication after durable exclusion provenance, crash-safe scoped resume, dependency-view release and pin restoration |
+| `native_snapshot.py`, `native_snapshot_publication.py` | Exclusive filtered snapshot publication after durable exclusion provenance; canonical publication guard before storage ownership; exact public authority controls omitted from private job views without creating portable authority; crash-safe scoped resume, dependency-view release and pin restoration |
 | `native_bridge.py`, `mcp_relay.py` | Job capabilities and durable start/poll/cancel operations |
 | `native_command.py` | Snapshot-confined long commands and owned-process cleanup |
 | `session_tools.py`, search/research/compute leaves | Role-scoped deterministic tool services |
-| `source.py`, transaction leaves | Hole replacement, protected source, journaling, and conflict detection |
+| `source.py`, `source_transaction.py`, `materialization_transaction.py` | Protected hole/helper replacement and run-bound proof/planning checkpoints |
+| `source_mutation.py`, `source_mutation_recovery.py`, `source_journal.py` | Bounded durable inode captures, no-clobber installation/rollback, and retained-version auditing |
 | `planning_controller.py`, proposal/review leaves | Plan validation, helper materialization, and branch repair |
 | `check_process.py`, `check_worker.py`, `native_check.py` | Isolated LeanProbe feedback and controller deadlines |
 | `lean_environment.py`, `submission_cache.py` | Dependency freshness and controller-owned exact-input acceptance reuse |
 | `verification.py`, `type_profile.py` | Exact-source compilation, complete axiom profiles, and protected kernel types |
 | Negation and recovery leaves | Exact-negation certificates and evidence-preserving continuation |
-| `libraries.py` | Pinned additive Lake requirements with configuration rollback |
+| `libraries.py`, `library_transaction.py` | Private pinned Lake resolution, no-replace new package promotion, journaled configuration recovery |
+| `library_configuration.py` | Bounded Lake configuration parsing and additive helper-target configuration in private previews |
+| `library_checkout.py`, `installed_libraries.py` | Independent ordinary Git checkout/commit evidence and read-only locked dependency reuse |
 
 Only the controller changes canonical sources, PLAN, and DAG state. Original
 proof source is immutable outside authorized holes. Captured target types and
@@ -152,28 +164,65 @@ Source transactions hold the controller lock through committed state. Resume
 checks exact before/after images and rejects outside edits. Final acceptance
 requires the requested scope free of `sorry` and a project Lake build.
 
-## Other workflows and project setup
+Ordinary source promotion follows controller ownership → publication ownership;
+library promotion adds the library-install lock after publication ownership.
+Recovery before job startup and final checking after job drainage do not introduce
+a concurrent reverse acquisition. Optional publication-lock cancellation/deadline
+polling checks before and after acquisition; legacy blocking and same-thread
+reentrant cleanup remain available. Cancellation stops new integration while
+preserving journals needed for safe rollback.
+
+Source mutation preflights supported same-device filesystems and the actual
+no-replace API before displacing canonical files. Captured original/candidate
+inodes and bounded rollback slots survive late editor descriptors. Sticky conflicts
+block the owning campaign; restoring bytes does not clear that authority loss.
+Fresh campaigns independently rediscover reconciled ordinary source. An interrupted
+library promotion additionally blocks fresh discovery until its pending protected
+configuration transaction can recover. No same-run prover conflict-reconciliation
+command or automatic retained-inode garbage collection is currently provided.
+
+## Formalization and project setup
 
 `native/harness_context.py` prepares source and skill context.
 `harness_workflow.py` owns native execution, global limits, submission, review,
 and promotion. `harness_observer.py` publishes process ownership, heartbeats,
 accounting, settings, and bounded activity through the status API.
 
-`harness_artifacts.py` freezes proposed bytes in an independent verification copy,
-checks declarations and original types/definitions, and rechecks canonical
-identity before promotion. Source-backed formalization uses dedicated controller leaves:
+Native callers durably record possible live ownership before entering the harness,
+including its preflight and MCP discovery. A verified failure to launch clears that
+record after owned tool cleanup. Normal formalization also clears it after a verified
+native result, bridge operation drainage and checker closure, before independent
+Lean checks, source reviews or publication. Draft retention additionally requires
+the full bridge to close. Uncertain closure preserves private inputs and prevents
+another invocation from reusing them.
+Checker and bridge shutdown remain retryable: failed cleanup retains the worker
+registry and private paths until independent owned-group and tracked-identity
+checks succeed and both output pipes reach physical EOF. A closing bridge refuses
+new operations and serializes closers.
+Recovered draft previews bind frozen source blobs, with current source attachment
+reported separately. That binding does not certify what the author actually read
+from its editable private copy.
+
+`harness_artifacts.py` captures shared project source and configuration bytes.
+Source-backed formalization uses dedicated controller leaves for checking and
+publication; proving uses its own controller. These are the two exposed workflows:
 
 | Module | Authority |
 | --- | --- |
 | `formalization/source_*` | Unabridged source bundles, original spans, include/macro provenance, complete regions and optional parser comparison; `source_companion` binds explicitly selected PDF evidence and approximate navigation without granting correspondence or coverage |
+| `formalization/source_numeric_conditionals.py`, `source_literal_macros.py`, `source_builtins.py` | Bounded lexical decimal-condition evaluation with scoped literal constants, required-brace argument effect refusal and shared standard command recognition; none executes TeX or grants source fidelity |
+| `formalization/source_draft.py`, `source_draft_artifacts.py`, `source_draft_recovery.py`, `native/harness_source_draft.py` | Explicit paired-PDF uncertainty admission for one author turn; durable observed completion and physically closed native/bridge markers; bounded local preview retention and exact run history bound to source selection and preparation; no mappings, review receipt, publication or proof authority |
 | `formalization_documents.py`, `formalization_tex_discovery.py`, `formalization_models.py`, `intake.py` | Source path selection, TeX root discovery, frozen intake context and workflow environment; document-tool displays project the same source inventory |
-| `preparation_plan.py`, `preparation_inputs.py`, `preparation_discovery.py`, `preparation_launch.py` | Read-only prerequisite estimates, bounded user/catalog acquisition authority, source-only previews and shared-budget setup before workflow ownership |
+| `preparation_plan.py`, `preparation_inputs.py`, `preparation_discovery.py`, `preparation_launch.py` | Require a checked project baseline before native planning or budgets; read-only prerequisite estimates, bounded user/catalog dependency expansion, source-only previews and shared-budget setup before workflow ownership |
 | `preparation.py`, `preparation_run.py`, `preparation_stage.py`, `preparation_layout.py`, `preparation_reuse.py`, `preparation_resources.py`, `preparation_lifecycle.py` | Exact setup authority, private dependency acquisition/build/import checks, measured resource bounds and disposal only after verified process cleanup |
+| `preparation_hash_cache.py` | Verify new Lake hash caches through the pinned compiler's pure API under stopped private ownership; admit only exact derived additions beside the unchanged original source inventory and retain them in transactionally published, fingerprinted infrastructure |
 | `preparation_transaction.py`, `preparation_fs_inputs.py`, `preparation_journal.py`, `preparation_progress.py`, `preparation_loss.py`, `preparation_resolution.py`, `preparation_resolution_progress.py`, `preparation_recovery.py`, `preparation_delta.py`, `preparation_audit.py`, `preparation_disposal.py` | Independent durable infrastructure journals, bounded per-entry progress and archive intents, exact unavailable-history observations, changed-entry publication and conflict-preserving recovery/disposal |
 | `workflows/project_setup/execution.py`, `execution_process.py`, `cleanup.py`, `toolchain_install.py`, `toolchain_publication.py`, `toolchain_recovery.py`, `toolchain_journal_loss.py`, `toolchain_disposal.py` | Scrubbed bounded setup commands, verified descendant shutdown, official compiler acquisition into private Elan state, recoverable exclusive publication, registered private disposal captures and exact-observation acknowledgment of ambiguous or unreadable history without replacing existing installations |
 | `slice_gate.py`, `inventory_authority.py`, `preparation_assignment.py`, `stage_errors.py`, `native/harness_formalization_stages.py` | Canonical complete source denominator, checked-plan delivery, controller-selected representative slice, immutable independent review and terminal setup-drift handling before full expansion |
 | `freshness.py`, `environment_display.py`, `conflict_resolution.py`, `pdf_actions.py`, `extraction_actions.py`, `mapping_actions.py`, `review_transport.py` | Current acceptance without proof-certificate lookup, exact version reconciliation/revocation, fidelity-preserving source repairs and UTF-8 bounded evidence envelopes |
 | `records.py`, `receipt_history.py`, `receipt_recovery.py`, `actions.py`, `diagnostic_actions.py`, `service.py` | Immutable selected revisions, explicit repairs, safe artifact IDs and shared CLI/editor snapshots |
+| `vscode-extension/src/panels/formalizationProjectSetupHost.ts`, `src/core/projectSetup.ts` | Explicit baseline setup bound to the host's selected Formalization workspace, separate setup reply correlation, cancellation outside the source queue and workspace-specific readiness, retry and logs; native planning still revalidates controller preparation |
+| `vscode-extension/src/panels/frozenArtifactDocuments.ts` | Named read-only virtual text from already verified artifact bytes, distinct viewer ownership, bounded retained contents and registration disposal; no filesystem lookup or source/translation authority |
 | `lean_layout.py`, `lean_policy.py`, `lean_inspector.py`, `lean_origin.py` | Evaluated Lake roots, explicit module builds, complete compiled declaration policy and exact compiler-helper provenance |
 | `inspector_readiness.py` | Compiler-only declaration-inspector compatibility before translation, empty kernel replay without statement approval and current receipt validation |
 | `proposal.py`, `proposal_schema.py`, `environment.py`, `dependency_inputs.py`, `dependency_files.py` | Owned write set, total region/item coverage, exact mappings, compiled-library/tooling inventory and persistent content identity; no inferred source-to-binary provenance |
@@ -185,6 +234,7 @@ identity before promotion. Source-backed formalization uses dedicated controller
 | `review.py`, `review_cache.py`, `review_dossier.py`, `review_scope.py`, `review_registry.py` | Fresh per-unit verdicts, whole-document gate, authority-bound review caches and frozen read-only retrieval; controller-derived slice/complete scope preserves the canonical denominator and planned remainder, while a complete declaration index links exact mathematical rows and the separate unabridged controller audit |
 | `publication.py`, `publication_journal.py`, `publication_recovery.py`, `publication_loss.py`, `publish.py`, `evidence.py` | Project-owned durable publication evidence, concurrent-save protection, explicit history-loss revocation and portable records |
 | `handoff.py`, `handoff_slots.py`, `proof_snapshot.py`, `proof_receipts.py` | Exact reviewed proof slots and frozen independent proof-preservation certificates |
+| `publication_case_paths.py`, `publication_membership.py` | Bounded literal control-path validation, case-alias authority-loss detection, and positive committed transaction membership binding each published document's current, handoff, revision and receipt bytes |
 | `workflows/prover/scoped_imports.py` | Private compilation of evaluated local import membership for authenticated formalization handoffs, source/configuration drift guards and controller publication of derived cache entries with retained prior versions; setup readiness grants no proof acceptance |
 | `workflows/prover/scoped_cache.py`, `scoped_cache_barrier.py` | Multipart cache publication, exact rollback without replacing competing versions, retained refresh-pointer captures and full local refresh before renewed admission |
 
@@ -193,11 +243,14 @@ document ownership, including nested preparation admission under that project lo
 The explicit preparation command releases its initial document selection lock before
 setup, then reacquires publication followed by document ownership to check the
 selected revision and report readiness. Blocking OS lock acquisition can defer a
-recorded cancellation until the holder releases ownership; it has no separate
-waiter deadline.
+recorded cancellation for legacy callers without wait options. Callers supplying a
+cancellation check or deadline use bounded nonblocking polling, checking before
+and after acquisition; this does not make every startup path cancellable.
 
-Source, layout, code, checks and scope changes invalidate the selected revision;
-review receipts are separate immutable evidence keyed to that identity. A passing
+Source, layout, code, checks and scope changes invalidate the selected revision.
+Author retry ownership also names its native run; candidates from another run sharing
+the same base revision cannot be superseded. Explicit source edits remove that ownership.
+Review receipts are separate immutable evidence keyed to the selected identity. A passing
 translation does not imply completed proofs. Named Prop proof slots are allowed,
 complete definitions and opaque bodies are valid, and conditional constructions
 expose their pending dependencies. Published source bundles, blueprint, receipts
@@ -324,11 +377,17 @@ observers, settings, and metrics. Focused host modules own these boundaries:
 | `workflowTerminal.ts` | Private tmux job execution, reattachment, and terminal fallback |
 | Prover snapshot/graph/progress/cache modules | Exact-run views, shared statuses, dependencies, operations, and coherent refresh |
 | Formalization service/artifact/message modules | Backend revision snapshots, verified frozen source navigation, typed inventory repairs, and exact prover handoff |
+| `workflowForms.ts`, Prove and Formalization views | Separate persisted author forms, fixed workflow identities, and explicit migration of retired launches |
 | `proverModelSettings.ts`, `agentActivity.ts` | Per-call setting evidence and bounded native activity |
 | Event buffer and storage-security modules | Bounded tails and realpath/no-symlink checks |
 | Experiment isolation/scoring/matrix modules | Frozen clean baselines, private cells, and evidence-based aggregates |
 
-Webviews provide setup, provider controls, launch, graph/tree, plan, jobs, limits,
+Prove and Formalization have separate tabs and launch forms. Formalization launch
+and resume bind the selected document, revision, original source and workspace in
+the host. Resume restores the trusted run's original provider, resolved model and
+draft intent. Historical runs without sufficient source or launch identity remain
+CLI-only. Configuration selects settings; a separate start action launches work.
+Webviews also provide setup, provider controls, graph/tree, plan, jobs, limits,
 changes, guidance, activity, model history, storage, and experiment views. The
 formalization view exposes coverage, command interpretations, independent review,
 proof certificates, and explicit revision conflicts from backend evidence. Host
@@ -361,3 +420,21 @@ code and include new leaves in the mypy gate. See [AGENTS.md](AGENTS.md).
 `scripts/lean_imo_campaign/` is separate evaluation tooling with native conditions,
 frozen runtime inputs, and optional global limits. Version-2 manifests reject
 legacy API-budget experiments. See [the campaign guide](docs/lean-imo-campaign.md).
+
+The prover source-mutation leaves own bounded durable inode capture, installation,
+rollback and recovery without sharing formalization publication state. Unknown or
+late-written editor versions remain retained and conflict blocks integration.
+`formalization/publication_registry_inventory.py` owns bounded discovery of surviving
+publication evidence and registry-completeness checks.
+`publication_registry_loss.py` binds acknowledgment to the exact observed authority
+loss and retires an incomplete index without granting selected acceptance; a fresh
+accepted publication remains required. `preparation_authorization.py` preserves
+baseline/plan authority through effectful preparation and final commitment.
+`preparation_dependency_pins.py` applies Lake's first-priority inherited-manifest
+resolution to the transitive locked closure, using roots independently validated
+by preparation authority. `prover/library_configuration.py` owns bounded Lake parsing and
+private helper-target previews; `library_transaction.py` owns distinct private
+dependency inputs, sanitized locked Git metadata, no-replace new checkout promotion,
+and durable configuration recovery.
+The extension's formalization scope/operation leaves freeze host-owned workspace
+identity across asynchronous calls and filter obsolete workspace/request results.

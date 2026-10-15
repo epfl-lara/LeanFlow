@@ -162,6 +162,7 @@ def _prepare_project(
             remedy: str,
             input_text: str | None = None,
             stdout_only: bool = False,
+            stdout_limit_bytes: int | None = None,
             cwd: Path | None = None,
         ) -> str:
             exit_code, output = run_command(
@@ -173,7 +174,8 @@ def _prepare_project(
                 phase=str(result["phase"]),
                 input_text=input_text,
                 stdout_only=stdout_only,
-                **({"execution_policy": execution_policy} if execution_policy is not None else {}),
+                stdout_limit_bytes=stdout_limit_bytes,
+                execution_policy=execution_policy,
             )
             if exit_code:
                 detail = safe_text(output[-4000:])

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from leanflow_cli.formalization.evidence import contained, identifier, identity, normalized_relative
+from leanflow_cli.formalization.evidence import identifier, identity, normalized_relative
 from leanflow_cli.formalization.publication_io import PublicationConflict, entry_hash, entry_path
+from leanflow_cli.formalization.publication_registry_inventory import discover_current_authority
 
 
 def expected_archive_hashes(journal: Mapping[str, Any]) -> dict[str, str]:
@@ -45,18 +45,9 @@ def observe_journal_loss(root: Path, registry: dict[str, Any], key: str) -> dict
             for item in registry["transactions"].values():
                 if item.get("revision_id"):
                     revisions.add(identifier(item["revision_id"]))
-            formalization = contained(root, "formalization")
-            if formalization.is_dir():
-                for path in formalization.glob("*/current.json"):
-                    relative = path.relative_to(root).as_posix()
-                    data = contained(root, relative).read_bytes()
-                    try:
-                        revision = json.loads(data).get("revision_id")
-                        if isinstance(revision, str):
-                            revisions.add(identifier(revision))
-                    except (ValueError, AttributeError):
-                        pass
-                    authority_paths.add(relative)
+            current = discover_current_authority(root)
+            revisions.update(current["revision_ids"])
+            authority_paths.update(current["evidence"])
         loss = record["loss"] = {
             "schema_version": 1,
             "transaction_id": key,

@@ -103,20 +103,6 @@ class LeanAxiomReport:
 
 
 @dataclass(frozen=True)
-class WorkflowRouteDecision:
-    workflow_kind: str
-    skill_name: str
-    route_action: str
-    blocker_kind: str
-    recommended_worker: str
-    search_exhausted: bool
-    reason: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
 class LeanWorkerRequest:
     worker: str
     goal: str

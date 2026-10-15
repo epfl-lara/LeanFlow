@@ -17,7 +17,7 @@ from leanflow_cli.formalization.compiled_evidence import (
 )
 from leanflow_cli.formalization.dependency_snapshot import create_formalization_snapshot
 from leanflow_cli.formalization.environment import LIBRARY_SEMANTICS, environment_identity
-from leanflow_cli.formalization.evidence import contained, digest, put_blob
+from leanflow_cli.formalization.evidence import contained, digest, identifier, put_blob
 from leanflow_cli.formalization.lean_build import build_project
 from leanflow_cli.formalization.lean_inspector import INSPECTOR
 from leanflow_cli.formalization.lean_layout import (
@@ -30,6 +30,7 @@ from leanflow_cli.formalization.proposal_schema import apply_proposal, bind_decl
 from leanflow_cli.formalization.publication import publication_guard
 from leanflow_cli.formalization.publication_io import PublicationConflict
 from leanflow_cli.formalization.records import (
+    assert_author_selection,
     assert_source_current,
     document_lock,
     load_document,
@@ -82,6 +83,7 @@ def check_proposal(
     base_revision_id: str,
     selection_token: str,
     allowed_axioms: tuple[str, ...],
+    author_run_id: str = "",
     deadline: float | None = None,
     cancelled: Callable[[], bool] | None = None,
     review_policy: dict[str, str] | None = None,
@@ -89,6 +91,8 @@ def check_proposal(
     """Return a checked immutable revision; every submission replaces prior selection."""
     selected_attempt: dict[str, Any] | None = None
     stage = "submission"
+    if author_run_id:
+        identifier(author_run_id)
 
     def rejected(result: dict[str, Any]) -> dict[str, Any]:
         """Retain a terminal check result on the exact submitted revision."""
@@ -132,11 +136,20 @@ def check_proposal(
             rehydrate_document(base, store)
             base["_directory"] = str(store)
             selected = load_document(root, document_id)
+            try:
+                assert_author_selection(selected, author_run_id, selection_token)
+            except ValueError as error:
+                return {
+                    "accepted": False,
+                    "error_code": "selection_changed",
+                    "error": str(error),
+                }
             # A preceding candidate from this run may be selected; a UI/source
             # edit from another actor must not be silently overwritten.
-            if (
-                selected["revision_id"] != base_revision_id
-                and selected.get("author_base_revision") != base_revision_id
+            if selected["revision_id"] != base_revision_id and not (
+                author_run_id
+                and selected.get("author_base_revision") == base_revision_id
+                and selected.get("author_run_id") == author_run_id
             ):
                 return {
                     "accepted": False,
@@ -146,6 +159,8 @@ def check_proposal(
             attempt = new_revision(base)
             attempt.update(
                 author_base_revision=base_revision_id,
+                author_run_id=author_run_id,
+                author_selection_token=selection_token,
                 status="submission_pending",
                 submission_id=uuid.uuid4().hex,
             )
@@ -166,6 +181,8 @@ def check_proposal(
             candidate = apply_proposal(base, proposal)
             candidate = new_revision(candidate)
             candidate["author_base_revision"] = base_revision_id
+            candidate["author_run_id"] = author_run_id
+            candidate["author_selection_token"] = selection_token
             stage = "environment"
             candidate["layout"] = layout = generation_layout(
                 resolve_layout(root, document_id), base

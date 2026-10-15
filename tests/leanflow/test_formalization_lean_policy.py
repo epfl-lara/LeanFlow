@@ -127,9 +127,9 @@ def test_empty_aggregator_and_no_new_library_mapping() -> None:
         lean_policy.evaluate_policy([_row()], (), dependency=True)
 
 
-@pytest.mark.parametrize("mode", ["formalization", "dependency", "ordinary_draft"])
+@pytest.mark.parametrize("mode", ["formalization", "dependency"])
 @pytest.mark.parametrize("explicit_deadline", [None, 12.5])
-def test_inspection_default_respects_explicit_and_ordinary_deadlines(
+def test_inspection_default_respects_explicit_deadlines(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
@@ -160,10 +160,9 @@ def test_inspection_default_respects_explicit_and_ordinary_deadlines(
             tmp_path,
             (),
             deadline=explicit_deadline,
-            require_closed_inputs=mode == "formalization",
         )
     assert not result["accepted"]
-    default = 300.0 if mode == "ordinary_draft" else 600.0
+    default = 600.0
     assert durations == ([default] if explicit_deadline is None else [])
     assert deadlines == [default + 1000.0 if explicit_deadline is None else explicit_deadline]
 
@@ -333,33 +332,28 @@ def test_real_existing_reuse_requires_controller_built_local_artifacts(real_proj
 
 
 @pytest.mark.integration
-def test_real_plain_draft_shares_compiled_acceptance(real_project: Path) -> None:
-    from leanflow_cli.native import harness_artifacts
-
+def test_real_formalization_registry_allows_named_proofs_and_aggregators(
+    real_project: Path,
+) -> None:
+    """Inspect genuine formalization modules through the shared compiled policy."""
     root = real_project
     (root / "src/Main.lean").write_text("def original : Nat := 3\n")
-    baseline = harness_artifacts.source_files(root)
-    snapshot = harness_artifacts.create_snapshot(root, root / ".leanflow/agent")
-    (snapshot / "src/Main/Paper.lean").write_text(
+    (root / "src/Main/Paper.lean").write_text(
         "theorem witness : ∃ n : Nat, n = 3 := by sorry\n"
         "noncomputable def selected : Nat := Classical.choose witness\n"
         "opaque complete : Nat := 7\n"
     )
-    (snapshot / "src/Main/Export.lean").write_text("import Main.Paper\n")
-    result = harness_artifacts.verify_proposal(
-        root=root,
-        snapshot=snapshot,
-        baseline=baseline,
-        directory=root / ".leanflow/checks",
-        workflow="draft",
-        active_file="",
-        allowed_axioms=("propext", "Classical.choice", "Quot.sound"),
-        deadline=None,
+    (root / "src/Main/Export.lean").write_text("import Main.Paper\n")
+    result = lean_policy.inspect_draft(
+        root,
+        ["src/Main/Paper.lean", "src/Main/Export.lean"],
+        root / ".leanflow/checks",
+        ("propext", "Classical.choice", "Quot.sound"),
     )
     assert result["accepted"], result
-    assert result["compiled_draft"]["profiles"]["selected"]["conditional"]
-    assert result["profiles"]["src/Main/Export.lean"] == {}
-    assert harness_artifacts.source_files(root) == baseline
+    assert result["profiles"]["selected"]["conditional"]
+    assert {row["name"] for row in result["obligations"]} == {"witness"}
+    assert result["modules"]["Main.Export"] == "src/Main/Export.lean"
 
 
 @pytest.mark.integration

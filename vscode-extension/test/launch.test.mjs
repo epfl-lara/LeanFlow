@@ -123,7 +123,7 @@ test("clean-room proof runs are supported with every native backend", () => {
     assert.equal(request.cleanRoom, true);
     assert.ok(buildWorkflowArgs(request).includes("--clean-room"));
   }
-  assert.match(validateLaunch(form({ kind: "golf", cleanRoom: true })).join(" "), /only supported for prove/);
+  assert.match(validateLaunch(form({ kind: "formalize", target: "paper.tex", cleanRoom: true })).join(" "), /only supported for prove/);
 });
 
 test("a file-scoped run passes the target positionally", () => {
@@ -499,10 +499,18 @@ test("formalize requires a target", () => {
 
 test("prove-only flags are rejected on other workflows", () => {
   const problems = validateLaunch(
-    form({ kind: "golf", research: true, cleanRoom: true, humanReview: true }),
+    form({ kind: "formalize", target: "paper.tex", research: true, cleanRoom: true, humanReview: true }),
   );
   assert.equal(problems.length, 3);
 });
+
+for (const kind of ["draft", "review", "refactor", "golf"]) {
+  test(`retired ${kind} launch intent is refused instead of reinterpreted as proving`, () => {
+    const request = form({ kind, target: "OldTarget.lean", prompt: "Old workflow intent" });
+    assert.match(validateLaunch(request).join(" "), /unsupported workflow|choose Prove or Formalization/i);
+    assert.throws(() => buildWorkflowArgs(request), /unsupported workflow|choose Prove or Formalization/i);
+  });
+}
 
 test("a clean prove form has no problems", () => {
   assert.deepEqual(validateLaunch(form({ target: "Main.lean" })), []);
@@ -510,7 +518,7 @@ test("a clean prove form has no problems", () => {
 
 test("legacy human-review values never reach redesigned prove launches or saved presets", () => {
   const legacy = form({ kind: "prove", humanReview: true });
-  assert.equal(buildWorkflowArgs(legacy).includes("--human-review"), false);
+  assert.throws(() => buildWorkflowArgs(legacy), /pauses are no longer supported/);
   assert.equal(launchRequestForViewState(legacy).humanReview, false);
 });
 

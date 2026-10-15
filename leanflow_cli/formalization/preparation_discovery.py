@@ -10,7 +10,14 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from agent.runtime.harness import BackendError, HarnessRequest, build_runtime_isolation, run_harness
+from agent.runtime.harness import (
+    BackendError,
+    HarnessRequest,
+    HarnessResult,
+    build_runtime_isolation,
+    run_harness,
+)
+from agent.runtime.harness.models import NativeCleanupUnverified
 from core.campaign_limits import CampaignLimits, LimitReached
 from core.deadlines import operation_cancelled, remaining_seconds
 from leanflow_cli.formalization.evidence import durable_json, identity
@@ -48,6 +55,22 @@ Each package request is {name:"package",url:"source HTTPS URL",revision:"full pi
 if known, else empty",imports:[modules],reason:"why required"}. Requests confer no
 authorization. Do not edit files, execute commands, or perform internet research.
 """
+
+
+def _invocation_metadata(
+    result: HarnessResult | None, backend: str, model: str, effort: str
+) -> dict[str, Any]:
+    """Retain observed native identity and counters without granting cleanup authority."""
+    return {
+        "protocol": PROTOCOL,
+        "session_id": result.session_id if result is not None else "",
+        "backend": backend,
+        "model": model,
+        "effort": effort,
+        "usage": result.usage if result is not None else None,
+        "usage_total": result.usage_total if result is not None else None,
+        "cleanup_verified": result is not None and result.cleanup_verified is True,
+    }
 
 
 def _recommendation(
@@ -238,11 +261,23 @@ def discover_preparation_plan(
         with capability as bridge:
             config = workspace / "mcp.json"
             durable_json(config, bridge.mcp_config())
+            executable = ""
+            readable_roots = [Path(__file__).resolve().parents[2]]
+            if backend == "lemex":
+                from leanflow_cli.runtime.lemex_install import (
+                    managed_distribution_root,
+                    resolve_lemex_executable,
+                )
+
+                executable = str(resolve_lemex_executable() or "lemex")
+                distribution = managed_distribution_root()
+                if distribution is not None:
+                    readable_roots.append(distribution)
             isolation = build_runtime_isolation(
                 backend,
                 workspace,
                 env=environment,
-                readable_roots=(Path(__file__).resolve().parents[2],),
+                readable_roots=readable_roots,
                 denied_roots=(root, directory),
             )
             invocation = budget.reserve()
@@ -264,6 +299,7 @@ def discover_preparation_plan(
                         env=environment,
                         tools=False,
                         restricted_tools=True,
+                        executable=executable,
                         mcp_config=config,
                         isolation=isolation,
                         deadline=deadline,
@@ -272,28 +308,38 @@ def discover_preparation_plan(
                         log_path=workspace / "native.jsonl",
                     )
                 )
+            except NativeCleanupUnverified as error:
+                observed = error.result
+                budget.finish(
+                    invocation, observed.usage if observed is not None else None, started=started
+                )
+                return {
+                    "accepted": False,
+                    "status": "cleanup_unverified",
+                    "error": str(error),
+                    "semantic_approval": False,
+                    "discovery": {
+                        **_invocation_metadata(observed, backend, model, effort),
+                        "cleanup_verified": False,
+                    },
+                }
             except BaseException:
                 budget.finish(invocation, None, started=started)
                 raise
             budget.finish(invocation, result.usage, started=started)
-        if result.status != "completed":
+        if result.status != "completed" or result.cleanup_verified is not True:
             return {
                 "accepted": False,
-                "status": result.status,
-                "error": result.error,
+                "status": result.status if result.status != "completed" else "cleanup_unverified",
+                "error": result.error
+                or "Native discovery closure is unverified; retain its private inputs",
                 "semantic_approval": False,
+                "discovery": _invocation_metadata(result, backend, model, effort),
             }
         assert_source_current(root, record)
         validate_preparation_plan(root, record, baseline)
         outcome = _recommendation(root, record, baseline, result.final_response)
-        outcome["discovery"] = {
-            "protocol": PROTOCOL,
-            "session_id": result.session_id,
-            "backend": backend,
-            "model": model,
-            "effort": effort,
-            "usage": result.usage,
-        }
+        outcome["discovery"] = _invocation_metadata(result, backend, model, effort)
         durable_json(workspace / "recommendation.json", outcome)
         return outcome
     except LimitReached as error:

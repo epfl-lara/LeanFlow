@@ -8,10 +8,11 @@ import re
 import shutil
 import tempfile
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from core.file_copy import copy_file
+from core.regular_files import read_regular_bytes
 from core.utils import atomic_json_write
 from leanflow_cli.runtime.dependency_cache import materialize_dependencies
 from leanflow_cli.runtime.dependency_cache.checkout import _copy_packages
@@ -24,6 +25,12 @@ from leanflow_cli.runtime.storage import (
 )
 from leanflow_cli.runtime.storage.process_views import process_views
 from tools.utilities.repository_research_policy import clean_room_path_block_reason
+
+from .native_snapshot_publication import (
+    PUBLICATION_EXCLUSION,
+    exclude_publication_file,
+    publication_documents,
+)
 
 _EXCLUDED = {
     ".git",
@@ -57,11 +64,12 @@ def _exclusion_identity(
     """Bind evaluated cache exclusion to the controller-created directory inode."""
     observed = (staged or destination).stat()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "project": str(destination.resolve()),
         "excluded_build_dir": build_dir,
         "device": observed.st_dev,
         "inode": observed.st_ino,
+        "excluded_publication_authority": PUBLICATION_EXCLUSION,
     }
 
 
@@ -71,14 +79,14 @@ def _assert_exclusion(destination: Path, build_dir: str) -> None:
     try:
         if record.is_symlink():
             raise ValueError("Snapshot exclusion provenance is aliased")
-        value = json.loads(record.read_text())
+        value = json.loads(read_regular_bytes(record, 64 * 1024))
         if value != _exclusion_identity(destination, build_dir):
             raise ValueError(
                 "Snapshot exclusion provenance differs from the evaluated build directory"
             )
     except (OSError, ValueError) as error:
         raise SnapshotProvenanceError(
-            "Existing native snapshot lacks exact build-exclusion provenance; preserve it and start a fresh proof job"
+            "Existing native snapshot lacks exact build-exclusion provenance or publication-exclusion provenance; preserve it and start a fresh proof job"
         ) from error
 
 
@@ -103,21 +111,33 @@ def remap_project_text(
 
 
 def create_snapshot(
-    project_root: Path, destination: Path, *, excluded_build_dir: str | None = None
+    project_root: Path,
+    destination: Path,
+    *,
+    excluded_build_dir: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    deadline: float | None = None,
 ) -> Path:
     """Copy permitted files without links to canonical sources or controller state.
 
     Dependencies retain their compiled artifacts; the project's own build products
     are excluded so previously compiled target proofs cannot bypass source filtering.
     """
-    if excluded_build_dir is not None:
-        # Serialize provenance publication and retry of a stopped pre-publication
-        # copy; nested prepare_snapshot ownership is explicitly reentrant.
-        with storage_lock():
-            return _create_snapshot(
-                project_root, destination, excluded_build_dir=excluded_build_dir
-            )
-    return _create_snapshot(project_root, destination)
+    from leanflow_cli.formalization.publication import publication_guard
+
+    _validate_destination(destination)
+    source = project_root.resolve(strict=True)
+    if not source.is_dir():
+        raise ValueError("A native snapshot requires an existing canonical project directory")
+    # Canonical publication ownership precedes global storage ownership in every
+    # entry point; the model copy itself never receives that approval authority.
+    with publication_guard(source, cancelled=cancelled, deadline=deadline):
+        if excluded_build_dir is not None:
+            with storage_lock():
+                return _create_snapshot(
+                    project_root, destination, excluded_build_dir=excluded_build_dir
+                )
+        return _create_snapshot(project_root, destination)
 
 
 def _publish_exclusion(destination: Path, build_dir: str, staged: Path) -> None:
@@ -210,6 +230,7 @@ def _copy_filtered(
 ) -> None:
     """Clone permitted source and dependency bytes while excluding private controller paths."""
     minimum = storage_policy().min_free_bytes
+    documents = publication_documents(source)
     for directory, names, files in os.walk(source, followlinks=False):
         current = Path(directory)
         relative = current.relative_to(source)
@@ -234,6 +255,7 @@ def _copy_filtered(
                 or item.is_symlink()
                 or not item.is_file()
                 or clean_room_path_block_reason(str(item), cwd=source)
+                or exclude_publication_file(relative / name, documents)
             ):
                 continue
             if shutil.disk_usage(output).free < minimum + item.stat().st_size:
@@ -242,13 +264,27 @@ def _copy_filtered(
 
 
 def prepare_snapshot(
-    project_root: Path, destination: Path, *, excluded_build_dir: str | None = None
+    project_root: Path,
+    destination: Path,
+    *,
+    excluded_build_dir: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    deadline: float | None = None,
 ) -> Path:
     """Create a private project or restore released dependencies before a resumed session."""
     _validate_destination(destination)
-    # Ownership must change before stale-owner collection can inspect this view.
-    with storage_lock():
-        return _prepare_snapshot(project_root, destination, excluded_build_dir=excluded_build_dir)
+    from leanflow_cli.formalization.publication import publication_guard
+
+    source = project_root.resolve(strict=True)
+    if not source.is_dir():
+        raise ValueError("A native snapshot requires an existing canonical project directory")
+    # Acquire P before storage even when an existing view resumes. Nested create
+    # uses same-thread reentrant ownership rather than reversing these locks.
+    with publication_guard(source, cancelled=cancelled, deadline=deadline):
+        with storage_lock():
+            return _prepare_snapshot(
+                project_root, destination, excluded_build_dir=excluded_build_dir
+            )
 
 
 def _prepare_snapshot(

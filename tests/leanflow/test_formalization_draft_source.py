@@ -31,7 +31,7 @@ def paired_record(tmp_path: Path) -> dict:
     source = tmp_path / "paper.tex"
     source.write_text(
         r"\begin{theorem}Every natural number equals itself.\end{theorem}"
-        r"\includegraphics{missing.png}\bibliography{missing}\addbibresource{other.bib}"
+        r"\includegraphics{missing.png}\addbibresource{other.bib}"
     )
     pdf = tmp_path / "paper.pdf"
     _pdf(pdf, ["Theorem 1. Every natural number equals itself. Figure and references."])
@@ -44,10 +44,9 @@ def test_author_deferral_preserves_all_original_source_diagnostics_and_coverage(
     inventory = paired_record["inventory"]
     original = copy.deepcopy(inventory)
     support = [row for row in inventory["diagnostics"] if row.get("support_command")]
-    assert len(support) == 3
+    assert len(support) == 2
     assert {row["support_command"] for row in support} == {
         "includegraphics",
-        "bibliography",
         "addbibresource",
     }
     assert any(
@@ -104,7 +103,7 @@ def test_author_deferral_requires_explicit_frozen_pair_and_structured_diagnostic
     else:
         for row in inventory["diagnostics"]:
             row.pop("support_command", None)
-    assert len(intake.author_blocking_diagnostics(inventory)) == 3
+    assert len(intake.author_blocking_diagnostics(inventory)) == 2
     assert not intake.draft_source_guidance(inventory)
 
 
@@ -232,7 +231,11 @@ def test_native_draft_only_turn_stops_without_retry_or_promotion(
 ) -> None:
     record = paired_record
     (tmp_path / "Main.lean").write_text("-- existing root\n")
-    monkeypatch.setattr(intake, "preflight_dependencies", lambda *args: {})
+    monkeypatch.setattr(
+        intake,
+        "preflight_dependencies",
+        lambda *args: {"owned_prefix": "Main/Document", "aggregator": "Main/Document.lean"},
+    )
     canonical = (tmp_path / "paper.tex").read_bytes()
     calls = []
     bridges = []
@@ -259,12 +262,7 @@ def test_native_draft_only_turn_stops_without_retry_or_promotion(
             rejected = bridges[-1].callbacks["submit_files"]("The author claims acceptance")
             assert rejected["accepted"] is False and rejected["status"] == "source_blocked"
             assert rejected["error_code"] == "source_repair_required"
-        return HarnessResult(
-            "completed",
-            final_response,
-            "draft",
-            {},
-        )
+        return HarnessResult("completed", final_response, "draft", {}, cleanup_verified=True)
 
     monkeypatch.setattr(harness_workflow, "prepare_snapshot", prepare)
     monkeypatch.setattr(harness_workflow, "NativeBridge", bridge_factory)

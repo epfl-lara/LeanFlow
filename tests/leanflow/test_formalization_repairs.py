@@ -8,11 +8,17 @@ from pathlib import Path
 
 import pytest
 
+from leanflow_cli.formalization.conflict_resolution import (
+    publication_conflicts,
+    resolve_publication_conflict,
+)
 from leanflow_cli.formalization.evidence import put_blob
 from leanflow_cli.formalization.formalization_documents import (
     prepare_formalization_document_context,
 )
 from leanflow_cli.formalization.proposal import check_proposal
+from leanflow_cli.formalization.publication_journal import load_registry, save_registry
+from leanflow_cli.formalization.publication_registry_loss import PublicationAuthorityLoss
 from leanflow_cli.formalization.records import (
     DocumentSelectionConflict,
     create_document,
@@ -172,9 +178,82 @@ def test_command_resolution_cannot_waive_missing_include(tmp_path: Path) -> None
     assert show_document(tmp_path, initial["document_id"])["revision_id"] == initial["revision_id"]
 
 
+def test_conditional_interpretation_retains_both_branches_and_unapproved_coverage(tmp_path: Path):
+    source = _source(
+        tmp_path,
+        r"\ifnum\unknownflag=0\relax"
+        r"\begin{theorem}\label{first}First alternative.\end{theorem}"
+        r"\else\begin{theorem}\label{second}Second alternative.\end{theorem}\fi",
+    )
+    original = source.read_bytes()
+    initial = inspect_document(tmp_path, source)
+    before = load_document(tmp_path, initial["document_id"])
+    diagnostic = next(
+        row for row in initial["diagnostics"] if row["code"] == "unresolved_conditional"
+    )
+    assert diagnostic["can_resolve_conditional"] and diagnostic["source_refs"]
+    action = {
+        "type": "resolve_conditional",
+        "diagnostic_id": diagnostic["id"],
+        "interpretation": "Both alternatives remain in scope; their rendered meanings require review.",
+        "reason": "Checked the frozen source and every alternative",
+        "verified": True,
+    }
+    for invalid in ({"verified": False}, {"reason": ""}, {"interpretation": ""}):
+        with pytest.raises(ValueError):
+            act_document(
+                tmp_path, initial["document_id"], initial["revision_id"], {**action, **invalid}
+            )
+    repaired = act_document(tmp_path, initial["document_id"], initial["revision_id"], action)
+    after = load_document(tmp_path, initial["document_id"])
+    assert source.read_bytes() == original and after["source_files"] == before["source_files"]
+    assert [(item["id"], item["scope"]) for item in after["inventory"]["items"]] == [
+        (item["id"], item["scope"]) for item in before["inventory"]["items"]
+    ]
+
+    def immutable(region):
+        return {
+            key: value
+            for key, value in region.items()
+            if key not in {"disposition", "reason", "source_interpretations"}
+        }
+
+    assert [immutable(region) for region in after["inventory"]["regions"]] == [
+        immutable(region) for region in before["inventory"]["regions"]
+    ]
+    assert [
+        region["id"]
+        for region in after["inventory"]["regions"]
+        if region["disposition"] == "excluded"
+    ] == [
+        region["id"]
+        for region in before["inventory"]["regions"]
+        if region["disposition"] == "excluded"
+    ]
+    resolved = next(row for row in repaired["diagnostics"] if row["id"] == diagnostic["id"])
+    assert resolved["blocking"] is False and resolved["resolution"]["actor"] == "user"
+    assert repaired["can_prove"] is False and repaired["counts"]["unresolved"] > 0
+    with pytest.raises(ValueError, match="revision changed"):
+        act_document(tmp_path, initial["document_id"], initial["revision_id"], action)
+
+
+@pytest.mark.parametrize(
+    "code", ["unresolved_loader_effect", "inherited_tex_meanings", "missing_support_file"]
+)
+def test_conditional_interpretation_cannot_waive_other_source_effects(tmp_path: Path, code: str):
+    from leanflow_cli.formalization.diagnostic_actions import resolve_conditional
+
+    record = {"inventory": {"diagnostics": [{"id": "diagnostic", "code": code}]}}
+    with pytest.raises(ValueError, match="Only an uncertain TeX conditional"):
+        resolve_conditional(record, {"diagnostic_id": "diagnostic", "verified": True})
+
+
 def test_private_cache_cleanup_never_writes_intake_or_lean_viewer_to_portable_tree(
     tmp_path: Path, monkeypatch
 ) -> None:
+    # Simulate an existing local publication whose project-wide ownership
+    # index survives removal of the disposable private document cache.
+    save_registry(tmp_path, load_registry(tmp_path))
     monkeypatch.setattr(
         "leanflow_cli.formalization.intake.lean_build.validate_build_inputs", lambda *a, **kw: {}
     )
@@ -220,13 +299,42 @@ def test_new_portable_selection_is_visible_conflict_until_explicit_selection(
     view = show_document(tmp_path, record["document_id"])
     assert view["status"] == "selection_conflict" and not view["can_prove"]
     assert view["selection_conflict"]["published_revision_id"] == newer["revision_id"]
+    selection = {"type": "select_revision", "revision_id": newer["revision_id"]}
+    with pytest.raises(PublicationAuthorityLoss):
+        act_document(tmp_path, record["document_id"], record["revision_id"], selection)
+    preserved = {
+        path.relative_to(portable): path.read_bytes()
+        for path in portable.rglob("*")
+        if path.is_file()
+    }
+    observed = publication_conflicts(tmp_path)["transactions"][0]
+    assert observed["unavailable_registry"]
+    acknowledgment = resolve_publication_conflict(
+        tmp_path,
+        {
+            **{
+                name: observed[name]
+                for name in ("transaction_id", "observation_id", "destinations", "retained_slots")
+            },
+            "choice": "keep_current",
+            "reason": "Inspected the imported portable selection; any mathematical authority requires fresh acceptance",
+        },
+    )
+    assert acknowledgment["requires_new_acceptance"]
+    assert load_registry(tmp_path)["selected_revision"] is None
+    assert preserved == {
+        path.relative_to(portable): path.read_bytes()
+        for path in portable.rglob("*")
+        if path.is_file()
+    }
     selected = act_document(
         tmp_path,
         record["document_id"],
         record["revision_id"],
-        {"type": "select_revision", "revision_id": newer["revision_id"]},
+        selection,
     )
     assert selected["revision_id"] == newer["revision_id"] and not selected["selection_conflict"]
+    assert not selected["can_prove"]
     historical = act_document(
         tmp_path,
         record["document_id"],

@@ -11,7 +11,7 @@ from typing import Any
 
 from leanflow_cli.lean.lean_parsing import _strip_lean_comments_and_strings
 from leanflow_cli.lean.lean_statement_guard import _strip_lean_comments
-from leanflow_cli.workflows.project_setup.process import SetupFailure
+from leanflow_cli.workflows.project_setup.process import MAX_PROTOCOL_STDOUT_BYTES, SetupFailure
 from leanflow_cli.workflows.project_setup.scaffold import (
     DEFAULT_TOOLCHAIN,
     REPL_REVISION,
@@ -103,6 +103,8 @@ def configure_repl(root: Path, run: Run, changed: list[str]) -> bool:
             ["git", "ls-remote", "--tags", "--refs", REPL_URL],
             code="repl_revision_lookup_failed",
             remedy="Check access to GitHub, then retry setup.",
+            stdout_only=True,
+            stdout_limit_bytes=MAX_PROTOCOL_STDOUT_BYTES,
         )
         tags = [
             line.rsplit("refs/tags/", 1)[-1] for line in output.splitlines() if "refs/tags/" in line

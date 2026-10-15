@@ -65,7 +65,6 @@ def test_prepare_formalization_document_context_freezes_planner_artifacts(
         project_root=project,
         cwd=project,
         workflow_args="docs/paper.tex",
-        project_label="DifferentFromLakeLibrary",
     )
     document_id, revision = context.metadata["document_id"], context.metadata["revision_id"]
     layout = evaluated_layout(project, document_id)
@@ -113,7 +112,7 @@ def test_prepare_formalization_document_context_preserves_existing_root_imports(
     source = project / "docs" / "paper.tex"
     _write_sample_tex(source)
     context = prepare_formalization_document_context(
-        project_root=project, cwd=project, workflow_args="docs/paper.tex", project_label="Demo"
+        project_root=project, cwd=project, workflow_args="docs/paper.tex"
     )
     assert root_file.read_text() == original
     assert not context.target_lean_path.exists()
@@ -312,35 +311,29 @@ def test_directory_formalization_selects_main_tex_and_records_project_inventory(
     assert relative == "docs/paper/main.tex"
     assert kind == "latex"
 
-    context = prepare_formalization_document_context(
-        project_root=project,
-        cwd=project,
-        workflow_args="docs/paper",
-        project_label="Demo",
-    )
+    with pytest.raises(FormalizationDocumentError, match="extraction needs repair"):
+        prepare_formalization_document_context(
+            project_root=project, cwd=project, workflow_args="docs/paper"
+        )
+    payload = inspect_formalization_document("docs/paper", project_root=project, cwd=project)
 
-    assert context.source_relative == "docs/paper/main.tex"
-    assert context.metadata["document_request_kind"] == "directory"
-    assert context.metadata["document_request_relative"] == "docs/paper"
-    assert context.metadata["tex_project_entrypoint"] == "docs/paper/main.tex"
-    assert context.metadata["tex_project_included_tex_files"] == ["docs/paper/macros.tex"]
-    assert context.metadata["tex_project_bibliography_files"] == ["docs/paper/refs.bbl"]
-    assert context.metadata["tex_project_local_asset_files"] == ["docs/paper/style.bst"]
-    assert context.metadata["tex_project_pdf_files"] == []
-    assert context.metadata["tex_project_figure_files"] == []
-    assert context.metadata["tex_project_support_files"] == [
+    assert payload["source_relative"] == "docs/paper/main.tex"
+    assert payload["document_request_kind"] == "directory"
+    assert payload["document_request_relative"] == "docs/paper"
+    assert payload["tex_project_entrypoint"] == "docs/paper/main.tex"
+    assert payload["tex_project_included_tex_files"] == ["docs/paper/macros.tex"]
+    assert payload["tex_project_bibliography_files"] == ["docs/paper/refs.bbl"]
+    assert payload["tex_project_local_asset_files"] == ["docs/paper/style.bst"]
+    assert payload["tex_project_pdf_files"] == []
+    assert payload["tex_project_figure_files"] == []
+    assert payload["tex_project_support_files"] == [
         "docs/paper/refs.bbl",
         "docs/paper/style.bst",
     ]
-    env = context.to_env()
-    assert env["LEANFLOW_FORMALIZATION_REQUEST_KIND"] == "directory"
-    assert env["LEANFLOW_FORMALIZATION_REQUEST_RELATIVE"] == "docs/paper"
-    assert env["LEANFLOW_FORMALIZATION_SELECTED_SOURCE"] == "docs/paper/main.tex"
-    manifest = json.loads(context.manifest_path.read_text(encoding="utf-8"))
-    assert "docs/paper/macros.tex" in manifest["inventory"]["files"]
-    assert manifest["inventory"]["source_relative"] == "docs/paper/main.tex"
-    assert not context.target_lean_path.exists()
-    assert "SOURCE FILE docs/paper/macros.tex" in context.extracted_text_path.read_text()
+    assert "docs/paper/macros.tex" in payload["inventory"]["files"]
+    assert payload["inventory"]["extraction_status"] == "blocked"
+    assert payload["inventory"]["files"]["docs/paper/macros.tex"]["text"] == "\\def\\good{good}\n"
+    assert not list(project.rglob("*.lean"))
 
 
 def test_directory_formalization_records_pdf_figure_and_support_files(tmp_path, evaluated_layout):
@@ -356,22 +349,21 @@ def test_directory_formalization_records_pdf_figure_and_support_files(tmp_path, 
     (figures / "diagram.png").write_bytes(b"png")
     (source_dir / "macros.sty").write_text("\\newcommand{\\good}{good}\n", encoding="utf-8")
 
-    context = prepare_formalization_document_context(
-        project_root=project,
-        cwd=project,
-        workflow_args="docs/paper",
-        project_label="Demo",
-    )
+    with pytest.raises(FormalizationDocumentError, match="extraction needs repair"):
+        prepare_formalization_document_context(
+            project_root=project, cwd=project, workflow_args="docs/paper"
+        )
+    payload = inspect_formalization_document("docs/paper", project_root=project, cwd=project)
 
-    assert context.metadata["tex_project_pdf_files"] == ["docs/paper/supplement.pdf"]
-    assert context.metadata["tex_project_figure_files"] == [
+    assert payload["tex_project_pdf_files"] == ["docs/paper/supplement.pdf"]
+    assert payload["tex_project_figure_files"] == [
         "docs/paper/figures/diagram.png",
         "docs/paper/supplement.pdf",
     ]
-    assert context.metadata["tex_project_support_files"] == ["docs/paper/macros.sty"]
-    assert context.metadata["inventory"]["source_relative"] == "docs/paper/main.tex"
-    assert not context.target_lean_path.exists()
-    assert not context.blueprint_path.exists()
+    assert payload["tex_project_support_files"] == ["docs/paper/macros.sty"]
+    assert payload["inventory"]["source_relative"] == "docs/paper/main.tex"
+    assert payload["inventory"]["extraction_status"] == "blocked"
+    assert not list(project.rglob("*.lean"))
 
 
 def test_directory_formalization_rejects_ambiguous_tex_roots(tmp_path):

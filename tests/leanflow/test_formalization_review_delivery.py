@@ -376,7 +376,9 @@ def test_unavailable_evidence_is_not_a_cached_semantic_rejection(
         value.update(
             coherence_decision="UNAVAILABLE", feedback="Evidence read failed; retry delivery."
         )
-        return HarnessResult(status="completed", final_response=json.dumps(value))
+        return HarnessResult(
+            status="completed", final_response=json.dumps(value), cleanup_verified=True
+        )
 
     monkeypatch.setattr(review, "run_harness", unavailable)
     result = review.review_revision(source_record, **kwargs)

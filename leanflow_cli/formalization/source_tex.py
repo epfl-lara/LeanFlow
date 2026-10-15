@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.regular_files import read_regular_bytes
+
 from .source_provenance import COMMAND, SourceText, TexScan, digest, group, identity, scan_tex
 
 
@@ -35,6 +37,7 @@ class TexBundle:
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
     occurrence_marks: dict[str, list[tuple[int, int, str, str]]] = field(default_factory=dict)
     includeonly: set[str] | None = None
+    includeonly_origin: tuple[str, int, int] | None = None
 
     def diagnostic(self, code: str, message: str, file: str, **extra: Any) -> None:
         """Record a blocking extraction uncertainty instead of declaring success."""
@@ -42,13 +45,14 @@ class TexBundle:
             {"code": code, "message": message, "file": file, "blocking": True, **extra}
         )
 
-    def read(self, path: Path) -> TexScan:
+    def read(self, path: Path, *, inherited_uncertain: bool = False) -> TexScan:
         """Read original bytes once and reuse their exact hash throughout extraction."""
         relative = path.relative_to(self.root).as_posix()
         if relative in self.scans:
             return self.scans[relative]
-        original = SourceText(relative, path.read_bytes())
-        scan = scan_tex(original)
+        original = SourceText(relative, read_regular_bytes(path, path.lstat().st_size))
+
+        scan = scan_tex(original, inherited_uncertain=inherited_uncertain)
         self.files[relative] = {
             "sha256": original.sha256,
             "encoding": original.encoding,
@@ -56,7 +60,6 @@ class TexBundle:
             "size": len(original.raw),
         }
         self.scans[relative] = scan
-        self.diagnostics.extend(scan.diagnostics)
         if original.encoding != "utf-8":
             self.diagnostic(
                 "encoding_unconfirmed",
@@ -90,7 +93,7 @@ class TexBundle:
     def _binary(self, path: Path) -> None:
         relative = path.relative_to(self.root).as_posix()
         if relative not in self.files:
-            raw = path.read_bytes()
+            raw = read_regular_bytes(path, path.lstat().st_size)
             self.files[relative] = {"sha256": digest(raw), "encoding": "binary", "size": len(raw)}
 
     def expand(
@@ -122,7 +125,7 @@ class TexBundle:
             )
             return
         try:
-            scan = self.read(path)
+            scan = self.read(path, inherited_uncertain=bool(ancestors))
         except OSError as error:
             occurrence["status"] = "unresolved"
             self.diagnostic("source_read_error", str(error), relative, occurrence_id=occurrence_id)
@@ -131,19 +134,30 @@ class TexBundle:
         if excluded:
             marks.append((0, len(scan.source.text), "excluded", "Excluded by includeonly"))
             return
+        self.diagnostics.extend(
+            {
+                **row,
+                "occurrence_id": occurrence_id,
+                "span": {**row["span"], "occurrence_id": occurrence_id},
+            }
+            for row in scan.diagnostics
+        )
         if not ancestors:
-            selected = re.search(r"\\includeonly\s*\{([^{}]*)\}", scan.visible)
-            if selected:
-                if any(char in selected[1] for char in "\\#"):
+            selections = list(re.finditer(r"\\includeonly\b", scan.visible))
+            if selections:
+                facts = {start: (end, names) for start, end, names in scan.includeonly_definitions}
+                selected = selections[0]
+                fact = facts.get(selected.start())
+                if len(selections) != 1 or fact is None or fact[1] is None:
                     self.diagnostic(
                         "unresolved_includeonly",
-                        "includeonly contains an unevaluated macro",
+                        "includeonly execution, scope or assignment order is uncertain; retain all includes",
                         relative,
+                        span=scan.source.span(selected.start(), selected.end()),
                     )
                 else:
-                    self.includeonly = {
-                        value.strip().removesuffix(".tex") for value in selected[1].split(",")
-                    }
+                    self.includeonly = set(fact[1])
+                    self.includeonly_origin = relative, selected.start(), fact[0]
         cursor = 0
         counters: dict[tuple[str, str], int] = {}
         for command in COMMAND.finditer(scan.visible):
@@ -201,11 +215,32 @@ class TexBundle:
                         occurrence_key + "/" + name + ":" + token + ":" + str(counters[counter_key])
                     )
                     if resolved:
-                        skip = (
+                        would_skip = (
                             name == "include"
                             and self.includeonly is not None
                             and token.strip().removesuffix(".tex") not in self.includeonly
                         )
+                        # The scanner records an exact direct directive, but
+                        # unknown intervening execution can change its meaning.
+                        origin = self.includeonly_origin
+                        known_before = (
+                            origin is not None
+                            and origin[0] == relative
+                            and origin[2] <= command.start()
+                            and not any(
+                                disposition == "unresolved"
+                                and start <= max(0, command.start() - 1) < finish
+                                for start, finish, disposition, _ in scan.marks
+                            )
+                        )
+                        skip = would_skip and known_before
+                        if would_skip and not known_before:
+                            self.diagnostic(
+                                "unresolved_includeonly",
+                                "includeonly authority is not known before this include; retain its source",
+                                relative,
+                                span=scan.source.span(command.start(), end),
+                            )
                         self.expand(
                             resolved,
                             child_key,

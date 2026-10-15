@@ -72,7 +72,9 @@ def test_restrictions_keep_native_loop_with_only_local_bridge_tools(
         assert names.isdisjoint({"start_web_search", "start_fetch_resource"})
         request.on_admitting()
         request.on_started()
-        return HarnessResult("completed", "{}", session_id="restricted-session")
+        return HarnessResult(
+            "completed", "{}", session_id="restricted-session", cleanup_verified=True
+        )
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", harness)
     try:
@@ -122,7 +124,7 @@ def test_native_history_and_usage_baseline_are_bound_to_research_policy(
         request.on_admitting()
         assert json.loads(ledger.read_text())["research_policy"] == expected_policy
         request.on_started()
-        return HarnessResult("completed", "{}", session_id="current-session")
+        return HarnessResult("completed", "{}", session_id="current-session", cleanup_verified=True)
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", harness)
     result = _session(tmp_path, provider="codex", allow_internet=not restricted)
@@ -156,7 +158,7 @@ def test_database_migration_keeps_spending_and_binds_native_history(
         assert request.previous_usage == (prior["usage_total"] if current_database else None)
         request.on_admitting()
         request.on_started()
-        return HarnessResult("completed", "{}", session_id="current-session")
+        return HarnessResult("completed", "{}", session_id="current-session", cleanup_verified=True)
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", harness)
     result = _session(tmp_path, provider="codex", allow_internet=True)
@@ -211,7 +213,7 @@ def test_restricted_launch_failure_keeps_safe_snapshot_retryable(
 
     def harness(request: Any, **kwargs: Any) -> HarnessResult:
         calls.append(request)
-        return HarnessResult("startup_error", error="Runtime binary missing")
+        return HarnessResult("startup_error", error="Runtime binary missing", cleanup_verified=True)
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", harness)
     for _ in range(2):

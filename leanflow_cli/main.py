@@ -354,7 +354,12 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "workflow":
         _hoist_preview_options(args)
         if any(token in {"-h", "--help"} for token in args.args):
-            print(workflow_run_help_text(args.workflow))
+            try:
+                help_text = workflow_run_help_text(args.workflow)
+            except ValueError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            print(help_text)
             return 0
         if (
             args.workflow not in _INFORMATIONAL_WORKFLOWS
@@ -382,7 +387,7 @@ def _main(argv: list[str] | None = None) -> int:
                             "type": str(entry.get("success_state", "") or "in-progress"),
                             "message": str(entry.get("label", "") or "[none]"),
                         }
-                        for entry in reversed(load_workflow_checkpoints())[:12]
+                        for entry in reversed(load_workflow_checkpoints()[-12:])
                     ],
                 )
                 return 0
@@ -439,7 +444,12 @@ def _main(argv: list[str] | None = None) -> int:
                 render_workflow_launch(Console(), launch_summary=describe_launch_plan(plan))
             return 0
         render_workflow_launch(Console(), launch_summary=describe_launch_plan(plan))
-        return run_workflow(text, active_cwd=Path.cwd(), requested_provider=args.provider)
+        return run_workflow(
+            text,
+            active_cwd=Path.cwd(),
+            requested_provider=args.provider,
+            prepared_plan=plan,
+        )
     if args.command == "flags":
         return handle_flags(args)
     if args.command == "runs":

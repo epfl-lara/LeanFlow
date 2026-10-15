@@ -36,6 +36,13 @@ from leanflow_cli.formalization.publication_loss import (
     loss_projection,
     resolve_journal_loss,
 )
+from leanflow_cli.formalization.publication_registry_loss import (
+    LOSS_ID,
+    PublicationAuthorityLoss,
+    acknowledge_authority_loss,
+    authority_loss_projection,
+    discover_authority,
+)
 
 
 class ConflictResolutionRequest(TypedDict):
@@ -156,7 +163,18 @@ def publication_conflicts(
     if transaction_id is not None:
         identifier(transaction_id)
     with publication_lock(root):
-        registry = load_registry(root)
+        try:
+            registry = load_registry(root)
+        except PublicationAuthorityLoss:
+            discovery = discover_authority(root)
+            return {
+                "schema_version": 1,
+                "transactions": (
+                    [authority_loss_projection(root, discovery)]
+                    if transaction_id in {None, LOSS_ID}
+                    else []
+                ),
+            }
         audit_retained(root, registry, raise_conflicts=False)
         results = []
         for key, entry in registry["transactions"].items():
@@ -288,6 +306,20 @@ def resolve_publication_conflict(
         raise ValueError("Publication resolution requires a reconciliation reason")
     transaction_id = identifier(request["transaction_id"])
     with publication_lock(root):
+        if transaction_id == LOSS_ID:
+            try:
+                load_registry(root)
+            except PublicationAuthorityLoss:
+                registry, resolution = acknowledge_authority_loss(
+                    root, request, read_journal=load_journal
+                )
+                if checkpoint:
+                    checkpoint("registry_loss_acknowledgment_prepared")
+                save_registry(root, registry, acknowledge_registry_loss=True)
+                if checkpoint:
+                    checkpoint("registry_loss_acknowledgment_committed")
+                return resolution
+            raise PublicationConflict("Publication registry has no unresolved authority loss")
         registry = load_registry(root)
         entry = registry["transactions"].get(transaction_id)
         if not entry:

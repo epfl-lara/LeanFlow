@@ -25,6 +25,10 @@ from leanflow_cli.workflows.prover.lean_environment import lean_environment_gene
 
 def portable_baseline(root: Path, document_id: str) -> dict[str, bytes]:
     """Capture published metadata at campaign start, before any author/reviewer runs."""
+    from leanflow_cli.formalization.publication_case_paths import exact_control_path
+
+    if not exact_control_path(root, f"formalization/{document_id}"):
+        return {}
     directory = contained(root, f"formalization/{document_id}")
     if not directory.exists():
         return {}

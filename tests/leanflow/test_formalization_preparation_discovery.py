@@ -10,7 +10,8 @@ from typing import Any
 import pytest
 
 from agent.runtime.harness import BackendError, HarnessResult
-from core.campaign_limits import CampaignLimits
+from agent.runtime.harness.models import NativeCleanupUnverified
+from core.campaign_limits import CampaignLimits, LimitReached
 from core.deadlines import deadline_after
 from leanflow_cli.formalization import preparation_discovery as discovery
 from leanflow_cli.formalization.preparation_inputs import preparation_documents
@@ -62,7 +63,7 @@ def _response(record: dict[str, Any], plan: dict[str, Any], **changes: Any) -> d
     }
 
 
-def _run(root, record, plan, monkeypatch, response, *, budget=None, **extra):
+def _run(root, record, plan, monkeypatch, response, *, budget=None, cleanup_verified=True, **extra):
     calls = []
 
     def invoke(request):
@@ -75,6 +76,7 @@ def _run(root, record, plan, monkeypatch, response, *, budget=None, **extra):
             session_id="fresh-discovery",
             final_response=json.dumps(response),
             usage={"input_tokens": 50, "output_tokens": 20},
+            cleanup_verified=cleanup_verified,
         )
 
     monkeypatch.setattr(discovery, "run_harness", invoke)
@@ -92,6 +94,108 @@ def _run(root, record, plan, monkeypatch, response, *, budget=None, **extra):
         **extra,
     )
     return result, calls
+
+
+def test_unverified_native_completion_cannot_authorize_setup_estimates(paper, monkeypatch):
+    root, record, plan = paper
+    before = (root / "paper.tex").read_bytes()
+    result, calls = _run(
+        root, record, plan, monkeypatch, _response(record, plan), cleanup_verified=False
+    )
+    assert len(calls) == 1 and not result["accepted"]
+    assert result["status"] == "cleanup_unverified" and not result["semantic_approval"]
+    assert "plan" not in result and (root / "paper.tex").read_bytes() == before
+    private = list((root / ".leanflow/discovery").iterdir())
+    assert private and all(path.is_dir() for path in private)
+    assert not list((root / ".leanflow/discovery").rglob("recommendation.json"))
+
+
+@pytest.mark.parametrize(
+    "mode,observed_kind",
+    [
+        ("exception", "known"),
+        ("exception", "no_usage"),
+        ("exception", "none"),
+        ("exception", "known_claims_closed"),
+        ("returned", "known"),
+        ("returned", "no_usage"),
+    ],
+)
+def test_unverified_discovery_retains_exact_observed_usage_without_authorizing_a_plan(
+    paper, monkeypatch, mode, observed_kind
+):
+    root, record, plan = paper
+    original = {
+        **{name: (root / name).read_bytes() for name in record["source_files"]},
+        "Existing.lean": (root / "Existing.lean").read_bytes(),
+    }
+    calls = []
+    budget = CampaignLimits(root / "limits.json", {"agent_calls": 2, "tokens": 18})
+    known = observed_kind in {"known", "known_claims_closed"}
+    usage = {"input_tokens": 11, "output_tokens": 7} if known else None
+    usage_total = None if observed_kind == "none" else {"input_tokens": 111, "output_tokens": 27}
+
+    def invoke(request):
+        calls.append(request)
+        request.on_started()
+        (request.cwd / "retained-discovery-input.txt").write_text(
+            "Preserve private input while native process closure is uncertain"
+        )
+        observed = (
+            None
+            if observed_kind == "none"
+            else HarnessResult(
+                "completed",
+                json.dumps(_response(record, plan)),
+                session_id="observed-discovery-session",
+                usage=usage,
+                usage_total=usage_total,
+                cleanup_verified=observed_kind == "known_claims_closed",
+            )
+        )
+        if mode == "exception":
+            raise NativeCleanupUnverified("Discovery cleanup remains unverified", result=observed)
+        return observed
+
+    monkeypatch.setattr(discovery, "run_harness", invoke)
+    monkeypatch.setattr(discovery, "build_runtime_isolation", lambda *args, **kwargs: object())
+    directory = root / ".leanflow/discovery"
+    result = discovery.discover_preparation_plan(
+        root,
+        record,
+        plan,
+        backend="claude",
+        model="fixture-model",
+        effort="max",
+        environment={"LEANFLOW_PROJECT_ROOT": str(root)},
+        budget=budget,
+        directory=directory,
+    )
+    assert len(calls) == 1 and not result["accepted"]
+    assert result["status"] == "cleanup_unverified" and result["semantic_approval"] is False
+    assert "plan" not in result and not list(directory.rglob("recommendation.json"))
+    assert result["discovery"] == {
+        "protocol": discovery.PROTOCOL,
+        "session_id": "" if observed_kind == "none" else "observed-discovery-session",
+        "backend": "claude",
+        "model": "fixture-model",
+        "effort": "max",
+        "usage": usage,
+        "usage_total": usage_total,
+        "cleanup_verified": False,
+    }
+    assert list(json.loads(budget.path.read_text())["invocations"].values()) == [
+        {"status": "finished", "usage": usage}
+    ]
+    with pytest.raises(
+        LimitReached, match="reported-token limit" if known else "usage is unavailable"
+    ):
+        budget.reserve()
+    assert calls[0].mcp_config.is_file()
+    assert (calls[0].cwd / "retained-discovery-input.txt").read_text() == (
+        "Preserve private input while native process closure is uncertain"
+    )
+    assert {name: (root / name).read_bytes() for name in original} == original
 
 
 def test_fresh_discovery_only_estimates_existing_reuse_and_keeps_authority(paper, monkeypatch):

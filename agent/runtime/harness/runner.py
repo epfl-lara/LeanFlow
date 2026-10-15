@@ -1,4 +1,4 @@
-"""Run a complete native agent session with only campaign cancellation or deadline."""
+"""Run complete native sessions with bounded supervision and verified owned cleanup."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, TextIO
@@ -20,10 +20,22 @@ from .commands import build_command, child_environment
 from .context_policy import validate_restricted_native_context
 from .discovery import discover_mcp_servers
 from .events import EventState, usage_delta
-from .isolation import IsolationUnavailable, sandbox_command
+from .isolation import IsolationPolicy, IsolationUnavailable, sandbox_command
 from .model_defaults import reasoning_default
-from .models import BackendError, HarnessRequest, HarnessResult
-from .processes import ProcessTree, cleanup_group
+from .models import (
+    BackendError,
+    HarnessRequest,
+    HarnessResult,
+    NativeCleanupUnverified,
+    NativeLaunchFailure,
+)
+from .processes import (
+    ProcessSampler,
+    ProcessTrackingUnavailable,
+    ProcessTree,
+    cleanup_group,
+    verify_owned_stopped,
+)
 from .redaction import environment_secrets, redact_native_value
 from .restricted import restricted_isolation
 from .settings import SettingsRecorder, native_input, private_control_response, startup_settings
@@ -54,15 +66,10 @@ def _record(
         on_event(payload)
 
 
-def run_harness(
-    request: HarnessRequest, on_event: Callable[[dict[str, Any]], None] | None = None
-) -> HarnessResult:
-    """Launch one native invocation and wait until terminal output is quiescent.
-
-    A zero-output session is allowed to run indefinitely. Only the caller's absolute
-    monotonic campaign deadline or cancellation callback stops active execution.
-    The cleanup grace bounds process termination, never useful model work.
-    """
+def _prepare_launch(
+    request: HarnessRequest,
+) -> tuple[list[str], dict[str, str], tuple[str, ...], str, IsolationPolicy] | HarnessResult:
+    """Resolve pure launch inputs and close discovery helpers before returning or raising."""
     if request.deadline is not None and (
         isinstance(request.deadline, bool) or not math.isfinite(request.deadline)
     ):
@@ -74,7 +81,10 @@ def run_harness(
     executable = shutil.which(command[0], path=environment.get("PATH"))
     if executable is None:
         return HarnessResult(
-            "startup_error", error=f"Native backend executable is unavailable: {command[0]}"
+            "startup_error",
+            session_id=request.session_id,
+            error=f"Native backend executable is unavailable: {command[0]}",
+            cleanup_verified=True,
         )
     # Linux mounts the granted target file; a PATH symlink may live outside it.
     executable = str(Path(executable).resolve())
@@ -118,7 +128,7 @@ def run_harness(
             environment["CLAUDE_CODE_TMPDIR"] = str(request.isolation.temp_root)
     stop = _stop_reason(request)
     if stop:
-        return HarnessResult(stop, session_id=request.session_id)
+        return HarnessResult(stop, session_id=request.session_id, cleanup_verified=True)
     if request.backend != "claude":
         discovery_command = sandbox_command(
             [
@@ -142,172 +152,264 @@ def run_harness(
         )
     stop = _stop_reason(request)
     if stop:
-        return HarnessResult(stop, session_id=request.session_id)
+        return HarnessResult(stop, session_id=request.session_id, cleanup_verified=True)
+    return command, environment, secrets, executable, policy
+
+
+def run_harness(
+    request: HarnessRequest, on_event: Callable[[dict[str, Any]], None] | None = None
+) -> HarnessResult:
+    """Launch one native invocation and wait until terminal output is quiescent.
+
+    A zero-output session has no idle deadline. The caller's campaign deadline or
+    cancellation stops normal execution; persistent process-inspection failure
+    aborts supervision. Cleanup bounds termination and never weakens final evidence.
+    """
+    try:
+        prepared = _prepare_launch(request)
+    except (NativeCleanupUnverified, NativeLaunchFailure):
+        raise
+    except (BackendError, IsolationUnavailable, OSError, ValueError) as error:
+        valid_deadline = request.deadline is None or (
+            not isinstance(request.deadline, bool) and math.isfinite(request.deadline)
+        )
+        status = (_stop_reason(request) if valid_deadline else "") or "startup_error"
+        raise NativeLaunchFailure(
+            str(error), status=status, session_id=request.session_id
+        ) from error
+    if isinstance(prepared, HarnessResult):
+        return prepared
+    command, environment, secrets, executable, policy = prepared
     state = EventState(request.backend, session_id=request.session_id)
     settings = SettingsRecorder(request, secrets)
     public_stream = NativeStreamRedactor(secrets)
     malformed = False
     process: subprocess.Popen[bytes] | None = None
-    if request.log_path is not None:
-        request.log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_context = (
-        request.log_path.open("a", encoding="utf-8") if request.log_path else nullcontext(None)
-    )
-    with tempfile.TemporaryFile() as prompt, log_context as log:
-        prompt.write(native_input(request))
-        prompt.seek(0)
-        if request.on_admitting is not None:
-            request.on_admitting()
-        try:
-            process = subprocess.Popen(
-                command,
-                cwd=request.cwd,
-                env=environment,
-                stdin=prompt,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            return HarnessResult("startup_error", session_id=request.session_id, error=str(exc))
-        buffers: dict[str, bytes] = {"stdout": b"", "stderr": b""}
-
-        def consume(channel: str, line: bytes) -> None:
-            """Decode one channel record; stderr never enters the JSON parser."""
-            nonlocal malformed
-            decoded = line.decode("utf-8", errors="replace")
-            if channel == "stderr":
-                metadata = startup_settings(request.backend, decoded)
-                if metadata is not None:
-                    if not metadata.get("reasoning_effort"):
-                        effort = reasoning_default(
-                            request, executable, environment, policy, metadata["model"]
-                        )
-                        if effort:
-                            metadata.update(
-                                reasoning_effort=effort, reasoning_source="native_model_default"
-                            )
-                    if change := settings.update(metadata):
-                        _record(log, change, on_event, secrets)
-                    return
-                if decoded:
-                    _record(log, {"type": "harness.stderr", "text": decoded}, on_event, secrets)
-                return
-            if not decoded.strip():
-                return
+    try:
+        with ExitStack() as resources:
             try:
-                event = json.loads(decoded)
-                if not isinstance(event, dict) or not isinstance(event.get("type"), str):
-                    raise ValueError("Expected a native event object with a string type")
-            except (ValueError, TypeError) as exc:
-                malformed = True
-                state.diagnostics.append(f"Malformed native JSON output: {exc}")
-                # A truncated delta cannot be scoped or joined safely; retaining
-                # its raw body would bypass the fragment credential guard.
-                _record(
-                    log,
-                    {
-                        "type": "harness.invalid_output",
-                        "text": f"Malformed native JSON output: {exc}. Raw record omitted.",
-                    },
-                    on_event,
-                    secrets,
+                if request.log_path is not None:
+                    request.log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_context = (
+                    request.log_path.open("a", encoding="utf-8")
+                    if request.log_path
+                    else nullcontext(None)
                 )
-                return
-            state.consume(event)
-            if change := settings.consume(event):
-                _record(log, change, on_event, secrets)
-            if private_control_response(event):
-                return
-            for public_event in public_stream.consume(event):
-                _record(log, public_event, on_event, secrets)
+                log = resources.enter_context(log_context)
+                prompt = resources.enter_context(tempfile.TemporaryFile())
+                prompt.write(native_input(request))
+                prompt.seek(0)
+                if request.on_admitting is not None:
+                    request.on_admitting()
+            except NativeCleanupUnverified:
+                raise
+            except (BackendError, OSError, ValueError) as error:
+                raise NativeLaunchFailure(str(error), session_id=request.session_id) from error
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=request.cwd,
+                    env=environment,
+                    stdin=prompt,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                return HarnessResult(
+                    "startup_error",
+                    session_id=request.session_id,
+                    error=str(exc),
+                    cleanup_verified=True,
+                )
+            buffers: dict[str, bytes] = {"stdout": b"", "stderr": b""}
 
-        cleaned = False
-        drain_deadline: float | None = None
-        tree = ProcessTree(process.pid)
-        last_scan = 0.0
-        try:
-            if request.on_started is not None:
-                request.on_started()
-            if initial := settings.update({}):
-                _record(log, initial, on_event, secrets)
-            with selectors.DefaultSelector() as selector:
-                assert process.stdout is not None and process.stderr is not None
-                for channel, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
-                    os.set_blocking(pipe.fileno(), False)
-                    selector.register(pipe, selectors.EVENT_READ, channel)
-                while selector.get_map() or process.poll() is None:
+            def consume(channel: str, line: bytes) -> None:
+                """Decode one channel record; stderr never enters the JSON parser."""
+                nonlocal malformed
+                decoded = line.decode("utf-8", errors="replace")
+                if channel == "stderr":
+                    metadata = startup_settings(request.backend, decoded)
+                    if metadata is not None:
+                        if not metadata.get("reasoning_effort"):
+                            effort = reasoning_default(
+                                request, executable, environment, policy, metadata["model"]
+                            )
+                            if effort:
+                                metadata.update(
+                                    reasoning_effort=effort, reasoning_source="native_model_default"
+                                )
+                        if change := settings.update(metadata):
+                            _record(log, change, on_event, secrets)
+                        return
+                    if decoded:
+                        _record(log, {"type": "harness.stderr", "text": decoded}, on_event, secrets)
+                    return
+                if not decoded.strip():
+                    return
+                try:
+                    event = json.loads(decoded)
+                    if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+                        raise ValueError("Expected a native event object with a string type")
+                except (ValueError, TypeError) as exc:
+                    malformed = True
+                    state.diagnostics.append(f"Malformed native JSON output: {exc}")
+                    # A truncated delta cannot be scoped or joined safely; retaining
+                    # its raw body would bypass the fragment credential guard.
+                    _record(
+                        log,
+                        {
+                            "type": "harness.invalid_output",
+                            "text": f"Malformed native JSON output: {exc}. Raw record omitted.",
+                        },
+                        on_event,
+                        secrets,
+                    )
+                    return
+                state.consume(event)
+                if change := settings.consume(event):
+                    _record(log, change, on_event, secrets)
+                if private_control_response(event):
+                    return
+                for public_event in public_stream.consume(event):
+                    _record(log, public_event, on_event, secrets)
+
+            cleaned = False
+            outputs_closed = False
+            drain_deadline: float | None = None
+            tree = ProcessTree(process.pid)
+            sampler = ProcessSampler(tree)
+            tracking_failed = False
+            last_scan = 0.0
+            try:
+                if request.on_started is not None:
+                    request.on_started()
+                if initial := settings.update({}):
+                    _record(log, initial, on_event, secrets)
+                with selectors.DefaultSelector() as selector:
+                    assert process.stdout is not None and process.stderr is not None
+                    for channel, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+                        os.set_blocking(pipe.fileno(), False)
+                        selector.register(pipe, selectors.EVENT_READ, channel)
+                    while selector.get_map() or process.poll() is None:
+                        if not cleaned:
+                            now = time.monotonic()
+                            if now - last_scan >= 0.25:
+                                try:
+                                    sampled = sampler.sample()
+                                    if not sampled and not state.diagnostics:
+                                        state.diagnostics.append(
+                                            "Native process tracking sample unavailable; retrying."
+                                        )
+                                except ProcessTrackingUnavailable as error:
+                                    state.error = str(error)
+                                    tracking_failed = True
+                                last_scan = now
+                            stop = _stop_reason(request)
+                            if stop or tracking_failed or process.poll() is not None:
+                                cleanup_group(process, tree)
+                                cleaned = True
+                                drain_deadline = time.monotonic() + 2
+                        for key, _ in selector.select(timeout=0.1):
+                            data = os.read(key.fd, 65536)
+                            channel = key.data
+                            if not data:
+                                selector.unregister(key.fileobj)
+                                if buffers[channel]:
+                                    consume(channel, buffers[channel])
+                                    buffers[channel] = b""
+                                continue
+                            buffers[channel] += data
+                            while b"\n" in buffers[channel]:
+                                line, buffers[channel] = buffers[channel].split(b"\n", 1)
+                                consume(channel, line)
+                        if (
+                            drain_deadline is not None
+                            and time.monotonic() >= drain_deadline
+                            and selector.get_map()
+                        ):
+                            state.error = (
+                                "Native descendants did not close output channels after cleanup."
+                            )
+                            break
+                    outputs_closed = not bool(selector.get_map())
+            finally:
+                try:
                     if not cleaned:
-                        now = time.monotonic()
-                        if now - last_scan >= 0.25:
-                            tree.refresh()
-                            last_scan = now
-                        stop = _stop_reason(request)
-                        if stop or process.poll() is not None:
-                            cleanup_group(process, tree)
-                            cleaned = True
-                            drain_deadline = time.monotonic() + 2
-                    for key, _ in selector.select(timeout=0.1):
-                        data = os.read(key.fd, 65536)
-                        channel = key.data
-                        if not data:
-                            selector.unregister(key.fileobj)
-                            if buffers[channel]:
-                                consume(channel, buffers[channel])
-                                buffers[channel] = b""
-                            continue
-                        buffers[channel] += data
-                        while b"\n" in buffers[channel]:
-                            line, buffers[channel] = buffers[channel].split(b"\n", 1)
-                            consume(channel, line)
-                    if (
-                        drain_deadline is not None
-                        and time.monotonic() >= drain_deadline
-                        and selector.get_map()
-                    ):
-                        state.error = (
-                            "Native descendants did not close output channels after cleanup."
-                        )
-                        break
-        finally:
-            if not cleaned:
-                cleanup_group(process, tree)
-            for public_event in public_stream.flush():
-                _record(log, public_event, on_event, secrets)
-            if process.stdout is not None:
-                process.stdout.close()
-            if process.stderr is not None:
-                process.stderr.close()
-    code = process.returncode
-    if stop:
-        status = stop
-    elif code != 0:
-        status = "failed"
-        state.error = state.error or f"Native backend exited with status {code}."
-    elif malformed:
-        status = "malformed_output"
-        state.error = state.error or "The native backend emitted malformed structured output."
-    elif state.error or not state.completed:
-        status = "failed"
-        state.error = (
-            state.error or "The native backend exited without a successful terminal event."
+                        cleanup_group(process, tree)
+                    for public_event in public_stream.flush():
+                        _record(log, public_event, on_event, secrets)
+                finally:
+                    for output_pipe in (process.stdout, process.stderr):
+                        if output_pipe is not None:
+                            try:
+                                output_pipe.close()
+                            except OSError:
+                                pass  # Preserve any owned-cleanup failure and its observed usage.
+        code = process.returncode
+        try:
+            cleanup_verified = verify_owned_stopped(tree, group=process.pid)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            raise NativeCleanupUnverified(
+                "Native cleanup evidence is unavailable; retain invocation inputs: " + str(error)
+            ) from error
+        if not cleanup_verified:
+            raise NativeCleanupUnverified(
+                "Native process group or tracked descendants remain live; retain invocation inputs"
+            )
+        cleanup_verified = cleanup_verified and outputs_closed
+        if stop:
+            status = stop
+        elif tracking_failed:
+            status = "failed"
+        elif code != 0:
+            status = "failed"
+            state.error = state.error or f"Native backend exited with status {code}."
+        elif malformed:
+            status = "malformed_output"
+            state.error = state.error or "The native backend emitted malformed structured output."
+        elif state.error or not state.completed:
+            status = "failed"
+            state.error = (
+                state.error or "The native backend exited without a successful terminal event."
+            )
+        else:
+            status = "completed"
+        usage = usage_delta(
+            state.usage_total,
+            request.previous_usage,
+            resumed=bool(request.session_id) and not request.restricted_tools,
+            cumulative=True,
         )
-    else:
-        status = "completed"
-    usage = usage_delta(
-        state.usage_total,
-        request.previous_usage,
-        resumed=bool(request.session_id) and not request.restricted_tools,
-        cumulative=True,
-    )
-    return HarnessResult(
-        status,
-        state.final_response,
-        state.session_id,
-        usage,
-        state.usage_total,
-        code,
-        state.error,
-        tuple(state.diagnostics),
-        tuple(settings.history),
-    )
+        return HarnessResult(
+            status,
+            state.final_response,
+            state.session_id,
+            usage,
+            state.usage_total,
+            code,
+            state.error,
+            tuple(state.diagnostics),
+            tuple(settings.history),
+            cleanup_verified,
+        )
+    except NativeCleanupUnverified as error:
+        if process is not None:
+            error.result = HarnessResult(
+                "cleanup_unverified",
+                state.final_response,
+                state.session_id,
+                usage_delta(
+                    state.usage_total,
+                    request.previous_usage,
+                    resumed=bool(request.session_id) and not request.restricted_tools,
+                    cumulative=True,
+                ),
+                state.usage_total,
+                process.returncode,
+                str(error),
+                tuple(state.diagnostics),
+                tuple(settings.history),
+                False,
+            )
+        raise

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import json
+import math
+import shutil
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ import pytest
 
 from leanflow_cli.formalization import freshness, handoff, publication
 from leanflow_cli.formalization.evidence import digest, durable_json, identity
+from leanflow_cli.formalization.publication_journal import load_registry, save_registry
 from leanflow_cli.formalization.records import (
     document_directory,
     load_document,
@@ -109,6 +112,9 @@ def test_handoff_reuses_only_exact_checked_environment_and_default_stays_strict(
 
 @pytest.fixture
 def reviewed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict[str, Any]]:
+    # Keep Lean checking synthetic while using actual committed publication
+    # authority for the portable receipt consumed by handoff gates.
+    save_registry(tmp_path, load_registry(tmp_path))
     (tmp_path / "src").mkdir()
     source = "def unrelated : Nat := sorry\nnamespace Paper\ntheorem target : True := by sorry\nend Paper\n"
     (tmp_path / "src/Main.lean").write_text(source)
@@ -182,12 +188,40 @@ def reviewed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dic
             ],
         },
     )
+    _publish_fixture_controls(tmp_path, "paper", record["revision_id"])
     monkeypatch.setattr(handoff, "environment_identity", lambda root: "environment")
     monkeypatch.setattr(freshness, "environment_identity", lambda root: "environment")
     monkeypatch.setattr(
         publication, "assert_no_pending_publication", lambda root: None, raising=False
     )
     return tmp_path, result
+
+
+def _publish_fixture_controls(
+    root: Path, document_id: str, revision_id: str, *, staged: Path | None = None
+) -> None:
+    """Commit a synthetic fresh acceptance through the real publication kernel."""
+    directory = document_directory(root, document_id, published=True)
+    staged = staged or directory
+    outputs = {
+        (directory / path.relative_to(staged)).relative_to(root).as_posix(): path.read_bytes()
+        for path in staged.rglob("*")
+        if path.is_file() and path.name not in {"document.lock", "receipt-history.lock"}
+    }
+    if staged == directory:
+        shutil.rmtree(directory)
+    before = {
+        name: (root / name).read_bytes() if (root / name).is_file() else None for name in outputs
+    }
+    publication.publish_revision(
+        root=root,
+        directory=root / ".leanflow/fixture-publication" / document_id / revision_id,
+        revision_id=revision_id,
+        plan=publication.freeze_publication_plan(revision_id, before, outputs, owned_paths=outputs),
+        before=before,
+        outputs=outputs,
+        validate=lambda: None,
+    )
 
 
 def test_builder_maps_compiled_names_to_exact_source_slots(reviewed) -> None:
@@ -382,8 +416,10 @@ def test_prover_acceptance_holds_publication_ownership(reviewed, monkeypatch) ->
     held = []
 
     @contextmanager
-    def guard(project):
+    def guard(project, *, cancelled=None, deadline=None):
         assert project == root
+        assert callable(cancelled) and cancelled() is False
+        assert deadline is None or math.isfinite(deadline)
         held.append(project)
         try:
             yield
@@ -553,9 +589,16 @@ def test_mixed_existing_reuse_and_generated_proof_authenticates_completed_certif
     """Retain readonly reuse without expecting it in the owned proof compiler profiles."""
     from leanflow_cli.formalization.service import show_document
 
-    root, old_handoff = reviewed
+    original_root, old_handoff = reviewed
+    record = load_document(original_root, "paper")
+    root = original_root / "mixed-project"
+    shutil.copytree(
+        original_root,
+        root,
+        ignore=shutil.ignore_patterns(".leanflow", "formalization", "mixed-project"),
+    )
+    save_registry(root, load_registry(root))
     directory = document_directory(root, "paper", published=True)
-    record = load_document(root, "paper")
     record["checks"]["declarations"].append(
         {
             "name": "other",
@@ -583,6 +626,7 @@ def test_mixed_existing_reuse_and_generated_proof_authenticates_completed_certif
         directory,
         {"status": "published", "revision_id": record["revision_id"], "handoff": accepted},
     )
+    _publish_fixture_controls(root, "paper", record["revision_id"])
     untouched = (root / "Unrelated.lean").read_bytes()
     path = root / "src/Main.lean"
     document = SourceDocument("src/Main.lean", path.read_text(), replacements={"1": "trivial"})

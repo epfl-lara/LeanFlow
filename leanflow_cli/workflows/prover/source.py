@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
@@ -200,15 +201,25 @@ class SourceDocument:
 
 
 def project_sources(root: Path) -> list[Path]:
-    """Enumerate user Lean sources without dependencies or workflow scratch files."""
-    return sorted(
-        path
-        for path in root.rglob("*.lean")
-        if not any(
-            part in {".lake", ".git", ".leanflow", ".venv"} for part in path.relative_to(root).parts
-        )
-        and not path.is_symlink()
-    )
+    """Enumerate user Lean sources, pruning excluded trees and refusing incomplete scans."""
+    if not root.is_dir():
+        return []
+
+    def scan_failed(error: OSError) -> None:
+        """Refuse partial source authority after an unreadable or disappearing directory."""
+        raise error
+
+    result = []
+    for current, directories, files in os.walk(root, onerror=scan_failed, followlinks=False):
+        directories[:] = [
+            name for name in directories if name not in {".lake", ".git", ".leanflow", ".venv"}
+        ]
+        # Glob matching also includes ordinary directories named *.lean.
+        for name in [*directories, *files]:
+            path = Path(current) / name
+            if path.match("*.lean") and not path.is_symlink():
+                result.append(path)
+    return sorted(result)
 
 
 def discover(
