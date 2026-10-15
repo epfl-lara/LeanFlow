@@ -463,6 +463,8 @@ files = [
   "leanflow_cli/formalization/source_literal_macros.py",
   "leanflow_cli/formalization/source_builtins.py",
   "leanflow_cli/formalization/source_structure.py",
+  "leanflow_cli/formalization/source_environment_paths.py",
+  "leanflow_cli/formalization/source_bibliography.py",
   "leanflow_cli/formalization/source_tex.py",
   "leanflow_cli/cli/formalization_command.py",
   "leanflow_cli/formalization/formalization_models.py",

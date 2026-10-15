@@ -9,6 +9,13 @@ from typing import Any
 
 from core.regular_files import read_regular_bytes
 
+from .source_bibliography import (
+    BIBLIOGRAPHY_MAX_BYTES,
+    BibliographySizeLimitError,
+    OversizedBibliographyFile,
+    check_bibliography_size,
+    discover_bibliography_support,
+)
 from .source_provenance import COMMAND, SourceText, TexScan, digest, group, identity, scan_tex
 
 
@@ -90,11 +97,116 @@ class TexBundle:
                     return path
         return None
 
-    def _binary(self, path: Path) -> None:
+    def _binary(self, path: Path, *, max_bytes: int | None = None) -> None:
+        """Freeze one support original under its fixed role-specific bound when supplied."""
+        if max_bytes is None and path.suffix.lower() in {".bib", ".bbl"}:
+            max_bytes = BIBLIOGRAPHY_MAX_BYTES
         relative = path.relative_to(self.root).as_posix()
+        if (
+            max_bytes is not None
+            and relative in self.files
+            and self.files[relative]["size"] > max_bytes
+        ):
+            raise BibliographySizeLimitError(path, self.files[relative]["size"], max_bytes)
         if relative not in self.files:
-            raw = read_regular_bytes(path, path.lstat().st_size)
+            if max_bytes is not None:
+                check_bibliography_size(path, max_bytes)
+            raw = read_regular_bytes(
+                path, max_bytes if max_bytes is not None else path.lstat().st_size
+            )
             self.files[relative] = {"sha256": digest(raw), "encoding": "binary", "size": len(raw)}
+
+    def _oversized_bibliography(
+        self,
+        path: Path,
+        unavailable: OversizedBibliographyFile,
+        span: dict[str, Any],
+        *,
+        command: str = "bibliography",
+        rendered_available: bool = False,
+    ) -> None:
+        """Explain an unread size-limited support input without waiving source uncertainty."""
+        optional_database = unavailable.role == "database" and rendered_available
+        self.diagnostics.append(
+            {
+                "code": (
+                    "missing_bibliography_database" if optional_database else "missing_support_file"
+                ),
+                "message": (
+                    "Supplied root-jobname .bbl is frozen, but database exceeds the bounded intake size"
+                    if optional_database
+                    else "Bibliography support exceeds the bounded intake size"
+                ),
+                "file": path.relative_to(self.root).as_posix(),
+                "blocking": not optional_database,
+                "span": span,
+                "support_command": command,
+                "support_target": unavailable.target,
+                "support_file": unavailable.path.relative_to(self.root).as_posix(),
+                "support_role": unavailable.role,
+                "support_unavailable_reason": "size_limit",
+                "support_size_bytes": unavailable.size_bytes,
+                "support_limit_bytes": unavailable.limit_bytes,
+            }
+        )
+
+    def _bibliography(self, path: Path, value: str, span: dict[str, Any]) -> None:
+        """Retain supplied bibliography bytes without claiming execution or reproducibility."""
+        support = discover_bibliography_support(self.root, self.selected, path, value, self.resolve)
+        relative = path.relative_to(self.root).as_posix()
+        for candidate in support.files:
+            self._binary(candidate, max_bytes=BIBLIOGRAPHY_MAX_BYTES)
+        for unavailable in support.oversized_files:
+            self._oversized_bibliography(
+                path, unavailable, span, rendered_available=support.rendered_available
+            )
+        for token in support.missing_targets:
+            self.diagnostic(
+                "missing_support_file",
+                f"Cannot resolve \\bibliography{{{token}}}",
+                relative,
+                span=span,
+                support_command="bibliography",
+                support_target=token,
+            )
+        if support.missing_rendered:
+            self.diagnostic(
+                "missing_support_file",
+                "Bibliography databases and exact root-jobname rendered support are unavailable",
+                relative,
+                span=span,
+                support_command="bibliography",
+                support_role="rendered_bibliography",
+                support_target=self.selected.with_suffix(".bbl").relative_to(self.root).as_posix(),
+            )
+        if support.ambiguous_jobnames:
+            self.diagnostic(
+                "ambiguous_bibliography",
+                "Multiple supplied root-jobname bibliographies require reconciliation",
+                relative,
+                span=span,
+                support_command="bibliography",
+                support_candidates=[
+                    candidate.relative_to(self.root).as_posix()
+                    for candidate in support.ambiguous_jobnames
+                ],
+                support_case_aliases=[
+                    candidate.relative_to(self.root).as_posix()
+                    for candidate in support.case_aliases
+                ],
+            )
+        for token in support.missing_databases:
+            self.diagnostics.append(
+                {
+                    "code": "missing_bibliography_database",
+                    "message": "Supplied root-jobname .bbl is frozen, but database source is unavailable",
+                    "file": relative,
+                    "blocking": False,
+                    "span": span,
+                    "support_command": "bibliography",
+                    "support_target": token,
+                }
+            )
 
     def expand(
         self,
@@ -258,16 +370,41 @@ class TexBundle:
                     else:
                         # External TeX distribution packages are named, never implicitly frozen.
                         occurrence.setdefault("external_packages", []).append(token.strip())
+            elif name == "bibliography":
+                self._bibliography(path, value, scan.source.span(command.start(), end))
             else:
                 suffixes = (
                     (".bib", ".bbl")
-                    if name in {"bibliography", "addbibresource"}
+                    if name == "addbibresource"
                     else (".pdf", ".png", ".jpg", ".jpeg", ".eps")
                 )
                 for token in value.split(","):
                     resolved = self.resolve(path, token, suffixes)
                     if resolved:
-                        self._binary(resolved)
+                        try:
+                            self._binary(
+                                resolved,
+                                max_bytes=(
+                                    BIBLIOGRAPHY_MAX_BYTES if name == "addbibresource" else None
+                                ),
+                            )
+                        except BibliographySizeLimitError as error:
+                            self._oversized_bibliography(
+                                path,
+                                OversizedBibliographyFile(
+                                    resolved,
+                                    token.strip(),
+                                    (
+                                        "database"
+                                        if resolved.suffix.lower() == ".bib"
+                                        else "bibliography_context"
+                                    ),
+                                    error.size_bytes,
+                                    error.limit_bytes,
+                                ),
+                                scan.source.span(command.start(), end),
+                                command=name,
+                            )
                     else:
                         self.diagnostic(
                             "missing_support_file",

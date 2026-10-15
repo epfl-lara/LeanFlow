@@ -96,9 +96,11 @@ class TexScan:
     includeonly_definitions: list[tuple[int, int, frozenset[str] | None]] = field(
         default_factory=list
     )
+    conditional_events: list[tuple[int, int, str, bool | None]] = field(default_factory=list)
 
 
 COMMAND = re.compile(r"\\([a-zA-Z@]+\*?|.)", re.DOTALL)
+MAX_CONDITIONAL_EVENTS = 100000
 DEFINITION_COMMANDS = {
     "newcommand",
     "renewcommand",
@@ -119,6 +121,21 @@ DEFINITION_COMMANDS = {
     "xdef",
     "DeclareMathOperator",
 }
+
+
+def _unbalanced_conditional_controls(declaration: str, numbers: LiteralTexNumbers) -> bool:
+    """Detect controls that escape a declaration when TeX skips rather than executes it."""
+    depth = 0
+    for match in COMMAND.finditer(declaration):
+        name = match[1]
+        if numbers.is_conditional(name):
+            depth += 1
+        elif name in {"else", "or", "fi"}:
+            if depth == 0:
+                return True
+            if name == "fi":
+                depth -= 1
+    return depth != 0
 
 
 def _definition(text: str, command: str, start: int) -> tuple[int, str, str] | None:
@@ -166,6 +183,9 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
     definitions: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
     includeonly_definitions: list[tuple[int, int, frozenset[str] | None]] = []
+    conditional_events: list[tuple[int, int, str, bool | None]] = []
+    conditional_indices: dict[int, int] = {}
+    conditional_events_limited = False
     stack: list[tuple[bool | None, bool, int]] = []
     numbers = LiteralTexNumbers()
     structural_uncertain = inherited_uncertain
@@ -188,6 +208,23 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
             }
         )
 
+    def conditional_event(start: int, end: int, kind: str, value: bool | None) -> None:
+        """Bound delimiter metadata before allocation and retain a strict overflow diagnostic."""
+        nonlocal conditional_events_limited
+        if len(conditional_events) >= MAX_CONDITIONAL_EVENTS:
+            if not conditional_events_limited:
+                diagnostic(
+                    "environment_structure_limit",
+                    "Conditional delimiter metadata exceeds its materialization bound",
+                    start,
+                    end,
+                )
+                conditional_events_limited = True
+            return
+        if kind in {"if", "ifcase"}:
+            conditional_indices[start] = len(conditional_events)
+        conditional_events.append((start, end, kind, value))
+
     def lose_structure(
         code: str, message: str, start: int, end: int, *, report: bool = True
     ) -> None:
@@ -197,6 +234,10 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
         numbers.trusted = False
         for index, (_, otherwise, begin) in enumerate(stack):
             stack[index] = None, otherwise, begin
+            if begin in conditional_indices:
+                event_index = conditional_indices[begin]
+                first, last, kind, _ = conditional_events[event_index]
+                conditional_events[event_index] = first, last, kind, None
         if report:
             diagnostic(code, message, start, end)
         mark(start, len(text), "unresolved", message, False)
@@ -247,11 +288,14 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
             # their replacement arguments. Only known conditional tokens nest.
             if numbers.is_conditional(name):
                 stack.append((None, False, pos))
+                conditional_event(pos, end, "if", False)
             elif name == "else" and stack:
                 value, _, begin = stack[-1]
                 stack[-1] = value, True, begin
+                conditional_event(pos, end, "else", None)
             elif name == "fi" and stack:
                 stack.pop()
+                conditional_event(pos, end, "fi", None)
             mark(pos, end, "excluded", "Definitely inactive conditional branch")
             pos = end
             continue
@@ -328,6 +372,7 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
                 if comparison is not None:
                     value, end = comparison
             stack.append((value, False, pos))
+            conditional_event(pos, end, "ifcase" if name == "ifcase" else "if", value)
             mark(pos, end, "supporting_context", "Conditional delimiter")
             if value is None and not inactive:
                 diagnostic(
@@ -357,10 +402,20 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
                     end,
                 )
             stack[-1] = value, True, begin
+            conditional_event(pos, end, "else", None)
             mark(pos, end, "supporting_context", "Conditional delimiter")
         elif name == "fi" and stack:
             stack.pop()
+            conditional_event(pos, end, "fi", None)
             mark(pos, end, "supporting_context", "Conditional delimiter")
+        elif name == "or":
+            conditional_event(pos, end, "or", None)
+            diagnostic(
+                "unsupported_environment_conditional",
+                "Case conditional alternatives require unsupported structural semantics",
+                pos,
+                end,
+            )
         elif name in DEFINITION_COMMANDS:
             if uncertain and not structural_uncertain:
                 lose_structure(
@@ -372,6 +427,15 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
             definition = _definition(text, name, end)
             if definition:
                 end, macro, body = definition
+                if any(value is None for value, _, _ in stack) and _unbalanced_conditional_controls(
+                    text[command.end() : end], numbers
+                ):
+                    diagnostic(
+                        "unsupported_environment_conditional",
+                        "Unbalanced conditional controls inside a possibly skipped definition require unsupported structural semantics",
+                        pos,
+                        end,
+                    )
                 if not inactive:
                     brace = text.find("{", command.end())
                     head = text[command.end() : brace] if brace >= 0 else ""
@@ -559,5 +623,11 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
     for _, _, start in stack:
         diagnostic("unclosed_conditional", "Conditional is not closed", start, len(text))
     return TexScan(
-        source, "".join(visible), marks, definitions, diagnostics, includeonly_definitions
+        source,
+        "".join(visible),
+        marks,
+        definitions,
+        diagnostics,
+        includeonly_definitions,
+        conditional_events,
     )

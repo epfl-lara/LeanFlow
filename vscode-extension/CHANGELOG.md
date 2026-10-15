@@ -3,6 +3,13 @@
 User-visible changes to the LeanFlow VS Code extension. Entries before 0.1.20
 include features and settings from the former direct-provider runtime.
 
+## Unreleased
+
+- With the updated backend, recover statement candidates across conditional TeX
+  layout wrappers while retaining structural uncertainty and acceptance gates.
+- Preserve supplied job-name bibliography evidence and distinguish missing
+  databases from ambiguous rendered bibliography support.
+
 ## 0.1.46
 
 - Point active formalization runs with no recorded events to their terminal for

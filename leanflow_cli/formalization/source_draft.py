@@ -31,6 +31,7 @@ _UNCERTAIN_CODES = {
     "unresolved_loader_effect",
     "inherited_tex_meanings",
     "unresolved_conditional",
+    "unresolved_environment_structure",
     "unresolved_command",
     "unsupported_tex_effect",
 }

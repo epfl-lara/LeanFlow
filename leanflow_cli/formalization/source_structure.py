@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .source_environment_paths import conditional_blocks
 from .source_provenance import COMMAND, digest, group, identity
 from .source_tex import TexBundle
 
@@ -76,6 +77,12 @@ def _environments(bundle: TexBundle) -> dict[str, str]:
 
 def _blocks(bundle: TexBundle, expanded: str) -> list[dict[str, Any]]:
     """Pair nested environment delimiters instead of matching nonnested regex bodies."""
+    plain = _plain_blocks(bundle, expanded)
+    alternatives = conditional_blocks(bundle, expanded)
+    if alternatives is not None:
+        # Preserve strict plain-block diagnostics, but do not invent path evidence
+        # for their candidates or use them as a fallback after structural failure.
+        return alternatives
     stack: list[tuple[str, int, int]] = []
     blocks: list[dict[str, Any]] = []
     for match in ENVIRONMENT.finditer(expanded):
@@ -109,6 +116,12 @@ def _blocks(bundle: TexBundle, expanded: str) -> list[dict[str, Any]]:
             spans[0]["file"] if spans else "",
             spans=spans,
         )
+    return sorted([*blocks, *plain], key=lambda block: block["start"])
+
+
+def _plain_blocks(bundle: TexBundle, expanded: str) -> list[dict[str, Any]]:
+    """Retain the separately delimited plain TeX proof and statement candidates."""
+    blocks: list[dict[str, Any]] = []
     for macro, closer, environment in (
         ("profess", "endprofess", "profess"),
         ("proof", "endproof", "proof"),
@@ -192,6 +205,9 @@ def extract_items(bundle: TexBundle, expanded: str) -> list[dict[str, Any]]:
         )
         if following:
             attached.append(following)
+        uncertain_proofs = attached if block.get("uncertain") else []
+        if block.get("uncertain"):
+            attached = []
         inside = [proof for proof in attached if proof["end"] <= block["end"]]
         spans = [
             span
@@ -224,7 +240,7 @@ def extract_items(bundle: TexBundle, expanded: str) -> list[dict[str, Any]]:
             for definition in scan.definitions
             if definition["name"] in used or definition["name"] == block["environment"].rstrip("*")
         ]
-        uncertain = any(
+        uncertain = bool(block.get("uncertain")) or any(
             mark[2] == "unresolved"
             and scan.source.offsets[mark[0]] < span["byte_end"]
             and span["byte_start"] < scan.source.offsets[mark[1]]
@@ -268,6 +284,16 @@ def extract_items(bundle: TexBundle, expanded: str) -> list[dict[str, Any]]:
                 "identity_basis": "label_occurrence" if label else "kind_ordinal_occurrence",
             }
         )
+        if uncertain_proofs:
+            items[-1].update(
+                proof_attachment_uncertain=True,
+                proof_attachment_note="Nearby proof candidates have no same-path attachment certificate",
+                proof_candidate_spans=[
+                    span
+                    for proof in uncertain_proofs
+                    for span in bundle.spans(proof["start"], proof["end"])
+                ],
+            )
     for label, item_ids in labels.items():
         if len(item_ids) > 1:
             bundle.diagnostic(

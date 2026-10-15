@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -14,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from agent.runtime.harness import processes as native_processes
 from agent.runtime.harness.models import NativeCleanupUnverified
 from agent.runtime.harness.processes import ProcessTree, verify_owned_stopped
 from core.utils import atomic_json_write
@@ -142,6 +144,62 @@ def _assert_closed(fixture: OwnedChecker) -> None:
     assert not fixture.worker.private.exists()
     assert fixture.bridge.closed and not fixture.bridge.closing
     assert not fixture.bridge.thread.is_alive()
+
+
+def _assert_live_owned_child(tree: ProcessTree, child_pid: int) -> None:
+    """Observe the exact live fixture child without a 50ms whole-table absence deadline."""
+    table = native_processes._cleanup_states(timeout_s=2)
+    assert child_pid in tree.descendants and child_pid in table
+    group, state, started = table[child_pid]
+    assert group == child_pid
+    assert started == " ".join(tree.descendants[child_pid].split())
+    assert not state.startswith("Z")
+
+
+@pytest.mark.parametrize("kind", ["live", "missing", "identity", "zombie", "group"])
+def test_live_owned_child_observation_requires_matching_identity_and_live_group(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    child_pid, identity = 811, "Thu Oct 15 10:00:00 2026"
+    tree = ProcessTree(800, {child_pid: identity})
+    table = {
+        child_pid: (
+            900 if kind == "group" else child_pid,
+            "Z+" if kind == "zombie" else "S",
+            "Thu Oct 15 11:00:00 2026" if kind == "identity" else identity,
+        )
+    }
+    if kind == "missing":
+        table.clear()
+    timeouts = []
+
+    def observe(timeout_s: float) -> dict[int, tuple[int, str, str]]:
+        timeouts.append(timeout_s)
+        return table
+
+    monkeypatch.setattr(native_processes, "_cleanup_states", observe)
+    if kind == "live":
+        _assert_live_owned_child(tree, child_pid)
+    else:
+        with pytest.raises(AssertionError):
+            _assert_live_owned_child(tree, child_pid)
+    assert timeouts == [2]
+
+
+@pytest.mark.parametrize(
+    "error", [ValueError("Unverifiable process table"), subprocess.TimeoutExpired("ps", 2)]
+)
+def test_live_owned_child_observation_propagates_unavailable_metadata(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    def unavailable(timeout_s: float) -> dict[int, tuple[int, str, str]]:
+        assert timeout_s == 2
+        raise error
+
+    monkeypatch.setattr(native_processes, "_cleanup_states", unavailable)
+    with pytest.raises(type(error)) as caught:
+        _assert_live_owned_child(ProcessTree(800, {811: "original identity"}), 811)
+    assert caught.value is error
 
 
 @pytest.mark.parametrize("draft_only", [False, True], ids=["normal", "source-draft"])
@@ -456,7 +514,7 @@ def test_unobserved_owned_session_escape_keeps_checker_inputs_until_physical_out
         independently_owned = ProcessTree(worker.process.pid)
         independently_owned.refresh()
         assert child_pid in independently_owned.descendants
-        assert not verify_owned_stopped(independently_owned, group=child_pid, timeout_s=0.05)
+        _assert_live_owned_child(independently_owned, child_pid)
         (worker.private / "retained.txt").write_text(
             "Private checker evidence must survive uncertain cleanup"
         )
@@ -487,7 +545,7 @@ def test_unobserved_owned_session_escape_keeps_checker_inputs_until_physical_out
             assert worker.process.poll() is not None
             assert worker._processes_verified and worker._closing
             assert verify_owned_stopped(worker.tree, group=worker.process.pid, timeout_s=1)
-            assert not verify_owned_stopped(independently_owned, group=child_pid, timeout_s=0.05)
+            _assert_live_owned_child(independently_owned, child_pid)
             _assert_retained(fixture)
             for stream in (worker.process.stdin, worker.process.stdout, worker.process.stderr):
                 assert stream is not None and not stream.closed

@@ -381,3 +381,25 @@ def test_frozen_census_and_complete_paginated_sources_remain_readonly(paper):
             break
         offset = result["next_offset"]
     assert json.loads("".join(parts)) == documents["large"]
+
+
+def test_native_discovery_retains_prime_and_unicode_declaration_hints(paper, monkeypatch):
+    """Accept real Lean name estimates without upgrading them to checked library matches."""
+    root, record, plan = paper
+    response = _response(record, plan)
+    names = [
+        "Finset.sup'",
+        "Entropy.α₁'",
+        "Ξ.a\u0301",
+        "List.head?",
+        "List.getElem?_eq_getElem",
+        "Option.get!",
+    ]
+    response["mathematical_prerequisites"][0]["candidate_declarations"] = names
+    result, calls = _run(root, record, plan, monkeypatch, response)
+    assert len(calls) == 1
+    assert result["accepted"] is True and result["semantic_approval"] is False
+    assert result["plan"]["mathematical_prerequisites"][0]["candidate_declarations"] == names
+    assert result["plan"]["required_imports"] == response["required_imports"]
+    assert result["plan"]["network_policy"] == plan["network_policy"]
+    assert record["units"] == [] and record["checks"] == {} and record["reviews"] == []

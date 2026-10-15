@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from leanflow_cli.formalization.source_draft import draft_policy
 from leanflow_cli.formalization.source_inventory import inventory_source
+from leanflow_cli.formalization.source_provenance import SourceText, scan_tex
+from tests.leanflow.test_source_environment_paths import paired
 from tests.leanflow.test_source_inventory import _assert_regions_partition_sources
 from tests.leanflow.test_source_numeric_conditionals import _inventory, _statement
 
@@ -85,7 +88,7 @@ def test_known_endinput_finishes_current_line_before_excluding_following_lines(t
 
 @pytest.mark.parametrize("loader", [r"\documentclass{article}", r"\usepackage{amsmath}"])
 def test_loader_uncertainty_disables_primitive_literal_definition_and_tail_masks(tmp_path, loader):
-    source = loader + r"\iffalse " + _statement("branch") + r"\fi"
+    source = loader + r"\begin{document}\iffalse " + _statement("branch") + r"\fi"
     source += r"\begin{comment}" + _statement("comment") + r"\end{comment}"
     source += r"\def\wrapper{" + _statement("replacement") + "}"
     source += r"\end{document}" + _statement("tail")
@@ -100,6 +103,24 @@ def test_loader_uncertainty_disables_primitive_literal_definition_and_tail_masks
     }
     assert {item["scope"] for item in inventory["items"]} == {"candidate"}
     assert inventory["extraction_status"] == "blocked"
+
+
+def test_unconditional_stray_document_end_is_strict_with_no_uncertain_candidates(tmp_path):
+    source = r"\documentclass{article}\iftrue " + _statement("branch") + r"\fi"
+    source += r"\end{document}" + _statement("tail")
+    inventory = _inventory(tmp_path, source)
+    assert inventory["items"] == []
+    assert any(row["code"] == "unmatched_environment" for row in inventory["diagnostics"])
+    assert any(
+        row["code"] == "unmatched_environment"
+        for row in draft_policy(paired(inventory), explicit=True)["strict"]
+    )
+    raw = source.encode()
+    first, last = raw.index(b"tail holds."), raw.index(b"tail holds.") + len(b"tail holds.")
+    covered = [
+        row for row in inventory["regions"] if row["byte_start"] < last and first < row["byte_end"]
+    ]
+    assert covered and {row["disposition"] for row in covered} == {"unresolved"}
 
 
 @pytest.mark.parametrize("literal", ["verb", "lstinline"])
@@ -136,8 +157,104 @@ def test_current_scoped_conditional_token_meaning_controls_inactive_nesting(tmp_
 def test_execution_uncertainty_never_consumes_skipped_control_tokens(tmp_path, ambiguous):
     source = r"\ifdim1pt<0pt" + ambiguous + _statement("live")
     inventory = _inventory(tmp_path, source)
+    if ambiguous == r"\def\ignored{\fi\bgroup}":
+        # Executing the definition consumes fi; skipping it exposes fi. The
+        # bounded path parser does not interpret this conditional token stream.
+        assert inventory["items"] == []
+        codes = {row["code"] for row in inventory["diagnostics"]}
+        assert {"unresolved_conditional", "unsupported_environment_conditional"} <= codes
+        assert any(
+            row["code"] == "unsupported_environment_conditional"
+            for row in draft_policy(paired(inventory), explicit=True)["strict"]
+        )
+        raw = source.encode()
+        first, last = raw.index(b"live holds."), raw.index(b"live holds.") + len(b"live holds.")
+        covered = [
+            row
+            for row in inventory["regions"]
+            if row["byte_start"] < last and first < row["byte_end"]
+        ]
+        assert covered and {row["disposition"] for row in covered} == {"unresolved"}
+        assert (
+            sum(min(last, row["byte_end"]) - max(first, row["byte_start"]) for row in covered)
+            == last - first
+        )
+        return
     assert [item["label"] for item in inventory["items"]] == ["live"]
     assert inventory["extraction_status"] == "blocked"
+
+
+def test_known_executing_definition_does_not_expose_its_conditional_replacement(tmp_path):
+    source = r"\def\ignored{\fi\bgroup}" + _statement("live")
+    inventory = _inventory(tmp_path, source)
+    assert [item["label"] for item in inventory["items"]] == ["live"]
+    assert not any(
+        row["code"] == "unsupported_environment_conditional" for row in inventory["diagnostics"]
+    )
+    assert scan_tex(SourceText("paper.tex", source.encode())).conditional_events == []
+
+
+def test_known_skipping_records_the_exposed_fi_instead_of_consuming_definition_arguments(tmp_path):
+    source = r"\iffalse\def\ignored{\fi\bgroup}" + _statement("live")
+    inventory = _inventory(tmp_path, source)
+    assert [item["label"] for item in inventory["items"]] == ["live"]
+    scan = scan_tex(SourceText("paper.tex", source.encode()))
+    assert any(
+        kind == "fi" and source[start:end] == r"\fi"
+        for start, end, kind, _ in scan.conditional_events
+    )
+    assert not any(
+        row["code"] == "unsupported_environment_conditional" for row in inventory["diagnostics"]
+    )
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        r"\newenvironment{wrapper}{x}{\fi}",
+        r"\def\wrapper\fi#1{x}",
+        r"\newcommand{\wrapper}[1][\fi]{x}",
+    ],
+)
+def test_unknown_execution_checks_conditional_balance_in_the_entire_declaration(
+    tmp_path, declaration
+):
+    source = r"\newif\ifchoice\ifchoice" + declaration + r"\else\fi"
+    inventory = _inventory(tmp_path, source + _statement("later"))
+    assert inventory["items"] == []
+    assert any(
+        row["code"] == "unsupported_environment_conditional"
+        for row in draft_policy(paired(inventory), explicit=True)["strict"]
+    )
+    _assert_regions_partition_sources(tmp_path, inventory)
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        r"\newcommand{\qed}{\ifmmode x\else y\fi}",
+        r"\newenvironment{wrapper}{\ifmmode x\else y\fi}{\iftrue z\fi}",
+    ],
+)
+def test_self_balanced_definition_controls_do_not_refuse_all_uncertain_candidates(
+    tmp_path, declaration
+):
+    source = r"\newif\ifchoice\ifchoice" + declaration + r"\else\fi"
+    inventory = _inventory(tmp_path, source + _statement("later"))
+    assert [item["label"] for item in inventory["items"]] == ["later"]
+    assert inventory["items"][0]["scope"] == "candidate"
+    assert not any(
+        row["code"] == "unsupported_environment_conditional" for row in inventory["diagnostics"]
+    )
+
+
+def test_plain_tex_unclosed_proof_remains_strict_when_conditional_path_mode_is_active(tmp_path):
+    source = r"\newif\ifchoice\ifchoice\fi\proof X"
+    inventory = _inventory(tmp_path, source)
+    assert any(
+        row["code"] == "unclosed_environment" and "plain TeX proof" in row["message"]
+        for row in draft_policy(paired(inventory), explicit=True)["strict"]
+    )
 
 
 def test_unparsed_definition_never_preserves_stale_integer_authority(tmp_path):

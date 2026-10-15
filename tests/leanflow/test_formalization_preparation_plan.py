@@ -245,3 +245,88 @@ def test_catalog_identity_remains_exact_when_mathematical_notes_change(paper):
     changed["plan_id"] = plan_identity(changed)
     assert changed["plan_id"] != plan["plan_id"]
     assert validate_preparation_plan(root, record, changed)["network_policy"]["catalog"] == CATALOG
+
+
+def test_prerequisite_hints_accept_prime_declaration_names(paper):
+    """Retain the real Finset.sup' estimate without treating it as a module import."""
+    root, record = paper
+    plan = default_preparation_plan(root, record, preset="lean")
+    plan["mathematical_prerequisites"][0]["candidate_declarations"] = ["Finset.sup'"]
+    plan["plan_id"] = plan_identity(plan)
+    assert validate_preparation_plan(root, record, plan) == plan
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Entropy.α₁'", "Ξ.a\u0301", "_root_.Finset.sup'", "A." + "a" * 510],
+)
+def test_prerequisite_hints_accept_bounded_unicode_components(paper, name):
+    """Accept Unicode estimates as hints while retaining exact plan identities."""
+    root, record = paper
+    plan = default_preparation_plan(root, record, preset="lean")
+    plan["mathematical_prerequisites"][0]["candidate_declarations"] = [name]
+    plan["plan_id"] = plan_identity(plan)
+    assert validate_preparation_plan(root, record, plan) == plan
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "'sup",
+        "?.head",
+        "!.get",
+        "A.?head",
+        "A.!get",
+        "2bad",
+        "A..b",
+        "A.",
+        ".A",
+        "A.foo bar",
+        "A.\nb",
+        "A.\x00b",
+        "A.\u202eb",
+        "A./b",
+        "A.\\b",
+        "A.foo;bar",
+        "A.foo()",
+        "A.😀",
+        "A.α:=by",
+        "«quoted hint»",
+        "A." + "a" * 511,
+        17,
+        None,
+    ],
+)
+def test_prerequisite_hints_reject_unbounded_or_nonidentifier_data(paper, name):
+    """Keep hint strings bounded and refuse controls, commands, paths and malformed names."""
+    root, record = paper
+    plan = default_preparation_plan(root, record, preset="lean")
+    plan["mathematical_prerequisites"][0]["candidate_declarations"] = [name]
+    plan["plan_id"] = plan_identity(plan)
+    with pytest.raises(
+        ValueError,
+        match=r"Invalid mathematical prerequisite estimate: row 1, candidate_declarations\[0\].*bounded qualified",
+    ):
+        validate_preparation_plan(root, record, plan)
+
+
+@pytest.mark.parametrize("module", ["Finset.sup'", "Entropy.α₁", "List.head?", "Option.get!"])
+def test_declaration_hint_grammar_does_not_relax_import_modules(paper, module):
+    """Keep portable module authority stricter than nonauthoritative name suggestions."""
+    root, record = paper
+    plan = default_preparation_plan(root, record, preset="lean")
+    plan["required_imports"] = [module]
+    plan["plan_id"] = plan_identity(plan)
+    with pytest.raises(ValueError):
+        validate_preparation_plan(root, record, plan)
+
+
+@pytest.mark.parametrize("name", ["List.head?", "List.getElem?_eq_getElem", "Option.get!"])
+def test_prerequisite_hints_accept_question_and_exclamation_names(paper, name):
+    """Retain Lean isIdRest punctuation as unverified declaration estimates."""
+    root, record = paper
+    plan = default_preparation_plan(root, record, preset="lean")
+    plan["mathematical_prerequisites"][0]["candidate_declarations"] = [name]
+    plan["plan_id"] = plan_identity(plan)
+    assert validate_preparation_plan(root, record, plan) == plan

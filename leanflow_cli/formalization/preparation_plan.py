@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -31,6 +32,25 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 _MODULE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*")
 _PIN = re.compile(r"[0-9a-fA-F]{40}")
 _DEFINITION_KINDS = {"definition", "notation", "construction"}
+_MAX_DECLARATION_HINT_CHARS = 512
+
+
+def _declaration_hint(value: object) -> bool:
+    """Recognize bounded Unicode declaration hints without granting import or type authority."""
+    if not isinstance(value, str) or not 1 <= len(value) <= _MAX_DECLARATION_HINT_CHARS:
+        return False
+    for component in value.split("."):
+        if not component or not (
+            component[0] == "_" or unicodedata.category(component[0]).startswith("L")
+        ):
+            return False
+        if any(
+            char not in {"_", "'", "?", "!"}
+            and unicodedata.category(char)[0] not in {"L", "M", "N"}
+            for char in component[1:]
+        ):
+            return False
+    return True
 
 
 def plan_identity(plan: dict[str, Any]) -> str:
@@ -384,7 +404,7 @@ def validate_preparation_plan(
     prerequisites = plan["mathematical_prerequisites"]
     if not isinstance(prerequisites, list) or len(prerequisites) > 128:
         raise ValueError("Mathematical prerequisite plan exceeds its bound")
-    for row in prerequisites:
+    for index, row in enumerate(prerequisites):
         if (
             not isinstance(row, dict)
             or set(row) != {"source_ids", "description", "strategy", "candidate_declarations"}
@@ -397,12 +417,15 @@ def validate_preparation_plan(
             or not 1 <= len(row["description"]) <= 4000
             or not isinstance(row.get("candidate_declarations"), list)
             or len(row["candidate_declarations"]) > 64
-            or any(
-                not isinstance(name, str) or not _MODULE.fullmatch(name)
-                for name in row["candidate_declarations"]
-            )
         ):
             raise ValueError("Invalid mathematical prerequisite estimate")
+        for hint_index, name in enumerate(row["candidate_declarations"]):
+            if not _declaration_hint(name):
+                raise ValueError(
+                    f"Invalid mathematical prerequisite estimate: row {index + 1}, "
+                    f"candidate_declarations[{hint_index}] requires a bounded qualified "
+                    "declaration hint with Unicode identifier components and optional primes, ? or !"
+                )
     notes = plan["representation_notes"]
     if (
         not isinstance(notes, list)

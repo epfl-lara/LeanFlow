@@ -311,3 +311,9 @@ Frozen preview files and the author report appear beside source navigation, with
 source uncertainty still blocking publication and proving. The option stays in
 the Formalization configuration and never applies to Prove. It does not mark items reviewed or mapped;
 resuming the completed campaign makes no new author call.
+
+The backend preserves alternative conditional layout wrappers when recovering
+candidate statements. Ambiguous nesting remains visible and blocks acceptance;
+the explicit paired-PDF draft option grants no source approval. Supplied root
+job-name `.bbl` files are frozen as bibliography evidence, with missing database
+and ambiguous support diagnostics kept separate.

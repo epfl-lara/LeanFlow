@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from leanflow_cli.formalization.source_draft import draft_policy
+from leanflow_cli.formalization.source_provenance import digest
 from tests.leanflow.test_source_numeric_conditionals import _inventory, _statement
 
 
@@ -40,6 +42,41 @@ def _branches(prefix: str, comparison: str = r"\flag=0\relax") -> str:
 def test_hidden_scope_or_argument_effects_cannot_exclude_either_branch(tmp_path, effect):
     inventory = _inventory(tmp_path, _branches(r"\def\flag{0}" + effect))
     assert any(row["code"] == "unresolved_conditional" for row in inventory["diagnostics"])
+    if effect == r"\def\close{\end{proof}}\begin{proof}\def\flag{1}\close":
+        # The lexical parser cannot establish a macro-generated closer's meaning.
+        # This is unsupported extraction, not a verdict about the actual TeX run.
+        assert inventory["items"] == []
+        assert any(row["code"] == "unclosed_environment" for row in inventory["diagnostics"])
+        raw = (tmp_path / "paper.tex").read_bytes()
+        for label in ("maybe", "alternative"):
+            text = (label + " holds.").encode()
+            first, last = raw.index(text), raw.index(text) + len(text)
+            covered = [
+                region
+                for region in inventory["regions"]
+                if region["byte_start"] < last and first < region["byte_end"]
+            ]
+            assert covered and {region["disposition"] for region in covered} == {"unresolved"}
+            assert sum(
+                min(last, region["byte_end"]) - max(first, region["byte_start"])
+                for region in covered
+            ) == len(text)
+        pdf = b"%PDF-fixture"
+        inventory["files"]["paper.pdf"] = {
+            "sha256": digest(pdf),
+            "encoding": "binary",
+            "size": len(pdf),
+        }
+        inventory["companion_pdf"] = {
+            "file": "paper.pdf",
+            "sha256": digest(pdf),
+            "selection": "explicit",
+        }
+        assert any(
+            row["code"] == "unclosed_environment"
+            for row in draft_policy(inventory, explicit=True)["strict"]
+        )
+        return
     assert {item["scope"] for item in inventory["items"]} == {"candidate"}
     assert {item["label"] for item in inventory["items"]} == {"maybe", "alternative"}
 

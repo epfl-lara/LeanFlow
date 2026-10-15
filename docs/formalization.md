@@ -32,6 +32,13 @@ service as `leanflow project setup` and its `project init` alias. The terminal
 reports setup phases and log paths; verbose dependency output remains in those logs.
 The prover receives checked infrastructure and reviewed statements after complete
 translation acceptance. Baseline setup alone grants no source or proof approval.
+Declaration search hints support qualified Unicode names and primes, question marks
+and exclamation marks, such as `Finset.sup'`, `List.head?` and `Option.get!` (see
+the [Lean identifier rules](https://lean-lang.org/doc/reference/latest/Source-Files-and-Modules/)).
+These are bounded, unverified hints rather than a complete Lean identifier parser.
+Imports and project paths retain
+their separate portable module-name checks. A valid hint never establishes that a
+declaration exists or has the required type.
 
 For deterministic inspection and explicit setup without launching a model:
 
@@ -151,6 +158,43 @@ completed draft campaign exposes its retained result without another author call
 In VS Code, choose **Configure unaccepted source draft** after pairing and setup,
 review its settings, and start the run separately. Inspect the resulting preview
 files beside their source links.
+
+Unresolved conditionals can contain alternative environment wrappers. The scanner
+keeps those alternatives separate when proposing statement boundaries; repeated
+unknown tests are independent, even if their text is identical. If a balanced
+complete alternative exists, malformed alternatives remain blocking structural
+uncertainty with original byte evidence. Only the explicit paired-PDF draft mode
+can defer that uncertainty. The absence of a balanced alternative, malformed
+unconditional input, unsupported case conditionals, unmappable delimiters, and
+structural resource limits remain hard blockers and produce no recovered blocks.
+Candidate recovery does not choose an active branch or establish coverage. Nearby
+proofs with uncertain branch attachment remain source context rather than establishing
+that the statement is proved in the source.
+Candidate histories share bounded persistent nodes, so long sequential environment
+lists do not repeatedly copy every earlier candidate. Node, edge, frontier and
+nesting limits still fail closed. When conditional path analysis is active,
+plain-TeX theorem/proof macro candidates are not recovered anywhere in the document;
+unclosed plain blocks still emit hard
+diagnostics. A possibly skipped definition is structurally unsupported when
+conditional controls escape its complete declaration, including default arguments,
+parameter text or environment end-code. Self-contained balanced known conditional
+controls alone do not discard the document's other candidates. Comment-sensitive
+controls and unknown conditional names still require conservative manual review.
+
+Traditional `\bibliography{...}` intake also freezes a supplied root job-name
+`.bbl`, which may accompany a source archive without its original `.bib` database.
+The inventory distinguishes rendered bibliography evidence from reproducible BibTeX
+inputs. Missing databases remain visible; ambiguous rendered bibliography files
+block acceptance. A complete set of named `.bib` inputs also supplies source context
+without a generated `.bbl`. An unrelated literal `.bbl` alone cannot substitute for
+those databases or the root job-name rendering. Bibliography inputs have a fixed
+4 MiB read limit. Oversized support is not read; its path, role, observed size and
+limit remain diagnostic evidence. An oversized database is unavailable for rebuild,
+while a unique valid root job-name `.bbl` can still supply rendered context. An
+oversized rendered bibliography, or unavailable required support without that
+rendering, remains blocking. Files growing during a bounded read still fail closed.
+Case aliases stay visible as blockers. Explicit
+`\addbibresource` paths still require their named resource.
 
 The selected candidate belongs to its author campaign until an explicit revision
 selection or source repair changes that ownership. A new campaign cannot silently

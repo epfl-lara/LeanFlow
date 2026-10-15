@@ -172,6 +172,11 @@ PDF, `leanflow workflow formalize docs/paper.tex --source-draft-only` prepares d
 one clearly unaccepted draft for inspection. It grants no review, publication or
 proving authority; see the [source draft boundary](docs/formalization.md).
 
+Conditional layout wrappers remain separate extraction alternatives. Recovered
+candidate statements still require source review, and uncertain nesting stays
+visible in unaccepted drafts. Intake also preserves supplied job-name `.bbl`
+bibliographies without claiming that a missing BibTeX database can be rebuilt.
+
 See the [prover workflow](docs/prover-workflow.md) for settings, verification,
 limits, outcomes, and resume behavior.
 
