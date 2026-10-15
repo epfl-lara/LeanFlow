@@ -49,9 +49,10 @@ async function fixture() {
     workspaceRoot() { return root; },
     async list() { return [f.snapshot]; },
     async show(id) { f.calls.push(["show", id]); return f.snapshot; },
+    async check(id, revision) { f.calls.push(["check", id, revision]); return f.checkedSnapshot ?? f.snapshot; },
     async inspect(source, companion) { f.calls.push(["inspect", source, ...companion ? [companion] : []]); return f.snapshot; },
-    async action(...args) { f.calls.push(["action", ...args]); return f.snapshot; },
-    async artifact(...args) { f.calls.push(["artifact", ...args]); return { id: args[2], path: source, kind: f.pdf ? "pdf" : "tex", sha256: createHash("sha256").update(content).digest("hex") }; },
+    async action(...args) { f.calls.push(["action", ...args]); return { schema_version: 1, committed: true, document_id: args[0], previous_revision_id: args[1], revision_id: f.snapshot.revision_id, currentness: "unchecked" }; },
+    async artifact(...args) { f.calls.push(["artifact", ...args]); return { id: args[2], path: source, kind: args[2].startsWith("proof-lean-") ? "lean" : f.pdf ? "pdf" : "tex", sha256: createHash("sha256").update(content).digest("hex") }; },
     async conflicts() { return f.conflicts ?? formalizationConflictFixture(); },
     async conflictArtifact(...args) {
       f.calls.push(["conflictArtifact", ...args]);
@@ -73,7 +74,7 @@ async function fixture() {
   const services = { onDidChange(callback) { f.changed = callback; return {dispose(){}}; }, project: { root }, formalizations: service, cli: { ok: true },
     setup: { onDidChange(callback) { setupListeners.add(callback); return {dispose: () => setupListeners.delete(callback)}; },
       state: () => setupState(f.setupState?.root ?? root), stateForRoot: selectedRoot => f.setupState?.root && f.setupState.root !== selectedRoot ? { ...setupState(selectedRoot), root: selectedRoot, status: "idle", message: "", recentOutput: [] } : setupState(selectedRoot),
-      async refresh(available, selectedRoot, current) { assert.equal(available, true); assert.equal(current(), true); f.calls.push(["baselineInspect", selectedRoot]); },
+      async refresh(available, selectedRoot, current) { assert.equal(available, true); assert.equal(current(), true); f.calls.push(["baselineInspect", selectedRoot]); await f.onBaselineRefresh?.(); },
       async startForRoot(selectedRoot, options) { f.calls.push(["baselineStart", selectedRoot, options]); f.setupState = { status: "running", root: selectedRoot }; f.setupChanged(); f.setupStarted?.(); await f.setupPending; f.setupState = { status: "ready", root: selectedRoot }; f.setupChanged(); },
       cancelForRoot(selectedRoot) { f.calls.push(["baselineCancel", selectedRoot]); f.setupRelease?.(); },
       async showLogForRoot(selectedRoot) { f.calls.push(["baselineLog", selectedRoot]); },
@@ -119,11 +120,41 @@ test("intake, current snapshots and repairs stay with the workspace host and bac
     assert.equal(ui.f.dialog.canSelectFolders, true);
     const action = { type: "set_scope", item_id: "item-1", scope: "excluded", reason: "Out of scope" };
     await ui.host.handle({ type: "formalizationAction", documentId: "paper-1", revisionId: "revision-1", action });
-    assert.deepEqual(ui.f.calls.at(-1), ["action", "paper-1", "revision-1", action]);
+    assert.deepEqual(ui.f.calls.find(row => row[0] === "action"), ["action", "paper-1", "revision-1", action]);
+    assert.equal(ui.last("formalizationActionCommitted").revisionId, "revision-1");
     ui.f.picked = [{ fsPath: "/etc/passwd" }];
     await ui.host.handle({ type: "inspectFormalization", sourceKind: "file" });
     assert.match(ui.last("notify").message, /inside the active/);
   } finally { await ui.dispose(); }
+});
+
+test("a committed repair is acknowledged before a failed view refresh", async () => {
+  const ui = await fixture();
+  try {
+    ui.f.services.formalizations.show = async () => { throw new Error("Slow current view unavailable"); };
+    await ui.host.handle({ type: "formalizationAction", documentId: "paper-1", revisionId: "revision-1", action: { type: "set_scope", item_id: "item-1", scope: "included", reason: "Keep statement" } });
+    const saved = ui.last("formalizationActionCommitted");
+    assert.equal(saved.documentId, "paper-1");
+    const refreshed = ui.last("formalizationState");
+    assert.match(refreshed.error, /Saved revision.*edit is already committed/);
+    assert.ok(ui.f.replies.indexOf(saved) < ui.f.replies.indexOf(refreshed));
+    assert.equal(ui.f.calls.filter(call => call[0] === "action").length, 1);
+  } finally { await ui.dispose(); }
+});
+
+test("slow currentness checking leaves frozen source navigation responsive", { timeout: 2000 }, async () => {
+  const ui = await fixture();
+  let release;
+  try {
+    const waiting = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { ui.f.services.formalizations.check = async () => { resolve(); await waiting; return ui.f.snapshot; }; });
+    const checking = ui.host.handle({ type: "checkFormalization", documentId: "paper-1", revisionId: "revision-1" });
+    await started;
+    await ui.host.handle({ type: "showFormalization", documentId: "paper-1" });
+    assert.equal(ui.last("formalizationState").snapshot.document_id, "paper-1");
+    release();
+    await checking;
+  } finally { release?.(); await ui.dispose(); }
 });
 
 test("source-only workspaces can inspect and prepare before LeanFlow project discovery", async () => {
@@ -215,18 +246,63 @@ test("current formalization preparation supersedes generic stale setup but not a
   try {
     const request = { kind: "formalize", target: "ignored.tex", sourceDraftOnly: false };
     ui.f.snapshot.source.path = "paper.tex";
+    ui.f.checkedSnapshot = structuredClone(ui.f.snapshot);
+    ui.f.checkedSnapshot.currentness = "checked";
+    ui.f.snapshot.currentness = "historical";
+    ui.f.snapshot.preparation.current = false;
+    ui.f.snapshot.can_prove = false;
+    delete ui.f.snapshot.handoff;
     ui.f.setupState = { status: "failed", code: "readiness_stale" };
     await ui.host.handle({ type: "launchFormalization", documentId: "paper-1", revisionId: "revision-1", request });
     assert.equal(ui.f.calls.filter(row => row[0] === "launch").length, 1);
+    assert.deepEqual(ui.f.calls.filter(row => row[0] === "check"), [["check", "paper-1", "revision-1"]]);
     ui.f.setupState = { status: "running" };
     await ui.host.handle({ type: "launchFormalization", documentId: "paper-1", revisionId: "revision-1", request });
     assert.match(ui.last("notify").message, /setup is still running/);
     assert.equal(ui.f.calls.filter(row => row[0] === "launch").length, 1);
     ui.f.setupState = { status: "idle" };
-    ui.f.snapshot.preparation.current = false;
+    ui.f.checkedSnapshot.preparation.current = false;
     await ui.host.handle({ type: "launchFormalization", documentId: "paper-1", revisionId: "revision-1", request });
     assert.match(ui.last("notify").message, /Set up project tools/);
     assert.equal(ui.f.calls.filter(row => row[0] === "launch").length, 1);
+  } finally { await ui.dispose(); }
+});
+
+test("historical launch refreshes detected baseline without a full acceptance check", async () => {
+  const ui = await fixture();
+  try {
+    ui.f.snapshot.source.path = "paper.tex";
+    ui.f.snapshot.currentness = "historical";
+    ui.f.snapshot.preparation.current = false;
+    ui.f.snapshot.can_prove = false;
+    delete ui.f.snapshot.handoff;
+    ui.f.setupState = { status: "detected", code: "setup_baseline_required" };
+    ui.f.onBaselineRefresh = () => { ui.f.setupState = { status: "ready" }; };
+    await ui.host.handle({ type: "launchFormalization", documentId: "paper-1", revisionId: "revision-1", request: { kind: "formalize", target: "paper.tex" } });
+    assert.equal(ui.f.calls.filter(row => row[0] === "launch").length, 1);
+    assert.deepEqual(ui.f.calls.find(row => row[0] === "baselineInspect"), ["baselineInspect", ui.f.root]);
+    assert.equal(ui.f.calls.some(row => row[0] === "check"), false);
+    assert.equal(ui.f.snapshot.can_prove, false);
+  } finally { await ui.dispose(); }
+});
+
+test("a workspace switch during baseline refresh prevents the old launch", async () => {
+  const ui = await fixture();
+  try {
+    ui.f.snapshot.source.path = "paper.tex";
+    ui.f.snapshot.currentness = "historical";
+    ui.f.snapshot.preparation.current = false;
+    ui.f.setupState = { status: "detected" };
+    let enter, release;
+    const entered = new Promise(resolve => { enter = resolve; });
+    const pending = new Promise(resolve => { release = resolve; });
+    ui.f.onBaselineRefresh = async () => { enter(); await pending; ui.f.setupState = { status: "ready" }; };
+    const launch = ui.host.handle({ type: "launchFormalization", documentId: "paper-1", revisionId: "revision-1", request: { kind: "formalize", target: "paper.tex" } });
+    await entered;
+    ui.f.services.project.root = path.join(ui.f.root, "other-workspace");
+    release();
+    await launch;
+    assert.equal(ui.f.calls.some(row => row[0] === "launch"), false);
   } finally { await ui.dispose(); }
 });
 
@@ -354,6 +430,27 @@ test("source links open verified frozen bytes and selection maps back without ex
     assert.equal(pdf.pageIndex, 1);
     assert.equal("path" in pdf, false);
     assert.equal(Buffer.from(pdf.base64, "base64").toString(), ui.f.opened.content);
+  } finally { await ui.dispose(); }
+});
+
+test("certified proof links use exact currentness instead of the historical artifact list", async () => {
+  const ui = await fixture();
+  try {
+    const id = "proof-lean-" + "d".repeat(64);
+    ui.f.checkedSnapshot = structuredClone(ui.f.snapshot);
+    ui.f.checkedSnapshot.currentness = "checked";
+    ui.f.checkedSnapshot.artifacts.push({ id, path: "Main/Certified.lean", kind: "lean", sha256: "d".repeat(64) });
+    ui.f.checkedSnapshot.items[0].lean_refs = [{ artifact_id: id, file: "Main/Certified.lean", name: "Paper.double", line_start: 1 }];
+    ui.f.snapshot.currentness = "historical";
+    ui.f.snapshot.can_prove = false;
+    delete ui.f.snapshot.handoff;
+    await ui.host.handle({ type: "openFormalizationArtifact", documentId: "paper-1", revisionId: "revision-1", artifactId: id, itemId: "item-1" });
+    assert.equal(ui.f.opened.language, "lean4");
+    assert.deepEqual(ui.f.calls.slice(0, 2), [["check", "paper-1", "revision-1"], ["artifact", "paper-1", "revision-1", id]]);
+    ui.f.checkedSnapshot.artifacts = [];
+    await ui.host.handle({ type: "openFormalizationArtifact", documentId: "paper-1", revisionId: "revision-1", artifactId: id, itemId: "item-1" });
+    assert.match(ui.last("notify").message, /not part/);
+    assert.equal(ui.f.calls.filter(row => row[0] === "artifact").length, 1);
   } finally { await ui.dispose(); }
 });
 

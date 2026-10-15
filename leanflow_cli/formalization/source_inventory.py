@@ -12,7 +12,7 @@ from .source_provenance import digest, identity
 from .source_structure import extract_items, inventory_regions
 from .source_tex import TexBundle
 
-EXTRACTION_VERSION = "provenance-scanner-v12"
+EXTRACTION_VERSION = "provenance-scanner-v15"
 
 
 def inventory_source(

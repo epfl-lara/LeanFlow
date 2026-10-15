@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Any
 
 from .source_environment_paths import conditional_blocks
+from .source_proof_wrappers import wrapper_candidates
 from .source_provenance import COMMAND, digest, group, identity
 from .source_tex import TexBundle
 
@@ -185,6 +187,12 @@ def extract_items(bundle: TexBundle, expanded: str) -> list[dict[str, Any]]:
         block for block in blocks if block["environment"].rstrip("*") in kinds or block.get("kind")
     ]
     proofs = [block for block in blocks if block["environment"] == "proof"]
+    custom_proofs = wrapper_candidates(bundle, expanded, blocks)
+    statement_labels = Counter(
+        match[1].strip()
+        for block in statements
+        if (match := LABEL.search(expanded[block["body_start"] : block["body_end"]]))
+    )
     items: list[dict[str, Any]] = []
     ordinals: dict[tuple[str, str], int] = {}
     labels: dict[str, list[str]] = {}
@@ -222,6 +230,25 @@ def extract_items(bundle: TexBundle, expanded: str) -> list[dict[str, Any]]:
         direct = expanded[block["body_start"] : block["body_end"]]
         label_match = LABEL.search(direct)
         label = label_match[1].strip() if label_match else None
+        custom_candidates = [
+            proof
+            for proof in custom_proofs
+            if (
+                proof["explicit_target_label"] == label
+                and label is not None
+                and statement_labels[label] == 1
+            )
+            or (
+                proof["explicit_target_label"] is None
+                and (
+                    block["start"] < proof["start"] < proof["end"] < block["end"]
+                    or (
+                        proof["start"] >= block["end"]
+                        and not expanded[block["end"] : proof["start"]].strip()
+                    )
+                )
+            )
+        ]
         title = group(expanded, block["body_start"], "[")
         kind = block.get("kind") or kinds[block["environment"].rstrip("*")]
         key = (spans[0]["occurrence_id"], label or kind)
@@ -284,16 +311,24 @@ def extract_items(bundle: TexBundle, expanded: str) -> list[dict[str, Any]]:
                 "identity_basis": "label_occurrence" if label else "kind_ordinal_occurrence",
             }
         )
-        if uncertain_proofs:
+        if uncertain_proofs or custom_candidates:
+            candidates = [*uncertain_proofs, *custom_candidates]
+            candidate_spans = [
+                span for proof in candidates for span in bundle.spans(proof["start"], proof["end"])
+            ]
             items[-1].update(
                 proof_attachment_uncertain=True,
                 proof_attachment_note="Nearby proof candidates have no same-path attachment certificate",
-                proof_candidate_spans=[
-                    span
-                    for proof in uncertain_proofs
-                    for span in bundle.spans(proof["start"], proof["end"])
-                ],
+                proof_candidate_spans=candidate_spans,
+                proof_candidate_text=bundle.original_text(candidate_spans),
+                content_hash=digest(
+                    text + "\0" + proof_text + "\0" + bundle.original_text(candidate_spans)
+                ),
             )
+            if custom_candidates:
+                items[-1]["proof_wrapper_definitions"] = [
+                    proof["wrapper"] for proof in custom_candidates
+                ]
     for label, item_ids in labels.items():
         if len(item_ids) > 1:
             bundle.diagnostic(

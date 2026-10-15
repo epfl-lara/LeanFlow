@@ -285,6 +285,18 @@ def _apply_action(record: dict[str, Any], action: dict[str, Any]) -> None:
             "authorized": action["authorized"],
             "reason": _reason(action),
         }
+    elif kind == "record_obligation":
+        from leanflow_cli.formalization.clause_obligations import record_obligation
+
+        refs = action.get("source_refs")
+        if not isinstance(refs, list) or not 1 <= len(refs) <= 32:
+            raise ValueError("Known clause requires bounded frozen source selections")
+        record_obligation(
+            record,
+            _item(record, str(action.get("item_id", ""))),
+            validated_spans(record, refs),
+            action,
+        )
     elif kind == "classify_region":
         _classify(record, action)
     elif kind == "resolve_command":

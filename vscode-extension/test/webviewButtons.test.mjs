@@ -183,6 +183,14 @@ test("formalization inventory exposes distinct evidence and revision-bound repai
     ui.click("Choose TeX project"); assert.equal(message(ui, "inspectFormalization").sourceKind, "folder");
     ui.click("Refresh inventory");
     const snapshot = formalizationFixture();
+    let revision = 1;
+    const acknowledge = () => {
+      const previousRevisionId = snapshot.revision_id;
+      snapshot.revision_id = `revision-${++revision}`;
+      hostMessage({ type: "formalizationActionCommitted", documentId: snapshot.document_id, previousRevisionId, revisionId: snapshot.revision_id });
+      hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot: structuredClone(snapshot), error: "" });
+      ui.click("Dismiss formalization status");
+    };
     hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
     assert.match(textOf(ui.root()), /1\/2 included items reviewed · 1 excluded · 1 unresolved regions/);
     assert.match(textOf(ui.root()), /correction_needed/); assert.match(textOf(ui.root()), /conditional/);
@@ -196,28 +204,72 @@ test("formalization inventory exposes distinct evidence and revision-bound repai
     ui.change(ui.input("New source item title"), "Missed statement");
     ui.click("Submit repair for revision-1");
     assert.equal(message(ui, "formalizationAction").action.type, "add_item");
+    assert.equal(ui.button("Submit repair for revision-1").props.disabled, true);
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+    acknowledge();
     ui.change(ui.input("Repair kind"), "scope");
     ui.change(ui.input("Repair reason"), "Open problem excluded by author");
-    ui.click("Submit repair for revision-1");
+    ui.click(`Submit repair for ${snapshot.revision_id}`);
     assert.deepEqual(message(ui, "formalizationAction").action, { type: "set_scope", item_id: "item-1", scope: "excluded", reason: "Open problem excluded by author" });
+    acknowledge();
     ui.change(ui.input("Repair kind"), "boundary");
-    ui.click("Submit repair for revision-1");
+    ui.click(`Submit repair for ${snapshot.revision_id}`);
     assert.equal(message(ui, "formalizationAction").action.type, "update_boundary");
+    acknowledge();
     ui.change(ui.input("Repair kind"), "mapping");
     ui.change(ui.input("Corrected Lean mappings"), "Main/Paper.lean | Paper.double");
-    ui.click("Submit repair for revision-1");
+    ui.click(`Submit repair for ${snapshot.revision_id}`);
     assert.equal(message(ui, "formalizationAction").action.type, "set_mapping");
+    acknowledge();
     ui.change(ui.input("Reason for region-1"), "Paragraph supplies notation");
     ui.click("Record region disposition");
     assert.equal(message(ui, "formalizationAction").action.classification, "supporting_context");
+    acknowledge();
+    ui.click("Check currentness");
+    assert.equal(message(ui, "checkFormalization").revisionId, snapshot.revision_id);
+    assert.equal(ui.button("Check currentness").props.disabled, true);
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot: { ...structuredClone(snapshot), currentness: "checked", source_currentness: "checked" }, error: "" });
     ui.click("Start proving accepted statements");
-    assert.equal(message(ui, "proveFormalization").revisionId, "revision-1");
+    assert.equal(message(ui, "proveFormalization").revisionId, snapshot.revision_id);
     ui.click("Configure formalization");
     assert.equal(ui.view.tab, "formalization"); assert.equal(ui.view.form.target, snapshot.source.path);
     act(() => ui.setView({ tab: "formalization" }));
     hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
     hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot: null, error: "Revision changed" });
     assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+  } finally { ui.dispose(); }
+});
+
+test("native source readings and paged clause checklists navigate evidence without recording approval", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = formalizationFixture();
+    snapshot.currentness = "historical";
+    snapshot.diagnostics = Array.from({ length: 26 }, (_, index) => ({
+      id: `native-${index}`, code: "unresolved_command", message: `Source notation ${index}`, blocking: true, native_interpretation_required: true, can_resolve_command: true,
+      source_refs: [{ artifact_id: "source-tex", file: "paper/main.tex", line_start: index + 1, text: `Frozen source ${index}` }],
+    }));
+    snapshot.items[0].known_obligations = Array.from({ length: 26 }, (_, index) => ({
+      id: `clause-${index}`, description: `Source requirement ${index}`, reason: "Explicit source requirement.",
+      source_refs: [{ artifact_id: "source-tex", file: "paper/main.tex", line_start: index + 1 }],
+      dispositions: [{ unit_id: "unit-core", disposition: "pending_proof", declaration_names: ["Paper.requirement"], rationale: "A complete named proposition remains to be proved." }],
+      verdicts: [],
+    }));
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.match(textOf(ui.root()), /26 pending native interpretation/);
+    ui.change(ui.input("Source issue filter"), "interpretations");
+    ui.click("Inspect pending interpretation native-0, occurrence 1");
+    assert.equal(message(ui, "openFormalizationArtifact").line, 1);
+    ui.click("Next source issues page");
+    assert.match(textOf(ui.root()), /Showing 26 of 26 source issues/);
+    ui.click("Previous source issues page");
+    ui.click("Inspect source clause clause-0, occurrence 1");
+    assert.equal(message(ui, "openFormalizationArtifact").itemId, "item-1");
+    ui.click("Next source clauses page");
+    assert.match(textOf(ui.root()), /Showing 26 of 26 source clauses/);
+    ui.click("Previous source clauses page");
+    assert.equal(message(ui, "formalizationAction"), undefined);
+    assert.equal(ui.buttons().some(button => textOf(button) === "Record command interpretation"), false);
   } finally { ui.dispose(); }
 });
 

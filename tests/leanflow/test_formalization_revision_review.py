@@ -119,7 +119,13 @@ def test_review_rejects_incomplete_or_misbound_verdicts(source_record, mutation)
     else:
         value["verdicts"][0]["issues"] = ["This is still wrong."]
     with pytest.raises(ValueError):
-        review.validate_review(json.dumps(value), dossier, "rev-a", "key")
+        review.validate_review(
+            json.dumps(value),
+            dossier,
+            "rev-a",
+            "key",
+            canonical_regions=source_record["inventory"]["regions"],
+        )
 
 
 @pytest.mark.parametrize("decision", ["PASS", "BLOCK"])
@@ -431,13 +437,25 @@ def test_open_claim_proof_assignment_requires_explicit_user_intent(source_record
     dossier = mandatory_dossier(source_record, source_record["units"], coherence=True)
     value = json.loads(answer(dossier, "rev-a", "key"))
     value["claims"][0]["status"] = status
-    assert not review.validate_review(json.dumps(value), dossier, "rev-a", "key")["accepted"]
+    assert not review.validate_review(
+        json.dumps(value),
+        dossier,
+        "rev-a",
+        "key",
+        canonical_regions=source_record["inventory"]["regions"],
+    )["accepted"]
     dossier["source_items"][0]["proof_authorization"] = {
         "actor": "user",
         "authorized": True,
         "reason": "I explicitly want to try this open claim.",
     }
-    assert review.validate_review(json.dumps(value), dossier, "rev-a", "key")["accepted"]
+    assert review.validate_review(
+        json.dumps(value),
+        dossier,
+        "rev-a",
+        "key",
+        canonical_regions=source_record["inventory"]["regions"],
+    )["accepted"]
 
 
 def test_proved_conjecture_title_uses_reviewed_content_status(source_record):
@@ -448,7 +466,13 @@ def test_proved_conjecture_title_uses_reviewed_content_status(source_record):
     value["claims"][0].update(
         status="proved", rationale="The source supplies a complete proof despite its title."
     )
-    assert review.validate_review(json.dumps(value), dossier, "rev-a", "key")["accepted"]
+    assert review.validate_review(
+        json.dumps(value),
+        dossier,
+        "rev-a",
+        "key",
+        canonical_regions=source_record["inventory"]["regions"],
+    )["accepted"]
 
 
 def test_unmapped_helper_proof_cannot_avoid_source_authorization(source_record):
@@ -500,7 +524,13 @@ def test_helper_type_dependency_inherits_open_question_authorization(source_reco
     dossier = mandatory_dossier(source_record, source_record["units"], coherence=True)
     response = json.loads(answer(dossier, "rev-a", "key"))
     response["claims"][0]["status"] = "open_question"
-    assert not review.validate_review(json.dumps(response), dossier, "rev-a", "key")["accepted"]
+    assert not review.validate_review(
+        json.dumps(response),
+        dossier,
+        "rev-a",
+        "key",
+        canonical_regions=source_record["inventory"]["regions"],
+    )["accepted"]
 
 
 def test_translation_dependencies_are_ordered_and_cycles_block(source_record):
@@ -598,7 +628,11 @@ def test_fenced_json_is_valid_and_invalid_protocol_is_not_negative_cached(
 ):
     dossier = mandatory_dossier(source_record, source_record["units"], coherence=True)
     assert review.validate_review(
-        "```json\n" + answer(dossier, "rev", "key") + "\n```", dossier, "rev", "key"
+        "```json\n" + answer(dossier, "rev", "key") + "\n```",
+        dossier,
+        "rev",
+        "key",
+        canonical_regions=source_record["inventory"]["regions"],
     )["accepted"]
     calls, kwargs = _review_transport(source_record, tmp_path, monkeypatch, malformed=True)
     first = review.review_revision(source_record, **kwargs)
@@ -628,6 +662,37 @@ def test_large_review_bounds_response_size_and_covers_every_unit_and_region(
     final = calls[-1]["dossier"]
     assert final["phase"] == "coherence" and len(final["prior_reviews"]) == 6
     assert len(final["project_unit_ids"]) == 17 and len(final["project_region_ids"]) == 81
+
+
+def test_frozen_catalog_is_built_once_per_multibatch_review_including_cache(
+    source_record, tmp_path, monkeypatch
+):
+    """Do not re-read the full source/kernel catalog in each dossier or rejection-key batch."""
+    from leanflow_cli.formalization import review_cache, review_dossier
+
+    source_record["units"] = [{**source_record["units"][0], "id": f"u-{i}"} for i in range(17)]
+    source_record["inventory"]["regions"] = [
+        {**source_record["inventory"]["regions"][0], "id": f"r-{i}"} for i in range(81)
+    ]
+    calls, kwargs = _review_transport(source_record, tmp_path, monkeypatch)
+    original = review.evidence_documents
+    catalogs = []
+
+    def once(record):
+        catalog = original(record)
+        catalogs.append(catalog)
+        return catalog
+
+    def rebuild_forbidden(*args, **kwargs):
+        pytest.fail("A review batch rebuilt the frozen evidence catalog")
+
+    monkeypatch.setattr(review, "evidence_documents", once)
+    monkeypatch.setattr(review_cache, "evidence_documents", rebuild_forbidden)
+    monkeypatch.setattr(review_dossier, "evidence_documents", rebuild_forbidden)
+    assert review.review_revision(source_record, **kwargs)["accepted"]
+    assert len(calls) == 7 and len(catalogs) == 1
+    assert review.review_revision(source_record, **kwargs)["accepted"]
+    assert len(calls) == 7 and len(catalogs) == 2
 
 
 def test_rejections_collect_all_batch_feedback_before_correction(

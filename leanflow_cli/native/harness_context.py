@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.regular_files import read_regular_bytes
+from leanflow_cli.formalization.evidence import contained, digest, identity
 from leanflow_cli.runtime.skill_core import load_skill
 from leanflow_cli.workflows.prover.native_snapshot import remap_project_text
 
@@ -31,6 +33,39 @@ structured proposal specified in the assignment. Follow the checked preparation
 plan and representative-slice receipt before full expansion. Independent item and
 document reviews gate publication.
 """
+
+
+def _copy_source_partition(root: Path, snapshot: Path, scratch: Path, manifest: str) -> str:
+    """Authenticate and copy the lossless audit partition before exposing its private path."""
+    value = json.loads(manifest)
+    reference = value.get("source_region_partition")
+    if reference is None:
+        return manifest
+    if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
+        raise ValueError("Formalization source partition reference is invalid")
+    selected = Path(reference["path"])
+    selected = root / selected if not selected.is_absolute() else selected
+    selected = contained(root, selected.relative_to(root).as_posix())
+    raw = read_regular_bytes(selected, limit=128 * 1024**2)
+    partition = json.loads(raw)
+    if (
+        not isinstance(partition, dict)
+        or identity(partition) != reference.get("sha256")
+        or len(partition.get("canonical_inventory", {}).get("regions", []))
+        != reference.get("canonical_region_count")
+        or len(partition.get("groups", [])) != reference.get("group_count")
+    ):
+        raise ValueError("Formalization source partition differs from frozen intake evidence")
+    target = contained(
+        snapshot, (scratch / "formalization-source-partition.json").relative_to(snapshot).as_posix()
+    )
+    target.write_bytes(raw)
+    value["source_region_partition"] = {
+        **reference,
+        "path": str(target),
+        "bytes_sha256": digest(raw),
+    }
+    return json.dumps(value, ensure_ascii=False)
 
 
 def prepare_context(
@@ -76,6 +111,8 @@ def prepare_context(
         target = scratch / ("formalization-" + field.lower() + ".txt")
         replacements[value] = str(target)
         texts[field] = content
+    if "MANIFEST" in texts:
+        texts["MANIFEST"] = _copy_source_partition(root, snapshot, scratch, texts["MANIFEST"])
     for field, content in texts.items():
         for before, after in replacements.items():
             content = content.replace(before, after)

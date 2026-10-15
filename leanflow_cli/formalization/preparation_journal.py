@@ -12,14 +12,23 @@ from pathlib import Path
 from typing import Any
 
 from core.home import leanflow_home
+from core.regular_files import read_regular_bytes
 from leanflow_cli.formalization.evidence import contained, durable_json, identifier, identity
 from leanflow_cli.formalization.preparation_audit import retained_identity
+from leanflow_cli.formalization.preparation_errors import (
+    PreparationAuthorityLoss,
+)
+from leanflow_cli.formalization.preparation_errors import (
+    PreparationConflict as PreparationConflict,
+)
 from leanflow_cli.formalization.preparation_fs_inputs import (
     entry_identity,
     managed_path,
 )
+from leanflow_cli.formalization.preparation_history import MAX_CONTROL_BYTES, discover_history
 from leanflow_cli.formalization.preparation_loss import observe_journal_loss, validate_loss
 from leanflow_cli.formalization.preparation_progress import apply_entry_progress, save_snapshot
+from leanflow_cli.formalization.preparation_registry_loss import validate_acknowledgment
 from leanflow_cli.formalization.preparation_resolution import (
     archive_intents,
     resolution_archive_paths,
@@ -29,10 +38,6 @@ from leanflow_cli.formalization.publication_io import entry_path
 
 TERMINAL = {"COMMITTED", "ROLLED_BACK", "RESOLVED"}
 STATES = TERMINAL | {"PREPARING", "PREPARED", "PUBLISHING", "ROLLING_BACK", "CONFLICTED"}
-
-
-class PreparationConflict(ValueError):
-    """Preserve all infrastructure versions until an observed reconciliation is recorded."""
 
 
 def precommit_cleanup(journal: dict[str, Any]) -> dict[str, Any] | None:
@@ -71,7 +76,7 @@ def preparation_directory(root: Path) -> Path:
 
 def _read(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text())
+        value = json.loads(read_regular_bytes(path, MAX_CONTROL_BYTES))
     except (OSError, ValueError) as error:
         _raise_transient_io(error)
         raise PreparationConflict("Preparation authority is unreadable") from error
@@ -259,7 +264,10 @@ def load_journal(root: Path, transaction_id: str) -> dict[str, Any]:
 def load_registry(root: Path) -> dict[str, Any]:
     """Read all setup attempts so older retained descriptors never lose their audit owner."""
     path = preparation_directory(root) / "registry.json"
-    if not path.exists():
+    discovery = discover_history(root, preparation_directory(root))
+    if not path.exists() and not path.is_symlink():
+        if discovery["evidence"]:
+            raise PreparationAuthorityLoss(discovery)
         return {
             "schema_version": 1,
             "root": str(root.resolve()),
@@ -269,14 +277,25 @@ def load_registry(root: Path) -> dict[str, Any]:
             "transactions": [],
             "conflict_queue": [],
             "journal_losses": {},
+            "index_history": {},
         }
-    value = _read(path)
+    try:
+        value = _read(path)
+    except PreparationConflict as error:
+        raise PreparationAuthorityLoss(discovery) from error
     if (
         value.get("root") != str(root.resolve())
         or not isinstance(value.get("transactions"), list)
         or len(value["transactions"]) != len(set(value["transactions"]))
     ):
         raise PreparationConflict("Preparation registry identity changed")
+    if (
+        discovery["unavailable_controls"]
+        or set(discovery["transactions"]) - set(value["transactions"])
+        or (value.get("index_history", {}) != discovery["index_history"])
+    ):
+        raise PreparationAuthorityLoss(discovery)
+    validate_acknowledgment(value)
     queue = value.setdefault("conflict_queue", [])
     if (
         not isinstance(queue, list)
@@ -291,6 +310,7 @@ def load_registry(root: Path) -> dict[str, Any]:
     if not isinstance(losses, dict) or any(key not in value["transactions"] for key in losses):
         raise PreparationConflict("Preparation journal loss ownership changed")
     changed = False
+    journals = {}
     for transaction_id in value["transactions"]:
         try:
             journal = load_journal(root, transaction_id)
@@ -322,6 +342,30 @@ def load_registry(root: Path) -> dict[str, Any]:
             and not (journal["state"] == "CONFLICTED" and transaction_id in queue)
         ):
             raise PreparationConflict("Preparation registry lost pending transaction ownership")
+        journals[transaction_id] = journal
+    receipt_path = preparation_directory(root) / "receipt.json"
+    if receipt_path.exists() and value.get("selected") not in losses:
+        try:
+            receipt = json.loads(read_regular_bytes(receipt_path, MAX_CONTROL_BYTES))
+        except (OSError, ValueError) as error:
+            _raise_transient_io(error)
+            raise PreparationAuthorityLoss(discovery) from error
+        allowed = [
+            journal["plan"]["receipt"]
+            for key, journal in journals.items()
+            if key == value.get("selected")
+            or (
+                key == value.get("active")
+                and journal["state"] == "COMMITTED"
+                and not journal["conflicts"]
+                and key
+                not in value.get("registry_loss_acknowledgment", {}).get(
+                    "discovered_transactions", []
+                )
+            )
+        ]
+        if receipt not in allowed:
+            raise PreparationAuthorityLoss(discovery)
     if changed:
         save_registry(root, value)
     return value
@@ -345,7 +389,14 @@ def save_journal(
 
 def settle(root: Path, registry: dict[str, Any], journal: dict[str, Any]) -> None:
     """Select checked setup only after commitment; resolved conflicts revoke selected readiness."""
-    if journal["state"] == "COMMITTED" and registry["active"] == journal["transaction_id"]:
+    lost_selection = registry.get("registry_loss_acknowledgment", {}).get(
+        "discovered_transactions", []
+    )
+    if (
+        journal["state"] == "COMMITTED"
+        and registry["active"] == journal["transaction_id"]
+        and journal["transaction_id"] not in lost_selection
+    ):
         registry["selected"] = journal["transaction_id"]
         durable_json(preparation_directory(root) / "receipt.json", journal["plan"]["receipt"])
     if journal["state"] == "RESOLVED":

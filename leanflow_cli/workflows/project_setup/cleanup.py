@@ -5,7 +5,11 @@ from __future__ import annotations
 import subprocess
 import time
 
-from agent.runtime.harness.processes import ProcessTree
+from agent.runtime.harness.processes import (
+    ProcessTree,
+    process_inspection_environment,
+    start_identity_matches,
+)
 
 
 def process_states() -> dict[int, tuple[int, str, str]]:
@@ -16,6 +20,7 @@ def process_states() -> dict[int, tuple[int, str, str]]:
         text=True,
         check=True,
         timeout=2,
+        env=process_inspection_environment(),
     )
     table = {}
     for line in result.stdout.splitlines():
@@ -39,7 +44,7 @@ def verify_owned_stopped(
         table = process_states()
         live = any(
             pid in table
-            and table[pid][2] == " ".join(start.split())
+            and start_identity_matches(table[pid][2], start)
             and not table[pid][1].startswith("Z")
             for pid, start in tree.descendants.items()
         ) or any(

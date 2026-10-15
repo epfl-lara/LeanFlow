@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent.runtime.harness.processes import start_identity_matches
 from leanflow_cli.formalization.evidence import durable_json, identity
 from leanflow_cli.formalization.preparation_transaction import preparation_directory
 from leanflow_cli.workflows.project_setup.cleanup import process_states
@@ -50,7 +51,7 @@ class PrivateStage:
             or not self.cleanup_observed
             or self.owner["pid"] != os.getpid()
             or current is None
-            or self.owner["start"] != current[2]
+            or not start_identity_matches(current[2], str(self.owner["start"]))
         ):
             raise ValueError("Preparation commitment requires its verified original controller")
         stage = self.path.lstat()

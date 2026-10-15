@@ -165,6 +165,9 @@ def save_reviewed_slice(
             "Representative slice requires its exact compiled and source review acceptance"
         )
     require_stage(root, record, "representative_slice")
+    from leanflow_cli.formalization.source_reconciliation import assert_reconciliation_reviewed
+
+    assert_reconciliation_reviewed(record, review.get("reviews", []))
     if (
         checked.get("selection_token") != current_selection_token(root, record["document_id"])
         or load_document(root, record["document_id"])["revision_id"] != record["revision_id"]
@@ -245,6 +248,7 @@ def assert_complete_slice(root: Path, record: dict[str, Any]) -> dict[str, Any] 
             if (
                 after is None
                 or after["representation_note"] != before["representation_note"]
+                or after.get("clause_dispositions", []) != before.get("clause_dispositions", [])
                 or set(before["required_source_ids"]) - set(after["required_source_ids"])
                 or {row["name"] for row in before["declarations"]}
                 - {row["name"] for row in after["declarations"]}

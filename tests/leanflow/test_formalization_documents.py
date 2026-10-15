@@ -287,7 +287,7 @@ def test_directory_formalization_selects_main_tex_and_records_project_inventory(
     source_dir = project / "docs" / "paper"
     source_dir.mkdir(parents=True)
     (source_dir / "macros.tex").write_text("\\def\\good{good}\n", encoding="utf-8")
-    (source_dir / "refs.bbl").write_text(
+    (source_dir / "main.bbl").write_text(
         "\\begin{thebibliography}{1}\\end{thebibliography}\n", encoding="utf-8"
     )
     (source_dir / "style.bst").write_text("ENTRY {}{}{}\n", encoding="utf-8")
@@ -311,10 +311,11 @@ def test_directory_formalization_selects_main_tex_and_records_project_inventory(
     assert relative == "docs/paper/main.tex"
     assert kind == "latex"
 
-    with pytest.raises(FormalizationDocumentError, match="extraction needs repair"):
-        prepare_formalization_document_context(
-            project_root=project, cwd=project, workflow_args="docs/paper"
-        )
+    context = prepare_formalization_document_context(
+        project_root=project, cwd=project, workflow_args="docs/paper"
+    )
+    manifest = json.loads(context.manifest_path.read_text())
+    assert manifest["source_reconciliation_requirements"]["diagnostics"]
     payload = inspect_formalization_document("docs/paper", project_root=project, cwd=project)
 
     assert payload["source_relative"] == "docs/paper/main.tex"
@@ -322,12 +323,12 @@ def test_directory_formalization_selects_main_tex_and_records_project_inventory(
     assert payload["document_request_relative"] == "docs/paper"
     assert payload["tex_project_entrypoint"] == "docs/paper/main.tex"
     assert payload["tex_project_included_tex_files"] == ["docs/paper/macros.tex"]
-    assert payload["tex_project_bibliography_files"] == ["docs/paper/refs.bbl"]
+    assert payload["tex_project_bibliography_files"] == ["docs/paper/main.bbl"]
     assert payload["tex_project_local_asset_files"] == ["docs/paper/style.bst"]
     assert payload["tex_project_pdf_files"] == []
     assert payload["tex_project_figure_files"] == []
     assert payload["tex_project_support_files"] == [
-        "docs/paper/refs.bbl",
+        "docs/paper/main.bbl",
         "docs/paper/style.bst",
     ]
     assert "docs/paper/macros.tex" in payload["inventory"]["files"]
@@ -349,10 +350,11 @@ def test_directory_formalization_records_pdf_figure_and_support_files(tmp_path, 
     (figures / "diagram.png").write_bytes(b"png")
     (source_dir / "macros.sty").write_text("\\newcommand{\\good}{good}\n", encoding="utf-8")
 
-    with pytest.raises(FormalizationDocumentError, match="extraction needs repair"):
-        prepare_formalization_document_context(
-            project_root=project, cwd=project, workflow_args="docs/paper"
-        )
+    context = prepare_formalization_document_context(
+        project_root=project, cwd=project, workflow_args="docs/paper"
+    )
+    manifest = json.loads(context.manifest_path.read_text())
+    assert manifest["source_reconciliation_requirements"]["diagnostics"]
     payload = inspect_formalization_document("docs/paper", project_root=project, cwd=project)
 
     assert payload["tex_project_pdf_files"] == ["docs/paper/supplement.pdf"]

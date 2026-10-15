@@ -17,6 +17,7 @@ from leanflow_cli.formalization.records import (
     document_directory,
     save_revision,
 )
+from leanflow_cli.formalization.source_review_regions import coalesce_regions
 
 
 @pytest.fixture
@@ -203,7 +204,7 @@ def test_corrected_slice_review_pass_allows_complete_translation_without_publica
         assert reviewed["files"] == {} and complete["checks"]["obligations"] == []
 
 
-@pytest.mark.parametrize("change", ["file", "declaration", "representation"])
+@pytest.mark.parametrize("change", ["file", "declaration", "representation", "known_clause"])
 def test_changed_slice_invalidates_expansion_and_preserves_historical_review(prepared, change):
     root, base = prepared
     checked = _checked(root, base, phase="representative_slice")
@@ -213,8 +214,10 @@ def test_changed_slice_invalidates_expansion_and_preserves_historical_review(pre
         complete["lean_files"]["Main/Formalization/Paper/Slice.lean"] = "different"
     elif change == "declaration":
         complete["checks"]["declarations"][0]["body_hash"] = "different"
-    else:
+    elif change == "representation":
         complete["units"][0]["representation_note"] = "A different representation"
+    else:
+        complete["units"][0]["clause_dispositions"] = [{"obligation_id": "changed-checklist"}]
     with pytest.raises(ValueError, match="recheck and review phase representative_slice"):
         slice_gate.assert_complete_slice(root, complete)
     assert slice_gate.slice_status(root, base)["phase"] == "representative_slice"
@@ -315,8 +318,11 @@ def test_relaunch_from_selected_slice_keeps_whole_document_region_denominator(
         "Translate the complete document",
     )
     assert set(assignment["formalization_stage"]["required_region_ids"]) == {
-        row["id"] for row in base["inventory"]["regions"]
+        row["id"] for row in coalesce_regions(base["inventory"]["regions"])
     }
+    assert (
+        assignment["source_region_partition"]["canonical_regions"] == base["inventory"]["regions"]
+    )
     complete = _checked(root, relaunched, phase="complete")["record"]
     expected = {row["id"] for row in base["inventory"]["regions"]}
     assert {row["id"] for row in complete["inventory"]["regions"]} == expected

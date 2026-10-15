@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from agent.runtime.harness.processes import start_identity_matches
 from leanflow_cli.formalization.evidence import identity, sync_directory
 from leanflow_cli.formalization.preparation_fs_inputs import entry_identity
 from leanflow_cli.formalization.preparation_journal import (
@@ -160,10 +161,12 @@ def dispose_preparation_incoming(
                 continue
             owner = journal.get("owner") or {}
             marker = precommit_cleanup(journal)
-            live_owner = owner.get("pid") in table and table[owner["pid"]][2] == owner.get("start")
-            current_owner = owner == caller and (
-                registry["current"] == transaction_id or marker is not None
+            live_owner = owner.get("pid") in table and start_identity_matches(
+                table[owner["pid"]][2], owner.get("start", "")
             )
+            current_owner = (
+                set(owner) == set(caller) and owner.get("pid") == caller["pid"] and live_owner
+            ) and (registry["current"] == transaction_id or marker is not None)
             dead_closed_owner = marker is not None and not live_owner
             if current_owner or dead_closed_owner:
                 payload = {

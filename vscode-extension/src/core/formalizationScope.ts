@@ -10,6 +10,7 @@ export interface FormalizationRequestScope { channel: string; id: number; docume
 export function formalizationRequestChannel(type: string): string {
   if (type === "formalizationProjectSetup") return "setup";
   if (type === "openFormalizationArtifact") return "artifact";
+  if (type === "checkFormalization") return "currentness";
   if (type === "launchFormalization" || type === "resumeFormalization") return "launch";
   if (type === "proveFormalization") return "prove";
   if (/Recovery|recoverFormalizationPreparation|resolveFormalizationPreparation/.test(type)) return "recovery";
@@ -51,6 +52,6 @@ export class FormalizationMessageGate {
     const request = message.formalizationRequest;
     if (!request) return true;
     if (this.requests.get(request.channel) !== request.id) return false;
-    return !["formalizationState", "formalizationPdf"].includes(message.type) || request.documentRequestId === (this.requests.get("document") ?? 0);
+    return !["formalizationState", "formalizationActionCommitted", "formalizationPdf"].includes(message.type) || request.documentRequestId === (this.requests.get("document") ?? 0);
   }
 }

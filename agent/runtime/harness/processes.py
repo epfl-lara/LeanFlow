@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import math
 import os
+import re
+import select
+import selectors
 import signal
 import subprocess
 import time
@@ -16,6 +19,32 @@ class ProcessTrackingUnavailable(BackendError):
     """Stop an invocation after bounded consecutive process-metadata sampling failures."""
 
 
+def process_inspection_environment() -> dict[str, str]:
+    """Pin process identity dates without changing the controller or native child's locale."""
+    return {**os.environ, "LC_ALL": "C"}
+
+
+_C_START = re.compile(
+    r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) "
+    r"(?:[1-9]|[12]\d|3[01]) (?:[01]\d|2[0-3]):[0-5]\d:[0-6]\d \d{4}\Z"
+)
+
+
+def start_identity_matches(current: str, expected: str) -> bool:
+    """Compare canonical starts, withholding legacy locale dates that cannot prove PID reuse."""
+    current, expected = " ".join(current.split()), " ".join(expected.split())
+    if current == expected:
+        return True
+    for value in (current, expected):
+        date_like = re.search(r"\d{1,2}:\d{2}:\d{2}", value) and re.search(r"\b\d{4}\b", value)
+        if not value.isascii() or (date_like and _C_START.fullmatch(value) is None):
+            raise ValueError(
+                "Process start identity uses an uncomparable legacy date format; "
+                "retain inputs and use observation-bound recovery"
+            )
+    return False
+
+
 def _processes() -> dict[int, tuple[int, str]]:
     """Read parentage and start identity without collecting arguments or environment."""
     result = subprocess.run(
@@ -24,16 +53,51 @@ def _processes() -> dict[int, tuple[int, str]]:
         text=True,
         check=True,
         timeout=2,
+        env=process_inspection_environment(),
     )
     entries: dict[int, tuple[int, str]] = {}
     for line in result.stdout.splitlines():
         parts = line.split(maxsplit=2)
         if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
             raise ValueError("Native tracking cannot validate the process table")
-        entries[int(parts[0])] = (int(parts[1]), parts[2])
+        entries[int(parts[0])] = (int(parts[1]), " ".join(parts[2].split()))
     if not entries:
         raise ValueError("Native tracking received an empty process table")
     return entries
+
+
+def process_exited(process: subprocess.Popen[bytes]) -> bool:
+    """Observe child exit without reaping the PID that reserves its owned process group."""
+    if process.returncode is not None:
+        return True
+    if os.name != "posix":
+        return process.poll() is not None
+    try:
+        waitid = getattr(os, "waitid", None)
+        if waitid is not None:
+            result = waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            return result is not None and result.si_pid == process.pid
+        if hasattr(select, "kqueue"):
+            queue = select.kqueue()
+            try:
+                event = select.kevent(
+                    process.pid,
+                    filter=select.KQ_FILTER_PROC,
+                    flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                    fflags=select.KQ_NOTE_EXIT,
+                )
+                return bool(queue.control([event], 1, 0))
+            finally:
+                queue.close()
+    except InterruptedError:
+        return False
+    except OSError as error:
+        if process.returncode is not None:
+            return True
+        raise ProcessTrackingUnavailable(
+            "Native child exit could not be observed without releasing its PID"
+        ) from error
+    raise ProcessTrackingUnavailable("Non-reaping native child exit observation is unavailable")
 
 
 @dataclass
@@ -42,18 +106,39 @@ class ProcessTree:
 
     root: int
     descendants: dict[int, str] = field(default_factory=dict)
+    process: subprocess.Popen[bytes] | None = field(default=None, kw_only=True, repr=False)
+    root_identity: str | None = field(default=None, init=False)
+    _root_retired: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Bind child ownership to the exact root PID represented by its original Popen."""
+        if self.process is not None and self.process.pid != self.root:
+            raise ValueError("Process tracking must bind the original root Popen")
 
     def refresh(self) -> None:
-        """Remember child identities before the native leader can exit."""
+        """Expand only the original unreaped root or matching cached descendants."""
         entries = _processes()
+        # Popen's cached returncode is deliberate: poll() can reap the child and
+        # release its PID between ownership inspection and signaling.
+        if self.process is not None and self.process.returncode is not None:
+            self._root_retired = True
+        current_root = entries.get(self.root)
+        if not self._root_retired:
+            if current_root is None:
+                self._root_retired = True
+            elif self.root_identity is None:
+                self.root_identity = current_root[1]
+            elif not start_identity_matches(current_root[1], self.root_identity):
+                self._root_retired = True
         parents = {
-            self.root,
             *(
                 pid
                 for pid, identity in self.descendants.items()
-                if entries.get(pid, (0, ""))[1] == identity
+                if pid in entries and start_identity_matches(entries[pid][1], identity)
             ),
         }
+        if not self._root_retired:
+            parents.add(self.root)
         while True:
             added = {
                 pid
@@ -70,7 +155,7 @@ class ProcessTree:
         """Signal tracked processes only when their start identity still matches."""
         entries = _processes()
         for pid, identity in self.descendants.items():
-            if entries.get(pid, (0, ""))[1] != identity:
+            if pid not in entries or not start_identity_matches(entries[pid][1], identity):
                 continue
             try:
                 os.kill(pid, sig)
@@ -120,6 +205,7 @@ def _group_has_live_processes(group: int) -> bool:
         text=True,
         check=True,
         timeout=2,
+        env=process_inspection_environment(),
     )
     for line in result.stdout.splitlines():
         fields = line.split()
@@ -139,7 +225,7 @@ def signal_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
     except PermissionError:
         # Darwin can return EPERM rather than ESRCH once only reaping remains.
         # Never hide an actual permission failure against a live process group.
-        if process.poll() is None or _group_has_live_processes(process.pid):
+        if not process_exited(process) or _group_has_live_processes(process.pid):
             raise
 
 
@@ -151,6 +237,7 @@ def _cleanup_states(timeout_s: float) -> dict[int, tuple[int, str, str]]:
         text=True,
         check=True,
         timeout=timeout_s,
+        env=process_inspection_environment(),
     )
     table: dict[int, tuple[int, str, str]] = {}
     for line in result.stdout.splitlines():
@@ -161,6 +248,52 @@ def _cleanup_states(timeout_s: float) -> dict[int, tuple[int, str, str]]:
     if not table:
         raise ValueError("Native cleanup received an empty process table")
     return table
+
+
+def group_has_owned_member(process: subprocess.Popen[bytes], tree: ProcessTree | None) -> bool:
+    """Require cached live membership before signaling an already reaped root's group."""
+    if tree is None or not tree.descendants:
+        return False
+    table = _cleanup_states(2.0)
+    return any(
+        pid in table
+        and table[pid][0] == process.pid
+        and not table[pid][1].startswith("Z")
+        and start_identity_matches(table[pid][2], identity)
+        for pid, identity in tree.descendants.items()
+    )
+
+
+def require_output_eof(
+    process: subprocess.Popen[bytes], *, timeout_s: float = 2.0, description: str = "Native"
+) -> None:
+    """Drain nonblocking streams within a finite bound and require physical output closure."""
+    if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise ValueError("Output closure verification needs a positive finite bound")
+    deadline = time.monotonic() + timeout_s
+    try:
+        with selectors.DefaultSelector() as selector:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    os.set_blocking(stream.fileno(), False)
+                    selector.register(stream, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise NativeCleanupUnverified(
+                        f"{description} output pipes remain open; retain invocation inputs"
+                    )
+                for key, _ in selector.select(min(0.05, remaining)):
+                    try:
+                        chunk = os.read(key.fd, 65536)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+    except (OSError, ValueError) as error:
+        raise NativeCleanupUnverified(
+            f"{description} output closure is unverified; retain invocation inputs"
+        ) from error
 
 
 def verify_owned_stopped(tree: ProcessTree | None, *, group: int, timeout_s: float = 2.0) -> bool:
@@ -180,7 +313,7 @@ def verify_owned_stopped(tree: ProcessTree | None, *, group: int, timeout_s: flo
         identities = tree.descendants if tree is not None else {}
         live = any(
             pid in table
-            and table[pid][2] == " ".join(start.split())
+            and start_identity_matches(table[pid][2], start)
             and not table[pid][1].startswith("Z")
             for pid, start in identities.items()
         ) or any(pgid == group and not state.startswith("Z") for pgid, state, _ in table.values())
@@ -194,24 +327,47 @@ def cleanup_group(process: subprocess.Popen[bytes], tree: ProcessTree | None = N
     metadata_errors: list[Exception] = []
 
     def inspect_and_signal(sig: signal.Signals, *, refresh: bool = False) -> None:
-        """Keep group cleanup unconditional if process-identity inspection fails."""
+        """Keep cached descendants signalable without rediscovering a reaped root."""
         if tree is None:
             return
         try:
-            if refresh:
+            if refresh and process.returncode is None:
                 tree.refresh()
             tree.signal(sig)
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             metadata_errors.append(error)
 
+    def signal_owned_group(sig: signal.Signals) -> None:
+        """An unreaped child reserves its PID; a former group needs cached ownership."""
+        try:
+            if process.returncode is None or group_has_owned_member(process, tree):
+                signal_group(process, sig)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            metadata_errors.append(error)
+
     inspect_and_signal(signal.SIGTERM, refresh=True)
-    signal_group(process, signal.SIGTERM)
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        pass
-    # Kill remaining descendants even when the native CLI itself already exited.
-    signal_group(process, signal.SIGKILL)
+    signal_owned_group(signal.SIGTERM)
+    # Keep an exited leader unreaped until escalation. Its reserved PID proves
+    # ownership of late same-group children even when they escaped the last scan.
+    term_deadline = time.monotonic() + 2
+    while process.returncode is None:
+        try:
+            if process_exited(process) and not _group_has_live_processes(process.pid):
+                break
+        except (
+            ProcessTrackingUnavailable,
+            OSError,
+            subprocess.SubprocessError,
+            ValueError,
+        ) as error:
+            metadata_errors.append(error)
+            break
+        remaining = term_deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
+    # Escalate before the single final wait releases the original PID.
+    signal_owned_group(signal.SIGKILL)
     inspect_and_signal(signal.SIGKILL)
     try:
         process.wait(timeout=2)

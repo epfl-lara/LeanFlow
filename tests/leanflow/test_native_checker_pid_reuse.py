@@ -82,7 +82,7 @@ def _reused_metadata(
     refresh = Mock(wraps=tree.refresh)
     final = Mock(return_value=True)
     monkeypatch.setattr(processes, "_processes", samples)
-    monkeypatch.setattr(checks, "_cleanup_states", group_samples, raising=False)
+    monkeypatch.setattr(processes, "_cleanup_states", group_samples)
     monkeypatch.setattr(checks, "signal_group", groups)
     monkeypatch.setattr(processes.os, "kill", individuals)
     monkeypatch.setattr(tree, "refresh", refresh)

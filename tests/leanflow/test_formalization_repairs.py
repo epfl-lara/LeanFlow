@@ -115,21 +115,21 @@ def test_common_latex_and_duplicate_labels_do_not_block_intake(tmp_path: Path, m
     assert len({item["id"] for item in context.metadata["inventory"]["items"]}) == 2
 
 
-def test_unresolved_commands_stop_before_layout_or_author_and_can_be_reconciled(
+def test_eligible_command_readings_remain_pending_and_can_be_explicitly_reconciled(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
         "leanflow_cli.formalization.intake.lean_build.validate_build_inputs", lambda *a, **kw: {}
     )
     source = _source(tmp_path, r"\newnotation{A real mathematical statement.}")
-    monkeypatch.setattr(
-        "leanflow_cli.formalization.intake.resolve_layout",
-        lambda *_: pytest.fail("Blocked source must not start layout or inference"),
+    monkeypatch.setattr("leanflow_cli.formalization.intake.resolve_layout", _layout)
+    context = prepare_formalization_document_context(
+        project_root=tmp_path, cwd=tmp_path, workflow_args="paper.tex"
     )
-    with pytest.raises(ValueError, match="extraction needs repair"):
-        prepare_formalization_document_context(
-            project_root=tmp_path, cwd=tmp_path, workflow_args="paper.tex"
-        )
+    manifest = json.loads(context.manifest_path.read_text())
+    assert manifest["source_reconciliation_requirements"]["diagnostics"]
+    assert any(row["blocking"] for row in context.metadata["inventory"]["diagnostics"])
+    assert source.read_text() == r"\newnotation{A real mathematical statement.}"
     initial = inspect_document(tmp_path, source)
     diagnostic = next(row for row in initial["diagnostics"] if row["code"] == "unresolved_command")
     assert diagnostic["can_resolve_command"] and diagnostic["source_refs"]

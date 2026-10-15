@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -19,6 +18,7 @@ from leanflow_cli.formalization.lean_configuration import (
 from leanflow_cli.formalization.lean_configuration import (
     validate_options,
 )
+from leanflow_cli.workflows.prover.check_command_cleanup import command_workspace
 from leanflow_cli.workflows.prover.check_process import isolated_command
 
 _MODULE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*")
@@ -82,8 +82,8 @@ def inspect_layout(
             raise ValueError("Lake configuration symlinks are unsupported")
         content = config.read_bytes()
         _static_configuration(config, content.decode("utf-8"))
-        with tempfile.TemporaryDirectory(prefix="leanflow-layout-") as temporary:
-            directory = Path(temporary).resolve()
+        with command_workspace(prefix="leanflow-layout-") as temporary:
+            directory = temporary
             package = directory / "project"
             package.mkdir()
             (package / config.name).write_bytes(content)

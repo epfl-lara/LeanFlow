@@ -4,9 +4,8 @@ LeanFlow automates Lean 4 proof repair and mathematical formalization. It works
 inside a Lean project, checks proof candidates independently, and records the
 plan, progress, logs, and usage so you can inspect or resume a run.
 
-- **Prove** fills existing `sorry` holes while preserving supplied statements.
-- **Research** develops a mathematical plan and coordinates concurrent provers
-  through a theorem dependency graph.
+- **Prove** fills existing `sorry` holes while preserving supplied statements;
+  its research mode plans and coordinates concurrent provers through a dependency graph.
 - **Formalize** turns LaTeX or PDF sources into a buildable Lean statement draft
   for review and subsequent proving.
 - **Observe** runs from the terminal or the [VS Code extension](vscode-extension/README.md).
@@ -90,6 +89,10 @@ in its tab before starting translation. The native planner then inspects the
 existing environment and can add missing approved dependencies through a checked
 transaction. Source inspection remains available before setup and makes no model
 calls; setup readiness does not approve mathematical statements.
+Saved source inventories open without rescanning the Mathlib environment. The
+editor labels them historical until an explicit currentness check; proof admission
+always rechecks the exact accepted revision. Large source inventories and advanced
+controls are grouped into collapsible, paginated sections.
 
 Choose the scope and workflow:
 

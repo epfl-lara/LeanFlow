@@ -6,11 +6,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from leanflow_cli.formalization.evidence import contained
+from leanflow_cli.formalization.evidence import contained, durable_json, identity
 from leanflow_cli.formalization.inventory_authority import complete_inventory
 from leanflow_cli.formalization.preparation_assignment import checked_preparation_assignment
 from leanflow_cli.formalization.records import load_document
 from leanflow_cli.formalization.slice_gate import protocol_enabled, slice_regions, slice_status
+from leanflow_cli.formalization.source_review_regions import coalesce_regions, compact_region
 
 
 def campaign_budget_path(root: Path, environment: dict[str, str], directory: Path) -> Path:
@@ -84,6 +85,32 @@ def stage_assignment(
     if not plan_ref["manifest"]:
         context["checked_preparation_plan"] = prepared
         plan_ref["assignment_field"] = "checked_preparation_plan"
+    selected = slice_regions(record) if stage["phase"] == "representative_slice" else None
+    regions = [row for row in inventory["regions"] if selected is None or row["id"] in selected]
+    groups = coalesce_regions(regions)
+    partition = {
+        "phase": stage["phase"],
+        "canonical_regions": regions,
+        "groups": groups,
+        "source_bundle": record["source_bundle"],
+        "base_revision_id": record["revision_id"],
+        "authority": "exact selected canonical source denominator; no source approval",
+        **({"full_inventory": inventory} if not plan_ref["manifest"] else {}),
+    }
+    partition_reference: dict[str, Any] = {
+        "sha256": identity(partition),
+        "canonical_region_count": len(regions),
+        "group_count": len(groups),
+    }
+    if context.get("project_root"):
+        path = contained(
+            Path(context["project_root"]), ".leanflow-job/formalization-stage-partition.json"
+        )
+        durable_json(path, partition)
+        partition_reference["path"] = str(path)
+    else:
+        context["source_region_partition"] = {**partition, "full_inventory": inventory}
+        partition_reference["assignment_field"] = "source_region_partition"
     assignment = {
         **stage,
         "workflow_protocol": 2,
@@ -96,11 +123,9 @@ def stage_assignment(
             if stage["phase"] == "representative_slice"
             else [item["id"] for item in inventory["items"] if item.get("scope") != "excluded"]
         ),
-        "required_region_ids": (
-            sorted(slice_regions(record))
-            if stage["phase"] == "representative_slice"
-            else [region["id"] for region in inventory["regions"]]
-        ),
+        "required_region_ids": [group["id"] for group in groups],
+        "source_region_partition": partition_reference,
+        "regions": [compact_region(group) for group in groups],
         "publication_authority": stage["phase"] == "complete",
     }
     context["formalization_stage"] = assignment
@@ -111,8 +136,11 @@ def stage_assignment(
         "Read the complete checked preparation plan from its manifest reference, including "
         "prerequisite candidate declarations and representation estimates. These estimates "
         "are not semantic approval; compile faithful reuse and review it with the source. "
-        "For representative_slice, map exactly its required source IDs and coverage "
-        "regions. Keep original source unchanged and implement definitions fully. "
+        "Cover every assigned review group ID exactly once. The exact ordered canonical "
+        "members remain available in source_region_partition; the full intake partition "
+        "retains all original source context. Do not mix group IDs and canonical IDs. "
+        "For representative_slice, map exactly its required source IDs and assigned groups. "
+        "Keep original source unchanged and implement definitions fully. "
         "Use separate files for the slice so expansion can preserve them exactly. "
         "Do not translate the remaining source until the independent slice review passes. "
         "For complete, retain all slice declaration names, mappings, representations and "

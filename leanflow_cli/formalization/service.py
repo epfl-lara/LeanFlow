@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,14 +12,12 @@ from leanflow_cli.formalization.evidence import (
     digest,
     durable_json,
     identifier,
-    identity,
     read_blob,
 )
 from leanflow_cli.formalization.inventory_authority import display_inventory
 from leanflow_cli.formalization.publication_case_paths import assert_receipt_control_path
 from leanflow_cli.formalization.records import (
     DocumentSelectionConflict,
-    assert_source_current,
     create_document,
     document_directory,
     document_lock,
@@ -28,416 +27,17 @@ from leanflow_cli.formalization.records import (
     rehydrate_document,
     save_revision,
     selection_pointer,
-    source_artifact_id,
-    source_bytes,
 )
-
-
-def _artifacts(
-    record: dict[str, Any],
-    proof_receipt: dict[str, Any] | None = None,
-    draft_preview: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    result = [
-        {
-            "id": source_artifact_id(record, file),
-            "path": file,
-            "kind": "pdf" if file.lower().endswith(".pdf") else "source",
-            "sha256": key,
-            "title": Path(file).name,
-            "origin": "source",
-        }
-        for file, key in record["source_files"].items()
-    ]
-    result.extend(
-        {
-            "id": ("proof-lean-" if proof_receipt else "lean-")
-            + identity({"file": file, "sha256": key}),
-            "path": file,
-            "kind": "lean",
-            "sha256": key,
-            "title": Path(file).name,
-            "origin": "proof" if proof_receipt else "lean",
-        }
-        for file, original in record.get("lean_files", {}).items()
-        for key in [(proof_receipt or {}).get("after", {}).get(file, original)]
-    )
-    result.extend(
-        {
-            "id": "context-lean-" + identity({"file": file, "sha256": key}),
-            "path": file,
-            "kind": "lean",
-            "sha256": key,
-            "title": Path(file).name,
-            "origin": "context",
-        }
-        for file, key in record.get("context_lean_files", {}).items()
-        if file not in record.get("lean_files", {})
-    )
-    result.extend({**row, "origin": "draft"} for row in (draft_preview or {}).get("artifacts", []))
-    return result
-
-
-def _display_preview(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
-    """Isolate optional preview corruption so original source and other documents stay inspectable."""
-    from leanflow_cli.formalization.source_draft import load_preview
-
-    try:
-        return load_preview(root, record), ""
-    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
-        return None, "Draft preview unavailable: " + str(error)
-
-
-def _ref(record: dict[str, Any], span: dict[str, Any], text: str = "") -> dict[str, Any]:
-    result = {
-        "artifact_id": source_artifact_id(record, span["file"]),
-        "file": span["file"],
-        "precision": span.get(
-            "precision",
-            span.get("mapping_precision", "approximate" if "page_index" in span else "exact"),
-        ),
-        "method": span.get(
-            "mapping_method", "page_only" if "page_index" in span else "source_bytes"
-        ),
-        "text": span.get("text", text),
-    }
-    for key in (
-        "line_start",
-        "line_end",
-        "byte_start",
-        "byte_end",
-        "page_index",
-        "text_start",
-        "text_end",
-        "occurrence_id",
-    ):
-        if key in span:
-            result[key] = span[key]
-    if (
-        "page_index" not in span
-        and "line_start" not in span
-        and span.get("coordinate_space") != "pdf_page"
-    ):
-        raw = source_bytes(record, span["file"])
-        result.update(
-            line_start=raw[: span.get("byte_start", 0)].count(b"\n") + 1,
-            line_end=raw[: max(span.get("byte_start", 0), span.get("byte_end", 1) - 1)].count(b"\n")
-            + 1,
-        )
-    return result
-
-
-def _verdicts(receipt: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
-    """Retain every unit verdict so a later phase cannot erase an earlier rejection."""
-    result: dict[str, list[dict[str, Any]]] = {}
-    for review in (receipt or {}).get("reviews", []):
-        for verdict in review.get("verdicts", []):
-            if verdict.get("unit_id"):
-                result.setdefault(verdict["unit_id"], []).append(verdict)
-    return result
-
-
-def _diagnostics(record: dict[str, Any]) -> list[dict[str, Any]]:
-    """Expose exact command evidence and retained resolutions without generic blocker waivers."""
-    return [
-        {
-            **diagnostic,
-            "source_refs": [
-                _ref(record, span)
-                for span in diagnostic.get(
-                    "spans", [diagnostic["span"]] if "span" in diagnostic else []
-                )
-            ],
-            "can_resolve_command": diagnostic["code"] == "unresolved_command",
-            "can_resolve_conditional": diagnostic["code"] == "unresolved_conditional",
-        }
-        for diagnostic in record["inventory"]["diagnostics"]
-    ]
-
-
-def snapshot(root: Path, record: dict[str, Any]) -> dict[str, Any]:
-    """Project exactly selected evidence without promoting historical success or model activity."""
-    receipt = load_receipt(record)
-    receipt_status = (receipt or {}).get("status")
-    receipt_error = (receipt or {}).get("error") or (receipt or {}).get("checks", {}).get("error")
-    selection_conflict = record.get("_selection_conflict")
-    proof_receipt = None
-    proof_error = ""
-    from leanflow_cli.formalization.freshness import published_acceptance_freshness
-
-    freshness = published_acceptance_freshness(root, record, receipt, verify_bytes=False)
-    if not selection_conflict:
-        try:
-            from leanflow_cli.formalization.proof_receipts import current_proof_receipt
-
-            proof_receipt = current_proof_receipt(root, record, receipt, freshness=freshness)
-        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
-            proof_error = str(error)
-    inventory = display_inventory(record, reviewed=receipt_status == "published")
-    verdicts = _verdicts(receipt)
-    claims = {
-        claim["source_id"]: claim
-        for review in (receipt or {}).get("reviews", [])
-        for claim in review.get("claims", [])
-    }
-    checks = (receipt or {}).get("checks", record.get("checks", {}))
-    declarations = {row["name"]: row for row in checks.get("declarations", [])}
-    if proof_receipt:
-        declarations.update(proof_receipt["checks"]["profiles"])
-
-    draft_preview, draft_preview_error = _display_preview(root, record)
-    artifacts = _artifacts(record, proof_receipt, draft_preview)
-    lean_artifacts = {
-        artifact["path"]: artifact["id"]
-        for artifact in artifacts
-        if artifact["origin"] in {"lean", "proof", "context"}
-    }
-    items = []
-    for source in inventory["items"]:
-        units = [unit for unit in record["units"] if source["id"] in unit["required_source_ids"]]
-        references = [dict(ref) for unit in units for ref in unit["declarations"]]
-        for ref in references:
-            ref.setdefault("file", "")
-            if ref["file"] in lean_artifacts:
-                ref["artifact_id"] = lean_artifacts[ref["file"]]
-            compiled = declarations.get(ref["name"], {})
-            if ref["file"] and type(compiled.get("line_start")) is int:
-                ref["line_start"] = compiled["line_start"]
-        rows = [declarations[ref["name"]] for ref in references if ref["name"] in declarations]
-        relevant = [
-            verdict
-            for unit in units
-            for verdict in verdicts.get(unit["id"], [])
-            if source["id"] in verdict.get("source_ids", [])
-        ]
-        blocked_review = any(verdict.get("decision") == "BLOCK" for verdict in relevant)
-        passed_review = bool(units) and all(
-            any(
-                verdict.get("decision") == "PASS"
-                and set(verdict.get("source_ids", [])) == set(unit["required_source_ids"])
-                for verdict in verdicts.get(unit["id"], [])
-            )
-            for unit in units
-        )
-        proof = (
-            "pending"
-            if not rows or any(row.get("pending") for row in rows)
-            else "conditional" if any(row.get("conditional") for row in rows) else "checked"
-        )
-        acceptance_stale = receipt_status == "published" and not freshness["current"]
-        if acceptance_stale:
-            proof = "stale"
-        items.append(
-            {
-                "id": source["id"],
-                "title": source.get("title") or source.get("label") or source["kind"],
-                "kind": source["kind"],
-                "claim_status": claims.get(source["id"], {}).get(
-                    "status", source.get("claim_status", "unclassified")
-                ),
-                "claim_status_rationale": claims.get(source["id"], {}).get("rationale", ""),
-                "extracted_claim_status": source.get("claim_status", "unclassified"),
-                "proof_authorization": source.get("proof_authorization"),
-                "scope": source.get("scope", "candidate"),
-                "source_refs": [
-                    _ref(record, span, source.get("text", "")) for span in source["statement_spans"]
-                ]
-                + [_ref(record, span) for span in source.get("pdf_refs", [])],
-                "lean_refs": references,
-                "review_status": (
-                    "correction_needed"
-                    if blocked_review
-                    else (
-                        "error"
-                        if receipt_status == "review_error"
-                        else "pass" if passed_review else "pending"
-                    )
-                ),
-                "elaboration_status": (
-                    "stale"
-                    if acceptance_stale
-                    else (
-                        "error"
-                        if receipt_status == "check_error"
-                        else (
-                            "rejected"
-                            if receipt_status == "check_rejected"
-                            else (
-                                "checked"
-                                if references and len(rows) == len(references)
-                                else "pending"
-                            )
-                        )
-                    )
-                ),
-                "proof_status": proof,
-                "feedback": list(
-                    dict.fromkeys(
-                        str(value) for verdict in relevant for value in verdict.get("issues", [])
-                    )
-                ),
-                "representation_notes": "\n\n".join(unit["representation_note"] for unit in units),
-                "mapping_rationale": "\n\n".join(
-                    dict.fromkeys(str(verdict.get("rationale", "")) for verdict in relevant)
-                ),
-            }
-        )
-    regions = [
-        {
-            "id": region["id"],
-            "title": region.get(
-                "title",
-                f"Page {region['page_index'] + 1}" if "page_index" in region else region["file"],
-            ),
-            "classification": (
-                "represented"
-                if region["disposition"] in {"item", "represented_item"}
-                else region["disposition"]
-            ),
-            "disposition": region["disposition"],
-            "source_refs": [_ref(record, region)],
-            "item_ids": region.get("item_ids", []),
-            "reason": region.get("reason", ""),
-            "repair_required": region.get("repair_required", False),
-        }
-        for region in inventory["regions"]
-    ]
-    stale = False
-    try:
-        assert_source_current(root, record)
-    except (ValueError, OSError):
-        stale = True
-    status = (
-        "selection_conflict"
-        if selection_conflict
-        else (receipt or {}).get("status", record.get("status", "inventory_pending"))
-    )
-    if status == "published" and not freshness["current"]:
-        status = freshness["status"]
-        proof_error = freshness["reason"]
-    handoff = (receipt or {}).get("handoff")
-    lean_stale = bool(proof_error)
-    publication_error = proof_error
-    if status == "published" and handoff:
-        try:
-            from leanflow_cli.formalization.publication import assert_no_pending_publication
-
-            assert_no_pending_publication(root)
-            for file, expected in (
-                (proof_receipt or {}).get("after", handoff.get("files", {})).items()
-            ):
-                if digest(contained(root, file).read_bytes()) != expected:
-                    lean_stale = True
-        except (OSError, ValueError, RuntimeError) as error:
-            lean_stale = True
-            publication_error = str(error)
-    unresolved = sum(
-        region["classification"] == "unresolved" or region.get("repair_required", False)
-        for region in regions
-    )
-    blocked = any(diagnostic.get("blocking") for diagnostic in inventory["diagnostics"])
-    accepted_handoff = bool(
-        status == "published"
-        and handoff
-        and handoff.get("revision_id") == record["revision_id"]
-        and not stale
-        and not lean_stale
-        and not blocked
-        and not unresolved
-        and not selection_conflict
-        and not draft_preview_error
-    )
-    can_prove = bool(accepted_handoff and (handoff or {}).get("obligations") and not proof_receipt)
-    revisions = []
-    seen = set()
-    for directory in (
-        document_directory(root, record["document_id"]),
-        document_directory(root, record["document_id"], published=True),
-    ):
-        parent = contained(directory, "revisions")
-        if parent.exists():
-            for path in sorted(parent.glob("*.json")):
-                if path.stem not in seen:
-                    historic = load_document(root, record["document_id"], path.stem)
-                    historic_receipt = load_receipt(historic)
-                    revisions.append(
-                        {
-                            "revision_id": historic["revision_id"],
-                            "status": (historic_receipt or {}).get(
-                                "status", historic.get("status", "inventory_pending")
-                            ),
-                        }
-                    )
-                    seen.add(path.stem)
-    from leanflow_cli.formalization.preparation import preparation_status
-    from leanflow_cli.formalization.slice_gate import slice_status
-
-    return {
-        "schema_version": 1,
-        "draft_preview": draft_preview,
-        "draft_preview_error": draft_preview_error or None,
-        "document_id": record["document_id"],
-        "revision_id": record["revision_id"],
-        "status": status,
-        "receipt_error": str(receipt_error) if receipt_error else None,
-        "acceptance_freshness": freshness,
-        "preparation": preparation_status(root),
-        "slice": slice_status(root, record),
-        "source": {
-            "kind": inventory["source_kind"],
-            "path": inventory["source_relative"],
-            "files": sorted(record["source_files"]),
-            "pages": len(inventory.get("pages", [])),
-        },
-        "items": items,
-        "regions": regions,
-        "diagnostics": _diagnostics({**record, "inventory": inventory})
-        + ([draft_preview_error] if draft_preview_error else [])
-        + (
-            [
-                publication_error
-                or "Published Lean sources changed; proof handoff needs revalidation"
-            ]
-            if lean_stale
-            else []
-        )
-        + (
-            [str(selection_conflict.get("message", selection_conflict))]
-            if selection_conflict
-            else []
-        ),
-        "counts": {
-            "included": sum(item["scope"] == "included" for item in items),
-            "excluded": sum(item["scope"] == "excluded" for item in items),
-            "candidates": sum(item["scope"] == "candidate" for item in items),
-            "reviewed": sum(item["review_status"] == "pass" for item in items),
-            "unresolved": unresolved,
-            "source_files": len(record["source_files"]),
-        },
-        "layout": record.get("layout"),
-        "artifacts": [
-            {key: value for key, value in artifact.items() if key != "origin"}
-            for artifact in artifacts
-        ],
-        "can_prove": can_prove,
-        "source_stale": stale,
-        "lean_stale": lean_stale,
-        "handoff": handoff if accepted_handoff else None,
-        "proof_revision_id": (proof_receipt or {}).get("proof_revision_id"),
-        "proof_completion": (
-            "checked"
-            if proof_receipt or (accepted_handoff and not (handoff or {}).get("obligations"))
-            else "pending"
-        ),
-        "selection_conflict": selection_conflict,
-        "revisions": revisions,
-        "reviewer": (receipt or {}).get("reviewer"),
-        "costs": (receipt or {}).get("costs"),
-    }
+from leanflow_cli.formalization.service_artifacts import _artifacts, _display_preview
+from leanflow_cli.formalization.service_snapshot import snapshot as snapshot
 
 
 def inspect_document(
-    root: Path, source: Path, *, companion_pdf: Path | None = None
+    root: Path,
+    source: Path,
+    *,
+    companion_pdf: Path | None = None,
+    verify_current: bool = True,
 ) -> dict[str, Any]:
     """Freeze intake and return the source audit without launching a model or creating Lean files."""
     root = root.resolve()
@@ -448,24 +48,37 @@ def inspect_document(
         )
 
         selected, _, _ = resolve_formalization_document(root, root, str(selected))
-    return snapshot(root, create_document(root, selected, companion_pdf=companion_pdf))
+    return snapshot(
+        root,
+        create_document(
+            root, selected, companion_pdf=companion_pdf, reconcile_receipt=verify_current
+        ),
+        verify_current=verify_current,
+    )
 
 
-def show_document(root: Path, document_id: str) -> dict[str, Any]:
+def show_document(root: Path, document_id: str, *, verify_current: bool = True) -> dict[str, Any]:
     """Read the selected private revision, falling back to portable published evidence."""
     try:
-        record = load_document(root, identifier(document_id))
+        record = load_document(root, identifier(document_id), reconcile_receipt=verify_current)
     except DocumentSelectionConflict as error:
-        record = load_document(root, identifier(document_id), error.private_revision)
+        record = load_document(
+            root, identifier(document_id), error.private_revision, reconcile_receipt=verify_current
+        )
         record["_selection_conflict"] = {
             "message": str(error),
             "private_revision_id": error.private_revision,
             "published_revision_id": error.published_revision,
         }
-    return snapshot(root.resolve(), record)
+    result = snapshot(root.resolve(), record, verify_current=verify_current)
+    if verify_current and not record.get("_selection_conflict"):
+        selected = load_document(root, identifier(document_id))
+        if selected["revision_id"] != record["revision_id"]:
+            raise ValueError("Formalization revision changed during currentness checking; refresh")
+    return result
 
 
-def list_documents(root: Path) -> dict[str, Any]:
+def list_documents(root: Path, *, verify_current: bool = True) -> dict[str, Any]:
     """List controller-owned documents through the public snapshot protocol."""
     from leanflow_cli.formalization.publication_case_paths import exact_control_path
 
@@ -478,11 +91,53 @@ def list_documents(root: Path) -> dict[str, Any]:
             for path in directory.iterdir():
                 if path.is_dir() and not path.is_symlink() and (path / "current.json").is_file():
                     ids.add(identifier(path.name))
-    return {"schema_version": 1, "documents": [show_document(root, key) for key in sorted(ids)]}
+    if verify_current:
+        documents = [show_document(root, key) for key in sorted(ids)]
+    else:
+        documents = []
+        for key in sorted(ids):
+            try:
+                record = load_document(root, key, reconcile_receipt=False)
+            except DocumentSelectionConflict as error:
+                record = load_document(root, key, error.private_revision, reconcile_receipt=False)
+            inventory = display_inventory(record, reviewed=False)
+            receipt = load_receipt(record)
+            documents.append(
+                {
+                    "schema_version": 1,
+                    "document_id": key,
+                    "revision_id": record["revision_id"],
+                    "status": (receipt or {}).get(
+                        "status", record.get("status", "inventory_pending")
+                    ),
+                    "currentness": "historical",
+                    "source_currentness": "unchecked",
+                    "source": {
+                        "kind": inventory["source_kind"],
+                        "path": inventory["source_relative"],
+                    },
+                    "items": [],
+                    "regions": [],
+                    "artifacts": [],
+                    "diagnostics": [],
+                    "counts": {
+                        "items": len(inventory["items"]),
+                        "regions": len(inventory["regions"]),
+                    },
+                    "can_prove": False,
+                    "handoff": None,
+                }
+            )
+    return {"schema_version": 1, "documents": documents}
 
 
 def act_document(
-    root: Path, document_id: str, expected_revision: str, action: dict[str, Any]
+    root: Path,
+    document_id: str,
+    expected_revision: str,
+    action: dict[str, Any],
+    *,
+    acknowledge_only: bool = False,
 ) -> dict[str, Any]:
     """Serialize a typed edit against the exact visible revision and invalidate prior acceptance."""
     root = root.resolve()
@@ -490,7 +145,11 @@ def act_document(
         raise ValueError("Formalization action must be a JSON object")
     from leanflow_cli.formalization.publication import publication_guard
 
-    with publication_guard(root), document_lock(root, document_id) as directory:
+    deadline = time.monotonic() + 15 if acknowledge_only else None
+    with (
+        publication_guard(root, deadline=deadline),
+        document_lock(root, document_id, deadline=deadline) as directory,
+    ):
         try:
             record = load_document(root, document_id)
         except DocumentSelectionConflict as error:
@@ -516,7 +175,16 @@ def act_document(
             selected = new_revision(record)
             apply_action(selected, action)
             selected = save_revision(directory, selected)
-        return snapshot(root, selected)
+    if acknowledge_only:
+        return {
+            "schema_version": 1,
+            "committed": True,
+            "document_id": selected["document_id"],
+            "revision_id": selected["revision_id"],
+            "previous_revision_id": expected_revision,
+            "currentness": "unchecked",
+        }
+    return snapshot(root, selected)
 
 
 def resolve_artifact(
@@ -525,19 +193,30 @@ def resolve_artifact(
     """Materialize an allowlisted immutable artifact on the host owning the workspace."""
     from leanflow_cli.formalization.proof_receipts import current_proof_receipt
     from leanflow_cli.formalization.publication import publication_guard
+    from leanflow_cli.formalization.publication_io import publication_lock
 
-    with publication_guard(root), document_lock(root, document_id) as directory:
-        record = load_document(root, document_id)
+    proof_artifact = artifact_id.startswith("proof-lean-")
+    # Frozen viewer copies need serialization, not publication recovery. Live
+    # certified proof bytes still require the complete current authority guard.
+    owner = publication_guard(root) if proof_artifact else publication_lock(root)
+    with owner, document_lock(root, document_id) as directory:
+        record = load_document(root, document_id, reconcile_receipt=proof_artifact)
         if record["revision_id"] != identifier(expected_revision):
             raise ValueError("Formalization revision changed; refresh before opening its source")
-        try:
-            proof_receipt = current_proof_receipt(root, record, load_receipt(record))
-        except (OSError, ValueError, RuntimeError):
-            # Historical frozen source remains inspectable after authority expires.
-            proof_receipt = None
+        proof_receipt = None
+        if proof_artifact:
+            try:
+                proof_receipt = current_proof_receipt(root, record, load_receipt(record))
+            except (OSError, ValueError, RuntimeError):
+                # Historical frozen source remains inspectable after authority expires.
+                proof_receipt = None
         candidates = [
             artifact
-            for artifact in _artifacts(record, proof_receipt, _display_preview(root, record)[0])
+            for artifact in _artifacts(
+                record,
+                proof_receipt,
+                _display_preview(root, record, verify_current=proof_artifact)[0],
+            )
             if artifact["id"] == artifact_id
         ]
         if len(candidates) != 1:

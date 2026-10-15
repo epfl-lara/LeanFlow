@@ -176,6 +176,8 @@ def test_preparation_receipt_binds_infrastructure_not_published_aggregator_bytes
     (state / "receipt.json").write_text(json.dumps(receipt))
     monkeypatch.setattr(preparation, "preparation_directory", lambda root: state)
     monkeypatch.setattr(preparation, "assert_no_pending_preparation", lambda root: None)
+    # This fabricated-receipt fixture isolates source/compiler checks; membership has real transaction tests.
+    monkeypatch.setattr(preparation, "require_selected_preparation", lambda root, receipt: None)
     monkeypatch.setattr(preparation, "environment_identity", lambda root: "checked-env")
     (tmp_path / "Main.lean").write_text("import Main.Formalization.DocumentChecked\n")
     with pytest.raises(ValueError, match="Prepared project source changed"):
@@ -214,6 +216,7 @@ def test_reuse_rebinds_only_checked_imports_and_creates_no_canonical_writes(tmp_
     }
     captured = []
     monkeypatch.setattr(reuse, "environment_identity", lambda root: "env")
+    monkeypatch.setattr(preparation, "load_preparation_receipt", lambda root: previous)
 
     def commit(root, staged, **kwargs):
         assert root == staged == tmp_path

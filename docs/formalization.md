@@ -10,18 +10,48 @@ Start in a source folder or an existing Lean project. Check the project baseline
 before launching translation:
 
 ```bash
+leanflow project setup --preset mathlib
 leanflow formalization inspect docs/paper.tex --json
 leanflow formalization inspect docs/paper.tex --companion-pdf docs/paper.pdf --json
-leanflow project setup --preset mathlib
 leanflow workflow formalize docs/paper.tex
 leanflow formalization list --json
 leanflow formalization show <document-id> --json
+leanflow formalization check <document-id> --expected-revision <revision-id> --json
 ```
+
+`list`, `show` and editor source navigation display saved evidence without scanning
+the current Mathlib environment. Their `currentness: historical` projection grants
+no proof handoff, even when it displays a saved successful review. Use **Check current
+acceptance** or `formalization check` for exact currentness; proving independently
+rechecks admission. A repair can return `--acknowledge-only`: its committed revision
+is acknowledged before a separate view refresh, so a slow refresh cannot turn a
+saved edit into an apparent failure. Source links stay usable during currentness checks.
 
 In VS Code, **Set up project** is the first step in the Formalization tab. It
 checks Lean, the installed dependencies and the REPL without launching a model.
 An existing core-only project can remain core-only; use `--preset lean` for a new
 minimal baseline. Existing source files, toolchains and package pins are preserved.
+
+After an interrupted baseline setup, first retry setup for controller-verified recovery.
+If a competing editor version or a dead controller still blocks it, inspect the preserved
+versions with `leanflow project recovery inspect <project> --json`. After independently
+confirming every old process and output writer stopped, acknowledge that exact
+`observation_id` with `leanflow project recovery acknowledge <project> --observation <id>
+--confirm-processes-stopped --confirm-output-closed --keep-current --json`, then run setup
+again. Acknowledgment keeps current files and every retained version; it records external
+confirmation and does not claim verified physical EOF, mathematical acceptance, or readiness.
+Live processes, missing identity evidence, changed observations and later retained-inode
+edits keep recovery blocked. Uncertain inputs remain retained. Verified closed command
+records and terminal setup journals move into indexed archives before the 256-record
+active limit; archived versions remain audited, and bounded archive exhaustion fails
+with a preservation instruction rather than deleting history.
+Acknowledgment writes a positive fresh-setup barrier before recording external closure.
+An interrupted acknowledgment, a missing barrier, or a missing or rolled-back archive
+blocks readiness. A failed subsequent setup can be retried while preserving the exact
+acknowledged versions; it does not require acknowledgment again solely because setup
+temporarily promoted a file. An archive missing its trusted external membership anchor
+requires restoring trusted history, rather than reconstructing approval from surviving
+files.
 
 Translation requires a current setup checkpoint or stronger current formalization
 preparation before any planning call or campaign budget is created. The native
@@ -82,6 +112,24 @@ The default setup ceiling is 16 GiB. Set `LEANFLOW_SETUP_MAX_RSS_GIB=20` for a l
 project; whole-number values from 1 to 20 are supported. Worker retention stays
 bounded when the ceiling increases.
 
+Native author and reviewer calls also sample the combined RSS of the native CLI
+and its observed children, including builds started through native shell tools.
+`LEANFLOW_NATIVE_MAX_RSS_GIB` selects a whole-number ceiling from 1 to 20 GiB;
+without it, calls use `LEANFLOW_SETUP_MAX_RSS_GIB`, then the 16 GiB default.
+Exceeding the ceiling or losing process inspection stops the invocation and requires
+verified process and output closure before further work. The metric counts shared
+pages per process and cannot measure peaks between samples.
+
+The Formalization and Prove controllers also enforce that same ceiling across the
+controller and all its observed workflow processes together. This includes native
+authors and reviewers, bridge commands and Lean checker siblings. A separate
+quarter-second monitor cancels the workflow after an observed excess or five
+consecutive inspection failures; launch and acceptance boundaries require fresh
+measurements. Preexisting unrelated child branches are excluded, while already
+owned warm checkers are included. Process RSS counts shared pages repeatedly,
+and short peaks between samples may be missed. The aggregate monitor does not
+replace each actor's independent process and physical output-closure checks.
+
 Ambiguous compiler acquisition history preserves every version. A healthy installed
 compiler can still be checked and reused. If acquisition needs an acknowledgment,
 use the journal and target paths from the setup diagnostic:
@@ -112,6 +160,21 @@ Recovery binds each progress record to its snapshot before checking paths and
 retained versions; progress cannot replace a missing plan or receipt.
 Stopping immediately after infrastructure commits records the committed receipt
 and stops before author launch. A later launch can reuse that checked setup.
+Actual CLI launches publish a verified preparation owner before dependency planning,
+so the same Stop action also interrupts discovery and setup. A one-time CLI restart
+establishes an initially inherited process token while preserving its PID, interpreter
+flags and native authentication. Preparation releases only its exact owner before
+the translation controller takes over. Preview and direct API inspection do not
+create Stop authority. Preparation and translation each enforce the shared workflow
+memory budget and keep process closure separate from mathematical acceptance.
+
+Receipt reuse requires positive membership in the selected, conflict-free committed
+preparation transaction. Missing or corrupt registries and older indexes that omit
+retained transactions are authority loss. Planning, preparation readiness and reuse
+stop until the exact observed history is reconciled. Acknowledgment preserves the
+available versions and selects no approved preparation; a fresh checked transaction
+must establish readiness. Progress records are recovery evidence, never replacement
+approval.
 
 The source may be a TeX file, an unambiguous TeX project directory or a PDF. Inspection
 freezes source files and creates a complete region inventory without creating Lean
@@ -136,10 +199,12 @@ author claims completion or submits a proposal; the private draft remains availa
 Repair the source and restart before attempting acceptance. Diagnostics stay blocking for complete proposal acceptance;
 coverage, publication and prover handoff are not approved. No source material is
 silently excluded and the original TeX is unchanged. Missing included TeX files,
-uncertain macros, parse failures and PDF extraction errors still stop before author launch.
+unsupported effects, incomplete structural evidence and PDF extraction errors remain
+hard blockers. Eligible lexical uncertainty has the ordinary reviewed path described
+below; it does not require selecting this unaccepted preview mode.
 
-For TeX execution uncertainty with an explicitly paired original PDF, request an
-unaccepted preview explicitly:
+To retain a preparatory preview without attempting ordinary source acceptance,
+request unaccepted draft mode explicitly with a paired original PDF:
 
 ```bash
 leanflow formalization inspect docs/paper.tex --companion-pdf docs/paper.pdf --json
@@ -162,9 +227,11 @@ files beside their source links.
 Unresolved conditionals can contain alternative environment wrappers. The scanner
 keeps those alternatives separate when proposing statement boundaries; repeated
 unknown tests are independent, even if their text is identical. If a balanced
-complete alternative exists, malformed alternatives remain blocking structural
-uncertainty with original byte evidence. Only the explicit paired-PDF draft mode
-can defer that uncertainty. The absence of a balanced alternative, malformed
+complete alternative exists, malformed alternatives remain structural uncertainty
+with original byte evidence. A normal lexical-reading proposal may address it only
+when all bounded violation witnesses are retained; truncation stays blocking. The
+scanner retains up to 1,024 distinct witnesses without correlating repeated tests.
+The absence of a balanced alternative, malformed
 unconditional input, unsupported case conditionals, unmappable delimiters, and
 structural resource limits remain hard blockers and produce no recovered blocks.
 Candidate recovery does not choose an active branch or establish coverage. Nearby
@@ -179,7 +246,26 @@ diagnostics. A possibly skipped definition is structurally unsupported when
 conditional controls escape its complete declaration, including default arguments,
 parameter text or environment end-code. Self-contained balanced known conditional
 controls alone do not discard the document's other candidates. Comment-sensitive
-controls and unknown conditional names still require conservative manual review.
+controls and unknown conditional names still require conservative independent review.
+
+Normal translation can propose a source-bound lexical reading for eligible loader,
+inherited-meaning, command, conditional and bounded structural diagnostics. The
+controller supplies exact requirements for the frozen revision, source bundle,
+diagnostic spans and complete item/region inventory. The author must describe every
+eligible uncertainty with a substantive interpretation and reason. The original
+diagnostics, candidate scopes, include occurrences and conditional alternatives
+remain immutable evidence. Candidate diagnostics become pending independent review,
+not user-verified facts. Fresh coverage and final coherence review must approve the
+reading for the current stage; complete translation still requires the full source
+denominator. No proposal can waive unknown effects, invent exclusions or claim that
+TeX or package code was executed. Inaccessible evidence and mathematical ambiguities
+still block acceptance.
+
+Literal custom proof environments that wrap `proof` can supply provisional proof
+candidates. Their complete declaration, argument count, original proof bytes and
+any explicit label reference remain available to the reviewer. Effectful,
+ambiguous or unsupported wrappers receive no automatic attachment, and a candidate
+association alone does not establish that the source claim is proved.
 
 Traditional `\bibliography{...}` intake also freezes a supplied root job-name
 `.bbl`, which may accompany a source archive without its original `.bib` database.
@@ -193,8 +279,18 @@ limit remain diagnostic evidence. An oversized database is unavailable for rebui
 while a unique valid root job-name `.bbl` can still supply rendered context. An
 oversized rendered bibliography, or unavailable required support without that
 rendering, remains blocking. Files growing during a bounded read still fail closed.
+Valid UTF-8 bibliography contents remain available as complete frozen text for
+source review; intake does not execute BibTeX or bibliography macros.
 Case aliases stay visible as blockers. Explicit
 `\addbibresource` paths still require their named resource.
+
+A narrowly identified commented `\bibliography` candidate can instead receive a
+lexical-reading proposal when the frozen same-file source supplies a complete
+literal inline bibliography and an explicit frozen PDF companion is available.
+The exact unescaped percent prefix and inline bibliography spans bind this
+counterfactual missing-reference diagnostic. Fresh source and companion-image
+reviews must assess that reading. It neither fabricates a supplied `.bib`/`.bbl`
+nor permits active missing bibliography commands or missing figures to pass.
 
 The selected candidate belongs to its author campaign until an explicit revision
 selection or source repair changes that ownership. A new campaign cannot silently
@@ -235,6 +331,10 @@ verified retry, including when an output pipe remains open after the tracked
 processes exit. Local stream closure never substitutes for physical EOF. A closing
 bridge refuses new operations; only successful cleanup
 clears the corresponding ownership warning.
+Shutdown interrupts owned HTTP connections before joining handlers, so stalled or
+slowly sending clients cannot keep a closing bridge alive. A page image counts as
+delivered only after its complete authenticated response was written; interrupted
+responses and text-only metadata reads do not satisfy the visual gate.
 Each run loads its own immutable preview even if another run is currently selected;
 recovery binds it to the frozen source blobs rather than the author's editable
 source copy. This binding does not certify what the author actually read. Current
@@ -250,7 +350,18 @@ and proofs, include occurrences and macro context. Regions include prose outside
 recognized theorem environments. Counts of detected statements are useful for
 navigation; they are never the denominator for claiming complete source coverage.
 
-Scanner policy v9 additionally recognizes bounded decimal `\ifnum` comparisons
+Author and reviewer views group contiguous regions without changing the canonical
+token census. Groups preserve file, include occurrence, mathematical membership,
+exclusion and repair boundaries. Each normally contains at most 256 original members
+and 16 KiB of source; a single larger original member remains whole and paginated.
+Compact views expose coordinates, member counts and an exact membership hash, with
+the full ordered partition in frozen audit evidence. Proposals may name every
+canonical region or every exact group. Controller checks reject mixed, stale,
+partial or duplicate coverage, then expand complete group dispositions and review
+verdicts back to all original region IDs. No mathematical text or alternative path
+is removed to make a batch fit.
+
+Scanner policy v15 recognizes bounded decimal `\ifnum` comparisons
 using literal parameter-free `\def` constants. It tracks local groups and direct
 redefinitions, retains inactive branches at their original byte offsets, and keeps
 numeric operands requiring recursive, parameterized, effectful or otherwise
@@ -258,7 +369,16 @@ unsupported expansion unresolved.
 Required-argument rendering helpers receive only a bounded effect check of literal
 brace arguments; they never become numeric constants. Optional/delimited arguments,
 hidden scope changes and external reads refuse numeric selection. Assignments in
-math and redefinitions of scanner controls require explicit reconciliation.
+math and redefinitions of scanner controls remain unsupported effects requiring
+source repair; a normal lexical-reading proposal cannot waive them.
+Recognized file-loading commands outside the literal include/support resolver,
+including `\@input`, `\@@input`, the import family, conditional file inputs and
+PDF/standalone inclusion, remain hard I/O blockers. Saved macro and environment
+replacement bodies are checked for recognized file or execution effects before
+masking, including environment end bodies. A later class or package load cannot
+hide those effects. Unknown `@` command names receive source-bound diagnostics
+unless they have an explicit known or local definition; they are not silently
+treated as builtins. The scanner never executes these commands to recover files.
 It does not execute TeX or package code. Standard rendering commands and frozen
 `\DeclareMathOperator` bodies provide lexical context, never coverage or translation
 approval.
@@ -281,6 +401,13 @@ assignments and intervening unknown execution retain every literal include candi
 These are conservative extraction rules, not verification of TeX execution or rendered
 correspondence; independent source review still owns fidelity.
 
+Fresh TeX authoring, publication and current source acceptance require the current
+extraction policy, even when an older inventory recorded no diagnostics. Use the
+revision-bound `retry_extraction` action to re-extract the unchanged original
+sources explicitly. Saved source and review evidence remain available as history;
+opening that history neither upgrades its scanner policy nor grants current
+publication or prover authority.
+
 The deterministic scanner is the initial default. The optional plasTeX comparison
 adapter is a measurement and compatibility seam, not an installed runtime requirement
 or proof that extraction is complete. Unknown constructs and missing includes remain
@@ -297,14 +424,19 @@ does not waive missing files or approve a translation. Unknown conditional predi
 also support a checked user interpretation with exact source occurrences and a reason.
 This action retains both branches, every original byte region and candidate scope;
 it selects no branch and grants no coverage, translation or proof approval. Loader
-effects and inherited meanings keep separate blockers. Verification checkboxes reset
-when the selected revision changes. The host resolves artifact IDs and verifies content before opening it; webviews do not
+and inherited-meaning diagnostics require their own exact proposed reading and
+independent review; a user command interpretation does not silently resolve them.
+Verification checkboxes reset when the selected revision changes. The host resolves
+artifact IDs and verifies content before opening it; webviews do not
 choose arbitrary host paths. PDF.js is packaged locally and needs no LaTeX extension.
 PDF links identify physical pages and distinguish approximate from exact locations.
 If coordinate extraction fails but complete page text is available, intake reports
 the fallback and provides approximate page-only links without fabricated boxes.
-Image-only or missing-text pages need a verified transcription or source repair;
+PDF-only image or missing-text pages need a verified transcription or source repair;
 acknowledging a warning cannot turn unknown content into complete coverage.
+For a TeX companion, the same independent review also receives frozen physical page
+images to check correspondence and additional mathematics. This does not bypass
+an extraction failure or a required source-repair flag.
 
 ## Definitions, files and acceptance
 
@@ -312,6 +444,15 @@ The proposal records many-to-many translation units: source IDs, exact Lean name
 representation notes and dependencies. This supports split statements, merged setup,
 supporting lemmas and direct library reuse. Every included source item is mapped;
 every selected region has an explicit disposition and review verdict.
+
+Explicitly identified source clauses are mandatory checklist entries, without a
+claim that every clause was automatically found. Each affected unit records whether
+the clause is represented, a named pending proof, omitted, specialized or unresolved,
+with exact mapped declaration names and a rationale. Independent clause verdicts
+must assess the original frozen spans and compiled meaning. Omitted efficiency
+requirements, narrower domains and unresolved trailing qualifiers block the full
+item even when disclosed in a representation note. A pending proof must be an
+explicit proposition with complete data and types, not a missing computation.
 
 Definitions, data fields and instances must be implemented. Holes are permitted only
 in named propositional proof slots. A complete opaque definition is valid. A
@@ -372,7 +513,8 @@ leanflow workflow formalize docs/paper.tex --review-provider claude --review-mod
 The reviewer runs in fresh native sessions, without the author's conversation. Each
 coherent batch receives complete required statements and proofs plus scoped read-only
 retrieval of frozen context. Every translation unit and required source ID needs a
-verdict. Large projects use batches of at most eight units and forty source regions,
+verdict. Large projects use batches of at most eight units and forty exact source
+groups,
 then a final review checks the complete project and prior verdicts together. Small
 projects combine region coverage with that final review. Reviewers can retrieve
 exact region text and unchanged Lean definitions from the frozen project.
@@ -384,10 +526,21 @@ expansion; they still require full review before publication. Author-written sco
 notes cannot change that authority. Reviewers assess shared source context and
 block ambiguities that affect the selected statements or representations.
 Large dossiers are paginated without dropping trailing text or other evidence.
-Each tool response is bounded to 16,000 UTF-8 bytes; reviewers can request smaller
-pages. Batches contain their declaration summaries, with complete compiled bodies
-available separately. Inaccessible evidence is an operational failure and cannot
+Text tool responses are bounded to 16,000 UTF-8 bytes including the complete transport
+envelope; reviewers can request smaller pages. Batches contain their declaration
+summaries, with complete compiled bodies available separately. Inaccessible
+evidence is an operational failure and cannot
 be cached as a semantic rejection.
+For an explicitly paired TeX/PDF, the controller renders every physical companion
+page into immutable evidence bound to the exact PDF hash, renderer and flags, page
+index and PNG hash. PNGs are limited to 4 MiB and 2,200 pixels per dimension; image
+responses use a separate 6 MiB transport envelope. Every assigned companion page
+must actually be retrieved as an image before a positive coverage batch counts.
+Text metadata, an unread image catalog or an incomplete response cannot substitute
+for delivery. Cached passes must retain the exact delivered image bindings. Final
+coherence assesses the same source, images and prior coverage; it is not a separate
+visual review campaign. Image delivery does not approve correspondence by itself,
+and the PDF-only transcription gate remains unchanged.
 All batch feedback is collected before correction. A malformed reply or failed
 reviewer launch is an operational error, not a mathematical rejection.
 
@@ -403,8 +556,9 @@ available without becoming approval of a newly selected revision.
 
 Passing files and evidence are published together under a recoverable transaction.
 The portable `formalization/<document-id>/` directory contains immutable revisions,
-source blobs, immutable receipt history, prior review decisions, `Blueprint.md` and
-`handoff.json`. Private native logs and disposable caches remain under `.leanflow/`;
+source blobs, immutable receipt history, prior review decisions, delivered companion
+image blobs and metadata, `Blueprint.md` and `handoff.json`. Private native logs and
+disposable caches remain under `.leanflow/`;
 removing private caches does not
 remove the published source links.
 

@@ -245,8 +245,14 @@ def save_revision(directory: Path, record: dict[str, Any]) -> dict[str, Any]:
     return {**result, "_directory": str(directory)}
 
 
-def load_document(root: Path, document_id: str, revision: str | None = None) -> dict[str, Any]:
-    """Load and authenticate a selected private or portable document revision."""
+def load_document(
+    root: Path,
+    document_id: str,
+    revision: str | None = None,
+    *,
+    reconcile_receipt: bool = True,
+) -> dict[str, Any]:
+    """Authenticate a revision, optionally recovering its committed receipt projection."""
     candidates = [
         document_directory(root, document_id),
         document_directory(root, document_id, published=True),
@@ -279,15 +285,20 @@ def load_document(root: Path, document_id: str, revision: str | None = None) -> 
         ):
             raise ValueError("Formalization revision bytes differ from their identity")
         result = {**record, "_directory": str(directory)}
-        from leanflow_cli.formalization.receipt_recovery import reconcile_committed_receipt
+        if reconcile_receipt:
+            from leanflow_cli.formalization.receipt_recovery import reconcile_committed_receipt
 
-        reconcile_committed_receipt(root, result)
+            reconcile_committed_receipt(root, result)
         return result
     raise ValueError("Formalization document/revision not found")
 
 
 def create_document(
-    root: Path, source: Path, *, companion_pdf: Path | None = None
+    root: Path,
+    source: Path,
+    *,
+    companion_pdf: Path | None = None,
+    reconcile_receipt: bool = True,
 ) -> dict[str, Any]:
     """Freeze a complete source inventory without modifying any project source."""
     from leanflow_cli.formalization.extraction_actions import (
@@ -307,7 +318,7 @@ def create_document(
                 document_directory(root, document_id, published=True), "current.json"
             ).is_file()
         ):
-            previous = load_document(root, document_id)
+            previous = load_document(root, document_id, reconcile_receipt=reconcile_receipt)
             pairing = previous["inventory"].get("companion_pdf")
             if companion_pdf is None and pairing:
                 inventory = inventory_source(root, source, companion_pdf=Path(pairing["file"]))
@@ -332,8 +343,10 @@ def create_document(
                     and not should_refresh_raw_extraction(previous, inventory)
                 )
             ):
-                rehydrate_document(previous, directory)
-                return {**previous, "_directory": str(directory)}
+                if reconcile_receipt:
+                    rehydrate_document(previous, directory)
+                    return {**previous, "_directory": str(directory)}
+                return previous
         return save_revision(
             directory,
             {

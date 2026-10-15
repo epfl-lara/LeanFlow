@@ -8,10 +8,12 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from agent.runtime.harness.processes import start_identity_matches
 from leanflow_cli.formalization.evidence import contained, identity
 from leanflow_cli.formalization.preparation_disposal import (
     dispose_preparation_incoming as dispose_preparation_incoming,
 )
+from leanflow_cli.formalization.preparation_errors import PreparationAuthorityLoss
 from leanflow_cli.formalization.preparation_fs_inputs import (
     CONFIG,
     MANAGED,
@@ -45,6 +47,11 @@ from leanflow_cli.formalization.preparation_journal import (
 from leanflow_cli.formalization.preparation_loss import loss_projection, resolve_journal_loss
 from leanflow_cli.formalization.preparation_progress import save_entry_progress
 from leanflow_cli.formalization.preparation_recovery import recover_locked
+from leanflow_cli.formalization.preparation_registry_loss import (
+    LOSS_ID,
+    acknowledge_registry_loss,
+    registry_loss_projection,
+)
 from leanflow_cli.formalization.publication_io import (
     check_filesystem,
     entry_path,
@@ -67,7 +74,9 @@ def load_preparation_transaction(root: Path) -> dict[str, Any] | None:
 def assert_no_pending_preparation(root: Path) -> None:
     """Audit every retained setup generation and refuse pending infrastructure work."""
     root = root.resolve()
-    if not (preparation_directory(root) / "registry.json").exists():
+    path = preparation_directory(root) / "registry.json"
+    if not path.exists() and not path.is_symlink():
+        load_registry(root)
         return
     with publication_lock(root):
         registry = load_registry(root)
@@ -87,7 +96,9 @@ def recover_preparation(
 ) -> dict[str, Any] | None:
     """Recover active setup first, then audit older retained descriptors before admission."""
     root = root.resolve()
-    if not (preparation_directory(root) / "registry.json").exists():
+    path = preparation_directory(root) / "registry.json"
+    if not path.exists() and not path.is_symlink():
+        load_registry(root)
         return None
     with publication_lock(root):
         registry = load_registry(root)
@@ -105,10 +116,24 @@ def recover_preparation(
 def preparation_conflicts(root: Path) -> dict[str, Any]:
     """Expose transaction-bound versions while ordinary startup remains blocked."""
     root = root.resolve()
-    if not (preparation_directory(root) / "registry.json").exists():
-        return {"schema_version": 1, "transactions": []}
+    path = preparation_directory(root) / "registry.json"
+    if not path.exists() and not path.is_symlink():
+        try:
+            load_registry(root)
+        except PreparationAuthorityLoss:
+            pass
+        else:
+            return {"schema_version": 1, "transactions": []}
     with publication_lock(root):
-        registry = load_registry(root)
+        try:
+            registry = load_registry(root)
+        except PreparationAuthorityLoss as error:
+            return {
+                "schema_version": 1,
+                "transactions": [
+                    registry_loss_projection(root, preparation_directory(root), error.discovery)
+                ],
+            }
         audit_retained(root, registry, raise_conflicts=False)
         result = []
         for transaction_id in registry["transactions"]:
@@ -192,10 +217,18 @@ def commit_preparation(
             }
         owner = {"pid": os.getpid(), "start": process_states()[os.getpid()][2]}
         precommit_cleanup = receipt.get("precommit_cleanup")
-        if precommit_cleanup is not None and (
-            not isinstance(precommit_cleanup, dict) or precommit_cleanup.get("owner") != owner
-        ):
-            raise ValueError("Preparation cleanup must belong to the original controller")
+        if precommit_cleanup is not None:
+            previous_owner = (
+                precommit_cleanup.get("owner") if isinstance(precommit_cleanup, dict) else None
+            )
+            if (
+                not isinstance(previous_owner, dict)
+                or set(previous_owner) != set(owner)
+                or previous_owner.get("pid") != owner["pid"]
+                or not isinstance(previous_owner.get("start"), str)
+                or not start_identity_matches(str(owner["start"]), previous_owner["start"])
+            ):
+                raise ValueError("Preparation cleanup must belong to the original controller")
         plan = {
             "schema_version": 1,
             "transaction_id": transaction_id,
@@ -361,7 +394,24 @@ def resolve_preparation_conflict(
     if not isinstance(reason, str) or not reason.strip():
         raise PreparationConflict("Preparation resolution requires a reconciliation reason")
     with publication_lock(root):
-        registry = load_registry(root)
+        try:
+            registry = load_registry(root)
+        except PreparationAuthorityLoss:
+            if observed.get("transaction_id") != LOSS_ID:
+                raise
+            from leanflow_cli.formalization.preparation_loss import observe_journal_loss
+
+            result = acknowledge_registry_loss(
+                root,
+                preparation_directory(root),
+                observed,
+                reason,
+                read_journal=load_journal,
+                observe_journal_loss=observe_journal_loss,
+            )
+            if checkpoint:
+                checkpoint("resolution_settled")
+            return result
         transaction_id = observed.get("transaction_id")
         if (
             not isinstance(transaction_id, str)

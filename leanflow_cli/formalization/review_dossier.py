@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.formalization.clause_obligations import obligation_registry, validate_dispositions
 from leanflow_cli.formalization.environment import LIBRARY_SEMANTICS
 from leanflow_cli.formalization.evidence import digest, identity, read_blob
 from leanflow_cli.formalization.inventory_authority import complete_inventory
@@ -19,6 +20,11 @@ from leanflow_cli.formalization.review_transport import (
     _response_size,
 )
 from leanflow_cli.formalization.review_transport import EvidenceBridge as EvidenceBridge
+from leanflow_cli.formalization.source_reconciliation import (
+    compact_requirements,
+    reconciliation_requirements,
+)
+from leanflow_cli.formalization.source_review_regions import coalesce_regions, compact_region
 
 
 def _span_text(record: dict[str, Any], span: dict[str, Any]) -> str | None:
@@ -85,7 +91,8 @@ def evidence_documents(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "PDF-only mathematics requires a verified full-page transcription. "
                     "For a TeX companion, audit correspondence and additional content; "
                     "do not rely on unverified extraction for PDF-only mathematical evidence. "
-                    "Native reviewers receive this transcription evidence, not the rendered PDF."
+                    "When rendered_page_delivery is read_source_image, retrieve all assigned "
+                    "physical pages through that tool; extracted text alone is insufficient."
                 ),
                 "pages": [
                     page
@@ -135,6 +142,40 @@ def evidence_documents(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 else {}
             ),
         }
+    groups = coalesce_regions(record["inventory"]["regions"])
+    documents["source-region-partition"] = {
+        "canonical_region_count": len(record["inventory"]["regions"]),
+        "membership_sha256": identity(groups),
+        "groups": groups,
+    }
+    for group in groups:
+        member = documents["region:" + group["member_region_ids"][0]]
+        documents["region:" + group["id"]] = {
+            **member,
+            "region": compact_region(group),
+            "original_text": _span_text(record, group),
+        }
+    stored_reading = record.get("source_reconciliation", {})
+    requirements = reconciliation_requirements(
+        {**record, "revision_id": stored_reading.get("base_revision_id", record["revision_id"])}
+    )
+    documents["source-reconciliation-requirements"] = requirements
+    documents["source-reconciliation"] = {
+        "requirements": requirements,
+        "proposed_reading": record.get("source_reconciliation"),
+        "approval": "none; exact source coverage and final coherence must independently pass",
+    }
+    obligations = obligation_registry(record)
+    documents["known-obligations"] = {
+        "discovery": "explicitly identified clauses only; completeness still requires source review",
+        "obligations": list(obligations.values()),
+    }
+    for key, row in obligations.items():
+        documents["obligation:" + key] = {
+            **row,
+            "source_text": [_span_text(record, ref) for ref in row["source_refs"]],
+            "authority": "known source clause; no translation approval or partial-scope authorization",
+        }
     lean_files = {**record.get("context_lean_files", {}), **record.get("lean_files", {})}
     for relative, key in lean_files.items():
         raw = read_blob(Path(record["_directory"]) / "blobs", key)
@@ -143,26 +184,38 @@ def evidence_documents(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def mandatory_dossier(
-    record: dict[str, Any], units: list[dict[str, Any]], *, coherence: bool
+    record: dict[str, Any],
+    units: list[dict[str, Any]],
+    *,
+    coherence: bool,
+    documents: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Supply unabridged required items and proofs, with full frozen retrieval as backup."""
     items = {item["id"]: copy.deepcopy(item) for item in record["inventory"]["items"]}
     required = {key for unit in units for key in unit["required_source_ids"]}
+    for unit in units:
+        validate_dispositions(record, unit, compiled=True)
     for key in required:
         item = items[key]
         item["proof_text"] = [
             _span_text(record, span) for span in item.get("proof_spans", []) if "byte_start" in span
         ]
-    documents = evidence_documents(record)
+    if documents is None:
+        documents = evidence_documents(record)
     referenced_files = {
         ref["file"] for unit in units for ref in unit["declarations"] if ref.get("file")
     }
+    groups = coalesce_regions(record["inventory"]["regions"])
     return {
         "schema_version": 1,
         "phase": "coherence" if coherence else "translation",
         "controller_scope": scope_header(documents["controller-scope"]),
         "pdf_evidence_policy": {
-            "rendered_page_delivery": "unavailable",
+            "rendered_page_delivery": (
+                "read_source_image"
+                if any(value.get("source_image_id") for value in documents.values())
+                else "unavailable"
+            ),
             "source_authority": record["inventory"]["source_kind"],
             "physical_page_inventory": record["inventory"].get(
                 "page_inventory",
@@ -173,18 +226,44 @@ def mandatory_dossier(
                 "require actor=user verified complete transcriptions, including "
                 "mathematically relevant rasterized clauses and diagrams. Extracted text alone "
                 "is insufficient even when nonempty. For TeX companions, check correspondence "
-                "and extra mathematical content: the TeX remains the claim authority; block "
-                "rather than rely on unverified PDF-only evidence. Review transcription "
-                "fidelity metadata and independent coverage of the repaired text."
+                "and extra mathematical content against EVERY assigned physical page using "
+                "read_source_image. Actual image delivery is required for coverage/coherence PASS; "
+                "text and image metadata alone are insufficient. The TeX remains claim authority; "
+                "normal independent review certifies this correspondence assessment, without "
+                "inventing user-verified transcriptions or PDF-only approval."
             ),
         },
         "units": units,
+        "known_obligations": list(obligation_registry(record, required).values()),
+        "clause_policy": (
+            "Every known clause requires its authored disposition and independent clause verdict. "
+            "Omitted, specialized and unresolved clauses block full-item PASS even when disclosed "
+            "in representation_note. Only exact formal representations or named Prop proof slots "
+            "with complete data/types may pass independent fidelity review. This registry does "
+            "not claim automatic discovery of all mathematical clauses."
+        ),
         "source_items": [items[key] for key in sorted(required)],
+        "source_reconciliation": (
+            compact_requirements(record["source_reconciliation"])
+            if record.get("source_reconciliation")
+            else None
+        ),
+        "coverage_partition": {
+            "evidence_id": "source-region-partition",
+            "membership_sha256": identity(groups),
+            "canonical_region_count": len(record["inventory"]["regions"]),
+            "group_count": len(groups),
+        },
         "regions": (
             [
                 {
-                    **region,
+                    **compact_region(region),
                     "evidence_id": "region:" + region["id"],
+                    **(
+                        {"source_image_id": documents["region:" + region["id"]]["source_image_id"]}
+                        if documents.get("region:" + region["id"], {}).get("source_image_id")
+                        else {}
+                    ),
                     **(
                         {"pdf_fidelity": documents["region:" + region["id"]]["pdf_fidelity"]}
                         if region.get("coordinate_space") == "pdf_page"
@@ -207,7 +286,7 @@ def mandatory_dossier(
                         else None
                     ),
                 }
-                for region in record["inventory"]["regions"]
+                for region in groups
             ]
             if coherence
             else []
@@ -274,10 +353,15 @@ def mandatory_dossier(
 
 
 def review_assignment(
-    record: dict[str, Any], dossier: dict[str, Any], dossier_id: str
+    record: dict[str, Any],
+    dossier: dict[str, Any],
+    dossier_id: str,
+    *,
+    documents: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Page large assignments instead of silently truncating them or overflowing native prompts."""
-    documents = evidence_documents(record)
+    # The catalog belongs to one frozen checking phase; each bridge owns its additions.
+    documents = dict(evidence_documents(record) if documents is None else documents)
     header = scope_header(documents["controller-scope"])
     if "controller_scope" in dossier and dossier["controller_scope"] != header:
         raise ValueError("Reviewer assignment differs from frozen controller scope")

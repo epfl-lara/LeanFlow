@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.formalization.clause_obligations import validate_dispositions
 from leanflow_cli.formalization.evidence import identifier
 
 
@@ -155,5 +156,8 @@ def set_mapping(record: dict[str, Any], action: dict[str, Any]) -> None:
             "depends_on_units": list(dict.fromkeys(dependencies)),
         },
     ]
+    if "clause_dispositions" in action:
+        replacement[-1]["clause_dispositions"] = deepcopy(action["clause_dispositions"])
+    validate_dispositions(record, replacement[-1])
     _validate_dependencies(replacement)
     record["units"] = replacement

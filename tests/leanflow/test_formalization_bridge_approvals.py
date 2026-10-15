@@ -1,14 +1,20 @@
 """Advertise immutable evidence reads without approving execution, edits, or arbitrary native servers."""
 
+import pytest
+
 from leanflow_cli.formalization.review_transport import EvidenceBridge
 from leanflow_cli.workflows.prover.native_bridge import NativeBridge
 from leanflow_cli.workflows.prover.session_tools import SessionTools
 
 
-def test_frozen_evidence_tools_only_advertise_bounded_readonly_capabilities():
+@pytest.mark.parametrize("visual", [False, True])
+def test_frozen_evidence_tools_only_advertise_bounded_readonly_capabilities(visual):
     bridge = object.__new__(EvidenceBridge)
+    bridge.images = {"page-image": object()} if visual else {}
     tools = bridge.schemas()
-    assert {row["name"] for row in tools} == {"get_assignment", "read_evidence"}
+    assert {row["name"] for row in tools} == {"get_assignment", "read_evidence"} | (
+        {"read_source_image"} if visual else set()
+    )
     assert all(
         row["annotations"]
         == {

@@ -7,13 +7,14 @@ import hashlib
 import json
 import math
 import re
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from agent.runtime.harness.models import NativeCleanupUnverified
 from core.deadlines import deadline_after, remaining_seconds
+from leanflow_cli.workflows.prover.check_command_cleanup import command_workspace
 from leanflow_cli.workflows.prover.library_configuration import (
     _append_requirements,
     _configuration,
@@ -100,10 +101,10 @@ def _run_update(
         "update",
         *names,
     ]
-    with tempfile.TemporaryDirectory(prefix="leanflow-library-install-") as temporary:
+    with command_workspace(prefix="leanflow-library-install-") as workspace:
         return isolated_command(
             project_root=root,
-            workspace=Path(temporary),
+            workspace=workspace,
             argv=argv,
             timeout_s=timeout_s,
             extra_writable_roots=paths,
@@ -177,10 +178,8 @@ def _install_locked(
             raise TimeoutError("Library installation deadline exceeded")
 
     try:
-        with tempfile.TemporaryDirectory(
-            prefix="library-stage-", dir=root / ".leanflow"
-        ) as temporary:
-            stage = Path(temporary) / "project"
+        with command_workspace(prefix="library-stage-", directory=root / ".leanflow") as temporary:
+            stage = temporary / "project"
             library_transaction.copy_inputs(root, stage, previous, check=check)
             private_lakefile = stage / lakefile.name
             private_manifest, private_toolchain = stage / manifest.name, stage / toolchain.name
@@ -270,6 +269,10 @@ def _install_locked(
                 "stdout": str(result.get("stdout", ""))[:16000],
                 "retained_source_mutations": retained,
             }
+    except NativeCleanupUnverified:
+        # A still-authorized updater may use the private stage; neither recovery
+        # nor enclosing scratch disposal is safe until its owner verifies closure.
+        raise
     except Exception as exc:
         from leanflow_cli.workflows.prover.source import SourceConflictError
 
@@ -362,6 +365,8 @@ def install_libraries(
                     time.sleep(0.05)
             recover_pending(root)
             return _install_locked(root, validated, deadline)
+    except NativeCleanupUnverified:
+        raise
     except Exception as exc:
         return {
             "accepted": False,

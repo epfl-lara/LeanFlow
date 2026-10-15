@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .source_builtins import LATEX_BUILTINS
+from .source_effects import DEFINITION_FILE_EFFECTS
 from .source_numeric_conditionals import (
     LITERAL_ENVIRONMENTS,
     SCANNER_CONTROL_NAMES,
@@ -138,7 +139,9 @@ def _unbalanced_conditional_controls(declaration: str, numbers: LiteralTexNumber
     return depth != 0
 
 
-def _definition(text: str, command: str, start: int) -> tuple[int, str, str] | None:
+def _definition(
+    text: str, command: str, start: int
+) -> tuple[int, str, str, list[tuple[int, int]]] | None:
     """Locate a declaration without treating its replacement text as a claim."""
     cursor = start
     if command in {"def", "gdef", "edef", "xdef"}:
@@ -147,7 +150,9 @@ def _definition(text: str, command: str, start: int) -> tuple[int, str, str] | N
             return None
         brace = text.find("{", macro.end())
         result = group(text, brace) if brace >= 0 else None
-        return (result[1], macro.group(1), result[0]) if result else None
+        return (
+            (result[1], macro.group(1), result[0], [(brace + 1, result[1] - 1)]) if result else None
+        )
     option = group(text, cursor, "[")
     if option:
         cursor = option[1]
@@ -159,7 +164,7 @@ def _definition(text: str, command: str, start: int) -> tuple[int, str, str] | N
         first = ("\\" + macro.group(1), macro.end())
     name, cursor = first
     if command == "declaretheorem":
-        return cursor, name.strip(), option[0] if option else ""
+        return cursor, name.strip(), option[0] if option else "", [(start, cursor)]
     for _ in range(2):
         option = group(text, cursor, "[")
         if option:
@@ -167,13 +172,15 @@ def _definition(text: str, command: str, start: int) -> tuple[int, str, str] | N
     body = group(text, cursor)
     if body is None:
         return None
+    replacements = [(text.index("{", cursor) + 1, body[1] - 1)]
     cursor = body[1]
     if command in {"newenvironment", "renewenvironment"}:
         following = group(text, cursor)
         if following is None:
             return None
+        replacements.append((text.index("{", cursor) + 1, following[1] - 1))
         cursor = following[1]
-    return cursor, name.strip().lstrip("\\"), body[0]
+    return cursor, name.strip().lstrip("\\"), body[0], replacements
 
 
 def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexScan:
@@ -299,7 +306,7 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
             mark(pos, end, "excluded", "Definitely inactive conditional branch")
             pos = end
             continue
-        if name in SCANNER_CONTROL_NAMES and name in numbers.macros and not inactive:
+        if name in SCANNER_CONTROL_NAMES and name in numbers.macros:
             numbers.command(name, text, end)
             mark(
                 pos,
@@ -324,33 +331,32 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
             declared = COMMAND.match(text, cursor)
             if declared and declared[1].startswith("if") and len(declared[1]) > 2:
                 end = declared.end()
-                if not inactive:
-                    base = declared[1][2:]
-                    for macro in (declared[1], base + "true", base + "false"):
-                        numbers.define(
-                            macro,
-                            "",
-                            "newif",
-                            "",
-                            uncertain=uncertain,
-                            conditional_token=macro == declared[1],
-                            boolean_setter=macro != declared[1],
-                        )
-                        definitions.append(
-                            {
-                                "id": identity("macro", source.file + ":" + macro + ":" + str(pos)),
-                                "name": macro,
-                                "command": "newif",
-                                "body": "",
-                                "span": source.span(pos, end),
-                                "uncertain": uncertain,
-                            }
-                        )
+                base = declared[1][2:]
+                for macro in (declared[1], base + "true", base + "false"):
+                    numbers.define(
+                        macro,
+                        "",
+                        "newif",
+                        "",
+                        uncertain=uncertain,
+                        conditional_token=macro == declared[1],
+                        boolean_setter=macro != declared[1],
+                    )
+                    definitions.append(
+                        {
+                            "id": identity("macro", source.file + ":" + macro + ":" + str(pos)),
+                            "name": macro,
+                            "command": "newif",
+                            "body": "",
+                            "span": source.span(pos, end),
+                            "uncertain": uncertain,
+                        }
+                    )
                 mark(
                     pos,
                     end,
-                    "excluded" if inactive else "supporting_context",
-                    "Definitely inactive conditional branch" if inactive else "Boolean declaration",
+                    "supporting_context",
+                    "Boolean declaration",
                 )
             else:
                 lose_structure("unparsed_definition", "Cannot bound \\newif declaration", pos, end)
@@ -360,21 +366,21 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
             mark(
                 pos,
                 end,
-                "excluded" if inactive else "supporting_context",
-                "Definitely inactive conditional branch" if inactive else "Boolean assignment",
+                "supporting_context",
+                "Boolean assignment",
             )
         elif numbers.is_conditional(name):
             value = (
                 {"iftrue": True, "iffalse": False}.get(name) if not structural_uncertain else None
             )
-            if name == "ifnum" and not inactive:
+            if name == "ifnum":
                 comparison = numbers.conditional(text, end)
                 if comparison is not None:
                     value, end = comparison
             stack.append((value, False, pos))
             conditional_event(pos, end, "ifcase" if name == "ifcase" else "if", value)
             mark(pos, end, "supporting_context", "Conditional delimiter")
-            if value is None and not inactive:
+            if value is None:
                 diagnostic(
                     "unresolved_conditional", f"Cannot evaluate \\{name} lexically", pos, end
                 )
@@ -426,7 +432,19 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
                 )
             definition = _definition(text, name, end)
             if definition:
-                end, macro, body = definition
+                end, macro, body, replacements = definition
+                # Replacement bodies are authentic source, even if their tokens
+                # are masked before a later loader invalidates macro meanings.
+                for first, last in replacements:
+                    for effect in COMMAND.finditer(text, first, last):
+                        effect_name = effect[1].rstrip("*")
+                        if effect_name in DEFINITION_FILE_EFFECTS:
+                            lose_structure(
+                                "unsupported_tex_effect",
+                                f"Definition replacement contains \\{effect_name} file or execution effects; lexical interpretation cannot certify them",
+                                effect.start(),
+                                effect.end(),
+                            )
                 if any(value is None for value, _, _ in stack) and _unbalanced_conditional_controls(
                     text[command.end() : end], numbers
                 ):
@@ -436,24 +454,23 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
                         pos,
                         end,
                     )
-                if not inactive:
-                    brace = text.find("{", command.end())
-                    head = text[command.end() : brace] if brace >= 0 else ""
-                    numbers.define(
-                        macro,
-                        body,
-                        name,
-                        head,
-                        uncertain=uncertain,
-                        declaration=text[command.end() : end],
+                brace = text.find("{", command.end())
+                head = text[command.end() : brace] if brace >= 0 else ""
+                numbers.define(
+                    macro,
+                    body,
+                    name,
+                    head,
+                    uncertain=uncertain,
+                    declaration=text[command.end() : end],
+                )
+                if macro in SCANNER_CONTROL_NAMES:
+                    lose_structure(
+                        "redefined_scanner_control",
+                        f"Source redefines scanner control \\{macro}; structural interpretation is uncertain",
+                        pos,
+                        end,
                     )
-                    if macro in SCANNER_CONTROL_NAMES:
-                        lose_structure(
-                            "redefined_scanner_control",
-                            f"Source redefines scanner control \\{macro}; structural interpretation is uncertain",
-                            pos,
-                            end,
-                        )
                 definitions.append(
                     {
                         "id": identity(
@@ -466,8 +483,6 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
                         "uncertain": uncertain,
                     }
                 )
-                if inactive:
-                    definitions.pop()
                 mark(
                     pos,
                     end,
@@ -475,14 +490,10 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
                     "Macro or environment definition",
                     not structural_uncertain,
                 )
-                if inactive:
-                    mark(pos, end, "excluded", "Definitely inactive conditional branch")
             else:
                 lose_structure(
                     "unparsed_definition", f"Cannot bound \\{name} declaration", pos, end
                 )
-        elif inactive:
-            mark(pos, end, "excluded", "Definitely inactive conditional branch")
         elif name in {"verb", "lstinline"} and end < len(text) and not uncertain:
             delimiter = text[end]
             closing = text.find(delimiter, end + 1)
@@ -617,7 +628,7 @@ def scan_tex(source: SourceText, *, inherited_uncertain: bool = False) -> TexSca
                 # need a separate blocker because those references are known.
                 report=name in numbers.macros or name in LATEX_BUILTINS or not name.isalpha(),
             )
-        if uncertain and not inactive and not any(a <= pos and end <= b for a, b, _, _ in marks):
+        if uncertain and not any(a <= pos and end <= b for a, b, _, _ in marks):
             mark(pos, end, "unresolved", "Conditional branch requires evaluation", False)
         pos = end
     for _, _, start in stack:

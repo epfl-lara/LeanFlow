@@ -529,6 +529,9 @@ def candidate_feedback(
         file=str(file),
         timeout_s=runtime.config.timeout_s,
     )
+    if runtime.workflow_resources is not None:
+        runtime.workflow_resources.check(force=True)
+    runtime._ensure_active()
     job["phase"] = "submitted" if result.get("accepted") is True else "working"
     runtime.progress.publish()
     if infrastructure_code(result):

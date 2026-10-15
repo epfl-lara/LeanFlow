@@ -29,6 +29,8 @@ def register_formalization_parser(subparsers: Any) -> None:
         ("list", "List frozen source inventories"),
         ("inspect", "Freeze a TeX project or PDF and inspect source coverage"),
         ("show", "Show the selected document revision"),
+        ("check", "Check current acceptance of an exact selected revision"),
+        ("history", "Page saved revision identities without validating currentness"),
         ("action", "Apply a source repair against an exact revision"),
         ("artifact", "Resolve a frozen source or Lean artifact on this host"),
         ("plan", "Estimate pinned dependencies and project layout before translation"),
@@ -64,8 +66,11 @@ def register_formalization_parser(subparsers: Any) -> None:
             "recover-preparation",
         }:
             command.add_argument("document_id")
-        if name in {"action", "artifact", "plan", "prepare"}:
+        if name in {"check", "history", "action", "artifact", "plan", "prepare"}:
             command.add_argument("--expected-revision", required=True)
+        if name == "history":
+            command.add_argument("--offset", type=int, default=0)
+            command.add_argument("--limit", type=int, default=50)
         if name in {"plan", "prepare"}:
             command.add_argument("--preset", choices=("mathlib", "lean"), default="mathlib")
             command.add_argument("--plan-json")
@@ -83,6 +88,7 @@ def register_formalization_parser(subparsers: Any) -> None:
             command.add_argument("--expected-observation", required=True)
         if name == "action":
             command.add_argument("--action-json", required=True)
+            command.add_argument("--acknowledge-only", action="store_true")
         if name == "artifact":
             command.add_argument("artifact_id")
 
@@ -93,7 +99,7 @@ def handle_formalization(args: argparse.Namespace) -> int:
         root = Path(args.project).resolve()
         operation = args.formalization_command
         if operation == "list":
-            result = list_documents(root)
+            result = list_documents(root, verify_current=False)
         elif operation in {"preparation-conflicts", "resolve-preparation", "recover-preparation"}:
             from leanflow_cli.formalization.preparation_transaction import (
                 preparation_conflicts,
@@ -144,13 +150,36 @@ def handle_formalization(args: argparse.Namespace) -> int:
         elif operation == "inspect":
             companion = getattr(args, "companion_pdf", None)
             result = inspect_document(
-                root, Path(args.source), companion_pdf=Path(companion) if companion else None
+                root,
+                Path(args.source),
+                companion_pdf=Path(companion) if companion else None,
+                verify_current=False,
             )
         elif operation == "show":
+            result = show_document(root, args.document_id, verify_current=False)
+        elif operation == "check":
             result = show_document(root, args.document_id)
+            if result["revision_id"] != args.expected_revision:
+                raise ValueError(
+                    "Formalization revision changed; refresh before checking currentness"
+                )
+        elif operation == "history":
+            from leanflow_cli.formalization.records import load_document
+            from leanflow_cli.formalization.service_history import revision_history
+
+            record = load_document(root, args.document_id, reconcile_receipt=False)
+            if record["revision_id"] != args.expected_revision:
+                raise ValueError("Selected revision changed; refresh saved history")
+            result = revision_history(
+                root, args.document_id, record["revision_id"], offset=args.offset, limit=args.limit
+            )
         elif operation == "action":
             result = act_document(
-                root, args.document_id, args.expected_revision, json.loads(args.action_json)
+                root,
+                args.document_id,
+                args.expected_revision,
+                json.loads(args.action_json),
+                acknowledge_only=getattr(args, "acknowledge_only", False),
             )
         elif operation == "artifact":
             result = resolve_artifact(

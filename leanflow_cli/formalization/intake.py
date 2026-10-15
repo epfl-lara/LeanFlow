@@ -7,7 +7,7 @@ from typing import Any
 
 from leanflow_cli.formalization import lean_build
 from leanflow_cli.formalization.dependency_inputs import dependency_inputs
-from leanflow_cli.formalization.evidence import durable_json
+from leanflow_cli.formalization.evidence import durable_json, identity
 from leanflow_cli.formalization.formalization_models import (
     FormalizationDocumentContext,
     FormalizationDocumentError,
@@ -24,6 +24,13 @@ from leanflow_cli.formalization.records import (
     save_revision,
     source_bytes,
 )
+from leanflow_cli.formalization.source_reconciliation import (
+    assert_current_extraction,
+    compact_requirements,
+    lexical_admission,
+    reconciliation_requirements,
+)
+from leanflow_cli.formalization.source_review_regions import coalesce_regions, compact_region
 
 
 def author_blocking_diagnostics(
@@ -36,7 +43,24 @@ def author_blocking_diagnostics(
     """
     from leanflow_cli.formalization.source_draft import draft_policy
 
-    return list(draft_policy(inventory, explicit=source_draft_only)["strict"])
+    if not source_draft_only:
+        try:
+            assert_current_extraction(inventory)
+        except ValueError as error:
+            return [
+                {
+                    "id": "source-extraction-outdated",
+                    "code": "outdated_extraction_policy",
+                    "blocking": True,
+                    "message": str(error),
+                }
+            ]
+    policy = draft_policy(inventory, explicit=source_draft_only)
+    strict = list(policy["strict"])
+    if policy["draft_only"]:
+        return strict
+    hard = lexical_admission(inventory)
+    return [row for row in strict if row in hard]
 
 
 def draft_source_guidance(inventory: dict[str, Any], *, source_draft_only: bool = False) -> str:
@@ -189,14 +213,40 @@ def prepare_intake(
             for page in record["inventory"].get("pages", [])
         )
     extracted_path.write_text("\n\n".join(text), encoding="utf-8")
+    requirements = reconciliation_requirements(record)
+    from leanflow_cli.formalization.source_draft import draft_policy
+
+    draft_only = draft_policy(inventory, explicit=source_draft_only)["draft_only"]
+    groups = coalesce_regions(inventory["regions"])
+    partition = {
+        "canonical_inventory": inventory,
+        "groups": groups,
+        "authority": "complete ordered source census; grouped view never narrows coverage",
+        "source_reconciliation_requirements": requirements,
+    }
+    partition_path = directory / "source-region-partition.json"
+    durable_json(partition_path, partition)
+    grouped_inventory = {
+        **inventory,
+        "regions": [compact_region(group) for group in groups],
+        "canonical_region_count": len(inventory["regions"]),
+        "region_authority": "exact-contiguous-canonical-partition",
+    }
     manifest: dict[str, Any] = {
         "schema_version": 1,
         "document_id": record["document_id"],
         "revision_id": record["revision_id"],
-        "inventory": inventory,
+        "inventory": inventory if draft_only else grouped_inventory,
+        "source_region_partition": {
+            "path": str(partition_path),
+            "sha256": identity(partition),
+            "canonical_region_count": len(inventory["regions"]),
+            "group_count": len(groups),
+        },
         "layout": layout,
         "units": record.get("units", []),
         "source_bundle": record["source_bundle"],
+        "source_reconciliation_requirements": compact_requirements(requirements),
         **({"checked_preparation_plan": checked_plan} if checked_plan else {}),
         **{
             key: record[key]
@@ -216,8 +266,14 @@ Document: {selection.source_relative}
 Frozen base revision: {record['revision_id']}
 Read the complete source manifest and original extracted files. Every selected region
 must be audited, including prose outside theorem environments. Blocking extraction
-diagnostics require source repair; never hide uncertainty, omit candidates, or narrow
+diagnostics require source repair or the manifest's exact lexical reconciliation proposal;
+hard execution/asset/expansion blockers remain source repairs. Never hide uncertainty, omit candidates, or narrow
 scope. If an unrecognized statement is found, report it for inventory repair.
+The manifest uses bounded contiguous review groups. Their exact ordered canonical
+members remain unmodified in source_region_partition; use that audit file when exact
+member provenance is needed. Submit coverage for every group ID exactly once, or
+every canonical region ID exactly once; never mix the coordinate systems or omit a
+member. Review all mathematical source content, including every known clause.
 
 {draft_source_guidance(inventory, source_draft_only=source_draft_only)}
 Read the complete source manifest, including checked_preparation_plan when present.
@@ -256,6 +312,22 @@ compiled dependencies or provide it explicitly. Region dispositions are item, su
 or a preserved explicit exclusion. Every source item except a user-excluded item must
 be mapped, and every region must occur exactly once. The independent reviewer must
 pass each item and the whole document. Author self-approval never satisfies a gate.
+Each source item may contain explicitly registered known_obligations. Every unit
+using that source must supply clause_dispositions for each known obligation:
+{{"obligation_id":"exact id","disposition":"represented/pending_proof/omitted/specialized/unresolved",
+"declaration_names":["exact mapped name"],"rationale":"specific clause evidence"}}.
+Omitted, specialized or unresolved clauses block full-item acceptance even when
+representation_note discloses them. pending_proof must name a real Prop theorem
+proof slot expressing the missing clause with complete computational definitions
+and types; it does not authorize data holes or dropped requirements. The known-clause
+checklist is not automatic discovery: preserve and review every source qualifier.
+When source_reconciliation_requirements lists lexical diagnostics, the proposal must
+include source_reconciliation={{"requirements_id":"exact requirements ID","entries":[
+{{"diagnostic_id":"every exact eligible ID","interpretation":"literal lexical reading",
+"reason":"specific source evidence"}}]}}. Preserve every conditional alternative and
+complete context. This proposes an interpretation for normal independent coverage
+and coherence review; it cannot certify package/loader purity, resolve a hard effect,
+exclude a source branch or grant mathematical approval. Never claim actual TeX execution.
 """
     context_path.write_text(guidance, encoding="utf-8")
     skill_path.write_text(

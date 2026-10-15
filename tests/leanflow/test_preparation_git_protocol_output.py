@@ -203,6 +203,27 @@ def test_read_failure_never_certifies_a_safe_prefix_as_complete_protocol(
         return child
 
     monkeypatch.setattr(subprocess, "Popen", with_broken_stdout)
+    if not restricted:
+        # Public setup uses raw nonblocking descriptors rather than blocking
+        # reader threads. Inject the same read failure at that actual boundary.
+        from leanflow_cli.workflows.project_setup import public_process
+
+        def broken_nonblocking_read(stream):
+            if owned and stream is owned[0].stdout:
+                wrapper = stream
+                if wrapper.read_bytes >= prefix_bytes:
+                    assert wrapper.child.wait(timeout=2) == 0
+                    failures.append(True)
+                    raise OSError("fixture reader lost its protocol channel")
+                content = os.read(stream.fileno(), min(4096, prefix_bytes - wrapper.read_bytes))
+                wrapper.read_bytes += len(content)
+                return content
+            try:
+                return os.read(stream.fileno(), 4096)
+            except BlockingIOError:
+                return None
+
+        monkeypatch.setattr(public_process, "_read", broken_nonblocking_read)
     with pytest.raises(process.SetupFailure) as error:
         process.run_command(
             [

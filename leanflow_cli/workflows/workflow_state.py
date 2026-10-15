@@ -631,6 +631,47 @@ def mark_workflow_live_status_startup(
     update_json_file(workflow_live_status_path(), mutate)
 
 
+def release_workflow_startup_owner(
+    run_id: str, *, outcome: str, metadata: Mapping[str, Any] | None = None
+) -> bool:
+    """Release only this exact preflight lease without erasing math or a later native owner."""
+    if outcome not in {"prepared", "cancelled", "failed"}:
+        raise ValueError("Invalid workflow startup release outcome")
+    writer = current_process_identity()
+
+    def mutate(payload: dict[str, Any]) -> tuple[bool, bool]:
+        current = process_identity_from_mapping(payload)
+        if (
+            payload.get("run_id") != run_id
+            or payload.get("owner_role") != "formalization-preflight"
+            or not _identity_is_current_process_owner(current, writer)
+        ):
+            return False, False
+        payload["preflight_release"] = {
+            "outcome": outcome,
+            "run_id": run_id,
+            **process_identity_details(writer),
+            **dict(metadata or {}),
+        }
+        payload.update(
+            process_id=0,
+            process_group_id=0,
+            process_session_id=0,
+            process_token_sha256="",
+            phase=(
+                "starting"
+                if outcome == "prepared"
+                else "interrupted" if outcome == "cancelled" else "failed"
+            ),
+            status="prepared" if outcome == "prepared" else outcome,
+            terminal=outcome != "prepared",
+            owner_role="",
+        )
+        return True, True
+
+    return bool(update_json_file_if_changed(workflow_live_status_path(), mutate))
+
+
 def _refresh_workflow_live_queue_source(
     *,
     target_symbol: str,
@@ -1438,9 +1479,9 @@ def _reduce_workflow_agent_event(
                 "process_session_id",
                 "process_token_sha256",
             ):
-                value = details.get(key)
-                if value not in (None, ""):
-                    summary[key] = value
+                identity_value = details.get(key)
+                if identity_value not in (None, ""):
+                    summary[key] = identity_value
     except Exception:
         pass
     timestamp = str(event.get("timestamp", "") or "")
@@ -1615,9 +1656,9 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
                     "process_session_id",
                     "process_token_sha256",
                 ):
-                    value = details.get(key)
-                    if value not in (None, ""):
-                        summary[key] = value
+                    identity_value = details.get(key)
+                    if identity_value not in (None, ""):
+                        summary[key] = identity_value
         except Exception:
             pass
         timestamp = str(event.get("timestamp", "") or "")

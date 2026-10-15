@@ -16,6 +16,7 @@ from .source_bibliography import (
     check_bibliography_size,
     discover_bibliography_support,
 )
+from .source_effects import LITERAL_FILE_COMMANDS
 from .source_provenance import COMMAND, SourceText, TexScan, digest, group, identity, scan_tex
 
 
@@ -115,6 +116,19 @@ class TexBundle:
                 path, max_bytes if max_bytes is not None else path.lstat().st_size
             )
             self.files[relative] = {"sha256": digest(raw), "encoding": "binary", "size": len(raw)}
+            if path.suffix.lower() in {".bib", ".bbl"}:
+                try:
+                    text = raw.decode("utf-8")
+                    if any(ord(char) < 32 and char not in "\t\r\n" for char in text):
+                        raise ValueError("Bibliography contains non-text control bytes")
+                except (UnicodeDecodeError, ValueError):
+                    self.diagnostic(
+                        "bibliography_encoding_unconfirmed",
+                        "Bibliography bytes are preserved; supply a verified UTF-8 transcription for review",
+                        relative,
+                    )
+                else:
+                    self.files[relative].update(encoding="utf-8", text=text)
 
     def _oversized_bibliography(
         self,
@@ -274,17 +288,7 @@ class TexBundle:
         counters: dict[tuple[str, str], int] = {}
         for command in COMMAND.finditer(scan.visible):
             name = command.group(1).rstrip("*")
-            if name not in {
-                "input",
-                "include",
-                "subfile",
-                "usepackage",
-                "RequirePackage",
-                "documentclass",
-                "includegraphics",
-                "bibliography",
-                "addbibresource",
-            }:
+            if name not in LITERAL_FILE_COMMANDS:
                 continue
             argument_pos = command.end()
             options = group(scan.visible, argument_pos, "[")

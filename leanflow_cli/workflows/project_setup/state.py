@@ -20,14 +20,22 @@ def state_directory(root: Path) -> Path:
     return leanflow_home() / "setup" / key
 
 
-def fingerprint(root: Path) -> str:
+def fingerprint(root: Path, *, configuration: dict[str, bytes | None] | None = None) -> str:
     """Hash dependency configuration and the executable used by readiness checking."""
     digest = hashlib.sha256()
+    digest.update(b"baseline-configuration-presence-v2\0")
     for name in ("lakefile.toml", "lakefile.lean", "lean-toolchain", "lake-manifest.json"):
         path = root / name
         digest.update(name.encode())
-        if path.is_file():
-            digest.update(path.read_bytes())
+        content = (
+            configuration.get(name)
+            if configuration is not None
+            else (path.read_bytes() if path.is_file() else None)
+        )
+        digest.update(b"absent\0" if content is None else b"present\0")
+        if content is not None:
+            digest.update(str(len(content)).encode() + b"\0")
+            digest.update(content)
     packages = root / ".lake/packages"
     if packages.is_dir():
         for package in sorted(packages.iterdir()):
@@ -76,7 +84,28 @@ def inspect_project(path: str | Path) -> dict[str, Any]:
             message="Project configuration or verification artifacts changed since setup.",
             remediation="Run project setup again to check and repair the environment.",
         )
-    ready = bool(valid and receipt.get("status") == "ready" and installed)
+    from leanflow_cli.workflows.project_setup.baseline_transaction import pending_issue
+
+    issue = pending_issue(root)
+    if issue:
+        receipt.update(
+            status="failed",
+            code="setup_recovery_required",
+            phase="recovery",
+            message=issue,
+            remediation="Retry project setup for verified recovery, or use project recovery inspect and acknowledge for exact preserved versions. External acknowledgment retains uncertain inputs and requires fresh setup.",
+        )
+    from leanflow_cli.workflows.project_setup.baseline_recovery import fresh_setup_required
+
+    if not issue and fresh_setup_required(root):
+        receipt.update(
+            status="failed",
+            code="setup_recheck_required",
+            phase="recovery",
+            message="Preserved setup versions were acknowledged externally; fresh setup is required.",
+            remediation="Run project setup to verify the retained current configuration.",
+        )
+    ready = bool(not issue and valid and receipt.get("status") == "ready" and installed)
     return {
         "root": str(root),
         "kind": kind,

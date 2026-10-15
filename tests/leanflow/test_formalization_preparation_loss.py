@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from leanflow_cli.formalization import preparation_journal
 from leanflow_cli.formalization import preparation_transaction as transaction
 from leanflow_cli.formalization.evidence import durable_json, identity
 from leanflow_cli.formalization.preparation_journal import load_journal, load_registry
@@ -128,7 +129,9 @@ def test_temporary_authority_read_error_does_not_persist_loss_or_revoke_receipt(
     original_bytes = failing.read_bytes()
     raised = False
     method = "read_bytes" if asset == "intent" else "read_text"
-    original = getattr(Path, method)
+    original = (
+        preparation_journal.read_regular_bytes if asset == "journal" else getattr(Path, method)
+    )
 
     def unreadable(path, *args, **kwargs):
         nonlocal raised
@@ -138,7 +141,10 @@ def test_temporary_authority_read_error_does_not_persist_loss_or_revoke_receipt(
         return original(path, *args, **kwargs)
 
     with monkeypatch.context() as patch:
-        patch.setattr(Path, method, unreadable)
+        if asset == "journal":
+            patch.setattr(preparation_journal, "read_regular_bytes", unreadable)
+        else:
+            patch.setattr(Path, method, unreadable)
         with pytest.raises(OSError) as error:
             load_registry(root)
         assert error.value.errno == failure

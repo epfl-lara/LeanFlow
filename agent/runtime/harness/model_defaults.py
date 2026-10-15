@@ -21,7 +21,8 @@ def reasoning_default(
     """Read model/list in the invocation's environment without starting a model turn.
 
     The returned value is labelled as a native model default, not per-response
-    inference telemetry. Discovery failure cannot change or fail the agent call.
+    inference telemetry. Missing discovery data leaves the default unknown.
+    Unverified helper closure still fails the invocation and retains its owner.
     """
     timeout = min(3.0, request.deadline - time.monotonic()) if request.deadline else 3.0
     if timeout <= 0 or (request.cancelled and request.cancelled()):

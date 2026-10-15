@@ -9,6 +9,7 @@ import pytest
 from agent.runtime.harness import HarnessResult
 from leanflow_cli.formalization import review
 from leanflow_cli.formalization.evidence import identity, put_blob
+from leanflow_cli.formalization.records import create_document
 from leanflow_cli.formalization.review_dossier import (
     EvidenceBridge,
     evidence_documents,
@@ -23,6 +24,61 @@ from tests.leanflow.test_formalization_revision_review import (
 from tests.leanflow.test_formalization_revision_review import source_record as _source_record
 
 source_record = _source_record
+
+
+def test_frozen_bibliography_text_is_delivered_over_all_native_evidence_pages(
+    source_record, tmp_path
+):
+    source = tmp_path / "bibliographic.tex"
+    source.write_text(r"\bibliography{refs}")
+    bibliography = source.with_suffix(".bbl")
+    original = "Référence αβ: " * 3000
+    bibliography.write_text(original, encoding="utf-8")
+    record = create_document(tmp_path, source)
+    record.update(checks=source_record["checks"], layout={}, units=[], environment_id="env-v1")
+    bibliography.write_text("Changed after freezing")
+    documents = evidence_documents(record)
+    evidence_id = "source:bibliographic.bbl"
+    tools = SessionTools(
+        role="reviewer",
+        project_root=Path(record["_directory"]),
+        workspace=Path(record["_directory"]) / "bibliography-tools",
+        context={},
+        allow_internet=False,
+    )
+    with EvidenceBridge(
+        toolset=tools,
+        context={},
+        callbacks={},
+        directory=Path(record["_directory"]) / "bibliography-bridge",
+    ) as bridge:
+        bridge.documents = documents
+        parts, offset, pages = [], 0, 0
+        while True:
+            response = bridge.dispatch(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "read_evidence",
+                        "arguments": {"id": evidence_id, "offset": offset},
+                    },
+                }
+            )
+            assert len(json.dumps(response, ensure_ascii=False).encode()) <= 16000
+            page = json.loads(response["result"]["content"][0]["text"])
+            assert page["sha256"] == identity(documents[evidence_id])
+            parts.append(page["text"])
+            pages += 1
+            if page["next_offset"] is None:
+                break
+            assert page["next_offset"] > offset
+            offset = page["next_offset"]
+    delivered = json.loads("".join(parts))
+    assert delivered["text"] == original
+    assert delivered["sha256"] == record["source_files"]["bibliographic.bbl"]
+    assert pages > 1
 
 
 def test_compiled_registry_index_retains_exact_meaning_and_unabridged_audit(source_record):
@@ -74,7 +130,14 @@ def test_compiled_registry_index_retains_exact_meaning_and_unabridged_audit(sour
         dossier["library_evidence"]["declarations"][0]["evidence_id"]
         == "library-declaration:Library.Data"
     )
-    assert len(dossier["regions"]) == len(source_record["inventory"]["regions"])
+    assert sum(row["member_count"] for row in dossier["regions"]) == len(
+        source_record["inventory"]["regions"]
+    )
+    assert [
+        key
+        for group in documents["source-region-partition"]["groups"]
+        for key in group["member_region_ids"]
+    ] == [row["id"] for row in source_record["inventory"]["regions"]]
     assert dossier["evidence_catalog"]["controller-checks"]["sha256"] == identity(before)
 
 

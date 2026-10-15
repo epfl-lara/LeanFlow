@@ -10,7 +10,7 @@ export function FormalizationDiagnostics({ diagnostics, disabled, submit, openSo
 }) {
   if (!diagnostics.length) return null;
   return <section className="card"><h3>Extraction diagnostics</h3>
-    <p>Record checked source interpretations before independent review. All original branches, candidate items and coverage obligations remain visible.</p>
+    <p>Original diagnostics remain visible alongside recorded interpretations and independent reviews. All original branches, candidate items and coverage obligations remain visible.</p>
     {diagnostics.map((diagnostic, index) => typeof diagnostic === "string"
       ? <p key={index} className="notice warn">{diagnostic}</p>
       : <CommandDiagnostic key={diagnostic.id} diagnostic={diagnostic} disabled={disabled} submit={submit} openSource={openSource} />)}
@@ -28,11 +28,13 @@ function CommandDiagnostic({ diagnostic, disabled, submit, openSource }: {
   const [reason, setReason] = useState("");
   const [verified, setVerified] = useState(false);
   const conditional = diagnostic.code === "unresolved_conditional";
+  const savedReview = diagnostic.native_interpretation_status === "saved_reviewed";
   const subject = conditional ? "Conditional" : "Command";
-  const resolvable = diagnostic.code === "unresolved_command" && diagnostic.can_resolve_command || conditional && diagnostic.can_resolve_conditional === true;
+  const resolvable = !savedReview && (diagnostic.code === "unresolved_command" && diagnostic.can_resolve_command || conditional && diagnostic.can_resolve_conditional === true);
   const valid = !disabled && resolvable && interpretation.trim() && reason.trim() && verified;
   return <details className="formalization-region">
-    <summary>{diagnostic.message} · {resolution ? "interpretation recorded" : diagnostic.resolution ? "source repair recorded" : diagnostic.blocking ? "blocking" : "information"}</summary>
+    <summary>{diagnostic.message} · {savedReview ? "source reading independently reviewed (saved)" : resolution ? "interpretation recorded" : diagnostic.resolution ? "source repair recorded" : diagnostic.blocking ? "blocking" : "information"}</summary>
+    {savedReview && <p className="muted">Saved source-reading review for this revision. Translation and current acceptance are shown separately.</p>}
     {diagnostic.source_refs.length > 0 && <ol>{diagnostic.source_refs.map((source, index) => <li key={index}>
       <button className="btn" disabled={disabled} onClick={() => openSource(source)}>
         Occurrence {index + 1}: {source.file ?? diagnostic.file ?? "Frozen source"}{source.page_index !== undefined ? ` · physical page ${source.page_index + 1}` : source.line_start ? ` · line ${source.line_start}` : ""}

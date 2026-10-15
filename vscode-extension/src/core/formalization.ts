@@ -41,6 +41,14 @@ export interface FormalizationItem {
   assumptions?: string[];
   representation_notes?: string;
   mapping_rationale?: string;
+  known_obligations?: {
+    id: string;
+    description: string;
+    reason: string;
+    source_refs: FormalizationSourceRef[];
+    dispositions: { unit_id: string; disposition: string; declaration_names: string[]; rationale: string }[];
+    verdicts: { decision: "PASS" | "BLOCK"; rationale: string; declaration_names: string[] }[];
+  }[];
 }
 
 export interface FormalizationRegion {
@@ -71,6 +79,8 @@ export interface FormalizationDiagnostic {
   source_refs: FormalizationSourceRef[];
   can_resolve_command: boolean;
   can_resolve_conditional?: boolean;
+  native_interpretation_required?: boolean;
+  native_interpretation_status?: "saved_reviewed" | "pending" | null;
   resolution_reason?: string;
   resolution?: "verified_transcription" | "explicit_scope_exclusion" | "explicit_source_boundary" | {
     actor: "user";
@@ -85,10 +95,12 @@ export interface FormalizationSnapshot {
   document_id: string;
   revision_id: string;
   status: string;
+  currentness?: "historical" | "checked";
+  source_currentness?: "unchecked" | "checked" | "stale";
   preparation?: { status: string; current: boolean; reason?: string; receipt?: Record<string, unknown> | null };
   preparation_result?: { accepted: boolean; status: string; error?: string };
   slice?: { phase: "representative_slice" | "complete"; required: boolean; slice_id?: string | null; slice_source_ids?: string[] };
-  acceptance_freshness?: { current: boolean; status: "not_published" | "current" | "environment_stale" | "checker_stale" | "acceptance_stale"; reason: string };
+  acceptance_freshness?: { current: boolean; status: "historical" | "not_published" | "current" | "environment_stale" | "checker_stale" | "acceptance_stale"; reason: string };
   receipt_error?: string | null;
   source: { kind: string; path: string; files?: string[]; pages?: number };
   items: FormalizationItem[];
@@ -126,6 +138,7 @@ export interface FormalizationSnapshot {
     obligations: { id: string; declaration: string; file: string; source_ids?: string[] }[];
   };
   revisions?: { revision_id: string; status: string }[];
+  revision_history?: { offset: number; next_offset: number | null; total: number };
 }
 
 export type FormalizationAction =
@@ -159,6 +172,13 @@ export function parseFormalizationSnapshot(value: unknown): FormalizationSnapsho
   const ids = raw.items.map(item => item.id);
   if (ids.some(id => typeof id !== "string" || !id) || new Set(ids).size !== ids.length ||
       raw.items.some(item => !Array.isArray(item.source_refs) || !Array.isArray(item.lean_refs) ||
+        item.known_obligations !== undefined && (!Array.isArray(item.known_obligations) || item.known_obligations.some(row =>
+          !row || typeof row.id !== "string" || typeof row.description !== "string" || typeof row.reason !== "string" ||
+          !Array.isArray(row.source_refs) || !Array.isArray(row.dispositions) || !Array.isArray(row.verdicts) ||
+          row.dispositions.some(value => !value || typeof value.unit_id !== "string" || typeof value.disposition !== "string" ||
+            typeof value.rationale !== "string" || !Array.isArray(value.declaration_names) || value.declaration_names.some(name => typeof name !== "string")) ||
+          row.verdicts.some(value => !value || !["PASS", "BLOCK"].includes(value.decision) || typeof value.rationale !== "string" ||
+            !Array.isArray(value.declaration_names) || value.declaration_names.some(name => typeof name !== "string")))) ||
         item.proof_authorization != null && (item.proof_authorization.actor !== "user" ||
           typeof item.proof_authorization.authorized !== "boolean" || typeof item.proof_authorization.reason !== "string"))) {
     throw new Error("The formalization service returned an invalid source inventory.");
@@ -169,6 +189,9 @@ export function parseFormalizationSnapshot(value: unknown): FormalizationSnapsho
       typeof diagnostic.message !== "string" || typeof diagnostic.blocking !== "boolean" ||
       typeof diagnostic.can_resolve_command !== "boolean" || !Array.isArray(diagnostic.source_refs) ||
       diagnostic.can_resolve_conditional !== undefined && typeof diagnostic.can_resolve_conditional !== "boolean" ||
+      diagnostic.native_interpretation_required !== undefined && typeof diagnostic.native_interpretation_required !== "boolean" ||
+      diagnostic.native_interpretation_status != null && !["saved_reviewed", "pending"].includes(diagnostic.native_interpretation_status) ||
+      diagnostic.native_interpretation_status === "saved_reviewed" && diagnostic.native_interpretation_required === true ||
       diagnostic.resolution != null && (typeof diagnostic.resolution === "string"
         ? !["verified_transcription", "explicit_scope_exclusion", "explicit_source_boundary"].includes(diagnostic.resolution)
         : diagnostic.resolution.actor !== "user" || diagnostic.resolution.verified !== true ||
@@ -178,7 +201,8 @@ export function parseFormalizationSnapshot(value: unknown): FormalizationSnapsho
   if (raw.preparation != null && (typeof raw.preparation !== "object" || typeof raw.preparation.current !== "boolean" || typeof raw.preparation.status !== "string") ||
       raw.slice != null && (typeof raw.slice !== "object" || typeof raw.slice.required !== "boolean" || !["representative_slice", "complete"].includes(raw.slice.phase)) ||
       raw.acceptance_freshness != null && (typeof raw.acceptance_freshness !== "object" || typeof raw.acceptance_freshness.current !== "boolean" || typeof raw.acceptance_freshness.reason !== "string" ||
-        !["not_published", "current", "environment_stale", "checker_stale", "acceptance_stale"].includes(raw.acceptance_freshness.status))) {
+        !["historical", "not_published", "current", "environment_stale", "checker_stale", "acceptance_stale"].includes(raw.acceptance_freshness.status)) ||
+      raw.currentness === "historical" && (raw.can_prove === true || raw.handoff != null || raw.acceptance_freshness?.current === true)) {
     throw new Error("The formalization service returned invalid preparation or acceptance freshness.");
   }
   if (raw.draft_preview != null) {

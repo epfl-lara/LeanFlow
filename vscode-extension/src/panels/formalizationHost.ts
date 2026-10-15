@@ -16,7 +16,7 @@ import { FrozenArtifactDocuments } from "./frozenArtifactDocuments";
 
 const MESSAGE_TYPES = new Set([
   "formalizationProjectSetup",
-  "listFormalizations", "inspectFormalization", "showFormalization", "formalizationAction",
+  "listFormalizations", "inspectFormalization", "showFormalization", "checkFormalization", "formalizationAction",
   "openFormalizationArtifact", "proveFormalization", "launchFormalization", "resumeFormalization",
   "listFormalizationConflicts", "openFormalizationConflictVersion", "resolveFormalizationConflict",
   "planFormalizationPreparation", "prepareFormalization", "cancelFormalizationPreparation",
@@ -68,6 +68,8 @@ export class FormalizationHost {
     if (message.type === "cancelFormalizationPreparation") { this.preparation.cancel(message, scope); return true; }
     if (message.type === "cancelFormalizationRecovery") { this.recovery.cancel(scope); return true; }
     if (message.type === "formalizationProjectSetup") { await this.setup.handle(message, scope); return true; }
+    // Currentness may inspect a large Mathlib environment. Keep source navigation and cancellation responsive.
+    if (message.type === "checkFormalization") { await this.dispatch(message, scope); return true; }
     const request = this.queue.then(() => this.dispatch(message, scope));
     this.queue = request.catch(() => undefined);
     await request;
@@ -130,6 +132,11 @@ export class FormalizationHost {
           post({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
           return;
         }
+        case "checkFormalization": {
+          const snapshot = await service.check(message.documentId, message.revisionId);
+          post({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+          return;
+        }
         case "inspectFormalization": {
           const picked = await vscode.window.showOpenDialog({
             canSelectMany: message.sourceKind === "file", canSelectFolders: message.sourceKind === "folder", canSelectFiles: message.sourceKind === "file",
@@ -156,12 +163,21 @@ export class FormalizationHost {
           return;
         }
         case "formalizationAction": {
-          const snapshot = await service.action(message.documentId, message.revisionId, message.action);
-          post({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+          const committed = await service.action(message.documentId, message.revisionId, message.action);
+          post({ type: "formalizationActionCommitted", documentId: committed.document_id, previousRevisionId: committed.previous_revision_id, revisionId: committed.revision_id });
+          try {
+            const snapshot = await service.show(message.documentId);
+            post({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+          } catch (error) {
+            const reason = redactSensitiveText(error instanceof Error ? error.message : String(error));
+            post({ type: "formalizationState", documentId: message.documentId, snapshot: null, error: `Saved revision ${committed.revision_id}. View refresh failed: ${reason}. Refresh the inventory; the edit is already committed.` });
+          }
           return;
         }
         case "openFormalizationArtifact": {
-          const snapshot = await service.show(message.documentId);
+          const snapshot = message.artifactId.startsWith("proof-lean-")
+            ? await service.check(message.documentId, message.revisionId)
+            : await service.show(message.documentId);
           if (snapshot.revision_id !== message.revisionId) throw new Error("The source revision changed. Refresh before opening this mapping.");
           const listedArtifact = snapshot.artifacts.find(artifact => artifact.id === message.artifactId);
           if (!listedArtifact) throw new Error("This artifact is not part of the selected revision.");
@@ -203,10 +219,24 @@ export class FormalizationHost {
           if (snapshot.revision_id !== message.revisionId || snapshot.selection_conflict || snapshot.source_stale) {
             throw new Error("The selected source revision changed or has a conflict. Refresh the inventory before launching.");
           }
-          const setup = this.services.setup?.stateForRoot(root);
+          const setupService = this.services.setup;
+          let setup = setupService?.stateForRoot(root);
           if (setup?.status === "running") throw new Error("Project setup is still running. Wait for project tools before starting or resuming formalization.");
-          if (snapshot.preparation?.current !== true && setup?.status !== "ready") {
-            throw new Error("Set up project tools in the Formalization tab before starting or resuming native planning.");
+          if (setup?.status !== "ready" && setupService) {
+            await setupService.refresh(this.services.cli.ok, root,
+              () => sameFormalizationScope(scope, this.services.formalizations.workspaceScope()));
+            operation.assertCurrent();
+            setup = setupService.stateForRoot(root);
+          }
+          if (setup?.status === "running") throw new Error("Project setup is still running. Wait for project tools before starting or resuming formalization.");
+          if (setup?.status !== "ready") {
+            // Historical show deliberately carries no preparation authority. A
+            // checked document may still provide stronger current setup evidence.
+            const checked = await service.check(message.documentId, message.revisionId);
+            if (checked.selection_conflict || checked.source_stale) throw new Error("The selected source revision changed or has a conflict. Refresh the inventory before launching.");
+            if (checked.preparation?.current !== true) {
+              throw new Error("Set up project tools in the Formalization tab before starting or resuming native planning.");
+            }
           }
           const source = await resolveExistingProjectPath(root, snapshot.source.path);
           if (!source) throw new Error("The source is no longer available inside this workspace.");
@@ -229,7 +259,7 @@ export class FormalizationHost {
           return;
         }
         case "proveFormalization": {
-          const snapshot = await service.show(message.documentId);
+          const snapshot = await service.check(message.documentId, message.revisionId);
           if (snapshot.revision_id !== message.revisionId || !snapshot.can_prove ||
               snapshot.handoff?.revision_id !== message.revisionId) {
             throw new Error("This revision is not ready for proving. Refresh and resolve the controller's blockers.");
@@ -247,7 +277,7 @@ export class FormalizationHost {
       const reason = redactSensitiveText(error instanceof Error ? error.message : String(error));
       if (message.type === "listFormalizations") {
         post({ type: "formalizationList", documents: [], error: reason });
-      } else if (message.type === "showFormalization" || message.type === "formalizationAction") {
+      } else if (message.type === "showFormalization" || message.type === "checkFormalization" || message.type === "formalizationAction") {
         post({ type: "formalizationState", documentId: message.documentId, snapshot: null, error: reason });
       } else if (message.type === "listFormalizationConflicts" || message.type === "openFormalizationConflictVersion" || message.type === "resolveFormalizationConflict") {
         post({ type: "formalizationConflicts", snapshot: null, error: reason });

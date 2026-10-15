@@ -11,10 +11,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from core.regular_files import read_regular_bytes
 from leanflow_cli.formalization.environment import environment_identity
 from leanflow_cli.formalization.evidence import identity
 from leanflow_cli.formalization.inspector_readiness import valid_inspector_readiness
+from leanflow_cli.formalization.preparation_history import MAX_CONTROL_BYTES
 from leanflow_cli.formalization.preparation_lifecycle import private_stage
+from leanflow_cli.formalization.preparation_membership import require_selected_preparation
 from leanflow_cli.formalization.preparation_plan import (
     default_preparation_plan,
     validate_preparation_plan,
@@ -26,6 +29,7 @@ from leanflow_cli.formalization.preparation_transaction import (
     preparation_directory,
     recover_preparation,
 )
+from leanflow_cli.formalization.publication_io import publication_lock
 from leanflow_cli.formalization.stage_errors import RepreparationRequired
 from leanflow_cli.runtime.project_operations import project_setup
 from leanflow_cli.runtime.storage import ensure_storage_capacity
@@ -34,12 +38,11 @@ from leanflow_cli.workflows.project_setup.scaffold import validate_mutable_paths
 from leanflow_cli.workflows.prover.source import project_sources
 
 
-def load_preparation_receipt(root: Path) -> dict[str, Any] | None:
-    """Read selected setup authority independently of model-written planning notes."""
-    path = preparation_directory(root) / "receipt.json"
-    if not path.exists():
+def _stored_receipt(path: Path) -> dict[str, Any] | None:
+    """Read a bounded historical receipt without treating its self-hash as authority."""
+    if not path.exists() and not path.is_symlink():
         return None
-    receipt = json.loads(path.read_text())
+    receipt = json.loads(read_regular_bytes(path, MAX_CONTROL_BYTES))
     if (
         not isinstance(receipt, dict)
         or receipt.get("schema_version") != 1
@@ -52,6 +55,21 @@ def load_preparation_receipt(root: Path) -> dict[str, Any] | None:
     return receipt
 
 
+def load_preparation_receipt(root: Path) -> dict[str, Any] | None:
+    """Read receipt authority only after locked history audit and positive committed selection."""
+    root = root.resolve()
+    path = preparation_directory(root) / "receipt.json"
+    if not path.exists() and not path.is_symlink():
+        assert_no_pending_preparation(root)
+        return None
+    with publication_lock(root):
+        assert_no_pending_preparation(root)
+        receipt = _stored_receipt(path)
+        if receipt is not None:
+            require_selected_preparation(root, receipt)
+        return receipt
+
+
 def assert_preparation_current(
     root: Path,
     expected_id: str | None = None,
@@ -60,7 +78,6 @@ def assert_preparation_current(
     check_project_sources: bool = True,
 ) -> dict[str, Any]:
     """Require exact checked infrastructure before starting or expanding translation."""
-    assert_no_pending_preparation(root)
     receipt = load_preparation_receipt(root)
     if receipt is None:
         raise ValueError("Prepare this project before source translation")
@@ -97,8 +114,44 @@ def _source_identity(root: Path) -> dict[str, str | None]:
     }
 
 
-def preparation_status(root: Path) -> dict[str, Any]:
+def preparation_status(root: Path, *, verify_current: bool = True) -> dict[str, Any]:
     """Expose actionable readiness without interpreting a historical setup success as current."""
+    if not verify_current:
+        try:
+            directory = preparation_directory(root)
+            receipt = _stored_receipt(directory / "receipt.json")
+            if receipt is None:
+                return {
+                    "status": "preparation_required",
+                    "current": False,
+                    "currentness": "unknown",
+                    "receipt": None,
+                    "reason": "No stored preparation receipt",
+                }
+            registry = json.loads(
+                read_regular_bytes(directory / "registry.json", MAX_CONTROL_BYTES)
+            )
+            if (
+                not isinstance(registry, dict)
+                or registry.get("schema_version") != 1
+                or registry.get("root") != str(root.resolve())
+            ):
+                raise ValueError("Preparation registry header is corrupt or unsupported")
+            return {
+                "status": "historical",
+                "current": False,
+                "currentness": "historical",
+                "receipt": receipt,
+                "reason": "Stored preparation only; current history, compiler and dependencies have not been checked",
+            }
+        except (OSError, ValueError, TypeError) as error:
+            return {
+                "status": "preparation_unknown",
+                "current": False,
+                "currentness": "unknown",
+                "receipt": None,
+                "reason": str(error),
+            }
     try:
         receipt = assert_preparation_current(root, check_project_sources=False)
         if _source_identity(root) != receipt["project_sources"]:

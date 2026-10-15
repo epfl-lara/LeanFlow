@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
 from collections.abc import Mapping
 from typing import Any
 
 from leanflow_cli.formalization.evidence import identity
+from leanflow_cli.formalization.source_visual import FrozenImage
 from leanflow_cli.workflows.prover.native_bridge import NativeBridge, _validate_arguments
 
 REVIEW_RESPONSE_BYTES = 16000
+IMAGE_RESPONSE_BYTES = 6 * 1024**2
 _REQUEST_ID_BYTES = 256
 
 
@@ -52,9 +55,14 @@ class EvidenceBridge(NativeBridge):
 
     documents: dict[str, dict[str, Any]]
 
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.images: dict[str, FrozenImage] = {}
+        self.image_reads: dict[str, str] = {}
+
     def schemas(self) -> list[dict[str, Any]]:
         """Advertise only assignment recovery and bounded frozen evidence retrieval."""
-        return [
+        schemas = [
             {
                 "name": "get_assignment",
                 "annotations": {
@@ -90,13 +98,44 @@ class EvidenceBridge(NativeBridge):
                 },
             },
         ]
+        if self.images:
+            schemas.append(
+                {
+                    "name": "read_source_image",
+                    "annotations": {
+                        "readOnlyHint": True,
+                        "destructiveHint": False,
+                        "openWorldHint": False,
+                    },
+                    "description": "Read one frozen full physical PDF page as an MCP image. Use only an image evidence_id from the immutable catalog. Metadata binds the exact PDF, zero-based physical page, renderer and PNG hash. Image responses have a separate bounded6MiB envelope; textual evidence remains capped at16000 UTF-8 bytes.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}},
+                        "required": ["id"],
+                        "additionalProperties": False,
+                    },
+                }
+            )
+        return schemas
 
     def call(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         """Resolve opaque catalog keys rather than accepting reviewer filesystem paths."""
+        with self.lock:
+            if self.closed or self.closing:
+                raise ValueError("The frozen reviewer bridge is closed")
         schema = next((row for row in self.schemas() if row["name"] == name), None)
         if schema is None:
             raise ValueError("Reviewers have no command, edit, or publication capability")
         _validate_arguments(arguments, schema["inputSchema"])
+        if name == "read_source_image":
+            image_id = str(arguments["id"])
+            if image_id not in self.images:
+                raise ValueError("Image ID is outside the frozen review catalog")
+            image = self.images[image_id]
+            return {
+                "metadata": copy.deepcopy(image.metadata),
+                "data": base64.b64encode(image.read()).decode("ascii"),
+            }
         if name == "get_assignment":
             if _response_size(self.context) <= REVIEW_RESPONSE_BYTES:
                 return copy.deepcopy(self.context)
@@ -143,11 +182,23 @@ class EvidenceBridge(NativeBridge):
                 },
             }
         response = super().dispatch(request)
+        image_request = (
+            isinstance(request, dict)
+            and request.get("method") == "tools/call"
+            and isinstance(request.get("params"), dict)
+            and request.get("params", {}).get("name") == "read_source_image"
+        )
+        if image_request and response.get("result", {}).get("isError") is False:
+            value = json.loads(response["result"]["content"][0]["text"])
+            response["result"]["content"] = [
+                {"type": "text", "text": json.dumps(value["metadata"], ensure_ascii=False)},
+                {"type": "image", "mimeType": "image/png", "data": value["data"]},
+            ]
         if (
             isinstance(request, dict)
             and request.get("method") == "tools/call"
             and len(json.dumps(response, ensure_ascii=False).encode("utf-8"))
-            > REVIEW_RESPONSE_BYTES
+            > (IMAGE_RESPONSE_BYTES if image_request else REVIEW_RESPONSE_BYTES)
         ):
             return {
                 "jsonrpc": "2.0",
@@ -163,3 +214,16 @@ class EvidenceBridge(NativeBridge):
                 },
             }
         return response
+
+    def response_delivered(self, request: Any, response: dict[str, Any]) -> None:
+        """Record images only after the complete authenticated HTTP response was written."""
+        if (
+            isinstance(request, dict)
+            and request.get("method") == "tools/call"
+            and isinstance(request.get("params"), dict)
+            and request["params"].get("name") == "read_source_image"
+            and response.get("result", {}).get("isError") is False
+        ):
+            metadata = json.loads(response["result"]["content"][0]["text"])
+            with self.lock:
+                self.image_reads[metadata["evidence_id"]] = metadata["png_sha256"]

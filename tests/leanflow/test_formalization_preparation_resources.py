@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,3 +106,23 @@ def test_unverified_postkill_identity_keeps_cleanup_false_and_blocks_disposal(po
             pass
     assert error.value.code == "setup_cleanup_unverified"
     assert policy.usage.cleanup_verified is False
+
+
+def test_monitor_rejects_malformed_rss_metadata_without_accepting_zero(policy, monkeypatch):
+    from agent.runtime.harness import resources
+
+    original = resources.subprocess.run
+
+    def malformed_rss(command, *args, **kwargs):
+        if command == ["/bin/ps", "-axo", "pid=,rss=,lstart="]:
+            return SimpleNamespace(stdout="not a process memory table\n")
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(resources.subprocess, "run", malformed_rss)
+    cancel = threading.Event()
+    with pytest.raises(ValueError, match="Native memory measurement"):
+        with supervise_preparation(policy, cancel=cancel, interval_s=0.05):
+            assert cancel.wait(timeout=3)
+    assert cancel.is_set()
+    assert policy.usage.peak_owned_rss_bytes == 0
+    assert policy.usage.cleanup_verified

@@ -21,6 +21,7 @@ from leanflow_cli.formalization.records import (
     save_receipt,
     save_revision,
 )
+from leanflow_cli.formalization.source_inventory import EXTRACTION_VERSION
 from leanflow_cli.workflows.prover import entrypoint, runtime
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.source import SourceDocument, discover
@@ -147,6 +148,7 @@ def reviewed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dic
                 "regions": [],
                 "diagnostics": [],
                 "source_kind": "latex",
+                "extraction_version": EXTRACTION_VERSION,
                 "source_relative": "paper.tex",
             },
             "units": [

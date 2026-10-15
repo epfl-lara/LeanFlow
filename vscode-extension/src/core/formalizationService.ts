@@ -13,7 +13,16 @@ import { sameFormalizationScope, type FormalizationWorkspaceScope } from "./form
 
 type Transport = (args: string[], options: { cwd: string; timeoutMs?: number }) => Promise<string>;
 const INSPECTION_TIMEOUT_MS = 60_000;
-const INSPECTION_COMMANDS = new Set(["list", "show", "plan", "preparation-conflicts", "conflicts", "artifact", "conflict-artifact"]);
+const INSPECTION_COMMANDS = new Set(["list", "show", "inspect", "plan", "preparation-conflicts", "conflicts", "artifact", "conflict-artifact"]);
+
+export interface FormalizationCommit {
+  schema_version: 1;
+  committed: true;
+  document_id: string;
+  revision_id: string;
+  previous_revision_id: string;
+  currentness: "unchecked";
+}
 
 export class FormalizationService {
   private readonly workspaceId = randomUUID();
@@ -57,7 +66,7 @@ export class FormalizationService {
   private async call(args: string[]): Promise<unknown> {
     const cwd = this.workspaceRoot();
     if (!cwd) throw new Error("Open a source workspace or LeanFlow project to inspect formalization material.");
-    return JSON.parse(await this.transport(["formalization", ...args, "--json"], { cwd, ...(INSPECTION_COMMANDS.has(args[0]) ? { timeoutMs: INSPECTION_TIMEOUT_MS } : {}) }));
+    return JSON.parse(await this.transport(["formalization", ...args, "--json"], { cwd, ...(args[0] === "check" ? { timeoutMs: 180_000 } : INSPECTION_COMMANDS.has(args[0]) ? { timeoutMs: INSPECTION_TIMEOUT_MS } : {}) }));
   }
 
   /** Return the backend's current document list, without reading its private registry. */
@@ -73,17 +82,24 @@ export class FormalizationService {
     return snapshot;
   }
 
+  /** Check exact current acceptance separately from fast, non-authorizing source navigation. */
+  async check(documentId: string, revisionId: string): Promise<FormalizationSnapshot> {
+    const snapshot = parseFormalizationSnapshot(await this.call(["check", documentId, "--expected-revision", revisionId]));
+    if (snapshot.document_id !== documentId || snapshot.revision_id !== revisionId || snapshot.currentness === "historical") throw new Error("Currentness response belongs to another revision. Refresh before continuing.");
+    return snapshot;
+  }
+
   /** Intake freezes source evidence but never launches a model or writes Lean proposals. */
   async inspect(source: string, companionPdf?: string): Promise<FormalizationSnapshot> {
     return parseFormalizationSnapshot(await this.call(["inspect", source, ...(companionPdf ? ["--companion-pdf", companionPdf] : [])]));
   }
 
-  async action(documentId: string, revisionId: string, action: FormalizationAction): Promise<FormalizationSnapshot> {
-    const snapshot = parseFormalizationSnapshot(await this.call([
-      "action", documentId, "--expected-revision", revisionId, `--action-json=${JSON.stringify(action)}`,
-    ]));
-    if (snapshot.document_id !== documentId) throw new Error("The repair returned a different source inventory.");
-    return snapshot;
+  async action(documentId: string, revisionId: string, action: FormalizationAction): Promise<FormalizationCommit> {
+    const committed = await this.call([
+      "action", documentId, "--expected-revision", revisionId, `--action-json=${JSON.stringify(action)}`, "--acknowledge-only",
+    ]) as FormalizationCommit;
+    if (!committed || committed.schema_version !== 1 || committed.committed !== true || committed.document_id !== documentId || committed.previous_revision_id !== revisionId || typeof committed.revision_id !== "string" || !committed.revision_id || committed.currentness !== "unchecked") throw new Error("The repair did not return a valid committed revision acknowledgment.");
+    return committed;
   }
 
   /** Inspect the controller's bounded setup intent before any infrastructure writes. */

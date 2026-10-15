@@ -419,6 +419,15 @@ def _main(argv: list[str] | None = None) -> int:
             # multiword label, prompt, or command template remains one value.
             text = f"{text} {shlex.join(args.args)}"
         try:
+            if argv is None and not getattr(args, "dry_run", False):
+                from leanflow_cli.workflow import parse_workflow_command
+
+                if parse_workflow_command(text).workflow_kind == "formalize":
+                    from leanflow_cli.formalization.preflight_owner import (
+                        ensure_cli_preflight_token,
+                    )
+
+                    ensure_cli_preflight_token()
             plan = resolve_workflow_request(
                 text,
                 active_cwd=Path.cwd(),

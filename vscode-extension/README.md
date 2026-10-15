@@ -26,6 +26,13 @@ buffers or the canonical project file. The PDF rerenders to fit the available
 pane width; its text selection layer uses the same page scale.
 
 The inventory displays source review, Lean elaboration, and proof state separately.
+The overview shows the next action, while setup, issues, preparation, revisions,
+draft artifacts and handoff details can be collapsed. Item and region tables are
+paged, with full totals and search. Saved status opens quickly as **historical**;
+**Check currentness** checks the current environment separately without blocking
+source navigation. Repairs display a saved-revision acknowledgment before refreshing.
+If that refresh fails, the UI keeps the saved acknowledgment and asks for a refresh
+without resubmitting the edit.
 Open or unclassified claims also show **Proof attempt permission**. Select the item,
 enter a reason, and choose **Allow proof attempt for this open claim** to opt in;
 the same control lets you revoke permission. Each change creates a new working
@@ -192,6 +199,8 @@ Every live job exposes **Stop** in the dashboard, sidebar, and Runs tree,
 including jobs started from a terminal. Stopping goes through
 `leanflow runs stop RUN_ID`, which revalidates the exact run's process identity
 before signalling. Incomplete history is marked unknown.
+With the updated backend, Formalization publishes this verified ownership during
+dependency planning and preparation too; Stop does not have to wait for translation.
 
 The proof workspace shows the theorem graph or tree, statements, dependencies,
 plan, jobs, usage, controller checks, stop reasons, and recorded source changes.

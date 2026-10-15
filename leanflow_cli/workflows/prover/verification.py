@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import tempfile
 import threading
 import time
 import uuid
@@ -18,6 +17,7 @@ from core.deadlines import (
     remaining_seconds,
     wait_slice,
 )
+from leanflow_cli.workflows.prover.check_command_cleanup import command_workspace
 from leanflow_cli.workflows.prover.models import Dag, Node, digest, safe_relative_file
 from leanflow_cli.workflows.prover.source import (
     SourceDocument,
@@ -512,8 +512,7 @@ class LeanVerifier:
             return self._scoped_compile(relative)
         output = self._module_output(relative)
         output.parent.mkdir(parents=True, exist_ok=True)
-        with self.lock, tempfile.TemporaryDirectory(prefix="leanflow-helper-check-") as temporary:
-            workspace = Path(temporary)
+        with self.lock, command_workspace(prefix="leanflow-helper-check-") as workspace:
             artifact = workspace / "checked.olean"
             result = isolated_command(
                 project_root=self.root,
@@ -632,10 +631,10 @@ class LeanVerifier:
                 return {"accepted": False, "error_code": "check_setup_failed", "error": str(error)}
         build_root = project_path(self.root, self.scoped_build_dir or ".lake/build")
         build_root.mkdir(parents=True, exist_ok=True)
-        with self.lock, tempfile.TemporaryDirectory(prefix="leanflow-final-check-") as temporary:
+        with self.lock, command_workspace(prefix="leanflow-final-check-") as workspace:
             result = isolated_command(
                 project_root=self.root,
-                workspace=Path(temporary),
+                workspace=workspace,
                 argv=["lake", "build"],
                 timeout_s=self.timeout_s,
                 cancelled=self.cancelled,

@@ -63,6 +63,347 @@ def _assume_current_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_historical_editor_projection_never_runs_currentness_or_grants_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from leanflow_cli.formalization import freshness, proof_receipts
+
+    record = create_document(tmp_path, _source(tmp_path))
+
+    def expensive(*args, **kwargs):
+        raise AssertionError("Historical reads must not launch currentness checking")
+
+    monkeypatch.setattr(freshness, "published_acceptance_freshness", expensive)
+    monkeypatch.setattr(proof_receipts, "current_proof_receipt", expensive)
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.service_snapshot.assert_source_current", expensive
+    )
+    shown = show_document(tmp_path, record["document_id"], verify_current=False)
+    assert shown["currentness"] == "historical"
+    assert shown["acceptance_freshness"]["current"] is False
+    assert shown["can_prove"] is False and shown["handoff"] is None
+    assert shown["source_currentness"] == "unchecked"
+
+
+def test_committed_action_ack_does_not_wait_for_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = create_document(tmp_path, _source(tmp_path))
+    item_id = record["inventory"]["items"][0]["id"]
+
+    def slow_snapshot(*args, **kwargs):
+        raise AssertionError("Committed edit must be acknowledged before any view refresh")
+
+    monkeypatch.setattr("leanflow_cli.formalization.service.snapshot", slow_snapshot)
+    result = act_document(
+        tmp_path,
+        record["document_id"],
+        record["revision_id"],
+        {"type": "set_scope", "item_id": item_id, "scope": "included", "reason": "Keep claim"},
+        acknowledge_only=True,
+    )
+    assert result["committed"] is True
+    assert result["document_id"] == record["document_id"]
+    assert result["revision_id"] != record["revision_id"]
+    assert load_document(tmp_path, record["document_id"])["revision_id"] == result["revision_id"]
+
+
+@pytest.mark.parametrize("operation", ["show", "list", "inspect", "artifact", "history"])
+def test_historical_views_preserve_staged_receipts_without_recovery_audits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    from leanflow_cli.formalization.records import load_receipt
+    from tests.leanflow.test_formalization_receipts import _commit_receipt
+
+    source = _source(tmp_path)
+    record = create_document(tmp_path, source)
+    staged, _ = _commit_receipt(tmp_path, record)
+    private = Path(record["_directory"])
+    before = {
+        path.relative_to(private): path.read_bytes()
+        for path in private.rglob("*")
+        if path.is_file() and "viewer" not in path.parts
+    }
+
+    def no_recovery(*args, **kwargs):
+        raise AssertionError("Historical browsing must not audit or repair publication authority")
+
+    monkeypatch.setattr("leanflow_cli.formalization.receipt_recovery.load_registry", no_recovery)
+    if operation == "show":
+        result = show_document(tmp_path, record["document_id"], verify_current=False)
+        assert result["currentness"] == "historical" and not result["can_prove"]
+    elif operation == "list":
+        assert list_documents(tmp_path, verify_current=False)["documents"]
+    elif operation == "inspect":
+        assert (
+            inspect_document(tmp_path, source, verify_current=False)["revision_id"]
+            == record["revision_id"]
+        )
+    elif operation == "artifact":
+        artifact = source_artifact_id(record, "paper.tex")
+        assert (
+            Path(
+                resolve_artifact(tmp_path, record["document_id"], record["revision_id"], artifact)[
+                    "path"
+                ]
+            ).read_bytes()
+            == source.read_bytes()
+        )
+    else:
+        parser = argparse.ArgumentParser()
+        register_formalization_parser(parser.add_subparsers(dest="command"))
+        args = parser.parse_args(
+            [
+                "formalization",
+                "--project",
+                str(tmp_path),
+                "history",
+                record["document_id"],
+                "--expected-revision",
+                record["revision_id"],
+                "--json",
+            ]
+        )
+        assert handle_formalization(args) == 0
+    assert load_receipt(record) == staged
+    assert all((private / name).read_bytes() == content for name, content in before.items())
+    with pytest.raises(AssertionError, match="must not audit"):
+        load_document(tmp_path, record["document_id"])
+
+
+def test_saved_revision_history_is_paged_without_loading_old_receipts(tmp_path: Path) -> None:
+    from leanflow_cli.formalization.service_history import revision_history
+
+    record = create_document(tmp_path, _source(tmp_path))
+    revisions = document_directory(tmp_path, record["document_id"]) / "revisions"
+    for index in range(125):
+        (revisions / f"rev-history-{index:04}.json").write_text("Unavailable historical body")
+    shown = show_document(tmp_path, record["document_id"], verify_current=False)
+    assert len(shown["revisions"]) == 50
+    assert shown["revisions"][0]["revision_id"] == record["revision_id"]
+    assert shown["revision_history"] == {"offset": 0, "next_offset": 50, "total": 126}
+    remaining = revision_history(
+        tmp_path, record["document_id"], record["revision_id"], offset=50, limit=100
+    )
+    names = [row["revision_id"] for row in [*shown["revisions"], *remaining["revisions"]]]
+    assert len(names) == len(set(names)) == 126
+    assert remaining["next_offset"] is None
+    assert all(row["status"] == "historical" for row in remaining["revisions"])
+
+
+def test_fast_document_picker_returns_summaries_without_loading_full_views(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = create_document(tmp_path, _source(tmp_path))
+
+    def no_snapshot(*args, **kwargs):
+        raise AssertionError("Document picker must not load full source-region projections")
+
+    monkeypatch.setattr("leanflow_cli.formalization.service.snapshot", no_snapshot)
+    shown = list_documents(tmp_path, verify_current=False)["documents"][0]
+    assert shown["document_id"] == record["document_id"]
+    assert shown["items"] == [] and shown["regions"] == []
+    assert shown["counts"]["items"] == 1
+    assert not shown["can_prove"] and shown["handoff"] is None
+
+
+@pytest.mark.parametrize(
+    "status", ["published", "accepted_staged", "review_rejected", "check_error"]
+)
+def test_fast_picker_reports_authenticated_saved_receipt_status_without_currentness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    from leanflow_cli.formalization.records import save_receipt
+
+    record = create_document(tmp_path, _source(tmp_path))
+    save_receipt(record, {"revision_id": record["revision_id"], "status": status})
+
+    def no_currentness(*args, **kwargs):
+        raise AssertionError("Saved picker status must not inspect current acceptance")
+
+    monkeypatch.setattr("leanflow_cli.formalization.service.snapshot", no_currentness)
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.freshness.published_acceptance_freshness", no_currentness
+    )
+    shown = list_documents(tmp_path, verify_current=False)["documents"][0]
+    assert shown["status"] == status
+    assert shown["currentness"] == "historical" and not shown["can_prove"]
+    assert shown["handoff"] is None
+
+
+def test_fast_picker_does_not_trust_an_edited_receipt_status(tmp_path: Path) -> None:
+    from leanflow_cli.formalization.records import save_receipt
+
+    record = create_document(tmp_path, _source(tmp_path))
+    saved = save_receipt(
+        record, {"revision_id": record["revision_id"], "status": "review_rejected"}
+    )
+    path = Path(record["_directory"]) / "receipts" / (record["revision_id"] + ".json")
+    path.write_text(json.dumps({**saved, "status": "published"}))
+    with pytest.raises(ValueError, match="differs from its immutable event"):
+        list_documents(tmp_path, verify_current=False)
+
+
+def test_frozen_artifact_navigation_does_not_audit_or_recover_proof_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = create_document(tmp_path, _source(tmp_path))
+    artifact_id = source_artifact_id(record, "paper.tex")
+
+    def no_authority_audit(*args, **kwargs):
+        raise AssertionError("Frozen browsing must not audit publication authority")
+
+    monkeypatch.setattr("leanflow_cli.formalization.publication.load_registry", no_authority_audit)
+    opened = resolve_artifact(tmp_path, record["document_id"], record["revision_id"], artifact_id)
+    assert Path(opened["path"]).read_bytes() == (tmp_path / "paper.tex").read_bytes()
+    with pytest.raises(AssertionError, match="must not audit"):
+        resolve_artifact(
+            tmp_path, record["document_id"], record["revision_id"], "proof-lean-" + "a" * 64
+        )
+
+
+def test_editor_keeps_native_lexical_readings_distinct_from_hard_source_repairs(
+    tmp_path: Path,
+) -> None:
+    source = _source(
+        tmp_path,
+        r"\documentclass{article}\begin{theorem}\UnknownSymbol is positive.\end{theorem}"
+        r"\includegraphics{missing-figure}",
+    )
+    shown = inspect_document(tmp_path, source, verify_current=False)
+    pending = [row for row in shown["diagnostics"] if row["native_interpretation_required"]]
+    assert pending and all(row["blocking"] for row in pending)
+    missing = next(row for row in shown["diagnostics"] if row["code"] == "missing_support_file")
+    assert missing["blocking"] and not missing["native_interpretation_required"]
+    assert not shown["can_prove"]
+
+
+def _reconciled_display_record(tmp_path: Path) -> dict:
+    """Store a complete candidate and its original source census for historical display tests."""
+    from leanflow_cli.formalization.records import save_revision
+    from leanflow_cli.formalization.source_reconciliation import apply_reconciliation
+    from tests.leanflow.test_source_reconciliation import proposal
+
+    value = create_document(
+        tmp_path,
+        _source(tmp_path, r"\documentclass{article}\begin{theorem}A claim.\end{theorem}"),
+    )
+    value.update(
+        workflow_protocol=2,
+        proposal_phase="complete",
+        author_base_revision=value["revision_id"],
+        slice_source_ids=[item["id"] for item in value["inventory"]["items"]],
+    )
+    apply_reconciliation(value, proposal(value))
+    for region in value["inventory"]["regions"]:
+        region.update(
+            disposition="item" if region.get("item_ids") else "supporting_context",
+            reason="Retain the complete source region in the proposed interpretation",
+        )
+    value["inventory"]["audit_complete"] = True
+    value["units"] = [
+        {
+            "id": "unit-complete",
+            "required_source_ids": value["slice_source_ids"],
+            "declarations": [],
+            "representation_note": "Display saved review evidence without proof authority",
+        }
+    ]
+    return save_revision(Path(value["_directory"]), value)
+
+
+def test_historical_published_readings_show_saved_review_without_clearing_original_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import copy
+
+    from leanflow_cli.formalization.records import save_receipt
+    from leanflow_cli.formalization.service_snapshot import snapshot
+    from tests.leanflow.test_source_reconciliation import reviews
+
+    record = _reconciled_display_record(tmp_path)
+    original = copy.deepcopy(record)
+    save_receipt(
+        record,
+        {"revision_id": record["revision_id"], "status": "published", "reviews": reviews(record)},
+    )
+
+    def no_currentness_audit(*args, **kwargs):
+        raise AssertionError("A saved review label must not check currentness or recover authority")
+
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.freshness.published_acceptance_freshness",
+        no_currentness_audit,
+    )
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.preparation.assert_preparation_current", no_currentness_audit
+    )
+    shown = snapshot(tmp_path, record, verify_current=False)
+    readings = [row for row in shown["diagnostics"] if row.get("pending_independent_review")]
+    assert readings
+    assert all(row["native_interpretation_status"] == "saved_reviewed" for row in readings)
+    assert all(not row["native_interpretation_required"] for row in readings)
+    assert all(row.get("pending_independent_review") for row in record["inventory"]["diagnostics"])
+    assert all(row["blocking"] for row in record["full_inventory"]["diagnostics"])
+    assert record == original
+    assert shown["currentness"] == "historical" and not shown["can_prove"]
+    assert shown["handoff"] is None
+
+
+@pytest.mark.parametrize(
+    "tamper", ["missing", "duplicate", "stale", "cleanup", "coherence", "slice", "staged"]
+)
+def test_incomplete_or_nonpublished_lexical_reviews_stay_pending_in_historical_display(
+    tmp_path: Path, tamper: str
+) -> None:
+    from leanflow_cli.formalization.records import save_receipt
+    from leanflow_cli.formalization.service_snapshot import snapshot
+    from tests.leanflow.test_source_reconciliation import reviews
+
+    record = _reconciled_display_record(tmp_path)
+    evidence = reviews(record)
+    status = "published"
+    if tamper == "missing":
+        evidence[0]["coverage"].pop()
+    elif tamper == "duplicate":
+        evidence[0]["coverage"].append(evidence[0]["coverage"][0])
+    elif tamper == "stale":
+        evidence[0]["revision_id"] = "rev-stale"
+    elif tamper == "cleanup":
+        evidence[0]["cleanup_verified"] = False
+    elif tamper == "coherence":
+        evidence[0]["coherence_decision"] = "BLOCK"
+    elif tamper == "slice":
+        record["proposal_phase"] = "representative_slice"
+    else:
+        status = "accepted_staged"
+    save_receipt(
+        record, {"revision_id": record["revision_id"], "status": status, "reviews": evidence}
+    )
+    shown = snapshot(tmp_path, record, verify_current=False)
+    readings = [row for row in shown["diagnostics"] if row["native_interpretation_required"]]
+    assert readings
+    assert all(row["native_interpretation_status"] == "pending" for row in readings)
+    assert not shown["can_prove"] and shown["handoff"] is None
+
+
+def test_editor_exposes_registered_clauses_without_treating_dispositions_as_approval(
+    tmp_path: Path,
+) -> None:
+    from leanflow_cli.formalization.service_snapshot import snapshot
+    from tests.leanflow.test_formalization_clause_obligations import _record
+
+    record = _record(tmp_path, "Both algorithms run in polynomial time.", "omitted")
+    shown = snapshot(tmp_path, record, verify_current=False)
+    clause = shown["items"][0]["known_obligations"][0]
+    assert clause["description"] == "Both algorithms run in polynomial time."
+    assert clause["source_refs"][0]["artifact_id"] in {row["id"] for row in shown["artifacts"]}
+    assert clause["dispositions"][0]["disposition"] == "omitted"
+    assert clause["verdicts"] == []
+    assert shown["items"][0]["review_status"] == "pending"
+    assert not shown["can_prove"]
+
+
 def test_intake_freezes_bytes_without_creating_lean_or_blueprint(tmp_path: Path) -> None:
     source = _source(tmp_path)
     first = inspect_document(tmp_path, source)

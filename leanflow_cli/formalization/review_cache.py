@@ -80,7 +80,11 @@ def _units_without_locations(units: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def rejection_key(
-    record: dict[str, Any], dossier: dict[str, Any], configuration: dict[str, str]
+    record: dict[str, Any],
+    dossier: dict[str, Any],
+    configuration: dict[str, str],
+    *,
+    documents: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """Ignore Lean comments, interior spacing and locations for a negative verdict.
 
@@ -88,7 +92,8 @@ def rejection_key(
     binds the whole project, imports, literal values, source interpretation and
     compiled expressions; unrelated comments cannot purchase another opinion.
     """
-    documents = evidence_documents(record)
+    if documents is None:
+        documents = evidence_documents(record)
     lean = {
         name: _lean_evidence(value["text"])
         for name, value in documents.items()
@@ -128,6 +133,11 @@ def rejection_key(
             "lean": lean,
             "declarations": declarations,
             "setup_notes": record.get("setup_notes", ""),
+            **(
+                {"source_reconciliation": record["source_reconciliation"]}
+                if record.get("source_reconciliation")
+                else {}
+            ),
             "phase": dossier["phase"],
             "controller_scope": dossier.get("controller_scope"),
             "scope_evidence": documents.get("controller-scope"),

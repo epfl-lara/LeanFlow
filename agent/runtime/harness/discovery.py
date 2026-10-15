@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import selectors
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
 
 from .models import BackendError, HarnessRequest, NativeCleanupUnverified
-from .processes import ProcessSampler, ProcessTree, cleanup_group
+from .processes import ProcessTree, cleanup_group, process_exited, require_output_eof
+from .resources import SAMPLE_INTERVAL_S, NativeResourceSampler, native_memory_limit_bytes
+
+DISCOVERY_TIMEOUT_S = 30.0
+MAX_OUTPUT_BYTES = 1024**2
 
 
 def discover_mcp_servers(
@@ -19,6 +25,11 @@ def discover_mcp_servers(
     The caller supplies the same OS sandbox as the invocation. This metadata process
     does not start an agent conversation and is never charged as an agent call.
     """
+    memory_limit = native_memory_limit_bytes(env)
+    deadline = min(
+        request.deadline if request.deadline is not None else float("inf"),
+        time.monotonic() + DISCOVERY_TIMEOUT_S,
+    )
     process = subprocess.Popen(
         command,
         cwd=request.cwd,
@@ -28,22 +39,62 @@ def discover_mcp_servers(
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    tree = ProcessTree(process.pid)
-    sampler = ProcessSampler(tree)
+    tree = ProcessTree(process.pid, process=process)
+    sampler = NativeResourceSampler(process, tree, memory_limit)
     outputs_closed = False
+    cleaned = False
+    drain_deadline: float | None = None
+    sample_at = 0.0
+    stdout = bytearray()
+    output_bytes = 0
     try:
-        while True:
-            sampler.sample()
-            if (request.cancelled is not None and request.cancelled()) or (
-                request.deadline is not None and time.monotonic() >= request.deadline
-            ):
-                raise BackendError("Native configuration discovery was cancelled by the campaign.")
-            try:
-                stdout, _ = process.communicate(timeout=0.1)
-                outputs_closed = True
-                break
-            except subprocess.TimeoutExpired:
-                continue
+        with selectors.DefaultSelector() as selector:
+            assert process.stdout is not None and process.stderr is not None
+            for pipe in (process.stdout, process.stderr):
+                os.set_blocking(pipe.fileno(), False)
+                selector.register(pipe, selectors.EVENT_READ)
+            while selector.get_map() or not process_exited(process):
+                now = time.monotonic()
+                if not cleaned:
+                    if now >= sample_at:
+                        sampler.sample()
+                        sample_at = now + SAMPLE_INTERVAL_S
+                    if request.cancelled is not None and request.cancelled():
+                        raise BackendError(
+                            "Native configuration discovery was cancelled by the campaign."
+                        )
+                    if now >= deadline:
+                        raise BackendError("Native configuration discovery exceeded its deadline.")
+                    if process_exited(process):
+                        # Keep the original PID reserved until its owned group is stopped.
+                        cleanup_group(process, tree)
+                        cleaned = True
+                        drain_deadline = time.monotonic() + 2
+                for key, _ in selector.select(timeout=0.1):
+                    data = os.read(key.fd, 65536)
+                    if not data:
+                        selector.unregister(key.fileobj)
+                        continue
+                    output_bytes += len(data)
+                    if output_bytes > MAX_OUTPUT_BYTES:
+                        raise BackendError(
+                            "Native configuration discovery exceeded its output limit."
+                        )
+                    if key.fileobj is process.stdout:
+                        stdout.extend(data)
+                if (
+                    drain_deadline is not None
+                    and time.monotonic() >= drain_deadline
+                    and selector.get_map()
+                ):
+                    raise NativeCleanupUnverified(
+                        "Native configuration descendants did not close output channels; "
+                        "retain invocation inputs"
+                    )
+            outputs_closed = not bool(selector.get_map())
+        if not cleaned:
+            cleanup_group(process, tree)
+            cleaned = True
         if process.returncode != 0:
             raise BackendError(
                 "Native MCP configuration discovery failed; refusing to inherit unverified external tools."
@@ -76,12 +127,12 @@ def discover_mcp_servers(
             ) from exc
     finally:
         try:
-            cleanup_group(process, tree)
+            if not cleaned:
+                cleanup_group(process, tree)
             if not outputs_closed:
                 try:
-                    process.communicate(timeout=2)
-                    outputs_closed = True
-                except subprocess.TimeoutExpired as error:
+                    require_output_eof(process, timeout_s=2, description="Native configuration")
+                except NativeCleanupUnverified as error:
                     raise NativeCleanupUnverified(
                         "Native configuration descendants did not close output channels; "
                         "retain invocation inputs"

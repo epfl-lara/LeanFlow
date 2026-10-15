@@ -116,13 +116,14 @@ def _bound_matcher() -> tuple[dict[str, Any], dict[str, Any]]:
         )
     checks["admitted_project_sources"] = {"src/Main/Base.lean": "a" * 64}
     record = {
+        "inventory": {"items": [{"id": "source-goal"}]},
         "units": [
             {
                 "id": "goal",
                 "required_source_ids": ["source-goal"],
                 "declarations": [{"name": "Sample.goal", "file": "src/Main/Goal.lean"}],
             }
-        ]
+        ],
     }
     return record, checks
 

@@ -9,11 +9,13 @@ from typing import Any, Literal, TypedDict
 
 from leanflow_cli.formalization.environment import environment_identity
 from leanflow_cli.formalization.evidence import contained, digest, identity
+from leanflow_cli.formalization.inventory_authority import complete_inventory
 from leanflow_cli.formalization.lean_inspector import INSPECTOR
 from leanflow_cli.formalization.lean_policy import POLICY_VERSION
 from leanflow_cli.formalization.publication_journal import load_journal, load_registry
 from leanflow_cli.formalization.publication_membership import require_committed_publication
 from leanflow_cli.formalization.records import document_directory
+from leanflow_cli.formalization.source_reconciliation import assert_current_extraction
 
 
 class AcceptanceFreshness(TypedDict):
@@ -21,7 +23,12 @@ class AcceptanceFreshness(TypedDict):
 
     current: bool
     status: Literal[
-        "not_published", "current", "environment_stale", "checker_stale", "acceptance_stale"
+        "historical",
+        "not_published",
+        "current",
+        "environment_stale",
+        "checker_stale",
+        "acceptance_stale",
     ]
     reason: str
 
@@ -91,6 +98,7 @@ def published_acceptance_freshness(
             "reason": "No published acceptance receipt",
         }
     try:
+        assert_current_extraction(complete_inventory(record))
         assert_revision_not_revoked(root, record["revision_id"])
         require_committed_publication(root, record["document_id"], record["revision_id"])
         handoff = receipt["handoff"]

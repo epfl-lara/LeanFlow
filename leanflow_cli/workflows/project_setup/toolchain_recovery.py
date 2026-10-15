@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from agent.runtime.harness.processes import start_identity_matches
 from core.home import leanflow_home
 from leanflow_cli.formalization.evidence import (
     digest,
@@ -67,7 +68,7 @@ def compiler_recovery_observation(path: Path, target: Path) -> dict[str, Any]:
     original_live = bool(
         owner is not None
         and owner["pid"] in table
-        and table[owner["pid"]][2] == owner.get("start")
+        and start_identity_matches(table[owner["pid"]][2], owner.get("start", ""))
         and owner["pid"] != os.getpid()
     )
     value = {
@@ -237,7 +238,7 @@ def recover_compiler_publications(
         if (
             owner is not None
             and owner["pid"] in table
-            and table[owner["pid"]][2] == owner.get("start")
+            and start_identity_matches(table[owner["pid"]][2], owner.get("start", ""))
             and owner["pid"] != os.getpid()
         ):
             raise failure("The earlier compiler publication controller is still alive.")

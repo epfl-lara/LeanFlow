@@ -8,6 +8,7 @@ import json
 import math
 import re
 import secrets
+import socket
 import sys
 import threading
 import uuid
@@ -111,9 +112,34 @@ class NativeBridge:
             self.operations[str(operation["id"])] = operation
         self.threads: list[threading.Thread] = []
         self.submitted_response = ""
+        self._connections: set[socket.socket] = set()
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
+            # Local native relays send small requests; stalled clients must not outlive closure.
+            timeout = 2.0
+
+            def setup(self) -> None:
+                """Register this socket object before reading any untrusted request bytes."""
+                super().setup()
+                with bridge.lock:
+                    stopping = bridge.closing or bridge.closed
+                    if not stopping:
+                        bridge._connections.add(self.connection)
+                if stopping:
+                    try:
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+
+            def finish(self) -> None:
+                """Release tracked socket ownership after handler streams physically close."""
+                try:
+                    super().finish()
+                finally:
+                    with bridge.lock:
+                        bridge._connections.discard(self.connection)
+
             def do_POST(self) -> None:
                 """Authenticate one job and dispatch a bounded protocol request."""
                 if not secrets.compare_digest(
@@ -121,6 +147,7 @@ class NativeBridge:
                 ):
                     self.send_error(403)
                     return
+                request: Any = None
                 try:
                     size = int(self.headers.get("Content-Length", "0"))
                     if not 0 < size <= 4 * 1024 * 1024:
@@ -128,6 +155,9 @@ class NativeBridge:
                         return
                     request = json.loads(self.rfile.read(size))
                     payload = bridge.dispatch(request)
+                except (TimeoutError, ConnectionError):
+                    self.close_connection = True
+                    return
                 except (ValueError, TypeError, KeyError) as error:
                     payload = {
                         "jsonrpc": "2.0",
@@ -139,12 +169,19 @@ class NativeBridge:
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(encoded)))
                 self.end_headers()
-                self.wfile.write(encoded)
+                try:
+                    self.wfile.write(encoded)
+                    self.wfile.flush()
+                except OSError:
+                    self.close_connection = True
+                    return
+                bridge.response_delivered(request, payload)
 
             def log_message(self, format: str, *args: Any) -> None:
                 """Keep MCP stdout and controller logs free from HTTP diagnostics."""
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = False
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self) -> NativeBridge:
@@ -174,8 +211,14 @@ class NativeBridge:
                 if self.closed:
                     return
                 self.closing = True
+                connections = tuple(self._connections)
                 for event in self.stop_events.values():
                     event.set()
+            for connection in connections:
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
             self.drain()
             from leanflow_cli.workflows.prover.check_process import close_check_workers
 
@@ -203,6 +246,9 @@ class NativeBridge:
                 }
             }
         }
+
+    def response_delivered(self, request: Any, response: dict[str, Any]) -> None:
+        """Observe a completely written response; subclasses may record evidence delivery."""
 
     def schemas(self) -> list[dict[str, Any]]:
         """Advertise quick tools plus durable start/poll/cancel operations."""
@@ -393,6 +439,7 @@ class NativeBridge:
                 argv,
                 snapshot=self.toolset.project_root,
                 directory=self.toolset.workspace / ".command-home",
+                owner_workspace=self.toolset.workspace,
                 deadline=self.toolset.deadline,
                 cancelled=self.toolset.cancelled,
                 network_allowed=self.toolset.allow_internet,

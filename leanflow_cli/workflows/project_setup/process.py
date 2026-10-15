@@ -3,14 +3,9 @@
 from __future__ import annotations
 
 import os
-import queue
 import re
 import shutil
-import signal
-import subprocess
-import sys
 import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
@@ -73,43 +68,6 @@ def check_cancel(cancel: threading.Event | None) -> None:
         raise SetupCancelled()
 
 
-def _stop(process: subprocess.Popen[str]) -> None:
-    """Reap the owned process group even when its leader has already exited."""
-    if os.name == "nt":
-        if process.poll() is None:
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            process.wait()
-        return
-
-    def signal_group(value: int) -> bool:
-        try:
-            os.killpg(process.pid, value)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            # macOS can report EPERM for an empty group while its leader exits.
-            # A live owned process must still surface a real signalling failure.
-            if sys.platform != "darwin" or process.poll() is None:
-                raise
-            return False
-
-    if signal_group(signal.SIGTERM):
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            process.poll()
-            if not signal_group(0):
-                break
-            time.sleep(0.02)
-        signal_group(signal.SIGKILL)
-    process.wait()
-
-
 def run_command(
     command: list[str],
     *,
@@ -140,110 +98,16 @@ def run_command(
             stdout_limit_bytes=stdout_limit_bytes,
             execution_policy=execution_policy,
         )
-    check_cancel(cancel)
-    log.write("\n$ " + safe_text(" ".join(command)) + "\n")
-    log.flush()
-    resolved = find_executable(command[0]) or command[0]
-    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "ELAN_NO_PROMPT": "1"}
-    if command[0] == "lake":
-        environment["PATH"] = str(Path(resolved).parent) + os.pathsep + environment.get("PATH", "")
-    process = subprocess.Popen(
-        [resolved, *command[1:]],
+    from leanflow_cli.workflows.project_setup.public_process import run_public_command
+
+    return run_public_command(
+        command,
         cwd=cwd,
-        env=environment,
-        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        start_new_session=os.name != "nt",
+        log=log,
+        cancel=cancel,
+        progress=progress,
+        phase=phase,
+        input_text=input_text,
+        stdout_only=stdout_only,
+        stdout_limit_bytes=stdout_limit_bytes,
     )
-    lines: queue.Queue[tuple[bool, str | Exception | None]] = queue.Queue(
-        maxsize=64 if stdout_limit_bytes is not None else 0
-    )
-    stopped = threading.Event()
-
-    def enqueue(item: tuple[bool, str | Exception | None]) -> None:
-        while not stopped.is_set():
-            try:
-                lines.put(item, timeout=0.05)
-                return
-            except queue.Full:
-                pass
-
-    def read_output(stream: TextIO, is_stdout: bool) -> None:
-        try:
-            while not stopped.is_set():
-                line = stream.readline(4096 if stdout_limit_bytes is not None else -1)
-                if not line:
-                    break
-                enqueue((is_stdout, line))
-        except Exception as error:
-            enqueue((is_stdout, error))
-        finally:
-            enqueue((is_stdout, None))
-
-    assert process.stdout is not None and process.stderr is not None
-    readers = [
-        threading.Thread(
-            target=read_output, args=(stream, is_stdout), daemon=True, name="leanflow-setup-output"
-        )
-        for stream, is_stdout in ((process.stdout, True), (process.stderr, False))
-    ]
-    for reader in readers:
-        reader.start()
-    tail = ""
-    stdout_tail = ""
-    protocol_parts: list[str] = []
-    protocol_bytes = 0
-    try:
-        if input_text is not None:
-            assert process.stdin is not None
-            process.stdin.write(input_text)
-            process.stdin.close()
-        ended = 0
-        while ended < len(readers) or process.poll() is None:
-            check_cancel(cancel)
-            try:
-                is_stdout, line = lines.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            if line is None:
-                ended += 1
-                continue
-            if isinstance(line, Exception):
-                if stdout_limit_bytes is not None:
-                    raise SetupFailure(
-                        "setup_protocol_read_failed",
-                        "Complete preparation protocol output could not be read.",
-                        "Retry the readiness query; incomplete output cannot establish readiness.",
-                    ) from line
-                continue
-            sanitized = safe_text(line)
-            log.write(sanitized + "\n")
-            log.flush()
-            tail = (tail + line)[-64000:]
-            if is_stdout:
-                stdout_tail = (stdout_tail + line)[-64000:]
-                if stdout_limit_bytes is not None:
-                    protocol_bytes += len(line.encode("utf-8"))
-                    if protocol_bytes > stdout_limit_bytes:
-                        raise SetupFailure(
-                            "setup_protocol_output_limit",
-                            "Complete preparation protocol output exceeds its byte bound.",
-                            "Reduce or page the protocol query; truncated output cannot establish readiness.",
-                        )
-                    protocol_parts.append(line)
-            if progress:
-                progress({"type": "output", "phase": phase, "message": sanitized})
-        exit_code = process.wait()
-        output = "".join(protocol_parts) if stdout_limit_bytes is not None else stdout_tail
-        return exit_code, output if stdout_only and exit_code == 0 else tail
-    finally:
-        stopped.set()
-        _stop(process)
-        for reader in readers:
-            reader.join(timeout=2)
-        process.stdout.close()
-        process.stderr.close()

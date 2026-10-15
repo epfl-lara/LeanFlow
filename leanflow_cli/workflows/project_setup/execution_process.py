@@ -99,7 +99,7 @@ def run_restricted_command(
             start_new_session=True,
         )
         policy.usage.commands += 1
-        tree = ProcessTree(process.pid)
+        tree = ProcessTree(process.pid, process=process)
 
         def enqueue(channel: bool, content: bytes | Exception | None) -> None:
             while not stopped.is_set():

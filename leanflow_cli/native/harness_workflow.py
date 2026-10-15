@@ -25,6 +25,7 @@ from leanflow_cli.native.harness_context import prepare_context
 from leanflow_cli.native.harness_observer import NativeObserver
 from leanflow_cli.runtime.project_operations import project_activity
 from leanflow_cli.runtime.storage import StoragePressure
+from leanflow_cli.runtime.workflow_resources import WorkflowResourceFailure, WorkflowResourceWindow
 from leanflow_cli.workflows.prover.native_bridge import NativeBridge
 from leanflow_cli.workflows.prover.native_snapshot import (
     prepare_snapshot,
@@ -62,8 +63,6 @@ def run_workflow(env: dict[str, str] | None = None) -> dict[str, Any]:
             draft_intent = environment.get("LEANFLOW_FORMALIZATION_SOURCE_DRAFT_ONLY", "false")
             if draft_intent not in {"true", "false"}:
                 raise ValueError("Invalid explicit source-draft-only intent")
-            if draft_intent == "true" and kind != "formalize":
-                raise ValueError("Source-draft-only intent applies only to formalize")
             completed_draft = completed_draft_state(
                 root,
                 environment,
@@ -84,14 +83,13 @@ def run_workflow(env: dict[str, str] | None = None) -> dict[str, Any]:
 
                 return recover_completed_draft(root, directory, completed_draft, environment)
             return _run_controller(
-                environment, root, kind, backend, directory, run_id, resume, observe=env is None
+                environment, root, backend, directory, run_id, resume, observe=env is None
             )
 
 
 def _run_controller(
     environment: dict[str, str],
     root: Path,
-    kind: str,
     backend: str,
     directory: Path,
     run_id: str,
@@ -108,10 +106,8 @@ def _run_controller(
     if source_draft_intent not in {"true", "false"}:
         raise ValueError("Invalid explicit source-draft-only intent")
     explicit_source_draft = source_draft_intent == "true"
-    if explicit_source_draft and kind != "formalize":
-        raise ValueError("Source-draft-only intent applies only to formalize")
     preview_layout: dict[str, Any] | None = None
-    if kind == "formalize" and resume:
+    if resume:
         from leanflow_cli.formalization.source_draft_recovery import (
             completed_draft_state,
             recover_completed_draft,
@@ -122,47 +118,44 @@ def _run_controller(
         )
         if completed is not None:
             return recover_completed_draft(root, directory, completed, environment)
-    if kind == "formalize" and not document_id:
+    if not document_id:
         raise ValueError("Formalization requires a frozen document inventory; restart the launch")
-    if kind == "formalize":
-        from leanflow_cli.formalization.intake import (
-            author_blocking_diagnostics,
-            draft_source_guidance,
-            draft_source_rejection,
-            preflight_dependencies,
-        )
-        from leanflow_cli.formalization.inventory_authority import complete_inventory
-        from leanflow_cli.formalization.records import assert_author_selection, load_document
+    from leanflow_cli.formalization.intake import (
+        author_blocking_diagnostics,
+        draft_source_guidance,
+        draft_source_rejection,
+        preflight_dependencies,
+    )
+    from leanflow_cli.formalization.inventory_authority import complete_inventory
+    from leanflow_cli.formalization.records import assert_author_selection, load_document
 
-        selected_document = load_document(root, document_id)
-        assert_author_selection(
-            selected_document, run_id, current_selection_token(root, document_id)
-        )
-        selected_inventory = complete_inventory(selected_document)
-        blockers = [
-            row["message"]
-            for row in author_blocking_diagnostics(
-                selected_inventory, source_draft_only=explicit_source_draft
-            )
-        ]
-        if blockers:
-            raise ValueError("Repair source inventory before formalization: " + "; ".join(blockers))
-        source_draft_guidance = draft_source_guidance(
+    selected_document = load_document(root, document_id)
+    assert_author_selection(selected_document, run_id, current_selection_token(root, document_id))
+    selected_inventory = complete_inventory(selected_document)
+    blockers = [
+        row["message"]
+        for row in author_blocking_diagnostics(
             selected_inventory, source_draft_only=explicit_source_draft
         )
-        source_draft_blocker = draft_source_rejection(
-            selected_inventory, source_draft_only=explicit_source_draft
-        )
-        if source_draft_blocker is not None:
-            from leanflow_cli.formalization.source_draft import assert_unaccepted_draft
+    ]
+    if blockers:
+        raise ValueError("Repair source inventory before formalization: " + "; ".join(blockers))
+    source_draft_guidance = draft_source_guidance(
+        selected_inventory, source_draft_only=explicit_source_draft
+    )
+    source_draft_blocker = draft_source_rejection(
+        selected_inventory, source_draft_only=explicit_source_draft
+    )
+    if source_draft_blocker is not None:
+        from leanflow_cli.formalization.source_draft import assert_unaccepted_draft
 
-            assert_unaccepted_draft(selected_document)
-        requested_revision = environment.get("LEANFLOW_FORMALIZATION_REVISION", "")
-        if requested_revision != selected_document["revision_id"] and not (
-            requested_revision == selected_document.get("author_base_revision")
-            and selected_document.get("author_run_id") == run_id
-        ):
-            raise ValueError("Source inventory changed; restart from its selected revision")
+        assert_unaccepted_draft(selected_document)
+    requested_revision = environment.get("LEANFLOW_FORMALIZATION_REVISION", "")
+    if requested_revision != selected_document["revision_id"] and not (
+        requested_revision == selected_document.get("author_base_revision")
+        and selected_document.get("author_run_id") == run_id
+    ):
+        raise ValueError("Source inventory changed; restart from its selected revision")
     state_path = directory / "state.json"
     if resume:
         state = json.loads(state_path.read_text())
@@ -174,7 +167,7 @@ def _run_controller(
         if (
             state.get("version") != 2
             or state.get("backend") != backend
-            or state.get("workflow") != kind
+            or state.get("workflow") != "formalize"
         ):
             raise ValueError(
                 "Start a new native run when changing backends or migrating legacy runs"
@@ -190,10 +183,9 @@ def _run_controller(
         baseline = {path: bytes.fromhex(data) for path, data in state["baseline"].items()}
         if source_files(root) != baseline:
             raise ValueError("Canonical sources changed; start a new workflow")
-        if kind == "formalize" and (
-            not state.get("formalization_selection_token")
-            or state["formalization_selection_token"] != current_selection_token(root, document_id)
-        ):
+        if not state.get("formalization_selection_token") or state[
+            "formalization_selection_token"
+        ] != current_selection_token(root, document_id):
             raise ValueError("Formalization selection changed; restart from its selected revision")
     else:
         if state_path.exists():
@@ -205,7 +197,7 @@ def _run_controller(
             "version": 2,
             "run_id": run_id,
             "backend": backend,
-            "workflow": kind,
+            "workflow": "formalize",
             "baseline": {path: data.hex() for path, data in baseline.items()},
             "status": "running",
             "source_draft_intent": explicit_source_draft,
@@ -216,10 +208,9 @@ def _run_controller(
             state["formalization_baseline"] = {
                 name: data.hex() for name, data in portable_baseline(root, document_id).items()
             }
-            if kind == "formalize":
-                state["formalization_selection_token"] = current_selection_token(
-                    root, document_id, initialize=True
-                )
+            state["formalization_selection_token"] = current_selection_token(
+                root, document_id, initialize=True
+            )
     state.update(
         status="running",
         terminal=False,
@@ -240,23 +231,14 @@ def _run_controller(
         campaign_budget_path,
     )
 
-    limits_path = (
-        campaign_budget_path(root, environment, directory)
-        if kind == "formalize"
-        else directory / "limits.json"
-    )
-    budget = CampaignLimits(
-        limits_path,
-        (
-            campaign_budget_limits(limits_path, environment)
-            if kind == "formalize"
-            else {
-                name: environment.get("LEANFLOW_PROVER_" + name.upper())
-                for name in ("agent_calls", "tokens", "wall_time_s")
-            }
-        ),
-    )
+    limits_path = campaign_budget_path(root, environment, directory)
+    budget = CampaignLimits(limits_path, campaign_budget_limits(limits_path, environment))
     cancelled = threading.Event()
+    from leanflow_cli.workflows.prover.check_process import owned_checker_identities
+
+    resources = WorkflowResourceWindow(
+        environment, cancelled, already_owned=owned_checker_identities(directory)
+    )
     explicit_cancel = threading.Event()
     terminal_submission = threading.Event()
 
@@ -268,7 +250,7 @@ def _run_controller(
     storage_error = ""
     finished = threading.Event()
     observing = threading.Event()
-    observer = NativeObserver(root, run_id, kind, backend) if observe else None
+    observer = NativeObserver(root, run_id, "formalize", backend) if observe else None
     previous_signals: dict[int, Any] = {}
 
     def stop_signal(*_: Any) -> None:
@@ -284,6 +266,7 @@ def _run_controller(
     def heartbeat() -> None:
         nonlocal storage_error
         while not finished.wait(1):
+            state["workflow_resources"] = resources.evidence()
             budget.persist()
             if observer is not None and observing.is_set():
                 try:
@@ -305,22 +288,22 @@ def _run_controller(
     ticker.start()
     snapshot = directory / "project"
     try:
+        resources.start()
         if observer is not None:
             observer.start(state)
             observing.set()
         storage_admission.check(force=True)
-        if kind == "formalize":
-            # Dependency census can be expensive. Install campaign monitoring and
-            # cancellation before paying that read-only preparation cost.
-            checked_layout = preflight_dependencies(root, document_id)
-            if source_draft_blocker is not None:
-                from leanflow_cli.formalization.lean_layout import generation_layout
+        # Dependency census can be expensive. Install campaign monitoring and
+        # cancellation before paying that read-only preparation cost.
+        checked_layout = preflight_dependencies(root, document_id)
+        if source_draft_blocker is not None:
+            from leanflow_cli.formalization.lean_layout import generation_layout
 
-                preview_layout = generation_layout(checked_layout, selected_document)
-                if not preview_layout.get("owned_prefix") or not preview_layout.get("aggregator"):
-                    raise ValueError("Source draft requires an allocated private module subtree")
-                state["source_draft_layout"] = preview_layout
-                atomic_json_write(state_path, state)
+            preview_layout = generation_layout(checked_layout, selected_document)
+            if not preview_layout.get("owned_prefix") or not preview_layout.get("aggregator"):
+                raise ValueError("Source draft requires an allocated private module subtree")
+            state["source_draft_layout"] = preview_layout
+            atomic_json_write(state_path, state)
         prepare_snapshot(root, snapshot)
         scratch = snapshot / ".leanflow-job"
         scratch.mkdir(exist_ok=True)
@@ -342,7 +325,7 @@ def _run_controller(
             if source_draft_guidance not in prompt:
                 prompt += "\n" + source_draft_guidance
         source_prompt = prompt
-        if kind == "formalize" and source_draft_blocker is None:
+        if source_draft_blocker is None:
             from leanflow_cli.native.harness_formalization_stages import stage_assignment
 
             context, prompt = stage_assignment(root, environment, context, source_prompt)
@@ -366,6 +349,7 @@ def _run_controller(
         def submit(response: str) -> dict[str, Any]:
             """Freeze one proposal at a time and retain only independently accepted bytes."""
             with validation_lock:
+                resources.check(force=True)
                 if terminal_submission.is_set():
                     return dict(last_validation)
                 receipt.clear()
@@ -381,7 +365,7 @@ def _run_controller(
                     deadline=deadline,
                     cancelled=cancelled.is_set,
                 )
-                if kind == "formalize" and source_draft_blocker is not None:
+                if source_draft_blocker is not None:
                     checked = dict(source_draft_blocker)
                     if (
                         current_selection_token(root, document_id)
@@ -392,7 +376,7 @@ def _run_controller(
                             "error_code": "selection_changed",
                             "error": "Source inventory selection changed; restart from its selected revision",
                         }
-                elif kind == "formalize" and source_draft_blocker is None:
+                elif source_draft_blocker is None:
                     from leanflow_cli.formalization.proposal import check_proposal
                     from leanflow_cli.formalization.review import review_configuration
 
@@ -409,6 +393,7 @@ def _run_controller(
                             environment,
                         ),
                     )
+                resources.check(force=True)
                 last_validation.clear()
                 last_validation.update(
                     {
@@ -423,7 +408,7 @@ def _run_controller(
                     atomic_json_write(directory / "accepted.json", checked)
                 if checked.get("error_code") == "needs_reprepare":
                     terminal_submission.set()
-                elif kind == "formalize" and source_draft_blocker is None:
+                elif source_draft_blocker is None:
                     try:
                         stage_assignment(root, environment, context, source_prompt)
                     except RepreparationRequired as error:
@@ -491,6 +476,7 @@ def _run_controller(
                 backend, snapshot, env=environment, readable_roots=reads, denied_roots=(root,)
             )
             while not cancelled.is_set():
+                resources.check(force=True)
                 storage_admission.check(force=True)
                 if observer is not None:
                     observer.publish(state, budget, phase="agent")
@@ -613,6 +599,7 @@ def _run_controller(
                     budget.finish(invocation, None, started=started)
                     raise
                 budget.finish(invocation, result.usage, started=started)
+                resources.check(force=True)
                 drain_author_bridge(
                     bridge, state, state_path, draft_only=source_draft_blocker is not None
                 )
@@ -655,7 +642,7 @@ def _run_controller(
                     return state
                 if source_draft_blocker is not None:
                     return state
-                final_checked = kind == "formalize" and bool(receipt)
+                final_checked = bool(receipt)
                 if final_checked:
                     # The native process can edit after submit_files. Its final
                     # response cannot select earlier accepted bytes implicitly.
@@ -678,7 +665,7 @@ def _run_controller(
                 if last_validation.get("status") == "source_blocked":
                     state.update(status="blocked", error=last_validation["error"])
                     return state
-                if kind == "formalize" and last_validation.get("status") == "check_error":
+                if last_validation.get("status") == "check_error":
                     state.update(
                         status={
                             "check_cancelled": "cancelled",
@@ -691,151 +678,151 @@ def _run_controller(
                     )
                     return state
                 if receipt.get("accepted"):
-                    if kind == "formalize":
-                        from leanflow_cli.formalization.review import review_revision
+                    from leanflow_cli.formalization.review import review_revision
 
-                        if observer is not None:
-                            observer.publish(state, budget, phase="source-review")
-                        review = review_revision(
-                            receipt["record"],
-                            backend=backend,
-                            model=environment.get("LEANFLOW_NATIVE_MODEL", ""),
-                            effort=environment.get("LEANFLOW_NATIVE_REASONING_EFFORT", ""),
-                            environment=environment,
-                            directory=directory / "source-review",
-                            budget=budget,
-                            deadline=deadline,
-                            cancelled=cancelled.is_set,
+                    if observer is not None:
+                        observer.publish(state, budget, phase="source-review")
+                    resources.check(force=True)
+                    review = review_revision(
+                        receipt["record"],
+                        backend=backend,
+                        model=environment.get("LEANFLOW_NATIVE_MODEL", ""),
+                        effort=environment.get("LEANFLOW_NATIVE_REASONING_EFFORT", ""),
+                        environment=environment,
+                        directory=directory / "source-review",
+                        budget=budget,
+                        deadline=deadline,
+                        cancelled=cancelled.is_set,
+                    )
+                    resources.check(force=True)
+                    atomic_json_write(directory / "source-review.json", review)
+                    state["source_review"] = review
+                    record = receipt["record"]
+                    save_receipt(
+                        record,
+                        {
+                            "schema_version": 1,
+                            "document_id": document_id,
+                            "revision_id": record["revision_id"],
+                            "status": (
+                                "review_passed"
+                                if review.get("accepted")
+                                else (
+                                    "review_rejected"
+                                    if review.get("status") == "completed"
+                                    else "review_error"
+                                )
+                            ),
+                            "error": review.get("error", review.get("feedback", "")),
+                            "review_status": review.get("status"),
+                            "checks": record["checks"],
+                            "reviews": review.get("reviews", []),
+                            "handoff": None,
+                        },
+                    )
+                    if review.get("accepted") is not True:
+                        if review.get("status") not in {None, "completed"}:
+                            state.update(
+                                status=(
+                                    review.get("status")
+                                    if review.get("status")
+                                    in {"limit_reached", "cancelled", "deadline_exceeded"}
+                                    else "blocked"
+                                ),
+                                error=str(
+                                    review.get(
+                                        "error",
+                                        review.get("feedback", "Source reviewer failed"),
+                                    )
+                                ),
+                            )
+                            return state
+                        if correction_rounds >= correction_limit or (
+                            bool(review.get("reviews"))
+                            and all(
+                                row.get("cache_reused")
+                                for row in review["reviews"]
+                                if not row.get("accepted")
+                            )
+                        ):
+                            state.update(
+                                status="blocked",
+                                error="Source review needs correction; unchanged rejections are not rerolled. "
+                                + str(review.get("feedback", "")),
+                            )
+                            return state
+                        correction_rounds += 1
+                        state["formalization_correction_rounds"] = correction_rounds
+                        atomic_json_write(state_path, state)
+                        receipt.clear()
+                        prompt = (
+                            "Independent source review rejected the draft. Repair the source mapping and statements, then submit_files again. Review feedback: "
+                            + json.dumps(review)
                         )
-                        atomic_json_write(directory / "source-review.json", review)
-                        state["source_review"] = review
-                        record = receipt["record"]
+                        continue
+                    if (
+                        record.get("workflow_protocol") == 2
+                        and record.get("proposal_phase") == "representative_slice"
+                    ):
+                        from leanflow_cli.formalization.slice_gate import save_reviewed_slice
+
+                        slice_receipt = save_reviewed_slice(root, receipt, review)
                         save_receipt(
                             record,
                             {
                                 "schema_version": 1,
                                 "document_id": document_id,
                                 "revision_id": record["revision_id"],
-                                "status": (
-                                    "review_passed"
-                                    if review.get("accepted")
-                                    else (
-                                        "review_rejected"
-                                        if review.get("status") == "completed"
-                                        else "review_error"
-                                    )
-                                ),
-                                "error": review.get("error", review.get("feedback", "")),
-                                "review_status": review.get("status"),
+                                "status": "slice_reviewed",
                                 "checks": record["checks"],
                                 "reviews": review.get("reviews", []),
                                 "handoff": None,
+                                "slice_id": slice_receipt["slice_id"],
                             },
-                        )
-                        if review.get("accepted") is not True:
-                            if review.get("status") not in {None, "completed"}:
-                                state.update(
-                                    status=(
-                                        review.get("status")
-                                        if review.get("status")
-                                        in {"limit_reached", "cancelled", "deadline_exceeded"}
-                                        else "blocked"
-                                    ),
-                                    error=str(
-                                        review.get(
-                                            "error",
-                                            review.get("feedback", "Source reviewer failed"),
-                                        )
-                                    ),
-                                )
-                                return state
-                            if correction_rounds >= correction_limit or (
-                                bool(review.get("reviews"))
-                                and all(
-                                    row.get("cache_reused")
-                                    for row in review["reviews"]
-                                    if not row.get("accepted")
-                                )
-                            ):
-                                state.update(
-                                    status="blocked",
-                                    error="Source review needs correction; unchanged rejections are not rerolled. "
-                                    + str(review.get("feedback", "")),
-                                )
-                                return state
-                            correction_rounds += 1
-                            state["formalization_correction_rounds"] = correction_rounds
-                            atomic_json_write(state_path, state)
-                            receipt.clear()
-                            prompt = (
-                                "Independent source review rejected the draft. Repair the source mapping and statements, then submit_files again. Review feedback: "
-                                + json.dumps(review)
-                            )
-                            continue
-                        if (
-                            record.get("workflow_protocol") == 2
-                            and record.get("proposal_phase") == "representative_slice"
-                        ):
-                            from leanflow_cli.formalization.slice_gate import save_reviewed_slice
-
-                            slice_receipt = save_reviewed_slice(root, receipt, review)
-                            save_receipt(
-                                record,
-                                {
-                                    "schema_version": 1,
-                                    "document_id": document_id,
-                                    "revision_id": record["revision_id"],
-                                    "status": "slice_reviewed",
-                                    "checks": record["checks"],
-                                    "reviews": review.get("reviews", []),
-                                    "handoff": None,
-                                    "slice_id": slice_receipt["slice_id"],
-                                },
-                            )
-                            state.update(
-                                formalization_phase="complete",
-                                representative_slice=slice_receipt["slice_id"],
-                            )
-                            atomic_json_write(state_path, state)
-                            receipt.clear()
-                            last_validation.clear()
-                            atomic_json_write(directory / "accepted.json", {"accepted": False})
-                            context, prompt = stage_assignment(
-                                root, environment, context, source_prompt
-                            )
-                            bridge.context = dict(context)
-                            initial_prompt = prompt
-                            prompt += "\nIndependent representative-slice review passed. Expand the remaining source while preserving the accepted slice."
-                            continue
-                        from leanflow_cli.formalization.publish import publish_checked
-
-                        publication = publish_checked(
-                            root,
-                            baseline,
-                            {
-                                name: bytes.fromhex(value)
-                                for name, value in state.get("formalization_baseline", {}).items()
-                            },
-                            receipt,
-                            review,
-                            directory / "publication",
-                            cancelled=cancelled.is_set,
                         )
                         state.update(
-                            status=(
-                                "draft_ready"
-                                if publication["status"] == "published"
-                                else "accepted_staged"
-                            ),
-                            formalization_revision=receipt["revision_id"],
-                            publication=publication,
-                            promoted_files=(
-                                list(receipt["files"])
-                                if publication["status"] == "published"
-                                else []
-                            ),
+                            formalization_phase="complete",
+                            representative_slice=slice_receipt["slice_id"],
                         )
-                        return state
+                        atomic_json_write(state_path, state)
+                        receipt.clear()
+                        last_validation.clear()
+                        atomic_json_write(directory / "accepted.json", {"accepted": False})
+                        context, prompt = stage_assignment(
+                            root, environment, context, source_prompt
+                        )
+                        bridge.context = dict(context)
+                        initial_prompt = prompt
+                        prompt += "\nIndependent representative-slice review passed. Expand the remaining source while preserving the accepted slice."
+                        continue
+                    from leanflow_cli.formalization.publish import publish_checked
+
+                    resources.check(force=True)
+                    publication = publish_checked(
+                        root,
+                        baseline,
+                        {
+                            name: bytes.fromhex(value)
+                            for name, value in state.get("formalization_baseline", {}).items()
+                        },
+                        receipt,
+                        review,
+                        directory / "publication",
+                        cancelled=cancelled.is_set,
+                    )
+                    state.update(
+                        status=(
+                            "draft_ready"
+                            if publication["status"] == "published"
+                            else "accepted_staged"
+                        ),
+                        formalization_revision=receipt["revision_id"],
+                        publication=publication,
+                        promoted_files=(
+                            list(receipt["files"]) if publication["status"] == "published" else []
+                        ),
+                    )
+                    return state
                 # The native process has ended, so continuation is another charged invocation.
                 feedback = (
                     "Continue the existing assignment. Independent verification rejected the source proposal. Repair these errors, then use submit_files: "
@@ -847,6 +834,9 @@ def _run_controller(
                 prompt += "\n" + feedback
             state["status"] = "cancelled"
             return state
+    except WorkflowResourceFailure as error:
+        state.update(status="resource_error", error=str(error), error_code=error.code)
+        return state
     except RepreparationRequired as error:
         state.update(status="needs_reprepare", error=str(error))
         return state
@@ -874,6 +864,17 @@ def _run_controller(
                 root, directory, state, environment, cancelled=explicit_cancel.is_set
             )
         cancelled.set()
+        try:
+            resources.close()
+        except NativeCleanupUnverified as error:
+            state.update(native_cleanup_unverified=True, status="error", error=str(error))
+        state["workflow_resources"] = resources.evidence()
+        if resources.failure is not None:
+            state.update(
+                status="resource_error",
+                error=str(resources.failure),
+                error_code=resources.failure.code,
+            )
         if storage_error:
             state.update(
                 status="storage_pressure",

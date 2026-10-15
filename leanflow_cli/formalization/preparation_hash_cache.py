@@ -118,12 +118,19 @@ def _inspect(
             check()
             original = relative.removesuffix(".hash")
             if not relative.endswith(".hash") or not before.get(original):
-                raise ValueError("Preparation added an unclassified dependency input: " + relative)
+                raise ValueError(
+                    f"Preparation added an unclassified dependency input: {name}/{relative}. "
+                    "Only a new .hash sidecar for an unchanged, previously recorded input "
+                    "can be verified through the pinned Lake hash API"
+                )
             source, path = contained(checkout, original), contained(checkout, relative)
             source_version, version = _regular(source), _regular(path)
             value = read_regular_bytes(path, 16)
             if not _HASH.fullmatch(value) or _regular(path) != version:
-                raise ValueError("Preparation added a malformed Lake hash cache: " + relative)
+                raise ValueError(
+                    f"Preparation added a malformed Lake hash cache: {name}/{relative}. "
+                    "Expected exactly one stable 16-byte hexadecimal Lake hash"
+                )
             caches.append(
                 _Cache(
                     name,

@@ -16,8 +16,10 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from agent.runtime.harness.models import NativeCleanupUnverified
 from core.deadlines import deadline_after
 from leanflow_cli.runtime.storage import StoragePressure
+from leanflow_cli.runtime.workflow_resources import WorkflowResourceFailure, WorkflowResourceWindow
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.live_progress import LiveProgress
@@ -137,6 +139,7 @@ class ProverRuntime:
         self.pending: dict[Future[dict[str, Any]], dict[str, Any]] = {}
         self.completions: queue.SimpleQueue[Future[dict[str, Any]]] = queue.SimpleQueue()
         self.cancelled = threading.Event()
+        self.workflow_resources: WorkflowResourceWindow | None = None
         self.native_bridges: dict[str, Any] = {}
         self.stopping = False
         self.scratch_before: dict[str, str] = {}
@@ -582,6 +585,8 @@ class ProverRuntime:
     def _reserve(self, requested: int) -> int:
         with self.lock:
             self._ensure_active()
+            if self.workflow_resources is not None:
+                self.workflow_resources.check(force=True)
             self._check_storage(force=True)
             remaining = (
                 None
@@ -618,6 +623,8 @@ class ProverRuntime:
 
     def _ensure_active(self) -> None:
         """Stop new controller work immediately after cancellation or the campaign deadline."""
+        if self.workflow_resources is not None:
+            self.workflow_resources.check()
         if self.cancelled.is_set() or self.stopping:
             self.stopping = True
             raise InfrastructureFailure(
@@ -654,6 +661,9 @@ class ProverRuntime:
                 cancelled=lambda: self.cancelled.is_set() or self.stopping,
                 deadline=deadline,
             ):
+                if self.workflow_resources is not None:
+                    self.workflow_resources.check(force=True)
+                self._ensure_active()
                 yield
         except PublicationCancelled as error:
             self._ensure_active()
@@ -1666,6 +1676,14 @@ class ProverRuntime:
             self.observer.start(self.state, resumed=self.state["phase"] == "resume")
         self.progress.start()
         try:
+            from leanflow_cli.workflows.prover.check_process import owned_checker_identities
+
+            self.workflow_resources = WorkflowResourceWindow(
+                os.environ,
+                self.cancelled,
+                already_owned=owned_checker_identities(self.store.directory),
+            )
+            self.workflow_resources.start()
             if hasattr(self.verifier, "preflight"):
                 self.state["phase"] = "preflight"
                 self._persist()
@@ -1676,6 +1694,7 @@ class ProverRuntime:
                     timeout_s=self.config.timeout_s,
                 )
                 self.state["preflight"] = preflight
+                self._ensure_active()
                 if preflight.get("accepted") is not True:
                     self._ensure_active()
                     raise InfrastructureFailure(
@@ -1911,6 +1930,8 @@ class ProverRuntime:
                     ),
                 )
                 self.state["verification"] = final
+                self.workflow_resources.check(force=True)
+                self._ensure_active()
                 if not final.get("accepted"):
                     self._ensure_active()
                 status = "completed" if final.get("accepted") else "verification_failed"
@@ -1922,6 +1943,9 @@ class ProverRuntime:
                 )
             elif self.config.agent_calls is not None and self.consumed >= self.config.agent_calls:
                 status = "budget_exhausted"
+        except WorkflowResourceFailure as error:
+            status = "resource_error"
+            self.state.update(error=str(error), stop_code=error.code)
         except BudgetExhausted as error:
             status = error.status
             self.state["error"] = str(error)
@@ -1940,6 +1964,19 @@ class ProverRuntime:
         finally:
             self.stopping = True
             self.cancelled.set()
+            if self.workflow_resources is not None:
+                try:
+                    self.workflow_resources.close()
+                except NativeCleanupUnverified as error:
+                    status = "error"
+                    self.state.update(native_cleanup_unverified=True, error=str(error))
+                if self.workflow_resources.failure is not None:
+                    status = "resource_error"
+                    self.state.update(
+                        error=str(self.workflow_resources.failure),
+                        stop_code=self.workflow_resources.failure.code,
+                    )
+                self.state["workflow_resources"] = self.workflow_resources.evidence()
             for future, job in list(self.pending.items()):
                 try:
                     completed_result = future.result()

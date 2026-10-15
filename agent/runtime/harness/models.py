@@ -76,3 +76,5 @@ class HarnessResult:
     diagnostics: tuple[str, ...] = field(default_factory=tuple)
     model_settings: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     cleanup_verified: bool = False
+    peak_owned_rss_bytes: int = 0
+    max_owned_rss_bytes: int = 0

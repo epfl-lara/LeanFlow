@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
+from agent.runtime.harness.processes import start_identity_matches
 from core.home import leanflow_home
 from leanflow_cli.formalization.evidence import (
     contained,
@@ -164,7 +165,7 @@ def _loss_observation(path: Path, target: Path, raw: bytes) -> dict[str, Any]:
     live = bool(
         owner is not None
         and owner["pid"] in table
-        and table[owner["pid"]][2] == owner["start"]
+        and start_identity_matches(table[owner["pid"]][2], owner["start"])
         and owner["pid"] != os.getpid()
     )
     observed: CompilerJournalLossObservation = {

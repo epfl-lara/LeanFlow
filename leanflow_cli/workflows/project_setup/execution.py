@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.runtime.harness.isolation import IsolationPolicy
-from agent.runtime.harness.processes import ProcessTree
+from agent.runtime.harness.resources import owned_rss_bytes as owned_rss_bytes
 from leanflow_cli.runtime.storage import StoragePressure, storage_policy
 from leanflow_cli.workflows.project_setup.process import SetupFailure, check_cancel
 
@@ -298,26 +298,3 @@ def build_setup_execution_policy(
         ),
         max_disk_growth_bytes=max_disk_growth_bytes,
     )
-
-
-def owned_rss_bytes(process: subprocess.Popen[bytes], tree: ProcessTree) -> int:
-    """Conservatively sum sampled owned RSS, including shared pages once per process."""
-    tree.refresh()
-    table = subprocess.run(
-        ["/bin/ps", "-axo", "pid=,lstart=,rss="],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=2,
-    )
-    total = 0
-    for line in table.stdout.splitlines():
-        parts = line.split()
-        if len(parts) != 7 or not parts[0].isdigit() or not parts[-1].isdigit():
-            continue
-        pid = int(parts[0])
-        start = " ".join(parts[1:6])
-        remembered = " ".join(tree.descendants.get(pid, "").split())
-        if (pid == process.pid and process.poll() is None) or remembered == start:
-            total += int(parts[-1]) * 1024
-    return total

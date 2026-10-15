@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from leanflow_cli.formalization.evidence import contained
+from leanflow_cli.formalization.inventory_authority import complete_inventory
 from leanflow_cli.formalization.records import source_bytes
 from leanflow_cli.formalization.source_inventory import inventory_source
 
@@ -68,6 +70,18 @@ def retry_extraction(record: dict[str, Any], reason: str) -> None:
         name: data["sha256"].removeprefix("sha256:") for name, data in replacement["files"].items()
     } != record["source_files"]:
         raise ValueError("Frozen re-extraction changed the selected source bundle")
+    old_clauses = {
+        item["id"]: item["known_obligations"]
+        for item in complete_inventory(record)["items"]
+        if item.get("known_obligations")
+    }
+    replacement_items = {item["id"]: item for item in replacement["items"]}
+    if old_clauses.keys() - replacement_items.keys():
+        raise ValueError(
+            "Re-extraction cannot discard known source clauses; preserve their source-item boundaries first"
+        )
+    for key, rows in old_clauses.items():
+        replacement_items[key]["known_obligations"] = copy.deepcopy(rows)
     record.update(inventory=replacement, units=[], setup_notes="")
     record.pop("slice_id", None)
     record["extraction_retry"] = {

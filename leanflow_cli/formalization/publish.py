@@ -114,6 +114,11 @@ def publish_checked(
     if not checked.get("accepted") or not review.get("accepted"):
         raise ValueError("Both compiled policy and independent source review must pass")
     record = checked["record"]
+    from leanflow_cli.formalization.source_reconciliation import assert_reconciliation_reviewed
+    from leanflow_cli.formalization.source_visual_receipt import validated_visual_evidence
+
+    assert_reconciliation_reviewed(record, review.get("reviews", []))
+    visual = validated_visual_evidence(record, review)
     from leanflow_cli.formalization.slice_gate import assert_complete_slice
 
     assert_complete_slice(root, record)
@@ -180,6 +185,7 @@ def publish_checked(
         "status": "accepted_staged",
         "checks": record["checks"],
         "reviews": review["reviews"],
+        "visual_evidence": visual,
         "handoff": handoff,
         "environment_id": record["environment_id"],
     }
@@ -215,8 +221,11 @@ def publish_checked(
         set(record["source_files"].values())
         | set(record.get("lean_files", {}).values())
         | set(record.get("context_lean_files", {}).values())
+        | {row["png_sha256"] for row in visual}
     ):
         outputs[f"{prefix}/blobs/{key}"] = read_blob(store / "blobs", key)
+    if visual:
+        outputs[f"{prefix}/visual-evidence.json"] = encoded(visual)
     for path in sorted((store / "review-cache").glob("*.json")):
         cached = json.loads(path.read_text())
         if cached.get("cache_key") != path.stem or cached.get("status") != "completed":

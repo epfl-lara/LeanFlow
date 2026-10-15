@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -25,6 +24,7 @@ from leanflow_cli.formalization.lean_origin import (
     authenticated_imported_equation as authenticated_imported_equation,
 )
 from leanflow_cli.formalization.lean_origin import imported_origin_owner, provenance_parent_allowed
+from leanflow_cli.workflows.prover.check_command_cleanup import command_workspace
 from leanflow_cli.workflows.prover.check_process import isolated_command
 from leanflow_cli.workflows.prover.source import lean_code_mask, project_path, project_sources
 
@@ -411,11 +411,11 @@ def inspect_draft(
         for data in sources.values():
             validate_source(data.decode("utf-8"))
         workspace.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="leanflow-draft-build-") as temporary:
+        with command_workspace(prefix="leanflow-draft-build-") as temporary:
             built = build_project(
                 root,
                 layout,
-                Path(temporary).resolve(),
+                temporary,
                 files=modules,
                 deadline=deadline,
                 cancelled=cancelled,
@@ -433,8 +433,8 @@ def inspect_draft(
             raise ValueError("Generated source changed during compilation")
         # A fresh inspection directory prevents source-side elaboration from
         # retaining write access to the inspector or forging its JSON output.
-        with tempfile.TemporaryDirectory(prefix="leanflow-draft-inspect-") as temporary:
-            directory = Path(temporary).resolve()
+        with command_workspace(prefix="leanflow-draft-inspect-") as temporary:
+            directory = temporary
             library = project_path(root, layout["lean_lib_dir"])
             result = _inspect(
                 root,
@@ -515,11 +515,11 @@ def inspect_dependency(
         library = project_path(root, layout["lean_lib_dir"])
         library.mkdir(parents=True, exist_ok=True)
         workspace.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="leanflow-dependency-inspect-") as temporary:
+        with command_workspace(prefix="leanflow-dependency-inspect-") as temporary:
             result = _inspect(
                 root,
                 imports,
-                Path(temporary).resolve(),
+                temporary,
                 names,
                 allowed_axioms,
                 deadline,

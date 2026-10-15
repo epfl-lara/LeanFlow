@@ -258,6 +258,9 @@ function parseWebviewMessageBody(
         ? { ok: true, message: { type, sourceKind: raw.sourceKind } } : reject("sourceKind");
     case "showFormalization":
       return formalizationId(raw.documentId) ? { ok: true, message: { type, documentId: raw.documentId } } : reject("documentId");
+    case "checkFormalization":
+      return formalizationId(raw.documentId) && formalizationId(raw.revisionId)
+        ? { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId } } : reject("current revision");
     case "formalizationAction": {
       const action = parseFormalizationAction(raw.action);
       return formalizationId(raw.documentId) && formalizationId(raw.revisionId) && action

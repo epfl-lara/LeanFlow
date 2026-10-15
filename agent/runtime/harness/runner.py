@@ -30,13 +30,19 @@ from .models import (
     NativeLaunchFailure,
 )
 from .processes import (
-    ProcessSampler,
-    ProcessTrackingUnavailable,
     ProcessTree,
     cleanup_group,
+    process_exited,
     verify_owned_stopped,
 )
 from .redaction import environment_secrets, redact_native_value
+from .resources import (
+    SAMPLE_INTERVAL_S,
+    NativeMemoryLimit,
+    NativeResourceSampler,
+    NativeResourceUnavailable,
+    native_memory_limit_bytes,
+)
 from .restricted import restricted_isolation
 from .settings import SettingsRecorder, native_input, private_control_response, startup_settings
 from .stream_redaction import NativeStreamRedactor
@@ -76,6 +82,7 @@ def _prepare_launch(
         raise BackendError("The campaign deadline must be a finite monotonic timestamp or None.")
     command = build_command(request)
     environment = child_environment(request)
+    native_memory_limit_bytes(environment)
     validate_restricted_native_context(request, environment)
     secrets = environment_secrets(environment)
     executable = shutil.which(command[0], path=environment.get("PATH"))
@@ -180,11 +187,13 @@ def run_harness(
     if isinstance(prepared, HarnessResult):
         return prepared
     command, environment, secrets, executable, policy = prepared
+    memory_limit = native_memory_limit_bytes(environment)
     state = EventState(request.backend, session_id=request.session_id)
     settings = SettingsRecorder(request, secrets)
     public_stream = NativeStreamRedactor(secrets)
     malformed = False
     process: subprocess.Popen[bytes] | None = None
+    sampler: NativeResourceSampler | None = None
     try:
         with ExitStack() as resources:
             try:
@@ -277,13 +286,24 @@ def run_harness(
             cleaned = False
             outputs_closed = False
             drain_deadline: float | None = None
-            tree = ProcessTree(process.pid)
-            sampler = ProcessSampler(tree)
-            tracking_failed = False
+            tree = ProcessTree(process.pid, process=process)
+            sampler = NativeResourceSampler(process, tree, memory_limit)
+            resource_error = ""
             last_scan = 0.0
             try:
                 if request.on_started is not None:
                     request.on_started()
+                _record(
+                    log,
+                    {
+                        "type": "harness.resource_limits",
+                        "max_owned_rss_bytes": memory_limit,
+                        "sampling_interval_s": SAMPLE_INTERVAL_S,
+                        "max_consecutive_sample_failures": sampler.max_failures,
+                    },
+                    on_event,
+                    secrets,
+                )
                 if initial := settings.update({}):
                     _record(log, initial, on_event, secrets)
                 with selectors.DefaultSelector() as selector:
@@ -291,22 +311,32 @@ def run_harness(
                     for channel, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
                         os.set_blocking(pipe.fileno(), False)
                         selector.register(pipe, selectors.EVENT_READ, channel)
-                    while selector.get_map() or process.poll() is None:
+                    while selector.get_map() or not process_exited(process):
                         if not cleaned:
                             now = time.monotonic()
-                            if now - last_scan >= 0.25:
+                            if now - last_scan >= SAMPLE_INTERVAL_S:
                                 try:
                                     sampled = sampler.sample()
                                     if not sampled and not state.diagnostics:
                                         state.diagnostics.append(
-                                            "Native process tracking sample unavailable; retrying."
+                                            "Native memory or ownership sample unavailable; retrying."
                                         )
-                                except ProcessTrackingUnavailable as error:
-                                    state.error = str(error)
-                                    tracking_failed = True
+                                except (NativeMemoryLimit, NativeResourceUnavailable) as error:
+                                    resource_error = str(error)
+                                    _record(
+                                        log,
+                                        {
+                                            "type": "harness.resource_error",
+                                            "error": resource_error,
+                                            "peak_owned_rss_bytes": sampler.peak_owned_rss_bytes,
+                                            "max_owned_rss_bytes": memory_limit,
+                                        },
+                                        on_event,
+                                        secrets,
+                                    )
                                 last_scan = now
                             stop = _stop_reason(request)
-                            if stop or tracking_failed or process.poll() is not None:
+                            if stop or resource_error or process_exited(process):
                                 cleanup_group(process, tree)
                                 cleaned = True
                                 drain_deadline = time.monotonic() + 2
@@ -360,8 +390,9 @@ def run_harness(
         cleanup_verified = cleanup_verified and outputs_closed
         if stop:
             status = stop
-        elif tracking_failed:
+        elif resource_error:
             status = "failed"
+            state.error = resource_error
         elif code != 0:
             status = "failed"
             state.error = state.error or f"Native backend exited with status {code}."
@@ -392,6 +423,8 @@ def run_harness(
             tuple(state.diagnostics),
             tuple(settings.history),
             cleanup_verified,
+            sampler.peak_owned_rss_bytes,
+            memory_limit,
         )
     except NativeCleanupUnverified as error:
         if process is not None:
@@ -411,5 +444,7 @@ def run_harness(
                 tuple(state.diagnostics),
                 tuple(settings.history),
                 False,
+                sampler.peak_owned_rss_bytes if sampler is not None else 0,
+                memory_limit,
             )
         raise

@@ -389,6 +389,55 @@ def test_frozen_preview_is_visible_and_openable_without_authority(
     assert Path(opened["path"]).stat().st_mode & 0o222 == 0
 
 
+@pytest.mark.parametrize("operation", ["load", "show", "snapshot", "artifact"])
+def test_historical_preview_browsing_uses_only_frozen_evidence(
+    preview_inputs: tuple[dict, Path, dict],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    record, author, layout = preview_inputs
+    frozen = _freeze(tmp_path, record, author, layout)
+
+    def no_currentness(*args, **kwargs):
+        raise AssertionError(
+            "Historical preview browsing must not recover receipts or hash live sources"
+        )
+
+    monkeypatch.setattr(source_draft, "load_document", no_currentness)
+    monkeypatch.setattr(source_draft, "read_regular_bytes", no_currentness)
+    if operation == "load":
+        assert source_draft.load_preview(tmp_path, record, verify_current=False) == frozen
+    elif operation == "artifact":
+        artifact = frozen["artifacts"][0]
+        opened = resolve_artifact(
+            tmp_path, record["document_id"], record["revision_id"], artifact["id"]
+        )
+        assert digest(Path(opened["path"]).read_bytes()) == artifact["sha256"]
+    else:
+        shown = (
+            show_document(tmp_path, record["document_id"], verify_current=False)
+            if operation == "show"
+            else snapshot(tmp_path, record, verify_current=False)
+        )
+        assert shown["draft_preview"] == frozen
+        assert shown["currentness"] == "historical" and shown["source_currentness"] == "unchecked"
+        assert not shown["can_prove"] and shown["handoff"] is None
+
+
+def test_historical_preview_preserves_saved_bytes_after_live_source_changes(
+    preview_inputs: tuple[dict, Path, dict], tmp_path: Path
+) -> None:
+    record, author, layout = preview_inputs
+    frozen = _freeze(tmp_path, record, author, layout)
+    source = tmp_path / "paper.tex"
+    source.write_text(source.read_text() + "\nChanged live source.\n")
+    assert source_draft.load_preview(tmp_path, record) is None
+    assert source_draft.load_preview(tmp_path, record, verify_current=False) == frozen
+    shown = show_document(tmp_path, record["document_id"], verify_current=False)
+    assert shown["draft_preview"] == frozen and not shown["can_prove"]
+
+
 def test_modified_preview_metadata_is_not_displayed_as_current_evidence(
     preview_inputs: tuple[dict, Path, dict], tmp_path: Path
 ) -> None:

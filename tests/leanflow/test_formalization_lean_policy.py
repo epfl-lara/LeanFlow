@@ -947,13 +947,14 @@ def _origin_only_proposal() -> tuple[dict[str, Any], dict[str, Any]]:
     )
     checks["admitted_project_sources"] = {"Main/Base.lean": "a" * 64}
     record = {
+        "inventory": {"items": [{"id": "source-goal"}]},
         "units": [
             {
                 "id": "goal",
                 "required_source_ids": ["source-goal"],
                 "declarations": [{"name": consumer["name"], "file": "Main/Goal.lean"}],
             }
-        ]
+        ],
     }
     return record, checks
 

@@ -53,6 +53,16 @@ def register_project_parser(subparsers: Any) -> None:
     inspect = commands.add_parser("inspect", help="Inspect project setup without changing files")
     inspect.add_argument("path", nargs="?", default=".")
     inspect.add_argument("--json", action="store_true", dest="json_output")
+    recovery = commands.add_parser(
+        "recovery", help="Inspect or explicitly acknowledge preserved setup conflicts"
+    )
+    recovery.add_argument("recovery_action", choices=("inspect", "acknowledge"))
+    recovery.add_argument("path", nargs="?", default=".")
+    recovery.add_argument("--observation", default="")
+    recovery.add_argument("--confirm-processes-stopped", action="store_true")
+    recovery.add_argument("--confirm-output-closed", action="store_true")
+    recovery.add_argument("--keep-current", action="store_true")
+    recovery.add_argument("--json", action="store_true", dest="json_output")
     show = commands.add_parser("show", help="Show the registered project")
     show.add_argument("path", nargs="?", default=".")
 
@@ -129,6 +139,30 @@ def _io_failure(path: str, error: Exception) -> dict[str, Any]:
 
 def handle_project(args: argparse.Namespace) -> int:
     """Run project inspection, registration display, or the shared setup pipeline."""
+    if args.project_command == "recovery":
+        from leanflow_cli.workflows.project_setup import baseline_recovery
+
+        try:
+            report = (
+                baseline_recovery.observation(args.path)
+                if args.recovery_action == "inspect"
+                else baseline_recovery.acknowledge(
+                    args.path,
+                    observation_id=args.observation,
+                    processes_stopped=args.confirm_processes_stopped,
+                    output_closed=args.confirm_output_closed,
+                    keep_current=args.keep_current,
+                )
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            print(
+                json.dumps(
+                    {"status": "blocked", "error": safe_text(str(error)), "retain_inputs": True}
+                )
+            )
+            return 1
+        print(json.dumps(report, sort_keys=True))
+        return 0
     if args.project_command == "show":
         try:
             project = discover_leanflow_project(args.path)

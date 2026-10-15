@@ -5,6 +5,17 @@ include features and settings from the former direct-provider runtime.
 
 ## Unreleased
 
+- Keep Formalization panels unique across source navigation and refreshed views.
+- With the updated backend, stop Formalization during dependency planning and setup
+  through the same verified run ownership used during translation.
+- Collapse advanced formalization sections, page large inventories and retain
+  visible totals, blockers and one suggested next action.
+- Acknowledge committed repairs before refreshing; separate historical source
+  navigation from expensive exact currentness checks and keep navigation responsive.
+- Review paired PDF pages through frozen, source-bound image evidence while
+  preserving independent coverage, source fidelity and proof gates.
+- Bound native model processes and their observed child builds to 16 GiB by
+  default, with an explicit option up to 20 GiB in the updated backend.
 - With the updated backend, recover statement candidates across conditional TeX
   layout wrappers while retaining structural uncertainty and acceptance gates.
 - Preserve supplied job-name bibliography evidence and distinguish missing

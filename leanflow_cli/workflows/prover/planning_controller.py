@@ -7,11 +7,11 @@ import itertools
 import json
 import queue
 import re
-import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from leanflow_cli.workflows.prover.check_command_cleanup import command_workspace
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.models import Dag
 from leanflow_cli.workflows.prover.planning import apply_proposal, json_report, planning_prompt
@@ -522,8 +522,8 @@ def _materialize_locked(
                 path = runtime.root / name
                 if path.is_file():
                     rewritten[path] = path.read_bytes()
-            with tempfile.TemporaryDirectory(prefix="leanflow-helper-config-") as temporary:
-                preview = Path(temporary)
+            with command_workspace(prefix="leanflow-helper-config-") as temporary:
+                preview = temporary
                 for path, content in rewritten.items():
                     (preview / path.name).write_bytes(content)
                 registered = ensure_helper_library(preview)

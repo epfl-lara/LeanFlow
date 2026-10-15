@@ -327,7 +327,7 @@ def test_group_cleanup_accepts_eperm_only_for_exited_or_zombie_group(monkeypatch
         "run",
         lambda *args, **kwargs: SimpleNamespace(stdout=members),
     )
-    processes.signal_group(SimpleNamespace(pid=412, poll=lambda: -15), signal.SIGKILL)
+    processes.signal_group(SimpleNamespace(pid=412, returncode=-15), signal.SIGKILL)
 
 
 @pytest.mark.parametrize("members", ["412 S\n", "412 T\n", "unrecognized process table\n"])
@@ -346,7 +346,7 @@ def test_group_cleanup_does_not_hide_permission_failure_with_live_or_unknown_mem
         lambda *args, **kwargs: SimpleNamespace(stdout=members),
     )
     with pytest.raises(PermissionError, match="real permission failure"):
-        processes.signal_group(SimpleNamespace(pid=412, poll=lambda: -15), signal.SIGKILL)
+        processes.signal_group(SimpleNamespace(pid=412, returncode=-15), signal.SIGKILL)
 
 
 def test_group_cleanup_does_not_hide_permission_failure_for_running_leader(monkeypatch):
@@ -361,8 +361,9 @@ def test_group_cleanup_does_not_hide_permission_failure_for_running_leader(monke
         "_group_has_live_processes",
         lambda *args: pytest.fail("A live leader already establishes unfinished cleanup"),
     )
+    monkeypatch.setattr(processes, "process_exited", lambda process: False)
     with pytest.raises(PermissionError, match="running native process"):
-        processes.signal_group(SimpleNamespace(pid=412, poll=lambda: None), signal.SIGKILL)
+        processes.signal_group(SimpleNamespace(pid=412, returncode=None), signal.SIGKILL)
 
 
 def test_group_cleanup_fails_closed_when_empty_group_cannot_be_verified(monkeypatch):
@@ -377,7 +378,7 @@ def test_group_cleanup_fails_closed_when_empty_group_cannot_be_verified(monkeypa
     monkeypatch.setattr(processes.os, "killpg", denied)
     monkeypatch.setattr(processes.subprocess, "run", unavailable)
     with pytest.raises(subprocess.TimeoutExpired):
-        processes.signal_group(SimpleNamespace(pid=412, poll=lambda: -15), signal.SIGKILL)
+        processes.signal_group(SimpleNamespace(pid=412, returncode=-15), signal.SIGKILL)
 
 
 def test_process_inspection_failure_still_stops_native_group(monkeypatch: pytest.MonkeyPatch):

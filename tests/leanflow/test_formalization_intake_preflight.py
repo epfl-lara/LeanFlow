@@ -303,7 +303,7 @@ def test_source_diagnostics_precede_dependency_preflight(
 ) -> None:
     root = unsupported_project
     source = root / "paper.tex"
-    source.write_text(r"\begin{theorem}\UnknownClaim{x} holds.\end{theorem}")
+    source.write_text(r"\write18{forbidden}\begin{theorem}True.\end{theorem}")
     record = inspect_document(root, source)
     monkeypatch.setattr(
         intake,

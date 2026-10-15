@@ -16,6 +16,38 @@ from leanflow_cli.formalization.source_inventory import inventory_source
 from leanflow_cli.formalization.source_provenance import digest
 
 
+@pytest.mark.parametrize("suffix", [".bib", ".bbl"])
+def test_bibliography_originals_are_readable_review_evidence(tmp_path: Path, suffix: str) -> None:
+    source = tmp_path / "paper.tex"
+    source.write_text(r"\bibliography{refs}")
+    support = tmp_path / ("refs.bib" if suffix == ".bib" else "paper.bbl")
+    text = "Référence αβ: " * 3000
+    support.write_text(text, encoding="utf-8")
+
+    result = inventory_source(tmp_path, source)
+
+    frozen = result["files"][support.name]
+    assert frozen["sha256"] == digest(support.read_bytes())
+    assert frozen["encoding"] == "utf-8"
+    assert frozen["text"] == text
+
+
+def test_invalid_bibliography_encoding_is_explicit_and_preserves_bytes(tmp_path: Path) -> None:
+    source = tmp_path / "paper.tex"
+    source.write_text(r"\bibliography{refs}")
+    support = tmp_path / "paper.bbl"
+    support.write_bytes(b"original\xffbibliography")
+
+    result = inventory_source(tmp_path, source)
+
+    assert result["files"][support.name]["sha256"] == digest(support.read_bytes())
+    assert result["files"][support.name]["encoding"] == "binary"
+    assert any(
+        row["code"] == "bibliography_encoding_unconfirmed" and row["blocking"]
+        for row in result["diagnostics"]
+    )
+
+
 def test_supplied_root_jobname_bbl_is_frozen_without_a_database(tmp_path: Path) -> None:
     source = tmp_path / "foo.tex"
     source.write_text(r"\begin{document}\bibliography{bar}\end{document}")

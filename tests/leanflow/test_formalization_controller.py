@@ -217,6 +217,37 @@ def test_workflow_promotes_only_after_item_and_coherence_reviews(formalization_w
     assert len(accounting["invocations"]) == 3
 
 
+def test_aggregate_failure_after_accepted_review_blocks_publication(
+    formalization_workflow, monkeypatch: pytest.MonkeyPatch
+):
+    from leanflow_cli.formalization import review
+    from leanflow_cli.runtime.workflow_resources import WorkflowResourceWindow
+
+    windows = []
+    original_start = WorkflowResourceWindow.start
+
+    def capture(window):
+        original_start(window)
+        windows.append(window)
+
+    original_review = review.review_revision
+
+    def exhaust(*args, **kwargs):
+        result = original_review(*args, **kwargs)
+        assert result["accepted"]
+        windows[-1].max_bytes = 0
+        return result
+
+    monkeypatch.setattr(WorkflowResourceWindow, "start", capture)
+    monkeypatch.setattr(review, "review_revision", exhaust)
+    result, accounting, requests, source, _ = formalization_workflow()
+    assert result["status"] == "resource_error"
+    assert result["error_code"] == "workflow_memory_limit"
+    assert "publication" not in result
+    assert source.read_text() == "-- Existing project\n"
+    assert len(requests) == 3 and len(accounting["invocations"]) == 3
+
+
 def test_workflow_does_not_reroll_unchanged_source_rejection(formalization_workflow):
     result, accounting, requests, source, checks = formalization_workflow(decision="BLOCK", calls=4)
     assert result["status"] == "blocked" and "not rerolled" in result["error"]
@@ -305,10 +336,10 @@ def test_stale_preparation_submission_interrupts_author_before_native_retry(
     assert source.read_text() == "-- Existing project\n" and "promoted_files" not in result
 
 
-def test_direct_controller_blocks_unresolved_inventory_before_inference(tmp_path, monkeypatch):
+def test_direct_controller_blocks_hard_source_effects_before_inference(tmp_path, monkeypatch):
     from leanflow_cli.formalization.records import create_document
 
-    (tmp_path / "paper.tex").write_text(r"\begin{theorem}\Mystery{x} holds.\end{theorem}")
+    (tmp_path / "paper.tex").write_text(r"\write18{forbidden}\begin{theorem}True.\end{theorem}")
     record = create_document(tmp_path, tmp_path / "paper.tex")
 
     def forbidden(*args, **kwargs):

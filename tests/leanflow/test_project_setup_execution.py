@@ -305,13 +305,19 @@ def test_private_disk_reserve_pressure_cancels_before_launch(policy):
 
 def test_memory_measurement_ignores_unowned_or_reused_pid(monkeypatch):
     start = "Wed Oct  7 12:00:00 2026"
-    tree = SimpleNamespace(refresh=lambda: None, descendants={2: start, 3: "other start"})
-    child = SimpleNamespace(pid=1, poll=lambda: None)
+    child = SimpleNamespace(pid=1, returncode=None)
+    tree = SimpleNamespace(
+        refresh=lambda: None,
+        process=child,
+        root=1,
+        root_identity=start,
+        descendants={2: start, 3: "other start"},
+    )
     monkeypatch.setattr(
         execution.subprocess,
         "run",
         lambda *args, **kwargs: SimpleNamespace(
-            stdout="1 Wed Oct  7 12:00:00 2026 1\n2 Wed Oct  7 12:00:00 2026 2\n3 Wed Oct  7 12:00:00 2026 999\n4 Wed Oct  7 12:00:00 2026 999\n"
+            stdout="1 1 Wed Oct  7 12:00:00 2026\n2 2 Wed Oct  7 12:00:00 2026\n3 999 Wed Oct  7 12:00:00 2026\n4 999 Wed Oct  7 12:00:00 2026\n"
         ),
     )
     assert execution.owned_rss_bytes(child, tree) == 3 * 1024

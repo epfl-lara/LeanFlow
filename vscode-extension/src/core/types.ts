@@ -808,6 +808,7 @@ export type HostMessage = (
   | { type: "formalizationConflicts"; snapshot: FormalizationConflictsSnapshot | null; error: string; resolvedTransactionId?: string }
   | { type: "formalizationList"; documents: FormalizationSnapshot[]; error: string }
   | { type: "formalizationState"; documentId: string; snapshot: FormalizationSnapshot | null; error: string }
+  | { type: "formalizationActionCommitted"; documentId: string; previousRevisionId: string; revisionId: string }
   | { type: "formalizationPdf"; pdf: FormalizationPdf }
   | { type: "formalizationConflictPdf"; transactionId: string; observationId: string; versionId: string; pdf: FormalizationPdf }
   | { type: "formalizationSourceSelection"; documentId: string; revisionId: string; artifactId: string; lineStart: number; lineEnd: number }
@@ -842,6 +843,7 @@ export type WebviewMessage = (
   | { type: "listFormalizations" }
   | { type: "inspectFormalization"; sourceKind: "file" | "folder" }
   | { type: "showFormalization"; documentId: string }
+  | { type: "checkFormalization"; documentId: string; revisionId: string }
   | { type: "formalizationAction"; documentId: string; revisionId: string; action: FormalizationAction }
   | { type: "openFormalizationArtifact"; documentId: string; revisionId: string; artifactId: string; itemId?: string; pageIndex?: number; line?: number }
   | { type: "launchFormalization"; documentId: string; revisionId: string; request: LaunchRequest }

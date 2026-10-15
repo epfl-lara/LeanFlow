@@ -58,6 +58,25 @@ test("coverage never equates an excluded claim, checked shell, or conditional co
   assert.throws(() => parseFormalizationSnapshot({ ...snapshot, acceptance_freshness: { status: "current", current: "true", reason: "" } }), /invalid preparation/);
 });
 
+test("saved lexical review display cannot masquerade as fresh acceptance", () => {
+  const snapshot = formalizationFixture();
+  snapshot.currentness = "historical";
+  snapshot.can_prove = false;
+  snapshot.handoff = null;
+  snapshot.diagnostics = [{ id: "d-reviewed", code: "unresolved_command", message: "Original diagnostic",
+    blocking: false, source_refs: [], can_resolve_command: false,
+    native_interpretation_required: false, native_interpretation_status: "saved_reviewed" }];
+  assert.equal(parseFormalizationSnapshot(snapshot).can_prove, false);
+  for (const status of ["approved", true, 1]) {
+    const bad = structuredClone(snapshot);
+    bad.diagnostics[0].native_interpretation_status = status;
+    assert.throws(() => parseFormalizationSnapshot(bad), /invalid extraction diagnostics/);
+  }
+  const conflicting = structuredClone(snapshot);
+  conflicting.diagnostics[0].native_interpretation_required = true;
+  assert.throws(() => parseFormalizationSnapshot(conflicting), /invalid extraction diagnostics/);
+});
+
 test("PDF navigation uses physical pages, document-bound artifacts and approximate text candidates", () => {
   const items = formalizationFixture().items;
   assert.deepEqual(pdfItemCandidates(items, "source-pdf", 0).map(item => item.id), ["item-1"]);
@@ -168,16 +187,17 @@ test("the client passes exact revision and JSON as argv and never reads state it
   const service = new FormalizationService(() => "/owning/host/project", async (args, options) => {
     calls.push({ args, options });
     if (args[1] === "list") return JSON.stringify({ schema_version: 1, documents: [formalizationFixture()] });
+    if (args[1] === "action") return JSON.stringify({ schema_version: 1, committed: true, document_id: "paper-1", previous_revision_id: "revision-1", revision_id: "revision-2", currentness: "unchecked" });
     return JSON.stringify(formalizationFixture());
   });
   await service.list(); await service.show("paper-1"); await service.inspect("paper/main.tex");
   assert.equal(calls[0].options.timeoutMs, 60_000);
   assert.equal(calls[1].options.timeoutMs, 60_000);
   await service.inspect("paper/main.tex", "paper/Rendered Copy.pdf");
-  assert.deepEqual(calls.at(-1), { args: ["formalization", "inspect", "paper/main.tex", "--companion-pdf", "paper/Rendered Copy.pdf", "--json"], options: { cwd: "/owning/host/project" } });
+  assert.deepEqual(calls.at(-1), { args: ["formalization", "inspect", "paper/main.tex", "--companion-pdf", "paper/Rendered Copy.pdf", "--json"], options: { cwd: "/owning/host/project", timeoutMs: 60_000 } });
   const action = { type: "set_scope", item_id: "item-1", scope: "excluded", reason: 'Keep literal $(no-command) and "quotes"' };
   await service.action("paper-1", "revision-1", action);
-  assert.deepEqual(calls.at(-1), { args: ["formalization", "action", "paper-1", "--expected-revision", "revision-1", `--action-json=${JSON.stringify(action)}`, "--json"], options: { cwd: "/owning/host/project" } });
+  assert.deepEqual(calls.at(-1), { args: ["formalization", "action", "paper-1", "--expected-revision", "revision-1", `--action-json=${JSON.stringify(action)}`, "--acknowledge-only", "--json"], options: { cwd: "/owning/host/project" } });
   const bad = new FormalizationService(() => "/project", async () => JSON.stringify({ ...formalizationFixture(), document_id: "other" }));
   await assert.rejects(bad.show("paper-1"), /different document/);
 });
@@ -202,6 +222,19 @@ test("proof permission requires an explicit boolean and reason without conferrin
   assert.equal(item.proof_status, "unknown");
   item.proof_authorization.authorized = "true";
   assert.throws(() => parseFormalizationSnapshot(snapshot), /invalid source inventory/);
+});
+
+test("historical projections never authorize proving and currentness is revision bound", async () => {
+  const historical = { ...formalizationFixture(), currentness: "historical", can_prove: false, handoff: null, acceptance_freshness: { current: false, status: "historical", reason: "Saved evidence only" } };
+  assert.equal(parseFormalizationSnapshot(historical).can_prove, false);
+  assert.throws(() => parseFormalizationSnapshot({ ...historical, can_prove: true }), /invalid preparation/);
+  assert.throws(() => parseFormalizationSnapshot({ ...historical, handoff: formalizationFixture().handoff }), /invalid preparation/);
+  const calls = [];
+  const service = new FormalizationService(() => "/project", async (args, options) => { calls.push({ args, options }); return JSON.stringify({ ...formalizationFixture(), currentness: "checked" }); });
+  assert.equal((await service.check("paper-1", "revision-1")).revision_id, "revision-1");
+  assert.deepEqual(calls[0], { args: ["formalization", "check", "paper-1", "--expected-revision", "revision-1", "--json"], options: { cwd: "/project", timeoutMs: 180_000 } });
+  await assert.rejects(service.check("paper-1", "changed-revision"), /another revision/);
+  assert.equal(parseWebviewMessage({ type: "checkFormalization", documentId: "paper-1" }).ok, false);
 });
 
 test("command reconciliation requires verified meaning and evidence without accepting source or review claims", () => {

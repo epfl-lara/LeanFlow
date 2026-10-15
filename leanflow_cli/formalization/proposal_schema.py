@@ -5,10 +5,13 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from leanflow_cli.formalization.clause_obligations import validate_dispositions
 from leanflow_cli.formalization.evidence import identifier
 from leanflow_cli.formalization.inventory_authority import complete_inventory
 from leanflow_cli.formalization.lean_origin import imported_origin_owner
 from leanflow_cli.formalization.lean_policy import POLICY_VERSION
+from leanflow_cli.formalization.source_reconciliation import apply_reconciliation
+from leanflow_cli.formalization.source_review_regions import expand_coverage
 
 
 def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str, Any]:
@@ -31,6 +34,12 @@ def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str
     result["proposal_phase"] = proposal.get("phase", "complete")
     if protocol_enabled(record):
         result["full_inventory"] = copy.deepcopy(result["inventory"])
+    try:
+        apply_reconciliation(result, proposal.get("source_reconciliation"))
+    except ValueError as error:
+        raise ValueError(
+            "Blocking extraction diagnostics require exact source reconciliation: " + str(error)
+        ) from error
     selected_source_ids = set(record["slice_source_ids"]) if partial else None
     if partial:
         selected_regions = slice_regions(record)
@@ -40,6 +49,14 @@ def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str
     items = {item["id"]: item for item in result["inventory"]["items"]}
     regions = {region["id"]: region for region in result["inventory"]["regions"]}
     coverage = proposal.get("coverage")
+    if isinstance(coverage, list):
+        try:
+            coverage = expand_coverage(result["inventory"]["regions"], coverage)
+        except ValueError as error:
+            raise ValueError(
+                "Coverage must account for every selected document region or exact review group: "
+                + str(error)
+            ) from error
     if not isinstance(coverage, list) or len(coverage) != len(regions):
         raise ValueError("Coverage must account for every selected document region")
     seen: set[str] = set()
@@ -118,6 +135,7 @@ def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str
                 raise ValueError("Lean references require exact fully qualified names")
             if not declaration.get("file") and not declaration.get("imports"):
                 raise ValueError("Library reuse must specify its pinned import modules")
+        validate_dispositions(result, unit)
         dependencies = unit.get("depends_on_units", [])
         if not isinstance(dependencies, list) or any(
             not isinstance(key, str) for key in dependencies
@@ -314,3 +332,4 @@ def bind_declarations(record: dict[str, Any], checks: dict[str, Any]) -> None:
             required.update(provenance[row["name"]])
         unit["derived_source_ids"] = sorted(required - set(unit.get("required_source_ids", [])))
         unit["required_source_ids"] = sorted(required)
+        validate_dispositions(record, unit, compiled=True)

@@ -220,6 +220,9 @@ def discover_preparation_plan(
     user_goal: str = "",
 ) -> dict[str, Any]:
     """Run one fresh native discovery call with paginated frozen evidence and a shared budget."""
+    from leanflow_cli.formalization.preparation_transaction import assert_no_pending_preparation
+
+    assert_no_pending_preparation(root)
     if operation_cancelled() or (cancelled and cancelled()):
         return {"accepted": False, "status": "cancelled", "semantic_approval": False}
     remaining = budget.remaining()

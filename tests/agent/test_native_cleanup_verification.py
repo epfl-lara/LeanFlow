@@ -217,7 +217,9 @@ def test_final_leader_reaping_is_bounded_and_cannot_infer_cleanup_after_timeout(
     def forbidden(*args, **kwargs):
         pytest.fail("A leader still alive after SIGKILL cannot certify completed cleanup")
 
-    leader = SimpleNamespace(pid=101, wait=wait)
+    leader = SimpleNamespace(pid=101, returncode=None, wait=wait)
+    monkeypatch.setattr(processes, "process_exited", lambda process: True)
+    monkeypatch.setattr(processes, "_group_has_live_processes", lambda group: False)
     monkeypatch.setattr(processes, "signal_group", lambda process, sig: signals.append(sig))
     monkeypatch.setattr(processes, "verify_owned_stopped", forbidden)
     started = time.monotonic()
@@ -225,5 +227,5 @@ def test_final_leader_reaping_is_bounded_and_cannot_infer_cleanup_after_timeout(
         NativeCleanupUnverified, match="leader did not exit.*retain invocation inputs"
     ):
         processes.cleanup_group(leader)
-    assert waits == [2, 2] and signals == [signal.SIGTERM, signal.SIGKILL]
+    assert waits == [2] and signals == [signal.SIGTERM, signal.SIGKILL]
     assert time.monotonic() - started < 0.5

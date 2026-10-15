@@ -240,6 +240,8 @@ def test_current_or_reused_receipt_requires_exact_inspector_readiness(tmp_path, 
     (directory / "receipt.json").write_text(json.dumps(receipt))
     monkeypatch.setattr(preparation, "preparation_directory", lambda root: directory)
     monkeypatch.setattr(preparation, "assert_no_pending_preparation", lambda root: None)
+    # Keep this fabricated receipt focused on inspector staleness, independently of membership tests.
+    monkeypatch.setattr(preparation, "require_selected_preparation", lambda root, receipt: None)
     monkeypatch.setattr(
         preparation_reuse,
         "commit_preparation",

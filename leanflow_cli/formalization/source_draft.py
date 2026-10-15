@@ -86,6 +86,9 @@ def draft_policy(inventory: dict[str, Any], *, explicit: bool = False) -> dict[s
     )
     if explicit and not paired:
         raise ValueError("--source-draft-only requires an explicitly paired frozen PDF")
+    from leanflow_cli.formalization.source_reconciliation import lexical_admission
+
+    hard = lexical_admission(inventory) if not explicit else []
     strict: list[dict[str, Any]] = []
     deferred: list[dict[str, Any]] = []
     for row in inventory.get("diagnostics", []):
@@ -96,6 +99,7 @@ def draft_policy(inventory: dict[str, Any], *, explicit: bool = False) -> dict[s
             and row.get("support_command") in {"includegraphics", "bibliography", "addbibresource"}
             and isinstance(row.get("support_target"), str)
             and bool(row["support_target"].strip())
+            and (explicit or row in hard)
         )
         structured = bool(row.get("id")) and _frozen_spans(inventory, row)
         uncertainty = explicit and structured and row.get("code") in _UNCERTAIN_CODES
@@ -250,8 +254,10 @@ def preview_is_current(root: Path, record: dict[str, Any], preview: dict[str, An
     return True
 
 
-def load_preview(root: Path, record: dict[str, Any]) -> dict[str, Any] | None:
-    """Expose only the selected, unaccepted preview while preserving independent acceptance."""
+def load_preview(
+    root: Path, record: dict[str, Any], *, verify_current: bool = True
+) -> dict[str, Any] | None:
+    """Authenticate saved preview bytes, optionally requiring their present source attachment."""
     if (load_receipt(record) or {}).get("status") in {"published", "accepted_staged"} or record.get(
         "status"
     ) in {"published", "accepted_staged"}:
@@ -264,4 +270,4 @@ def load_preview(root: Path, record: dict[str, Any]) -> dict[str, Any] | None:
     preview = load_run_preview(root, record, identifier(value["run_id"]))
     if preview is None or preview["preview_id"] != value.get("preview_id"):
         raise ValueError("Selected draft preview is missing or changed")
-    return preview if preview_is_current(root, record, preview) else None
+    return preview if not verify_current or preview_is_current(root, record, preview) else None

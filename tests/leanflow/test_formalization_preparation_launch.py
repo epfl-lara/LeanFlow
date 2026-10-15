@@ -57,7 +57,7 @@ def test_source_only_preview_never_prepares_or_calls_native(source_folder, monke
 
 @pytest.mark.parametrize(
     "unsupported",
-    [r"\unknownmath{A}", r"\ifdim 1pt<2pt Hidden mathematics.\fi"],
+    [r"\write18{touch forbidden}", r"\input{missing-source}"],
 )
 def test_source_blocker_precedes_discovery_budget_and_project_effects(
     source_folder, monkeypatch, unsupported
@@ -79,6 +79,41 @@ def test_source_blocker_precedes_discovery_budget_and_project_effects(
         launch.prepare_formalization_launch(root, "paper.tex", {"provider": "claude"})
     assert source.read_bytes() == original
     assert not (root / ".leanflow/formalization-campaigns").exists()
+    assert not (root / "lean-toolchain").exists()
+
+
+@pytest.mark.parametrize(
+    "lexical",
+    [r"\unknownmath{A}", r"\ifdim 1pt<2pt Hidden mathematics.\fi"],
+)
+def test_lexical_uncertainty_reaches_discovery_without_becoming_source_approval(
+    source_folder, monkeypatch, lexical
+):
+    from leanflow_cli.formalization.records import load_document
+
+    root = source_folder
+    source = root / "paper.tex"
+    source.write_text(source.read_text() + lexical)
+    original = source.read_bytes()
+    observed = []
+
+    def discover(project_root, record, plan, **kwargs):
+        assert project_root == root
+        assert any(row["blocking"] for row in record["inventory"]["diagnostics"])
+        assert record.get("source_reconciliation") is None
+        observed.append(record)
+        return {"accepted": False, "status": "source_interpretation_required"}
+
+    monkeypatch.setattr(launch, "discover_preparation_plan", discover)
+    monkeypatch.setattr(
+        launch, "prepare_document_project", lambda *args, **kwargs: pytest.fail("Project setup")
+    )
+    with pytest.raises(ValueError, match="source_interpretation_required"):
+        launch.prepare_formalization_launch(root, "paper.tex", {"provider": "codex"})
+    assert len(observed) == 1 and source.read_bytes() == original
+    saved = load_document(root, observed[0]["document_id"])
+    assert saved.get("source_reconciliation") is None and not saved["reviews"]
+    assert any(row["blocking"] for row in saved["inventory"]["diagnostics"])
     assert not (root / "lean-toolchain").exists()
 
 

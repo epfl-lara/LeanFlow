@@ -1,14 +1,14 @@
-"""Prepare source-only formalization launches before project discovery or active workflow ownership."""
+"""Prepare source-backed launches under cancellable ownership before native-controller handoff."""
 
 from __future__ import annotations
 
 import os
 import shlex
-import signal
 import subprocess
 import sys
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ from leanflow_cli.formalization.preparation import (
 )
 from leanflow_cli.formalization.preparation_discovery import discover_preparation_plan
 from leanflow_cli.formalization.preparation_plan import default_preparation_plan
+from leanflow_cli.formalization.preparation_transaction import assert_no_pending_preparation
 from leanflow_cli.formalization.records import (
     assert_author_selection,
     create_document,
@@ -66,6 +67,7 @@ def source_project_root(cwd: Path) -> Path:
 
 def _require_project_baseline(root: Path) -> None:
     """Require checked tools before planning, retaining stronger current preparation authority."""
+    assert_no_pending_preparation(root)
     try:
         setup = inspect_project(root)
         if setup.get("ready") is True and setup.get("configured") is True:
@@ -122,6 +124,40 @@ def prepare_formalization_launch(
     user_goal: str = "",
     source_draft_only: bool = False,
 ) -> dict[str, Any]:
+    """Expose cancellation and aggregate resource ownership before paid preparation."""
+    env = dict(os.environ if environment is None else environment)
+    root = source_project_root(cwd)
+    completed = completed_draft_state(
+        root, env, explicit=source_draft_only, backend=str(runtime["provider"])
+    )
+    if completed is not None:
+        return {"root": root, "completed_source_draft": completed}
+    from leanflow_cli.formalization.preflight_owner import preflight_owner
+
+    with preflight_owner(root, env) as (cancelled, resources):
+        return _prepare_formalization_launch(
+            cwd,
+            workflow_args,
+            runtime,
+            environment=env,
+            user_goal=user_goal,
+            source_draft_only=source_draft_only,
+            cancelled=cancelled,
+            check=lambda: resources.check(force=True),
+        )
+
+
+def _prepare_formalization_launch(
+    cwd: Path,
+    workflow_args: str,
+    runtime: dict[str, Any],
+    *,
+    environment: dict[str, str] | None = None,
+    user_goal: str = "",
+    source_draft_only: bool = False,
+    cancelled: threading.Event,
+    check: Callable[[], None],
+) -> dict[str, Any]:
     """Own one source preparation campaign and return its checked infrastructure and shared budget."""
     root = source_project_root(cwd)
     env = dict(os.environ if environment is None else environment)
@@ -130,7 +166,9 @@ def prepare_formalization_launch(
     )
     if completed is not None:
         return {"root": root, "completed_source_draft": completed}
+    check()
     _require_project_baseline(root)
+    check()
     selected = _select_formalization_document(root, cwd, workflow_args)
     with project_activity(root):
         record = create_document(root, selected.source_path)
@@ -152,6 +190,9 @@ def prepare_formalization_launch(
                 "Source extraction needs repair before project preparation: "
                 + "; ".join(row["message"] for row in blockers)
             )
+    check()
+    if cancelled.is_set():
+        raise ValueError("Formalization preparation cancelled before planning")
     limits = load_config().get("limits", {})
     configured = {
         name: env.get("LEANFLOW_PROVER_" + name.upper(), limits.get(name))
@@ -189,11 +230,6 @@ def prepare_formalization_launch(
     directory.mkdir(parents=True)
     budget_path = directory / "budget.json"
     budget = CampaignLimits(budget_path, configured)
-    cancelled = threading.Event()
-    previous_signals: dict[int, Any] = {}
-    if threading.current_thread() is threading.main_thread():
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            previous_signals[signum] = signal.signal(signum, lambda *_: cancelled.set())
     try:
         plan = default_preparation_plan(
             root,
@@ -208,6 +244,9 @@ def prepare_formalization_launch(
             "false",
             "off",
         }
+        check()
+        if cancelled.is_set():
+            raise ValueError("Formalization preparation cancelled before discovery")
         if discovery_enabled:
             _report_preparation_progress(
                 {
@@ -229,6 +268,7 @@ def prepare_formalization_launch(
                 cancelled=cancelled.is_set,
                 user_goal=user_goal,
             )
+            check()
             if discovered.get("accepted") is not True:
                 raise ValueError(
                     "Formalization preparation discovery needs correction: "
@@ -260,6 +300,7 @@ def prepare_formalization_launch(
             network_allowed=env.get("LEANFLOW_FORMALIZATION_ALLOW_NETWORK", "true").lower()
             not in {"0", "false", "off"},
         )
+        check()
         if prepared.get("accepted") is not True:
             raise ValueError(
                 "Formalization project preparation failed: "
@@ -271,5 +312,3 @@ def prepare_formalization_launch(
         return {"root": root, "receipt": prepared["receipt"], "budget_path": budget_path}
     finally:
         budget.persist()
-        for previous_signum, handler in previous_signals.items():
-            signal.signal(previous_signum, handler)

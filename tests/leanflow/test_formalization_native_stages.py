@@ -137,6 +137,15 @@ def test_native_corrects_slice_then_expands_all_reuse_without_proof_or_premature
         return {"status": "published"}
 
     monkeypatch.setattr(publish, "publish_checked", publisher)
+    bridges = []
+    bridge_type = review.EvidenceBridge
+
+    def bridge(**kwargs):
+        instance = bridge_type(**kwargs)
+        bridges.append(instance)
+        return instance
+
+    monkeypatch.setattr(review, "EvidenceBridge", bridge)
 
     def invoke(request, on_event=None):
         request.on_started()
@@ -190,7 +199,17 @@ def test_native_corrects_slice_then_expands_all_reuse_without_proof_or_premature
         reviewers.append(request)
         assert not request.session_id and request.restricted_tools
         assignment = json.loads(request.prompt[len(review._CONTRACT) + 1 :])
-        dossier = assignment["dossier"]
+        if "dossier_ref" in assignment:
+            offset, chunks = 0, []
+            while offset is not None:
+                page = bridges[-1].call(
+                    "read_evidence", {"id": assignment["dossier_ref"], "offset": offset}
+                )
+                chunks.append(page["text"])
+                offset = page["next_offset"]
+            dossier = json.loads("".join(chunks))
+        else:
+            dossier = assignment["dossier"]
         decision = "BLOCK" if len(authors) == 1 else "PASS"
         return HarnessResult(
             "completed",

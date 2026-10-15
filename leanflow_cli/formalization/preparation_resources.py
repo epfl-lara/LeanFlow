@@ -8,21 +8,14 @@ import subprocess
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from types import SimpleNamespace
 
 from agent.runtime.harness.processes import ProcessTree, _processes
+from agent.runtime.harness.resources import observed_descendant_rss_bytes
 from leanflow_cli.workflows.project_setup.cleanup import verify_owned_stopped
-from leanflow_cli.workflows.project_setup.execution import SetupExecutionPolicy, owned_rss_bytes
+from leanflow_cli.workflows.project_setup.execution import SetupExecutionPolicy
 from leanflow_cli.workflows.project_setup.process import SetupFailure
 
 _campaign_owner = threading.Lock()
-
-
-class _ObservedTree(ProcessTree):
-    """Use already identified children without rediscovering unrelated controller descendants."""
-
-    def refresh(self) -> None:
-        """Keep the externally sampled owned set stable for RSS measurement."""
 
 
 @contextmanager
@@ -53,7 +46,7 @@ def supervise_preparation(
     tree = ProcessTree(os.getpid())
     excluded: dict[int, str] = {}
 
-    def owned() -> _ObservedTree:
+    def owned() -> ProcessTree:
         tree.refresh()
         table = _processes()
         excluded_parents = {
@@ -70,7 +63,7 @@ def supervise_preparation(
             for pid in added:
                 excluded[pid] = table[pid][1]
             excluded_parents.update(added)
-        return _ObservedTree(
+        return ProcessTree(
             tree.root,
             {pid: start for pid, start in tree.descendants.items() if excluded.get(pid) != start},
         )
@@ -94,8 +87,7 @@ def supervise_preparation(
                 observed = owned()
                 # The parent controller is deliberately excluded; only its new
                 # tracked invocation trees belong to this preparation budget.
-                parent = SimpleNamespace(pid=os.getpid(), poll=lambda: 0)
-                policy.observe_rss(owned_rss_bytes(parent, observed))  # type: ignore[arg-type]
+                policy.observe_rss(observed_descendant_rss_bytes(observed.descendants))
                 policy.observe_disk()
             except BaseException as error:
                 failures.append(error)

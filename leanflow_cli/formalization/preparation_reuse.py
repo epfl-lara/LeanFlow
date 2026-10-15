@@ -29,6 +29,12 @@ def reuse_preparation(
         raise RepreparationRequired(
             "Prepared Lean compatibility was not checked by the current inspector; prepare again before reuse"
         )
+    from leanflow_cli.formalization.preparation import load_preparation_receipt
+
+    if load_preparation_receipt(root) != previous:
+        raise RepreparationRequired(
+            "Preparation reuse requires its current selected committed receipt"
+        )
     if not set(plan["required_imports"]).issubset(previous["imports"]):
         return None
     if any(

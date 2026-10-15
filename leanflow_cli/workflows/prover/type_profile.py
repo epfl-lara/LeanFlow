@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tempfile
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from core.deadlines import deadline_after, remaining_seconds
+from leanflow_cli.workflows.prover.check_command_cleanup import command_workspace
 from leanflow_cli.workflows.prover.models import digest
 
 _MODULE = "LeanFlowTypeProfileInput"
@@ -158,7 +158,7 @@ def compiled_type_profiles(
     # cannot run cleanup, and resume deliberately refuses symlinked evidence.
     with ExitStack() as cleanup:
         directory = Path(
-            cleanup.enter_context(tempfile.TemporaryDirectory(prefix="leanflow-profile-compile-"))
+            cleanup.enter_context(command_workspace(prefix="leanflow-profile-compile-"))
         ).resolve()
         input_file = directory.joinpath(*compiled_module.split(".")).with_suffix(".lean")
         input_file.parent.mkdir(parents=True, exist_ok=True)
@@ -204,7 +204,7 @@ def compiled_type_profiles(
         # systems. Give trusted inspection a fresh write domain that no source
         # compiler ever held, and freeze only the completed artifact across it.
         directory = Path(
-            cleanup.enter_context(tempfile.TemporaryDirectory(prefix="leanflow-profile-inspect-"))
+            cleanup.enter_context(command_workspace(prefix="leanflow-profile-inspect-"))
         ).resolve()
         compiled_artifact = directory.joinpath(*compiled_module.split(".")).with_suffix(".olean")
         compiled_artifact.parent.mkdir(parents=True, exist_ok=True)

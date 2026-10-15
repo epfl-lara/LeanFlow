@@ -7,13 +7,22 @@ import selectors
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable, Sequence
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from agent.runtime.harness.isolation import IsolationPolicy, sandbox_command
-from agent.runtime.harness.processes import ProcessTree, cleanup_group
+from agent.runtime.harness.models import NativeCleanupUnverified
+from agent.runtime.harness.processes import (
+    ProcessTree,
+    cleanup_group,
+    process_exited,
+    require_output_eof,
+)
 from core.deadlines import operation_cancelled
+from leanflow_cli.workflows.prover.check_command_cleanup import CommandOwnership
 
 _OUTPUT_LIMIT = 64000
 
@@ -26,11 +35,12 @@ def run_command(
     deadline: float | None = None,
     cancelled: Callable[[], bool] | None = None,
     network_allowed: bool = True,
+    owner_workspace: Path | None = None,
 ) -> dict[str, Any]:
-    """Start a process group and stop its descendants only on explicit cancellation/deadline."""
+    """Supervise a native tool under its campaign limits and require physical closure on return."""
     if not argv or any(not isinstance(arg, str) or "\0" in arg for arg in argv):
         raise ValueError("argv must contain nonempty executable arguments without NUL bytes")
-    temporary = directory / "tmp"
+    temporary = directory / "tmp" / uuid.uuid4().hex
     temporary.mkdir(parents=True, exist_ok=True)
     elan_home = Path(os.environ.get("ELAN_HOME", str(Path.home() / ".elan"))).expanduser().resolve()
     reads = tuple(
@@ -88,17 +98,27 @@ def run_command(
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    tree = ProcessTree(process.pid)
+    tree = ProcessTree(process.pid, process=process)
+    ownership = CommandOwnership(
+        (owner_workspace or directory).resolve(),
+        temporary,
+        process,
+        tree,
+        cleanup_group,
+        partial(require_output_eof, description="Native command"),
+        input_roots=(snapshot.resolve(),),
+    )
     output = {"stdout": bytearray(), "stderr": bytearray()}
     status = "completed"
     cleaned = False
+    drain_deadline: float | None = None
     try:
         with selectors.DefaultSelector() as selector:
             assert process.stdout is not None and process.stderr is not None
             for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, selectors.EVENT_READ, name)
-            while selector.get_map() or process.poll() is None:
+            while selector.get_map() or not process_exited(process):
                 if operation_cancelled() or (cancelled is not None and cancelled()):
                     status = "cancelled"
                     break
@@ -106,9 +126,15 @@ def run_command(
                     status = "timeout"
                     break
                 tree.refresh()
-                if process.poll() is not None and not cleaned:
+                if process_exited(process) and not cleaned:
                     cleanup_group(process, tree)
                     cleaned = True
+                    ownership.processes_verified = True
+                    drain_deadline = time.monotonic() + 2.0
+                if drain_deadline is not None and time.monotonic() >= drain_deadline:
+                    raise NativeCleanupUnverified(
+                        "Native command output pipes remain open after leader exit; retain its inputs"
+                    )
                 for key, _ in selector.select(0.2):
                     chunk = os.read(key.fd, 65536)
                     if not chunk:
@@ -117,15 +143,21 @@ def run_command(
                         output[key.data].extend(chunk)
                         if len(output[key.data]) > _OUTPUT_LIMIT:
                             del output[key.data][:-_OUTPUT_LIMIT]
+    except NativeCleanupUnverified:
+        # Final close below owns the retention decision; a verified retry cannot
+        # turn interrupted capture into success or claim already-deleted inputs.
+        status = "capture_failed"
     finally:
-        cleanup_group(process, tree)
-        for pipe in (process.stdout, process.stderr):
-            if pipe is not None:
-                pipe.close()
+        ownership.close()
     return {
         "success": status == "completed" and process.returncode == 0,
         "status": status,
         "returncode": process.returncode,
+        "error": (
+            "Native command output capture was interrupted; retry the command."
+            if status == "capture_failed"
+            else ""
+        ),
         "elapsed_s": round(time.monotonic() - started, 3),
         **{key: bytes(value).decode("utf-8", errors="replace") for key, value in output.items()},
     }

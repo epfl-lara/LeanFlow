@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from core.home import leanflow_home
-from core.process_identity import process_identity_from_mapping, process_identity_matches
+from core.process_identity import (
+    _process_token,
+    current_process_identity,
+    process_identity_from_mapping,
+    process_identity_matches,
+    process_token_sha256,
+)
 
 _TERMINAL_PHASES = frozenset(
     {"completed", "exited", "stopped", "interrupted", "cancelled", "failed", "error", "dead"}
@@ -83,6 +89,19 @@ def _check_status(path: Path, root: Path, *, require_root: bool = False) -> None
     if payload.get("terminal") is True or str(payload.get("phase", "")) in _TERMINAL_PHASES:
         return
     if str(payload.get("status", "")) in _TERMINAL_PHASES:
+        return
+    identity = process_identity_from_mapping(payload)
+    current = current_process_identity()
+    if (
+        payload.get("owner_role") == "formalization-preflight"
+        and payload.get("workflow_kind") == "formalize"
+        and payload.get("phase") == "starting"
+        and identity.verifiable
+        and identity == current
+        and process_token_sha256(_process_token(current.pid)) == current.token_sha256
+    ):
+        # This exact preflight controller must prepare its own dependencies;
+        # foreign owners and every normal workflow still exclude setup.
         return
     if _process_is_live(payload):
         raise ProjectBusyError(

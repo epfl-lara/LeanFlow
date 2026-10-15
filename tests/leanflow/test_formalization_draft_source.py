@@ -24,6 +24,31 @@ from leanflow_cli.formalization.source_inventory import inventory_source
 from leanflow_cli.native import harness_workflow
 from leanflow_cli.native.harness_artifacts import source_files
 from tests.leanflow.test_source_inventory import _pdf
+from tests.leanflow.test_source_reconciliation import bibliography_record
+
+
+def test_exact_commented_bibliography_uses_ordinary_review_not_implicit_draft(tmp_path):
+    from leanflow_cli.formalization.source_draft import draft_policy
+
+    value = bibliography_record(tmp_path)
+    before = copy.deepcopy(value["inventory"])
+    policy = draft_policy(value["inventory"])
+    assert not policy["draft_only"] and not policy["deferred"]
+    assert intake.author_blocking_diagnostics(value["inventory"]) == []
+    assert intake.draft_source_rejection(value["inventory"]) is None
+    assert value["inventory"] == before
+    assert draft_policy(value["inventory"], explicit=True)["draft_only"]
+
+
+def test_active_missing_bibliography_retains_unaccepted_draft_boundary(tmp_path):
+    from leanflow_cli.formalization.source_draft import draft_policy
+
+    value = bibliography_record(tmp_path, prefix="")
+    before = copy.deepcopy(value["inventory"])
+    policy = draft_policy(value["inventory"])
+    assert policy["draft_only"] and policy["deferred"]
+    assert intake.draft_source_rejection(value["inventory"])["accepted"] is False
+    assert value["inventory"] == before
 
 
 @pytest.fixture
