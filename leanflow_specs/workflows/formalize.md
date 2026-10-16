@@ -34,7 +34,11 @@ The first assignment admits only the representative source slice selected by the
 
 Create only Lean files in the allocated document module tree, plus the assigned structured proposal file. Its aggregator must import every generated module and contain only imports, comments and whitespace. Record explanations in the proposal fields. The controller generates the portable blueprint and source artifacts after acceptance and owns the bounded root-import edit. Never edit the toolchain or dependency configuration as part of translation.
 
+Finish polling an asynchronous Lean check before editing any project Lean file or building modules. The check binds the whole project environment, so even an unrelated source edit or build artifact invalidates its feedback. Repair the files after the check finishes, then check the revised version.
+
 Definitions, instances, structures and constructions must be complete. Pending holes are allowed only in named propositional theorem proof slots; types and computational data must contain no holes. A construction may depend explicitly on a named pending existence theorem. Completed proofs, complete opaque definitions and exact library reuse are valid. Source conjectures retain their claim status independently of the LaTeX environment name.
+
+Kernel replay rejects project unsafe/partial constants, including executable recursion helpers generated for a safe recursive definition. Use a complete `noncomputable def` for the mathematical function, or a suitable existing fold, when that helper would otherwise be emitted. This does not establish computability or efficiency: preserve those source claims as named Prop obligations tied to the actual algorithm and input-size/cost model. Do not infer helper safety from its name or weaken the replay policy.
 
 Write `.leanflow-job/formalization-proposal.json` according to the assignment schema. Each translation unit records required source IDs, exact Lean declaration references, a representation rationale and unit dependencies. Splits, merges and justified helpers are supported. Coverage accounts for every selected document region, with a reason for each disposition. The controller checks mappings against the complete compiled declaration registry, including auxiliaries, and explicitly builds all generated modules plus the project.
 
@@ -47,6 +51,7 @@ Each coherent batch is reviewed in a fresh native session with unabridged requir
 For an explicitly paired TeX companion PDF, reviewers must retrieve every assigned physical page through `read_source_image` and compare it with the frozen source. Text metadata and a proposed correspondence are insufficient. The controller records delivered image hashes with verdicts and rejects acceptance when any required image is unavailable or unread. PDF-only sources still require their separate verified transcription gate.
 
 The independent reviewer must assess each known clause against its exact `obligation:<id>` evidence and mapped Lean declarations. An omitted efficiency condition, narrowed domain or unresolved qualifier blocks the item. A named pending proof is acceptable only when its proposition faithfully represents that clause; data and type holes remain forbidden. Discovering another missing clause requires correction, even if every registered checklist entry passed.
+Preserve asymptotic quantifiers and the source's input-size measure: a fixed-size predicate or an unlinked family helper does not represent a stated uniform efficiency requirement.
 
 Every source, scope, mapping, layout or code edit invalidates the selected revision's acceptance. Historical receipts remain immutable. A passing review is published with exact files, source evidence, blueprint and handoff under `formalization/<document-id>/`. Publication uses a durable transaction and refuses concurrent edits. Unsupported publication primitives leave the result accepted and staged, with a visible reason.
 

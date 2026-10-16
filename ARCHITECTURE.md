@@ -203,6 +203,8 @@ source census for audit.
 `harness_workflow.py` owns native execution, global limits, submission, review,
 and promotion. `harness_observer.py` publishes process ownership, heartbeats,
 accounting, settings, and bounded activity through the status API.
+Tool activity exposes compact receipts and allowlisted, controller-authored failure
+summaries; arbitrary error text, arguments and results remain private.
 
 Native callers durably record possible live ownership before entering the harness,
 including its preflight and MCP discovery. A verified failure to launch clears that

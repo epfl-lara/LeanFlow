@@ -216,6 +216,10 @@ controller or a selected job at its next decision boundary.
 current tools, elapsed time, plans, and reported reasoning. **Follow live** keeps
 new activity in view. Streamed text updates in place, and expanding a row shows
 readable arguments and results with the recorded JSON available below.
+Native workflow tool events retain compact receipts instead of raw arguments and
+results. Known check failures show a short explanation, such as source changes
+during a check; unknown failures retain the operation ID for diagnosis. These
+summaries describe an attempted check and do not grant Lean acceptance.
 
 Use **Show reported reasoning** or the Logs view’s **Reasoning** filter to follow
 public summaries and traces. Availability depends on the native runtime and its

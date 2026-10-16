@@ -486,7 +486,9 @@ class NativeBridge:
                         "tool-result",
                         {
                             "tool": name,
-                            "result": operation.get("result", {"error": operation.get("error")}),
+                            "result": operation.get(
+                                "result", {"success": False, "error": operation.get("error")}
+                            ),
                             "operation_id": operation["id"],
                             "arguments": dict(arguments),
                         },

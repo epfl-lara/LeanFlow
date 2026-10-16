@@ -159,6 +159,120 @@ def test_proposal_requires_exact_current_complete_frozen_bindings(tmp_path, tamp
 
 
 @pytest.mark.parametrize(
+    "case,message",
+    [
+        ("root_type", "Source reading root must be an object"),
+        ("root_extra", "Source reading root keys must be exactly requirements_id and entries"),
+        ("root_missing", "Source reading root keys must be exactly requirements_id and entries"),
+        (
+            "requirements_id",
+            "Source reading requirements_id must bind the exact frozen reconciliation requirements",
+        ),
+        ("entries_type", "Source reading entries must be a list"),
+        ("entry_type", "Source reading entry 1 must be an object"),
+        (
+            "entry_extra",
+            "Source reading entry 1 keys must be exactly diagnostic_id, interpretation and reason",
+        ),
+        (
+            "entry_missing",
+            "Source reading entry 1 keys must be exactly diagnostic_id, interpretation and reason",
+        ),
+        ("id_type", "Source reading entry 1 diagnostic_id must be a string"),
+        ("id_unknown", "Source reading entry 1 diagnostic_id is not in the frozen requirements"),
+        ("id_duplicate", "Source reading entry 2 diagnostic_id duplicates an earlier entry"),
+        ("missing", "Source reading omitted frozen lexical uncertainty"),
+    ],
+)
+def test_source_reading_errors_identify_safe_bounded_categories(tmp_path, case, message) -> None:
+    value = record(tmp_path)
+    original = copy.deepcopy(value)
+    supplied = proposal(value)
+    private = "PRIVATE-payload-api_key=sk-privatevalue1234567890" + "x" * 5000
+    if case == "root_type":
+        supplied = private
+    elif case == "root_extra":
+        supplied[private] = private
+    elif case == "root_missing":
+        supplied.pop("requirements_id")
+    elif case == "requirements_id":
+        supplied["requirements_id"] = private
+    elif case == "entries_type":
+        supplied["entries"] = private
+    elif case == "entry_type":
+        supplied["entries"][0] = private
+    elif case == "entry_extra":
+        supplied["entries"][0][private] = private
+    elif case == "entry_missing":
+        supplied["entries"][0].pop("interpretation")
+    elif case == "id_type":
+        supplied["entries"][0]["diagnostic_id"] = {private: private}
+    elif case == "id_unknown":
+        supplied["entries"][0]["diagnostic_id"] = private
+    elif case == "id_duplicate":
+        supplied["entries"].insert(1, copy.deepcopy(supplied["entries"][0]))
+    else:
+        supplied["entries"].pop()
+    with pytest.raises(ValueError) as rejected:
+        apply_reconciliation(value, supplied)
+    assert str(rejected.value) == message
+    assert len(str(rejected.value)) <= 200
+    assert "PRIVATE" not in str(rejected.value) and "sk-private" not in str(rejected.value)
+    assert value == original
+
+
+@pytest.mark.parametrize("field", ["interpretation", "reason"])
+@pytest.mark.parametrize("case", ["type", "blank", "long"])
+def test_source_reading_text_errors_name_only_the_field_and_constraint(
+    tmp_path, field, case
+) -> None:
+    value = record(tmp_path)
+    original = copy.deepcopy(value)
+    supplied = proposal(value)
+    supplied["entries"][0][field] = {
+        "type": {"PRIVATE": "must not be copied"},
+        "blank": " \n\t ",
+        "long": "PRIVATE" + "λ" * MAX_INTERPRETATION_CHARACTERS,
+    }[case]
+    with pytest.raises(ValueError) as rejected:
+        apply_reconciliation(value, supplied)
+    suffix = (
+        f"must contain at most {MAX_INTERPRETATION_CHARACTERS} Python characters"
+        if case == "long"
+        else "must be a nonempty string"
+    )
+    assert str(rejected.value) == f"Source reading entry 1 {field} {suffix}"
+    assert len(str(rejected.value)) <= 200 and "PRIVATE" not in str(rejected.value)
+    assert value == original
+
+
+@pytest.mark.parametrize("field", ["interpretation", "reason"])
+@pytest.mark.parametrize("length", [4096, 4097])
+def test_source_reading_text_limit_counts_python_characters_without_changing_bindings(
+    tmp_path, field, length
+) -> None:
+    value = record(tmp_path)
+    original = copy.deepcopy(value)
+    supplied = proposal(value)
+    requirements = reconciliation_requirements(value)
+    supplied["entries"][0][field] = "λ" * length
+    assert len(supplied["entries"][0][field].encode()) > MAX_INTERPRETATION_CHARACTERS
+    if length > MAX_INTERPRETATION_CHARACTERS:
+        with pytest.raises(
+            ValueError, match=f"{field} must contain at most 4096 Python characters"
+        ):
+            apply_reconciliation(value, supplied)
+        assert value == original
+        return
+    apply_reconciliation(value, supplied)
+    stored = value["source_reconciliation"]
+    assert stored["requirements_id"] == requirements["requirements_id"]
+    assert stored["entries"][0][field] == supplied["entries"][0][field]
+    assert stored["verified"] is False
+    assert value["full_inventory"] == original["inventory"]
+
+
+@pytest.mark.parametrize(
     "tamper",
     [
         "missing",

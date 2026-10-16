@@ -17,6 +17,29 @@ from leanflow_cli.workflows.workflow_state import (
     save_workflow_live_status,
 )
 
+_CHECK_FAILURE_SUMMARIES = {
+    "check_busy": "Another Lean check still owns this workspace.",
+    "check_cancelled": "This Lean check was cancelled.",
+    "check_capture_failed": "Lean check output capture was interrupted.",
+    "check_environment_changed": "The Lean environment changed during this check.",
+    "check_request_too_large": "The Lean check request exceeded its size limit.",
+    "check_response_too_large": "Lean check feedback exceeded its size limit.",
+    "check_setup_failed": "The Lean checker could not complete this request.",
+    "check_timeout": "The Lean check exceeded its time limit.",
+    "isolated_lean_check_failed": "The isolated Lean checker could not complete this check.",
+    "isolation_unavailable": "The required Lean check isolation is unavailable.",
+}
+
+
+def _check_receipt(receipt: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Unwrap one completed operation envelope without inspecting arbitrary tool content."""
+    nested = receipt.get("result")
+    if isinstance(nested, Mapping) and (
+        receipt.get("status") == "completed" or receipt.get("success") is True
+    ):
+        return nested
+    return receipt
+
 
 class NativeObserver:
     """Expose one CLI-owned native run without copying prompts or tool transcripts.
@@ -141,7 +164,7 @@ class NativeObserver:
             )
 
     def event(self, kind: str, detail: Mapping[str, Any]) -> None:
-        """Append bounded MCP receipt metadata while leaving output in private logs."""
+        """Append bounded receipts and allowlisted failure summaries, keeping output private."""
         with self._lock:
             if not self._started or self._finished:
                 return
@@ -169,7 +192,7 @@ class NativeObserver:
             receipt = detail.get("result")
             summary = dict(receipt) if isinstance(receipt, Mapping) else {}
             summary.update(detail)
-            compact = {
+            compact: dict[str, Any] = {
                 key: self._text(summary[key], 200)
                 for key in ("operation_id", "tool", "status", "phase")
                 if isinstance(summary.get(key), str)
@@ -182,6 +205,22 @@ class NativeObserver:
                 }
             )
             tool = compact.get("tool", "operation")
+            if kind == "tool-result" and summary.get("tool") == "start_lean_check":
+                check = _check_receipt(receipt) if isinstance(receipt, Mapping) else detail
+                if check.get("success") is False or check.get("status") == "failed":
+                    # Transport completion does not make the nested Lean check successful.
+                    compact["success"] = False
+                    code = check.get("error_code")
+                    failure_summary = (
+                        _CHECK_FAILURE_SUMMARIES.get(code) if isinstance(code, str) else None
+                    )
+                    if failure_summary is not None:
+                        compact["error_code"] = self._text(code, 80)
+                    compact["failure_summary"] = self._text(
+                        failure_summary
+                        or "The Lean check failed; details remain in the private tool log.",
+                        200,
+                    )
             message = {
                 "tool-start": f"Native tool started: {tool}",
                 "tool-result": f"Native tool finished: {tool}",

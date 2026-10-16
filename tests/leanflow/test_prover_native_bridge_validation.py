@@ -187,6 +187,28 @@ def test_advertised_valid_callback_and_poll_are_dispatched_exactly_once(bridge):
     assert calls == ['{"proof":"trivial"}']
 
 
+@pytest.mark.parametrize("message", ["", "PRIVATE checker exception"])
+def test_failed_check_exception_emits_an_explicit_failure_receipt(bridge, monkeypatch, message):
+    instance, _ = bridge
+    instance.toolset.role = "prover"
+    events = []
+    instance.on_event = lambda kind, detail: events.append((kind, detail))
+
+    def fail(name, arguments):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(instance.toolset, "invoke", fail)
+    receipt = instance.call("start_lean_check", {})
+    instance.drain()
+    operation = instance.call("poll_operation", {"operation_id": receipt["operation_id"]})
+    assert operation["status"] == "failed" and operation["error"] == message
+    assert "result" not in operation
+    assert [kind for kind, _ in events] == ["tool-start", "tool-result"]
+    detail = events[-1][1]
+    assert detail["operation_id"] == receipt["operation_id"]
+    assert detail["result"] == {"success": False, "error": message}
+
+
 @pytest.mark.parametrize(
     "offset,accepted",
     [

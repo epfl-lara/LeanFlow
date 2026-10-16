@@ -254,29 +254,39 @@ def apply_reconciliation(
     if not expected and proposal is None:
         record.pop("source_reconciliation", None)
         return
-    if (
-        not isinstance(proposal, dict)
-        or set(proposal) != {"requirements_id", "entries"}
-        or proposal["requirements_id"] != requirements["requirements_id"]
-        or not isinstance(proposal["entries"], list)
-    ):
-        raise ValueError("Source reading must bind the exact frozen reconciliation requirements")
+    if not isinstance(proposal, dict):
+        raise ValueError("Source reading root must be an object")
+    if set(proposal) != {"requirements_id", "entries"}:
+        raise ValueError("Source reading root keys must be exactly requirements_id and entries")
+    if proposal["requirements_id"] != requirements["requirements_id"]:
+        raise ValueError(
+            "Source reading requirements_id must bind the exact frozen reconciliation requirements"
+        )
+    if not isinstance(proposal["entries"], list):
+        raise ValueError("Source reading entries must be a list")
     entries: dict[str, dict[str, Any]] = {}
-    for row in proposal["entries"]:
-        if (
-            not isinstance(row, dict)
-            or set(row) != {"diagnostic_id", "interpretation", "reason"}
-            or not isinstance(row["diagnostic_id"], str)
-            or row["diagnostic_id"] not in expected
-            or row["diagnostic_id"] in entries
-            or any(
-                not isinstance(row[key], str)
-                or not row[key].strip()
-                or len(row[key]) > MAX_INTERPRETATION_CHARACTERS
-                for key in ("interpretation", "reason")
+    for index, row in enumerate(proposal["entries"], start=1):
+        location = f"Source reading entry {index}"
+        if not isinstance(row, dict):
+            raise ValueError(f"{location} must be an object")
+        if set(row) != {"diagnostic_id", "interpretation", "reason"}:
+            raise ValueError(
+                f"{location} keys must be exactly diagnostic_id, interpretation and reason"
             )
-        ):
-            raise ValueError("Every lexical uncertainty needs one bounded explicit source reading")
+        if not isinstance(row["diagnostic_id"], str):
+            raise ValueError(f"{location} diagnostic_id must be a string")
+        if row["diagnostic_id"] not in expected:
+            raise ValueError(f"{location} diagnostic_id is not in the frozen requirements")
+        if row["diagnostic_id"] in entries:
+            raise ValueError(f"{location} diagnostic_id duplicates an earlier entry")
+        for key in ("interpretation", "reason"):
+            if not isinstance(row[key], str) or not row[key].strip():
+                raise ValueError(f"{location} {key} must be a nonempty string")
+            if len(row[key]) > MAX_INTERPRETATION_CHARACTERS:
+                raise ValueError(
+                    f"{location} {key} must contain at most "
+                    f"{MAX_INTERPRETATION_CHARACTERS} Python characters"
+                )
         entries[row["diagnostic_id"]] = copy.deepcopy(row)
     if set(entries) != expected:
         raise ValueError("Source reading omitted frozen lexical uncertainty")

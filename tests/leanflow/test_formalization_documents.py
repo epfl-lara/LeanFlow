@@ -101,6 +101,32 @@ def test_prepare_formalization_document_context_freezes_planner_artifacts(
     assert env["LEANFLOW_FORMALIZATION_SELECTED_SOURCE"] == "docs/paper.tex"
 
 
+def test_formalization_assignment_advertises_exact_source_reading_contract(
+    tmp_path, evaluated_layout
+):
+    project = tmp_path / "Demo"
+    source = project / "docs" / "paper.tex"
+    _write_sample_tex(source)
+    context = prepare_formalization_document_context(
+        project_root=project, cwd=project, workflow_args="docs/paper.tex"
+    )
+    guidance = context.context_path.read_text()
+    assert context.blueprint_skill_path.read_text().endswith(guidance)
+    for clause in (
+        "exactly two root keys: requirements_id and entries",
+        "exactly three keys: diagnostic_id, interpretation and reason",
+        "No extra keys are allowed",
+        "4096 Python characters each",
+        "including the initial representative slice",
+        "every diagnostic in source_reconciliation_requirements",
+    ):
+        assert clause in guidance
+    example = guidance.split("include source_reconciliation=", 1)[1].split(". Preserve", 1)[0]
+    reading = json.loads(example)
+    assert set(reading) == {"requirements_id", "entries"}
+    assert set(reading["entries"][0]) == {"diagnostic_id", "interpretation", "reason"}
+
+
 def test_prepare_formalization_document_context_preserves_existing_root_imports(
     tmp_path, evaluated_layout
 ):

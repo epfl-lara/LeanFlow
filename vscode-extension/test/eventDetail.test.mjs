@@ -139,6 +139,37 @@ test("tool results keep their structure and flag failures", () => {
   assert.equal(failed.find((section) => section.id === "arguments"), undefined, "empty arguments are omitted");
 });
 
+test("compact native checker failures render without a private output record", () => {
+  const receipt = event("tool-result", {
+    tool: "start_lean_check", operation_id: "check-1", success: false,
+    error_code: "check_setup_failed",
+    failure_summary: "The Lean checker could not start or complete its setup.",
+  });
+  const sections = eventOutputSections(receipt, null);
+  assert.deepEqual(titles(sections), ["Check failure"]);
+  assert.equal(sections[0].kind, "prose");
+  assert.equal(sections[0].tone, "err");
+  assert.equal(sections[0].value, receipt.details.failure_summary);
+  assert.ok(eventFacts(receipt, null).some(fact => fact.label === "operation" && fact.value === "check-1"));
+  assert.ok(eventFacts(receipt, null).some(fact => fact.label === "error code" && fact.value === "check_setup_failed"));
+  const search = eventSearchText(receipt);
+  assert.ok(search.includes("check_setup_failed") && search.includes("could not start") && search.includes("check-1"));
+  assert.equal(evidenceStatus(receipt, { found: true, evidence: { record: null } }, false, ""), null);
+});
+
+test("unknown native checker failures render the generic controller receipt", () => {
+  const receipt = event("tool-result", {
+    tool: "start_lean_check", operation_id: "unknown-1", success: false,
+    failure_summary: "The Lean check failed; details remain in the private tool log.",
+  });
+  const sections = eventOutputSections(receipt, null);
+  assert.deepEqual(titles(sections), ["Check failure"]);
+  assert.equal(sections[0].text, receipt.details.failure_summary);
+  assert.ok(eventFacts(receipt, null).some(fact => fact.label === "operation" && fact.value === "unknown-1"));
+  assert.ok(!eventFacts(receipt, null).some(fact => fact.label === "error code"));
+  assert.deepEqual(eventOutputSections(event("tool-result", { tool: "start_lean_check", success: true }), null), []);
+});
+
 test("native MCP text outputs render their contents rather than the transport envelope", () => {
   const result = { content: [{ type: "text", text: JSON.stringify({ ok: false, goals: "⊢ n + 0 = n", error: "unsolved goals" }) }], isError: true };
   const sections = eventOutputSections(event("agent-tool-end", { tool: "lean_check", description: "Check the current proof", status: "failed" }), { result });

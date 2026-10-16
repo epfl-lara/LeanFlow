@@ -5,6 +5,8 @@ include features and settings from the former direct-provider runtime.
 
 ## Unreleased
 
+- Explain known native check failures in activity rows and their details while
+  preserving compact receipts and keeping raw tool payloads private.
 - Keep Formalization panels unique across source navigation and refreshed views.
 - With the updated backend, stop Formalization during dependency planning and setup
   through the same verified run ownership used during translation.

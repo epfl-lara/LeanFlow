@@ -25,6 +25,7 @@ from leanflow_cli.formalization.records import (
     source_bytes,
 )
 from leanflow_cli.formalization.source_reconciliation import (
+    MAX_INTERPRETATION_CHARACTERS,
     assert_current_extraction,
     compact_requirements,
     lexical_admission,
@@ -297,6 +298,13 @@ proofs may remain pending; complete proofs are also welcome. A construction usin
 named pending existence theorem must expose that dependency. Never use data holes,
 dummy inhabitants, invented hypotheses, or new axioms to make the build pass.
 
+The independent kernel inspector rejects project unsafe/partial declarations,
+including executable recursion helpers emitted for otherwise safe recursive functions.
+Use a complete noncomputable mathematical definition or a suitable existing fold when
+that helper would otherwise be generated. This does not establish computability or
+efficiency: retain those source claims as faithful named Prop obligations, with the
+actual algorithm and its input-size/cost model. Never weaken the kernel gate.
+
 Before submit_files, write `.leanflow-job/formalization-proposal.json`:
 {{"schema_version":1,"base_revision_id":"{record['revision_id']}",
  "setup_notes":"representation and shared definition choices",
@@ -328,6 +336,13 @@ include source_reconciliation={{"requirements_id":"exact requirements ID","entri
 complete context. This proposes an interpretation for normal independent coverage
 and coherence review; it cannot certify package/loader purity, resolve a hard effect,
 exclude a source branch or grant mathematical approval. Never claim actual TeX execution.
+The source_reconciliation object has exactly two root keys: requirements_id and entries.
+Each entries element has exactly three keys: diagnostic_id, interpretation and reason.
+No extra keys are allowed; do not copy source_spans or other diagnostic metadata into them.
+Both interpretation and reason must be nonempty strings, limited to
+{MAX_INTERPRETATION_CHARACTERS} Python characters each, counted before trimming.
+Include one entry for every diagnostic in source_reconciliation_requirements, exactly
+once, including the initial representative slice; slice scope does not narrow this list.
 """
     context_path.write_text(guidance, encoding="utf-8")
     skill_path.write_text(

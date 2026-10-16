@@ -185,6 +185,23 @@ During preparation, Live receives current phases, native activity, heartbeats an
 the shared campaign counters. It labels retained mathematical results as belonging
 to the prior run. A preparation failure has its own error field, and a heartbeat
 does not advance the time of the last real activity.
+Native tool activity retains compact receipts. Known check failures have bounded,
+controller-authored summaries without copying raw error text, tool arguments or
+results into public activity. Unknown failures retain their operation ID. A source
+change during an asynchronous check invalidates that attempt; finish polling a
+check before editing any project Lean file or building modules, then check the
+corrected files again.
+Kernel replay currently rejects unsafe/partial project constants, including the
+executable helpers Lean can generate for an ordinary safe recursive definition.
+A complete noncomputable mathematical definition or an appropriate existing fold
+avoids that unsupported implementation form. Computability and efficiency still
+need their own faithful named theorem obligations; a noncomputable declaration
+does not establish either claim. Compiler names and navigation hints cannot waive
+the independent kernel check.
+
+Source-reading rejections identify the entry and failed constraint without exposing
+its proposed text. Assignment guidance lists the exact required fields and limits;
+these checks validate metadata only and do not grant source-fidelity approval.
 Progress updates skip busy status locks. Preparation ownership changes have a
 finite lock wait, and failed release prevents translation from taking over.
 
