@@ -126,6 +126,16 @@ The default setup ceiling is 16 GiB. Set `LEANFLOW_SETUP_MAX_RSS_GIB=20` for a l
 project; whole-number values from 1 to 20 are supported. Worker retention stays
 bounded when the ceiling increases.
 
+Preparation tolerates up to four consecutive OS or subprocess metadata gaps;
+the fifth stops the stage. Identity ambiguity, malformed observations, policy
+failures and observed memory excess stop it immediately. A fresh healthy sample
+and verified descendant cleanup are required before preparation can finish and
+publish infrastructure. Private diagnostics retain only bounded counters and
+allowlisted failure categories. An unjoined monitor keeps serial ownership until
+it has irrevocably finished every process inspection and cleanup action. One
+terminal diagnostic writer may then finish without holding serial ownership;
+the uncertain stage remains retained.
+
 Native author and reviewer calls also sample the combined RSS of the native CLI
 and its observed children, including builds started through native shell tools.
 `LEANFLOW_NATIVE_MAX_RSS_GIB` selects a whole-number ceiling from 1 to 20 GiB;

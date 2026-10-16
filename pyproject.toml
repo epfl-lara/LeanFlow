@@ -141,6 +141,7 @@ files = [
   "leanflow_cli/formalization/preparation_launch.py",
   "leanflow_cli/formalization/preflight_owner.py",
   "leanflow_cli/formalization/preparation_resources.py",
+  "leanflow_cli/formalization/preparation_inspection.py",
   "leanflow_cli/formalization/preparation_reuse.py",
   "leanflow_cli/cli/formalization_preparation.py",
   "leanflow_cli/formalization/conflict_resolution.py",

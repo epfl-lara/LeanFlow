@@ -146,7 +146,12 @@ def prepare_private_stage(
         setattr(policy.usage, field, acquisition_resources.get(field, 0))
     lease.require_cleanup()
     try:
-        with supervise_preparation(policy, cancel=cancel):
+        with supervise_preparation(
+            policy,
+            cancel=cancel,
+            diagnostic_path=preparation_directory(root).resolve()
+            / (uuid.uuid4().hex + "-resource-inspection.json"),
+        ):
             checking = stage / ".leanflow/preparation-checks"
             checking.mkdir(parents=True, exist_ok=True)
             policy.check(cancel)
@@ -267,7 +272,12 @@ def prepare_private_stage(
     # build. Repeat the original authority comparison after its descendants stop.
     lease.require_cleanup()
     try:
-        with supervise_preparation(policy, cancel=cancel):
+        with supervise_preparation(
+            policy,
+            cancel=cancel,
+            diagnostic_path=preparation_directory(root).resolve()
+            / (uuid.uuid4().hex + "-resource-inspection.json"),
+        ):
             with step_log(
                 "checking_dependency_sources", "Checking pinned dependency sources after builds"
             ) as source_log:
