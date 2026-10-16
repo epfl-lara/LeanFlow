@@ -8,6 +8,8 @@ include features and settings from the former direct-provider runtime.
 - Keep Formalization panels unique across source navigation and refreshed views.
 - With the updated backend, stop Formalization during dependency planning and setup
   through the same verified run ownership used during translation.
+- Show dependency-planning activity in Live and label retained mathematical results
+  as belonging to the previous run until preparation finishes.
 - Collapse advanced formalization sections, page large inventories and retain
   visible totals, blockers and one suggested next action.
 - Acknowledge committed repairs before refreshing; separate historical source

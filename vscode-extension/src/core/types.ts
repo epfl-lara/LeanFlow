@@ -197,12 +197,16 @@ export interface LiveStatus {
   goals?: string;
   last_activity_type?: string;
   last_activity_message?: string;
+  last_activity_at?: string;
   latest_checkpoint_label?: string;
   checkpoint_count?: number;
   updated_at?: string;
   runtime_heartbeat_at?: string;
   process_id?: number;
   stale_snapshot?: boolean;
+  /** Preparation retains the preceding mathematical snapshot until handoff. */
+  startup_reconciliation_pending?: boolean;
+  preflight_error?: string;
   agent_capacity?: Record<string, number>;
   [key: string]: unknown;
 }

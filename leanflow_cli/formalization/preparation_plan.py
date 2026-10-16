@@ -10,6 +10,21 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from leanflow_cli.formalization.evidence import digest, identity, normalized_relative
+from leanflow_cli.formalization.preparation_bounds import (
+    MAX_BLOCKER_CHARS,
+    MAX_BLOCKERS,
+    MAX_CANDIDATE_DECLARATIONS,
+    MAX_DECLARATION_HINT_CHARS,
+    MAX_IMPORTS,
+    MAX_PACKAGE_FIELD_CHARS,
+    MAX_PACKAGES,
+    MAX_PREREQUISITE_DESCRIPTION_CHARS,
+    MAX_PREREQUISITES,
+    MAX_REPRESENTATION_NOTE_CHARS,
+    MAX_REPRESENTATION_NOTES,
+    MAX_REPRESENTATION_NOTES_BYTES,
+    MAX_SLICE_SOURCE_IDS,
+)
 from leanflow_cli.formalization.preparation_inputs import (
     configuration_hashes,
     existing_packages,
@@ -32,12 +47,11 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 _MODULE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*")
 _PIN = re.compile(r"[0-9a-fA-F]{40}")
 _DEFINITION_KINDS = {"definition", "notation", "construction"}
-_MAX_DECLARATION_HINT_CHARS = 512
 
 
 def _declaration_hint(value: object) -> bool:
     """Recognize bounded Unicode declaration hints without granting import or type authority."""
-    if not isinstance(value, str) or not 1 <= len(value) <= _MAX_DECLARATION_HINT_CHARS:
+    if not isinstance(value, str) or not 1 <= len(value) <= MAX_DECLARATION_HINT_CHARS:
         return False
     for component in value.split("."):
         if not component or not (
@@ -162,14 +176,17 @@ def _package(row: Any, toolchain: str) -> dict[str, Any]:
     )
     if (
         not isinstance(result["imports"], list)
-        or len(result["imports"]) > 256
+        or len(result["imports"]) > MAX_IMPORTS
         or any(
             not isinstance(module, str) or not _MODULE.fullmatch(module)
             for module in result["imports"]
         )
     ):
         raise ValueError("Preparation package imports must be bounded module names")
-    if not isinstance(result["reason"], str) or not 1 <= len(result["reason"]) <= 4000:
+    if (
+        not isinstance(result["reason"], str)
+        or not 1 <= len(result["reason"]) <= MAX_PACKAGE_FIELD_CHARS
+    ):
         raise ValueError("Preparation package requires a bounded nonempty rationale")
     return result
 
@@ -277,7 +294,7 @@ def default_preparation_plan(
                 }
                 for item in items
                 if item["kind"] in _DEFINITION_KINDS
-            ][:128],
+            ][:MAX_PREREQUISITES],
         ),
         "representation_notes": overrides.get(
             "representation_notes",
@@ -326,7 +343,7 @@ def validate_preparation_plan(
     ):
         raise ValueError("Preparation cannot broaden the authorized dependency catalog")
     user = [_package(row, plan["toolchain"]) for row in policy.get("user_authorized_packages", [])]
-    if len(plan["packages"]) > 32 or len(user) > 32:
+    if len(plan["packages"]) > MAX_PACKAGES or len(user) > MAX_PACKAGES:
         raise ValueError("Preparation plan exceeds the package limit")
     existing_names = {row["name"].casefold() for row in plan["existing_packages"]}
     proposed_names: set[str] = set()
@@ -363,7 +380,7 @@ def validate_preparation_plan(
     imports = plan["required_imports"]
     if (
         not isinstance(imports, list)
-        or len(imports) > 256
+        or len(imports) > MAX_IMPORTS
         or any(not isinstance(name, str) or not _MODULE.fullmatch(name) for name in imports)
         or len(imports) != len(set(imports))
     ):
@@ -373,8 +390,11 @@ def validate_preparation_plan(
     blockers = plan["blockers"]
     if (
         not isinstance(blockers, list)
-        or len(blockers) > 32
-        or any(not isinstance(reason, str) or not 1 <= len(reason) <= 4000 for reason in blockers)
+        or len(blockers) > MAX_BLOCKERS
+        or any(
+            not isinstance(reason, str) or not 1 <= len(reason) <= MAX_BLOCKER_CHARS
+            for reason in blockers
+        )
     ):
         raise ValueError("Preparation blockers must be bounded explicit reasons")
     needs_mathlib = plan["preset"] == "mathlib" or any(
@@ -388,7 +408,7 @@ def validate_preparation_plan(
     selected = plan["slice_source_ids"]
     if (
         not isinstance(selected, list)
-        or not 1 <= len(selected) <= 8
+        or not 1 <= len(selected) <= MAX_SLICE_SOURCE_IDS
         or len(selected) != len(set(selected))
         or set(selected) - set(items)
     ):
@@ -402,7 +422,7 @@ def validate_preparation_plan(
     ):
         raise ValueError("Representative slice must include an available source result")
     prerequisites = plan["mathematical_prerequisites"]
-    if not isinstance(prerequisites, list) or len(prerequisites) > 128:
+    if not isinstance(prerequisites, list) or len(prerequisites) > MAX_PREREQUISITES:
         raise ValueError("Mathematical prerequisite plan exceeds its bound")
     for index, row in enumerate(prerequisites):
         if (
@@ -414,9 +434,9 @@ def validate_preparation_plan(
             or any(not isinstance(key, str) for key in row["source_ids"])
             or set(row["source_ids"]) - set(items)
             or not isinstance(row.get("description"), str)
-            or not 1 <= len(row["description"]) <= 4000
+            or not 1 <= len(row["description"]) <= MAX_PREREQUISITE_DESCRIPTION_CHARS
             or not isinstance(row.get("candidate_declarations"), list)
-            or len(row["candidate_declarations"]) > 64
+            or len(row["candidate_declarations"]) > MAX_CANDIDATE_DECLARATIONS
         ):
             raise ValueError("Invalid mathematical prerequisite estimate")
         for hint_index, name in enumerate(row["candidate_declarations"]):
@@ -427,12 +447,26 @@ def validate_preparation_plan(
                     "declaration hint with Unicode identifier components and optional primes, ? or !"
                 )
     notes = plan["representation_notes"]
-    if (
-        not isinstance(notes, list)
-        or len(notes) > 32
-        or any(not isinstance(note, str) or not 1 <= len(note) <= 4000 for note in notes)
-    ):
-        raise ValueError("Representation notes must be bounded nonempty text")
+    if not isinstance(notes, list):
+        raise ValueError("Representation notes must be bounded nonempty text: expected a list")
+    if len(notes) > MAX_REPRESENTATION_NOTES:
+        raise ValueError(
+            "Representation notes must be bounded nonempty text: "
+            f"count {len(notes)} exceeds limit {MAX_REPRESENTATION_NOTES}"
+        )
+    total_bytes = 0
+    for index, note in enumerate(notes):
+        if not isinstance(note, str) or not 1 <= len(note) <= MAX_REPRESENTATION_NOTE_CHARS:
+            raise ValueError(
+                "Representation notes must be bounded nonempty text: "
+                f"note {index + 1} requires 1..{MAX_REPRESENTATION_NOTE_CHARS} characters"
+            )
+        total_bytes += len(note.encode("utf-8"))
+    if total_bytes > MAX_REPRESENTATION_NOTES_BYTES:
+        raise ValueError(
+            "Representation notes must be bounded nonempty text: "
+            f"UTF-8 bytes {total_bytes} exceeds limit {MAX_REPRESENTATION_NOTES_BYTES}"
+        )
     if plan.get("layout") != _layout(read_configuration(root), record["document_id"]):
         raise ValueError("Native discovery cannot replace the controller's layout allocation")
     return copy.deepcopy(plan)

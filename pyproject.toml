@@ -166,6 +166,7 @@ files = [
   "leanflow_cli/formalization/preparation_inputs.py",
   "leanflow_cli/formalization/preparation_journal.py",
   "leanflow_cli/formalization/preparation_plan.py",
+  "leanflow_cli/formalization/preparation_bounds.py",
   "leanflow_cli/formalization/preparation_recovery.py",
   "leanflow_cli/formalization/preparation_stage.py",
   "leanflow_cli/formalization/preparation_transaction.py",

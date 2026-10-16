@@ -33,6 +33,80 @@ def paper(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     return tmp_path, create_document(tmp_path, path)
 
 
+def test_whole_paper_plan_preserves_all_thirty_four_representation_notes(paper):
+    root, record = paper
+    plan = default_preparation_plan(root, record)
+    notes = [
+        f"Source-bound ambiguity {index}: retain its exact quantifiers." for index in range(34)
+    ]
+    plan["representation_notes"] = notes
+    plan["plan_id"] = plan_identity(plan)
+    checked = validate_preparation_plan(root, record, plan)
+    assert checked["representation_notes"] == notes
+    assert checked["network_policy"] == plan["network_policy"]
+
+
+@pytest.mark.parametrize("count,accepted", [(32, True), (34, True), (128, True), (129, False)])
+def test_representation_note_count_has_an_explicit_whole_paper_limit(paper, count, accepted):
+    root, record = paper
+    plan = default_preparation_plan(root, record)
+    plan["representation_notes"] = [f"Source uncertainty {index}." for index in range(count)]
+    plan["plan_id"] = plan_identity(plan)
+    if accepted:
+        assert (
+            validate_preparation_plan(root, record, plan)["representation_notes"]
+            == plan["representation_notes"]
+        )
+    else:
+        with pytest.raises(ValueError, match="count 129 exceeds limit 128"):
+            validate_preparation_plan(root, record, plan)
+
+
+@pytest.mark.parametrize("length,accepted", [(4000, True), (4001, False), (0, False)])
+def test_representation_note_character_limit_is_retained(paper, length, accepted):
+    root, record = paper
+    plan = default_preparation_plan(root, record)
+    plan["representation_notes"] = ["a" * length]
+    plan["plan_id"] = plan_identity(plan)
+    if accepted:
+        assert validate_preparation_plan(root, record, plan)["representation_notes"] == [
+            "a" * length
+        ]
+    else:
+        with pytest.raises(ValueError, match=r"note 1 requires 1\.\.4000 characters"):
+            validate_preparation_plan(root, record, plan)
+
+
+@pytest.mark.parametrize("overflow", [False, True])
+def test_representation_note_utf8_aggregate_is_bounded_independently(paper, overflow):
+    root, record = paper
+    plan = default_preparation_plan(root, record)
+    notes = ["\U0001f600" * 1024 for _ in range(128)]
+    if overflow:
+        notes[0] += "a"
+    plan["representation_notes"] = notes
+    plan["plan_id"] = plan_identity(plan)
+    if overflow:
+        with pytest.raises(ValueError, match="UTF-8 bytes 524289 exceeds limit 524288"):
+            validate_preparation_plan(root, record, plan)
+    else:
+        assert validate_preparation_plan(root, record, plan)["representation_notes"] == notes
+
+
+def test_maximal_note_json_encoding_fits_existing_preparation_control_budget(paper):
+    from leanflow_cli.formalization.preparation_history import MAX_CONTROL_BYTES
+
+    root, record = paper
+    plan = default_preparation_plan(root, record)
+    plan["representation_notes"] = ["\0" * 4000 for _ in range(128)]
+    plan["plan_id"] = plan_identity(plan)
+    checked = validate_preparation_plan(root, record, plan)
+    encoded = json.dumps(checked, ensure_ascii=True).encode("utf-8")
+    assert 3 * 1024**2 > len(encoded) > 512 * 1024
+    assert len(encoded) < MAX_CONTROL_BYTES
+    assert json.loads(encoded)["representation_notes"] == checked["representation_notes"]
+
+
 def _project(root: Path, *, toolchain: str = DEFAULT_TOOLCHAIN, packages: bool = True) -> None:
     (root / "lean-toolchain").write_text(toolchain + "\n")
     (root / "lakefile.toml").write_text(

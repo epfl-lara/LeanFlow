@@ -20,6 +20,7 @@ from leanflow_cli.formalization.formalization_documents import _select_formaliza
 from leanflow_cli.formalization.formalization_models import FormalizationDocumentError
 from leanflow_cli.formalization.intake import author_blocking_diagnostics, draft_source_rejection
 from leanflow_cli.formalization.inventory_authority import complete_inventory
+from leanflow_cli.formalization.preflight_owner import PreflightProgress
 from leanflow_cli.formalization.preparation import (
     assert_preparation_current,
     load_preparation_receipt,
@@ -134,7 +135,13 @@ def prepare_formalization_launch(
         return {"root": root, "completed_source_draft": completed}
     from leanflow_cli.formalization.preflight_owner import preflight_owner
 
-    with preflight_owner(root, env) as (cancelled, resources):
+    with preflight_owner(root, env) as (cancelled, resources, progress):
+
+        def check() -> None:
+            """Stop preparation when either resource or live ownership inspection fails."""
+            progress.check()
+            resources.check(force=True)
+
         return _prepare_formalization_launch(
             cwd,
             workflow_args,
@@ -143,7 +150,8 @@ def prepare_formalization_launch(
             user_goal=user_goal,
             source_draft_only=source_draft_only,
             cancelled=cancelled,
-            check=lambda: resources.check(force=True),
+            check=check,
+            progress=progress,
         )
 
 
@@ -157,6 +165,7 @@ def _prepare_formalization_launch(
     source_draft_only: bool = False,
     cancelled: threading.Event,
     check: Callable[[], None],
+    progress: PreflightProgress,
 ) -> dict[str, Any]:
     """Own one source preparation campaign and return its checked infrastructure and shared budget."""
     root = source_project_root(cwd)
@@ -166,6 +175,7 @@ def _prepare_formalization_launch(
     )
     if completed is not None:
         return {"root": root, "completed_source_draft": completed}
+    progress.phase({"phase": "checking_baseline"})
     check()
     _require_project_baseline(root)
     check()
@@ -224,12 +234,20 @@ def _prepare_formalization_launch(
                 if "Start a new campaign when changing limits" not in str(error):
                     raise
             else:
+                progress.bind_budget(budget)
                 budget.persist()
                 return {"root": root, "receipt": previous, "budget_path": path}
     directory = contained(root, ".leanflow/formalization-campaigns/" + uuid.uuid4().hex)
     directory.mkdir(parents=True)
     budget_path = directory / "budget.json"
     budget = CampaignLimits(budget_path, configured)
+    progress.bind_budget(budget)
+
+    def report(event: dict[str, Any]) -> None:
+        """Keep terminal messages and exact-owner progress on the same preparation phase."""
+        _report_preparation_progress(event)
+        progress.phase(event)
+
     try:
         plan = default_preparation_plan(
             root,
@@ -248,7 +266,7 @@ def _prepare_formalization_launch(
         if cancelled.is_set():
             raise ValueError("Formalization preparation cancelled before discovery")
         if discovery_enabled:
-            _report_preparation_progress(
+            report(
                 {
                     "phase": "dependency_plan",
                     "message": "Estimating mathematical dependencies with the selected native backend…",
@@ -267,10 +285,11 @@ def _prepare_formalization_launch(
                 deadline=deadline_after(budget.remaining()),
                 cancelled=cancelled.is_set,
                 user_goal=user_goal,
+                on_event=progress.native_event,
             )
             check()
             if discovered.get("accepted") is not True:
-                raise ValueError(
+                discovery_failure = ValueError(
                     "Formalization preparation discovery needs correction: "
                     + str(
                         discovered.get(
@@ -279,11 +298,16 @@ def _prepare_formalization_launch(
                         )
                     )
                 )
+                progress.failed(
+                    discovery_failure,
+                    code=str(discovered.get("status") or "preparation_discovery_error"),
+                )
+                raise discovery_failure
             plan = discovered["plan"]
         remaining = budget.remaining()
         if cancelled.is_set() or (remaining is not None and remaining <= 0):
             raise ValueError("Formalization preparation campaign was cancelled or exhausted")
-        _report_preparation_progress(
+        report(
             {
                 "phase": "project_setup",
                 "message": "Preparing and checking pinned dependencies in a private project…",
@@ -293,7 +317,7 @@ def _prepare_formalization_launch(
             root,
             record,
             plan=plan,
-            progress=_report_preparation_progress,
+            progress=report,
             cancel=cancelled,
             timeout_s=min(1800.0, remaining) if remaining is not None else 1800.0,
             budget_path=budget_path,
@@ -302,13 +326,18 @@ def _prepare_formalization_launch(
         )
         check()
         if prepared.get("accepted") is not True:
-            raise ValueError(
+            setup_failure = ValueError(
                 "Formalization project preparation failed: "
                 + str(prepared.get("error", prepared.get("status")))
             )
-        _report_preparation_progress(
-            {"phase": "ready", "message": "Project setup passed; continuing to formalization."}
-        )
+            progress.failed(
+                setup_failure,
+                code=str(
+                    prepared.get("error_code") or prepared.get("status") or "project_setup_failed"
+                ),
+            )
+            raise setup_failure
+        report({"phase": "ready", "message": "Project setup passed; continuing to formalization."})
         return {"root": root, "receipt": prepared["receipt"], "budget_path": budget_path}
     finally:
         budget.persist()

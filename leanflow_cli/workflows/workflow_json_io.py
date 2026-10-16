@@ -14,7 +14,9 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -31,14 +33,61 @@ except ImportError:  # pragma: no cover - non-POSIX (Windows)
 _WRITE_LOCK = threading.Lock()
 
 
+class WorkflowStateLockTimeout(TimeoutError):
+    """Retain existing state when bounded ownership publication cannot obtain its lock."""
+
+
 @contextlib.contextmanager
-def json_write_lock(path: Path) -> Iterator[None]:
+def _bounded_json_write_lock(path: Path, timeout_s: float) -> Iterator[None]:
+    """Retry only nonblocking lock attempts, releasing the process lock between attempts."""
+    if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or timeout_s < 0:
+        raise ValueError("Workflow state lock timeout must be finite and nonnegative")
+    deadline = time.monotonic() + timeout_s
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a", encoding="utf-8") as handle:
+        while True:
+            acquired = _WRITE_LOCK.acquire(blocking=False)
+            if acquired:
+                file_locked = False
+                try:
+                    if fcntl is not None:
+                        try:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            file_locked = True
+                        except BlockingIOError:
+                            acquired = False
+                    if acquired:
+                        yield
+                        return
+                finally:
+                    try:
+                        if file_locked:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    finally:
+                        _WRITE_LOCK.release()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise WorkflowStateLockTimeout(
+                    f"Workflow state lock remains busy at {lock_path}; existing ownership retained"
+                )
+            time.sleep(min(0.025, remaining))
+
+
+@contextlib.contextmanager
+def json_write_lock(path: Path, *, timeout_s: float | None = None) -> Iterator[None]:
     """Serialize read-modify-write updates of ``path`` across processes.
 
     One shared sidecar flock per JSON file: every cooperative writer of a
     multi-key state file (plan-state summary, nudge log, dispatch ledger)
     must update inside this lock or risk clobbering other writers' keys.
+    A finite timeout uses nonblocking attempts without holding the process
+    lock while waiting for another process. The default keeps legacy waits.
     """
+    if timeout_s is not None:
+        with _bounded_json_write_lock(path, timeout_s):
+            yield
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
     with _WRITE_LOCK, lock_path.open("a", encoding="utf-8") as handle:
@@ -54,9 +103,14 @@ def json_write_lock(path: Path) -> Iterator[None]:
         yield
 
 
-def update_json_file(path: Path, mutate: Callable[[dict[str, Any]], Any]) -> Any:
+def update_json_file(
+    path: Path,
+    mutate: Callable[[dict[str, Any]], Any],
+    *,
+    lock_timeout_s: float | None = None,
+) -> Any:
     """Transactionally read, mutate (in place), and atomically write ``path``."""
-    with json_write_lock(path):
+    with json_write_lock(path, timeout_s=lock_timeout_s):
         payload = read_json_file(path)
         outcome = mutate(payload)
         atomic_json_write(path, payload, sort_keys=True)
@@ -66,6 +120,8 @@ def update_json_file(path: Path, mutate: Callable[[dict[str, Any]], Any]) -> Any
 def update_json_file_if_changed(
     path: Path,
     mutate: Callable[[dict[str, Any]], tuple[Any, bool]],
+    *,
+    lock_timeout_s: float | None = None,
 ) -> Any:
     """Transactionally update ``path`` only when ``mutate`` reports a change.
 
@@ -74,7 +130,7 @@ def update_json_file_if_changed(
     second full-size state snapshot merely to compare payloads while retaining
     the existing crash-atomic write contract whenever durable state changes.
     """
-    with json_write_lock(path):
+    with json_write_lock(path, timeout_s=lock_timeout_s):
         payload = read_json_file(path)
         outcome, changed = mutate(payload)
         if changed:

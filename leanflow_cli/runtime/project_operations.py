@@ -95,7 +95,7 @@ def _check_status(path: Path, root: Path, *, require_root: bool = False) -> None
     if (
         payload.get("owner_role") == "formalization-preflight"
         and payload.get("workflow_kind") == "formalize"
-        and payload.get("phase") == "starting"
+        and payload.get("phase") in {"starting", "reconciling", "dependency_plan", "project_setup"}
         and identity.verifiable
         and identity == current
         and process_token_sha256(_process_token(current.pid)) == current.token_sha256

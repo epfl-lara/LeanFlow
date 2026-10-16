@@ -85,6 +85,12 @@ package source. Setup runs privately and selects infrastructure only after check
 it. Interrupted publication or concurrent saves preserve every version and require
 recovery or explicit reconciliation before another launch.
 
+Native planning receives the same field limits enforced by the validator. It can
+retain up to 128 representation notes, each containing 1–4,000 Unicode characters,
+with a combined 512 KiB UTF-8 limit. Exceeding a limit reports the count or size and
+preserves the original recommendation; notes are never silently dropped. These
+notes record estimates and ambiguities, without granting translation approval.
+
 Preparation publishes only changed infrastructure entries and preserves existing
 dependency Git settings. Exact checked infrastructure can be reused for a new source
 revision when its layout, pins and requested imports match the checked receipt.
@@ -167,6 +173,12 @@ flags and native authentication. Preparation releases only its exact owner befor
 the translation controller takes over. Preview and direct API inspection do not
 create Stop authority. Preparation and translation each enforce the shared workflow
 memory budget and keep process closure separate from mathematical acceptance.
+During preparation, Live receives current phases, native activity, heartbeats and
+the shared campaign counters. It labels retained mathematical results as belonging
+to the prior run. A preparation failure has its own error field, and a heartbeat
+does not advance the time of the last real activity.
+Progress updates skip busy status locks. Preparation ownership changes have a
+finite lock wait, and failed release prevents translation from taking over.
 
 Receipt reuse requires positive membership in the selected, conflict-free committed
 preparation transaction. Missing or corrupt registries and older indexes that omit

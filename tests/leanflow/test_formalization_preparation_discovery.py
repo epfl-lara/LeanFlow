@@ -213,6 +213,53 @@ def test_fresh_discovery_only_estimates_existing_reuse_and_keeps_authority(paper
     assert (root / "Existing.lean").read_text().startswith("namespace Existing\n")
 
 
+def test_completed_whole_paper_discovery_retains_all_thirty_four_ambiguity_notes(
+    paper, monkeypatch
+):
+    root, record, plan = paper
+    notes = [
+        f"Source ambiguity {index}: preserve the literal statement and pending disposition."
+        for index in range(34)
+    ]
+    response = _response(record, plan, representation_notes=notes)
+    result, calls = _run(root, record, plan, monkeypatch, response)
+    assert len(calls) == 1 and result["accepted"] is True
+    assert result["semantic_approval"] is False
+    assert result["plan"]["representation_notes"] == notes
+    assert result["plan"]["network_policy"] == plan["network_policy"]
+    saved = json.loads((calls[0].cwd / "recommendation.json").read_text())
+    assert saved["plan"]["representation_notes"] == notes
+
+
+def test_native_contract_and_assignment_advertise_shared_recommendation_bounds(paper, monkeypatch):
+    from leanflow_cli.formalization.preparation_bounds import recommendation_field_bounds
+
+    root, record, plan = paper
+    result, calls = _run(root, record, plan, monkeypatch, _response(record, plan))
+    assert result["accepted"] and len(calls) == 1
+    prompt, assignment_text = calls[0].prompt.rsplit("\n", 1)
+    assignment = json.loads(assignment_text)
+    bounds = recommendation_field_bounds()
+    assert assignment["recommendation_field_bounds"] == bounds
+    assert json.dumps(bounds, sort_keys=True, separators=(",", ":")) in prompt
+    assert bounds["representation_notes"] == {
+        "max_items": 128,
+        "note_characters": [1, 4000],
+        "total_utf8_bytes": 512 * 1024,
+    }
+    assert bounds["package_requests"]["acquisition_authorized"] is False
+
+
+def test_oversized_notes_get_a_specific_count_error_without_a_saved_plan(paper, monkeypatch):
+    root, record, plan = paper
+    response = _response(record, plan, representation_notes=["Keep this source clause."] * 129)
+    result, calls = _run(root, record, plan, monkeypatch, response)
+    assert result["accepted"] is False and result["semantic_approval"] is False
+    assert result["status"] == "preparation_discovery_error"
+    assert "count 129 exceeds limit 128" in result["error"]
+    assert "plan" not in result and not (calls[0].cwd / "recommendation.json").exists()
+
+
 def test_model_unknown_source_is_retained_as_explicit_blocker_without_authorization(
     paper, monkeypatch
 ):

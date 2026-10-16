@@ -48,6 +48,7 @@ export function LiveView() {
   // The runtime heartbeats on its own cadence; a long gap means the process is
   // busy inside one step or gone, and the two look identical from out here.
   const quiet = age !== null && age > 120;
+  const previousMathematics = status?.startup_reconciliation_pending === true;
 
   return (
     <>
@@ -118,7 +119,16 @@ export function LiveView() {
 
       {status && !proverLoading && !proverSnapshot && (
         <>
-          <div className="stats">
+          {previousMathematics && status.preflight_error && (
+            <Notice tone="error">Preparation error: {status.preflight_error}</Notice>
+          )}
+          {previousMathematics && (
+            <Notice tone="info">
+              Mathematical results below are from the previous run; preparation has not
+              produced new results. Current preparation activity is shown separately.
+            </Notice>
+          )}
+          <div className="stats" aria-label={previousMathematics ? "Previous mathematical status" : "Current mathematical status"}>
             <Stat label="Phase" value={status.phase ?? "—"} small />
             <Stat label="Target" value={status.target_symbol || "—"} small />
             <Stat label="File" value={status.active_file_label || "—"} small />
@@ -155,7 +165,7 @@ export function LiveView() {
           </Card>
 
           {status.current_blocker && (
-            <Card title="Current blocker">
+            <Card title={previousMathematics ? "Previous mathematical blocker" : "Current blocker"}>
               <div className="mono">{status.current_blocker}</div>
             </Card>
           )}
@@ -187,7 +197,7 @@ export function LiveView() {
                 <span className="tag" title={status.last_activity_type}>
                   {humanEventLabel(status.last_activity_type ?? "")}
                 </span>
-                <span className="muted">{relativeTime(status.updated_at)}</span>
+                <span className="muted">{relativeTime(status.last_activity_at ?? status.updated_at)}</span>
               </div>
               <div>{status.last_activity_message}</div>
             </Card>

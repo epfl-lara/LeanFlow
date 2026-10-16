@@ -527,7 +527,9 @@ def save_workflow_live_status(payload: Mapping[str, Any]) -> None:
     update_json_file(workflow_live_status_path(), mutate)
 
 
-_WORKFLOW_STARTUP_PHASES = frozenset({"starting", "reconciling"})
+_WORKFLOW_STARTUP_PHASES = frozenset(
+    {"starting", "reconciling", "dependency_plan", "project_setup"}
+)
 
 
 def _identity_is_current_process_owner(
@@ -559,7 +561,10 @@ def _startup_previous_owner_metadata(
 
 
 def mark_workflow_live_status_startup(
-    *, phase: str, metadata: Mapping[str, Any] | None = None
+    *,
+    phase: str,
+    metadata: Mapping[str, Any] | None = None,
+    lock_timeout_s: float | None = None,
 ) -> None:
     """Claim the live-status pointer before expensive startup reconciliation.
 
@@ -628,11 +633,15 @@ def mark_workflow_live_status_startup(
         elif not same_owner:
             payload.pop("startup_previous_owner", None)
 
-    update_json_file(workflow_live_status_path(), mutate)
+    update_json_file(workflow_live_status_path(), mutate, lock_timeout_s=lock_timeout_s)
 
 
 def release_workflow_startup_owner(
-    run_id: str, *, outcome: str, metadata: Mapping[str, Any] | None = None
+    run_id: str,
+    *,
+    outcome: str,
+    metadata: Mapping[str, Any] | None = None,
+    lock_timeout_s: float | None = None,
 ) -> bool:
     """Release only this exact preflight lease without erasing math or a later native owner."""
     if outcome not in {"prepared", "cancelled", "failed"}:
@@ -669,7 +678,86 @@ def release_workflow_startup_owner(
         )
         return True, True
 
-    return bool(update_json_file_if_changed(workflow_live_status_path(), mutate))
+    return bool(
+        update_json_file_if_changed(
+            workflow_live_status_path(), mutate, lock_timeout_s=lock_timeout_s
+        )
+    )
+
+
+def publish_workflow_preflight_progress(
+    run_id: str,
+    owner: ProcessIdentity,
+    snapshot: Mapping[str, Any],
+    *,
+    status_path: Path,
+    activity_path: Path,
+    activity: Mapping[str, Any] | None = None,
+) -> bool:
+    """Update only the captured preflight owner and append metadata without touching later owners."""
+    if snapshot.get("phase") not in _WORKFLOW_STARTUP_PHASES:
+        raise ValueError("Invalid formalization preflight progress phase")
+    timestamp = datetime.now(UTC).isoformat()
+    fields = {
+        key: snapshot[key]
+        for key in (
+            "phase",
+            "native_metrics",
+            "preflight_resources",
+            "status",
+            "preflight_error",
+            "preflight_error_code",
+        )
+        if key in snapshot
+    }
+
+    def mutate(payload: dict[str, Any]) -> tuple[bool, bool]:
+        if (
+            payload.get("run_id") != run_id
+            or payload.get("owner_role") != "formalization-preflight"
+            or not _identity_is_current_process_owner(process_identity_from_mapping(payload), owner)
+            or not _identity_is_current_process_owner(owner, current_process_identity())
+        ):
+            return False, False
+        payload.update(fields, updated_at=timestamp, runtime_heartbeat_at=timestamp)
+        if activity is not None:
+            payload.update(
+                last_activity_type=activity["type"],
+                last_activity_message=activity["message"],
+                last_activity_at=timestamp,
+            )
+        return True, True
+
+    changed = bool(update_json_file_if_changed(status_path, mutate, lock_timeout_s=0.0))
+    if changed and activity is not None:
+        # This historical append does not update run-owner sidecars or touch
+        # live status again: a replacement between these writes stays intact.
+        _locked_append(
+            activity_path,
+            json.dumps(
+                {
+                    "event_id": uuid.uuid4().hex[:12],
+                    "timestamp": timestamp,
+                    "type": activity["type"],
+                    "run_id": run_id,
+                    "agent_id": "",
+                    "task_label": "formalize",
+                    "run_scope": "top-level",
+                    "message": activity["message"],
+                    "details": {
+                        **dict(activity.get("details", {})),
+                        **process_identity_details(owner),
+                        "workflow_kind": "formalize",
+                        "workflow_command": "/formalize",
+                        "effective_prompt": "",
+                        "active_skill": "",
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n",
+        )
+    return changed
 
 
 def _refresh_workflow_live_queue_source(

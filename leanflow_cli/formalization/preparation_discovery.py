@@ -21,6 +21,13 @@ from agent.runtime.harness.models import NativeCleanupUnverified
 from core.campaign_limits import CampaignLimits, LimitReached
 from core.deadlines import operation_cancelled, remaining_seconds
 from leanflow_cli.formalization.evidence import durable_json, identity
+from leanflow_cli.formalization.preparation_bounds import (
+    MAX_IMPORTS,
+    MAX_PACKAGE_FIELD_CHARS,
+    MAX_PACKAGES,
+    recommendation_bounds_contract,
+    recommendation_field_bounds,
+)
 from leanflow_cli.formalization.preparation_inputs import preparation_documents
 from leanflow_cli.formalization.preparation_plan import (
     CATALOG,
@@ -54,7 +61,7 @@ strategy:"search_existing_then_define",candidate_declarations:[exact names]}.
 Each package request is {name:"package",url:"source HTTPS URL",revision:"full pin
 if known, else empty",imports:[modules],reason:"why required"}. Requests confer no
 authorization. Do not edit files, execute commands, or perform internet research.
-"""
+""" + recommendation_bounds_contract()
 
 
 def _invocation_metadata(
@@ -103,7 +110,7 @@ def _recommendation(
     ):
         plan[key] = value[key]
     requests = value["package_requests"]
-    if not isinstance(requests, list) or len(requests) > 32:
+    if not isinstance(requests, list) or len(requests) > MAX_PACKAGES:
         raise ValueError("Native package recommendations exceed their bound")
     unauthorized = []
     existing = {row["name"] for row in plan["existing_packages"]}
@@ -114,12 +121,12 @@ def _recommendation(
             not isinstance(request, dict)
             or set(request) != {"name", "url", "revision", "imports", "reason"}
             or not all(
-                isinstance(request[key], str) and len(request[key]) <= 4000
+                isinstance(request[key], str) and len(request[key]) <= MAX_PACKAGE_FIELD_CHARS
                 for key in ("name", "url", "revision", "reason")
             )
             or not request["reason"].strip()
             or not isinstance(request["imports"], list)
-            or len(request["imports"]) > 256
+            or len(request["imports"]) > MAX_IMPORTS
             or any(
                 not isinstance(module, str)
                 or not re.fullmatch(r"[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*", module)
@@ -218,6 +225,7 @@ def discover_preparation_plan(
     deadline: float | None = None,
     cancelled: Callable[[], bool] | None = None,
     user_goal: str = "",
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one fresh native discovery call with paginated frozen evidence and a shared budget."""
     from leanflow_cli.formalization.preparation_transaction import assert_no_pending_preparation
@@ -246,6 +254,7 @@ def discover_preparation_plan(
             "sha256": identity(documents["preparation-assignment"]),
             "required_read": "Read preparation-assignment in full through read_evidence; estimates confer no source or dependency approval",
             "trusted_user_goal": user_goal,
+            "recommendation_field_bounds": recommendation_field_bounds(),
             "goal_authority": "The goal guides mathematical estimates and slice selection. It never authorizes dependency sources or pins; only the existing checked catalog/user dependency plan does.",
         }
         tools = SessionTools(
@@ -309,7 +318,8 @@ def discover_preparation_plan(
                         cancelled=cancelled,
                         on_started=on_started,
                         log_path=workspace / "native.jsonl",
-                    )
+                    ),
+                    **({"on_event": on_event} if on_event is not None else {}),
                 )
             except NativeCleanupUnverified as error:
                 observed = error.result

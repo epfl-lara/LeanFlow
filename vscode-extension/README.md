@@ -201,6 +201,9 @@ including jobs started from a terminal. Stopping goes through
 before signalling. Incomplete history is marked unknown.
 With the updated backend, Formalization publishes this verified ownership during
 dependency planning and preparation too; Stop does not have to wait for translation.
+Live reports preparation activity while dependencies are inspected. Until preparation
+finishes, retained mathematical results and blockers are labelled as belonging to
+the previous run.
 
 The proof workspace shows the theorem graph or tree, statements, dependencies,
 plan, jobs, usage, controller checks, stop reasons, and recorded source changes.
