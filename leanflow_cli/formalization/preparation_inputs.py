@@ -142,6 +142,41 @@ def preparation_documents(
                 }
             ),
         }
+    index = []
+    macros = {row["id"]: row for row in inventory.get("macro_definitions", [])}
+    for item in inventory["items"]:
+        evidence_id = "source-item:" + item["id"]
+        # Preserve complete statements, clauses and provenance separately from
+        # the short navigation index; the canonical coverage denominator stays intact.
+        documents[evidence_id] = {
+            "item": copy.deepcopy(item),
+            "macro_context": [
+                copy.deepcopy(macros[key]) for key in item.get("context_refs", []) if key in macros
+            ],
+            "authority": "frozen source candidates; no semantic or coverage approval",
+        }
+        index.append(
+            {
+                "source_id": item["id"],
+                "kind": item["kind"],
+                "scope": item["scope"],
+                "title": item.get("title", "")[:160],
+                "statement_excerpt": item["text"][:400],
+                "statement_excerpt_complete": len(item["text"]) <= 400,
+                "clause_ids": [row["id"] for row in item.get("known_obligations", [])],
+                "statement_spans": copy.deepcopy(item["statement_spans"]),
+                "evidence_id": evidence_id,
+            }
+        )
+    documents["mathematical-source-index"] = {
+        "source_revision_id": record["revision_id"],
+        "canonical_inventory_ref": "inventory",
+        "source_item_count": len(index),
+        "known_clause_count": sum(len(row["clause_ids"]) for row in index),
+        "canonical_region_count": len(inventory["regions"]),
+        "items": index,
+        "authority": "navigation only; excerpts never narrow source coverage or approve translations",
+    }
     census: list[dict[str, Any]] = []
     total_bytes = 0
     omitted: list[str] = []
@@ -180,6 +215,15 @@ def preparation_documents(
     documents["preparation-assignment"] = {
         "source_revision_id": record["revision_id"],
         "base_plan_id": plan["plan_id"],
+        "mathematical_source_index_ref": "mathematical-source-index",
+        "reading_order": (
+            "Read mathematical-source-index completely, following next_offset until null. "
+            "It lists every canonical item and known clause, including excluded items. "
+            "Read relevant source-item evidence for complete statements, clauses, proofs and "
+            "macro context. Exact statement_spans locate source bytes or PDF page text. "
+            "Use source:<file> for surrounding passages and inventory for the complete "
+            "lexical/region audit; do not begin with its preamble or treat excerpts as coverage."
+        ),
         "default_plan": plan,
         "existing_declaration_candidates": census,
         "omitted_project_sources": omitted,

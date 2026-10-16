@@ -1,8 +1,10 @@
-"""Share native preparation field bounds between validation and its advertised contract."""
+"""Bound preparation discovery time and share its validated recommendation contract."""
 
 from __future__ import annotations
 
 import json
+import math
+from collections.abc import Mapping
 from typing import Any
 
 MAX_IMPORTS = 256
@@ -18,6 +20,22 @@ MAX_REPRESENTATION_NOTE_CHARS = 4000
 MAX_REPRESENTATION_NOTES_BYTES = 512 * 1024
 MAX_BLOCKERS = 32
 MAX_BLOCKER_CHARS = 4000
+DISCOVERY_WALL_TIME_ENV = "LEANFLOW_FORMALIZATION_DISCOVERY_WALL_TIME_S"
+DEFAULT_DISCOVERY_WALL_TIME_S = 900.0
+
+
+def discovery_wall_time_s(environment: Mapping[str, str]) -> float:
+    """Require a finite positive discovery-stage limit without changing campaign limits."""
+    value = environment.get(DISCOVERY_WALL_TIME_ENV, str(DEFAULT_DISCOVERY_WALL_TIME_S))
+    try:
+        if not isinstance(value, str):
+            raise ValueError("Environment settings require text")
+        seconds = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{DISCOVERY_WALL_TIME_ENV} must be a finite positive number") from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(f"{DISCOVERY_WALL_TIME_ENV} must be a finite positive number")
+    return seconds
 
 
 def recommendation_field_bounds() -> dict[str, Any]:

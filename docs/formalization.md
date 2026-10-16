@@ -207,6 +207,14 @@ During preparation, Live receives current phases, native activity, heartbeats an
 the shared campaign counters. It labels retained mathematical results as belonging
 to the prior run. A preparation failure has its own error field, and a heartbeat
 does not advance the time of the last real activity.
+Dependency discovery starts from a compact frozen index of every source item and
+known clause, with exact source locators and complete per-item evidence. The full
+canonical inventory remains available and still determines coverage. Discovery
+has a separate 15-minute wall-time limit, configurable with the finite positive
+`LEANFLOW_FORMALIZATION_DISCOVERY_WALL_TIME_S` setting, capped by the campaign's
+remaining time. A quiet process is still bounded by that deadline. Verified
+cancellation or timeout preserves the draft and charged campaign history and is
+reported separately from unverified process cleanup.
 Native tool activity retains compact receipts. Known check failures have bounded,
 controller-authored summaries without copying raw error text, tool arguments or
 results into public activity. Unknown failures retain their operation ID. A source
