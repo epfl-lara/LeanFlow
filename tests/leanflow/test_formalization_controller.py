@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -104,6 +105,7 @@ def formalization_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         startup_error=False,
         submit_then_change=False,
         terminal_submission=False,
+        wall_time_s=None,
     ):
         def native(request, on_event=None):
             requests.append(request)
@@ -197,6 +199,7 @@ def formalization_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 "LEANFLOW_FORMALIZATION_DOCUMENT_ID": record["document_id"],
                 "LEANFLOW_FORMALIZATION_REVISION": record["revision_id"],
                 "LEANFLOW_PROVER_AGENT_CALLS": str(calls),
+                **({"LEANFLOW_PROVER_WALL_TIME_S": str(wall_time_s)} if wall_time_s else {}),
             }
         )
         directory = tmp_path / ".leanflow/native-workflows" / result["run_id"]
@@ -215,6 +218,43 @@ def test_workflow_promotes_only_after_item_and_coherence_reviews(formalization_w
         assert reviewer.session_id == "" and reviewer.previous_usage is None
         assert reviewer.cwd != requests[0].cwd
     assert len(accounting["invocations"]) == 3
+
+
+@pytest.mark.parametrize("lock", ["project", "document"])
+@pytest.mark.parametrize("expired", [False, True])
+def test_publication_admission_keeps_campaign_deadline_and_reports_stop_without_promotion(
+    formalization_workflow, monkeypatch: pytest.MonkeyPatch, lock: str, expired: bool
+) -> None:
+    from leanflow_cli.formalization import proposal, publish
+    from leanflow_cli.formalization.publication_io import PublicationCancelled
+    from leanflow_cli.formalization.records import DocumentLockCancelled
+
+    checked_deadlines = []
+    actual_check = proposal.check_proposal
+
+    def check(**kwargs):
+        checked_deadlines.append(kwargs["deadline"])
+        return actual_check(**kwargs)
+
+    def stopped(*args, **kwargs):
+        assert checked_deadlines and kwargs["deadline"] == checked_deadlines[-1]
+        assert kwargs["deadline"] is not None and callable(kwargs["cancelled"])
+        if expired:
+            # Change only this controller's clock seam, preserving real cleanup clocks.
+            monkeypatch.setattr(
+                workflow, "time", SimpleNamespace(monotonic=lambda: kwargs["deadline"] + 1)
+            )
+        error = PublicationCancelled if lock == "project" else DocumentLockCancelled
+        raise error("Stopped before publication admission")
+
+    monkeypatch.setattr(proposal, "check_proposal", check)
+    monkeypatch.setattr(publish, "publish_checked", stopped)
+    result, accounting, requests, source, _ = formalization_workflow(wall_time_s=60)
+    assert result["status"] == ("deadline_exceeded" if expired else "cancelled")
+    assert "publication admission" in result["error"]
+    assert source.read_text() == "-- Existing project\n"
+    assert len(requests) == len(accounting["invocations"]) == 3
+    assert "publication" not in result and "promoted_files" not in result
 
 
 def test_aggregate_failure_after_accepted_review_blocks_publication(

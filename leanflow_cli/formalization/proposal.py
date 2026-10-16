@@ -28,8 +28,9 @@ from leanflow_cli.formalization.lean_layout import (
 from leanflow_cli.formalization.lean_policy import POLICY_VERSION, inspect_dependency, inspect_draft
 from leanflow_cli.formalization.proposal_schema import apply_proposal, bind_declarations
 from leanflow_cli.formalization.publication import publication_guard
-from leanflow_cli.formalization.publication_io import PublicationConflict
+from leanflow_cli.formalization.publication_io import PublicationCancelled, PublicationConflict
 from leanflow_cli.formalization.records import (
+    DocumentLockCancelled,
     assert_author_selection,
     assert_source_current,
     document_lock,
@@ -94,6 +95,10 @@ def check_proposal(
     if author_run_id:
         identifier(author_run_id)
 
+    def stopped() -> bool:
+        """Include controller-context cancellation while waiting for either ownership lock."""
+        return operation_cancelled() or (cancelled is not None and cancelled())
+
     def rejected(result: dict[str, Any]) -> dict[str, Any]:
         """Retain a terminal check result on the exact submitted revision."""
         failure = _operational_failure(result)
@@ -123,7 +128,10 @@ def check_proposal(
     try:
         # Editor actions acquire project ownership first; match that order before
         # stage admission reenters the project lock while this document is owned.
-        with publication_guard(root), document_lock(root, document_id) as store:
+        with (
+            publication_guard(root, deadline=deadline, cancelled=stopped),
+            document_lock(root, document_id, deadline=deadline, cancelled=stopped) as store,
+        ):
             from leanflow_cli.formalization.records import current_selection_token
 
             if current_selection_token(root, document_id) != selection_token:
@@ -156,6 +164,10 @@ def check_proposal(
                     "error_code": "selection_changed",
                     "error": "Source inventory changed; restart from its selected revision",
                 }
+            if stopped():
+                return rejected({"accepted": False, "error_code": "check_cancelled"})
+            if deadline is not None and remaining_seconds(deadline) == 0:
+                return rejected({"accepted": False, "error_code": "check_timeout"})
             attempt = new_revision(base)
             attempt.update(
                 author_base_revision=base_revision_id,
@@ -430,6 +442,8 @@ def check_proposal(
             }
     except (PublicationConflict, RepreparationRequired) as exc:
         return rejected({"accepted": False, "error_code": "needs_reprepare", "error": str(exc)})
+    except (PublicationCancelled, DocumentLockCancelled) as exc:
+        return rejected({"accepted": False, "error_code": "check_cancelled", "error": str(exc)})
     except subprocess.SubprocessError as exc:
         return rejected(
             {

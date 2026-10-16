@@ -150,7 +150,7 @@ def test_pending_publication_stops_author_without_creating_a_correctable_submiss
     token = current_selection_token(tmp_path, record["document_id"])
 
     @contextmanager
-    def blocked(root: Path) -> Iterator[None]:
+    def blocked(root: Path, **_kwargs: object) -> Iterator[None]:
         raise PublicationConflict("Preserved publication versions require recovery")
         yield
 

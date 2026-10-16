@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from core.deadlines import operation_cancelled, remaining_seconds
 from leanflow_cli.formalization.environment import environment_identity
 from leanflow_cli.formalization.evidence import contained, digest, durable_json, read_blob
 from leanflow_cli.formalization.handoff import build_handoff
@@ -102,17 +103,57 @@ def publish_checked(
     directory: Path,
     *,
     cancelled: Callable[[], bool] | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Keep acceptance staged on unsupported hosts; publish only the exact reviewed selection."""
-    from leanflow_cli.formalization.publication import (
-        PublicationUnsupported,
-        freeze_publication_plan,
-        publication_guard,
-        publish_revision,
-    )
+    from leanflow_cli.formalization.publication import publication_guard
 
     if not checked.get("accepted") or not review.get("accepted"):
         raise ValueError("Both compiled policy and independent source review must pass")
+
+    def stopped() -> bool:
+        """Honor explicit and controller-context Stop during queued admission."""
+        return operation_cancelled() or (cancelled is not None and cancelled())
+
+    def interrupted() -> bool:
+        """Keep the original deadline active through precommit transaction boundaries."""
+        return stopped() or (deadline is not None and remaining_seconds(deadline) == 0)
+
+    with (
+        publication_guard(root, deadline=deadline, cancelled=stopped),
+        document_lock(root, checked["record"]["document_id"], deadline=deadline, cancelled=stopped),
+    ):
+        return _publish_checked_owned(
+            root, baseline, metadata_baseline, checked, review, directory, cancelled=interrupted
+        )
+
+
+def _publish_checked_owned(
+    root: Path,
+    baseline: dict[str, bytes],
+    metadata_baseline: dict[str, bytes],
+    checked: dict[str, Any],
+    review: dict[str, Any],
+    directory: Path,
+    *,
+    cancelled: Callable[[], bool],
+) -> dict[str, Any]:
+    """Prepare receipts and publish only while the caller owns both admission locks."""
+    from leanflow_cli.formalization.publication import (
+        PublicationCancelled,
+        PublicationUnsupported,
+        freeze_publication_plan,
+        publish_revision,
+    )
+
+    def check_active() -> None:
+        """Refuse new evidence writes after Stop or expiry; committed recovery stays mandatory."""
+        if cancelled():
+            raise PublicationCancelled(
+                "Formalization publication was interrupted before commitment"
+            )
+
+    check_active()
     record = checked["record"]
     from leanflow_cli.formalization.source_reconciliation import assert_reconciliation_reviewed
     from leanflow_cli.formalization.source_visual_receipt import validated_visual_evidence
@@ -189,12 +230,14 @@ def publish_checked(
         "handoff": handoff,
         "environment_id": record["environment_id"],
     }
+    check_active()
     receipt = save_receipt(record, receipt)
     prefix = f"formalization/{document_id}"
 
     def encoded(value: Any) -> bytes:
         return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
 
+    check_active()
     published = save_receipt(
         record,
         {
@@ -240,6 +283,7 @@ def publish_checked(
         owned_paths=set(outputs),
         protected_paths=set(record["source_files"]),
     )
+    check_active()
     durable_json(store / "publication-plans" / f"{revision}.json", plan)
 
     def validate() -> None:
@@ -272,27 +316,27 @@ def publish_checked(
         if environment_identity(root) != record["environment_id"]:
             raise ValueError("Compiler/dependency inputs changed during publication")
 
-    with publication_guard(root), document_lock(root, document_id):
-        try:
-            journal = publish_revision(
-                root=root,
-                directory=directory,
-                revision_id=revision,
-                before=before,
-                outputs=outputs,
-                plan=plan,
-                validate=validate,
-                validate_commit=validate_commit,
-                cancelled=cancelled,
-            )
-        except PublicationUnsupported as exc:
-            return save_receipt(
-                record,
-                {
-                    **{key: value for key, value in receipt.items() if key != "receipt_id"},
-                    "publication_error": str(exc),
-                },
-            )
-        if journal["status"] != "COMMITTED":
-            raise ValueError("Publication did not produce its durable commit marker")
-        return save_receipt(record, published)
+    check_active()
+    try:
+        journal = publish_revision(
+            root=root,
+            directory=directory,
+            revision_id=revision,
+            before=before,
+            outputs=outputs,
+            plan=plan,
+            validate=validate,
+            validate_commit=validate_commit,
+            cancelled=cancelled,
+        )
+    except PublicationUnsupported as exc:
+        return save_receipt(
+            record,
+            {
+                **{key: value for key, value in receipt.items() if key != "receipt_id"},
+                "publication_error": str(exc),
+            },
+        )
+    if journal["status"] != "COMMITTED":
+        raise ValueError("Publication did not produce its durable commit marker")
+    return save_receipt(record, published)

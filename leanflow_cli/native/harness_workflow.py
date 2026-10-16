@@ -795,21 +795,35 @@ def _run_controller(
                         initial_prompt = prompt
                         prompt += "\nIndependent representative-slice review passed. Expand the remaining source while preserving the accepted slice."
                         continue
+                    from leanflow_cli.formalization.publication_io import PublicationCancelled
                     from leanflow_cli.formalization.publish import publish_checked
+                    from leanflow_cli.formalization.records import DocumentLockCancelled
 
                     resources.check(force=True)
-                    publication = publish_checked(
-                        root,
-                        baseline,
-                        {
-                            name: bytes.fromhex(value)
-                            for name, value in state.get("formalization_baseline", {}).items()
-                        },
-                        receipt,
-                        review,
-                        directory / "publication",
-                        cancelled=cancelled.is_set,
-                    )
+                    try:
+                        publication = publish_checked(
+                            root,
+                            baseline,
+                            {
+                                name: bytes.fromhex(value)
+                                for name, value in state.get("formalization_baseline", {}).items()
+                            },
+                            receipt,
+                            review,
+                            directory / "publication",
+                            cancelled=cancelled.is_set,
+                            deadline=deadline,
+                        )
+                    except (PublicationCancelled, DocumentLockCancelled) as error:
+                        state.update(
+                            status=(
+                                "deadline_exceeded"
+                                if deadline is not None and time.monotonic() >= deadline
+                                else "cancelled"
+                            ),
+                            error=str(error),
+                        )
+                        return state
                     state.update(
                         status=(
                             "draft_ready"
