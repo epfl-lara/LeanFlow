@@ -91,6 +91,14 @@ with a combined 512 KiB UTF-8 limit. Exceeding a limit reports the count or size
 preserves the original recommendation; notes are never silently dropped. These
 notes record estimates and ambiguities, without granting translation approval.
 
+An interrupted compilation capture remains a failed check and retains its cause.
+If capture was interrupted while stopping an owned process after the compiler
+had already exited successfully, and final process and output closure are verified,
+setup can make one fresh compilation attempt against unchanged pinned inputs within
+the original time limit. Both attempts remain in the diagnostic record. Late output
+pipe closure, unknown process closure, changed inputs, cancellation, expired limits
+and Lean errors stop setup.
+
 Preparation publishes only changed infrastructure entries and preserves existing
 dependency Git settings. Exact checked infrastructure can be reused for a new source
 revision when its layout, pins and requested imports match the checked receipt.

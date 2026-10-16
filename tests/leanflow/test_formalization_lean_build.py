@@ -163,6 +163,44 @@ def test_process_cancellation_is_returned_without_launching_another_module(
     assert lean_build.build_project(root, layout, root.parent / "check") == failure
 
 
+def test_closed_capture_interruption_requires_one_fresh_successful_invocation(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A safely closed interrupted header capture may recover only from fresh output."""
+    root, layout, calls = build_case
+    command = lean_build.isolated_command
+    attempts = []
+    interrupted = {
+        "success": False,
+        "ok": False,
+        "error_code": "check_capture_failed",
+        "error": "Interrupted capture",
+        "capture_failure": {
+            "boundary": "owned_stop",
+            "leader_exited_before_cleanup": True,
+            "leader_returncode": 0,
+            "causes": [],
+        },
+        "capture_cleanup": {
+            "processes_verified": True,
+            "output_eof_verified": True,
+            "closed": True,
+        },
+    }
+
+    def capture(**kwargs: object) -> dict:
+        attempts.append(kwargs)
+        return interrupted if len(attempts) == 1 else command(**kwargs)
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    result = lean_build.build_project(root, layout, root.parent / "check")
+    assert result["success"] is True
+    assert len(attempts) == len(calls) + 1
+    recovery = result["capture_recovery"]
+    assert len(recovery) == 1 and recovery[0]["first_attempt"]["success"] is False
+    assert recovery[0]["fresh_attempt"]["success"] is True
+
+
 def test_source_only_dependency_build_has_an_explicit_unsupported_result(
     build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -338,3 +376,508 @@ def test_library_cannot_import_an_executable_root(build_case: tuple[Path, dict, 
     layout["executables"] = [{"src_dir": "src", "root": "Main"}]
     with pytest.raises(ValueError, match="cannot import an executable"):
         lean_build.build_project(root, layout, root.parent / "check")
+
+
+def _closed_capture_failure() -> dict:
+    """Construct the exact internal contract emitted only after positive final closure."""
+    return {
+        "success": False,
+        "ok": False,
+        "error_code": "check_capture_failed",
+        "error": "Interrupted capture",
+        "returncode": None,
+        "stdout": "",
+        "stderr": "",
+        "timed_out": False,
+        "capture_failure": {
+            "boundary": "owned_stop",
+            "leader_exited_before_cleanup": True,
+            "leader_returncode": 0,
+            "causes": [{"type": "NativeCleanupUnverified", "message": "first stop failed"}],
+        },
+        "capture_cleanup": {
+            "processes_verified": True,
+            "output_eof_verified": True,
+            "closed": True,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"capture_cleanup": {}},
+        {
+            "capture_cleanup": {
+                "closed": True,
+                "processes_verified": True,
+                "output_eof_verified": False,
+            }
+        },
+        {"error_code": "check_cancelled"},
+        {"error_code": "check_timeout", "timed_out": True},
+        {"error_code": "check_setup_failed"},
+        {"error_code": None, "returncode": 1},
+        {
+            "capture_failure": {
+                "boundary": "unknown",
+                "leader_exited_before_cleanup": True,
+                "leader_returncode": 0,
+            }
+        },
+        {
+            "capture_failure": {
+                "boundary": "output_eof",
+                "leader_exited_before_cleanup": True,
+                "leader_returncode": 0,
+            }
+        },
+        {
+            "capture_failure": {
+                "boundary": "owned_stop",
+                "leader_exited_before_cleanup": False,
+                "leader_returncode": 0,
+            }
+        },
+        *[
+            {
+                "capture_failure": {
+                    "boundary": "owned_stop",
+                    "leader_exited_before_cleanup": True,
+                    "leader_returncode": code,
+                }
+            }
+            for code in (None, -9, 1, True)
+        ],
+    ],
+)
+def test_only_known_closed_capture_after_prior_normal_exit_is_eligible(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch, changed: dict
+) -> None:
+    """Ordinary compiler errors, cancellation and uncertain or killed leaders fail closed."""
+    root, layout, _ = build_case
+    attempts = []
+    failure = {**_closed_capture_failure(), **changed}
+
+    def capture(**kwargs):
+        attempts.append(kwargs)
+        return failure
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    assert lean_build.build_project(root, layout, root.parent / "check") == failure
+    assert len(attempts) == 1
+
+
+def test_a_second_capture_failure_stops_without_a_third_attempt(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never turn a build-global one-shot recovery into an unbounded retry loop."""
+    root, layout, _ = build_case
+    attempts = []
+
+    def capture(**kwargs):
+        attempts.append(kwargs)
+        return _closed_capture_failure()
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    result = lean_build.build_project(root, layout, root.parent / "check")
+    assert result["success"] is False
+    assert len(attempts) == 2
+    assert result["capture_recovery"][0]["fresh_attempt"]["success"] is False
+
+
+def test_header_recovery_spends_the_only_retry_for_all_later_modules(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later module cannot acquire a second retry after successful header recovery."""
+    root, layout, _ = build_case
+    command = lean_build.isolated_command
+    attempts = []
+
+    def capture(**kwargs):
+        attempts.append(kwargs)
+        return command(**kwargs) if len(attempts) == 2 else _closed_capture_failure()
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    result = lean_build.build_project(root, layout, root.parent / "check")
+    assert result["success"] is False and result["module"] == "Paper.Base"
+    assert len(attempts) == 3 and len(result["capture_recovery"]) == 1
+
+
+@pytest.mark.parametrize("stop", ["explicit_cancel", "outer_cancel", "deadline", "resource"])
+def test_original_cancellation_deadline_and_resource_policy_prevent_retry(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch, stop: str
+) -> None:
+    """No new invocation may escape the original caller's cancellation or time budget."""
+    from core.deadlines import operation_cancellation
+    from leanflow_cli.formalization import lean_build_capture
+
+    root, layout, _ = build_case
+    attempts = []
+
+    def capture(**kwargs):
+        attempts.append(kwargs)
+        return _closed_capture_failure()
+
+    def cancelled():
+        if stop == "resource" and attempts:
+            raise RuntimeError("fixture aggregate memory policy failure")
+        return bool(attempts) and stop == "explicit_cancel"
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    monkeypatch.setattr(
+        lean_build_capture,
+        "remaining_seconds",
+        lambda _: 0 if attempts and stop == "deadline" else 10,
+    )
+    with operation_cancellation(lambda: bool(attempts) and stop == "outer_cancel"):
+        if stop == "resource":
+            with pytest.raises(RuntimeError, match="aggregate memory"):
+                lean_build.build_project(root, layout, root.parent / "check", cancelled=cancelled)
+        else:
+            result = lean_build.build_project(
+                root, layout, root.parent / "check", cancelled=cancelled
+            )
+            assert result["success"] is False
+            assert result["capture_recovery"][0]["retry_skipped"] in {
+                "cancelled",
+                "deadline_expired",
+            }
+    assert len(attempts) == 1
+
+
+@pytest.mark.parametrize(
+    "mutation", ["source", "new_source", "configuration", "compiler", "dependency", "header_output"]
+)
+def test_input_or_unowned_output_changes_prevent_fresh_capture(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """Retain conflicting inputs rather than weakening guards to make recovery proceed."""
+    root, layout, _ = build_case
+    attempts = []
+    conflicting = root.parent / "check/unowned.txt"
+
+    def capture(**kwargs):
+        attempts.append(kwargs)
+        if mutation == "source":
+            (root / "src/Paper/Base.lean").write_text("def base := 999\n")
+        elif mutation == "new_source":
+            (root / "Added.lean").write_text("def added := 1\n")
+        elif mutation == "configuration":
+            (root / "lean-toolchain").write_text("changed\n")
+        elif mutation == "compiler":
+            Path(kwargs["argv"][0]).write_bytes(b"changed compiler")
+        elif mutation == "dependency":
+            monkeypatch.setattr(
+                lean_build, "dependency_inputs", lambda _: {"packages": {"changed": {}}}
+            )
+        else:
+            conflicting.write_text("retain this conflicting output")
+        return _closed_capture_failure()
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    result = lean_build.build_project(root, layout, root.parent / "check")
+    assert result["success"] is False and len(attempts) == 1
+    assert result["capture_recovery"][0]["retry_skipped"] == "inputs_or_outputs_changed"
+    if mutation == "header_output":
+        assert conflicting.read_text() == "retain this conflicting output"
+
+
+def test_module_recovery_discards_partial_outputs_and_rechecks_from_source(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first command's unaccepted artifact must be absent when the fresh command starts."""
+    root, layout, _ = build_case
+    command = lean_build.isolated_command
+    interrupted = False
+    attempts = []
+
+    def capture(**kwargs):
+        nonlocal interrupted
+        attempts.append(kwargs)
+        if "--deps-json" not in kwargs["argv"] and not interrupted:
+            interrupted = True
+            args = kwargs["argv"]
+            Path(args[args.index("-o") + 1]).write_bytes(b"unaccepted partial artifact")
+            return _closed_capture_failure()
+        return command(**kwargs)
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    result = lean_build.build_project(root, layout, root.parent / "check")
+    assert result["success"] is True and len(attempts) == 5
+    assert result["capture_recovery"][0]["first_attempt"]["success"] is False
+    assert (root / "outputs/lib/lean/Paper/Base.olean").read_bytes() == b"fresh compiled Paper.Base"
+
+
+def test_real_spawned_capture_failure_recovery_uses_a_different_process(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise physical command closure and a fresh independent capture with real children."""
+    import sys
+
+    from agent.runtime.harness.models import NativeCleanupUnverified
+    from leanflow_cli.workflows.prover import check_process
+
+    root, layout, _ = build_case
+    command = lean_build.isolated_command
+    kill = check_process._kill
+    stopped = []
+    results = []
+
+    def transient(process, tree=None):
+        stopped.append(process)
+        if len(stopped) == 1:
+            raise NativeCleanupUnverified("fixture first capture stop failed")
+        return kill(process, tree)
+
+    def capture(**kwargs):
+        if "--deps-json" not in kwargs["argv"]:
+            return command(**kwargs)
+        expected = command(**kwargs)
+        kwargs["argv"] = [
+            sys.executable,
+            "-I",
+            "-c",
+            "import sys,time;print(sys.argv[1],flush=True);time.sleep(.03)",
+            expected["stdout"],
+        ]
+        result = check_process.isolated_command(**kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(check_process, "_sandbox_command", lambda argv, **_: list(argv))
+    monkeypatch.setattr(check_process, "_kill", transient)
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    result = lean_build.build_project(root, layout, root.parent / "check")
+    assert result["success"] is True
+    assert len(results) == 2 and results[0]["success"] is False and results[1]["success"] is True
+    assert results[0]["stdout"] == "" and results[0]["capture_failure"]["leader_returncode"] == 0
+    assert len({process.pid for process in stopped}) == 2
+    assert all(process.returncode == 0 for process in stopped)
+
+
+@pytest.mark.parametrize(
+    "conflict", ["unexpected", "symlink", "hardlink", "setup", "earlier_artifact"]
+)
+def test_module_recovery_preserves_conflicting_outputs_or_changed_earlier_artifacts(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch, conflict: str
+) -> None:
+    """Do not delete conflicting files or reuse changed artifacts merely to enable another check."""
+    root, layout, _ = build_case
+    command = lean_build.isolated_command
+    interrupted = False
+    attempts = []
+    retained = []
+    sentinel = root.parent / "sentinel"
+    sentinel.write_bytes(b"external sentinel")
+
+    def capture(**kwargs):
+        nonlocal interrupted
+        attempts.append(kwargs)
+        args = kwargs["argv"]
+        earlier = root / "outputs/lib/lean/Paper/Base.olean"
+        if (
+            "--deps-json" not in args
+            and not interrupted
+            and (conflict != "earlier_artifact" or earlier.exists())
+        ):
+            interrupted = True
+            output = Path(args[args.index("-o") + 1])
+            if conflict == "unexpected":
+                output.write_bytes(b"unaccepted partial artifact")
+                unknown = Path(kwargs["workspace"]) / "unknown.txt"
+                unknown.write_text("preserve me")
+                retained.extend([output, unknown])
+            elif conflict == "symlink":
+                output.symlink_to(sentinel)
+                retained.append(output)
+            elif conflict == "hardlink":
+                output.hardlink_to(sentinel)
+                retained.append(output)
+            elif conflict == "setup":
+                setup = Path(
+                    next(arg for arg in args if arg.startswith("--setup=")).removeprefix("--setup=")
+                )
+                setup.write_text("changed setup")
+                retained.append(setup)
+            else:
+                earlier.write_bytes(b"changed earlier artifact")
+                retained.append(earlier)
+            return _closed_capture_failure()
+        return command(**kwargs)
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    result = lean_build.build_project(root, layout, root.parent / "check")
+    assert result["success"] is False and interrupted
+    assert len(attempts) == (3 if conflict == "earlier_artifact" else 2)
+    assert result["capture_recovery"][0]["retry_skipped"] == "inputs_or_outputs_changed"
+    assert sentinel.read_bytes() == b"external sentinel"
+    assert all(path.exists() for path in retained)
+
+
+def test_changed_inputs_after_fresh_success_keep_both_attempts_and_fail_the_build(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh compiler success cannot overrule an input guard failure discovered afterward."""
+    root, layout, _ = build_case
+    command = lean_build.isolated_command
+    attempts = []
+
+    def capture(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            return _closed_capture_failure()
+        result = command(**kwargs)
+        (root / "src/Paper/Base.lean").write_text("def base := 999\n")
+        return result
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    result = lean_build.build_project(root, layout, root.parent / "check")
+    assert result["success"] is False and result["error_code"] == "check_inputs_changed"
+    assert len(attempts) == 2
+    record = result["capture_recovery"][0]
+    assert (
+        record["first_attempt"]["success"] is False and record["fresh_attempt"]["success"] is True
+    )
+    assert "guard_error" in record
+
+
+def test_fresh_compiler_error_stays_rejected_and_preserves_original_capture_cause(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh ordinary type error is final, with the earlier capture problem kept as context."""
+    root, layout, _ = build_case
+    attempts = []
+
+    def capture(**kwargs):
+        attempts.append(kwargs)
+        return (
+            _closed_capture_failure()
+            if len(attempts) == 1
+            else {"success": False, "returncode": 1, "stderr": "type mismatch"}
+        )
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    result = lean_build.build_project(root, layout, root.parent / "check")
+    assert result["success"] is False and result["stderr"] == "type mismatch"
+    assert len(attempts) == 2
+    record = result["capture_recovery"][0]
+    assert record["first_attempt"]["capture_failure"]["causes"][0]["message"] == "first stop failed"
+    assert record["fresh_attempt"]["returncode"] == 1
+
+
+def test_capture_retry_uses_only_remaining_original_deadline(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spending time on a failed capture never grants the fresh command a reset timeout."""
+    import time
+
+    root, layout, _ = build_case
+    command = lean_build.isolated_command
+    attempts = []
+
+    def capture(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            time.sleep(0.02)
+            return _closed_capture_failure()
+        return command(**kwargs)
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    result = lean_build.build_project(
+        root, layout, root.parent / "check", deadline=time.monotonic() + 10
+    )
+    assert result["success"] is True
+    assert attempts[0]["timeout_s"] > attempts[1]["timeout_s"] > 0
+
+
+def test_uncertain_fresh_capture_propagates_with_both_attempt_diagnostics(
+    build_case: tuple[Path, dict, list], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Uncertain final ownership never becomes a failure return that could permit input disposal."""
+    from agent.runtime.harness.models import NativeCleanupUnverified
+
+    root, layout, _ = build_case
+    attempts = []
+
+    def capture(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            return _closed_capture_failure()
+        raise NativeCleanupUnverified("fixture second capture retains owned inputs")
+
+    monkeypatch.setattr(lean_build, "isolated_command", capture)
+    with pytest.raises(NativeCleanupUnverified) as caught:
+        lean_build.build_project(root, layout, root.parent / "check")
+    assert len(attempts) == 2
+    note = caught.value.__notes__[0]
+    assert "first stop failed" in note
+    assert '"cleanup_unverified": true' in note
+
+
+@pytest.mark.parametrize("alias_kind", ["library_root", "internal_directory"])
+def test_compiler_directory_alias_preserves_normal_build_and_input_guards(
+    build_case: tuple[Path, dict, list], alias_kind: str
+) -> None:
+    """Allow normal builds through directory aliases while binding their target and descendants."""
+    import os
+
+    from leanflow_cli.formalization.lean_build_capture import compiler_version
+
+    root, layout, calls = build_case
+    library = root.parent / "compiler/lib/lean"
+    if alias_kind == "library_root":
+        target = root.parent / "actual-library"
+        library.rename(target)
+        link = library
+        link.symlink_to(target, target_is_directory=True)
+        leaf = target / "Init.olean"
+    else:
+        target = library / "Target"
+        target.mkdir()
+        leaf = target / "Extra.olean"
+        leaf.write_bytes(b"first")
+        link = library / "Alias"
+        link.symlink_to(target, target_is_directory=True)
+    result = lean_build.build_project(root, layout, root.parent / "check")
+    assert result["success"] is True and len(calls) == 4
+    assert "capture_recovery" not in result
+    before = compiler_version(library)
+    assert before[str(link)][5] == os.readlink(link)
+    assert before[str(link)][-1] == ""
+    assert any(Path(name).name == leaf.name and version[-1] for name, version in before.items())
+    leaf.write_bytes(b"other")
+    assert compiler_version(library) != before
+    second = compiler_version(library)
+    replacement = root.parent / "replacement-library"
+    replacement.mkdir()
+    (replacement / leaf.name).write_bytes(b"other")
+    link.unlink()
+    link.symlink_to(replacement, target_is_directory=True)
+    assert compiler_version(library) != second
+
+
+def test_late_output_eof_closure_never_authorizes_fresh_capture_or_output_reset(tmp_path):
+    """Later pipe EOF cannot prove an unknown writer stopped, even after all owned cleanup passed."""
+    from leanflow_cli.formalization.lean_build_capture import BuildCapture
+
+    failure = _closed_capture_failure()
+    failure["capture_failure"]["boundary"] = "output_eof"
+    commands, guards, resets = [], [], []
+    partial = tmp_path / "partial.olean"
+    partial.write_bytes(b"unaccepted output must remain untouched")
+
+    def command(**kwargs):
+        commands.append(kwargs)
+        return failure
+
+    def reset_outputs():
+        resets.append(True)
+        partial.unlink()
+
+    capture = BuildCapture(deadline=None, cancelled=None, verify_inputs=lambda: guards.append(True))
+    result = capture.run(command, reset_outputs=reset_outputs)
+    assert result is failure and result["success"] is False
+    assert len(commands) == 1 and guards == resets == []
+    assert capture.recovery == [] and capture.result(result) is result
+    assert partial.read_bytes() == b"unaccepted output must remain untouched"

@@ -29,6 +29,11 @@ from agent.runtime.harness.processes import (
     verify_owned_stopped,
 )
 from core.deadlines import deadline_after, operation_cancelled, remaining_seconds, wait_slice
+from leanflow_cli.workflows.prover.check_capture_failure import (
+    CaptureInterruption,
+    capture_failure,
+    interrupted_capture_note,
+)
 from leanflow_cli.workflows.prover.check_command_cleanup import CommandOwnership, close_commands
 from leanflow_cli.workflows.prover.check_sandbox import (
     IsolationUnavailable,
@@ -496,6 +501,7 @@ def isolated_command(
     process: subprocess.Popen[bytes] | None = None
     tree: ProcessTree | None = None
     ownership: CommandOwnership | None = None
+    interrupted: dict[str, Any] | None = None
     try:
         if timeout_s is not None and timeout_s <= 0:
             return _failure(
@@ -553,17 +559,19 @@ def isolated_command(
             "stderr_truncated": truncated["stderr"],
             "timed_out": False,
         }
-    except NativeCleanupUnverified:
+    except NativeCleanupUnverified as error:
         # A final ownership.close() below may verify a transient failed stop.
         # Capture remains unsuccessful, but only that final close may claim retention.
-        return {
+        interrupted = {
             **_failure(
                 "check_capture_failed", "Isolated command capture was interrupted; retry the check."
             ),
             "returncode": None,
             "stdout": "",
             "stderr": "",
+            "capture_failure": capture_failure(error),
         }
+        return interrupted
     except subprocess.TimeoutExpired:
         return {
             **_failure(
@@ -598,9 +606,36 @@ def isolated_command(
         }
     finally:
         if ownership is not None:
-            ownership.close()
+            try:
+                ownership.close()
+            except NativeCleanupUnverified as error:
+                if interrupted is not None:
+                    error.add_note(interrupted_capture_note(interrupted["capture_failure"]))
+                raise
+            if (
+                interrupted is not None
+                and ownership.closed
+                and ownership.processes_verified
+                and ownership.output_eof_verified
+            ):
+                interrupted["capture_cleanup"] = {
+                    "processes_verified": True,
+                    "output_eof_verified": True,
+                    "closed": True,
+                }
+                if interrupted["capture_failure"]["leader_exited_before_cleanup"]:
+                    assert process is not None
+                    interrupted["capture_failure"]["leader_returncode"] = process.returncode
         elif private is not None:
             shutil.rmtree(private, ignore_errors=True)
+
+
+def _stop_capture(process: subprocess.Popen[bytes], tree: ProcessTree) -> None:
+    """Mark only cleanup failures originating at the command capture boundary."""
+    try:
+        _kill(process, tree)
+    except NativeCleanupUnverified as error:
+        raise CaptureInterruption("owned_stop", "Owned stop interrupted command capture") from error
 
 
 def _capture_command(
@@ -633,7 +668,7 @@ def _capture_command(
                 if process_exited(process) and drain_deadline is None:
                     # A background child may retain our pipes after the compiler
                     # exits. End its authority before trusting produced artifacts.
-                    _kill(process, tree)
+                    _stop_capture(process, tree)
                     drain_deadline = time.monotonic() + 2.0
             if operation_cancelled() or (cancelled is not None and cancelled()):
                 raise InterruptedError("The controller cancelled this operation")
@@ -642,8 +677,8 @@ def _capture_command(
                 assert timeout_s is not None
                 raise subprocess.TimeoutExpired(process.args, timeout_s)
             if drain_deadline is not None and time.monotonic() >= drain_deadline:
-                raise NativeCleanupUnverified(
-                    "Lean checker output pipes remain open after leader exit; retain its inputs"
+                raise CaptureInterruption(
+                    "output_eof", "Lean checker output pipes remain open after leader exit"
                 )
             for key, _ in selector.select(wait_slice(deadline)):
                 chunk = os.read(key.fd, 65536)
@@ -659,7 +694,7 @@ def _capture_command(
     if tree is not None and drain_deadline is None:
         # Both channels can reach EOF in the same observation that notices exit.
         # Stop the still-reserved group before wait() releases the original PID.
-        _kill(process, tree)
+        _stop_capture(process, tree)
     remaining = remaining_seconds(deadline)
     process.wait(timeout=remaining)
     return bytes(tails["stdout"]), bytes(tails["stderr"]), truncated

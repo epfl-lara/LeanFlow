@@ -167,6 +167,16 @@ def test_capture_cleanup_retry_does_not_report_retained_deleted_inputs(monkeypat
     assert result["success"] is False
     assert result["error_code"] == "check_capture_failed"
     assert "retain" not in result["error"]
+    assert result["capture_cleanup"] == {
+        "processes_verified": True,
+        "output_eof_verified": True,
+        "closed": True,
+    }
+    assert result["capture_failure"]["boundary"] == "owned_stop"
+    assert any(
+        "fixture first cleanup failed" in item["message"]
+        for item in result["capture_failure"]["causes"]
+    )
     assert len(calls) == 2
     assert not any(
         owner.workspace == workspace for owner in check_command_cleanup._RETAINED.values()
@@ -207,6 +217,145 @@ def test_enclosing_workspace_and_stage_are_released_only_after_last_verified_ret
     assert owner.closed
     assert not stage.exists() and not workspace.exists()
     assert not check_command_cleanup._RETAINED_DIRECTORIES
+
+
+def test_capture_diagnostics_preserve_bounded_forcibly_redacted_original_cause(
+    monkeypatch, tmp_path
+):
+    """Diagnostic evidence survives optional redaction being disabled without leaking credentials."""
+    import json
+    import sys
+
+    project, workspace = tmp_path / "project", tmp_path / "workspace"
+    project.mkdir()
+    workspace.mkdir()
+    monkeypatch.setenv("LEANFLOW_REDACT_SECRETS", "0")
+    monkeypatch.setattr(check_process, "_sandbox_command", lambda argv, **kwargs: list(argv))
+    original = check_process._kill
+    calls = []
+    secret = "ghp_" + "x" * 40
+
+    def transient(process, tree=None):
+        calls.append(process)
+        if len(calls) == 1:
+            raise NativeCleanupUnverified("original boundary " + secret + " detail" * 10000)
+        return original(process, tree)
+
+    monkeypatch.setattr(check_process, "_kill", transient)
+    result = check_process.isolated_command(
+        project_root=project,
+        workspace=workspace,
+        argv=[sys.executable, "-I", "-c", "import time;time.sleep(.03)"],
+        timeout_s=3,
+    )
+    diagnostic = result["capture_failure"]
+    encoded = json.dumps(diagnostic)
+    assert secret not in encoded and "original boundary" in encoded
+    assert len(encoded) < 24000
+    assert diagnostic["boundary"] == "owned_stop"
+    assert diagnostic["leader_exited_before_cleanup"] is True
+    assert diagnostic["leader_returncode"] == 0
+    assert any(
+        frame["function"] == "transient"
+        for cause in diagnostic["causes"]
+        for frame in cause["frames"]
+    )
+    assert all(
+        set(frame) == {"file", "function", "line"}
+        for cause in diagnostic["causes"]
+        for frame in cause["frames"]
+    )
+
+
+def test_uncertain_final_physical_eof_never_returns_positive_capture_cleanup(monkeypatch, tmp_path):
+    """A later uncertain close raises and retains ownership instead of returning retry evidence."""
+    import sys
+
+    project, workspace = tmp_path / "project", tmp_path / "workspace"
+    project.mkdir()
+    workspace.mkdir()
+    monkeypatch.setenv("LEANFLOW_REDACT_SECRETS", "0")
+    monkeypatch.setattr(check_process, "_sandbox_command", lambda argv, **kwargs: list(argv))
+    original_kill, original_eof = check_process._kill, check_process._require_output_eof
+    calls = []
+    secret = "ghp_" + "q" * 40
+
+    def transient(process, tree=None):
+        calls.append(process)
+        if len(calls) == 1:
+            raise NativeCleanupUnverified("fixture first stop failed " + secret + " detail" * 10000)
+        return original_kill(process, tree)
+
+    def uncertain_eof(process):
+        raise NativeCleanupUnverified("fixture physical EOF remains uncertain")
+
+    monkeypatch.setattr(check_process, "_kill", transient)
+    monkeypatch.setattr(check_process, "_require_output_eof", uncertain_eof)
+    try:
+        with pytest.raises(
+            NativeCleanupUnverified, match="physical EOF remains uncertain"
+        ) as caught:
+            check_process.isolated_command(
+                project_root=project,
+                workspace=workspace,
+                argv=[sys.executable, "-I", "-c", "import time;time.sleep(.03)"],
+                timeout_s=3,
+            )
+        owners = list(check_command_cleanup._RETAINED.values())
+        assert len(owners) == 1
+        assert owners[0].private.is_dir()
+        assert owners[0].processes_verified is True
+        assert owners[0].output_eof_verified is False and owners[0].closed is False
+        note = "\n".join(getattr(caught.value, "__notes__", []))
+        assert "fixture first stop failed" in note
+        assert secret not in note and len(note) < 66000
+        assert '"capture_cleanup"' not in note and '"leader_returncode"' not in note
+    finally:
+        for owner in tuple(check_command_cleanup._RETAINED.values()):
+            owner.kill, owner.require_eof = original_kill, original_eof
+            owner.close()
+
+
+def test_proof_verifier_does_not_retry_or_publish_a_safely_closed_capture_failure(
+    monkeypatch, tmp_path
+):
+    """The new build-only recovery contract cannot grant acceptance to ordinary proof callers."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "Main.lean").write_text("theorem fixture : True := by trivial\n")
+    attempts = []
+
+    def interrupted(**kwargs):
+        attempts.append(kwargs)
+        args = kwargs["argv"]
+        from pathlib import Path
+
+        Path(args[args.index("-o") + 1]).write_bytes(b"unaccepted first output")
+        return {
+            "success": False,
+            "ok": False,
+            "error_code": "check_capture_failed",
+            "returncode": None,
+            "stdout": "",
+            "stderr": "",
+            "capture_failure": {
+                "boundary": "owned_stop",
+                "leader_exited_before_cleanup": True,
+                "leader_returncode": 0,
+            },
+            "capture_cleanup": {
+                "closed": True,
+                "processes_verified": True,
+                "output_eof_verified": True,
+            },
+        }
+
+    monkeypatch.setattr(check_process, "isolated_command", interrupted)
+    verifier = LeanVerifier(project, ())
+    result = verifier.compile_module("Main.lean")
+    assert result["accepted"] is False and result["success"] is False
+    assert len(attempts) == 1
+    assert not verifier._module_output("Main.lean").exists()
 
 
 def test_failed_warm_worker_does_not_prevent_later_worker_cleanup(monkeypatch, tmp_path):

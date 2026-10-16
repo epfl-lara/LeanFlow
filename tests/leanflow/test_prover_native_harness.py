@@ -434,7 +434,7 @@ def test_silent_session_has_no_three_or_twenty_minute_deadline(
         "leanflow_cli.workflows.prover.runtime.time.monotonic", lambda: runtime.started + 3600
     )
     runtime._ensure_active()
-    assert runtime._remaining_verification_time() == 86400 - 3600
+    assert runtime._remaining_verification_time() == pytest.approx(86400 - 3600, rel=0, abs=1e-6)
     runtime._persist()
     saved = json.loads((runtime.store.directory / "state.json").read_text())
     assert saved["metrics"]["elapsed_s"] >= 3600

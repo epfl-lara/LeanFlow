@@ -9,7 +9,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from core.deadlines import remaining_seconds
 from core.file_copy import copy_file
 from leanflow_cli.formalization.dependency_inputs import compiled_library_paths, dependency_inputs
 from leanflow_cli.formalization.dependency_modules import (
@@ -20,6 +19,12 @@ from leanflow_cli.formalization.dependency_modules import (
 from leanflow_cli.formalization.dependency_snapshot import _package_roots
 from leanflow_cli.formalization.environment import compiler_executable
 from leanflow_cli.formalization.evidence import contained, digest
+from leanflow_cli.formalization.lean_build_capture import (
+    BuildCapture,
+    compiler_version,
+    reset_failed_outputs,
+    workspace_version,
+)
 from leanflow_cli.formalization.lean_configuration import validate_options
 from leanflow_cli.formalization.lean_layout import build_membership
 from leanflow_cli.workflows.prover.check_process import isolated_command
@@ -161,6 +166,7 @@ def validate_build_inputs(
         "local": local,
         "targets": targets,
         "excluded_sources": sorted(excluded),
+        "inventory": inventory,
     }
 
 
@@ -236,34 +242,88 @@ def build_project(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(source_bytes[name])
             local[name] = target
-    parsed = isolated_command(
+    compiler_before = compiler_version(compiler)
+    source_guard = {path: path.read_bytes() for path in project_sources(root)}
+    local_artifacts: dict[str, Any] = {}
+    configuration_before = {
+        name: (root / name).read_bytes() if (root / name).is_file() else None
+        for name in ("lean-toolchain", "lakefile.lean", "lakefile.toml", "lake-manifest.json")
+    }
+    layout_before = json.dumps(layout, sort_keys=True)
+
+    def verify_capture_inputs() -> None:
+        """Refuse recovery after any source, configuration or pinned dependency change."""
+        if (
+            set(project_sources(root)) != set(source_guard)
+            or any(
+                path.is_symlink() or path.read_bytes() != data
+                for path, data in source_guard.items()
+            )
+            or any(
+                path.is_symlink() or path.read_bytes() != source_bytes[name]
+                for name, path in original.items()
+            )
+            or any(
+                path.is_symlink() or path.read_bytes() != source_bytes[name]
+                for name, path in local.items()
+            )
+            or json.dumps(layout, sort_keys=True) != layout_before
+            or any(
+                ((root / name).read_bytes() if (root / name).is_file() else None) != data
+                for name, data in configuration_before.items()
+            )
+            or compiler_version(compiler) != compiler_before
+            or dependency_inputs(root) != admitted["inventory"]
+        ):
+            raise ValueError("Pinned compilation inputs changed before capture recovery")
+        for previous in local_artifacts.values():
+            if any(
+                Path(path).is_symlink() or digest(Path(path).read_bytes()) != sha
+                for path, sha in previous["sha256"].items()
+            ):
+                raise ValueError("Compiler modified an earlier local artifact")
+        if local_artifacts:
+            _check_output_census(library, local_artifacts)
+
+    recovery = BuildCapture(
+        deadline=deadline, cancelled=cancelled, verify_inputs=verify_capture_inputs
+    )
+    workspace_before = workspace_version(workspace)
+
+    def verify_header_workspace() -> None:
+        """Preserve unexpected header outputs rather than deleting unowned files to retry."""
+        if workspace_version(workspace) != workspace_before:
+            raise ValueError("Header capture changed its workspace; retain unexpected outputs")
+
+    parsed = recovery.run(
+        isolated_command,
+        reset_outputs=verify_header_workspace,
         project_root=root,
         workspace=workspace,
         argv=[lean, "-j1", "--deps-json", *(str(path) for path in local.values())],
-        timeout_s=remaining_seconds(deadline),
-        cancelled=cancelled,
     )
     if not parsed.get("success"):
-        return parsed
+        return recovery.result(parsed)
     rows = json.loads(parsed.get("stdout", ""))["imports"]
     if not isinstance(rows, list) or len(rows) != len(local):
         raise ValueError("Pinned compiler returned an incomplete module-header census")
     headers: dict[str, list[str]] = {}
     for module, row in zip(local, rows, strict=True):
         if row.get("errors") or not isinstance(row.get("result"), dict):
-            return {
-                "success": False,
-                "returncode": 1,
-                "error": f"Invalid import header in {module}",
-                "stderr": "\n".join(row.get("errors", [])),
-            }
+            return recovery.result(
+                {
+                    "success": False,
+                    "returncode": 1,
+                    "error": f"Invalid import header in {module}",
+                    "stderr": "\n".join(row.get("errors", [])),
+                }
+            )
         headers[module] = [item["module"] for item in row["result"]["imports"]]
     order = _ordered_modules(headers, requested)
     artifacts = admitted["artifacts"]
     if library.exists():
         shutil.rmtree(library)
     library.mkdir(parents=True)
-    local_artifacts: dict[str, Any] = {}
     for index, module in enumerate(order):
         for dependency in headers[module]:
             relative = Path(*dependency.split(".")).with_suffix(".olean")
@@ -297,12 +357,17 @@ def build_project(
         relative_output = Path(*module.split(".")).with_suffix(".olean")
         output = compile_workspace / relative_output
         output.parent.mkdir(parents=True, exist_ok=True)
-        result = isolated_command(
+
+        def reset_compiler_outputs() -> None:
+            """Remove only known regular derived outputs after their owner has verifiably closed."""
+            reset_failed_outputs(compile_workspace, setup, setup_bytes, output)
+
+        result = recovery.run(
+            isolated_command,
+            reset_outputs=reset_compiler_outputs,
             project_root=root,
             workspace=compile_workspace,
             argv=[lean, "-j1", "--setup=" + str(setup), "-o", str(output), str(local[module])],
-            timeout_s=remaining_seconds(deadline),
-            cancelled=cancelled,
             extra_readable_roots=(
                 (
                     local[module],
@@ -318,7 +383,7 @@ def build_project(
             ),
         )
         if not result.get("success"):
-            return {**result, "module": module}
+            return recovery.result({**result, "module": module})
         if not output.is_file() or output.is_symlink():
             raise ValueError(f"Pinned compiler did not produce a private artifact: {module}")
         parts = _artifact_parts(output)
@@ -368,13 +433,15 @@ def build_project(
         _check_output_census(library, local_artifacts)
     if {name: digest(path.read_bytes()) for name, path in original.items()} != before:
         raise ValueError("Local module source changed during direct compilation")
-    return {
-        "success": True,
-        "modules": order,
-        "authority": "direct-pinned-lean",
-        "local_artifacts": local_artifacts,
-        "excluded_sources": admitted["excluded_sources"],
-        "source_sha256": {
-            path.relative_to(root).as_posix(): before[name] for name, path in original.items()
-        },
-    }
+    return recovery.result(
+        {
+            "success": True,
+            "modules": order,
+            "authority": "direct-pinned-lean",
+            "local_artifacts": local_artifacts,
+            "excluded_sources": admitted["excluded_sources"],
+            "source_sha256": {
+                path.relative_to(root).as_posix(): before[name] for name, path in original.items()
+            },
+        }
+    )
