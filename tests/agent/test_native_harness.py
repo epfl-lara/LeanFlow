@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import signal
@@ -319,7 +320,7 @@ def test_group_cleanup_accepts_eperm_only_for_exited_or_zombie_group(monkeypatch
     from agent.runtime.harness import processes
 
     def denied(*args):
-        raise PermissionError("macOS group has no signalable processes")
+        raise PermissionError(errno.EPERM, "macOS group has no signalable processes")
 
     monkeypatch.setattr(processes.os, "killpg", denied)
     monkeypatch.setattr(
@@ -337,7 +338,7 @@ def test_group_cleanup_does_not_hide_permission_failure_with_live_or_unknown_mem
     from agent.runtime.harness import processes
 
     def denied(*args):
-        raise PermissionError("real permission failure")
+        raise PermissionError(errno.EPERM, "real permission failure")
 
     monkeypatch.setattr(processes.os, "killpg", denied)
     monkeypatch.setattr(
@@ -353,7 +354,7 @@ def test_group_cleanup_does_not_hide_permission_failure_for_running_leader(monke
     from agent.runtime.harness import processes
 
     def denied(*args):
-        raise PermissionError("running native process")
+        raise PermissionError(errno.EPERM, "running native process")
 
     monkeypatch.setattr(processes.os, "killpg", denied)
     monkeypatch.setattr(
@@ -370,7 +371,7 @@ def test_group_cleanup_fails_closed_when_empty_group_cannot_be_verified(monkeypa
     from agent.runtime.harness import processes
 
     def denied(*args):
-        raise PermissionError("unverified native process group")
+        raise PermissionError(errno.EPERM, "unverified native process group")
 
     def unavailable(*args, **kwargs):
         raise subprocess.TimeoutExpired("ps", 2)

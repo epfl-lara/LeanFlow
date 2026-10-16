@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -174,3 +176,184 @@ def test_term_ignoring_uncached_group_child_is_killed_before_leader_reaping(tmp_
         for stream in (leader.stdout, leader.stderr):
             if stream is not None:
                 stream.close()
+
+
+@pytest.mark.parametrize("final", ["absent", "zombie"])
+def test_eperm_exiting_group_settles_before_original_popen_reaping(monkeypatch, final):
+    """Wait for positive group cessation while the original exited leader still reserves its PID."""
+    process = SimpleNamespace(
+        pid=412,
+        returncode=None,
+        wait=lambda **_: pytest.fail("Settlement reaped the original leader"),
+        poll=lambda: pytest.fail("Settlement polled and reaped the original leader"),
+    )
+
+    def denied(*args):
+        raise PermissionError(errno.EPERM, "Darwin exiting-group signal race")
+
+    unrelated = "900 900 S Fri Oct 16 00:00:00 2026\n"
+    rows = [
+        "412 412 ?Es Fri Oct 16 00:00:00 2026\n" + unrelated,
+        ("412 412 Zs Fri Oct 16 00:00:00 2026\n" if final == "zombie" else "") + unrelated,
+    ]
+    calls = []
+
+    def ps(argv, **kwargs):
+        assert process.returncode is None
+        calls.append(argv)
+        assert argv[-1] == "pid=,pgid=,stat=,lstart="
+        assert 0 < kwargs["timeout"] <= 2
+        return SimpleNamespace(stdout=rows.pop(0))
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(processes, "process_exited", lambda _: True)
+    monkeypatch.setattr(processes.subprocess, "run", ps)
+    processes.signal_group(process, signal.SIGKILL)
+    assert process.returncode is None and rows == [] and len(calls) == 2
+
+
+def test_eperm_exiting_or_live_group_remains_failure_after_bounded_settlement(monkeypatch):
+    """An exiting marker remains live until independent group absence or zombie evidence exists."""
+    process = SimpleNamespace(pid=412, returncode=None)
+    clock = [0.0]
+    samples = []
+    original = PermissionError(errno.EPERM, "group remains live")
+
+    def denied(*args):
+        raise original
+
+    def states(timeout):
+        samples.append(timeout)
+        assert process.returncode is None and 0 < timeout <= 2
+        return {412: (412, "?Es", "original")}
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(processes, "process_exited", lambda _: True)
+    monkeypatch.setattr(processes, "_cleanup_states", states)
+    monkeypatch.setattr(processes.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        processes.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay)
+    )
+    with pytest.raises(PermissionError) as caught:
+        processes.signal_group(process, signal.SIGKILL)
+    assert caught.value is original and clock[0] == pytest.approx(2)
+    assert len(samples) > 1 and process.returncode is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PermissionError(errno.EPERM, "ps denied"),
+        ValueError("uncomparable metadata"),
+        subprocess.TimeoutExpired("ps", 2),
+    ],
+)
+def test_eperm_settlement_propagates_metadata_uncertainty_without_reaping(monkeypatch, error):
+    """Unavailable or invalid independent metadata cannot certify group cessation."""
+    process = SimpleNamespace(pid=412, returncode=None)
+
+    def denied(*args):
+        raise PermissionError(errno.EPERM, "group signal denied")
+
+    def unavailable(timeout):
+        raise error
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(processes, "process_exited", lambda _: True)
+    monkeypatch.setattr(processes, "_cleanup_states", unavailable)
+    with pytest.raises(type(error)) as caught:
+        processes.signal_group(process, signal.SIGKILL)
+    assert caught.value is error and process.returncode is None
+
+
+def test_eperm_settlement_rejects_malformed_unrelated_process_rows(monkeypatch):
+    """Even a zombie target cannot authorize closure from an incomplete independent census."""
+    process = SimpleNamespace(pid=412, returncode=None)
+
+    def denied(*args):
+        raise PermissionError(errno.EPERM, "group signal denied")
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(processes, "process_exited", lambda _: True)
+    monkeypatch.setattr(
+        processes.subprocess,
+        "run",
+        lambda *_, **__: SimpleNamespace(
+            stdout="412 412 Z Fri Oct 16 00:00:00 2026\nmalformed unrelated row\n"
+        ),
+    )
+    with pytest.raises(ValueError, match="cannot validate"):
+        processes.signal_group(process, signal.SIGKILL)
+    assert process.returncode is None
+
+
+@pytest.mark.parametrize("code", [None, errno.EACCES, errno.EINVAL])
+def test_group_signal_other_permission_errors_never_enter_settlement(monkeypatch, code):
+    """Only the exact Darwin EPERM race can use the bounded independent exit check."""
+    original = (
+        PermissionError("unknown errno") if code is None else PermissionError(code, "other errno")
+    )
+
+    def denied(*args):
+        raise original
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(
+        processes, "process_exited", lambda _: pytest.fail("Non-EPERM cannot infer leader exit")
+    )
+    monkeypatch.setattr(
+        processes, "verify_owned_stopped", lambda *_, **__: pytest.fail("Non-EPERM cannot settle")
+    )
+    with pytest.raises(PermissionError) as caught:
+        processes.signal_group(SimpleNamespace(pid=412, returncode=None), signal.SIGKILL)
+    assert caught.value is original
+
+
+@pytest.mark.parametrize("boundary", ["exit_observation", "independent_verification"])
+def test_eperm_settlement_cannot_continue_after_the_original_pid_is_reaped(monkeypatch, boundary):
+    """Loss of the original Popen reservation cannot fall back to numeric group authority."""
+    process = SimpleNamespace(pid=412, returncode=None)
+
+    def denied(*args):
+        raise PermissionError(errno.EPERM, "group signal denied")
+
+    def exited(_):
+        if boundary == "exit_observation":
+            process.returncode = 0
+        return True
+
+    def verify(*args, **kwargs):
+        assert boundary == "independent_verification"
+        process.returncode = 0
+        return True
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(processes, "process_exited", exited)
+    monkeypatch.setattr(processes, "verify_owned_stopped", verify)
+    monkeypatch.setattr(
+        processes,
+        "_group_has_live_processes",
+        lambda _: pytest.fail("A lost reservation cannot use the reaped path"),
+    )
+    with pytest.raises(PermissionError, match="group signal denied"):
+        processes.signal_group(process, signal.SIGKILL)
+
+
+def test_eperm_unknown_exit_observation_never_enters_group_settlement(monkeypatch):
+    """Unknown leader exit is an error, never permission to suppress an unsuccessful signal."""
+
+    def denied(*args):
+        raise PermissionError(errno.EPERM, "group signal denied")
+
+    def unknown(_):
+        raise processes.ProcessTrackingUnavailable("unverifiable original exit")
+
+    monkeypatch.setattr(processes.os, "killpg", denied)
+    monkeypatch.setattr(processes, "process_exited", unknown)
+    monkeypatch.setattr(
+        processes,
+        "verify_owned_stopped",
+        lambda *_, **__: pytest.fail("Unknown exit cannot settle"),
+    )
+    with pytest.raises(processes.ProcessTrackingUnavailable):
+        processes.signal_group(SimpleNamespace(pid=412, returncode=None), signal.SIGKILL)

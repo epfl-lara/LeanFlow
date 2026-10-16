@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import math
 import os
 import re
@@ -218,14 +219,26 @@ def _group_has_live_processes(group: int) -> bool:
 
 def signal_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
     """Signal the invocation group, including children after its leader exits."""
+    reserved = process.returncode is None
     try:
         os.killpg(process.pid, sig)
     except ProcessLookupError:
         pass
-    except PermissionError:
-        # Darwin can return EPERM rather than ESRCH once only reaping remains.
-        # Never hide an actual permission failure against a live process group.
-        if not process_exited(process) or _group_has_live_processes(process.pid):
+    except PermissionError as error:
+        if error.errno != errno.EPERM or not process_exited(process):
+            raise
+        if reserved:
+            # Darwin may briefly expose an exiting group after reporting leader
+            # exit. Keep its PID reserved until independent group cessation wins.
+            if process.returncode is not None:
+                raise
+            if (
+                not verify_owned_stopped(None, group=process.pid, timeout_s=2.0)
+                or process.returncode is not None
+            ):
+                raise
+        elif _group_has_live_processes(process.pid):
+            # An already reaped root permits only the existing immediate check.
             raise
 
 
