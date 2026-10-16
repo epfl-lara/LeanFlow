@@ -13,6 +13,12 @@ from leanflow_cli.formalization.formalization_documents import (
     FormalizationDocumentError,
     prepare_formalization_document_context,
 )
+from leanflow_cli.formalization.preparation_campaign import (
+    admit_author,
+    campaign_budget,
+    campaign_lock,
+    select_campaign,
+)
 from leanflow_cli.formalization.records import load_document, source_artifact_id
 from leanflow_cli.formalization.service import act_document, inspect_document, show_document
 from leanflow_cli.native import harness_workflow
@@ -81,22 +87,38 @@ def _native_preflight(
     directory = root / ".leanflow/native-workflows" / run_id
     before = {}
     if resume:
-        directory.mkdir(parents=True)
+        selected = load_document(root, record["document_id"])
+        token = harness_workflow.current_selection_token(
+            root, record["document_id"], initialize=True
+        )
+        with campaign_lock(root, run_id):
+            binding = select_campaign(
+                root,
+                selected,
+                run_id=run_id,
+                limits={},
+                backend="codex",
+                selection_token=token,
+                source_draft_only=False,
+                effective_draft=False,
+                resume=False,
+                budget_path=directory / "limits.json",
+            )
+            admit_author(root, binding, resume=False, state_path=directory / "state.json")
+            limits = CampaignLimits(campaign_budget(root, binding), binding["limits"])
         state = {
             "version": 2,
             "run_id": run_id,
             "backend": "codex",
             "workflow": "formalize",
             "status": "blocked",
+            "campaign_binding_id": binding["binding_id"],
             "baseline": {
                 path: data.hex() for path, data in harness_workflow.source_files(root).items()
             },
-            "formalization_selection_token": harness_workflow.current_selection_token(
-                root, record["document_id"], initialize=True
-            ),
+            "formalization_selection_token": token,
         }
         (directory / "state.json").write_text(json.dumps(state))
-        limits = CampaignLimits(directory / "limits.json", {})
         invocation = limits.reserve()
         limits.finish(invocation, {"input_tokens": 12, "output_tokens": 7}, started=True)
         before = json.loads((directory / "limits.json").read_text())["invocations"]

@@ -974,6 +974,7 @@ def resolve_workflow_request(
     )
     if preparation_launch is not None and "budget_path" in preparation_launch:
         child_env["LEANFLOW_FORMALIZATION_BUDGET_PATH"] = str(preparation_launch["budget_path"])
+        child_env["LEANFLOW_WORKFLOW_RUN_ID"] = preparation_launch["run_id"]
     for key in ("LEANFLOW_FORMALIZATION_HANDOFF", "LEANFLOW_FORMALIZATION_REVISION"):
         child_env.pop(key, None)
     from leanflow_cli.config import DEFAULT_CONFIG, load_config

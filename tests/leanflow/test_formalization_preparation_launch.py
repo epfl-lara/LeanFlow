@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.campaign_limits import CampaignLimits
+from core.campaign_limits import CampaignLimits, LimitReached
 from leanflow_cli import workflow
 from leanflow_cli.formalization import preparation_launch as launch
 from leanflow_cli.runtime.project_operations import project_setup
@@ -35,6 +35,11 @@ def source_folder(tmp_path: Path, monkeypatch):
         lambda root: (_ for _ in ()).throw(ValueError("Not prepared")),
     )
     monkeypatch.setattr(launch, "inspect_project", lambda root: {"ready": True, "configured": True})
+    monkeypatch.setattr(
+        launch,
+        "discover_preparation_plan",
+        lambda *args, **kwargs: pytest.fail("Unexpected native discovery in a launch fixture"),
+    )
     return tmp_path
 
 
@@ -263,6 +268,7 @@ def test_actual_launch_prepares_before_discovery_and_stamps_native_intake(
         assert user_goal == "Use a representative definition and dependent theorem"
         return {
             "root": root,
+            "run_id": "fixture-launch",
             "budget_path": root / ".leanflow/formalization-campaigns/fixture/budget.json",
         }
 
@@ -414,7 +420,7 @@ def test_fresh_launch_gets_new_budget_and_explicit_resume_keeps_cumulative_usage
             "preparation_plan_id": kwargs["plan"]["plan_id"],
             "source_bundle": record["source_bundle"],
             "plan": kwargs["plan"],
-            "budget_path": str(kwargs["budget_path"]),
+            "budget_path": kwargs["budget_path"].relative_to(root).as_posix(),
         }
         receipts.append(receipt)
         return {"accepted": True, "receipt": receipt}
@@ -436,6 +442,7 @@ def test_fresh_launch_gets_new_budget_and_explicit_resume_keeps_cumulative_usage
         "paper.tex",
         runtime,
         environment={
+            "LEANFLOW_WORKFLOW_RUN_ID": "first-run",
             "LEANFLOW_FORMALIZATION_DISCOVERY": "false",
             "LEANFLOW_FORMALIZATION_PRESET": "lean",
         },
@@ -445,6 +452,7 @@ def test_fresh_launch_gets_new_budget_and_explicit_resume_keeps_cumulative_usage
         "paper.tex",
         runtime,
         environment={
+            "LEANFLOW_WORKFLOW_RUN_ID": "original-run",
             "LEANFLOW_FORMALIZATION_DISCOVERY": "false",
         },
     )
@@ -473,3 +481,146 @@ def test_fresh_launch_gets_new_budget_and_explicit_resume_keeps_cumulative_usage
         )
         == 1
     )
+
+
+def test_failed_discovery_resume_reuses_same_run_budget_without_preparation_receipt(
+    source_folder, monkeypatch
+):
+    root = source_folder
+    observations = []
+
+    def discover(project_root, record, plan, **kwargs):
+        budget = kwargs["budget"]
+        observations.append((budget.path, set(budget.state["invocations"])))
+        if len(observations) == 1:
+            call = budget.reserve()
+            budget.started_call(call)
+            budget.finish(call, {"input_tokens": 11, "output_tokens": 7}, started=True)
+            return {"accepted": False, "status": "fixture_discovery_failed"}
+        return {"accepted": True, "plan": plan}
+
+    monkeypatch.setattr(launch, "discover_preparation_plan", discover)
+    monkeypatch.setattr(launch, "load_preparation_receipt", lambda root: None)
+    monkeypatch.setattr(
+        launch,
+        "prepare_document_project",
+        lambda *args, **kwargs: {
+            "accepted": True,
+            "receipt": {"preparation_id": "prepared"},
+        },
+    )
+    environment = {"LEANFLOW_WORKFLOW_RUN_ID": "discovery-retry"}
+    with pytest.raises(ValueError, match="fixture_discovery_failed"):
+        launch.prepare_formalization_launch(
+            root, "paper.tex", {"provider": "codex"}, environment=environment
+        )
+    original = CampaignLimits(
+        observations[0][0], {"agent_calls": 3, "tokens": None, "wall_time_s": None}
+    )
+    original_calls = set(original.state["invocations"])
+    assert len(original_calls) == 1
+    resumed = launch.prepare_formalization_launch(
+        root,
+        "paper.tex",
+        {"provider": "codex"},
+        environment={**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "discovery-retry"},
+    )
+    assert observations[1] == (observations[0][0], original_calls)
+    assert resumed["budget_path"] == observations[0][0]
+    assert set(CampaignLimits(resumed["budget_path"], original.limits).state["invocations"]) == (
+        original_calls
+    )
+
+
+@pytest.mark.parametrize(
+    ("limits", "usage", "message"),
+    [
+        ({"agent_calls": 1, "tokens": None, "wall_time_s": None}, {}, "agent-call limit"),
+        (
+            {"agent_calls": 3, "tokens": 18, "wall_time_s": None},
+            {"input_tokens": 11, "output_tokens": 7},
+            "reported-token limit",
+        ),
+        (
+            {"agent_calls": 3, "tokens": 100, "wall_time_s": None},
+            None,
+            "Token usage is unavailable",
+        ),
+    ],
+)
+def test_failed_discovery_resume_preserves_exhaustion_and_unknown_usage(
+    source_folder, monkeypatch, limits, usage, message
+):
+    root = source_folder
+    paid_calls = []
+
+    def discover(project_root, record, plan, **kwargs):
+        budget = kwargs["budget"]
+        invocation = budget.reserve()
+        budget.started_call(invocation)
+        paid_calls.append((budget.path, invocation))
+        budget.finish(invocation, usage, started=True)
+        return {"accepted": False, "status": "fixture_discovery_failed"}
+
+    monkeypatch.setattr(launch, "load_config", lambda: {"limits": limits})
+    monkeypatch.setattr(launch, "discover_preparation_plan", discover)
+    monkeypatch.setattr(launch, "load_preparation_receipt", lambda root: None)
+    monkeypatch.setattr(
+        launch, "prepare_document_project", lambda *args, **kwargs: pytest.fail("Setup admitted")
+    )
+    environment = {"LEANFLOW_WORKFLOW_RUN_ID": "capped-discovery"}
+    with pytest.raises(ValueError, match="fixture_discovery_failed"):
+        launch.prepare_formalization_launch(
+            root, "paper.tex", {"provider": "codex"}, environment=environment
+        )
+    with pytest.raises(LimitReached, match=message):
+        launch.prepare_formalization_launch(
+            root,
+            "paper.tex",
+            {"provider": "codex"},
+            environment={**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "capped-discovery"},
+        )
+    assert len(paid_calls) == 1
+    saved = CampaignLimits(paid_calls[0][0], limits)
+    assert list(saved.state["invocations"]) == [paid_calls[0][1]]
+    assert saved.state["invocations"][paid_calls[0][1]]["usage"] == usage
+
+
+@pytest.mark.parametrize(
+    ("name", "replacement"),
+    [("agent_calls", 4), ("tokens", 101), ("wall_time_s", 61)],
+)
+def test_failed_discovery_resume_rejects_changed_limits_before_paid_work(
+    source_folder, monkeypatch, name, replacement
+):
+    root = source_folder
+    limits = {"agent_calls": 3, "tokens": 100, "wall_time_s": 60}
+    discoveries = []
+
+    def discover(project_root, record, plan, **kwargs):
+        discoveries.append(kwargs["budget"].path)
+        invocation = kwargs["budget"].reserve()
+        kwargs["budget"].started_call(invocation)
+        kwargs["budget"].finish(invocation, {"input_tokens": 1}, started=True)
+        return {"accepted": False, "status": "fixture_discovery_failed"}
+
+    monkeypatch.setattr(launch, "load_config", lambda: {"limits": limits})
+    monkeypatch.setattr(launch, "discover_preparation_plan", discover)
+    monkeypatch.setattr(launch, "load_preparation_receipt", lambda root: None)
+    monkeypatch.setattr(
+        launch, "prepare_document_project", lambda *args, **kwargs: pytest.fail("Setup admitted")
+    )
+    environment = {"LEANFLOW_WORKFLOW_RUN_ID": "changed-cap"}
+    with pytest.raises(ValueError, match="fixture_discovery_failed"):
+        launch.prepare_formalization_launch(
+            root, "paper.tex", {"provider": "codex"}, environment=environment
+        )
+    limits[name] = replacement
+    with pytest.raises(ValueError, match="(?i)new campaign"):
+        launch.prepare_formalization_launch(
+            root,
+            "paper.tex",
+            {"provider": "codex"},
+            environment={**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "changed-cap"},
+        )
+    assert len(discoveries) == 1

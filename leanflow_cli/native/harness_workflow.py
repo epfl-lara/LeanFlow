@@ -18,6 +18,11 @@ from agent.runtime.harness.models import NativeCleanupUnverified, NativeLaunchFa
 from agent.runtime.harness.network_policy import restricted_research
 from core.campaign_limits import CampaignLimits, LimitReached
 from core.utils import atomic_json_write
+from leanflow_cli.formalization.preparation_campaign import (
+    admit_author,
+    campaign_lock,
+    load_campaign,
+)
 from leanflow_cli.formalization.records import current_selection_token, save_receipt
 from leanflow_cli.formalization.stage_errors import RepreparationRequired
 from leanflow_cli.native.harness_artifacts import source_files
@@ -49,6 +54,7 @@ def run_workflow(env: dict[str, str] | None = None) -> dict[str, Any]:
     run_id = resume or environment.get("LEANFLOW_WORKFLOW_RUN_ID") or uuid.uuid4().hex[:16]
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", run_id):
         raise ValueError("Invalid native workflow run ID")
+    environment["LEANFLOW_WORKFLOW_RUN_ID"] = run_id
     directory = root / ".leanflow" / "native-workflows" / run_id
     with project_activity(root):
         from leanflow_cli.formalization.publication import (
@@ -82,9 +88,10 @@ def run_workflow(env: dict[str, str] | None = None) -> dict[str, Any]:
                 from leanflow_cli.formalization.source_draft_recovery import recover_completed_draft
 
                 return recover_completed_draft(root, directory, completed_draft, environment)
-            return _run_controller(
-                environment, root, backend, directory, run_id, resume, observe=env is None
-            )
+            with campaign_lock(root, run_id):
+                return _run_controller(
+                    environment, root, backend, directory, run_id, resume, observe=env is None
+                )
 
 
 def _run_controller(
@@ -157,7 +164,15 @@ def _run_controller(
     ):
         raise ValueError("Source inventory changed; restart from its selected revision")
     state_path = directory / "state.json"
-    if resume:
+    from leanflow_cli.native.harness_formalization_stages import (
+        campaign_budget_limits,
+        campaign_budget_path,
+    )
+
+    limits_path = campaign_budget_path(root, environment, directory)
+    binding = load_campaign(root, run_id)
+    resume_author = admit_author(root, binding, resume=bool(resume), state_path=state_path)
+    if resume_author:
         state = json.loads(state_path.read_text())
         if state.get("native_cleanup_unverified"):
             raise ValueError(
@@ -201,6 +216,7 @@ def _run_controller(
             "baseline": {path: data.hex() for path, data in baseline.items()},
             "status": "running",
             "source_draft_intent": explicit_source_draft,
+            "campaign_binding_id": binding["binding_id"],
         }
         if document_id:
             from leanflow_cli.formalization.publish import portable_baseline
@@ -226,12 +242,6 @@ def _run_controller(
     if restricted:
         environment = {**environment, "LEANFLOW_PROVER_ALLOW_INTERNET": "false"}
     atomic_json_write(state_path, state)
-    from leanflow_cli.native.harness_formalization_stages import (
-        campaign_budget_limits,
-        campaign_budget_path,
-    )
-
-    limits_path = campaign_budget_path(root, environment, directory)
     budget = CampaignLimits(limits_path, campaign_budget_limits(limits_path, environment))
     cancelled = threading.Event()
     from leanflow_cli.workflows.prover.check_process import owned_checker_identities

@@ -54,6 +54,7 @@ def evaluated_formalization_layout(monkeypatch):
             "root": root,
             "receipt": receipt,
             "budget_path": root / ".leanflow/formalization-campaigns/fixture/budget.json",
+            "run_id": "fixture-run",
         }
 
     monkeypatch.setattr(

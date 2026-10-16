@@ -23,6 +23,7 @@ from core.process_identity import (
     current_process_identity,
     process_token_sha256,
 )
+from leanflow_cli.formalization.preparation_campaign import CampaignOwner
 from leanflow_cli.runtime.workflow_resources import WorkflowResourceWindow
 from leanflow_cli.workflows.workflow_json_io import WorkflowStateLockTimeout
 from leanflow_cli.workflows.workflow_state import (
@@ -46,9 +47,11 @@ class PreflightProgress:
         resources: WorkflowResourceWindow,
         *,
         enabled: bool,
+        accounting_owner: CampaignOwner | None = None,
     ) -> None:
         self.run_id, self.cancelled, self.resources = run_id, cancelled, resources
         self.enabled = enabled
+        self._accounting_owner = accounting_owner
         self.owner = current_process_identity()
         self.status_path = workflow_live_status_path()
         self.activity_path = workflow_run_activity_path(run_id)
@@ -61,6 +64,7 @@ class PreflightProgress:
         self._finished = threading.Event()
         self._thread: threading.Thread | None = None
         self._closing = False
+        self._worker_finalized = False
         self._error: Exception | None = None
         self._budget: CampaignLimits | None = None
         self._phase, self._message = "starting", "Checking setup before formalization"
@@ -70,18 +74,38 @@ class PreflightProgress:
         self._failure: tuple[str, str] | None = None
 
     def start(self) -> None:
-        """Start one throttled heartbeat only after exact CLI ownership was claimed."""
-        if self.enabled:
-            self._thread = threading.Thread(
-                target=self._run, name="leanflow-preflight-progress", daemon=True
-            )
+        """Checkpoint accounting periodically, publishing status only for verified live owners."""
+        self._thread = threading.Thread(
+            target=self._run, name="leanflow-preflight-progress", daemon=True
+        )
+        if self._accounting_owner is not None:
+            self._accounting_owner.attach_worker()
+        try:
             self._thread.start()
+        except BaseException:
+            self._thread = None
+            if self._accounting_owner is not None:
+                self._accounting_owner.close(worker=True)
+            raise
 
     def bind_budget(self, budget: CampaignLimits) -> None:
         """Use the real shared campaign object without fabricating counts from native events."""
         with self._lock:
             if not self._closing:
                 self._budget = budget
+
+    def bind_accounting_owner(self, owner: CampaignOwner) -> None:
+        """Admit the existing checkpoint worker only after baseline/source checks pass."""
+        with self._lock:
+            if self._worker_finalized:
+                raise RuntimeError("Preflight checkpoint worker already finalized")
+            if self._closing or self._accounting_owner is not None:
+                raise RuntimeError("Preflight accounting ownership cannot be replaced")
+            if self._thread is not None:
+                if not self._thread.is_alive():
+                    raise RuntimeError("Preflight checkpoint worker already stopped")
+                owner.attach_worker()
+            self._accounting_owner = owner
 
     def phase(self, event: dict[str, Any]) -> None:
         """Record controller phase labels while ignoring source/output message text."""
@@ -160,6 +184,10 @@ class PreflightProgress:
             )
             failure = self._failure
         metrics: dict[str, Any] = {}
+        if budget is not None:
+            budget.persist()
+        if not self.enabled:
+            return
         if budget is not None:
             # Never hold a budget lock during status/activity file ownership.
             with budget.lock:
@@ -244,6 +272,12 @@ class PreflightProgress:
         except Exception as error:
             self._error = error
             self.cancelled.set()
+        finally:
+            with self._lock:
+                self._worker_finalized = True
+                owner = self._accounting_owner
+            if owner is not None:
+                owner.close(worker=True)
 
     def check(self) -> None:
         """Surface failed progress ownership instead of continuing under a stale live pointer."""
@@ -311,7 +345,7 @@ def ensure_cli_preflight_token() -> None:
 
 @contextmanager
 def preflight_owner(
-    root: Path, environment: Mapping[str, str]
+    root: Path, environment: Mapping[str, str], *, accounting_owner: CampaignOwner | None = None
 ) -> Iterator[tuple[threading.Event, WorkflowResourceWindow, PreflightProgress]]:
     """Share preparation cancellation/resources and conditionally release only our live pointer."""
     cancelled = threading.Event()
@@ -362,7 +396,9 @@ def preflight_owner(
                 },
             )
             claimed = True
-        progress = PreflightProgress(run_id, cancelled, resources, enabled=claimed)
+        progress = PreflightProgress(
+            run_id, cancelled, resources, enabled=claimed, accounting_owner=accounting_owner
+        )
         progress.start()
         resources.start()
         if cancelled.is_set():

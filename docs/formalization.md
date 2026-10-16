@@ -184,6 +184,18 @@ Recovery binds each progress record to its snapshot before checking paths and
 retained versions; progress cannot replace a missing plan or receipt.
 Stopping immediately after infrastructure commits records the committed receipt
 and stops before author launch. A later launch can reuse that checked setup.
+Each new formalization run durably binds its source selection and campaign budget
+before the first paid planning call. Resume reopens that exact ledger with the
+same effective limits, including after failed preparation that published no
+receipt. Stale setup or controller readiness requires fresh checking, not a fresh
+allowance. A missing, inconsistent or legacy unbound budget stops before paid
+work with recovery or explicit new-campaign guidance; the controller never chooses
+the newest ledger or infers a binding from displayed counters. Changing campaign
+limits requires an explicit new campaign. Retained historical usage remains
+visible and is not silently merged into a different campaign.
+Preparation checkpoints active time even when its native call emits no output.
+An unfinished checkpoint writer retains exclusive accounting ownership until its
+last write ends; a bounded shutdown failure cannot admit a competing writer.
 Actual CLI launches publish a verified preparation owner before dependency planning,
 so the same Stop action also interrupts discovery and setup. A one-time CLI restart
 establishes an initially inherited process token while preserving its PID, interpreter

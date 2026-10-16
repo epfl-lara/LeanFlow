@@ -9,16 +9,57 @@ from typing import Any
 from leanflow_cli.formalization.evidence import contained, durable_json, identity
 from leanflow_cli.formalization.inventory_authority import complete_inventory
 from leanflow_cli.formalization.preparation_assignment import checked_preparation_assignment
-from leanflow_cli.formalization.records import load_document
+from leanflow_cli.formalization.preparation_campaign import (
+    campaign_budget,
+    load_campaign,
+    select_campaign,
+)
+from leanflow_cli.formalization.records import current_selection_token, load_document
 from leanflow_cli.formalization.slice_gate import protocol_enabled, slice_regions, slice_status
 from leanflow_cli.formalization.source_review_regions import coalesce_regions, compact_region
 
 
 def campaign_budget_path(root: Path, environment: dict[str, str], directory: Path) -> Path:
-    """Select a shared budget only through its controller-owned preparation receipt."""
+    """Require run-bound accounting and independently validate any prepared-budget hint."""
+    run_id = (
+        environment.get("LEANFLOW_NATIVE_RESUME_RUN_ID")
+        or environment.get("LEANFLOW_WORKFLOW_RUN_ID")
+        or directory.name
+    )
+    record = load_document(root, environment["LEANFLOW_FORMALIZATION_DOCUMENT_ID"])
+    resume = bool(environment.get("LEANFLOW_NATIVE_RESUME_RUN_ID"))
+    binding_path = directory / "campaign-accounting.json"
+    existing = load_campaign(root, run_id) if resume or binding_path.exists() else None
+    limits = {
+        name: environment.get(
+            "LEANFLOW_PROVER_" + name.upper(), (existing or {}).get("limits", {}).get(name)
+        )
+        for name in ("agent_calls", "tokens", "wall_time_s")
+    }
+    from leanflow_cli.formalization.intake import draft_source_rejection
+
+    binding = select_campaign(
+        root,
+        record,
+        run_id=run_id,
+        limits=limits,
+        backend=environment.get("LEANFLOW_NATIVE_PROVIDER", "codex"),
+        selection_token=current_selection_token(root, record["document_id"]),
+        source_draft_only=environment.get("LEANFLOW_FORMALIZATION_SOURCE_DRAFT_ONLY", "false")
+        == "true",
+        effective_draft=draft_source_rejection(
+            complete_inventory(record),
+            source_draft_only=environment.get("LEANFLOW_FORMALIZATION_SOURCE_DRAFT_ONLY", "false")
+            == "true",
+        )
+        is not None,
+        resume=existing is not None,
+        budget_path=None if existing is not None else directory / "limits.json",
+    )
+    bound_path = campaign_budget(root, binding)
     value = environment.get("LEANFLOW_FORMALIZATION_BUDGET_PATH", "")
     if not value:
-        return directory / "limits.json"
+        return bound_path
     from leanflow_cli.formalization.preparation import load_preparation_receipt
 
     receipt = load_preparation_receipt(root)
@@ -32,14 +73,15 @@ def campaign_budget_path(root: Path, environment: dict[str, str], directory: Pat
     if (
         not requested.is_relative_to(root / ".leanflow/formalization-campaigns")
         or requested != selected
+        or requested != bound_path
     ):
         raise ValueError("Shared formalization budget differs from the prepared campaign")
-    record = load_document(
+    prepared_record = load_document(
         root,
         environment["LEANFLOW_FORMALIZATION_DOCUMENT_ID"],
         environment["LEANFLOW_FORMALIZATION_REVISION"],
     )
-    if record.get("preparation_id") != receipt["preparation_id"]:
+    if prepared_record.get("preparation_id") != receipt["preparation_id"]:
         raise ValueError("Shared campaign preparation does not match the frozen source")
     return requested
 
@@ -48,7 +90,7 @@ def campaign_budget_limits(path: Path, environment: dict[str, str]) -> dict[str,
     """Retain prepared campaign defaults while rejecting incompatible explicit overrides."""
     names = ("agent_calls", "tokens", "wall_time_s")
     saved: dict[str, Any] = {}
-    if environment.get("LEANFLOW_FORMALIZATION_BUDGET_PATH"):
+    if path.exists():
         value = json.loads(path.read_text())
         if value.get("version") != 2 or set(value.get("limits", {})) != set(names):
             raise ValueError("Shared formalization campaign limits are malformed")

@@ -14,11 +14,16 @@ from core.campaign_limits import CampaignLimits
 from leanflow_cli.formalization import preparation
 from leanflow_cli.formalization import preparation_launch as launch
 from leanflow_cli.formalization.evidence import identity
+from leanflow_cli.formalization.preparation_campaign import (
+    campaign_budget,
+    campaign_lock,
+    select_campaign,
+)
 from leanflow_cli.formalization.preparation_transaction import (
     commit_preparation,
     protected_inputs,
 )
-from leanflow_cli.formalization.records import create_document
+from leanflow_cli.formalization.records import create_document, current_selection_token
 from leanflow_cli.workflows.project_setup import inspect_project, prepare_project, service
 from tests.leanflow.preparation_helpers import inspector_readiness_record
 
@@ -170,10 +175,19 @@ def test_current_transactional_preparation_can_resume_without_generic_setup_rece
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     (root / "paper.tex").write_text(r"\begin{definition}A natural number.\end{definition}")
     record = create_document(root, root / "paper.tex")
-    budget = CampaignLimits(
-        root / ".leanflow/formalization-campaigns/checked/budget.json",
-        {"agent_calls": 3, "tokens": None, "wall_time_s": None},
-    )
+    with campaign_lock(root, "existing-run"):
+        binding = select_campaign(
+            root,
+            record,
+            run_id="existing-run",
+            limits={"agent_calls": 3},
+            backend="codex",
+            selection_token=current_selection_token(root, record["document_id"]),
+            source_draft_only=False,
+            effective_draft=False,
+            resume=False,
+        )
+        budget = CampaignLimits(campaign_budget(root, binding), binding["limits"])
     budget.persist()
     receipt = {
         "schema_version": 1,
@@ -182,7 +196,7 @@ def test_current_transactional_preparation_can_resume_without_generic_setup_rece
         "environment_id": "explicit-unit-fixture-environment",
         "project_sources": {},
         "inspector_readiness": inspector_readiness_record(),
-        "budget_path": str(budget.path),
+        "budget_path": budget.path.relative_to(root).as_posix(),
         "plan": {"preset": "lean"},
     }
     receipt["preparation_id"] = "preparation-" + identity(receipt)

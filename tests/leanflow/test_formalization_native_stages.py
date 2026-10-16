@@ -8,6 +8,11 @@ from agent.runtime.harness import HarnessResult, IsolationPolicy
 from core.campaign_limits import CampaignLimits
 from leanflow_cli.formalization import preparation, proposal, publish, review, slice_gate
 from leanflow_cli.formalization.evidence import digest
+from leanflow_cli.formalization.preparation_campaign import (
+    campaign_budget,
+    campaign_lock,
+    select_campaign,
+)
 from leanflow_cli.formalization.proposal_schema import apply_proposal
 from leanflow_cli.formalization.records import (
     create_document,
@@ -58,7 +63,19 @@ def test_native_corrects_slice_then_expands_all_reuse_without_proof_or_premature
         },
     )
     base = save_revision(document_directory(tmp_path, record["document_id"]), record)
-    budget_path = tmp_path / ".leanflow/formalization-campaigns/fixture/budget.json"
+    with campaign_lock(tmp_path, "stage-run"):
+        binding = select_campaign(
+            tmp_path,
+            base,
+            run_id="stage-run",
+            limits={"agent_calls": 9},
+            backend="claude",
+            selection_token=current_selection_token(tmp_path, base["document_id"]),
+            source_draft_only=False,
+            effective_draft=False,
+            resume=False,
+        )
+        budget_path = campaign_budget(tmp_path, binding)
     budget = CampaignLimits(budget_path, {"agent_calls": 9, "tokens": None, "wall_time_s": None})
     setup_call = budget.reserve()
     budget.started_call(setup_call)
@@ -267,6 +284,7 @@ def test_native_corrects_slice_then_expands_all_reuse_without_proof_or_premature
     result = native.run_workflow(
         {
             "LEANFLOW_PROJECT_ROOT": str(tmp_path),
+            "LEANFLOW_WORKFLOW_RUN_ID": "stage-run",
             "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
             "LEANFLOW_NATIVE_PROVIDER": "claude",
             "LEANFLOW_FORMALIZATION_DOCUMENT_ID": base["document_id"],

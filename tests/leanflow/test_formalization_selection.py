@@ -8,6 +8,13 @@ from pathlib import Path
 import pytest
 
 from leanflow_cli.formalization import proposal, publish
+from leanflow_cli.formalization.preparation_campaign import (
+    admit_author,
+    campaign_budget,
+    campaign_lock,
+    load_campaign,
+    select_campaign,
+)
 from leanflow_cli.formalization.records import (
     assert_author_selection,
     create_document,
@@ -313,28 +320,50 @@ def test_resume_cannot_recapture_revoked_or_missing_campaign_authority(
         "leanflow_cli.formalization.intake.preflight_dependencies", lambda *args: {}
     )
     token = current_selection_token(tmp_path, document["document_id"])
+    directory = tmp_path / ".leanflow/native-workflows/campaign"
+    with campaign_lock(tmp_path, "campaign"):
+        binding = select_campaign(
+            tmp_path,
+            document,
+            run_id="campaign",
+            limits={},
+            backend="codex",
+            selection_token=token,
+            source_draft_only=False,
+            effective_draft=False,
+            resume=False,
+            budget_path=directory / "limits.json",
+        )
+        admit_author(tmp_path, binding, resume=False, state_path=directory / "state.json")
+        ledger = campaign_budget(tmp_path, binding)
+    ledger_bytes = ledger.read_bytes()
     state = {
         "version": 2,
+        "run_id": "campaign",
+        "campaign_binding_id": binding["binding_id"],
         "backend": "codex",
         "workflow": "formalize",
         "baseline": {name: data.hex() for name, data in source_files(tmp_path).items()},
         **({} if missing else {"formalization_selection_token": token}),
     }
-    directory = tmp_path / ".leanflow/native-workflows/campaign"
-    directory.mkdir(parents=True)
     (directory / "state.json").write_text(json.dumps(state))
-    act_document(
-        tmp_path,
-        document["document_id"],
-        document["revision_id"],
-        {"type": "select_revision", "revision_id": document["revision_id"]},
-    )
+    if not missing:
+        act_document(
+            tmp_path,
+            document["document_id"],
+            document["revision_id"],
+            {"type": "select_revision", "revision_id": document["revision_id"]},
+        )
+        assert current_selection_token(tmp_path, document["document_id"]) != token
+    else:
+        assert current_selection_token(tmp_path, document["document_id"]) == token
     monkeypatch.setattr(
         harness_workflow,
         "run_harness",
         lambda *a, **k: pytest.fail("Revoked resume must not start inference"),
     )
-    with pytest.raises(ValueError, match="selection changed"):
+    expected = "selection changed" if missing else "Campaign source or run identity changed"
+    with pytest.raises(ValueError, match=expected):
         harness_workflow.run_workflow(
             {
                 "LEANFLOW_PROJECT_ROOT": str(tmp_path),
@@ -346,3 +375,5 @@ def test_resume_cannot_recapture_revoked_or_missing_campaign_authority(
             }
         )
     assert json.loads((directory / "state.json").read_text()) == state
+    assert ledger.read_bytes() == ledger_bytes
+    assert load_campaign(tmp_path, "campaign") == binding

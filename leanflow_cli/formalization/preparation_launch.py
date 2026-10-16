@@ -9,13 +9,13 @@ import sys
 import threading
 import uuid
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
 from core.campaign_limits import CampaignLimits
 from core.deadlines import deadline_after
 from leanflow_cli.config import load_config
-from leanflow_cli.formalization.evidence import contained
 from leanflow_cli.formalization.formalization_documents import _select_formalization_document
 from leanflow_cli.formalization.formalization_models import FormalizationDocumentError
 from leanflow_cli.formalization.intake import author_blocking_diagnostics, draft_source_rejection
@@ -25,6 +25,11 @@ from leanflow_cli.formalization.preparation import (
     assert_preparation_current,
     load_preparation_receipt,
     prepare_document_project,
+)
+from leanflow_cli.formalization.preparation_campaign import (
+    campaign_budget,
+    campaign_lock,
+    select_campaign,
 )
 from leanflow_cli.formalization.preparation_discovery import discover_preparation_plan
 from leanflow_cli.formalization.preparation_plan import default_preparation_plan
@@ -133,16 +138,30 @@ def prepare_formalization_launch(
     )
     if completed is not None:
         return {"root": root, "completed_source_draft": completed}
+    run_id = (
+        env.get("LEANFLOW_NATIVE_RESUME_RUN_ID")
+        or env.get("LEANFLOW_WORKFLOW_RUN_ID")
+        or ("formalize-cli-" + uuid.uuid4().hex)
+    )
+    env["LEANFLOW_WORKFLOW_RUN_ID"] = run_id
     from leanflow_cli.formalization.preflight_owner import preflight_owner
 
-    with preflight_owner(root, env) as (cancelled, resources, progress):
+    with (
+        ExitStack() as accounting_stack,
+        preflight_owner(root, env) as (cancelled, resources, progress),
+    ):
+
+        def claim_accounting() -> None:
+            """Retain serial accounting through final checkpoint worker closure."""
+            accounting = accounting_stack.enter_context(campaign_lock(root, run_id))
+            progress.bind_accounting_owner(accounting)
 
         def check() -> None:
             """Stop preparation when either resource or live ownership inspection fails."""
             progress.check()
             resources.check(force=True)
 
-        return _prepare_formalization_launch(
+        result = _prepare_formalization_launch(
             cwd,
             workflow_args,
             runtime,
@@ -152,7 +171,9 @@ def prepare_formalization_launch(
             cancelled=cancelled,
             check=check,
             progress=progress,
+            claim_accounting=claim_accounting,
         )
+        return {**result, "run_id": run_id}
 
 
 def _prepare_formalization_launch(
@@ -166,6 +187,7 @@ def _prepare_formalization_launch(
     cancelled: threading.Event,
     check: Callable[[], None],
     progress: PreflightProgress,
+    claim_accounting: Callable[[], None],
 ) -> dict[str, Any]:
     """Own one source preparation campaign and return its checked infrastructure and shared budget."""
     root = source_project_root(cwd)
@@ -208,12 +230,27 @@ def _prepare_formalization_launch(
         name: env.get("LEANFLOW_PROVER_" + name.upper(), limits.get(name))
         for name in ("agent_calls", "tokens", "wall_time_s")
     }
+    claim_accounting()
     try:
         previous_intent = load_preparation_receipt(root)
     except (OSError, ValueError, RuntimeError):
         previous_intent = None
-    # An unchanged prepared document can reuse its exact infrastructure and slice
-    # while an explicit resume keeps cumulative campaign usage.
+    binding = select_campaign(
+        root,
+        record,
+        run_id=env["LEANFLOW_WORKFLOW_RUN_ID"],
+        limits=configured,
+        backend=str(runtime["provider"]),
+        selection_token=current_selection_token(root, record["document_id"]),
+        source_draft_only=source_draft_only,
+        effective_draft=effective_draft,
+        resume=bool(env.get("LEANFLOW_NATIVE_RESUME_RUN_ID")),
+    )
+    budget_path = campaign_budget(root, binding)
+    directory = budget_path.parent
+    budget = CampaignLimits(budget_path, binding["limits"])
+    progress.bind_budget(budget)
+    # Infrastructure freshness cannot select, reset, or authorize accounting.
     try:
         previous = assert_preparation_current(root)
     except (OSError, ValueError, RuntimeError):
@@ -222,122 +259,102 @@ def _prepare_formalization_launch(
         previous
         and env.get("LEANFLOW_NATIVE_RESUME_RUN_ID")
         and previous.get("source_bundle") == record["source_bundle"]
-        and previous.get("budget_path")
+        and previous.get("budget_path") == budget_path.relative_to(root).as_posix()
     ):
-        path = Path(previous["budget_path"])
-        path = root / path if not path.is_absolute() else path
-        path = contained(root, path.relative_to(root).as_posix())
-        if path.is_file():
-            try:
-                budget = CampaignLimits(path, configured)
-            except ValueError as error:
-                if "Start a new campaign when changing limits" not in str(error):
-                    raise
-            else:
-                progress.bind_budget(budget)
-                budget.persist()
-                return {"root": root, "receipt": previous, "budget_path": path}
-    directory = contained(root, ".leanflow/formalization-campaigns/" + uuid.uuid4().hex)
-    directory.mkdir(parents=True)
-    budget_path = directory / "budget.json"
-    budget = CampaignLimits(budget_path, configured)
-    progress.bind_budget(budget)
+        return {"root": root, "receipt": previous, "budget_path": budget_path}
 
     def report(event: dict[str, Any]) -> None:
         """Keep terminal messages and exact-owner progress on the same preparation phase."""
         _report_preparation_progress(event)
         progress.phase(event)
 
-    try:
-        plan = default_preparation_plan(
-            root,
-            record,
-            preset=env.get(
-                "LEANFLOW_FORMALIZATION_PRESET",
-                (previous_intent or {}).get("plan", {}).get("preset", "lean"),
-            ),
-        )
-        discovery_enabled = env.get("LEANFLOW_FORMALIZATION_DISCOVERY", "true").lower() not in {
-            "0",
-            "false",
-            "off",
-        }
-        check()
-        if cancelled.is_set():
-            raise ValueError("Formalization preparation cancelled before discovery")
-        if discovery_enabled:
-            report(
-                {
-                    "phase": "dependency_plan",
-                    "message": "Estimating mathematical dependencies with the selected native backend…",
-                }
-            )
-            discovered = discover_preparation_plan(
-                root,
-                record,
-                plan,
-                backend=str(runtime["provider"]),
-                model=str(runtime.get("model") or ""),
-                effort=str(runtime.get("reasoning_effort") or ""),
-                environment={**env, "LEANFLOW_PROJECT_ROOT": str(root)},
-                budget=budget,
-                directory=directory / "discovery",
-                deadline=deadline_after(budget.remaining()),
-                cancelled=cancelled.is_set,
-                user_goal=user_goal,
-                on_event=progress.native_event,
-            )
-            check()
-            if discovered.get("accepted") is not True:
-                discovery_failure = ValueError(
-                    "Formalization preparation discovery needs correction: "
-                    + str(
-                        discovered.get(
-                            "error",
-                            discovered.get("unauthorized_packages") or discovered.get("status"),
-                        )
-                    )
-                )
-                progress.failed(
-                    discovery_failure,
-                    code=str(discovered.get("status") or "preparation_discovery_error"),
-                )
-                raise discovery_failure
-            plan = discovered["plan"]
-        remaining = budget.remaining()
-        if cancelled.is_set() or (remaining is not None and remaining <= 0):
-            raise ValueError("Formalization preparation campaign was cancelled or exhausted")
+    plan = default_preparation_plan(
+        root,
+        record,
+        preset=env.get(
+            "LEANFLOW_FORMALIZATION_PRESET",
+            (previous_intent or {}).get("plan", {}).get("preset", "lean"),
+        ),
+    )
+    discovery_enabled = env.get("LEANFLOW_FORMALIZATION_DISCOVERY", "true").lower() not in {
+        "0",
+        "false",
+        "off",
+    }
+    check()
+    if cancelled.is_set():
+        raise ValueError("Formalization preparation cancelled before discovery")
+    if discovery_enabled:
         report(
             {
-                "phase": "project_setup",
-                "message": "Preparing and checking pinned dependencies in a private project…",
+                "phase": "dependency_plan",
+                "message": "Estimating mathematical dependencies with the selected native backend…",
             }
         )
-        prepared = prepare_document_project(
+        discovered = discover_preparation_plan(
             root,
             record,
-            plan=plan,
-            progress=report,
-            cancel=cancelled,
-            timeout_s=min(1800.0, remaining) if remaining is not None else 1800.0,
-            budget_path=budget_path,
-            network_allowed=env.get("LEANFLOW_FORMALIZATION_ALLOW_NETWORK", "true").lower()
-            not in {"0", "false", "off"},
+            plan,
+            backend=str(runtime["provider"]),
+            model=str(runtime.get("model") or ""),
+            effort=str(runtime.get("reasoning_effort") or ""),
+            environment={**env, "LEANFLOW_PROJECT_ROOT": str(root)},
+            budget=budget,
+            directory=directory / "discovery",
+            deadline=deadline_after(budget.remaining()),
+            cancelled=cancelled.is_set,
+            user_goal=user_goal,
+            on_event=progress.native_event,
         )
         check()
-        if prepared.get("accepted") is not True:
-            setup_failure = ValueError(
-                "Formalization project preparation failed: "
-                + str(prepared.get("error", prepared.get("status")))
+        if discovered.get("accepted") is not True:
+            discovery_failure = ValueError(
+                "Formalization preparation discovery needs correction: "
+                + str(
+                    discovered.get(
+                        "error",
+                        discovered.get("unauthorized_packages") or discovered.get("status"),
+                    )
+                )
             )
             progress.failed(
-                setup_failure,
-                code=str(
-                    prepared.get("error_code") or prepared.get("status") or "project_setup_failed"
-                ),
+                discovery_failure,
+                code=str(discovered.get("status") or "preparation_discovery_error"),
             )
-            raise setup_failure
-        report({"phase": "ready", "message": "Project setup passed; continuing to formalization."})
-        return {"root": root, "receipt": prepared["receipt"], "budget_path": budget_path}
-    finally:
-        budget.persist()
+            raise discovery_failure
+        plan = discovered["plan"]
+    remaining = budget.remaining()
+    if cancelled.is_set() or (remaining is not None and remaining <= 0):
+        raise ValueError("Formalization preparation campaign was cancelled or exhausted")
+    report(
+        {
+            "phase": "project_setup",
+            "message": "Preparing and checking pinned dependencies in a private project…",
+        }
+    )
+    prepared = prepare_document_project(
+        root,
+        record,
+        plan=plan,
+        progress=report,
+        cancel=cancelled,
+        timeout_s=min(1800.0, remaining) if remaining is not None else 1800.0,
+        budget_path=budget_path,
+        network_allowed=env.get("LEANFLOW_FORMALIZATION_ALLOW_NETWORK", "true").lower()
+        not in {"0", "false", "off"},
+    )
+    check()
+    if prepared.get("accepted") is not True:
+        setup_failure = ValueError(
+            "Formalization project preparation failed: "
+            + str(prepared.get("error", prepared.get("status")))
+        )
+        progress.failed(
+            setup_failure,
+            code=str(
+                prepared.get("error_code") or prepared.get("status") or "project_setup_failed"
+            ),
+        )
+        raise setup_failure
+    report({"phase": "ready", "message": "Project setup passed; continuing to formalization."})
+    return {"root": root, "receipt": prepared["receipt"], "budget_path": budget_path}

@@ -205,6 +205,7 @@ def test_formalization_intake_shares_project_ownership(
         lambda *args, **kwargs: {
             "root": root,
             "budget_path": root / ".leanflow/formalization-campaigns/fixture/budget.json",
+            "run_id": "fixture-run",
         },
     )
     if setup_already_running:

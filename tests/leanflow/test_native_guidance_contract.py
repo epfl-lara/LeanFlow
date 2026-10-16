@@ -85,7 +85,11 @@ def test_formalization_layout_uses_project_configuration_without_label_keyword(
     )
     monkeypatch.setattr(
         "leanflow_cli.formalization.preparation_launch.prepare_formalization_launch",
-        lambda *args, **kwargs: {"root": tmp_path, "budget_path": tmp_path / "budget.json"},
+        lambda *args, **kwargs: {
+            "root": tmp_path,
+            "budget_path": tmp_path / "budget.json",
+            "run_id": "fixture-run",
+        },
     )
 
     def intake(*, project_root, cwd, workflow_args, require_preparation):

@@ -8,7 +8,17 @@ from agent.runtime.harness import HarnessResult
 from agent.runtime.harness.events import usage_delta
 from agent.runtime.harness.models import NativeLaunchFailure
 from core.campaign_limits import CampaignLimits
-from leanflow_cli.formalization.records import create_document
+from leanflow_cli.formalization.preparation_campaign import (
+    admit_author,
+    campaign_budget,
+    campaign_lock,
+    select_campaign,
+)
+from leanflow_cli.formalization.records import (
+    create_document,
+    current_selection_token,
+    load_document,
+)
 from leanflow_cli.native import harness_workflow as runner
 from leanflow_cli.native.harness_artifacts import source_files
 from leanflow_cli.runtime.project_operations import ProjectBusyError, project_setup
@@ -84,6 +94,84 @@ def test_formalization_uses_selected_native_runtime_with_unlimited_defaults(tmp_
     assert not seen[0].restricted_tools
     assert seen[0].deadline is None and seen[0].model == seen[0].effort == ""
     assert seen[0].cwd != tmp_path
+
+
+def test_preflight_only_retry_admits_first_author_without_resetting_usage(tmp_path, monkeypatch):
+    """Resume a bound failed preflight without inventing an earlier author checkpoint."""
+    record = load_document(tmp_path, _environment(tmp_path)["LEANFLOW_FORMALIZATION_DOCUMENT_ID"])
+    run_id = "preflight-only"
+    directory = tmp_path / ".leanflow/native-workflows" / run_id
+    with campaign_lock(tmp_path, run_id):
+        binding = select_campaign(
+            tmp_path,
+            record,
+            run_id=run_id,
+            limits={"agent_calls": 3},
+            backend="codex",
+            selection_token=current_selection_token(tmp_path, record["document_id"]),
+            source_draft_only=False,
+            effective_draft=False,
+            resume=False,
+        )
+        budget_path = campaign_budget(tmp_path, binding)
+        budget = CampaignLimits(budget_path, binding["limits"])
+        call = budget.reserve()
+        budget.started_call(call)
+        budget.finish(call, {"input_tokens": 11, "output_tokens": 7}, started=True)
+    assert not (directory / "state.json").exists()
+    seen = []
+
+    def invoke(request, on_event=None):
+        seen.append(request)
+        request.on_started()
+        return HarnessResult(
+            status="completed",
+            final_response='{"status":"blocked","reason":"Fixture"}',
+            session_id="first-author",
+            usage={"input_tokens": 2, "output_tokens": 1},
+            cleanup_verified=True,
+        )
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "leanflow_cli.native.harness_context.load_skill", lambda *args, **kwargs: None
+    )
+    result = runner.run_workflow(
+        {**_environment(tmp_path), "LEANFLOW_NATIVE_RESUME_RUN_ID": run_id}
+    )
+    assert result["status"] == "blocked" and len(seen) == 1
+    assert not seen[0].session_id
+    state = json.loads((directory / "state.json").read_text())
+    assert state["campaign_binding_id"] == binding["binding_id"]
+    ledger = json.loads(budget_path.read_text())
+    assert len(ledger["invocations"]) == 2
+    assert ledger["invocations"][call]["usage"] == {"input_tokens": 11, "output_tokens": 7}
+    assert not (directory / "limits.json").exists()
+
+
+def test_missing_genuine_author_state_cannot_become_first_author_retry(tmp_path, monkeypatch):
+    record = load_document(tmp_path, _environment(tmp_path)["LEANFLOW_FORMALIZATION_DOCUMENT_ID"])
+    directory = tmp_path / ".leanflow/native-workflows/lost-author"
+    with campaign_lock(tmp_path, "lost-author"):
+        binding = select_campaign(
+            tmp_path,
+            record,
+            run_id="lost-author",
+            limits={},
+            backend="codex",
+            selection_token=current_selection_token(tmp_path, record["document_id"]),
+            source_draft_only=False,
+            effective_draft=False,
+            resume=False,
+        )
+        admit_author(tmp_path, binding, resume=False, state_path=directory / "state.json")
+    monkeypatch.setattr(runner, "run_harness", lambda *args, **kwargs: pytest.fail("New author"))
+    with pytest.raises(ValueError, match="author state is missing"):
+        runner.run_workflow(
+            {**_environment(tmp_path), "LEANFLOW_NATIVE_RESUME_RUN_ID": "lost-author"}
+        )
+    assert not (directory / "state.json").exists()
 
 
 def test_setup_ownership_rejects_native_workflow_before_project_writes(tmp_path, monkeypatch):
@@ -263,7 +351,29 @@ def test_clean_room_rejects_online_or_unclassified_checkpoints_before_launch(
 ):
     directory = tmp_path / ".leanflow/native-workflows/old-run"
     directory.mkdir(parents=True)
-    state = {"version": 2, "backend": "codex", "workflow": "formalize", "baseline": {}}
+    record = load_document(tmp_path, _environment(tmp_path)["LEANFLOW_FORMALIZATION_DOCUMENT_ID"])
+    with campaign_lock(tmp_path, "old-run"):
+        binding = select_campaign(
+            tmp_path,
+            record,
+            run_id="old-run",
+            limits={},
+            backend="codex",
+            selection_token=current_selection_token(tmp_path, record["document_id"]),
+            source_draft_only=False,
+            effective_draft=False,
+            resume=False,
+            budget_path=directory / "limits.json",
+        )
+        admit_author(tmp_path, binding, resume=False, state_path=directory / "state.json")
+    state = {
+        "version": 2,
+        "run_id": "old-run",
+        "campaign_binding_id": binding["binding_id"],
+        "backend": "codex",
+        "workflow": "formalize",
+        "baseline": {},
+    }
     if saved_policy is not None:
         state["research_policy"] = saved_policy
     path = directory / "state.json"

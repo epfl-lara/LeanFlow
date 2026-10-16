@@ -153,7 +153,18 @@ def test_actual_cli_reexec_preserves_pid_flags_and_public_stop_cancels_preflight
         assert final["process_id"] == 0 and final["preflight_release"]["outcome"] == "cancelled"
         records = list((tmp_path / "home/setup").glob("*/commands/*.json"))
         assert records and all(json.loads(path.read_text())["cleanup_verified"] for path in records)
-        assert not (root / ".leanflow/native-workflows").exists()
+        # Preflight accounting survives cancellation without admitting an author.
+        directory = root / ".leanflow/native-workflows/formalize-vscode-run-preflight-test"
+        assert {path.name for path in directory.iterdir()} == {
+            "campaign-accounting.json",
+            "campaign-accounting.lock",
+        }
+        from leanflow_cli.formalization.preparation_campaign import campaign_budget, load_campaign
+
+        binding = load_campaign(root, directory.name)
+        ledger = json.loads(campaign_budget(root, binding).read_text())
+        assert ledger["campaign_binding_id"] == binding["binding_id"]
+        assert ledger["elapsed_s"] > 0
     finally:
         if process.poll() is None:
             process.kill()
