@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from core.campaign_limits import CampaignLimits, LimitReached, optional_limit
+from core.campaign_limits import AccountingError, CampaignLimits, LimitReached, optional_limit
 
 
 @pytest.mark.parametrize("value", [True, False, -1, float("inf"), float("nan"), "1.5"])
@@ -86,3 +86,22 @@ def test_resume_keeps_uncertain_interrupted_call_and_token_usage(tmp_path, start
     assert resumed.state["invocations"][call]["interrupted"] is True
     with pytest.raises(LimitReached, match="unavailable"):
         resumed.reserve()
+
+
+def test_failed_final_checkpoint_cannot_clear_durable_interruption_barrier(tmp_path, monkeypatch):
+    """The clean marker is published atomically with the final elapsed-time charge."""
+    budget = CampaignLimits(tmp_path / "limits.json", {"wall_time_s": 30})
+    budget.begin_checkpoints()
+    before = budget.path.read_bytes()
+
+    def fail(*args):
+        raise OSError("Fixture final checkpoint unavailable")
+
+    monkeypatch.setattr("core.campaign_limits.atomic_json_write", fail)
+    with pytest.raises(AccountingError, match="could not be persisted"):
+        budget.finish_checkpoints()
+    with pytest.raises(AccountingError, match="no further work"):
+        budget.reserve()
+    with pytest.raises(AccountingError, match="accounting is unresolved"):
+        CampaignLimits(budget.path, budget.limits)
+    assert budget.path.read_bytes() == before

@@ -61,6 +61,12 @@ def evidence_documents(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "declarations": declaration_index(record["checks"]),
         "units": {"units": record["units"]},
     }
+    for correction in record.get("corrections", []):
+        documents["correction:" + correction["id"]] = correction
+    for authority in record.get("correction_authorities", []):
+        documents["authority:" + authority["id"]] = authority
+    for evidence in record["checks"].get("correction_evidence", []):
+        documents["correction-evidence:" + evidence["correction_id"]] = evidence
     for row in record["checks"]["declarations"]:
         documents["declaration:" + row["name"]] = row
     for row in record["checks"].get("library_declarations", []):
@@ -206,8 +212,15 @@ def mandatory_dossier(
         ref["file"] for unit in units for ref in unit["declarations"] if ref.get("file")
     }
     groups = coalesce_regions(record["inventory"]["regions"])
+    corrections = [
+        row
+        for row in record.get("corrections", [])
+        if coherence or row["source_item_id"] in required
+    ]
+    correction_ids = {row["id"] for row in corrections}
     return {
         "schema_version": 1,
+        "revision_id": record["revision_id"],
         "phase": "coherence" if coherence else "translation",
         "controller_scope": scope_header(documents["controller-scope"]),
         "pdf_evidence_policy": {
@@ -234,6 +247,13 @@ def mandatory_dossier(
             ),
         },
         "units": units,
+        "corrections": copy.deepcopy(corrections),
+        "correction_authorities": copy.deepcopy(record.get("correction_authorities", [])),
+        "correction_evidence": [
+            copy.deepcopy(row)
+            for row in record["checks"].get("correction_evidence", [])
+            if row["correction_id"] in correction_ids
+        ],
         "known_obligations": list(obligation_registry(record, required).values()),
         "clause_policy": (
             "Every known clause requires its authored disposition and independent clause verdict. "

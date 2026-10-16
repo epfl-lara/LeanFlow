@@ -17,6 +17,19 @@ class LimitReached(RuntimeError):
     """Prevent new work after an explicit global limit or unknown capped usage."""
 
 
+class AccountingError(RuntimeError):
+    """Refuse work after an unresolved checkpoint or interrupted accounting writer."""
+
+
+def assert_accounting_resolved(state: Mapping[str, Any]) -> None:
+    """Reject uncertain elapsed time without rewriting an existing ledger."""
+    if state.get("accounting_error") or state.get("checkpoint_worker_active"):
+        raise AccountingError(
+            "Campaign accounting is unresolved; retain this ledger and its charged calls. "
+            "Do not resume with an uncertain active-time allowance"
+        )
+
+
 def optional_limit(value: Any, *, integer: bool = False) -> int | float | None:
     """Validate a nonnegative limit without conflating zero, false and unlimited."""
     if value is None or value == "":
@@ -47,6 +60,7 @@ class CampaignLimits:
                 raise ValueError("Start a new campaign when changing limits or migrating old runs")
         else:
             self.state = {"version": 2, "limits": self.limits, "elapsed_s": 0.0, "invocations": {}}
+        self.check_accounting()
         # A restarted controller cannot prove that a reserved process never ran.
         # Keep its call charge and unknown usage rather than silently refunding it.
         for call in self.state["invocations"].values():
@@ -69,11 +83,49 @@ class CampaignLimits:
         """Checkpoint elapsed time even while an invocation emits no events."""
         with self.lock:
             self.state["elapsed_s"] = self.elapsed()
-            atomic_json_write(self.path, self.state)
+            try:
+                atomic_json_write(self.path, self.state)
+            except Exception as error:
+                self.state["accounting_error"] = str(error) or type(error).__name__
+                raise AccountingError(
+                    "Campaign accounting checkpoint could not be persisted"
+                ) from error
+
+    def check_accounting(self) -> None:
+        """Reject uncertain elapsed time instead of treating it as unused allowance."""
+        assert_accounting_resolved(self.state)
+
+    def begin_checkpoints(self) -> None:
+        """Record the writer before it starts so a crash cannot silently refund its interval."""
+        with self.lock:
+            self.check_accounting()
+            self.state["checkpoint_worker_active"] = True
+            self.persist()
+
+    def finish_checkpoints(self) -> None:
+        """Clear the crash marker only after the worker's actual last accounting effect."""
+        with self.lock:
+            if self.state.get("accounting_error"):
+                raise AccountingError("Campaign checkpoint failed; retain its unresolved ledger")
+            self.state.pop("checkpoint_worker_active", None)
+            self.persist()
+
+    def fail_accounting(self, error: BaseException) -> None:
+        """Latch failure in memory and try to retain it without clearing the crash marker."""
+        with self.lock:
+            self.state["accounting_error"] = str(error) or type(error).__name__
+            try:
+                self.persist()
+            except Exception:
+                # The marker was durable before this worker started. A failed
+                # second write must not erase that conservative reopen barrier.
+                pass
 
     def reserve(self) -> str:
         """Reserve one invocation before dispatch, including concurrent reservations."""
         with self.lock:
+            if self.state.get("accounting_error"):
+                raise AccountingError("Campaign checkpoint failed; no further work may start")
             remaining = self.remaining()
             if remaining is not None and remaining <= 0:
                 raise LimitReached("Global campaign time limit reached")

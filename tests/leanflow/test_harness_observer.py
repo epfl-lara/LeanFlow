@@ -59,6 +59,17 @@ def test_native_observer_claims_same_run_before_activity(observer):
     assert "PRIVATE" not in json.dumps([live, events, metadata])
 
 
+def test_completed_ambiguous_draft_exits_successfully_without_claiming_source_acceptance(observer):
+    observer.start({"status": "running"})
+    observer.finish({"status": "completed_with_ambiguities", "accepted": False})
+    live = load_workflow_live_status()
+    assert live["terminal"] is True and live["phase"] == "completed"
+    assert live["status"] == "completed_with_ambiguities"
+    event = _events(observer)[-1]
+    assert event["details"]["exit_code"] == 0
+    assert event["details"]["status"] == "completed_with_ambiguities"
+
+
 def test_native_observer_budget_keeps_unknown_usage_and_ignores_refunded_calls(observer):
     observer.start({"status": "running"})
     budget = CampaignLimits(observer.root / "limits.json", {"agent_calls": 4})

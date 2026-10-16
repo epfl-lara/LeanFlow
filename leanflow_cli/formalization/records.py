@@ -364,6 +364,11 @@ def create_document(
                 "checks": {},
                 "reviews": [],
                 "handoff": None,
+                **(
+                    {"correction_authorities": copy.deepcopy(previous["correction_authorities"])}
+                    if previous and "correction_authorities" in previous
+                    else {}
+                ),
             },
         )
 

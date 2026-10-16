@@ -33,6 +33,40 @@ paged, with full totals and search. Saved status opens quickly as **historical**
 source navigation. Repairs display a saved-revision acknowledgment before refreshing.
 If that refresh fails, the UI keeps the saved acknowledgment and asks for a refresh
 without resubmitting the edit.
+
+A completed draft with unresolved review notes shows **Delivered draft project**
+and one **Open draft project** button. This opens the controller-verified Lean
+project folder in another window of the installed VS Code, retaining the owning
+Remote SSH/WSL host when applicable. Source/PDF links remain frozen previews.
+Full source totals, explicit exclusions, coverage gaps and review notes stay
+visible. Saved compilation checks are distinguished from unverified incomplete
+projects; revising notes is optional for draft
+delivery. This draft has no translation acceptance or accepted prover handoff,
+and theorem proofs may remain `sorry`.
+
+Select an item to compare **Original reading**, **Adopted reading**, and its
+**Lean statement** under **Source corrections and interpretations**. Frozen
+source excerpts and PDF/TeX links preserve the original wording. Lean links show
+the saved compiled type and its type, body and definition-context identities.
+Local evidence, scoped user decisions, independent review, and affected units
+are collapsed separately. A saved **PASS** remains saved evidence until the
+existing whole-revision currentness and acceptance gates succeed; theorem proof
+completion remains a separate state. Encoding repairs are labelled separately
+from mathematical source corrections.
+
+Under **Optional correction choices**, **Enable bounded correction policy for this
+paper** records permission once for every currently included item in the exact
+frozen source bundle. Each proposal still needs closed local evidence and fresh
+independent source review. For a nonunique reading, expand **Record a specific
+reading or convention**, enter the reading and reason, and choose **Record
+interpretation** or **Record convention**. These actions create versioned user
+decisions; they do not approve a statement or prove the paper. The same controls
+allow revocation. These decisions are optional for draft delivery; unresolved
+readings can stay explicitly flagged for later revision. Choices are disabled while the source is stale, setup or a
+workflow is active, or another change is waiting to save. A missing exact source
+binding offers no decision actions; an oversized paper policy scope is never
+silently shortened.
+
 Open or unclassified claims also show **Proof attempt permission**. Select the item,
 enter a reason, and choose **Allow proof attempt for this open claim** to opt in;
 the same control lets you revoke permission. Each change creates a new working

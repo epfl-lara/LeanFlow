@@ -61,7 +61,9 @@ export function formalizationProgress(snapshot: FormalizationSnapshot): Formaliz
 /** A draft preview or reviewed representative slice is never reported as an accepted translation. */
 function translationLabel(snapshot: FormalizationSnapshot, historical: boolean, accepted: boolean): string {
   const saved = historical ? " (saved record; check currentness)" : "";
-  if (snapshot.draft_preview) return "unaccepted source draft only; no translation approval";
+  if (snapshot.draft_preview) return snapshot.draft_preview.status === "unaccepted_formalization"
+    ? `draft project delivered${snapshot.draft_preview.delivery_status === "incomplete" ? " with incomplete coverage" : ""}; review notes flagged; no translation approval`
+    : "unaccepted source draft only; no translation approval";
   if (accepted) return (snapshot.status === "accepted_staged" ? "accepted; publication still pending" : "accepted for this revision") + saved;
   const freshness = snapshot.acceptance_freshness;
   if (STALE.has(snapshot.status) || freshness && !freshness.current && STALE.has(freshness.status)) return `earlier acceptance is stale${freshness?.reason ? `: ${freshness.reason}` : ""}`;
@@ -98,6 +100,7 @@ export function formalizationNextStep(snapshot: FormalizationSnapshot, progress:
   if (context.workflowBusy) return { text: "A workflow is running in this workspace. Follow it in Live; another run can start after it stops." };
   if (context.preparationBusy) return { text: "Project preparation is running.", target: { id: "formalization-preparation", label: "Show preparation" } };
   if (context.setupRunning) return { text: "Project setup is running.", target: { id: "formalization-setup", label: "Show project setup" } };
+  if (snapshot.draft_preview?.status === "unaccepted_formalization") return { text: "Open the delivered draft project. Review notes can be revised later; this draft has no accepted prover handoff.", target: { id: "formalization-draft", label: "Show draft project" } };
   if (!context.baselineReady) return { text: "Set up project tools before formalizing. Source inspection and repairs remain available.", target: { id: "formalization-setup", label: "Go to project setup" } };
   if (progress.blocking || progress.repairRegions) {
     const work = [

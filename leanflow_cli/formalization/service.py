@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from leanflow_cli.formalization.actions import apply_action
+from leanflow_cli.formalization.corrections import correction_authority_history
 from leanflow_cli.formalization.evidence import (
     contained,
     digest,
@@ -166,6 +167,16 @@ def act_document(
                 root, document_id, identifier(str(action.get("revision_id", "")))
             )
             rehydrate_document(selected, directory)
+            current_history = correction_authority_history(record)
+            historical = correction_authority_history(selected)
+            if historical != current_history:
+                if historical != current_history[: len(historical)]:
+                    raise ValueError(
+                        "Revision selection cannot replace divergent trusted correction authority history"
+                    )
+                selected = new_revision(selected)
+                selected["correction_authorities"] = current_history
+                selected = save_revision(directory, selected)
             durable_json(
                 contained(directory, "current.json"),
                 selection_pointer(directory, selected["revision_id"], revoke_authority=True),
@@ -210,18 +221,30 @@ def resolve_artifact(
             except (OSError, ValueError, RuntimeError):
                 # Historical frozen source remains inspectable after authority expires.
                 proof_receipt = None
+        preview = _display_preview(root, record, verify_current=proof_artifact)[0]
         candidates = [
             artifact
             for artifact in _artifacts(
                 record,
                 proof_receipt,
-                _display_preview(root, record, verify_current=proof_artifact)[0],
+                preview,
             )
             if artifact["id"] == artifact_id
         ]
         if len(candidates) != 1:
             raise ValueError("Artifact does not belong to this selected revision")
         artifact = candidates[0]
+        if artifact["kind"] == "project":
+            from leanflow_cli.formalization.draft_delivery import resolve_project_artifact
+
+            if artifact["origin"] != "draft" or preview is None:
+                raise ValueError("Project artifact requires a retained draft preview")
+            project = resolve_project_artifact(root, preview, artifact)
+            return {
+                key: value
+                for key, value in {**artifact, "path": str(project)}.items()
+                if key != "origin"
+            }
         artifact_directory = (
             document_directory(root, document_id)
             if artifact["origin"] == "draft"

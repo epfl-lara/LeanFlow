@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.formalization.corrections import assert_corrections_accepted
 from leanflow_cli.formalization.environment import environment_identity
 from leanflow_cli.formalization.evidence import contained, digest, durable_json, identity
 from leanflow_cli.formalization.handoff_slots import compiled_entry, source_entries
@@ -108,6 +110,8 @@ def build_handoff(
         "guidance_refs": guidance_refs or [],
         "definition_refs": definition_refs or [],
     }
+    if registry.get("correction_evidence"):
+        result["source_corrections"] = copy.deepcopy(registry["correction_evidence"])
     return {**result, "handoff_id": "handoff-" + identity(result)}
 
 
@@ -181,6 +185,7 @@ def validate_handoff(
         or handoff["files"] != expected_files
         or handoff["modules"] != registry["modules"]
         or handoff["protected_declarations"] != protected
+        or handoff.get("source_corrections", []) != registry.get("correction_evidence", [])
     ):
         raise ValueError("Formalization handoff differs from immutable compiled acceptance")
     pending = {row["name"]: row for row in registry["obligations"]}
@@ -205,6 +210,7 @@ def validate_handoff(
         or selected_receipt != receipt
     ):
         raise ValueError("Formalization handoff is not bound to a published acceptance receipt")
+    assert_corrections_accepted(record, receipt.get("reviews", []))
     for reference in handoff.get("guidance_refs", []):
         if digest(contained(root, reference["artifact"]).read_bytes()) != reference["sha256"]:
             raise ValueError("Formalization proof guidance artifact changed")

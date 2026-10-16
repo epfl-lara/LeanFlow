@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import signal
 import threading
@@ -50,6 +51,7 @@ from leanflow_cli.workflows.workflow_activity_retention import (
     retained_source_names,
 )
 from leanflow_cli.workflows.workflow_json_io import (  # noqa: F401
+    WorkflowStateLockTimeout,
     read_json_file,
     update_json_file,
     update_json_file_if_changed,
@@ -143,13 +145,16 @@ def _record_slow_append(
         pass
 
 
-def _locked_append(path: Path, text: str) -> None:
+def _locked_append(path: Path, text: str, *, lock_timeout_s: float | None = None) -> None:
     """Append ``text`` and trace slow local, process, and write phases."""
     started = time.monotonic()
     local_lock_wait_s = 0.0
     cross_process_lock_wait_s = 0.0
     write_s = 0.0
     ensure_directory(path.parent)
+    if lock_timeout_s is not None:
+        _bounded_append(path, text, lock_timeout_s)
+        return
     local_lock_started = time.monotonic()
     with _APPEND_LOCK:
         local_lock_wait_s = max(0.0, time.monotonic() - local_lock_started)
@@ -179,6 +184,38 @@ def _locked_append(path: Path, text: str) -> None:
             cross_process_lock_wait_s=cross_process_lock_wait_s,
             write_s=write_s,
         )
+
+
+def _bounded_append(path: Path, text: str, timeout_s: float) -> None:
+    """Skip progress under contention without holding the local lock while waiting."""
+    if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or timeout_s < 0:
+        raise ValueError("Workflow activity lock timeout must be finite and nonnegative")
+    deadline = time.monotonic() + timeout_s
+    with path.open("a", encoding="utf-8") as handle:
+        while True:
+            if _APPEND_LOCK.acquire(blocking=False):
+                locked = False
+                try:
+                    if fcntl is not None:
+                        try:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            locked = True
+                        except BlockingIOError:
+                            pass
+                    if fcntl is None or locked:
+                        handle.write(text)
+                        handle.flush()
+                        return
+                finally:
+                    try:
+                        if locked and fcntl is not None:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    finally:
+                        _APPEND_LOCK.release()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise WorkflowStateLockTimeout(f"Workflow activity remains busy at {path}")
+            time.sleep(min(0.025, remaining))
 
 
 @contextlib.contextmanager
@@ -502,7 +539,9 @@ def load_workflow_live_status() -> dict[str, Any]:
     return update_json_file_if_changed(path, normalize_current)
 
 
-def save_workflow_live_status(payload: Mapping[str, Any]) -> None:
+def save_workflow_live_status(
+    payload: Mapping[str, Any], *, lock_timeout_s: float | None = None
+) -> None:
     """Replace live status without stealing a verified foreign ownership lease."""
     replacement = dict(payload)
     _attach_current_process_identity(replacement)
@@ -524,7 +563,7 @@ def save_workflow_live_status(payload: Mapping[str, Any]) -> None:
         current.clear()
         current.update(replacement)
 
-    update_json_file(workflow_live_status_path(), mutate)
+    update_json_file(workflow_live_status_path(), mutate, lock_timeout_s=lock_timeout_s)
 
 
 _WORKFLOW_STARTUP_PHASES = frozenset(
@@ -732,31 +771,33 @@ def publish_workflow_preflight_progress(
     if changed and activity is not None:
         # This historical append does not update run-owner sidecars or touch
         # live status again: a replacement between these writes stays intact.
-        _locked_append(
-            activity_path,
-            json.dumps(
-                {
-                    "event_id": uuid.uuid4().hex[:12],
-                    "timestamp": timestamp,
-                    "type": activity["type"],
-                    "run_id": run_id,
-                    "agent_id": "",
-                    "task_label": "formalize",
-                    "run_scope": "top-level",
-                    "message": activity["message"],
-                    "details": {
-                        **dict(activity.get("details", {})),
-                        **process_identity_details(owner),
-                        "workflow_kind": "formalize",
-                        "workflow_command": "/formalize",
-                        "effective_prompt": "",
-                        "active_skill": "",
+        with contextlib.suppress(WorkflowStateLockTimeout):
+            _locked_append(
+                activity_path,
+                json.dumps(
+                    {
+                        "event_id": uuid.uuid4().hex[:12],
+                        "timestamp": timestamp,
+                        "type": activity["type"],
+                        "run_id": run_id,
+                        "agent_id": "",
+                        "task_label": "formalize",
+                        "run_scope": "top-level",
+                        "message": activity["message"],
+                        "details": {
+                            **dict(activity.get("details", {})),
+                            **process_identity_details(owner),
+                            "workflow_kind": "formalize",
+                            "workflow_command": "/formalize",
+                            "effective_prompt": "",
+                            "active_skill": "",
+                        },
                     },
-                },
-                sort_keys=True,
+                    sort_keys=True,
+                )
+                + "\n",
+                lock_timeout_s=0.0,
             )
-            + "\n",
-        )
     return changed
 
 
@@ -877,7 +918,7 @@ def touch_workflow_runtime_heartbeat(
 
 
 def _touch_workflow_live_status_from_activity(
-    *, timestamp: str, event_type: str, message: str
+    *, timestamp: str, event_type: str, message: str, lock_timeout_s: float | None = None
 ) -> None:
     """Refresh the owner runner's snapshot after durable live activity.
 
@@ -903,7 +944,7 @@ def _touch_workflow_live_status_from_activity(
         payload["last_activity_type"] = str(event_type or "")
         payload["last_activity_message"] = str(message or "")[:500]
 
-    update_json_file(path, mutate)
+    update_json_file(path, mutate, lock_timeout_s=lock_timeout_s)
 
 
 def append_workflow_activity(event_type: str, message: str, **details: Any) -> None:
@@ -911,6 +952,8 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
 
     Enriches event details with environment variables for workflow kind, skill, prompt, and project root; persists run metadata. Events are locked and appended to both run-scoped and agent-scoped JSONL files.
     """
+    # Preserve the open metadata API used by callers forwarding typed dictionaries.
+    lock_timeout_s: float | None = details.pop("lock_timeout_s", None)
     ensure_workflow_state_root()
     normalized_details = dict(details)
     env_workflow_kind = str(os.getenv("LEANFLOW_NATIVE_WORKFLOW_KIND", ""))
@@ -985,11 +1028,15 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
     if agent_id:
         paths.append(workflow_agent_activity_path(agent_id, task_label))
     for path in paths:
-        _locked_append(path, serialized + "\n")
+        if lock_timeout_s is None:
+            _locked_append(path, serialized + "\n")
+        else:
+            _locked_append(path, serialized + "\n", lock_timeout_s=lock_timeout_s)
     _touch_workflow_live_status_from_activity(
         timestamp=timestamp,
         event_type=event_type,
         message=message,
+        lock_timeout_s=lock_timeout_s,
     )
 
 

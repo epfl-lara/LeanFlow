@@ -464,4 +464,9 @@ def test_large_phase_response_ids_are_explicit_and_not_context_ids(
             assert expected["unit_ids"] == expected["source_ids"] == []
     final = calls[-1]["dossier"]
     assert final["project_unit_ids"] and final["project_region_ids"]
-    assert final["expected_response"] == {"unit_ids": [], "source_ids": [], "region_ids": []}
+    assert final["expected_response"] == {
+        "unit_ids": [],
+        "source_ids": [],
+        "region_ids": [],
+        "correction_ids": [],
+    }

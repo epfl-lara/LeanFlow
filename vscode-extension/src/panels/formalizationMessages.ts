@@ -1,5 +1,6 @@
 /** Validate the bounded repair vocabulary; review verdicts and artifact paths cannot be submitted. */
 import type { FormalizationAction, FormalizationLeanRef, FormalizationSourceRef } from "../core/formalization";
+import { correctionAuthorityAction } from "../core/formalizationCorrections";
 
 export function formalizationId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value);
@@ -44,6 +45,8 @@ export function parseFormalizationAction(value: unknown): FormalizationAction | 
   const raw = record(value);
   if (!raw) return null;
   switch (raw.type) {
+    case "record_correction_authority":
+      return correctionAuthorityAction(raw);
     case "resolve_command":
     case "resolve_conditional":
       return formalizationId(raw.diagnostic_id) && text(raw.interpretation) && raw.interpretation.trim() &&

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,6 +81,34 @@ def existing_project(path: Path, *, lean_file=False):
     else:
         (path / "lakefile.toml").write_text('name = "demo"\n')
     return path
+
+
+@pytest.mark.parametrize("has_manifest", [False, True])
+def test_private_setup_never_restores_shared_dependencies(
+    tmp_path, fake_tools, monkeypatch, has_manifest
+):
+    """Keep private dependency setup isolated before and after adding its REPL pin."""
+    root = existing_project(tmp_path / "private-stage")
+    if has_manifest:
+        (root / "lake-manifest.json").write_text(
+            json.dumps({"packages": [{"name": "repl", "rev": "repl-pin"}]})
+        )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Private setup attempted shared dependency or public baseline effects")
+
+    monkeypatch.setattr(service, "_restore_dependencies", forbidden)
+    monkeypatch.setattr(service, "_share_dependencies", forbidden)
+    monkeypatch.setattr(service, "prepare_configuration", forbidden)
+    policy = SimpleNamespace(
+        isolation=SimpleNamespace(snapshot_root=root),
+        check=lambda cancel: None,
+        evidence=lambda: {"private_fixture": True},
+    )
+    result = prepare_project(root, preset="lean", execution_policy=policy)
+    assert result["status"] == "ready"
+    assert result["execution"] == {"private_fixture": True}
+    assert ["lake", "build", "repl"] in fake_tools[0]
 
 
 @pytest.mark.parametrize("configuration", [False, True])

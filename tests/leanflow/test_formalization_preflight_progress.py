@@ -90,9 +90,9 @@ def _activities(progress):
 
 
 @contextmanager
-def _held_status_lock(path):
+def _held_status_lock(path, *, sidecar=True):
     """Hold the actual sidecar in an independent process with fixture-owned release."""
-    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path = path.with_suffix(path.suffix + ".lock") if sidecar else path
     ready = path.with_suffix(".holder-ready")
     script = """
 import fcntl, pathlib, sys
@@ -345,7 +345,7 @@ def test_bounded_json_update_cannot_wait_for_the_process_lock_or_mutate_on_timeo
 def test_unjoined_progress_writer_retains_ownership_and_cannot_handoff(preflight, monkeypatch):
     entered, release = threading.Event(), threading.Event()
 
-    def blocked_append(*args):
+    def blocked_append(*args, **kwargs):
         entered.set()
         assert release.wait(6)
 
@@ -367,6 +367,69 @@ def test_unjoined_progress_writer_retains_ownership_and_cannot_handoff(preflight
         release.set()
         progress._thread.join(2)
         assert not progress._thread.is_alive()
+
+
+def test_quiet_preflight_checkpoints_and_cancels_under_real_activity_lock(preflight):
+    """A suspended activity writer cannot starve the accounting worker or Stop."""
+    run_id = owner.os.environ["LEANFLOW_WORKFLOW_RUN_ID"]
+    path = workflow_state.workflow_run_activity_path(run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    budget = CampaignLimits(preflight / "budget.json", {"wall_time_s": 30})
+    with _held_status_lock(path, sidecar=False):
+        with pytest.raises(ValueError, match="preparation cancelled"):
+            with owner.preflight_owner(preflight, dict(owner.os.environ)) as (
+                cancelled,
+                _,
+                progress,
+            ):
+                progress.bind_budget(budget)
+                progress.phase({"phase": "dependency_plan"})
+                deadline = time.monotonic() + 3
+                while json.loads(budget.path.read_text())["elapsed_s"] < 0.9:
+                    assert time.monotonic() < deadline
+                    time.sleep(0.02)
+                started = time.monotonic()
+                cancelled.set()
+        assert time.monotonic() - started < 0.5
+        assert progress._thread is not None and not progress._thread.is_alive()
+        assert not path.read_text()
+
+
+def test_skipped_activity_append_does_not_invent_new_activity_each_heartbeat(progress):
+    """Consume a phase shown in Live even when its best-effort history append is skipped."""
+    progress.activity_path.parent.mkdir(parents=True, exist_ok=True)
+    with _held_status_lock(progress.activity_path, sidecar=False):
+        progress.phase({"phase": "dependency_plan"})
+        progress._publish()
+        first = _status()
+        progress._publish()
+        second = _status()
+        assert second["runtime_heartbeat_at"] > first["runtime_heartbeat_at"]
+        assert second["last_activity_at"] == first["last_activity_at"]
+        assert not progress.activity_path.read_text()
+
+
+def test_only_parent_clears_preflight_marker_after_worker_and_resource_effects(
+    preflight, monkeypatch
+):
+    budget = CampaignLimits(preflight / "budget.json", {"wall_time_s": 30})
+    original_close = Resources.close
+    observed = []
+
+    def close(resources):
+        # This is the outer parent's final opportunity to mutate accounting.
+        observed.append(json.loads(budget.path.read_text())["checkpoint_worker_active"])
+        budget.persist()
+        original_close(resources)
+
+    monkeypatch.setattr(Resources, "close", close)
+    with owner.preflight_owner(preflight, dict(owner.os.environ)) as (_, _, progress):
+        progress.bind_budget(budget)
+        assert json.loads(budget.path.read_text())["checkpoint_worker_active"]
+    assert observed == [True]
+    assert progress._thread is not None and not progress._thread.is_alive()
+    assert not json.loads(budget.path.read_text()).get("checkpoint_worker_active")
+    CampaignLimits(budget.path, budget.limits)
 
 
 def test_close_joins_worker_and_late_callbacks_cannot_overwrite_handoff(preflight):

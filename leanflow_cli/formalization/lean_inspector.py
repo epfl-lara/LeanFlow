@@ -207,6 +207,47 @@ def propType (env : Environment) (type : Expr) (name : Name) : IO Bool := do
       { fileName := "<formalization-inspector>", fileMap := default,
         options := inspectionOptions } { env }
   catch error => throw <| IO.userError s!"cannot determine proposition for {name}: {error}"
+-- Report closed correction facts from replayed expressions, never pretty text.
+-- The stricter correction role uses these fields; ordinary draft proofs retain
+-- their existing named-obligation policy.
+def correctionShape (env : Environment) (info : ConstantInfo) : IO Json := do
+  try
+    let typeConstantName : Option String :=
+      match info.type with
+      | .const name [] => some name.toString
+      | _ => none
+    let typeHeadForall ←
+      (do
+        let reduced ← Meta.whnf info.type
+        pure reduced.isForall).run' |>.toIO'
+          { fileName := "<formalization-inspector>", fileMap := default,
+            options := inspectionOptions } { env }
+    let mut propositionBodyHeadForall : Option Bool := none
+    let mut propositionBodyIsProp : Option Bool := none
+    match info with
+    | .defnInfo definition =>
+      match definition.type with
+      | .sort .zero =>
+        let shape ←
+          (do
+            let reduced ← Meta.whnf definition.value
+            let isProp ← Meta.isProp definition.value
+            pure (reduced.isForall, isProp)).run' |>.toIO'
+              { fileName := "<formalization-inspector>", fileMap := default,
+                options := inspectionOptions } { env }
+        propositionBodyHeadForall := some shape.1
+        propositionBodyIsProp := some shape.2
+      | _ => pure ()
+    | _ => pure ()
+    return Json.mkObj [
+      ("type_constant_name", toJson typeConstantName),
+      ("type_head_forall", toJson typeHeadForall),
+      ("proposition_body_head_forall", toJson propositionBodyHeadForall),
+      ("proposition_body_is_prop", toJson propositionBodyIsProp)]
+  catch _ =>
+    -- Ordinary declarations do not require this stricter evidence role. A
+    -- correction warrant with an unavailable shape still fails closed.
+    return Json.mkObj [("inspection_error", toJson "correction_shape_unavailable")]
 -- Compute one fixed-point dependency table from checked kernel constants.
 -- No imported persistent axiom cache participates, even on newer compilers.
 def axiomTable (env : Environment) (roots : Array Name) : IO (NameMap (Array Name)) := do
@@ -390,9 +431,11 @@ def declarationRecord (env metadata : Environment) (axiomCache : NameMap (Array 
     ("module", toJson (moduleName.map Name.toString)),
     ("kind", toJson (kind info)),
     ("type", toJson (repr info.type).pretty),
+    ("pretty_type", toJson (← prettyExpr env info.type)),
     ("levels", toJson (info.levelParams.map Name.toString)),
     ("body", toJson (value.map fun v => (repr v).pretty)),
     ("is_prop", toJson (← propType env info.type name)),
+    ("correction_shape", ← correctionShape env info),
     ("unsafe", toJson info.isUnsafe),
     ("internal", toJson info.name.isInternal),
     ("generated_from", toJson (origin.1.map Name.toString)),

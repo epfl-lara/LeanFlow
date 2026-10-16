@@ -194,6 +194,12 @@ the newest ledger or infers a binding from displayed counters. Changing campaign
 limits requires an explicit new campaign. Retained historical usage remains
 visible and is not silently merged into a different campaign.
 Preparation checkpoints active time even when its native call emits no output.
+Translation does the same. A durable active-writer marker prevents a killed or
+failed checkpoint writer from silently refunding quiet native time on resume.
+Accounting persistence failure cancels the author and blocks review, publication
+and another admission. Stop waits a bounded time for the checkpoint thread; if
+closure remains uncertain, ownership and private inputs stay retained. Contended
+display or activity writes are skipped and cannot hold up accounting or Stop.
 An unfinished checkpoint writer retains exclusive accounting ownership until its
 last write ends; a bounded shutdown failure cannot admit a competing writer.
 Actual CLI launches publish a verified preparation owner before dependency planning,
@@ -520,6 +526,65 @@ must assess the original frozen spans and compiled meaning. Omitted efficiency
 requirements, narrower domains and unresolved trailing qualifiers block the full
 item even when disclosed in a representation note. A pending proof must be an
 explicit proposition with complete data and types, not a missing computation.
+
+### Documented source corrections
+
+Human revision is optional. A prepared run continues to a complete best-effort
+project when source ambiguities remain after review or the author cannot select a
+reading. It uses the same campaign budget and deadline, completes all included
+items and preserves the complete original denominator, including trusted exclusions.
+Provisional readings and unresolved clauses remain explicit. Independent compilation
+checks actual mapped declarations and the whole project; a fresh advisory review
+then assesses the full source, continuing through flagged items. If review cannot
+finish within the budget, its unreviewed scope remains visible.
+
+The editor's **Open draft project** action opens the concrete retained Lean project.
+Frozen source, proposal, coverage census, check report and review findings remain
+inspectable. **Completed with ambiguities** means the full saved project passed
+technical checks; it grants no source acceptance or Prove handoff. Missing files,
+uncompiled mappings, cancellation or uncertain process closure remain distinct
+incomplete/operational outcomes. Correcting an optional interpretation later
+requires checking the changed project again; previous evidence stays archived.
+
+The original TeX/PDF and its item, clause and region denominator remain unchanged.
+The editor offers a whole-document bounded correction policy, or a scoped reading
+and reason for a specific item. These trusted decisions create versioned authority
+records for the exact source bundle and scope. The model can propose a correction;
+it cannot create permission or approve its own proposal. Revoking or changing a
+decision requires fresh review; selecting old evidence must not restore an older
+permission.
+
+Each proposed correction links the original frozen passage and literal reading to
+the adopted reading, exact Lean declarations, source context, rationale and any
+applicable user decision. A corrected clause uses `represented_via_correction`
+and its exact correction ID instead of a generic representation note. Every affected
+unit retains that clause. Source encoding repairs restore the paper's actual meaning;
+they do not need to prove equivalence to an incorrect earlier Lean encoding.
+
+A mathematical repair or substantive interpretation also supplies a closed local
+expected proposition and a complete theorem of exactly that named proposition.
+The independently replayed environment must show no extra hypotheses, pending
+proof dependencies, new axioms, unsafe/native evidence or circular justification.
+This initial evidence role accepts closed facts; general repairs requiring a
+quantified local warrant remain blocked rather than weakening the check. Local
+evidence can establish an arithmetic discrepancy or feasible counterexample. It
+does not itself identify the intended replacement or prove the corrected theorem.
+
+The existing statement reviewer sees the original and adopted readings, checked
+facts, competing alternatives and exact authority references together. That same
+review must return an explicit correction verdict before the affected clause can
+pass. The document coherence review checks interactions through shared definitions.
+Missing source support, competing plausible repairs or a substantive unapproved
+choice blocks acceptance with the alternatives recorded. A refuted literal claim
+cannot be handed to a prover as an ordinary pending theorem.
+
+Publication, the blueprint and the prover handoff retain these records and bind
+them to the exact checked declarations, environment and current authority. The
+editor separates saved verdicts from current acceptance and separates both from
+proof completion. The adopted main theorem may still have a named `sorry`; the
+local justification for a correction may not. Preserved unaccepted drafts include
+the proposed correction JSON for inspection, with no permission or acceptance
+inferred from model-authored status fields.
 
 Definitions, data fields and instances must be implemented. Holes are permitted only
 in named propositional proof slots. A complete opaque definition is valid. A

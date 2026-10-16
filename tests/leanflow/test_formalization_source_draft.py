@@ -378,11 +378,18 @@ def test_frozen_preview_is_visible_and_openable_without_authority(
         "Main/Document.lean",
         ".leanflow-job/setup-notes.md",
         ".leanflow-job/blockers.md",
+        ".leanflow-job/formalization-proposal.json",
     }
-    assert all(
-        row["path"] not in {"Main/Outside.lean", ".leanflow-job/formalization-proposal.json"}
-        for row in artifacts
+    assert all(row["path"] != "Main/Outside.lean" for row in artifacts)
+    proposal = next(
+        row for row in artifacts if row["path"] == ".leanflow-job/formalization-proposal.json"
     )
+    proposal_path = resolve_artifact(
+        tmp_path, record["document_id"], record["revision_id"], proposal["id"]
+    )
+    assert Path(proposal_path["path"]).read_text() == '{"accepted": true}'
+    assert selected.get("corrections", []) == []
+    assert selected.get("correction_authorities", []) == []
     module = next(row for row in artifacts if row["path"] == "Main/Document/Setup.lean")
     opened = resolve_artifact(tmp_path, record["document_id"], record["revision_id"], module["id"])
     assert Path(opened["path"]).read_bytes() == frozen_module

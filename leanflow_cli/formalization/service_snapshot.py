@@ -14,6 +14,12 @@ from leanflow_cli.formalization.records import (
     source_bytes,
 )
 from leanflow_cli.formalization.service_artifacts import _artifacts, _display_preview
+from leanflow_cli.formalization.service_corrections import (
+    authority_options,
+    item_corrections,
+    mark_current_corrections,
+    source_bundle_binding,
+)
 
 
 def _ref(
@@ -22,6 +28,7 @@ def _ref(
     text: str = "",
     *,
     sources: dict[str, bytes] | None = None,
+    literal_excerpt: bool = False,
 ) -> dict[str, Any]:
     result = {
         "artifact_id": source_artifact_id(record, span["file"]),
@@ -63,6 +70,23 @@ def _ref(
             line_start=raw[: span.get("byte_start", 0)].count(b"\n") + 1,
             line_end=raw[: max(span.get("byte_start", 0), span.get("byte_end", 1) - 1)].count(b"\n")
             + 1,
+        )
+    if (
+        literal_excerpt
+        and "page_index" not in span
+        and span.get("coordinate_space") != "pdf_page"
+        and type(span.get("byte_start")) is int
+        and type(span.get("byte_end")) is int
+    ):
+        file = span["file"]
+        if sources is None:
+            raw = source_bytes(record, file)
+        else:
+            if file not in sources:
+                sources[file] = source_bytes(record, file)
+            raw = sources[file]
+        result["text"] = raw[span["byte_start"] : span["byte_end"]].decode(
+            "utf-8", errors="replace"
         )
     return result
 
@@ -223,6 +247,8 @@ def snapshot(root: Path, record: dict[str, Any], *, verify_current: bool = True)
         for artifact in artifacts
         if artifact["origin"] in {"lean", "proof", "context"}
     }
+    correction_options = authority_options(record, inventory)
+    all_references = [ref for unit in record["units"] for ref in unit["declarations"]]
     items = []
     for source in inventory["items"]:
         units = [unit for unit in record["units"] if source["id"] in unit["required_source_ids"]]
@@ -279,6 +305,18 @@ def snapshot(root: Path, record: dict[str, Any], *, verify_current: bool = True)
                 + [_ref(record, span, sources=sources) for span in source.get("pdf_refs", [])],
                 "lean_refs": references,
                 "known_obligations": _known_clauses(record, source, units, relevant, sources),
+                "corrections": item_corrections(
+                    record,
+                    source["id"],
+                    references=all_references,
+                    checks=checks,
+                    receipt=receipt,
+                    artifacts=lean_artifacts,
+                    source_ref=lambda span: _ref(
+                        record, span, sources=sources, literal_excerpt=True
+                    ),
+                ),
+                "correction_authority_options": correction_options[source["id"]],
                 "review_status": (
                     "correction_needed"
                     if blocked_review
@@ -385,6 +423,7 @@ def snapshot(root: Path, record: dict[str, Any], *, verify_current: bool = True)
         and not draft_preview_error
     )
     can_prove = bool(accepted_handoff and (handoff or {}).get("obligations") and not proof_receipt)
+    mark_current_corrections(items, accepted_handoff=accepted_handoff)
     from leanflow_cli.formalization.service_history import revision_history
 
     history = revision_history(root, record["document_id"], record["revision_id"])
@@ -400,6 +439,7 @@ def snapshot(root: Path, record: dict[str, Any], *, verify_current: bool = True)
         "draft_preview_error": draft_preview_error or None,
         "document_id": record["document_id"],
         "revision_id": record["revision_id"],
+        **({"source_bundle": record["source_bundle"]} if source_bundle_binding(record) else {}),
         "status": status,
         "receipt_error": str(receipt_error) if receipt_error else None,
         "acceptance_freshness": freshness,

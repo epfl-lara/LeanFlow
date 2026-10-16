@@ -162,6 +162,7 @@ def prepare_intake(
             "preparation_id": receipt["preparation_id"],
             "preparation_plan_id": receipt["preparation_plan_id"],
             "slice_source_ids": receipt["plan"]["slice_source_ids"],
+            "environment_id": receipt["environment_id"],
         }
         if any(record.get(key) != value for key, value in fields.items()):
             with document_lock(root, record["document_id"]) as owner:
@@ -247,6 +248,8 @@ def prepare_intake(
         "layout": layout,
         "units": record.get("units", []),
         "source_bundle": record["source_bundle"],
+        "correction_authorities": record.get("correction_authorities", []),
+        "corrections": record.get("corrections", []),
         "source_reconciliation_requirements": compact_requirements(requirements),
         **({"checked_preparation_plan": checked_plan} if checked_plan else {}),
         **{
@@ -329,6 +332,33 @@ representation_note discloses them. pending_proof must name a real Prop theorem
 proof slot expressing the missing clause with complete computational definitions
 and types; it does not authorize data holes or dropped requirements. The known-clause
 checklist is not automatic discovery: preserve and review every source qualifier.
+Source corrections stay separate from lexical reconciliation. The manifest's
+correction_authorities are scoped, versioned user decisions; you cannot create,
+enable or enlarge them in a proposal. Already approved conventions retain their
+scope and do not remove sampler, program or efficiency obligations.
+Restore an incorrect Lean encoding to the actual source meaning without demanding
+equivalence to the previous wrong encoding. Do not call this a paper erratum.
+For a proposed mathematical correction, add a corrections array. Each entry has
+id, kind (encoding_repair/equivalent_reformulation/source_supported_mathematical/user_interpretation),
+source_item_id, clause_ids, original (source_refs and literal_reading), adopted
+(reading and declaration_names), rationale, source_context_refs, authority_refs,
+and evidence. Use the existing exact frozen source-ref objects. Each evidence
+entry has goal_name, proof_name and purpose. The first implementation requires
+closed local facts: a complete definition `def expected : Prop := <local fact>`
+and a complete theorem `theorem checked : expected := ...`, with no leading
+binders or pending/unsafe/axiomatic dependencies. General hypothesis-bearing
+warrants are unsupported. Encoding repairs may use evidence:[] and still require
+independent source/image/type review. A proof of an arbitrary or vacuous fact is
+not a justification for changing the paper. Source-supported repairs require
+applicable bounded policy and source context that distinguishes competing repairs.
+Every corrected clause uses disposition represented_via_correction, an additional
+correction_id, and exactly its adopted declaration_names. Original items, clauses
+and region coverage remain present. Do not also create a pending theorem asserting
+a literal claim that has been refuted. Record unresolved substantive alternatives
+precisely; do not silently add hypotheses or grant yourself user authority.
+Correction-specific verdicts are part of the same fresh statement review. A closed
+local justification does not require proving the corrected paper theorem; its
+designated Prop proof may remain sorry when this formalization task requests that.
 When source_reconciliation_requirements lists lexical diagnostics, the proposal must
 include source_reconciliation={{"requirements_id":"exact requirements ID","entries":[
 {{"diagnostic_id":"every exact eligible ID","interpretation":"literal lexical reading",

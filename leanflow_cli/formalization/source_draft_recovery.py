@@ -44,7 +44,11 @@ def assert_resume_draft_mode(
             or state.get("native_status") == "completed"
         )
     )
-    if isinstance(state, dict) and state.get("native_cleanup_unverified") and not spent_draft:
+    if (
+        isinstance(state, dict)
+        and (state.get("native_cleanup_unverified") or state.get("independent_cleanup_unverified"))
+        and not spent_draft
+    ):
         raise ValueError(
             "Prior native process closure is unverified; retain its private inputs and start a separate campaign"
         )
@@ -76,7 +80,11 @@ def completed_draft_state(
             or state.get("native_status") == "completed"
         )
     )
-    if isinstance(state, dict) and state.get("native_cleanup_unverified") and not spent_draft:
+    if (
+        isinstance(state, dict)
+        and (state.get("native_cleanup_unverified") or state.get("independent_cleanup_unverified"))
+        and not spent_draft
+    ):
         raise ValueError(
             "Prior native process closure is unverified; retain its private inputs and start a separate campaign"
         )

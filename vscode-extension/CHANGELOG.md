@@ -5,6 +5,16 @@ include features and settings from the former direct-provider runtime.
 
 ## Unreleased
 
+- Open delivered full-paper draft projects from one **Open draft project** button
+  in the owning VS Code host. Keep unresolved review notes visible, human revision
+  optional for delivery, and acceptance/prover handoff separate.
+- Compare original and adopted correction readings with frozen source/PDF and
+  Lean links; collapse local evidence, user decisions, saved review and affected
+  units while keeping source acceptance separate from theorem proofs.
+- Record a versioned bounded correction policy for the included paper, or a
+  specific interpretation/convention with a reading and reason. Keep choices
+  disabled during source drift, active work or a pending save; saved verdicts
+  confer current acceptance only after the existing whole-revision gates pass.
 - Explain known native check failures in activity rows and their details while
   preserving compact receipts and keeping raw tool payloads private.
 - Keep Formalization panels unique across source navigation and refreshed views.

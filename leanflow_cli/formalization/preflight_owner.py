@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.accounting.redact import redact_sensitive_value
-from core.campaign_limits import CampaignLimits
+from core.campaign_limits import AccountingError, CampaignLimits
 from core.process_identity import (
     PROCESS_TOKEN_ENV,
     _process_token,
@@ -91,8 +91,15 @@ class PreflightProgress:
     def bind_budget(self, budget: CampaignLimits) -> None:
         """Use the real shared campaign object without fabricating counts from native events."""
         with self._lock:
-            if not self._closing:
-                self._budget = budget
+            if self._closing or self._worker_finalized or self._budget is not None:
+                raise RuntimeError("Preflight accounting writer cannot be replaced or rebound")
+            try:
+                budget.begin_checkpoints()
+            except BaseException as error:
+                self.cancelled.set()
+                budget.fail_accounting(error)
+                raise
+            self._budget = budget
 
     def bind_accounting_owner(self, owner: CampaignOwner) -> None:
         """Admit the existing checkpoint worker only after baseline/source checks pass."""
@@ -272,6 +279,8 @@ class PreflightProgress:
         except Exception as error:
             self._error = error
             self.cancelled.set()
+            if self._budget is not None:
+                self._budget.fail_accounting(error)
         finally:
             with self._lock:
                 self._worker_finalized = True
@@ -282,9 +291,17 @@ class PreflightProgress:
     def check(self) -> None:
         """Surface failed progress ownership instead of continuing under a stale live pointer."""
         if self._error is not None:
-            raise RuntimeError(
+            raise AccountingError(
                 "Formalization preflight progress could not be published safely"
             ) from self._error
+
+    def finalize_accounting(self) -> None:
+        """Clear the marker only after this parent and the exact worker finish budget effects."""
+        if self._thread is not None and self._thread.is_alive():
+            raise AccountingError("Preflight accounting worker remains active; retain its ledger")
+        self.check()
+        if self._budget is not None:
+            self._budget.finish_checkpoints()
 
     def close(self) -> None:
         """Ignore late callbacks and join finitely before releasing ownership or changing environment."""
@@ -423,6 +440,12 @@ def preflight_owner(
         try:
             resources.close()
             closed = True
+            if progress is not None and progress_error is None:
+                try:
+                    progress.finalize_accounting()
+                except Exception as error:
+                    progress_error = error
+                    cancelled.set()
         finally:
             try:
                 if claimed and (

@@ -170,6 +170,17 @@ separate from mathematical imports. See the [supported input boundary](docs/form
 ordinary proving is unchanged. `autoprove` and `autoformalize` are compatibility
 aliases of `prove` and `formalize`.
 
+Unresolved paper ambiguities do not stop generation. The workflow finishes a
+checked best-effort draft with explicit assumptions and review findings, and the
+editor can open its complete Lean project. Human revision is optional; that draft
+does not grant source acceptance or a Prove handoff.
+
+Paper errors can be recorded as [documented corrections](docs/formalization.md#documented-source-corrections)
+without editing the original source. A scoped user policy permits bounded repairs;
+substantive interpretations need an explicit recorded decision. Any required local
+justification must be checked, and the adopted statement still needs independent
+source review. Its theorem proof may remain a named `sorry` obligation.
+
 TeX package or macro effects can block source acceptance. With an explicitly paired
 PDF, `leanflow workflow formalize docs/paper.tex --source-draft-only` prepares dependencies and retains
 one clearly unaccepted draft for inspection. It grants no review, publication or

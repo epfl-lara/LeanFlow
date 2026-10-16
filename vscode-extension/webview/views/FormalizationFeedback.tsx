@@ -32,6 +32,7 @@ const ACTION_LABELS: Partial<Record<FormalizationAction["type"], string>> = {
   resolve_command: "command interpretation",
   resolve_conditional: "conditional interpretation",
   authorize_proof: "proof permission",
+  record_correction_authority: "correction decision",
   transcribe_page: "page transcription",
   replace_page_transcription: "page transcription",
   set_scope: "scope change",

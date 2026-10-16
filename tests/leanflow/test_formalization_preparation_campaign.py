@@ -37,6 +37,22 @@ def _budget(root, binding):
     return CampaignLimits(campaign.campaign_budget(root, binding), binding["limits"])
 
 
+def _author_checkpoint(binding, **changes):
+    return {
+        "version": 2,
+        "workflow": "formalize",
+        "backend": binding["backend"],
+        "run_id": binding["run_id"],
+        "campaign_binding_id": binding["binding_id"],
+        "baseline": {},
+        "formalization_baseline": {},
+        "formalization_selection_token": binding["selection_token"],
+        "source_draft_intent": binding["source_draft_only"],
+        "source_draft_only": binding["effective_draft"],
+        **changes,
+    }
+
+
 def test_exact_resume_preserves_binding_ledger_bytes_and_charged_call(tmp_path, source_record):
     binding = _select(tmp_path, source_record)
     budget = _budget(tmp_path, binding)
@@ -372,20 +388,34 @@ def test_matching_author_checkpoint_resumes_the_actual_existing_author(tmp_path,
     state = tmp_path / ".leanflow/native-workflows/fixture-run/state.json"
     with campaign.campaign_lock(tmp_path, "fixture-run"):
         assert campaign.admit_author(tmp_path, binding, resume=False, state_path=state) is False
-    state.write_text(
-        json.dumps({"run_id": "fixture-run", "campaign_binding_id": binding["binding_id"]})
-    )
+    state.write_text(json.dumps(_author_checkpoint(binding)))
     with campaign.campaign_lock(tmp_path, "fixture-run"):
         assert campaign.admit_author(tmp_path, binding, resume=True, state_path=state) is True
+
+
+@pytest.mark.parametrize("admitted", [False, True])
+def test_resume_history_validation_is_read_only_for_preflight_and_bound_author(
+    tmp_path, source_record, admitted
+):
+    binding = _select(tmp_path, source_record)
+    directory = tmp_path / ".leanflow/native-workflows/fixture-run"
+    state = directory / "state.json"
+    if admitted:
+        with campaign.campaign_lock(tmp_path, "fixture-run"):
+            campaign.admit_author(tmp_path, binding, resume=False, state_path=state)
+        state.write_text(json.dumps(_author_checkpoint(binding)))
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    assert _select(tmp_path, source_record, resume=True) == binding
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert state.exists() is admitted
+    assert (directory / "author-admitted.json").exists() is admitted
 
 
 def test_legacy_checkpoint_without_positive_author_marker_cannot_resume(tmp_path, source_record):
     binding = _select(tmp_path, source_record)
     directory = tmp_path / ".leanflow/native-workflows/fixture-run"
     state = directory / "state.json"
-    state.write_text(
-        json.dumps({"run_id": "fixture-run", "campaign_binding_id": binding["binding_id"]})
-    )
+    state.write_text(json.dumps(_author_checkpoint(binding)))
     original = state.read_bytes()
     with campaign.campaign_lock(tmp_path, "fixture-run"):
         with pytest.raises(ValueError):
@@ -404,9 +434,7 @@ def test_mismatched_author_marker_cannot_admit_or_resume_a_process(
     binding = _select(tmp_path, source_record)
     directory = tmp_path / ".leanflow/native-workflows/fixture-run"
     state = directory / "state.json"
-    state.write_text(
-        json.dumps({"run_id": "fixture-run", "campaign_binding_id": binding["binding_id"]})
-    )
+    state.write_text(json.dumps(_author_checkpoint(binding)))
     marker = directory / "author-admitted.json"
     marker.write_text(
         json.dumps(
@@ -431,11 +459,7 @@ def test_author_checkpoint_must_match_the_bound_run(tmp_path, source_record, cha
     state = tmp_path / ".leanflow/native-workflows/fixture-run/state.json"
     with campaign.campaign_lock(tmp_path, "fixture-run"):
         assert campaign.admit_author(tmp_path, binding, resume=False, state_path=state) is False
-    state.write_text(
-        json.dumps(
-            {"run_id": "fixture-run", "campaign_binding_id": binding["binding_id"], **changes}
-        )
-    )
+    state.write_text(json.dumps(_author_checkpoint(binding, **changes)))
     original = state.read_bytes()
     with campaign.campaign_lock(tmp_path, "fixture-run"):
         with pytest.raises(ValueError):

@@ -1,4 +1,6 @@
 /** Project source inventory and review projections owned by the formalization controller. */
+import { invalidCorrectionProjection } from "./formalizationCorrections";
+
 export interface FormalizationSourceRef {
   artifact_id: string;
   file?: string;
@@ -21,6 +23,48 @@ export interface FormalizationLeanRef {
   declaration_origin?: "generated" | "existing_project" | "dependency";
   line_start?: number;
   line_end?: number;
+  type?: string;
+  type_hash?: string;
+  body_hash?: string;
+  definition_context_hash?: string;
+}
+
+export interface FormalizationAuthorityAction {
+  type: "record_correction_authority";
+  authority_id: string;
+  version: number;
+  kind: "bounded_policy" | "interpretation" | "convention";
+  source_bundle: string;
+  source_item_ids: string[];
+  clause_ids: string[];
+  statement: string;
+  enabled: boolean;
+}
+
+export interface FormalizationCorrectionAuthority extends Omit<FormalizationAuthorityAction, "type"> {
+  id: string;
+  actor: "user";
+  current?: boolean;
+}
+
+export interface FormalizationCorrection {
+  id: string;
+  content_id: string;
+  kind: "encoding_repair" | "equivalent_reformulation" | "source_supported_mathematical" | "user_interpretation";
+  source_item_id: string;
+  clause_ids: string[];
+  original: { literal_reading: string; source_refs: FormalizationSourceRef[] };
+  adopted: { reading: string; lean_refs: FormalizationLeanRef[] };
+  rationale: string;
+  source_context_refs: FormalizationSourceRef[];
+  authorities: FormalizationCorrectionAuthority[];
+  authority_current: boolean;
+  evidence_status: "saved_checked" | "stale" | "pending";
+  evidence_id?: string | null;
+  evidence: { goal_name: string; proof_name: string; purpose: string; goal: FormalizationLeanRef; proof: FormalizationLeanRef }[];
+  reviews: { correction_id: string; content_id: string; evidence_id: string; authority_refs: string[]; decision: "PASS" | "BLOCK"; rationale: string; source_support: string; competing_alternatives: string; issues: string[]; binding_matches: boolean }[];
+  dependents: { unit_id: string; source_item_ids: string[]; declaration_names: string[] }[];
+  acceptance_status: "current" | "saved" | "pending";
 }
 
 export interface FormalizationItem {
@@ -41,6 +85,8 @@ export interface FormalizationItem {
   assumptions?: string[];
   representation_notes?: string;
   mapping_rationale?: string;
+  corrections?: FormalizationCorrection[];
+  correction_authority_options?: { enabled: boolean; current: FormalizationCorrectionAuthority | null; action: FormalizationAuthorityAction }[];
   known_obligations?: {
     id: string;
     description: string;
@@ -70,6 +116,29 @@ export interface FormalizationArtifact {
   title?: string;
 }
 
+export interface FormalizationDraftDelivery {
+  complete: boolean;
+  coverage_complete: boolean;
+  compiled: boolean;
+  project_saved: boolean;
+  counts: {
+    source_items: number;
+    required_source_items: number;
+    excluded_source_items: number;
+    mapped_source_items: number;
+    regions: number;
+    accounted_regions: number;
+    known_clauses: number;
+    required_known_clauses: number;
+    excluded_known_clauses: number;
+    accounted_known_clauses: number;
+    unresolved_known_clauses: number;
+  };
+  project_artifact_id: string;
+  census_artifact_id: string;
+  report_artifact_ids: Record<string, string>;
+}
+
 export interface FormalizationDiagnostic {
   id: string;
   code: string;
@@ -94,6 +163,7 @@ export interface FormalizationSnapshot {
   schema_version: 1;
   document_id: string;
   revision_id: string;
+  source_bundle?: string;
   status: string;
   currentness?: "historical" | "checked";
   source_currentness?: "unchecked" | "checked" | "stale";
@@ -117,7 +187,10 @@ export interface FormalizationSnapshot {
     source_bundle: string;
     preparation_id: string;
     source_diagnostics: string[];
-    status: "unaccepted_source_uncertain";
+    status: "unaccepted_source_uncertain" | "unaccepted_formalization";
+    reason?: "review_ambiguities";
+    delivery_status?: "complete" | "incomplete";
+    delivery?: FormalizationDraftDelivery;
     accepted: false;
     publication_authority: false;
     proof_authority: false;
@@ -142,6 +215,7 @@ export interface FormalizationSnapshot {
 }
 
 export type FormalizationAction =
+  | FormalizationAuthorityAction
   | { type: "retry_extraction"; reason: string }
   | { type: "resolve_command" | "resolve_conditional"; diagnostic_id: string; interpretation: string; reason: string; verified: true }
   | { type: "authorize_proof"; item_id: string; authorized: boolean; reason: string }
@@ -198,6 +272,9 @@ export function parseFormalizationSnapshot(value: unknown): FormalizationSnapsho
           typeof diagnostic.resolution.interpretation !== "string" || typeof diagnostic.resolution.reason !== "string")))) {
     throw new Error("The formalization service returned invalid extraction diagnostics.");
   }
+  if (invalidCorrectionProjection(raw as FormalizationSnapshot)) {
+    throw new Error("The formalization service returned invalid correction evidence or user decisions.");
+  }
   if (raw.preparation != null && (typeof raw.preparation !== "object" || typeof raw.preparation.current !== "boolean" || typeof raw.preparation.status !== "string") ||
       raw.slice != null && (typeof raw.slice !== "object" || typeof raw.slice.required !== "boolean" || !["representative_slice", "complete"].includes(raw.slice.phase)) ||
       raw.acceptance_freshness != null && (typeof raw.acceptance_freshness !== "object" || typeof raw.acceptance_freshness.current !== "boolean" || typeof raw.acceptance_freshness.reason !== "string" ||
@@ -208,15 +285,41 @@ export function parseFormalizationSnapshot(value: unknown): FormalizationSnapsho
   if (raw.draft_preview != null) {
     const preview = raw.draft_preview;
     const artifacts = raw.artifacts;
-    if (typeof preview !== "object" || preview.schema_version !== 1 || preview.status !== "unaccepted_source_uncertain" ||
-        preview.accepted !== false || preview.publication_authority !== false || preview.proof_authority !== false || raw.can_prove === true ||
+    const delivered = preview.status === "unaccepted_formalization";
+    const delivery = preview.delivery;
+    const counts = delivery?.counts;
+    if (typeof preview !== "object" || preview.schema_version !== 1 || !["unaccepted_source_uncertain", "unaccepted_formalization"].includes(preview.status) ||
+        preview.accepted !== false || preview.publication_authority !== false || preview.proof_authority !== false || raw.can_prove === true || raw.handoff != null ||
+        ["published", "accepted_staged"].includes(raw.status ?? "") ||
         [preview.preview_id, preview.run_id, preview.base_revision_id, preview.source_bundle, preview.model_report_artifact_id].some(value => typeof value !== "string" || !value) ||
         typeof preview.preparation_id !== "string" || preview.base_revision_id !== raw.revision_id ||
         !Array.isArray(preview.source_diagnostics) || preview.source_diagnostics.some(value => typeof value !== "string") ||
         !Array.isArray(preview.artifacts) || preview.artifacts.some(artifact => !artifact || typeof artifact !== "object" ||
           [artifact.id, artifact.path, artifact.kind, artifact.sha256].some(value => typeof value !== "string" || !value) ||
-          !["lean", "source"].includes(artifact.kind) || !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
-          !artifacts.some(existing => existing.id === artifact.id && existing.sha256 === artifact.sha256)) ||
+          !["lean", "source", ...(delivered ? ["project"] : [])].includes(artifact.kind) || !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
+          !artifacts.some(existing => existing.id === artifact.id && existing.sha256 === artifact.sha256 && existing.kind === artifact.kind && existing.path === artifact.path)) ||
+        !delivered && (preview.reason !== undefined || preview.delivery_status !== undefined || preview.delivery !== undefined) ||
+        delivered && (preview.reason !== "review_ambiguities" || !["complete", "incomplete"].includes(preview.delivery_status ?? "") ||
+          !delivery || typeof delivery !== "object" || Array.isArray(delivery) || typeof delivery.complete !== "boolean" ||
+          typeof delivery.compiled !== "boolean" || typeof delivery.coverage_complete !== "boolean" ||
+          delivery.complete !== (preview.delivery_status === "complete") || delivery.complete !== (delivery.coverage_complete && delivery.compiled) ||
+          typeof delivery.project_saved !== "boolean" ||
+          !counts || [counts.source_items, counts.required_source_items, counts.excluded_source_items, counts.mapped_source_items,
+            counts.regions, counts.accounted_regions, counts.known_clauses, counts.required_known_clauses, counts.excluded_known_clauses,
+            counts.accounted_known_clauses, counts.unresolved_known_clauses].some(count => !Number.isSafeInteger(count) || count < 0) ||
+          counts.required_source_items + counts.excluded_source_items !== counts.source_items ||
+          counts.required_known_clauses + counts.excluded_known_clauses !== counts.known_clauses ||
+          counts.mapped_source_items > counts.required_source_items || counts.accounted_regions > counts.regions ||
+          counts.accounted_known_clauses > counts.required_known_clauses || counts.unresolved_known_clauses > counts.required_known_clauses ||
+          delivery.coverage_complete && (!delivery.project_saved || counts.mapped_source_items !== counts.required_source_items ||
+            counts.accounted_regions !== counts.regions || counts.accounted_known_clauses !== counts.required_known_clauses) ||
+          [delivery.project_artifact_id, delivery.census_artifact_id].some(id => typeof id !== "string" || !id) ||
+          !delivery.report_artifact_ids || typeof delivery.report_artifact_ids !== "object" || Array.isArray(delivery.report_artifact_ids) ||
+          delivery.report_artifact_ids["Delivery-census"] !== delivery.census_artifact_id ||
+          Object.values(delivery.report_artifact_ids).some(id => typeof id !== "string" || !preview.artifacts.some(artifact => artifact.id === id && artifact.kind === "source")) ||
+          !preview.artifacts.some(artifact => artifact.kind === "project" && artifact.id === delivery.project_artifact_id) ||
+          !/^[A-Za-z0-9_-]{1,80}$/.test(preview.run_id) || preview.artifacts.filter(artifact => artifact.kind === "project").length !== 1 ||
+          preview.artifacts.some(artifact => artifact.kind === "project" && artifact.path !== `.leanflow/native-workflows/${preview.run_id}/project`)) ||
         !preview.artifacts.some(artifact => artifact.id === preview.model_report_artifact_id && artifact.kind === "source")) {
       throw new Error("The formalization service returned an invalid unaccepted draft preview.");
     }

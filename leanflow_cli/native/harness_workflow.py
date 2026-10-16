@@ -16,9 +16,10 @@ from typing import Any
 from agent.runtime.harness import HarnessRequest, build_runtime_isolation, run_harness
 from agent.runtime.harness.models import NativeCleanupUnverified, NativeLaunchFailure
 from agent.runtime.harness.network_policy import restricted_research
-from core.campaign_limits import CampaignLimits, LimitReached
+from core.campaign_limits import AccountingError, CampaignLimits, LimitReached
 from core.utils import atomic_json_write
 from leanflow_cli.formalization.preparation_campaign import (
+    CampaignOwner,
     admit_author,
     campaign_lock,
     load_campaign,
@@ -27,6 +28,7 @@ from leanflow_cli.formalization.records import current_selection_token, save_rec
 from leanflow_cli.formalization.stage_errors import RepreparationRequired
 from leanflow_cli.native.harness_artifacts import source_files
 from leanflow_cli.native.harness_context import prepare_context
+from leanflow_cli.native.harness_heartbeat import AuthorHeartbeat
 from leanflow_cli.native.harness_observer import NativeObserver
 from leanflow_cli.runtime.project_operations import project_activity
 from leanflow_cli.runtime.storage import StoragePressure
@@ -88,9 +90,16 @@ def run_workflow(env: dict[str, str] | None = None) -> dict[str, Any]:
                 from leanflow_cli.formalization.source_draft_recovery import recover_completed_draft
 
                 return recover_completed_draft(root, directory, completed_draft, environment)
-            with campaign_lock(root, run_id):
+            with campaign_lock(root, run_id) as accounting_owner:
                 return _run_controller(
-                    environment, root, backend, directory, run_id, resume, observe=env is None
+                    environment,
+                    root,
+                    backend,
+                    directory,
+                    run_id,
+                    resume,
+                    observe=env is None,
+                    accounting_owner=accounting_owner,
                 )
 
 
@@ -103,6 +112,7 @@ def _run_controller(
     resume: str,
     *,
     observe: bool,
+    accounting_owner: CampaignOwner | None = None,
 ) -> dict[str, Any]:
     """Hold exclusive campaign ownership through native execution and final cleanup."""
     restricted = restricted_research(environment)
@@ -174,7 +184,9 @@ def _run_controller(
     resume_author = admit_author(root, binding, resume=bool(resume), state_path=state_path)
     if resume_author:
         state = json.loads(state_path.read_text())
-        if state.get("native_cleanup_unverified"):
+        if state.get("accounting_unresolved"):
+            raise AccountingError("Author accounting is unresolved; retain its ledger and draft")
+        if state.get("native_cleanup_unverified") or state.get("independent_cleanup_unverified"):
             raise ValueError(
                 "Prior native process closure is unverified; retain its private inputs and start a separate campaign"
             )
@@ -239,6 +251,29 @@ def _run_controller(
         state["source_diagnostics"] = source_draft_blocker["source_diagnostics"]
     else:
         state["source_draft_only"] = False
+    if resume and state.get("best_effort_completed"):
+        from leanflow_cli.formalization.source_draft import load_run_preview, preview_is_current
+
+        preview = load_run_preview(root, selected_document, run_id)
+        from leanflow_cli.formalization.draft_delivery import project_manifest
+        from leanflow_cli.formalization.evidence import identity
+
+        project_hash = identity(project_manifest(directory / "project"))
+        if (
+            preview is not None
+            and preview_is_current(root, selected_document, preview)
+            and any(
+                row.get("kind") == "project" and row.get("sha256") == project_hash
+                for row in preview.get("artifacts", [])
+            )
+        ):
+            state.update(status="completed_with_ambiguities", terminal=True, draft_preview=preview)
+            atomic_json_write(state_path, state)
+            return state
+        state.update(best_effort_completed=False, best_effort_author_completed=False)
+        state.pop("best_effort_check", None)
+        state.pop("best_effort_review", None)
+    state["best_effort_author_completed"] = False
     if restricted:
         environment = {**environment, "LEANFLOW_PROVER_ALLOW_INTERNET": "false"}
     atomic_json_write(state_path, state)
@@ -258,7 +293,6 @@ def _run_controller(
 
     storage_admission = StorageAdmission(root)
     storage_error = ""
-    finished = threading.Event()
     observing = threading.Event()
     observer = NativeObserver(root, run_id, "formalize", backend) if observe else None
     previous_signals: dict[int, Any] = {}
@@ -273,31 +307,34 @@ def _run_controller(
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous_signals[signum] = signal.signal(signum, stop_signal)
 
-    def heartbeat() -> None:
+    def heartbeat_checkpoint() -> None:
         nonlocal storage_error
-        while not finished.wait(1):
-            state["workflow_resources"] = resources.evidence()
-            budget.persist()
-            if observer is not None and observing.is_set():
-                try:
-                    observer.publish(state, budget)
-                except Exception as error:
-                    state["error"] = f"Live status ownership failed: {error}"
-                    cancelled.set()
-            remaining = budget.remaining()
-            if remaining is not None and remaining <= 0:
-                cancelled.set()
-            try:
-                storage_admission.check()
-            except StoragePressure as error:
-                storage_error = str(error)
-                cancelled.set()
-                return
+        state["workflow_resources"] = resources.evidence()
+        if observer is not None and observing.is_set():
+            observer.publish(state, budget)
+        remaining = budget.remaining()
+        if remaining is not None and remaining <= 0:
+            cancelled.set()
+        try:
+            storage_admission.check()
+        except StoragePressure as error:
+            storage_error = str(error)
+            cancelled.set()
 
-    ticker = threading.Thread(target=heartbeat, daemon=True)
-    ticker.start()
+    ticker = AuthorHeartbeat(budget, cancelled, heartbeat_checkpoint, owner=accounting_owner)
+
+    def check_controller() -> None:
+        """Check accounting before allowing any further authoritative work."""
+        ticker.check()
+        if state.get("independent_cleanup_unverified"):
+            raise NativeCleanupUnverified(
+                "Independent checker or reviewer closure is unverified; retain its inputs"
+            )
+        resources.check(force=True)
+
     snapshot = directory / "project"
     try:
+        ticker.start()
         resources.start()
         if observer is not None:
             observer.start(state)
@@ -306,6 +343,10 @@ def _run_controller(
         # Dependency census can be expensive. Install campaign monitoring and
         # cancellation before paying that read-only preparation cost.
         checked_layout = preflight_dependencies(root, document_id)
+        best_effort_supported = (
+            selected_document.get("workflow_protocol") == 2
+            and checked_layout.get("accepted") is True
+        )
         if source_draft_blocker is not None:
             from leanflow_cli.formalization.lean_layout import generation_layout
 
@@ -338,7 +379,20 @@ def _run_controller(
         if source_draft_blocker is None:
             from leanflow_cli.native.harness_formalization_stages import stage_assignment
 
-            context, prompt = stage_assignment(root, environment, context, source_prompt)
+            prior_review = state.get("source_review", {})
+            if state.get("best_effort") or (
+                resume
+                and best_effort_supported
+                and prior_review.get("status") == "completed"
+                and prior_review.get("accepted") is False
+            ):
+                from leanflow_cli.native.harness_best_effort import assignment
+
+                context, prompt = assignment(
+                    root, environment, context, source_prompt, state, state.get("source_review", {})
+                )
+            else:
+                context, prompt = stage_assignment(root, environment, context, source_prompt)
         elif source_draft_blocker is not None:
             context["formalization_stage"] = {
                 "phase": "source_draft",
@@ -359,7 +413,7 @@ def _run_controller(
         def submit(response: str) -> dict[str, Any]:
             """Freeze one proposal at a time and retain only independently accepted bytes."""
             with validation_lock:
-                resources.check(force=True)
+                check_controller()
                 if terminal_submission.is_set():
                     return dict(last_validation)
                 receipt.clear()
@@ -375,7 +429,32 @@ def _run_controller(
                     deadline=deadline,
                     cancelled=cancelled.is_set,
                 )
-                if source_draft_blocker is not None:
+                if state.get("best_effort"):
+                    from leanflow_cli.native.harness_best_effort import (
+                        current_record,
+                        layout_for,
+                        saved_draft,
+                    )
+
+                    if (
+                        current_selection_token(root, document_id)
+                        != state["formalization_selection_token"]
+                    ):
+                        terminal_submission.set()
+                        checked = {
+                            "accepted": False,
+                            "error_code": "selection_changed",
+                            "error": "Source selection changed during best-effort generation",
+                        }
+                    else:
+                        try:
+                            selected = current_record(root, document_id)
+                            checked = saved_draft(
+                                snapshot, selected, layout_for(selected, checked_layout)
+                            )
+                        except (ValueError, OSError, KeyError, TypeError) as error:
+                            checked = {"accepted": False, "draft_saved": False, "error": str(error)}
+                elif source_draft_blocker is not None:
                     checked = dict(source_draft_blocker)
                     if (
                         current_selection_token(root, document_id)
@@ -386,7 +465,7 @@ def _run_controller(
                             "error_code": "selection_changed",
                             "error": "Source inventory selection changed; restart from its selected revision",
                         }
-                elif source_draft_blocker is None:
+                elif source_draft_blocker is None and not state.get("best_effort"):
                     from leanflow_cli.formalization.proposal import check_proposal
                     from leanflow_cli.formalization.review import review_configuration
 
@@ -403,7 +482,7 @@ def _run_controller(
                             environment,
                         ),
                     )
-                resources.check(force=True)
+                check_controller()
                 last_validation.clear()
                 last_validation.update(
                     {
@@ -418,7 +497,7 @@ def _run_controller(
                     atomic_json_write(directory / "accepted.json", checked)
                 if checked.get("error_code") == "needs_reprepare":
                     terminal_submission.set()
-                elif source_draft_blocker is None:
+                elif source_draft_blocker is None and not state.get("best_effort"):
                     try:
                         stage_assignment(root, environment, context, source_prompt)
                     except RepreparationRequired as error:
@@ -486,11 +565,17 @@ def _run_controller(
                 backend, snapshot, env=environment, readable_roots=reads, denied_roots=(root,)
             )
             while not cancelled.is_set():
-                resources.check(force=True)
+                check_controller()
                 storage_admission.check(force=True)
                 if observer is not None:
                     observer.publish(state, budget, phase="agent")
                 invocation = budget.reserve()
+                # A rejected reservation starts no new author. Keep the last
+                # closed draft and its checks available for terminal retention.
+                if state.get("best_effort"):
+                    state.pop("best_effort_check", None)
+                    state.pop("best_effort_review", None)
+                    state.update(best_effort_author_completed=False, best_effort_completed=False)
                 started = False
 
                 def on_started() -> None:
@@ -609,7 +694,7 @@ def _run_controller(
                     budget.finish(invocation, None, started=started)
                     raise
                 budget.finish(invocation, result.usage, started=started)
-                resources.check(force=True)
+                check_controller()
                 drain_author_bridge(
                     bridge, state, state_path, draft_only=source_draft_blocker is not None
                 )
@@ -625,6 +710,8 @@ def _run_controller(
                     native_status=result.status,
                     error=result.error,
                 )
+                if state.get("best_effort") and result.status == "completed":
+                    state["best_effort_author_completed"] = True
                 if source_draft_blocker is not None and result.status == "completed":
                     state["source_draft_completed"] = True
                     state.update(
@@ -652,6 +739,129 @@ def _run_controller(
                     return state
                 if source_draft_blocker is not None:
                     return state
+                if state.get("best_effort"):
+                    from leanflow_cli.native.harness_best_effort import (
+                        DraftRepairRequired,
+                        check_project,
+                        current_record,
+                        layout_for,
+                        repair_feedback,
+                    )
+
+                    selected = current_record(root, document_id)
+                    if (
+                        current_selection_token(root, document_id)
+                        != state["formalization_selection_token"]
+                    ):
+                        state.update(
+                            status="blocked",
+                            error="Source selection changed during best-effort generation",
+                        )
+                        return state
+                    selected_layout = layout_for(selected, checked_layout)
+                    state.update(
+                        best_effort_revision=selected["revision_id"],
+                        best_effort_layout=selected_layout,
+                    )
+                    try:
+                        report, subject, proposed = check_project(
+                            root,
+                            snapshot,
+                            selected,
+                            baseline,
+                            selected_layout,
+                            directory / "best-effort-checks" / uuid.uuid4().hex,
+                            allowed,
+                            deadline=deadline,
+                            cancelled=cancelled.is_set,
+                        )
+                    except RepreparationRequired:
+                        raise
+                    except DraftRepairRequired as error:
+                        state["best_effort_check"] = {
+                            "accepted": False,
+                            "complete": False,
+                            "error": str(error),
+                        }
+                        prompt = (
+                            "Repair these authored draft files and finish the entire best-effort project: "
+                            + str(error)
+                        )
+                        continue
+                    except NativeCleanupUnverified:
+                        state.update(
+                            independent_cleanup_unverified=True, native_cleanup_unverified=True
+                        )
+                        atomic_json_write(state_path, state)
+                        raise
+                    except (ValueError, OSError, KeyError, TypeError) as error:
+                        state.update(status="draft_incomplete", error=str(error))
+                        return state
+                    check_controller()
+                    state["best_effort_check"] = report
+                    atomic_json_write(state_path, state)
+                    if not report.get("complete"):
+                        from leanflow_cli.formalization.proposal import _operational_failure
+
+                        failure = _operational_failure(report)
+                        if failure:
+                            state.update(
+                                status={
+                                    "check_cancelled": "cancelled",
+                                    "check_timeout": "deadline_exceeded",
+                                }.get(failure[0], "draft_incomplete"),
+                                error=failure[1],
+                                error_code=failure[0],
+                            )
+                            return state
+                        prompt = (
+                            "Finish the complete best-effort project and fix these technical/coverage errors. Human ambiguities remain optional annotations. "
+                            + repair_feedback(report)
+                        )
+                        continue
+                    from leanflow_cli.formalization.draft_review import review_draft
+
+                    try:
+                        advisory = review_draft(
+                            subject,
+                            proposed,
+                            report["checks"],
+                            backend=backend,
+                            model=environment.get("LEANFLOW_NATIVE_MODEL", ""),
+                            effort=environment.get("LEANFLOW_NATIVE_REASONING_EFFORT", ""),
+                            environment=environment,
+                            directory=directory / "best-effort-review",
+                            budget=budget,
+                            deadline=deadline,
+                            cancelled=cancelled.is_set,
+                        )
+                    except NativeCleanupUnverified:
+                        state.update(
+                            independent_cleanup_unverified=True, native_cleanup_unverified=True
+                        )
+                        atomic_json_write(state_path, state)
+                        raise
+                    state["best_effort_review"] = advisory
+                    if (
+                        advisory.get("status") == "cleanup_unverified"
+                        or advisory.get("cleanup_verified") is False
+                    ):
+                        state.update(
+                            independent_cleanup_unverified=True,
+                            native_cleanup_unverified=True,
+                            status="error",
+                            error="Independent reviewer closure is unverified; retain its project and evidence",
+                        )
+                        atomic_json_write(state_path, state)
+                        return state
+                    check_controller()
+                    if explicit_cancel.is_set():
+                        state.update(status="cancelled")
+                        return state
+                    state.update(
+                        best_effort_completed=True, status="completed_with_ambiguities", error=""
+                    )
+                    return state
                 final_checked = bool(receipt)
                 if final_checked:
                     # The native process can edit after submit_files. Its final
@@ -663,6 +873,23 @@ def _run_controller(
                     except (ValueError, TypeError):
                         reported = None
                     if isinstance(reported, dict) and reported.get("status") == "blocked":
+                        prior_review = state.get("source_review", {})
+                        if best_effort_supported:
+                            from leanflow_cli.native.harness_best_effort import assignment
+
+                            feedback = prior_review or {
+                                "review_status": "not_run",
+                                "author_report": reported,
+                            }
+                            context, prompt = assignment(
+                                root, environment, context, source_prompt, state, feedback
+                            )
+                            bridge.context = dict(context)
+                            initial_prompt = prompt
+                            receipt.clear()
+                            last_validation.clear()
+                            atomic_json_write(state_path, state)
+                            continue
                         state.update(
                             status="blocked", error=str(reported.get("reason", "External blocker"))
                         )
@@ -673,6 +900,18 @@ def _run_controller(
                     state.update(status="blocked", error=last_validation["error"])
                     return state
                 if last_validation.get("status") == "source_blocked":
+                    if best_effort_supported:
+                        from leanflow_cli.native.harness_best_effort import assignment
+
+                        context, prompt = assignment(
+                            root, environment, context, source_prompt, state, last_validation
+                        )
+                        bridge.context = dict(context)
+                        initial_prompt = prompt
+                        receipt.clear()
+                        last_validation.clear()
+                        atomic_json_write(state_path, state)
+                        continue
                     state.update(status="blocked", error=last_validation["error"])
                     return state
                 if last_validation.get("status") == "check_error":
@@ -692,19 +931,34 @@ def _run_controller(
 
                     if observer is not None:
                         observer.publish(state, budget, phase="source-review")
-                    resources.check(force=True)
-                    review = review_revision(
-                        receipt["record"],
-                        backend=backend,
-                        model=environment.get("LEANFLOW_NATIVE_MODEL", ""),
-                        effort=environment.get("LEANFLOW_NATIVE_REASONING_EFFORT", ""),
-                        environment=environment,
-                        directory=directory / "source-review",
-                        budget=budget,
-                        deadline=deadline,
-                        cancelled=cancelled.is_set,
-                    )
-                    resources.check(force=True)
+                    check_controller()
+                    try:
+                        review = review_revision(
+                            receipt["record"],
+                            backend=backend,
+                            model=environment.get("LEANFLOW_NATIVE_MODEL", ""),
+                            effort=environment.get("LEANFLOW_NATIVE_REASONING_EFFORT", ""),
+                            environment=environment,
+                            directory=directory / "source-review",
+                            budget=budget,
+                            deadline=deadline,
+                            cancelled=cancelled.is_set,
+                        )
+                    except NativeCleanupUnverified:
+                        state.update(
+                            independent_cleanup_unverified=True, native_cleanup_unverified=True
+                        )
+                        atomic_json_write(state_path, state)
+                        raise
+                    if (
+                        review.get("status") == "cleanup_unverified"
+                        or review.get("cleanup_verified") is False
+                    ):
+                        state.update(
+                            independent_cleanup_unverified=True, native_cleanup_unverified=True
+                        )
+                        atomic_json_write(state_path, state)
+                    check_controller()
                     atomic_json_write(directory / "source-review.json", review)
                     state["source_review"] = review
                     record = receipt["record"]
@@ -755,12 +1009,25 @@ def _run_controller(
                                 if not row.get("accepted")
                             )
                         ):
-                            state.update(
-                                status="blocked",
-                                error="Source review needs correction; unchanged rejections are not rerolled. "
-                                + str(review.get("feedback", "")),
+                            if not best_effort_supported:
+                                state.update(
+                                    status="blocked",
+                                    error="Source review needs correction; unchanged rejections are not rerolled. "
+                                    + str(review.get("feedback", "")),
+                                )
+                                return state
+                            from leanflow_cli.native.harness_best_effort import assignment
+
+                            context, prompt = assignment(
+                                root, environment, context, source_prompt, state, review
                             )
-                            return state
+                            bridge.context = dict(context)
+                            initial_prompt = prompt
+                            receipt.clear()
+                            last_validation.clear()
+                            atomic_json_write(directory / "accepted.json", {"accepted": False})
+                            atomic_json_write(state_path, state)
+                            continue
                         correction_rounds += 1
                         state["formalization_correction_rounds"] = correction_rounds
                         atomic_json_write(state_path, state)
@@ -809,7 +1076,7 @@ def _run_controller(
                     from leanflow_cli.formalization.publish import publish_checked
                     from leanflow_cli.formalization.records import DocumentLockCancelled
 
-                    resources.check(force=True)
+                    check_controller()
                     try:
                         publication = publish_checked(
                             root,
@@ -858,6 +1125,9 @@ def _run_controller(
                 prompt += "\n" + feedback
             state["status"] = "cancelled"
             return state
+    except AccountingError as error:
+        state.update(status="accounting_error", error=str(error), accounting_unresolved=True)
+        return state
     except WorkflowResourceFailure as error:
         state.update(status="resource_error", error=str(error), error_code=error.code)
         return state
@@ -877,15 +1147,16 @@ def _run_controller(
         state.update(status="error", error=str(error))
         return state
     finally:
-        finished.set()
-        ticker.join()
-        if (
-            state.get("source_draft_completed") or state.get("source_draft_terminal_observed")
-        ) and source_draft_blocker is not None:
-            from leanflow_cli.formalization.source_draft_recovery import retain_completed_draft
-
-            retain_completed_draft(
-                root, directory, state, environment, cancelled=explicit_cancel.is_set
+        checkpoint_closed = ticker.close()
+        try:
+            ticker.check()
+        except AccountingError as error:
+            state.update(status="accounting_error", error=str(error), accounting_unresolved=True)
+        if not checkpoint_closed:
+            state.update(
+                status="accounting_error",
+                error="Author accounting worker did not stop; retain its ledger, ownership and inputs",
+                accounting_unresolved=True,
             )
         cancelled.set()
         try:
@@ -899,27 +1170,114 @@ def _run_controller(
                 error=str(resources.failure),
                 error_code=resources.failure.code,
             )
+        # This is the last campaign accounting effect. Bounded local artifact
+        # retention follows the fence and never starts another paid actor.
+        if checkpoint_closed and not state.get("accounting_unresolved"):
+            try:
+                budget.finish_checkpoints()
+            except AccountingError as error:
+                state.update(
+                    status="accounting_error", error=str(error), accounting_unresolved=True
+                )
+        if (
+            (state.get("source_draft_completed") or state.get("source_draft_terminal_observed"))
+            and source_draft_blocker is not None
+            and not state.get("accounting_unresolved")
+            and not state.get("native_cleanup_unverified")
+            and resources.failure is None
+            and not storage_error
+        ):
+            from leanflow_cli.formalization.source_draft_recovery import retain_completed_draft
+
+            retain_completed_draft(
+                root, directory, state, environment, cancelled=explicit_cancel.is_set
+            )
+        elif source_draft_blocker is not None and (
+            state.get("source_draft_completed") or state.get("source_draft_terminal_observed")
+        ):
+            state.setdefault(
+                "draft_retention_error",
+                "Source draft accounting or process closure is unresolved; retain its private inputs",
+            )
+        if (
+            state.get("best_effort_author_completed")
+            and not state.get("accounting_unresolved")
+            and not state.get("native_cleanup_unverified")
+            and resources.failure is None
+            and not explicit_cancel.is_set()
+            and checkpoint_closed
+            and not storage_error
+        ):
+            from leanflow_cli.formalization.draft_delivery import retain_best_effort
+            from leanflow_cli.native.harness_best_effort import current_record, layout_for
+
+            try:
+                selected = current_record(root, document_id)
+                preview = retain_best_effort(
+                    root,
+                    selected,
+                    snapshot,
+                    layout=layout_for(selected, checked_layout),
+                    run_id=run_id,
+                    selection_token=state["formalization_selection_token"],
+                    model_report=str(state.get("final_response", "")),
+                    check_report=state.get("best_effort_check"),
+                    compiled=(state.get("best_effort_check", {}).get("complete") is True),
+                    review_notes=state.get("best_effort_review")
+                    or {
+                        "accepted": False,
+                        "publication_authority": False,
+                        "proof_authority": False,
+                        "advisory_decision": "UNREVIEWED",
+                        "status": "not_run",
+                        "reason": "No advisory review of this draft completed; earlier source reviews refer to other candidates.",
+                    },
+                    deadline=time.monotonic() + 10,
+                    cancelled=explicit_cancel.is_set,
+                )
+                state["draft_preview"] = preview
+                if (
+                    state.get("best_effort_completed")
+                    and preview.get("delivery_status") != "complete"
+                ):
+                    state.update(
+                        best_effort_completed=False,
+                        status="draft_incomplete",
+                        error="Draft changed after checking; saved for another check",
+                    )
+            except (ValueError, OSError, KeyError, TypeError) as error:
+                state.update(best_effort_delivery_error=str(error), status="draft_incomplete")
         if storage_error:
             state.update(
                 status="storage_pressure",
                 error=storage_error,
                 next_step="Free disk space or adjust storage.min_free_gib, then resume. Proofs, checkpoints and consumed calls are preserved.",
             )
+        if state.get("accounting_unresolved"):
+            state["status"] = "accounting_error"
         try:
-            budget.persist()
             state["terminal"] = True
             atomic_json_write(state_path, state)
             # Retain continuation files; only rebuildable dependency views expire.
             try:
-                if state.get("native_cleanup_unverified") or (
-                    (
-                        state.get("source_draft_terminal_observed")
-                        or state.get("source_draft_completed")
+                if (
+                    state.get("accounting_unresolved")
+                    or state.get("native_cleanup_unverified")
+                    or (
+                        (
+                            state.get("source_draft_terminal_observed")
+                            or state.get("source_draft_completed")
+                        )
+                        and not state.get("source_draft_quiescent")
                     )
-                    and not state.get("source_draft_quiescent")
                 ):
                     state["cache_cleanup_error"] = (
-                        "Author process closure is unverified; retain its private dependency views and pins"
+                        "Author accounting or process closure is unresolved; retain its private dependency views and pins"
+                    )
+                    atomic_json_write(state_path, state)
+                elif state.get("best_effort_author_completed"):
+                    state["dependency_views_retained"] = (
+                        "Keep the delivered best-effort project buildable"
                     )
                     atomic_json_write(state_path, state)
                 else:
@@ -927,7 +1285,7 @@ def _run_controller(
             except (OSError, ValueError) as error:
                 state["cache_cleanup_error"] = str(error)
                 atomic_json_write(state_path, state)
-            if observer is not None and observing.is_set():
+            if checkpoint_closed and observer is not None and observing.is_set():
                 observer.publish(state, budget)
                 observer.finish(state)
         finally:
@@ -957,7 +1315,7 @@ def _main() -> int:
     print(json.dumps(public, ensure_ascii=False))
     return (
         0
-        if result.get("status") in {"completed", "draft_ready"}
+        if result.get("status") in {"completed", "draft_ready", "completed_with_ambiguities"}
         else 130 if result.get("status") == "cancelled" else 1
     )
 

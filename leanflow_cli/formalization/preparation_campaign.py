@@ -15,7 +15,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from core.campaign_limits import CampaignLimits, optional_limit
+from core.campaign_limits import (
+    AccountingError,
+    CampaignLimits,
+    assert_accounting_resolved,
+    optional_limit,
+)
 from core.regular_files import read_regular_bytes
 from leanflow_cli.formalization.evidence import contained, durable_json, identity
 
@@ -203,6 +208,7 @@ def campaign_budget(root: Path, binding: dict[str, Any]) -> Path:
         or not isinstance(calls, dict)
     ):
         raise ValueError("Malformed campaign budget; start a new campaign")
+    assert_accounting_resolved(ledger)
     for key, call in calls.items():
         if (
             not isinstance(key, str)
@@ -256,6 +262,7 @@ def select_campaign(
         selected = campaign_budget(root, binding)
         if budget_path is not None and budget_path.absolute() != selected:
             raise ValueError("Requested budget differs from the bound campaign")
+        validate_author_history(root, binding, state_path=directory / "state.json")
         return binding
     if path.exists() or path.is_symlink() or (directory / "state.json").exists():
         raise ValueError(
@@ -281,9 +288,8 @@ def select_campaign(
     return load_campaign(root, run_id)
 
 
-def admit_author(root: Path, binding: dict[str, Any], *, resume: bool, state_path: Path) -> bool:
-    """Mark first author admission before state creation, never recreating a lost checkpoint."""
-    campaign_budget(root, binding)
+def validate_author_history(root: Path, binding: dict[str, Any], *, state_path: Path) -> bool:
+    """Read existing admission history before paid preparation without creating or repairing it."""
     directory = _directory(root, binding["run_id"])
     if state_path != directory / "state.json":
         raise ValueError("Author state differs from the bound native run")
@@ -294,7 +300,7 @@ def admit_author(root: Path, binding: dict[str, Any], *, resume: bool, state_pat
         "run_id": binding["run_id"],
     }
     if marker_path.exists() or marker_path.is_symlink():
-        if _read(marker_path) != expected or not resume:
+        if _read(marker_path) != expected:
             raise ValueError("Author admission identity changed; start a new campaign")
         if not state_path.exists():
             raise ValueError(
@@ -306,9 +312,71 @@ def admit_author(root: Path, binding: dict[str, Any], *, resume: bool, state_pat
             or state.get("campaign_binding_id") != binding["binding_id"]
         ):
             raise ValueError("Author checkpoint does not match campaign accounting")
+        if state.get("accounting_unresolved"):
+            raise AccountingError("Author accounting is unresolved; retain its ledger and draft")
+        if state.get("native_cleanup_unverified") or state.get("independent_cleanup_unverified"):
+            raise ValueError(
+                "Prior native process closure is unverified; retain its private inputs and start a separate campaign"
+            )
+        if (
+            type(state.get("version")) is not int
+            or state["version"] != 2
+            or state.get("backend") != binding["backend"]
+            or state.get("workflow") != "formalize"
+        ):
+            raise ValueError(
+                "Start a new native run when changing backends or migrating legacy runs"
+            )
+        for field, expected_mode in (
+            ("source_draft_intent", binding["source_draft_only"]),
+            ("source_draft_only", binding["effective_draft"]),
+        ):
+            value = state.get(field, False)
+            if type(value) is not bool or value != expected_mode:
+                raise ValueError(
+                    "Author checkpoint source-draft mode changed; start a new campaign"
+                )
+        if state.get("formalization_selection_token") != binding["selection_token"]:
+            raise ValueError("Formalization selection changed; restart from its selected revision")
+        baseline = _checkpoint_baseline(state, "baseline")
+        if "formalization_baseline" in state:
+            _checkpoint_baseline(state, "formalization_baseline")
+        from leanflow_cli.native.harness_artifacts import source_files
+
+        if source_files(root) != baseline:
+            raise ValueError("Canonical sources changed; start a new workflow")
         return True
     if state_path.exists() or state_path.is_symlink():
         raise ValueError("Legacy author state has no campaign admission; start a new campaign")
     _assert_pre_author_directory(directory)
+    return False
+
+
+def _checkpoint_baseline(state: Mapping[str, Any], name: str) -> dict[str, bytes]:
+    """Validate the existing checkpoint byte-map format without coercing malformed values."""
+    value = state.get(name)
+    if not isinstance(value, dict) or any(
+        not isinstance(path, str) or not isinstance(data, str) for path, data in value.items()
+    ):
+        raise ValueError("Author checkpoint has a missing or malformed " + name)
+    try:
+        return {path: bytes.fromhex(data) for path, data in value.items()}
+    except ValueError as error:
+        raise ValueError("Author checkpoint has malformed " + name + " bytes") from error
+
+
+def admit_author(root: Path, binding: dict[str, Any], *, resume: bool, state_path: Path) -> bool:
+    """Mark first author admission before state creation, never recreating a lost checkpoint."""
+    campaign_budget(root, binding)
+    if validate_author_history(root, binding, state_path=state_path):
+        if not resume:
+            raise ValueError("Author admission identity changed; start a new campaign")
+        return True
+    marker_path = _directory(root, binding["run_id"]) / "author-admitted.json"
+    expected = {
+        "schema_version": 1,
+        "binding_id": binding["binding_id"],
+        "run_id": binding["run_id"],
+    }
     durable_json(marker_path, expected)
     return False

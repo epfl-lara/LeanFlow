@@ -31,12 +31,14 @@ def estimated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     record = create_document(tmp_path, paper)
     record.update(
         workflow_protocol=2,
+        environment_id="checked-fixture-environment",
         preparation_id="prepared",
         preparation_plan_id="plan",
         slice_source_ids=[record["inventory"]["items"][0]["id"]],
     )
     record = save_revision(document_directory(tmp_path, record["document_id"]), record)
     receipt = {
+        "environment_id": "checked-fixture-environment",
         "preparation_id": "prepared",
         "preparation_plan_id": "plan",
         "source_bundle": record["source_bundle"],

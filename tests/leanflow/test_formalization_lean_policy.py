@@ -278,6 +278,44 @@ def real_project(tmp_path: Path) -> Path:
 
 
 @pytest.mark.integration
+def test_real_correction_shapes_come_from_replayed_closed_expressions(real_project: Path) -> None:
+    """Distinguish complete closed warrants from proofs that assume their conclusion."""
+    (real_project / "src/Main.lean").write_text(
+        "namespace Paper\n"
+        "def localGoal : Prop := 2 + 2 = (4 : Nat)\n"
+        "theorem localFact : localGoal := rfl\n"
+        "theorem assumedWarrant (h : localGoal) : localGoal := h\n"
+        "def vacuousGoal : Prop := localGoal → localGoal\n"
+        "theorem vacuousFact : vacuousGoal := fun h => h\n"
+        "def slow : Prop := Nat.rec True (fun n p => if n = 0 then p else p) 1000000\n"
+        "theorem adopted : True := by sorry\n"
+        "end Paper\n"
+    )
+    result = lean_policy.inspect_draft(real_project, ["src/Main.lean"], real_project / "checks", ())
+    assert result["accepted"], result
+    assert result["kernel_replay"]["scope"] == "referenced-dependency-closure"
+    profiles = result["profiles"]
+    assert profiles["Paper.localGoal"]["correction_shape"] == {
+        "type_constant_name": None,
+        "type_head_forall": False,
+        "proposition_body_head_forall": False,
+        "proposition_body_is_prop": True,
+    }
+    assert (
+        profiles["Paper.localFact"]["correction_shape"]["type_constant_name"] == "Paper.localGoal"
+    )
+    assert profiles["Paper.localFact"]["correction_shape"]["type_head_forall"] is False
+    assert profiles["Paper.assumedWarrant"]["correction_shape"]["type_head_forall"] is True
+    assert profiles["Paper.vacuousGoal"]["correction_shape"]["proposition_body_head_forall"] is True
+    assert profiles["Paper.vacuousFact"]["correction_shape"]["type_head_forall"] is True
+    assert profiles["Paper.localFact"]["pretty_type"]
+    assert profiles["Paper.slow"]["correction_shape"] == {
+        "inspection_error": "correction_shape_unavailable"
+    }
+    assert {row["name"] for row in result["obligations"]} == {"Paper.adopted"}
+
+
+@pytest.mark.integration
 def test_real_existing_reuse_requires_controller_built_local_artifacts(real_project: Path) -> None:
     """Use the exact local artifact map, retaining custom-root source identity."""
     from leanflow_cli.formalization.evidence import digest

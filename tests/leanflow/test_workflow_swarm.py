@@ -37,6 +37,7 @@ def evaluated_formalization_layout(monkeypatch):
             "source_bundle": record["source_bundle"],
             "preparation_id": "prepared-fixture",
             "preparation_plan_id": "plan-fixture",
+            "environment_id": "environment-fixture",
             "plan": {
                 "plan_id": "plan-fixture",
                 "slice_source_ids": [item["id"] for item in record["inventory"]["items"]],

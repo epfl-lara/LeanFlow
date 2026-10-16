@@ -408,8 +408,9 @@ def test_stop_after_real_reuse_commit_prevents_native_workflow_continuation(
     assert load_journal(root, original["transaction_id"])["plan"]["receipt"] == previous
 
 
+@pytest.mark.parametrize("receipt_path_format", ["absolute", "relative", "wrong_path"])
 def test_fresh_launch_gets_new_budget_and_explicit_resume_keeps_cumulative_usage(
-    source_folder, monkeypatch
+    source_folder, monkeypatch, receipt_path_format
 ):
     root = source_folder
     receipts = []
@@ -420,7 +421,11 @@ def test_fresh_launch_gets_new_budget_and_explicit_resume_keeps_cumulative_usage
             "preparation_plan_id": kwargs["plan"]["plan_id"],
             "source_bundle": record["source_bundle"],
             "plan": kwargs["plan"],
-            "budget_path": kwargs["budget_path"].relative_to(root).as_posix(),
+            "budget_path": (
+                kwargs["budget_path"].relative_to(root).as_posix()
+                if receipt_path_format == "relative"
+                else str(kwargs["budget_path"])
+            ),
         }
         receipts.append(receipt)
         return {"accepted": True, "receipt": receipt}
@@ -464,23 +469,50 @@ def test_fresh_launch_gets_new_budget_and_explicit_resume_keeps_cumulative_usage
     call = accounting.reserve()
     accounting.started_call(call)
     accounting.finish(call, {"input_tokens": 1}, started=True)
-    resumed = launch.prepare_formalization_launch(
-        root,
-        "paper.tex",
-        runtime,
-        environment={
-            "LEANFLOW_NATIVE_RESUME_RUN_ID": "original-run",
-        },
-    )
-    assert resumed["budget_path"] == second["budget_path"] and len(receipts) == 2
-    assert (
-        len(
-            CampaignLimits(
-                resumed["budget_path"], {"agent_calls": 3, "tokens": None, "wall_time_s": None}
-            ).state["invocations"]
+    for name in ("discover_preparation_plan", "prepare_document_project"):
+        monkeypatch.setattr(
+            launch, name, lambda *args, **kwargs: pytest.fail("Unexpected paid planning or setup")
         )
-        == 1
+    monkeypatch.setattr(
+        CampaignLimits,
+        "reserve",
+        lambda *args, **kwargs: pytest.fail("Unexpected call reservation"),
     )
+    if receipt_path_format == "wrong_path":
+        # A current receipt from another valid campaign must not take the reuse shortcut.
+        receipts[-1]["budget_path"] = str(first["budget_path"])
+
+        def stop_before_replanning(*args, **kwargs):
+            raise ValueError("Mismatched receipt requires fresh preparation")
+
+        monkeypatch.setattr(launch, "default_preparation_plan", stop_before_replanning)
+        with pytest.raises(ValueError, match="Mismatched receipt requires fresh preparation"):
+            launch.prepare_formalization_launch(
+                root,
+                "paper.tex",
+                runtime,
+                environment={"LEANFLOW_NATIVE_RESUME_RUN_ID": "original-run"},
+            )
+    else:
+        monkeypatch.setattr(
+            launch,
+            "default_preparation_plan",
+            lambda *args, **kwargs: pytest.fail("Current receipt was needlessly replanned"),
+        )
+        resumed = launch.prepare_formalization_launch(
+            root,
+            "paper.tex",
+            runtime,
+            environment={"LEANFLOW_NATIVE_RESUME_RUN_ID": "original-run"},
+        )
+        assert resumed["budget_path"] == second["budget_path"]
+        assert resumed["receipt"]["preparation_id"] == receipts[-1]["preparation_id"]
+        assert resumed["receipt"]["plan"] == receipts[-1]["plan"]
+    assert len(receipts) == 2
+    retained = CampaignLimits(
+        second["budget_path"], {"agent_calls": 3, "tokens": None, "wall_time_s": None}
+    ).state["invocations"]
+    assert len(retained) == 1 and retained[call]["usage"] == {"input_tokens": 1}
 
 
 def test_failed_discovery_resume_reuses_same_run_budget_without_preparation_receipt(
@@ -624,3 +656,139 @@ def test_failed_discovery_resume_rejects_changed_limits_before_paid_work(
             environment={**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "changed-cap"},
         )
     assert len(discoveries) == 1
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing_state",
+        "missing_marker",
+        "wrong_marker",
+        "wrong_checkpoint",
+        "old_version",
+        "other_workflow",
+        "other_backend",
+        "missing_baseline",
+        "list_baseline",
+        "nonstring_baseline",
+        "invalid_hex_baseline",
+        "changed_baseline",
+        "invalid_portable_baseline",
+        "missing_selection",
+        "changed_selection",
+        "author_accounting_uncertain",
+        "native_cleanup_uncertain",
+        "ledger_checkpoint_active",
+        "ledger_accounting_error",
+    ],
+)
+def test_public_resume_rejects_inconsistent_author_history_before_paid_stale_preparation(
+    source_folder, monkeypatch, damage
+):
+    import json
+
+    from core.campaign_limits import AccountingError
+    from leanflow_cli.formalization import preparation_campaign as campaign
+    from leanflow_cli.formalization.records import create_document, current_selection_token
+    from leanflow_cli.native.harness_artifacts import source_files
+
+    root = source_folder
+    record = create_document(root, root / "paper.tex")
+    run_id = "admitted-resume"
+    with campaign.campaign_lock(root, run_id):
+        binding = campaign.select_campaign(
+            root,
+            record,
+            run_id=run_id,
+            limits={"agent_calls": 3, "tokens": None, "wall_time_s": None},
+            backend="codex",
+            selection_token=current_selection_token(root, record["document_id"]),
+            source_draft_only=False,
+            effective_draft=False,
+            resume=False,
+        )
+        directory = root / ".leanflow/native-workflows" / run_id
+        state = directory / "state.json"
+        campaign.admit_author(root, binding, resume=False, state_path=state)
+    state.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "workflow": "formalize",
+                "backend": "codex",
+                "run_id": run_id,
+                "campaign_binding_id": binding["binding_id"],
+                "baseline": {name: data.hex() for name, data in source_files(root).items()},
+                "formalization_baseline": {},
+                "formalization_selection_token": binding["selection_token"],
+                "source_draft_intent": False,
+                "source_draft_only": False,
+            }
+        )
+    )
+    budget = CampaignLimits(campaign.campaign_budget(root, binding), binding["limits"])
+    invocation = budget.reserve()
+    budget.started_call(invocation)
+    budget.finish(invocation, {"input_tokens": 11}, started=True)
+    marker = directory / "author-admitted.json"
+    if damage == "missing_state":
+        state.unlink()
+    elif damage == "missing_marker":
+        marker.unlink()
+    elif damage == "wrong_marker":
+        marker.write_text(json.dumps({**json.loads(marker.read_text()), "binding_id": "0" * 64}))
+    elif damage == "wrong_checkpoint":
+        state.write_text(
+            json.dumps({**json.loads(state.read_text()), "campaign_binding_id": "0" * 64})
+        )
+    elif damage.startswith("ledger_"):
+        ledger = json.loads(budget.path.read_text())
+        ledger[
+            (
+                "checkpoint_worker_active"
+                if damage == "ledger_checkpoint_active"
+                else "accounting_error"
+            )
+        ] = (True if damage == "ledger_checkpoint_active" else "Checkpoint write failed")
+        budget.path.write_text(json.dumps(ledger))
+    else:
+        checkpoint = json.loads(state.read_text())
+        field, replacement = {
+            "old_version": ("version", 1),
+            "other_workflow": ("workflow", "prove"),
+            "other_backend": ("backend", "claude"),
+            "missing_baseline": ("baseline", None),
+            "list_baseline": ("baseline", []),
+            "nonstring_baseline": ("baseline", {"Main.lean": 123}),
+            "invalid_hex_baseline": ("baseline", {"Main.lean": "not hex"}),
+            "changed_baseline": ("baseline", {"Main.lean": ""}),
+            "invalid_portable_baseline": ("formalization_baseline", []),
+            "missing_selection": ("formalization_selection_token", None),
+            "changed_selection": ("formalization_selection_token", "other-selection"),
+            "author_accounting_uncertain": ("accounting_unresolved", True),
+            "native_cleanup_uncertain": ("native_cleanup_unverified", True),
+        }[damage]
+        if replacement is None:
+            checkpoint.pop(field)
+        else:
+            checkpoint[field] = replacement
+        state.write_text(json.dumps(checkpoint))
+    before = {path: path.read_bytes() for path in (state, marker, budget.path) if path.exists()}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Inconsistent admitted history reached paid work or dependency preparation")
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_RESUME_RUN_ID", run_id)
+    monkeypatch.setattr(
+        workflow, "resolve_runtime_provider", lambda **kwargs: {"provider": "codex"}
+    )
+    monkeypatch.setattr(launch, "load_preparation_receipt", lambda root: {"status": "stale"})
+    monkeypatch.setattr(launch, "discover_preparation_plan", forbidden)
+    monkeypatch.setattr(launch, "prepare_document_project", forbidden)
+    monkeypatch.setattr(CampaignLimits, "reserve", forbidden)
+    monkeypatch.setattr(CampaignLimits, "persist", forbidden)
+    with pytest.raises((ValueError, AccountingError)):
+        workflow.resolve_workflow_request("/formalize paper.tex", active_cwd=root)
+    assert all(path.read_bytes() == data for path, data in before.items())
+    assert state.exists() == (damage != "missing_state")
+    assert marker.exists() == (damage != "missing_marker")

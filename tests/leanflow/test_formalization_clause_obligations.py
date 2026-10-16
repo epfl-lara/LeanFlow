@@ -257,8 +257,8 @@ def test_obligation_repair_is_frozen_and_non_authorizing(tmp_path: Path) -> None
 def test_review_contract_upgrade_invalidates_old_selected_policy(tmp_path, monkeypatch) -> None:
     record = _record(tmp_path, "Exact clause.")
     configuration = review.review_configuration("claude", "fixture", "max", {})
-    assert configuration["protocol"] == "source-review-v10"
-    record["review_policy"] = {**configuration, "protocol": "source-review-v9"}
+    assert configuration["protocol"] == "source-review-v11"
+    record["review_policy"] = {**configuration, "protocol": "source-review-v10"}
     _, kwargs = review_helpers._review_transport(record, tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="Reviewer contract changed"):
         review.review_revision(record, **kwargs)

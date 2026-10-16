@@ -6,6 +6,7 @@ import copy
 from typing import Any
 
 from leanflow_cli.formalization.clause_obligations import validate_dispositions
+from leanflow_cli.formalization.corrections import apply_corrections
 from leanflow_cli.formalization.evidence import identifier
 from leanflow_cli.formalization.inventory_authority import complete_inventory
 from leanflow_cli.formalization.lean_origin import imported_origin_owner
@@ -22,6 +23,8 @@ def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str
     ):
         raise ValueError("Proposal must name the current frozen source revision")
     result = copy.deepcopy(record)
+    if {"correction_authorities", "correction_evidence"}.intersection(proposal):
+        raise ValueError("Author proposals cannot grant correction authority or checked evidence")
     result["inventory"] = copy.deepcopy(complete_inventory(record))
     from leanflow_cli.formalization.slice_gate import protocol_enabled, slice_regions
 
@@ -40,6 +43,7 @@ def apply_proposal(record: dict[str, Any], proposal: dict[str, Any]) -> dict[str
         raise ValueError(
             "Blocking extraction diagnostics require exact source reconciliation: " + str(error)
         ) from error
+    apply_corrections(result, proposal.get("corrections", []))
     selected_source_ids = set(record["slice_source_ids"]) if partial else None
     if partial:
         selected_regions = slice_regions(record)

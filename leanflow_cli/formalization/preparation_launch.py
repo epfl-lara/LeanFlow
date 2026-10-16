@@ -259,7 +259,8 @@ def _prepare_formalization_launch(
         previous
         and env.get("LEANFLOW_NATIVE_RESUME_RUN_ID")
         and previous.get("source_bundle") == record["source_bundle"]
-        and previous.get("budget_path") == budget_path.relative_to(root).as_posix()
+        and previous.get("budget_path")
+        in {str(budget_path), budget_path.relative_to(root).as_posix()}
     ):
         return {"root": root, "receipt": previous, "budget_path": budget_path}
 

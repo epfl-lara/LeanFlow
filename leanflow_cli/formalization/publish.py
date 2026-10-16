@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import quote
 
 from core.deadlines import operation_cancelled, remaining_seconds
+from leanflow_cli.formalization.corrections import assert_corrections_accepted
 from leanflow_cli.formalization.environment import environment_identity
 from leanflow_cli.formalization.evidence import contained, digest, durable_json, read_blob
 from leanflow_cli.formalization.handoff import build_handoff
@@ -84,6 +85,27 @@ def blueprint(record: dict[str, Any]) -> str:
     pending = record["checks"].get("obligations", [])
     lines.extend(["", f"Pending named proof obligations: {len(pending)}.", ""])
     lines.extend(f"- `{row['name']}` in `{row['file']}`" for row in pending)
+    if record.get("corrections"):
+        lines.extend(["", "## Reviewed with documented corrections", ""])
+        for correction in record["corrections"]:
+            lines.extend(
+                [
+                    f"### {correction['id']} · {correction['kind'].replace('_', ' ')}",
+                    "",
+                    "Original: " + correction["original"]["literal_reading"],
+                    "",
+                    "Adopted: " + correction["adopted"]["reading"],
+                    "",
+                    correction["rationale"],
+                    "",
+                    "Authority references: " + ", ".join(correction["authority_refs"]),
+                    "",
+                    "Lean declarations: " + ", ".join(correction["adopted"]["declaration_names"]),
+                    "",
+                    "Correction review and any local checked evidence are separate from downstream theorem proof completion.",
+                    "",
+                ]
+            )
     lines.extend(
         [
             "",
@@ -159,6 +181,7 @@ def _publish_checked_owned(
     from leanflow_cli.formalization.source_visual_receipt import validated_visual_evidence
 
     assert_reconciliation_reviewed(record, review.get("reviews", []))
+    assert_corrections_accepted(record, review.get("reviews", []))
     visual = validated_visual_evidence(record, review)
     from leanflow_cli.formalization.slice_gate import assert_complete_slice
 

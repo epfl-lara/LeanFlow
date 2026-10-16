@@ -236,7 +236,7 @@ export function FormalizationView() {
       <FormalizationSection id="formalization-inventory" title="Source inventory" defaultOpen attention={pdfShown}
         status={[{ label: plural(snapshot.items.length, "item") }, { label: `${counts.reviewed}/${counts.included} reviewed${progress.historical ? " (saved)" : ""}` }, ...(counts.excluded ? [{ label: `${counts.excluded} excluded` }] : [])]}>
         <FormalizationInventory key={snapshot.document_id} items={snapshot.items} selectedId={selectedId} selectItem={setSelectedId} candidates={sourceSelection ? sourceCandidates : null} historical={progress.historical} />
-        {selected && <FormalizationItemDetail item={selected} revisionId={snapshot.revision_id} historical={progress.historical} disabled={actionBlocked} linksDisabled={!!error} submit={repair} openArtifact={openArtifact} />}
+        {selected && <FormalizationItemDetail item={selected} revisionId={snapshot.revision_id} historical={progress.historical} disabled={actionBlocked} correctionsDisabled={sourceStale || workflowBusy || setupRunning} linksDisabled={!!error} submit={repair} openArtifact={openArtifact} />}
         <div className="toolbar">{snapshot.artifacts.filter(artifact => artifact.kind === "pdf" || artifact.path.endsWith(".pdf")).map(artifact => <button className="btn secondary" key={artifact.id} disabled={!!error} onClick={() => openArtifact(artifact.id)}>Open PDF: {artifact.title ?? artifact.path}</button>)}</div>
         {pdf && pdfShown && <FormalizationPdfView pdf={pdf} items={snapshot.items} selectedId={selectedId} selectItem={setSelectedId} companion={snapshot.source.kind === "latex"} onSelection={snapshot.source.kind === "pdf" ? setPdfSelection : undefined} />}
         <FormalizationRepair key={`${snapshot.document_id}:${selectedId}`} snapshot={snapshot} item={selected} disabled={actionBlocked} submit={repair} pdfSelection={pdfSelection} />
@@ -246,14 +246,19 @@ export function FormalizationView() {
         status={[preparationBusy ? { label: "running", tone: "running" } : snapshot.preparation?.current ? { label: "prepared and current", tone: "ok" } : { label: snapshot.preparation?.status ? snapshot.preparation.status.replaceAll("_", " ") : "not prepared" }]}>
         <FormalizationPreparation key={`preparation:${snapshot.document_id}:${snapshot.revision_id}`} snapshot={snapshot} ready={ready} onActiveChange={setPreparationBusy} />
       </FormalizationSection>
-      {snapshot.draft_preview && <FormalizationSection id="formalization-draft" title="Unaccepted source draft"
-        status={[{ label: "not accepted", tone: "warn" }, { label: plural(snapshot.draft_preview.artifacts.length, "file") }]}>
-        <p className="notice warn">Source uncertainty remains unresolved. These files have no coverage, translation, publication or proof approval.</p>
+      {snapshot.draft_preview && <FormalizationSection id="formalization-draft" title={snapshot.draft_preview.status === "unaccepted_formalization" ? "Delivered draft project" : "Unaccepted source draft"}
+        status={[{ label: "not accepted", tone: "warn" }, ...(snapshot.draft_preview.delivery_status ? [{ label: `draft ${snapshot.draft_preview.delivery_status}` }] : []), { label: plural(snapshot.draft_preview.artifacts.filter(artifact => artifact.kind !== "project").length, "frozen file") }]}>
+        <p className="notice warn">{snapshot.draft_preview.status === "unaccepted_formalization" ? "The draft project is delivered with flagged review notes. Human revision is optional for delivery; translation acceptance and proof approval remain separate." : "Source uncertainty remains unresolved. These files have no coverage, translation, publication or proof approval."}</p>
+        {snapshot.draft_preview.delivery && <>
+          <p>{snapshot.draft_preview.delivery.counts.mapped_source_items}/{snapshot.draft_preview.delivery.counts.required_source_items} required source items mapped ({snapshot.draft_preview.delivery.counts.source_items} total; {snapshot.draft_preview.delivery.counts.excluded_source_items} explicitly excluded) · {snapshot.draft_preview.delivery.counts.accounted_regions}/{snapshot.draft_preview.delivery.counts.regions} regions accounted · {snapshot.draft_preview.delivery.counts.accounted_known_clauses}/{snapshot.draft_preview.delivery.counts.required_known_clauses} required clauses accounted ({snapshot.draft_preview.delivery.counts.known_clauses} total; {snapshot.draft_preview.delivery.counts.excluded_known_clauses} explicitly excluded) · {plural(snapshot.draft_preview.delivery.counts.unresolved_known_clauses, "unresolved clause")}. The frozen delivery census lists exact gaps and review notes; these totals do not approve the translation.</p>
+          <p>{snapshot.draft_preview.delivery.compiled ? "Saved project compilation checked; theorem proofs may remain sorry." : "Project compilation is unverified. The incomplete saved project remains available for inspection."}</p>
+        </>}
         <p>{snapshot.draft_preview.source_diagnostics.length} source diagnostics remain attached to this draft. Run <code>{snapshot.draft_preview.run_id}</code>.</p>
-        <ul>{snapshot.draft_preview.artifacts.map(artifact => <li key={artifact.id}>
+        {snapshot.draft_preview.artifacts.filter(artifact => artifact.kind === "project").map(artifact => <button key={artifact.id} className="btn primary" disabled={!ready || repairBlocked} onClick={() => openArtifact(artifact.id)}>Open draft project</button>)}
+        <ul>{snapshot.draft_preview.artifacts.filter(artifact => artifact.kind !== "project").map(artifact => <li key={artifact.id}>
           <button className="btn secondary" disabled={!ready || repairBlocked} onClick={() => openArtifact(artifact.id)}>{artifact.title ?? artifact.path}</button>
         </li>)}</ul>
-        <p className="muted">Inspect the frozen draft beside the original TeX and PDF. Source repairs and independent statement review are required before proving.</p>
+        <p className="muted">{snapshot.draft_preview.status === "unaccepted_formalization" ? "Open the project in VS Code and inspect its notes beside the frozen TeX/PDF. You can revise ambiguous readings later. This draft has no accepted prover handoff." : "Inspect the frozen draft beside the original TeX and PDF. Source repairs and independent statement review are required before proving."}</p>
       </FormalizationSection>}
       <FormalizationSection id="formalization-handoff" title="Prover handoff"
         status={[snapshot.proof_completion === "checked" ? { label: "proofs checked", tone: "ok" } : snapshot.handoff ? { label: `${plural(snapshot.handoff.obligations.length, "obligation")} open` }

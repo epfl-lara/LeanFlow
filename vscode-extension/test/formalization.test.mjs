@@ -10,7 +10,7 @@ import { FormalizationService } from "../dist/test/formalizationService.mjs";
 import { readFormalizationArtifact } from "../dist/test/formalizationArtifact.mjs";
 import { parseWebviewMessage } from "../dist/test/messageSchema.mjs";
 import { buildWorkflowArgs } from "../dist/test/launch.mjs";
-import { formalizationFixture, sourceDraftFixture } from "./helpers/formalizationFixture.mjs";
+import { formalizationFixture, sourceDraftFixture, deliveredDraftFixture } from "./helpers/formalizationFixture.mjs";
 import { formalizationConflictFixture } from "./helpers/formalizationConflictFixture.mjs";
 
 test("source drafts reject proof or publication authority and unbound artifact bytes", () => {
@@ -34,6 +34,53 @@ test("source drafts reject proof or publication authority and unbound artifact b
     Object.assign(bad.draft_preview.artifacts[0], changed);
     assert.throws(() => parseFormalizationSnapshot(bad), /invalid unaccepted draft/);
   }
+});
+
+test("delivered draft projects require an exact run-bound folder and no acceptance authority", () => {
+  const snapshot = deliveredDraftFixture();
+  assert.equal(parseFormalizationSnapshot(snapshot).draft_preview.delivery_status, "complete");
+  for (const mutate of [
+    value => { value.draft_preview.reason = "approved"; },
+    value => { value.draft_preview.delivery_status = "accepted"; },
+    value => { value.draft_preview.delivery = null; },
+    value => { value.draft_preview.delivery.compiled = false; },
+    value => { value.draft_preview.delivery.coverage_complete = false; },
+    value => { value.draft_preview.delivery.counts.source_items = -1; },
+    value => { value.draft_preview.delivery.counts.excluded_source_items = 1; },
+    value => { value.draft_preview.delivery.counts.mapped_source_items = 3; },
+    value => { value.draft_preview.delivery.counts.mapped_source_items = 1; },
+    value => { value.draft_preview.delivery.project_artifact_id = "unknown-project"; },
+    value => { value.draft_preview.delivery.census_artifact_id = "unknown-census"; },
+    value => { value.draft_preview.run_id = "../outside"; },
+    value => { value.handoff = { revision_id: value.revision_id, obligations: [] }; },
+    value => { value.can_prove = true; },
+    value => { value.status = "published"; },
+    value => { value.draft_preview.artifacts.find(row => row.kind === "project").path = "/elsewhere/project"; },
+    value => { value.draft_preview.artifacts.push({ ...value.draft_preview.artifacts.at(-1) }); },
+    value => { value.draft_preview.artifacts = value.draft_preview.artifacts.filter(row => row.kind !== "project"); },
+  ]) {
+    const invalid = structuredClone(snapshot);
+    mutate(invalid);
+    assert.throws(() => parseFormalizationSnapshot(invalid), /invalid unaccepted draft/);
+  }
+  const oldPreview = sourceDraftFixture();
+  oldPreview.draft_preview.artifacts.push(snapshot.draft_preview.artifacts.at(-1));
+  oldPreview.artifacts.push(snapshot.draft_preview.artifacts.at(-1));
+  assert.throws(() => parseFormalizationSnapshot(oldPreview), /invalid unaccepted draft/);
+  const incomplete = structuredClone(snapshot);
+  incomplete.draft_preview.delivery_status = "incomplete";
+  incomplete.draft_preview.delivery.complete = false;
+  incomplete.draft_preview.delivery.coverage_complete = false;
+  incomplete.draft_preview.delivery.compiled = false;
+  incomplete.draft_preview.delivery.project_saved = false;
+  incomplete.draft_preview.delivery.counts.mapped_source_items = 1;
+  assert.equal(parseFormalizationSnapshot(incomplete).draft_preview.delivery_status, "incomplete");
+  const excluded = structuredClone(snapshot);
+  excluded.draft_preview.delivery.counts.source_items = 3;
+  excluded.draft_preview.delivery.counts.excluded_source_items = 1;
+  excluded.draft_preview.delivery.counts.known_clauses = 3;
+  excluded.draft_preview.delivery.counts.excluded_known_clauses = 1;
+  assert.equal(parseFormalizationSnapshot(excluded).draft_preview.delivery_status, "complete");
 });
 
 test("source draft intent is an explicit boolean formalize option before the trailing prompt", () => {

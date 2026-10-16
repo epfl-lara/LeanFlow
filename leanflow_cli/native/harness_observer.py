@@ -5,13 +5,15 @@ from __future__ import annotations
 import os
 import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from agent.accounting.redact import redact_sensitive_text
 from core.campaign_limits import CampaignLimits
+from leanflow_cli.workflows.workflow_json_io import WorkflowStateLockTimeout
 from leanflow_cli.workflows.workflow_state import (
     append_workflow_activity,
     save_workflow_live_status,
@@ -73,24 +75,40 @@ class NativeObserver:
 
     def _activity(self, kind: str, message: str, **details: Any) -> None:
         """Supply explicit context so activity enrichment cannot copy user prompts."""
-        append_workflow_activity(
-            kind,
-            self._text(message),
-            process_id=os.getpid(),
-            agent_session_id="native-" + self.run_id,
-            project_root=str(self.root),
-            workflow_kind=self.kind,
-            workflow_command="/" + self.kind,
-            effective_prompt="",
-            active_skill="",
-            run_scope="top-level",
-            provider=self.backend,
-            **details,
-        )
+        try:
+            append_workflow_activity(
+                kind,
+                self._text(message),
+                lock_timeout_s=0.0,
+                process_id=os.getpid(),
+                agent_session_id="native-" + self.run_id,
+                project_root=str(self.root),
+                workflow_kind=self.kind,
+                workflow_command="/" + self.kind,
+                effective_prompt="",
+                active_skill="",
+                run_scope="top-level",
+                provider=self.backend,
+                **details,
+            )
+        except WorkflowStateLockTimeout:
+            pass
+
+    @contextmanager
+    def _display_lock(self) -> Iterator[bool]:
+        """Skip display work while another callback owns its bounded publication."""
+        acquired = self._lock.acquire(blocking=False)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                self._lock.release()
 
     def start(self, state: Mapping[str, Any]) -> None:
         """Claim live process ownership before announcing the native run."""
-        with self._lock:
+        with self._display_lock() as acquired:
+            if not acquired:
+                return
             if self._started:
                 return
             os.environ.update(
@@ -109,13 +127,17 @@ class NativeObserver:
         phase: str | None = None,
     ) -> None:
         """Publish scalar progress while preserving unknown native usage as unknown."""
-        with self._lock:
+        with self._display_lock() as acquired:
+            if not acquired:
+                return
             if self._finished:
                 return
             if phase is not None:
                 self._phase = phase
             if budget is not None:
-                with budget.lock:
+                if not budget.lock.acquire(blocking=False):
+                    return
+                try:
                     calls = [
                         call
                         for call in budget.state["invocations"].values()
@@ -140,32 +162,44 @@ class NativeObserver:
                         "elapsed_s": round(budget.elapsed(), 3),
                         "limits": dict(budget.limits),
                     }
+                finally:
+                    budget.lock.release()
             timestamp = datetime.now(UTC).isoformat()
-            save_workflow_live_status(
-                {
-                    "run_id": self.run_id,
-                    "project_root": str(self.root),
-                    "process_id": os.getpid(),
-                    "updated_at": timestamp,
-                    "runtime_heartbeat_at": timestamp,
-                    "workflow_kind": self.kind,
-                    "workflow_command": "/" + self.kind,
-                    "provider": self.backend,
-                    "phase": self._phase,
-                    "status": self._text(state.get("status", "running")),
-                    "terminal": bool(state.get("terminal", False)),
-                    "native_session_id": self._text(state.get("session_id", "")),
-                    "native_state_path": str(
-                        self.root / ".leanflow/native-workflows" / self.run_id / "state.json"
-                    ),
-                    "native_metrics": dict(self._metrics),
-                    "current_blocker": self._text(state.get("error", ""), 1000),
-                }
-            )
+            try:
+                self._save_status(state, timestamp)
+            except WorkflowStateLockTimeout:
+                pass
+
+    def _save_status(self, state: Mapping[str, Any], timestamp: str) -> None:
+        """Publish through a nonblocking status sidecar attempt."""
+        save_workflow_live_status(
+            {
+                "run_id": self.run_id,
+                "project_root": str(self.root),
+                "process_id": os.getpid(),
+                "updated_at": timestamp,
+                "runtime_heartbeat_at": timestamp,
+                "workflow_kind": self.kind,
+                "workflow_command": "/" + self.kind,
+                "provider": self.backend,
+                "phase": self._phase,
+                "status": self._text(state.get("status", "running")),
+                "terminal": bool(state.get("terminal", False)),
+                "native_session_id": self._text(state.get("session_id", "")),
+                "native_state_path": str(
+                    self.root / ".leanflow/native-workflows" / self.run_id / "state.json"
+                ),
+                "native_metrics": dict(self._metrics),
+                "current_blocker": self._text(state.get("error", ""), 1000),
+            },
+            lock_timeout_s=0.0,
+        )
 
     def event(self, kind: str, detail: Mapping[str, Any]) -> None:
         """Append bounded receipts and allowlisted failure summaries, keeping output private."""
-        with self._lock:
+        with self._display_lock() as acquired:
+            if not acquired:
+                return
             if not self._started or self._finished:
                 return
             if kind == "agent-settings":
@@ -229,7 +263,9 @@ class NativeObserver:
 
     def finish(self, state: Mapping[str, Any]) -> None:
         """Publish terminal ownership and the exit event consumed by run discovery."""
-        with self._lock:
+        with self._display_lock() as acquired:
+            if not acquired:
+                return
             if not self._started or self._finished:
                 return
             terminal = dict(state)
@@ -239,10 +275,14 @@ class NativeObserver:
                 terminal["error"] = "Native controller exited without a terminal result"
             terminal.update(status=status, terminal=True)
             # Existing readers recognize exited as terminal even after the PID dies.
-            terminal_phase = "completed" if status == "completed" else "exited"
+            terminal_phase = (
+                "completed" if status in {"completed", "completed_with_ambiguities"} else "exited"
+            )
             self.publish(terminal, phase=terminal_phase)
             code = (
-                0 if status in {"completed", "draft_ready"} else 130 if status == "cancelled" else 1
+                0
+                if status in {"completed", "draft_ready", "completed_with_ambiguities"}
+                else 130 if status == "cancelled" else 1
             )
             self._activity(
                 "runner-exit",

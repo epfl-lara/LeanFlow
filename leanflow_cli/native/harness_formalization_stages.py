@@ -101,7 +101,12 @@ def campaign_budget_limits(path: Path, environment: dict[str, str]) -> dict[str,
 
 
 def stage_assignment(
-    root: Path, environment: dict[str, str], context: dict[str, Any], prompt: str
+    root: Path,
+    environment: dict[str, str],
+    context: dict[str, Any],
+    prompt: str,
+    *,
+    best_effort: bool = False,
 ) -> tuple[dict[str, Any], str]:
     """Describe only the currently admitted slice or full expansion from durable controller state."""
     record = load_document(
@@ -111,7 +116,11 @@ def stage_assignment(
     )
     if not protocol_enabled(record):
         return context, prompt
-    stage = slice_status(root, record)
+    stage = (
+        {"phase": "complete", "required": True, "best_effort": True, "slice_id": None}
+        if best_effort
+        else slice_status(root, record)
+    )
     inventory = complete_inventory(record)
     prepared = checked_preparation_assignment(root, record)
     plan = prepared["plan"]
@@ -168,9 +177,28 @@ def stage_assignment(
         "required_region_ids": [group["id"] for group in groups],
         "source_region_partition": partition_reference,
         "regions": [compact_region(group) for group in groups],
-        "publication_authority": stage["phase"] == "complete",
+        "publication_authority": stage["phase"] == "complete" and not best_effort,
+        "proof_authority": False,
     }
     context["formalization_stage"] = assignment
+    if best_effort:
+        return context, prompt + (
+            "\nComplete the best-effort formalization of the ENTIRE paper now.\n"
+            + json.dumps(assignment, ensure_ascii=False)
+            + "\nHuman interpretation is optional and must never stop generation. Keep original "
+            "source unchanged. Implement all definitions/data, leave theorem proofs as named "
+            "sorry obligations. Choose and explicitly label provisional readings or alternative "
+            "statements for ambiguous passages; record assumptions, source errors and reasons "
+            "in setup-notes.md/blockers.md and the proposal. Do not mark known-false literal "
+            "claims as ordinary proof work. No human permission or source-review PASS is "
+            "required to FINISH THIS UNACCEPTED DRAFT. No statement approval, slice PASS or "
+            "Prove handoff is granted. Cover every original assigned item, clause and region "
+            "in a full phase=complete proposal; unresolved clauses remain explicitly accounted "
+            "for. Finish all remaining modules, update the aggregator, use Lean tools to fix "
+            "compile errors, and submit_files to report saved coverage. A response with "
+            "accepted=false and draft_saved=true is expected: finish after saving the complete "
+            "project. Review findings remain annotations for later human revision.\n"
+        )
     instructions = (
         "\nController-enforced formalization stage:\n"
         + json.dumps(assignment, ensure_ascii=False)

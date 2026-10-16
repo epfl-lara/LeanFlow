@@ -203,6 +203,10 @@ source census for audit.
 `harness_workflow.py` owns native execution, global limits, submission, review,
 and promotion. `harness_observer.py` publishes process ownership, heartbeats,
 accounting, settings, and bounded activity through the status API.
+`native/harness_heartbeat.py` owns the author checkpoint writer and bounded closure.
+It records active accounting ownership before execution, cancels on persistence
+failure and releases ownership only after final elapsed-time persistence and
+physical worker closure. Display locks cannot block this accounting lifecycle.
 Tool activity exposes compact receipts and allowlisted, controller-authored failure
 summaries; arbitrary error text, arguments and results remain private.
 
@@ -235,6 +239,9 @@ publication; proving uses its own controller. These are the two exposed workflow
 | `formalization_documents.py`, `formalization_tex_discovery.py`, `formalization_models.py`, `intake.py` | Source path selection, TeX root discovery, frozen intake context and workflow environment; document-tool displays project the same source inventory |
 | `preparation_plan.py`, `preparation_bounds.py`, `preparation_inputs.py`, `preparation_discovery.py`, `preparation_launch.py` | Require a checked project baseline before native planning or budgets; shared advertised recommendation bounds, read-only prerequisite estimates, bounded user/catalog dependency expansion, source-only previews and shared-budget setup before native-controller ownership |
 | `preparation_campaign.py` | Persist controller-owned run/source accounting identity before paid planning; reopen the exact budget independently of preparation freshness, reject inconsistent or unbound resume history and preserve prior charges through failed preflight |
+| `corrections.py`, `correction_evidence.py` | Versioned scoped user decisions, immutable original/adopted readings, replayed closed local warrants, exact clause dispositions and same-call independent correction verdicts; existing review/publication/handoff gates remain acceptance authority |
+| `service_corrections.py` | Project correction evidence and current controller-bound decision templates into the existing item details; saved verdicts do not imply fresh acceptance |
+| `native/harness_best_effort.py`, `draft_delivery.py`, `draft_delivery_census.py`, `draft_review.py` | Same-campaign whole-paper completion after unresolved readings, independent compiled-name/data/build checks, isolated advisory full-source review and immutable versions of unaccepted drafts; retain a real buildable project without slice, publication or prover authority |
 | `preflight_owner.py`, `workflows/workflow_json_io.py` | Publish a verified CLI preparation owner with cooperative Stop, aggregate memory supervision, bounded planning activity and heartbeats; skip contended progress writes, bound ownership transitions and refuse handoff after failed release; retain prior mathematics separately from current preparation errors, preserve inherited interpreter flags; previews claim no owner |
 | `preparation.py`, `preparation_run.py`, `preparation_stage.py`, `preparation_layout.py`, `preparation_reuse.py`, `preparation_resources.py`, `preparation_inspection.py`, `preparation_lifecycle.py` | Exact setup authority, private dependency acquisition/build/import checks, bounded metadata-gap diagnostics with positive final supervision, measured resource bounds and disposal only after verified process cleanup |
 | `preparation_hash_cache.py` | Verify new Lake hash caches through the pinned compiler's pure API under stopped private ownership; admit only exact derived additions beside the unchanged original source inventory and retain them in transactionally published, fingerprinted infrastructure |

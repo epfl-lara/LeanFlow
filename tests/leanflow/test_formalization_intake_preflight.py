@@ -221,6 +221,75 @@ def test_admitted_dependencies_allow_companion_backed_draft_without_acceptance(
     assert not inspected["can_prove"] and not context.target_lean_path.exists()
 
 
+@pytest.mark.parametrize("preparation_changed", [False, True])
+def test_prepared_intake_rebinds_previous_checked_environment_before_paid_work(
+    build_admission_project, monkeypatch, preparation_changed
+) -> None:
+    """Use the current checked preparation rather than an inherited previous checker identity."""
+    from leanflow_cli.formalization import preparation, slice_gate
+    from leanflow_cli.formalization.formalization_documents import _select_formalization_document
+    from leanflow_cli.formalization.records import (
+        create_document,
+        document_lock,
+        new_revision,
+        save_revision,
+    )
+    from tests.leanflow.preparation_helpers import inspector_readiness_record
+
+    root, layout = build_admission_project
+    layout["src_dir"] = "."
+    _dependency(root, "example")
+    record = create_document(root, root / "paper.tex")
+    source_id = record["inventory"]["items"][0]["id"]
+    with document_lock(root, record["document_id"]) as directory:
+        previous = new_revision(record)
+        previous.update(
+            workflow_protocol=2,
+            preparation_id="old-preparation" if preparation_changed else "current-preparation",
+            preparation_plan_id="current-plan",
+            slice_source_ids=[source_id],
+            environment_id="old-checked-environment",
+            checks={"accepted": True},
+            reviews=[{"accepted": True}],
+            handoff={"accepted": True},
+        )
+        previous = save_revision(directory, previous)
+    receipt = {
+        "preparation_id": "current-preparation",
+        "preparation_plan_id": "current-plan",
+        "source_bundle": record["source_bundle"],
+        "environment_id": "new-checked-environment",
+        "inspector_readiness": inspector_readiness_record(),
+        "project_sources": preparation._source_identity(root),
+        "plan": {"plan_id": "current-plan", "slice_source_ids": [source_id]},
+    }
+    monkeypatch.setattr(preparation, "load_preparation_receipt", lambda _: receipt)
+    monkeypatch.setattr(preparation, "environment_identity", lambda _: receipt["environment_id"])
+    monkeypatch.setattr(
+        harness_workflow, "run_harness", lambda *a, **kw: pytest.fail("Intake cannot call a model")
+    )
+    monkeypatch.setattr(
+        CampaignLimits, "reserve", lambda *a, **kw: pytest.fail("Intake cannot reserve a paid call")
+    )
+    source_before = (root / "paper.tex").read_bytes()
+    context = intake.prepare_intake(
+        root, _select_formalization_document(root, root, "paper.tex"), require_preparation=True
+    )
+    selected = load_document(root, record["document_id"])
+    slice_gate.require_stage(root, selected, "representative_slice")
+    assert selected["revision_id"] == context.metadata["revision_id"]
+    assert selected["revision_id"] != previous["revision_id"]
+    assert selected["environment_id"] == receipt["environment_id"]
+    assert selected["preparation_id"] == receipt["preparation_id"]
+    assert selected["checks"] == {} and selected["reviews"] == [] and not selected["handoff"]
+    assert (
+        load_document(root, record["document_id"], previous["revision_id"])["environment_id"]
+        == "old-checked-environment"
+    )
+    assert (root / "paper.tex").read_bytes() == source_before
+    assert not (root / ".leanflow/native-workflows").exists()
+
+
 @pytest.fixture
 def unsupported_project(tmp_path: Path) -> Path:
     package = tmp_path / ".lake/packages/repl"

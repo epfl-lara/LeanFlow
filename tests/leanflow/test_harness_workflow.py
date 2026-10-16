@@ -7,7 +7,7 @@ import pytest
 from agent.runtime.harness import HarnessResult
 from agent.runtime.harness.events import usage_delta
 from agent.runtime.harness.models import NativeLaunchFailure
-from core.campaign_limits import CampaignLimits
+from core.campaign_limits import AccountingError, CampaignLimits
 from leanflow_cli.formalization.preparation_campaign import (
     admit_author,
     campaign_budget,
@@ -372,7 +372,8 @@ def test_clean_room_rejects_online_or_unclassified_checkpoints_before_launch(
         "campaign_binding_id": binding["binding_id"],
         "backend": "codex",
         "workflow": "formalize",
-        "baseline": {},
+        "baseline": {name: data.hex() for name, data in source_files(tmp_path).items()},
+        "formalization_selection_token": binding["selection_token"],
     }
     if saved_policy is not None:
         state["research_policy"] = saved_policy
@@ -616,20 +617,156 @@ def test_hard_kill_during_independent_check_does_not_leave_a_false_native_live_m
     assert checkpoint["native_process_cleanup_verified"] is True
     assert checkpoint["native_cleanup_unverified"] is False
 
-    def resumed(request, on_event=None):
-        request.on_started()
-        return HarnessResult(
-            "completed",
-            '{"status":"blocked","reason":"Await source repair"}',
-            cleanup_verified=True,
-        )
-
-    monkeypatch.setattr(runner, "run_harness", resumed)
-    result = runner.run_workflow(
-        {**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "post-author-crash"}
+    # Native closure and elapsed-time accounting are independent: the actor is
+    # closed, but this hard kill did not let its checkpoint worker close cleanly.
+    ledger = state_path.with_name("limits.json")
+    before = ledger.read_bytes()
+    assert json.loads(before)["checkpoint_worker_active"] is True
+    monkeypatch.setattr(
+        runner, "run_harness", lambda *a, **k: pytest.fail("Uncertain accounting resumed")
     )
-    assert result["status"] == "blocked", result.get("error")
-    assert not result["native_cleanup_unverified"]
+    with pytest.raises(AccountingError, match="accounting is unresolved"):
+        runner.run_workflow({**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "post-author-crash"})
+    assert ledger.read_bytes() == before
+    assert not json.loads(state_path.read_text())["native_cleanup_unverified"]
+
+
+def test_author_checkpoint_failure_cancels_silent_actor_and_retains_accounting(
+    tmp_path, monkeypatch
+):
+    """Drive the real controller through a checkpoint failure after actor admission."""
+    import threading
+    import time
+
+    from leanflow_cli.native.harness_heartbeat import AuthorHeartbeat
+
+    entered, checkpoint_failed = threading.Event(), threading.Event()
+    actor_cancellation = []
+    original_persist = CampaignLimits.persist
+
+    def persist(budget):
+        if threading.current_thread() is not threading.main_thread() and entered.is_set():
+            checkpoint_failed.set()
+            raise OSError("Fixture disk quota exhausted")
+        return original_persist(budget)
+
+    monkeypatch.setattr(CampaignLimits, "persist", persist)
+    monkeypatch.setattr(
+        runner,
+        "AuthorHeartbeat",
+        lambda *a, **k: AuthorHeartbeat(*a, **k, interval_s=0.02),
+    )
+    environment = _environment(tmp_path, LEANFLOW_WORKFLOW_RUN_ID="checkpoint-failure")
+    directory = tmp_path / ".leanflow/native-workflows/checkpoint-failure"
+
+    def invoke(request, on_event=None):
+        request.on_started()
+        entered.set()
+        deadline = time.monotonic() + 3
+        while not request.cancelled() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        actor_cancellation.append(request.cancelled())
+        assert request.cancelled() and checkpoint_failed.is_set()
+        durable = json.loads((directory / "limits.json").read_text())
+        assert durable["checkpoint_worker_active"] is True
+        assert len(durable["invocations"]) == 1
+        # Even a reopen before the main thread's final persist cannot silently
+        # restore the missing interval, including a wall-time-only campaign.
+        with pytest.raises(AccountingError, match="accounting is unresolved"):
+            CampaignLimits(directory / "limits.json", {"wall_time_s": 60})
+        return HarnessResult("cancelled", "", cleanup_verified=True)
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
+    monkeypatch.setattr("leanflow_cli.native.harness_context.load_skill", lambda *a, **kw: None)
+    for target in (
+        "leanflow_cli.formalization.proposal.check_proposal",
+        "leanflow_cli.formalization.review.review_revision",
+        "leanflow_cli.formalization.publish.publish_checked",
+    ):
+        monkeypatch.setattr(
+            target, lambda *a, **k: pytest.fail("Authority after checkpoint failure")
+        )
+    started = time.monotonic()
+    result = runner.run_workflow({**environment, "LEANFLOW_PROVER_WALL_TIME_S": "60"})
+    assert time.monotonic() - started < 5
+    assert actor_cancellation == [True]
+    assert result["status"] == "accounting_error" and result["accounting_unresolved"]
+    durable = json.loads((directory / "limits.json").read_text())
+    assert durable["checkpoint_worker_active"] and durable["accounting_error"]
+    assert len(durable["invocations"]) == 1
+    assert next(iter(durable["invocations"].values()))["status"] == "finished"
+    before = (directory / "limits.json").read_bytes()
+    with pytest.raises(AccountingError, match="accounting is unresolved"):
+        CampaignLimits(directory / "limits.json", {"wall_time_s": 60})
+    assert (directory / "limits.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("held", ["status", "activity"])
+def test_real_author_controller_stop_is_bounded_under_suspended_display_writer(
+    tmp_path, monkeypatch, held
+):
+    """Close the author/controller while another process retains a display lock."""
+    import time
+
+    from leanflow_cli.native.harness_heartbeat import AuthorHeartbeat
+    from leanflow_cli.workflows import workflow_state
+    from tests.leanflow.test_formalization_preflight_progress import _held_status_lock
+
+    created = []
+
+    def heartbeat(*args, **kwargs):
+        value = AuthorHeartbeat(*args, **kwargs, interval_s=0.02)
+        created.append(value)
+        return value
+
+    monkeypatch.setattr(runner, "AuthorHeartbeat", heartbeat)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
+    monkeypatch.setattr("leanflow_cli.native.harness_context.load_skill", lambda *a, **kw: None)
+    for name, value in _environment(
+        tmp_path, LEANFLOW_WORKFLOW_RUN_ID="display-contention"
+    ).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_PROCESS_TOKEN", "author-controller-fixture")
+    stopped_at = []
+    directory = tmp_path / ".leanflow/native-workflows/display-contention"
+    path = (
+        workflow_state.workflow_live_status_path()
+        if held == "status"
+        else workflow_state.workflow_run_activity_path("display-contention")
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # This is an unrelated writer, so establish it before the controller's
+    # process monitor captures its preexisting exclusions.
+    holder = _held_status_lock(path, sidecar=held == "status")
+    holder_process = holder.__enter__()
+
+    def invoke(request, on_event=None):
+        request.on_started()
+        deadline = time.monotonic() + 3
+        before = json.loads((directory / "limits.json").read_text())["elapsed_s"]
+        while json.loads((directory / "limits.json").read_text())["elapsed_s"] < before + 0.08:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        stopped_at.append(time.monotonic())
+        created[0].cancelled.set()
+        assert request.cancelled()
+        return HarnessResult("cancelled", "", cleanup_verified=True)
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    try:
+        result = runner.run_workflow()
+        assert result["status"] == "cancelled", result.get("error")
+        assert time.monotonic() - stopped_at[0] < 1
+        assert created[0]._thread is not None and not created[0]._thread.is_alive()
+        durable = json.loads((directory / "limits.json").read_text())
+        assert not durable.get("checkpoint_worker_active")
+        assert len(durable["invocations"]) == 1
+        assert next(iter(durable["invocations"].values()))["status"] == "finished"
+        assert holder_process.poll() is None
+    finally:
+        holder.__exit__(None, None, None)
 
 
 @pytest.mark.parametrize("verified_no_launch", [False, True])

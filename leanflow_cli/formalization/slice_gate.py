@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.formalization.corrections import assert_corrections_accepted
 from leanflow_cli.formalization.evidence import contained, durable_json, identity, read_blob
 from leanflow_cli.formalization.inventory_authority import (
     assert_complete_coverage,
@@ -68,6 +69,7 @@ def _binding(record: dict[str, Any]) -> dict[str, Any]:
         "preparation_id": record["preparation_id"],
         "preparation_plan_id": record["preparation_plan_id"],
         "slice_source_ids": sorted(record["slice_source_ids"]),
+        "correction_authorities": identity(record.get("correction_authorities", [])),
         "source_inventory_identity": identity(
             {
                 key: value
@@ -95,7 +97,20 @@ def _load_slice(root: Path, record: dict[str, Any]) -> dict[str, Any] | None:
         raise ValueError("Representative slice receipt bytes changed")
     if receipt["binding"] != _binding(record):
         return None
+    # Admission reads the original source base, before an author has proposed
+    # corrections. A submitted slice/complete candidate must additionally retain
+    # the exact reviewed corrections affecting the representative source items.
+    if record.get("proposal_phase") in {"representative_slice", "complete"} and (
+        receipt.get("corrections", []) != _slice_corrections(record)
+    ):
+        return None
     return receipt
+
+
+def _slice_corrections(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """Retain correction intent for selected units without forbidding disjoint later expansion."""
+    selected = set(record["slice_source_ids"])
+    return [row for row in record.get("corrections", []) if row["source_item_id"] in selected]
 
 
 def slice_status(root: Path, record: dict[str, Any]) -> dict[str, Any]:
@@ -168,6 +183,7 @@ def save_reviewed_slice(
     from leanflow_cli.formalization.source_reconciliation import assert_reconciliation_reviewed
 
     assert_reconciliation_reviewed(record, review.get("reviews", []))
+    assert_corrections_accepted(record, review.get("reviews", []))
     if (
         checked.get("selection_token") != current_selection_token(root, record["document_id"])
         or load_document(root, record["document_id"])["revision_id"] != record["revision_id"]
@@ -201,6 +217,7 @@ def save_reviewed_slice(
         "revision_id": record["revision_id"],
         "environment_id": record["environment_id"],
         "units": copy.deepcopy(record["units"]),
+        "corrections": copy.deepcopy(_slice_corrections(record)),
         "files": files,
         "declarations": [_meaning(row) for row in record["checks"]["declarations"]],
         "review": copy.deepcopy(review),

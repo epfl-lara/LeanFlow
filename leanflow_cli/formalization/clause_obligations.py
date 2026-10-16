@@ -8,7 +8,14 @@ from typing import Any
 from leanflow_cli.formalization.evidence import identity
 from leanflow_cli.formalization.inventory_authority import complete_inventory
 
-_DISPOSITIONS = {"represented", "pending_proof", "omitted", "specialized", "unresolved"}
+_DISPOSITIONS = {
+    "represented",
+    "pending_proof",
+    "omitted",
+    "specialized",
+    "unresolved",
+    "represented_via_correction",
+}
 _POSITIVE = {"represented", "pending_proof"}
 _MAX_OBLIGATIONS = 256
 _MAX_REFS = 32
@@ -150,7 +157,9 @@ def validate_dispositions(
             "disposition",
             "declaration_names",
             "rationale",
-        }:
+        } | (
+            {"correction_id"} if row.get("disposition") == "represented_via_correction" else set()
+        ):
             raise ValueError("Invalid authored clause disposition")
         key, names = row["obligation_id"], row["declaration_names"]
         if (
@@ -169,6 +178,20 @@ def validate_dispositions(
                 "Clause disposition names unknown or duplicate source/declaration evidence"
             )
         _text(row["rationale"], "Clause disposition rationale")
+        if row["disposition"] == "represented_via_correction":
+            corrections = {entry["id"]: entry for entry in record.get("corrections", [])}
+            correction_id = row.get("correction_id")
+            correction = corrections.get(correction_id) if isinstance(correction_id, str) else None
+            if (
+                correction is None
+                or correction["source_item_id"] != required[key]["source_id"]
+                or key not in correction["clause_ids"]
+                or not names
+                or set(names) != set(correction["adopted"]["declaration_names"])
+            ):
+                raise ValueError(
+                    "Correction-backed clauses need the exact proposed correction and adopted declarations"
+                )
         if row["disposition"] in _POSITIVE and not names:
             raise ValueError("Represented clauses require exact mapped Lean declarations")
         if (
@@ -194,7 +217,11 @@ def validate_dispositions(
 
 
 def validate_clause_verdicts(
-    unit: dict[str, Any], verdict: dict[str, Any], obligations: dict[str, dict[str, Any]]
+    unit: dict[str, Any],
+    verdict: dict[str, Any],
+    obligations: dict[str, dict[str, Any]],
+    *,
+    accepted_corrections: set[str] | None = None,
 ) -> list[str]:
     """Bind independent checklist verdicts and block every known omitted, narrowed or unresolved clause."""
     authored = {row["obligation_id"]: row for row in unit.get("clause_dispositions", [])}
@@ -236,13 +263,17 @@ def validate_clause_verdicts(
         seen.add(key)
         if key not in authored:
             raise ValueError("Reviewer cannot invent the author's missing clause disposition")
+        positive = authored[key]["disposition"] in _POSITIVE or (
+            authored[key]["disposition"] == "represented_via_correction"
+            and authored[key].get("correction_id") in (accepted_corrections or set())
+        )
         if (
             row["decision"] == "PASS"
-            and authored[key]["disposition"] in _POSITIVE
+            and positive
             and (not names or set(names) != set(authored[key]["declaration_names"]))
         ):
             raise ValueError("Clause PASS requires all exact authored declaration evidence")
-        if authored[key]["disposition"] not in _POSITIVE or row["decision"] != "PASS":
+        if not positive or row["decision"] != "PASS":
             row["decision"] = "BLOCK"
             blocked.append(key)
     return blocked

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.campaign_limits import CampaignLimits
+from core.campaign_limits import AccountingError, CampaignLimits
 from leanflow_cli.formalization import preparation_campaign as campaign
 from leanflow_cli.formalization.preflight_owner import PreflightProgress
 
@@ -36,10 +36,10 @@ def test_checkpoint_io_failure_cancels_and_surfaces_before_handoff(tmp_path, mon
         failed.set()
         raise OSError("Fixture checkpoint unavailable")
 
-    monkeypatch.setattr(budget, "persist", fail)
     cancelled = threading.Event()
     progress = PreflightProgress("fixture", cancelled, SimpleNamespace(), enabled=False)
     progress.bind_budget(budget)
+    monkeypatch.setattr(budget, "persist", fail)
     progress.start()
     assert failed.wait(2)
     with pytest.raises(RuntimeError, match="published safely"):
@@ -55,6 +55,8 @@ def test_blocked_checkpoint_retains_campaign_owner_until_exact_worker_returns(
     original_persist = budget.persist
 
     def blocked():
+        if threading.current_thread() is threading.main_thread():
+            return original_persist()
         entered.set()
         assert release.wait(5)
         original_persist()
@@ -91,6 +93,59 @@ def test_blocked_checkpoint_retains_campaign_owner_until_exact_worker_returns(
             assert not worker.is_alive()
     with campaign.campaign_lock(tmp_path, "fixture"):
         pass
+    with pytest.raises(AccountingError, match="accounting is unresolved"):
+        CampaignLimits(budget.path, {})
+
+
+def test_killed_quiet_preflight_keeps_admission_and_blocks_uncertain_wall_time(tmp_path):
+    """A process exit cannot turn an unclosed checkpoint interval into fresh allowance."""
+    import multiprocessing
+    import os
+
+    path = tmp_path / "budget.json"
+
+    def interrupted():
+        with campaign.campaign_lock(tmp_path, "crashed") as owner:
+            budget = CampaignLimits(path, {"wall_time_s": 60})
+            progress = PreflightProgress(
+                "crashed",
+                threading.Event(),
+                SimpleNamespace(),
+                enabled=False,
+                accounting_owner=owner,
+            )
+            progress.bind_budget(budget)
+            call = budget.reserve()
+            budget.started_call(call)
+            checkpointed = threading.Event()
+            original_persist = budget.persist
+
+            def persist():
+                original_persist()
+                if threading.current_thread() is not threading.main_thread():
+                    checkpointed.set()
+
+            budget.persist = persist
+            progress.start()
+            assert checkpointed.wait(2)
+            os._exit(89)
+
+    child = multiprocessing.get_context("fork").Process(target=interrupted)
+    child.start()
+    child.join(5)
+    if child.is_alive():
+        child.kill()
+        child.join(2)
+        pytest.fail("Quiet preflight fixture failed to exit")
+    assert child.exitcode == 89
+    before = path.read_bytes()
+    saved = json.loads(before)
+    assert saved["checkpoint_worker_active"] is True
+    assert len(saved["invocations"]) == 1
+    assert next(iter(saved["invocations"].values()))["status"] == "running"
+    with pytest.raises(AccountingError, match="accounting is unresolved"):
+        CampaignLimits(path, {"wall_time_s": 60})
+    assert path.read_bytes() == before
 
 
 def test_checkpoint_worker_can_finish_before_parent_releases_accounting(tmp_path):

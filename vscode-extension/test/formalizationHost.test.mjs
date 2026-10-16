@@ -1,13 +1,14 @@
 /** Host actions validate revisions and artifact identities before source access or proving. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, writeFile, readFile, rm, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, symlink, writeFile, readFile, rm, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { build } from "esbuild";
-import { formalizationFixture } from "./helpers/formalizationFixture.mjs";
+import { formalizationFixture, deliveredDraftFixture } from "./helpers/formalizationFixture.mjs";
 import { formalizationConflictFixture } from "./helpers/formalizationConflictFixture.mjs";
+import { formalizationCorrectionFixture } from "./helpers/formalizationCorrectionFixture.mjs";
 
 const bundle = await build({
   stdin: { contents: 'export { FormalizationHost } from "./src/panels/formalizationHost";', resolveDir: process.cwd(), loader: "ts" },
@@ -16,9 +17,11 @@ const bundle = await build({
     builder.onResolve({ filter: /^vscode$/ }, () => ({ path: "vscode", namespace: "fixture" }));
     builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: `
       const f = () => globalThis.formalizationHostFixture;
-      export const Uri = { file: fsPath => ({ fsPath }), from: parts => ({ ...parts, toString: () => parts.scheme + '://' + parts.authority + parts.path }) };
+      const uri = parts => ({ ...parts, fsPath: parts.fsPath ?? parts.path, with: changes => uri({ ...parts, ...changes, fsPath: changes.path ?? parts.fsPath }), toString: () => parts.scheme + '://' + (parts.authority ?? '') + parts.path });
+      export const Uri = { file: fsPath => uri({scheme:'file',path:fsPath}), from: uri };
       export const languages = { setTextDocumentLanguage: async (document, language) => { f().opened.language = language; return { ...document, languageId: language }; } };
-      export const env = {remoteName:undefined};
+      export const env = {get remoteName(){ return f().remoteName; }};
+      export const commands = { executeCommand: async (...args) => { (f().commands ??= []).push(args); } };
       export const ViewColumn = { Beside: 2 };
       export class Range { constructor(...args) { this.args = args; } }
       export class RelativePattern { constructor(base, pattern) { this.base = base; this.pattern = pattern; } }
@@ -430,6 +433,88 @@ test("source links open verified frozen bytes and selection maps back without ex
     assert.equal(pdf.pageIndex, 1);
     assert.equal("path" in pdf, false);
     assert.equal(Buffer.from(pdf.base64, "base64").toString(), ui.f.opened.content);
+  } finally { await ui.dispose(); }
+});
+
+test("delivered projects open in the owning classic VS Code host through the exact resolver", async () => {
+  const ui = await fixture();
+  try {
+    ui.f.snapshot = deliveredDraftFixture();
+    const listed = ui.f.snapshot.artifacts.find(row => row.kind === "project");
+    const folder = path.join(ui.f.root, listed.path);
+    await mkdir(folder, { recursive: true });
+    await writeFile(path.join(folder, "Main.lean"), "theorem draft : True := by sorry\n");
+    ui.f.services.formalizations.artifact = async (...args) => {
+      ui.f.calls.push(["artifact", ...args]);
+      return { ...listed, path: folder };
+    };
+    const request = { type: "openFormalizationArtifact", documentId: "paper-1", revisionId: "revision-1", artifactId: listed.id };
+    await ui.host.handle(request);
+    assert.deepEqual(ui.f.calls.at(-1), ["artifact", "paper-1", "revision-1", listed.id]);
+    assert.equal(ui.f.commands[0][0], "vscode.openFolder");
+    assert.equal(ui.f.commands[0][1].fsPath, folder);
+    assert.deepEqual(ui.f.commands[0][2], { forceNewWindow: true });
+    assert.equal(ui.f.opened, undefined);
+    assert.match(await readFile(path.join(folder, "Main.lean"), "utf8"), /by sorry/);
+    ui.f.remoteName = "ssh-remote";
+    ui.f.folders = [{ uri: { scheme: "vscode-remote", authority: "ssh-remote+owner", fsPath: ui.f.root,
+      with: changes => ({ scheme: "vscode-remote", authority: "ssh-remote+owner", fsPath: changes.path }) } }];
+    await ui.host.handle(request);
+    assert.equal(ui.f.commands[1][1].scheme, "vscode-remote");
+    assert.equal(ui.f.commands[1][1].authority, "ssh-remote+owner");
+    assert.equal(ui.f.commands[1][1].fsPath, folder);
+  } finally { await ui.dispose(); }
+});
+
+test("draft project folder navigation rejects substituted identities, paths and aliases", async () => {
+  const ui = await fixture();
+  try {
+    const snapshot = deliveredDraftFixture();
+    const listed = snapshot.artifacts.find(row => row.kind === "project");
+    const folder = path.join(ui.f.root, listed.path);
+    await mkdir(folder, { recursive: true });
+    const request = { type: "openFormalizationArtifact", documentId: "paper-1", revisionId: "revision-1", artifactId: listed.id };
+    for (const mutation of [
+      value => { value.id = "another-project"; },
+      value => { value.kind = "lean"; },
+      value => { value.sha256 = "0".repeat(64); },
+      value => { value.path = ui.f.root; },
+    ]) {
+      ui.f.snapshot = structuredClone(snapshot);
+      const artifact = { ...listed, path: folder };
+      mutation(artifact);
+      ui.f.services.formalizations.artifact = async () => artifact;
+      await ui.host.handle(request);
+      assert.equal(ui.f.commands, undefined);
+      assert.equal(ui.last("notify").level, "error");
+    }
+    ui.f.services.formalizations.artifact = async () => ({ ...listed, path: folder });
+    ui.f.snapshot = structuredClone(snapshot);
+    ui.f.snapshot.can_prove = true;
+    await ui.host.handle(request);
+    assert.equal(ui.f.commands, undefined);
+    ui.f.snapshot = structuredClone(snapshot);
+    await rm(folder, { recursive: true });
+    await symlink(ui.f.root, folder);
+    await ui.host.handle(request);
+    assert.equal(ui.f.commands, undefined);
+    assert.match(ui.last("notify").message, /unexpected draft project location/);
+  } finally { await ui.dispose(); }
+});
+
+test("correction evidence links belong to their item even in a separate compiled artifact", async () => {
+  const ui = await fixture();
+  try {
+    ui.f.snapshot = formalizationCorrectionFixture();
+    ui.f.snapshot.artifacts.push({ id: "correction-facts", path: "Main/Facts.lean", kind: "lean", sha256: "a".repeat(64) });
+    ui.f.snapshot.items[0].corrections[0].evidence[0].proof.artifact_id = "correction-facts";
+    const request = { type: "openFormalizationArtifact", documentId: "paper-1", revisionId: "revision-1", artifactId: "correction-facts", itemId: "item-1", line: 12 };
+    await ui.host.handle(request);
+    assert.equal(ui.f.opened.language, "lean4");
+    assert.equal(ui.f.calls.filter(row => row[0] === "artifact").length, 1);
+    await ui.host.handle({ ...request, itemId: "item-2" });
+    assert.match(ui.last("notify").message, /does not belong/);
+    assert.equal(ui.f.calls.filter(row => row[0] === "artifact").length, 1);
   } finally { await ui.dispose(); }
 });
 

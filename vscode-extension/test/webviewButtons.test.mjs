@@ -4,8 +4,9 @@ import { after, test } from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
 import ts from "typescript";
 import { mount, textOf, act, SidebarView, FormalizationConflictsFixture, FormalizationPreparationFixture, clickedButtons, normalizeProverSnapshot } from "./helpers/webviewFixture.mjs";
-import { formalizationFixture, sourceDraftFixture } from "./helpers/formalizationFixture.mjs";
+import { formalizationFixture, sourceDraftFixture, deliveredDraftFixture } from "./helpers/formalizationFixture.mjs";
 import { formalizationConflictFixture } from "./helpers/formalizationConflictFixture.mjs";
+import { formalizationCorrectionFixture } from "./helpers/formalizationCorrectionFixture.mjs";
 
 function message(ui, type) { return ui.messages.filter(row => row.type === type).at(-1); }
 
@@ -60,6 +61,46 @@ test("unaccepted preview opens exact frozen artifacts and keeps proving disabled
     ui.click("Configure formalization");
     assert.equal(ui.view.form.sourceDraftOnly, false);
     assert.equal(option().props.checked, false);
+  } finally { ui.dispose(); }
+});
+
+test("delivered draft opens the controller artifact and leaves human revision optional", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = deliveredDraftFixture();
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.match(textOf(ui.root()), /Delivered draft project/);
+    assert.match(textOf(ui.root()), /Human revision is optional for delivery/);
+    assert.match(textOf(ui.root()), /2\/2 required source items mapped \(2 total; 0 explicitly excluded\)/);
+    assert.match(textOf(ui.root()), /2\/2 required clauses accounted \(2 total; 0 explicitly excluded\) · 1 unresolved clause/);
+    assert.match(textOf(ui.root()), /Saved project compilation checked; theorem proofs may remain sorry/);
+    assert.match(textOf(ui.root()), /Open the delivered draft project/);
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
+    ui.click("Open draft project");
+    assert.deepEqual(message(ui, "openFormalizationArtifact"), { type: "openFormalizationArtifact", documentId: "paper-1", revisionId: "revision-1", artifactId: "draft-project", itemId: undefined, pageIndex: undefined, line: undefined });
+    assert.equal("path" in message(ui, "openFormalizationArtifact"), false);
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "Controller unavailable" });
+    assert.equal(ui.button("Open draft project").props.disabled, true);
+  } finally { ui.dispose(); }
+});
+
+test("incomplete uncompiled draft remains inspectable with full totals and explicit exclusions", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = deliveredDraftFixture();
+    snapshot.draft_preview.delivery_status = "incomplete";
+    Object.assign(snapshot.draft_preview.delivery, { complete: false, coverage_complete: false, compiled: false });
+    Object.assign(snapshot.draft_preview.delivery.counts, { source_items: 4, required_source_items: 3, excluded_source_items: 1,
+      known_clauses: 4, required_known_clauses: 3, excluded_known_clauses: 1 });
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    assert.match(textOf(ui.root()), /draft incomplete/);
+    assert.match(textOf(ui.root()), /2\/3 required source items mapped \(4 total; 1 explicitly excluded\)/);
+    assert.match(textOf(ui.root()), /2\/3 required clauses accounted \(4 total; 1 explicitly excluded\)/);
+    assert.match(textOf(ui.root()), /Project compilation is unverified/);
+    assert.equal(ui.button("Open draft project").props.disabled, false);
+    ui.click("Open draft project");
+    assert.equal(message(ui, "openFormalizationArtifact").artifactId, "draft-project");
+    assert.equal(ui.button("Start proving accepted statements").props.disabled, true);
   } finally { ui.dispose(); }
 });
 
@@ -1403,5 +1444,41 @@ test("returning to Formalization restores its selected source through a fresh sc
     assert.deepEqual(ui.view.form, saved);
     assert.equal(ui.input("Frozen source target").props.value, snapshot.source.path);
     assert.equal(ui.view.form.sourceDraftOnly, true);
+  } finally { ui.dispose(); }
+});
+
+test("correction buttons navigate frozen evidence and save or revoke a scoped decision", () => {
+  const ui = mount("formalization");
+  try {
+    let snapshot = formalizationCorrectionFixture();
+    const show = next => {
+      if (next.revision_id !== snapshot.revision_id) hostMessage({ type: "formalizationActionCommitted", documentId: snapshot.document_id, previousRevisionId: snapshot.revision_id, revisionId: next.revision_id });
+      snapshot = next;
+      hostMessage({ type: "formalizationState", snapshot, error: "" });
+    };
+    show(snapshot);
+    ui.click("Original source · physical page 1");
+    assert.equal(message(ui, "openFormalizationArtifact").pageIndex, 0);
+    ui.click("Lean: Paper.double");
+    assert.equal(message(ui, "openFormalizationArtifact").artifactId, "lean-1");
+    ui.click("Enable bounded correction policy for this paper");
+    assert.equal(message(ui, "formalizationAction").action.kind, "bounded_policy");
+    show({ ...formalizationCorrectionFixture(), revision_id: "revision-2" });
+    ui.change(ui.input("Correction reading"), "Use positive feasible integer parameters in the formal statement.");
+    ui.change(ui.input("Correction decision reason"), "This records the source domains without granting mathematical approval.");
+    ui.click("Record interpretation");
+    const recorded = message(ui, "formalizationAction").action;
+    assert.equal(recorded.kind, "interpretation");
+    const next = { ...formalizationCorrectionFixture(), revision_id: "revision-3" };
+    const { type, ...saved } = recorded;
+    const decision = next.items[0].correction_authority_options[1];
+    decision.enabled = true;
+    decision.current = { ...saved, id: "authority-interpretation", actor: "user" };
+    decision.action = { ...recorded, version: 2 };
+    show(next);
+    ui.click("Revoke this interpretation");
+    assert.equal(message(ui, "formalizationAction").action.enabled, false);
+    assert.equal(message(ui, "formalizationAction").action.version, 2);
+    assert.doesNotMatch(textOf(ui.root()), /current source acceptance/);
   } finally { ui.dispose(); }
 });

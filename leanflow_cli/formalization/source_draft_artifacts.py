@@ -14,7 +14,11 @@ MAX_DRAFT_FILES = 128
 MAX_DRAFT_FILE_BYTES = 2 * 1024 * 1024
 MAX_DRAFT_BYTES = 8 * 1024 * 1024
 MAX_MODEL_REPORT_BYTES = 64 * 1024
-_NOTES = (".leanflow-job/setup-notes.md", ".leanflow-job/blockers.md")
+_NOTES = (
+    ".leanflow-job/setup-notes.md",
+    ".leanflow-job/blockers.md",
+    ".leanflow-job/formalization-proposal.json",
+)
 
 
 def read_regular(path: Path, limit: int) -> bytes:
@@ -54,7 +58,13 @@ def read_regular(path: Path, limit: int) -> bytes:
 
 
 def freeze_artifacts(
-    snapshot: Path, blobs: Path, layout: dict[str, Any], run_id: str, model_report: str
+    snapshot: Path,
+    blobs: Path,
+    layout: dict[str, Any],
+    run_id: str,
+    model_report: str,
+    *,
+    formalization: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     """Copy only allocated Lean files and explicitly labelled draft reports into immutable blobs."""
     prefix = contained(snapshot, layout["owned_prefix"])
@@ -99,13 +109,17 @@ def freeze_artifacts(
             .encode()
             + marker
         )
-    label = b"# Unaccepted source-uncertain draft\n\nThis model report is not a translation, coverage, publication or proof approval.\n\n"
+    label = (
+        b"# Unaccepted formalization draft\n\nThis model report is not a translation, coverage, publication or proof approval.\n\n"
+        if formalization
+        else b"# Unaccepted source-uncertain draft\n\nThis model report is not a translation, coverage, publication or proof approval.\n\n"
+    )
     contents = [(f"draft/{run_id}/Model-report.md", label + report)]
     total = len(contents[0][1])
     for path in sorted(files):
         relative = path.relative_to(snapshot).as_posix()
         data = read_regular(contained(snapshot, relative), MAX_DRAFT_FILE_BYTES)
-        if relative in _NOTES:
+        if relative in _NOTES and relative.endswith(".md"):
             data = label + data
         total += len(data)
         if total > MAX_DRAFT_BYTES:

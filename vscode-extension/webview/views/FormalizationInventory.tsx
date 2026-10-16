@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { proofAuthorizationLabel, type FormalizationAction, type FormalizationItem } from "../../src/core/formalization";
 import { FORMALIZATION_PAGE_SIZE, FormalizationPager, formalizationPage } from "./FormalizationPager";
 import { FormalizationProofAuthorization } from "./FormalizationProofAuthorization";
+import { FormalizationCorrections } from "./FormalizationCorrections";
 
 export function FormalizationInventory({ items, selectedId, selectItem, candidates, historical }: {
   items: FormalizationItem[]; selectedId: string; selectItem: (id: string) => void; candidates: FormalizationItem[] | null; historical: boolean;
@@ -33,8 +34,9 @@ export function FormalizationInventory({ items, selectedId, selectItem, candidat
   </>;
 }
 
-export function FormalizationItemDetail({ item, revisionId, historical, disabled, linksDisabled, submit, openArtifact }: {
+export function FormalizationItemDetail({ item, revisionId, historical, disabled, correctionsDisabled, linksDisabled, submit, openArtifact }: {
   item: FormalizationItem; revisionId: string; historical: boolean; disabled: boolean; linksDisabled: boolean; submit: (action: FormalizationAction) => void;
+  correctionsDisabled?: boolean;
   openArtifact: (artifactId: string, itemId?: string, pageIndex?: number, line?: number) => void;
 }) {
   const [clausePage, setClausePage] = useState(0);
@@ -60,6 +62,7 @@ export function FormalizationItemDetail({ item, revisionId, historical, disabled
     {item.representation_notes && <p>Representation: {item.representation_notes}</p>}
     {item.mapping_rationale && <p>Mapping rationale: {item.mapping_rationale}</p>}
     {item.feedback?.length ? <ul>{item.feedback.map((entry, index) => <li key={index}>{entry}</li>)}</ul> : null}
+    <FormalizationCorrections item={item} revisionId={revisionId} disabled={disabled || !!correctionsDisabled} linksDisabled={linksDisabled} submit={submit} openArtifact={openArtifact} />
     {!!item.known_obligations?.length && <section aria-label="Known source clauses">
       <h4>Known source clauses · {item.known_obligations.length}</h4>
       <p className="muted">These are explicitly identified source requirements. The checklist does not establish that every mathematical clause was discovered. Author proposals still need independent review.</p>

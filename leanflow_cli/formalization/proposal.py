@@ -15,6 +15,7 @@ from leanflow_cli.formalization.compiled_evidence import (
     assert_reuse_sources_unchanged,
     merge_reused_declarations,
 )
+from leanflow_cli.formalization.corrections import bind_correction_evidence
 from leanflow_cli.formalization.dependency_snapshot import create_formalization_snapshot
 from leanflow_cli.formalization.environment import LIBRARY_SEMANTICS, environment_identity
 from leanflow_cli.formalization.evidence import contained, digest, identifier, put_blob
@@ -383,6 +384,8 @@ def check_proposal(
                     }
                 )
             bind_declarations(candidate, checks)
+            candidate["checks"] = checks
+            bind_correction_evidence(candidate, checks)
             if (
                 candidate.get("workflow_protocol") == 2
                 and candidate["proposal_phase"] == "complete"

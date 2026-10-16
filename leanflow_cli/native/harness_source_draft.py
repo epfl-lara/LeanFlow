@@ -51,7 +51,10 @@ def drain_author_bridge(
             from leanflow_cli.workflows.prover.check_process import close_check_workers
 
             close_check_workers(bridge.toolset.workspace)
-            state.update(native_cleanup_unverified=False, native_tool_cleanup_unverified=False)
+            state.update(
+                native_cleanup_unverified=bool(state.get("independent_cleanup_unverified")),
+                native_tool_cleanup_unverified=False,
+            )
             atomic_json_write(state_path, state)
     except BaseException:
         _retain_uncertain_tools(state, state_path)
@@ -86,7 +89,7 @@ def closed_draft_bridge(
             raise
         state["native_tool_cleanup_unverified"] = False
         if state.get("native_process_cleanup_verified") is True:
-            state["native_cleanup_unverified"] = False
+            state["native_cleanup_unverified"] = bool(state.get("independent_cleanup_unverified"))
         if draft_only and state.get("source_draft_native_closed"):
             state["source_draft_quiescent"] = True
         atomic_json_write(state_path, state)

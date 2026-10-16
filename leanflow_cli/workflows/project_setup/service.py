@@ -318,7 +318,7 @@ def _prepare_project(
                     pins = manifest_revisions(previous)
                     phase("dependencies", "Preparing pinned project dependencies")
                     added = configure_repl(root, run, changed)
-                    shared = _restore_dependencies(root, log) if execution_policy is None else False
+                    shared = False
                     if (
                         added
                         or not manifest.is_file()
@@ -355,8 +355,6 @@ def _prepare_project(
                             raise
                         if previous != (manifest.read_bytes() if manifest.is_file() else None):
                             changed.append("lake-manifest.json")
-                        if execution_policy is None:
-                            shared = _restore_dependencies(root, log) or shared
                 if shared:
                     reuse_installed = installed_environment(root)
                     phase("dependencies", "Reusing private copies of shared pinned dependencies")

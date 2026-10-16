@@ -53,3 +53,21 @@ export function sourceDraftFixture() {
   };
   return snapshot;
 }
+
+/** Full-paper draft delivery retains review ambiguity without acceptance authority. */
+export function deliveredDraftFixture() {
+  const snapshot = sourceDraftFixture();
+  snapshot.status = "completed_with_ambiguities";
+  snapshot.draft_preview.status = "unaccepted_formalization";
+  snapshot.draft_preview.reason = "review_ambiguities";
+  snapshot.draft_preview.delivery_status = "complete";
+  snapshot.draft_preview.delivery = { complete: true, coverage_complete: true, compiled: true, project_saved: true,
+    counts: { source_items: 2, required_source_items: 2, excluded_source_items: 0, mapped_source_items: 2,
+      regions: 1, accounted_regions: 1, known_clauses: 2, required_known_clauses: 2, excluded_known_clauses: 0, accounted_known_clauses: 2, unresolved_known_clauses: 1 },
+    project_artifact_id: "draft-project", census_artifact_id: "draft-report", report_artifact_ids: { "Delivery-census": "draft-report" } };
+  const project = { id: "draft-project", path: `.leanflow/native-workflows/${snapshot.draft_preview.run_id}/project`,
+    kind: "project", title: "Draft Lean project", sha256: "1".repeat(64) };
+  snapshot.draft_preview.artifacts.push(project);
+  snapshot.artifacts.push(project);
+  return snapshot;
+}

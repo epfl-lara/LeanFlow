@@ -285,6 +285,10 @@ def _apply_action(record: dict[str, Any], action: dict[str, Any]) -> None:
             "authorized": action["authorized"],
             "reason": _reason(action),
         }
+    elif kind == "record_correction_authority":
+        from leanflow_cli.formalization.corrections import record_correction_authority
+
+        record_correction_authority(record, action)
     elif kind == "record_obligation":
         from leanflow_cli.formalization.clause_obligations import record_obligation
 

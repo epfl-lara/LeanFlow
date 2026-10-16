@@ -1,6 +1,8 @@
 /** Route formalization UI actions through the owning host's controller and verified artifacts. */
 import * as path from "node:path";
+import { lstat, realpath } from "node:fs/promises";
 import * as vscode from "vscode";
+import type { FormalizationArtifact, FormalizationSnapshot } from "../core/formalization";
 import { readFormalizationArtifact } from "../core/formalizationArtifact";
 import { formalizationWorkspaceRoot } from "../core/formalizationWorkspace";
 import { redactSensitiveText } from "../core/runPrivacy";
@@ -22,6 +24,30 @@ const MESSAGE_TYPES = new Set([
   "planFormalizationPreparation", "prepareFormalization", "cancelFormalizationPreparation",
   "listFormalizationPreparationRecovery", "recoverFormalizationPreparation", "resolveFormalizationPreparation", "cancelFormalizationRecovery",
 ]);
+
+/** Open only the controller-resolved run project, retaining the owning VS Code host. */
+async function draftProjectUri(root: string, snapshot: FormalizationSnapshot, listed: FormalizationArtifact, artifact: FormalizationArtifact): Promise<vscode.Uri> {
+  const preview = snapshot.draft_preview;
+  if (preview?.status !== "unaccepted_formalization" || preview.reason !== "review_ambiguities" ||
+      preview.accepted !== false || preview.publication_authority !== false || preview.proof_authority !== false ||
+      snapshot.can_prove || snapshot.handoff || !/^[A-Za-z0-9_-]{1,80}$/.test(preview.run_id) ||
+      artifact.kind !== "project" || artifact.id !== listed.id || artifact.sha256 !== listed.sha256 ||
+      !preview.artifacts.some(row => row.id === listed.id && row.kind === "project" && row.sha256 === listed.sha256)) {
+    throw new Error("This draft project is not bound to the selected unaccepted revision.");
+  }
+  const relative = `.leanflow/native-workflows/${preview.run_id}/project`;
+  const expected = path.join(root, relative);
+  if (listed.path !== relative || artifact.path !== expected || (await realpath(expected)) !== expected) {
+    throw new Error("The controller returned an unexpected draft project location.");
+  }
+  const stat = await lstat(expected);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("The draft project is not a regular run-owned folder.");
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    if (await realpath(folder.uri.fsPath).catch(() => "") === root) return folder.uri.with({ path: vscode.Uri.file(expected).path });
+  }
+  if (vscode.env.remoteName) throw new Error("Open this draft from its owning VS Code workspace.");
+  return vscode.Uri.file(expected);
+}
 
 export class FormalizationHost {
   private queue: Promise<void> = Promise.resolve();
@@ -183,11 +209,21 @@ export class FormalizationHost {
           if (!listedArtifact) throw new Error("This artifact is not part of the selected revision.");
           if (message.itemId) {
             const item = snapshot.items.find(item => item.id === message.itemId);
-            if (!item || ![...item.source_refs, ...item.lean_refs].some(ref => ref.artifact_id === message.artifactId)) {
+            const correctionRefs = item?.corrections?.flatMap(row => [
+              ...row.original.source_refs, ...row.source_context_refs, ...row.adopted.lean_refs,
+              ...row.evidence.flatMap(fact => [fact.goal, fact.proof]),
+            ]) ?? [];
+            if (!item || ![...item.source_refs, ...item.lean_refs, ...correctionRefs].some(ref => ref.artifact_id === message.artifactId)) {
               throw new Error("This artifact does not belong to the selected source item.");
             }
           }
           const artifact = await service.artifact(message.documentId, message.revisionId, message.artifactId);
+          if (listedArtifact.kind === "project") {
+            const uri = await draftProjectUri(root, snapshot, listedArtifact, artifact);
+            operation.assertCurrent();
+            await vscode.commands.executeCommand("vscode.openFolder", uri, { forceNewWindow: true });
+            return;
+          }
           const bytes = await readFormalizationArtifact(artifact);
           operation.assertCurrent();
           if (artifact.kind === "pdf" || artifact.path.toLowerCase().endsWith(".pdf")) {

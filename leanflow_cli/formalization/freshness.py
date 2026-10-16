@@ -7,6 +7,10 @@ import subprocess
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
+from leanflow_cli.formalization.corrections import (
+    assert_corrections_accepted,
+    assert_current_correction_authority,
+)
 from leanflow_cli.formalization.environment import environment_identity
 from leanflow_cli.formalization.evidence import contained, digest, identity
 from leanflow_cli.formalization.inventory_authority import complete_inventory
@@ -102,6 +106,8 @@ def published_acceptance_freshness(
         assert_revision_not_revoked(root, record["revision_id"])
         require_committed_publication(root, record["document_id"], record["revision_id"])
         handoff = receipt["handoff"]
+        assert_current_correction_authority(root, record)
+        assert_corrections_accepted(record, receipt.get("reviews", []))
         directory = document_directory(root, record["document_id"], published=True)
         stored = json.loads(contained(directory, "handoff.json").read_text(encoding="utf-8"))
         if (
@@ -112,6 +118,8 @@ def published_acceptance_freshness(
             != "handoff-"
             + identity({key: value for key, value in handoff.items() if key != "handoff_id"})
             or handoff.get("environment_id") != record["environment_id"]
+            or handoff.get("source_corrections", [])
+            != record.get("checks", {}).get("correction_evidence", [])
         ):
             raise ValueError("Published acceptance differs from its immutable source review")
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:

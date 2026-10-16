@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from leanflow_cli.formalization.correction_evidence import semantic_context_identity
+from leanflow_cli.formalization.corrections import correction_context_identity
 from leanflow_cli.formalization.evidence import identity
 from leanflow_cli.formalization.review_dossier import evidence_documents
 from leanflow_cli.workflows.prover.source import lean_lexical_regions
@@ -122,7 +124,13 @@ def rejection_key(
     ]
     return identity(
         {
-            "schema": "semantic-rejection-v3",
+            "schema": "semantic-rejection-v4",
+            "correction_context": correction_context_identity(record),
+            "correction_checked_context": (
+                semantic_context_identity(record.get("checks", {}), include_pending_bodies=False)
+                if record.get("corrections")
+                else None
+            ),
             "configuration": configuration,
             "inventory": record["inventory"],
             "source_bundle": record["source_bundle"],
