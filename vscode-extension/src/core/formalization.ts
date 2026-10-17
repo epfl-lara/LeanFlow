@@ -78,6 +78,7 @@ export interface FormalizationItem {
   scope: string;
   source_refs: FormalizationSourceRef[];
   lean_refs: FormalizationLeanRef[];
+  draft_mapping?: { preview_id: string; lean_refs: FormalizationLeanRef[]; issues: string[]; notes?: string[] };
   review_status: string;
   elaboration_status: string;
   proof_status: string;
@@ -274,6 +275,25 @@ export function parseFormalizationSnapshot(value: unknown): FormalizationSnapsho
   }
   if (invalidCorrectionProjection(raw as FormalizationSnapshot)) {
     throw new Error("The formalization service returned invalid correction evidence or user decisions.");
+  }
+  for (const item of raw.items) {
+    const mapping = item.draft_mapping;
+    if (mapping === undefined) continue;
+    const preview = raw.draft_preview;
+    if (!mapping || Object.keys(mapping).some(key => !["preview_id", "lean_refs", "issues", "notes"].includes(key)) ||
+        preview?.status !== "unaccepted_formalization" || !Array.isArray(preview.artifacts) || mapping.preview_id !== preview.preview_id ||
+        !Array.isArray(mapping.issues) || mapping.issues.length > 33 || mapping.issues.some(issue => typeof issue !== "string" || issue.length > 4096) ||
+        mapping.notes !== undefined && (!Array.isArray(mapping.notes) || mapping.notes.length > 33 || mapping.notes.some(note => typeof note !== "string" || note.length > 4096)) ||
+        !Array.isArray(mapping.lean_refs) || mapping.lean_refs.length > 128 || mapping.lean_refs.length > 0 && preview.delivery?.compiled !== true || mapping.lean_refs.some(ref =>
+          !ref || typeof ref.name !== "string" || !ref.name || ref.name.length > 1024 ||
+          ![ref.type_hash, ref.body_hash].every(value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)) ||
+          ref.type !== undefined && (typeof ref.type !== "string" || ref.type.length > 1_000_000) ||
+          (ref.artifact_id ? !Number.isSafeInteger(ref.line_start) || Number(ref.line_start) < 1 ||
+            !preview.artifacts?.some(artifact => artifact.id === ref.artifact_id && artifact.kind === "lean" && artifact.path === ref.file &&
+              raw.artifacts!.some(listed => listed.id === artifact.id && listed.sha256 === artifact.sha256 && listed.path === artifact.path && listed.kind === "lean"))
+            : ref.declaration_origin !== "dependency" || ref.file !== undefined || ref.line_start !== undefined))) {
+      throw new Error("The formalization service returned invalid unaccepted draft navigation.");
+    }
   }
   if (raw.preparation != null && (typeof raw.preparation !== "object" || typeof raw.preparation.current !== "boolean" || typeof raw.preparation.status !== "string") ||
       raw.slice != null && (typeof raw.slice !== "object" || typeof raw.slice.required !== "boolean" || !["representative_slice", "complete"].includes(raw.slice.phase)) ||

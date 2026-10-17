@@ -539,6 +539,14 @@ then assesses the full source, continuing through flagged items. If review canno
 finish within the budget, its unreviewed scope remains visible.
 
 The editor's **Open draft project** action opens the concrete retained Lean project.
+A separate unaccepted draft blueprint and item links join saved source IDs to the
+exact frozen Lean files and compiled locations. They leave canonical mappings,
+source review and proof status unchanged; absent or inconsistent navigation
+evidence remains a visible gap. The blueprint is collapsed and paged.
+Frozen TeX/PDF and Lean previews do not wait for publication or document mutation
+locks during verification. Their selected revision, allowlist and immutable bytes
+are checked independently. Certified proof files and opening a retained project
+folder retain their existing authority and ownership guards.
 Frozen source, proposal, coverage census, check report and review findings remain
 inspectable. **Completed with ambiguities** means the full saved project passed
 technical checks; it grants no source acceptance or Prove handoff. Missing files,

@@ -25,6 +25,8 @@ dashboard, preserving the selected source line. They do not open editable Untitl
 buffers or the canonical project file. The PDF rerenders to fit the available
 pane width; its text selection layer uses the same page scale. Opening a PDF
 reveals and focuses its viewer; refreshing saved status preserves your focus.
+Frozen source and Lean previews remain available while verification runs; a
+changed selected revision asks you to refresh its links.
 
 The inventory displays source review, Lean elaboration, and proof state separately.
 The overview shows the next action, while setup, issues, preparation, revisions,
@@ -44,6 +46,11 @@ visible. Saved compilation checks are distinguished from unverified incomplete
 projects; revising notes is optional for draft
 delivery. This draft has no translation acceptance or accepted prover handoff,
 and theorem proofs may remain `sorry`.
+
+Select **Unaccepted draft declarations** on an item, or expand the paged
+**Unaccepted draft blueprint**, to follow frozen source/PDF and draft Lean links.
+These mappings come from the saved draft checks and remain separate from accepted
+translation links. Missing navigation evidence stays visible.
 
 Select an item to compare **Original reading**, **Adopted reading**, and its
 **Lean statement** under **Source corrections and interpretations**. Frozen

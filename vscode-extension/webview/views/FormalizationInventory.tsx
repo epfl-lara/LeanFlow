@@ -4,6 +4,7 @@ import { proofAuthorizationLabel, type FormalizationAction, type FormalizationIt
 import { FORMALIZATION_PAGE_SIZE, FormalizationPager, formalizationPage } from "./FormalizationPager";
 import { FormalizationProofAuthorization } from "./FormalizationProofAuthorization";
 import { FormalizationCorrections } from "./FormalizationCorrections";
+import { DraftDeclarations } from "./FormalizationDraftBlueprint";
 
 export function FormalizationInventory({ items, selectedId, selectItem, candidates, historical }: {
   items: FormalizationItem[]; selectedId: string; selectItem: (id: string) => void; candidates: FormalizationItem[] | null; historical: boolean;
@@ -58,6 +59,10 @@ export function FormalizationItemDetail({ item, revisionId, historical, disabled
       <button className="btn secondary" disabled={linksDisabled || !ref.artifact_id} onClick={() => ref.artifact_id && openArtifact(ref.artifact_id, item.id, undefined, ref.line_start)}>{ref.name}</button>
       <p className="muted">{ref.file}{!ref.artifact_id ? " · no verified source link" : ""}</p>
     </div>)}{!item.lean_refs.length && <p>No Lean mapping recorded.</p>}</div></div>
+    {item.draft_mapping && <section aria-label="Unaccepted draft declarations"><h4>Unaccepted draft declarations</h4>
+      <p className="muted">Saved provisional mappings; source acceptance and proof completion remain separate.</p>
+      <DraftDeclarations item={item} disabled={linksDisabled} openArtifact={openArtifact} showTypes />
+    </section>}
     {item.assumptions?.length ? <p>Assumptions: {item.assumptions.join("; ")}</p> : null}
     {item.representation_notes && <p>Representation: {item.representation_notes}</p>}
     {item.mapping_rationale && <p>Mapping rationale: {item.mapping_rationale}</p>}

@@ -1385,6 +1385,26 @@ test("Formalization baseline is manual, workspace scoped, and required before na
   } finally { ui.dispose(); }
 });
 
+test("unaccepted draft blueprint buttons preserve source identity and compiled declaration lines", () => {
+  const ui = mount("formalization");
+  try {
+    const snapshot = deliveredDraftFixture();
+    snapshot.items[1].draft_mapping = { preview_id: snapshot.draft_preview.preview_id, issues: [], lean_refs: [{
+      artifact_id: "draft-lean", file: snapshot.draft_preview.artifacts.find(row => row.id === "draft-lean").path,
+      name: "Paper.late", line_start: 2, type_hash: "a".repeat(64), body_hash: "b".repeat(64),
+    }] };
+    hostMessage({ type: "formalizationState", documentId: snapshot.document_id, snapshot, error: "" });
+    const blueprint = ui.root().findAllByType("summary").find(node => /^Unaccepted draft blueprint/.test(textOf(node))).parent;
+    assert.ok(blueprint); assert.equal(blueprint.props.open, undefined);
+    ui.click(blueprint.findAllByType("button").find(button => textOf(button) === "Draft Lean: Paper.late"));
+    assert.equal(message(ui, "openFormalizationArtifact").itemId, "item-2");
+    assert.equal(message(ui, "openFormalizationArtifact").line, 2);
+    ui.click(blueprint.findAllByType("button").find(button => textOf(button) === "Draft source: Chosen halves · physical page 2"));
+    assert.equal(message(ui, "openFormalizationArtifact").artifactId, "source-pdf");
+    assert.equal(message(ui, "openFormalizationArtifact").pageIndex, 1);
+  } finally { ui.dispose(); }
+});
+
 after(() => {
   const files = ["webview/App.tsx", "webview/CliNotice.tsx", ...readdirSync("webview/views").filter(name => name.endsWith(".tsx")).map(name => `webview/views/${name}`)];
   const buttons = [];

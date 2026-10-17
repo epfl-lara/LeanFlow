@@ -10,6 +10,7 @@ import { workflowForm } from "../workflowForms";
 import { LaunchView } from "./LaunchView";
 import { FormalizationFeedbackBar, NO_FORMALIZATION_FEEDBACK, formalizationSavePending, reduceFormalizationFeedback } from "./FormalizationFeedback";
 import { FormalizationInventory, FormalizationItemDetail } from "./FormalizationInventory";
+import { FormalizationDraftBlueprint } from "./FormalizationDraftBlueprint";
 import { FormalizationIssues } from "./FormalizationIssues";
 import { FormalizationPager, formalizationPage } from "./FormalizationPager";
 import { FormalizationPdfView } from "./FormalizationPdf";
@@ -263,6 +264,7 @@ export function FormalizationView() {
           <p>{snapshot.draft_preview.delivery.compiled ? "Saved project compilation checked; theorem proofs may remain sorry." : "Project compilation is unverified. The incomplete saved project remains available for inspection."}</p>
         </>}
         <p>{snapshot.draft_preview.source_diagnostics.length} source diagnostics remain attached to this draft. Run <code>{snapshot.draft_preview.run_id}</code>.</p>
+        {snapshot.draft_preview.status === "unaccepted_formalization" && <FormalizationDraftBlueprint key={snapshot.draft_preview.preview_id} items={snapshot.items} disabled={!!error} openArtifact={openArtifact} />}
         {snapshot.draft_preview.artifacts.filter(artifact => artifact.kind === "project").map(artifact => <button key={artifact.id} className="btn primary" disabled={!ready || repairBlocked} onClick={() => openArtifact(artifact.id)}>Open draft project</button>)}
         <ul>{snapshot.draft_preview.artifacts.filter(artifact => artifact.kind !== "project").map(artifact => <li key={artifact.id}>
           <button className="btn secondary" disabled={!ready || repairBlocked} onClick={() => openArtifact(artifact.id)}>{artifact.title ?? artifact.path}</button>

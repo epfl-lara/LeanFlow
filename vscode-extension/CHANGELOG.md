@@ -5,6 +5,10 @@ include features and settings from the former direct-provider runtime.
 
 ## Unreleased
 
+- Open frozen source and Lean previews during independent verification without
+  waiting on publication locks; retain proof and project ownership checks.
+- Navigate unaccepted drafts through separate item declaration links and a
+  collapsed, paged blueprint, with explicit mapping gaps and acceptance status.
 - Bring opened PDFs into view with keyboard focus; preserve focus during saved
   status refreshes and item navigation.
 - Open delivered full-paper draft projects from one **Open draft project** button

@@ -213,7 +213,9 @@ export class FormalizationHost {
               ...row.original.source_refs, ...row.source_context_refs, ...row.adopted.lean_refs,
               ...row.evidence.flatMap(fact => [fact.goal, fact.proof]),
             ]) ?? [];
-            if (!item || ![...item.source_refs, ...item.lean_refs, ...correctionRefs].some(ref => ref.artifact_id === message.artifactId)) {
+            const draftRefs = snapshot.draft_preview?.status === "unaccepted_formalization" && item?.draft_mapping?.preview_id === snapshot.draft_preview.preview_id
+              ? item.draft_mapping.lean_refs : [];
+            if (!item || ![...item.source_refs, ...item.lean_refs, ...draftRefs, ...correctionRefs].some(ref => ref.artifact_id === message.artifactId)) {
               throw new Error("This artifact does not belong to the selected source item.");
             }
           }

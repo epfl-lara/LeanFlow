@@ -20,6 +20,7 @@ from leanflow_cli.formalization.service_corrections import (
     mark_current_corrections,
     source_bundle_binding,
 )
+from leanflow_cli.formalization.service_draft_navigation import draft_item_mappings
 
 
 def _ref(
@@ -242,6 +243,7 @@ def snapshot(root: Path, record: dict[str, Any], *, verify_current: bool = True)
         root, record, verify_current=verify_current
     )
     artifacts = _artifacts(record, proof_receipt, draft_preview)
+    draft_mappings = draft_item_mappings(root, record, draft_preview)
     lean_artifacts = {
         artifact["path"]: artifact["id"]
         for artifact in artifacts
@@ -304,6 +306,11 @@ def snapshot(root: Path, record: dict[str, Any], *, verify_current: bool = True)
                 ]
                 + [_ref(record, span, sources=sources) for span in source.get("pdf_refs", [])],
                 "lean_refs": references,
+                **(
+                    {"draft_mapping": draft_mappings[source["id"]]}
+                    if source["id"] in draft_mappings
+                    else {}
+                ),
                 "known_obligations": _known_clauses(record, source, units, relevant, sources),
                 "corrections": item_corrections(
                     record,

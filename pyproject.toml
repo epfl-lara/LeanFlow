@@ -139,6 +139,8 @@ files = [
   "leanflow_cli/formalization/service_artifacts.py",
   "leanflow_cli/formalization/service_snapshot.py",
   "leanflow_cli/formalization/service_corrections.py",
+  "leanflow_cli/formalization/service_draft_navigation.py",
+  "leanflow_cli/formalization/service_viewer.py",
   "leanflow_cli/formalization/preparation_layout.py",
   "leanflow_cli/formalization/environment_display.py",
   "leanflow_cli/formalization/extraction_actions.py",

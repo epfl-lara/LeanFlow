@@ -518,6 +518,26 @@ test("correction evidence links belong to their item even in a separate compiled
   } finally { await ui.dispose(); }
 });
 
+test("provisional frozen declaration links are bound to their source item and exact preview", async () => {
+  const ui = await fixture();
+  try {
+    ui.f.snapshot = deliveredDraftFixture();
+    ui.f.snapshot.items[1].draft_mapping = { preview_id: ui.f.snapshot.draft_preview.preview_id,
+      lean_refs: [{ artifact_id: "draft-lean", name: "Paper.late", line_start: 2 }], issues: [] };
+    const request = { type: "openFormalizationArtifact", documentId: "paper-1", revisionId: "revision-1", artifactId: "draft-lean", itemId: "item-2", line: 2 };
+    await ui.host.handle(request);
+    assert.equal(ui.f.opened.language, "lean4");
+    assert.equal(ui.f.shown[1].selection.args[0], 1);
+    assert.equal(ui.f.calls.filter(row => row[0] === "artifact").length, 1);
+    await ui.host.handle({ ...request, itemId: "item-1" });
+    assert.match(ui.last("notify").message, /does not belong/);
+    ui.f.snapshot.items[1].draft_mapping.preview_id = "another-preview";
+    await ui.host.handle(request);
+    assert.match(ui.last("notify").message, /does not belong/);
+    assert.equal(ui.f.calls.filter(row => row[0] === "artifact").length, 1);
+  } finally { await ui.dispose(); }
+});
+
 test("certified proof links use exact currentness instead of the historical artifact list", async () => {
   const ui = await fixture();
   try {
