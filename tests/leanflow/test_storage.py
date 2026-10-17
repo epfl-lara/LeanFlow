@@ -7,7 +7,9 @@ import multiprocessing
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -420,6 +422,44 @@ def _sleeping_child(executable: Path, *, cwd: Path) -> subprocess.Popen[str]:
     return child
 
 
+def _cleanup_after_reaped_child(
+    child: subprocess.Popen[str], removed: tuple[Path, ...], *, timeout_s: float = 10
+) -> None:
+    """Retry only an observed uncertain host inventory after this test's child has been reaped."""
+    assert child.returncode is not None
+    original = process_inventory.process_views
+    observed: ProcessViews | None = None
+
+    def inspect() -> ProcessViews:
+        nonlocal observed
+        observed = original()
+        return observed
+
+    deadline = time.monotonic() + timeout_s
+    with patch.object(process_inventory, "process_views", inspect):
+        while True:
+            observed = None
+            report = cleanup_storage(policy=_policy())
+            if not any(path.exists() for path in removed):
+                return
+            if observed is None or observed.complete or time.monotonic() >= deadline:
+                break
+            # Other xdist children can exit between ps and lsof. Unknown
+            # inventories must retain storage; retry a fresh maintenance pass.
+            time.sleep(0.05)
+    raise AssertionError(
+        "Storage remained after reaped-child cleanup: "
+        + json.dumps(
+            {
+                "inventory_complete": None if observed is None else observed.complete,
+                "entries": report["entries"],
+                "cleanup_errors": report["cleanup_errors"],
+                "preserved_unknown": report["preserved_unknown"],
+            }
+        )
+    )
+
+
 def test_orphan_child_cwd_protects_workspace_after_controller_death(
     home: Path, tmp_path: Path
 ) -> None:
@@ -438,7 +478,7 @@ def test_orphan_child_cwd_protects_workspace_after_controller_death(
     finally:
         child.terminate()
         child.communicate(timeout=10)
-    cleanup_storage(policy=_policy())
+    _cleanup_after_reaped_child(child, (snapshot / ".lake/packages",))
     assert not (snapshot / ".lake/packages").exists()
     assert (snapshot / "Proof.lean").exists()
 
@@ -459,8 +499,39 @@ def test_orphan_runtime_python_protects_runtime_and_its_source_release(
     finally:
         child.terminate()
         child.communicate(timeout=10)
-    cleanup_storage(policy=_policy())
+    _cleanup_after_reaped_child(child, (runtime, release))
     assert not runtime.exists() and not release.exists()
+
+
+def test_reaped_child_cleanup_retries_only_incomplete_inventory(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _entry(home, "retry-runtime", kind="runtime")
+    child = _sleeping_child(Path(sys.executable), cwd=tmp_path)
+    child.terminate()
+    child.communicate(timeout=10)
+    seen: list[bool] = []
+
+    def inspect() -> ProcessViews:
+        seen.append(runtime.exists())
+        return ProcessViews((), (), len(seen) > 1)
+
+    monkeypatch.setattr(process_inventory, "process_views", inspect)
+    _cleanup_after_reaped_child(child, (runtime,))
+    assert seen == [True, True] and not runtime.exists()
+
+
+def test_reaped_child_cleanup_still_fails_when_inventory_stays_unknown(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _entry(home, "unknown-retry-runtime", kind="runtime")
+    child = _sleeping_child(Path(sys.executable), cwd=tmp_path)
+    child.terminate()
+    child.communicate(timeout=10)
+    monkeypatch.setattr(process_inventory, "process_views", lambda: ProcessViews((), (), False))
+    with pytest.raises(AssertionError, match="unverifiable process inventory"):
+        _cleanup_after_reaped_child(child, (runtime,), timeout_s=0)
+    assert runtime.exists()
 
 
 def test_unknown_process_inventory_preserves_dead_views_and_runtimes(
@@ -500,6 +571,28 @@ def test_macos_inventory_accepts_mandatory_cwd_field(monkeypatch) -> None:
     views = process_inventory._posix_views()
     assert views.complete
     assert views.working_directories == ("/tmp/project",)
+
+
+def test_macos_inventory_retains_when_a_listed_process_loses_cwd(monkeypatch) -> None:
+    """Preserve uncertainty when a process exits after ps but remains an unreaped zombie."""
+
+    def capture(command, **kwargs):
+        output = (
+            f"123 {os.getuid()} S python /tmp/other.py\n456 {os.getuid()} S python child\n"
+            if command[0] == "ps"
+            else "p123\nfcwd\nn/tmp/other\n"
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    probes = []
+    monkeypatch.setattr(process_inventory.subprocess, "run", capture)
+    monkeypatch.setattr(
+        process_inventory.os, "kill", lambda pid, signal: probes.append((pid, signal))
+    )
+    views = process_inventory._posix_views()
+    assert probes == [(456, 0)]
+    assert not views.complete
+    assert views.uses(Path("/tmp/unrelated-runtime"))
 
 
 def test_linux_login_helper_requires_privileged_service_parent(tmp_path: Path) -> None:

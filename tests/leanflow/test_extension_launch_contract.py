@@ -99,13 +99,20 @@ def test_additional_skills_repeat_the_flag() -> None:
 
 
 def test_human_review_flag() -> None:
-    assert _spec(["prove", "--human-review"]).human_review is True
+    with pytest.raises(ValueError, match="pauses are no longer supported"):
+        _spec(["prove", "--human-review"])
 
 
 def test_every_workflow_kind_the_extension_offers_is_routable() -> None:
-    """The extension's workflow picker must not offer a command the CLI rejects."""
-    for kind in ("prove", "formalize", "review", "refactor", "golf", "draft"):
+    """Both dedicated editor tabs must route through the retained public workflows."""
+    for kind in ("prove", "formalize"):
         assert _spec([kind]).workflow_kind == kind
+
+
+@pytest.mark.parametrize("kind", ["review", "refactor", "golf", "draft"])
+def test_retired_editor_workflows_require_reconfiguration(kind: str) -> None:
+    with pytest.raises(ValueError, match="unsupported workflow"):
+        _spec([kind])
 
 
 def test_launch_preview_redacts_credentials_embedded_in_urls() -> None:
@@ -201,7 +208,7 @@ def test_launch_preview_sanitizes_runtime_urls_without_losing_endpoint_identity(
         assert secret not in serialized
 
 
-@pytest.mark.parametrize("flag", ["--research", "--clean-room", "--human-review"])
+@pytest.mark.parametrize("flag", ["--research", "--clean-room"])
 def test_prove_only_flags_are_rejected_elsewhere(flag: str) -> None:
     """The extension disables these outside prove; the CLI is the backstop."""
     with pytest.raises(ValueError):

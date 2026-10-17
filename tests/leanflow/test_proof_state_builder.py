@@ -1,7 +1,7 @@
 """Tests for the extracted proof_state_builder helpers.
 
 ``_build_live_proof_state`` itself stays in native_runner (it reaches lean_inspect /
-probe_capabilities / route_workflow_step backend calls, the TheoremQueueManager, env readers,
+probe_capabilities backend calls, the TheoremQueueManager, env readers,
 and workflow-state mutation). Only its movable pure sub-helpers were extracted: the declaration
 line-index lookups and the queue-horizon text shapers. The re-export-identity test pins every
 moved name to the same object on ``native_runner`` so the many callers still living there (and

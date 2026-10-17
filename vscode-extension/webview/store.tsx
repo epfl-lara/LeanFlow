@@ -32,10 +32,12 @@ import { trackedRunForLiveStatus } from "../src/core/runSelection";
 import { emptyLaunchRequest } from "../src/core/types";
 import type { ProverSnapshot } from "../src/core/prover";
 import { loadViewState, post, saveViewState } from "./vscodeApi";
+import { patchWorkflowForm, restoreWorkflowView, selectWorkflowTab, workflowForm, type WorkflowView } from "./workflowForms";
 
-export type TabId = "providers" | "launch" | "live" | "logs" | "knobs" | "sweeps";
+export type TabId = "providers" | "launch" | "formalization" | "live" | "logs" | "knobs" | "sweeps";
 
-export interface ViewState {
+export interface ViewState extends WorkflowView {
+  formalizationSelection?: { workspace: string; hostId?: string; generation?: number; documentId: string; configure: boolean };
   tab: TabId;
   form: LaunchRequest;
   logFilter: string[];
@@ -66,7 +68,10 @@ const DEFAULT_VIEW: ViewState = {
 };
 
 function viewStateForPersistence(view: ViewState): ViewState {
-  return { ...view, form: launchRequestForViewState(view.form) };
+  return { ...view, form: launchRequestForViewState(view.form), workflowForms: {
+    prove: launchRequestForViewState(workflowForm(view, "prove")),
+    formalize: launchRequestForViewState(workflowForm(view, "formalize")),
+  } };
 }
 
 function persistViewState(view: ViewState): void {
@@ -139,7 +144,7 @@ type Action =
   | { type: "dismissToast"; id: number };
 
 const initialView = (() => {
-  const restored = loadViewState(DEFAULT_VIEW);
+  const restored = restoreWorkflowView(loadViewState(DEFAULT_VIEW));
   const sanitized = viewStateForPersistence(restored);
   if (JSON.stringify(restored) !== JSON.stringify(sanitized)) {
     // Purge plaintext prompts or credential-shaped values written by older
@@ -168,12 +173,13 @@ let toastId = 0;
 function reduce(state: Store, action: Action): Store {
   switch (action.type) {
     case "view": {
-      const view = { ...state.view, ...action.patch };
+      const merged = { ...state.view, ...action.patch };
+      const view = action.patch.tab ? selectWorkflowTab(merged, action.patch.tab) : merged;
       persistViewState(view);
       return { ...state, view };
     }
     case "form": {
-      const view = { ...state.view, form: { ...state.view.form, ...action.patch } };
+      const view = patchWorkflowForm(state.view, action.patch);
       persistViewState(view);
       return { ...state, view };
     }
@@ -205,7 +211,7 @@ function reduceHost(state: Store, message: HostMessage): Store {
     case "state": {
       const navigation = message.state.runNavigation;
       const changed = navigation && navigation.sequence !== state.app?.runNavigation?.sequence;
-      const view = changed ? { ...state.view, tab: navigation.tab, logAgent: "", logSearch: "", logFilter: [] } : state.view;
+      const view = changed ? { ...selectWorkflowTab(state.view, navigation.tab), logAgent: "", logSearch: "", logFilter: [] } : state.view;
       return { ...state, app: message.state, view };
     }
     case "proverState": {
@@ -251,7 +257,7 @@ function reduceHost(state: Store, message: HostMessage): Store {
       };
     }
     case "targetPicked": {
-      const view = { ...state.view, form: { ...state.view.form, target: message.path } };
+      const view = patchWorkflowForm(state.view, { target: message.path, kind: message.kind ?? state.view.form.kind }, false);
       persistViewState(view);
       return { ...state, view };
     }

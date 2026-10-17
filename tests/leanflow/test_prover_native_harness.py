@@ -23,6 +23,80 @@ from leanflow_cli.workflows.prover.session_tools import SessionTools
 from tests.leanflow.test_prover_runtime import Verifier, project
 
 
+@pytest.mark.parametrize("throws", [False, True])
+def test_unverified_native_cleanup_blocks_candidate_copy_lease_release_and_private_reuse(
+    tmp_path, monkeypatch, throws
+):
+    from agent.runtime.harness.models import NativeCleanupUnverified
+    from leanflow_cli.workflows.prover import agent_session
+
+    root = tmp_path / "project"
+    root.mkdir()
+    project(root)
+    original = (root / "Main.lean").read_bytes()
+    workspace = root / ".leanflow/jobs/job"
+    workspace.mkdir(parents=True)
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Unverified native cleanup cannot release dependencies or reuse private inputs")
+
+    monkeypatch.setattr(agent_session, "release_snapshot_dependencies", forbidden)
+
+    def native(request, **kwargs):
+        calls.append(request)
+        ledger = workspace.parent / ".runtime/job/request-count.json"
+        assert json.loads(ledger.read_text())["native_cleanup_unverified"] is True
+        request.on_started()
+        scratch = request.cwd / ".leanflow-job"
+        (scratch / "candidate.txt").write_text("trivial")
+        (scratch / "Scratch.lean").write_text("theorem candidate : True := by trivial\n")
+        if throws:
+            raise NativeCleanupUnverified("Tracked native process remains live")
+        return HarnessResult(
+            "completed", '{"proof":"trivial"}', returncode=0, cleanup_verified=False
+        )
+
+    monkeypatch.setattr("agent.runtime.harness.run_harness", native)
+    kwargs = dict(
+        role="prover",
+        prompt="Prove",
+        project_root=root,
+        workspace=workspace,
+        config={"provider": "codex"},
+        api_budget=2,
+        log_path=workspace / "events.jsonl",
+        context={},
+    )
+    if throws:
+        with pytest.raises(NativeCleanupUnverified):
+            run_session(**kwargs)
+    else:
+        result = run_session(**kwargs)
+        assert result["status"] == "provider_error" and result["final_response"] == ""
+        assert result["artifacts"] == [] and not result["cleanup_verified"]
+    assert len(calls) == 1 and (root / "Main.lean").read_bytes() == original
+    assert not (workspace / "candidate.txt").exists() and not (workspace / "Scratch.lean").exists()
+    ledger = workspace.parent / ".runtime/job/request-count.json"
+    assert json.loads(ledger.read_text())["native_cleanup_unverified"] is True
+    before = {
+        path.relative_to(workspace).as_posix(): path.read_bytes()
+        for path in workspace.rglob("*")
+        if path.is_file()
+    }
+    ledger_before = ledger.read_bytes()
+    monkeypatch.setattr("agent.runtime.harness.run_harness", forbidden)
+    monkeypatch.setattr(agent_session, "prepare_snapshot", forbidden)
+    with pytest.raises(ValueError, match="closure is unverified"):
+        run_session(**kwargs)
+    assert ledger.read_bytes() == ledger_before
+    assert {
+        path.relative_to(workspace).as_posix(): path.read_bytes()
+        for path in workspace.rglob("*")
+        if path.is_file()
+    } == before
+
+
 @pytest.fixture(autouse=True)
 def native_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep native database preparation inside disposable test homes."""
@@ -249,6 +323,7 @@ def test_one_native_invocation_owns_the_full_conversation_without_default_overri
             usage={"input_tokens": 10, "output_tokens": 2},
             usage_total={"input_tokens": 10, "output_tokens": 2},
             returncode=0,
+            cleanup_verified=True,
         )
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", harness)
@@ -303,7 +378,9 @@ def test_startup_failure_is_not_an_agent_invocation(
     workspace.mkdir(parents=True)
     monkeypatch.setattr(
         "agent.runtime.harness.run_harness",
-        lambda request, **kwargs: HarnessResult("startup_error", error="missing binary"),
+        lambda request, **kwargs: HarnessResult(
+            "startup_error", error="missing binary", cleanup_verified=True
+        ),
     )
     result = run_session(
         role="prover",
@@ -357,7 +434,7 @@ def test_silent_session_has_no_three_or_twenty_minute_deadline(
         "leanflow_cli.workflows.prover.runtime.time.monotonic", lambda: runtime.started + 3600
     )
     runtime._ensure_active()
-    assert runtime._remaining_verification_time() == 86400 - 3600
+    assert runtime._remaining_verification_time() == pytest.approx(86400 - 3600, rel=0, abs=1e-6)
     runtime._persist()
     saved = json.loads((runtime.store.directory / "state.json").read_text())
     assert saved["metrics"]["elapsed_s"] >= 3600
@@ -493,7 +570,9 @@ def test_native_rejected_candidate_repairs_in_same_process_and_receipt_is_bound(
         assert accepted["receipt"]["revision"] == 0
         assert len(accepted["receipt"]["input_hash"]) == 64
         assert path.read_bytes() == original
-        return HarnessResult("completed", '{"proof":"trivial"}', returncode=0)
+        return HarnessResult(
+            "completed", '{"proof":"trivial"}', returncode=0, cleanup_verified=True
+        )
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", harness)
     state = ProverRuntime(

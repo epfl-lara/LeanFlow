@@ -405,7 +405,10 @@ def test_resolve_workflow_request_recovers_similar_requested_active_file(tmp_pat
     assert plan.workflow.workflow_args == "ProveDemo/RealTheorems-homework.lean"
 
 
-def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("kind,target", [("prove", "Main.lean"), ("formalize", "paper.tex")])
+def test_interactive_workflow_launch_spawns_background_runner(
+    monkeypatch, tmp_path, capsys, kind, target
+):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     shell = InteractiveShell()
     shell.cwd = tmp_path
@@ -413,26 +416,35 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
     fake_plan = NativeLaunchPlan(
         project=type("Project", (), {"label": "Demo", "root": tmp_path})(),
         workflow=NativeWorkflowSpec(
-            workflow_kind="prove",
-            frontend_command="/prove",
-            canonical_command="/prove",
-            backend_command="/prove Main.lean",
-            workflow_args="Main.lean",
+            workflow_kind=kind,
+            frontend_command=f"/{kind}",
+            canonical_command=f"/{kind}",
+            backend_command=f"/{kind} {target}",
+            workflow_args=target,
         ),
         runtime={
             "provider": "custom",
             "model": "zai-org/GLM-5.1",
             "base_url": "https://inference.rcp.epfl.ch/v1",
         },
-        child_env={"LEANFLOW_NATIVE_PROCESS_TOKEN": "shell-launch-token"},
+        child_env={
+            "LEANFLOW_NATIVE_PROCESS_TOKEN": "shell-launch-token",
+            "LEANFLOW_FORMALIZATION_BUDGET_PATH": "campaign-1/budget.json",
+        },
         argv=["python", "-m", "leanflow_cli.native.native_runner"],
         active_skill="lean-proof-loop",
         toolset_name="leanflow-native",
     )
 
-    monkeypatch.setattr(
-        "leanflow_cli.shell.resolve_workflow_request", lambda *args, **kwargs: fake_plan
-    )
+    resolved = []
+
+    def resolve(command, **kwargs):
+        resolved.append(command)
+        assert len(resolved) == 1, "Shell discovery/setup must resolve only once"
+        return fake_plan
+
+    monkeypatch.setattr("leanflow_cli.shell.resolve_workflow_request", resolve)
+    monkeypatch.setattr("leanflow_cli.workflow.resolve_workflow_request", resolve)
     monkeypatch.setattr(
         "leanflow_cli.shell.describe_launch_plan",
         lambda plan: {
@@ -458,12 +470,20 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
     class _FakeProcess:
         pid = 43210
 
-    monkeypatch.setattr(
-        "leanflow_cli.shell.spawn_workflow", lambda *args, **kwargs: (fake_plan, _FakeProcess())
-    )
+    spawned = []
+
+    def popen(argv, **kwargs):
+        spawned.append((argv, kwargs))
+        assert kwargs["env"]["LEANFLOW_FORMALIZATION_BUDGET_PATH"] == "campaign-1/budget.json"
+        assert kwargs["cwd"] == str(tmp_path)
+        return _FakeProcess()
+
+    monkeypatch.setattr("leanflow_cli.workflow.subprocess.Popen", popen)
     monkeypatch.setattr("leanflow_cli.shell.load_workflow_live_status", lambda: {})
 
-    assert shell._run_workflow_command("/prove Main.lean") == 0
+    assert shell._run_workflow_command(f"/{kind} {target}") == 0
+    assert len(resolved) == len(spawned) == 1
+    assert fake_plan.child_env["LEANFLOW_NATIVE_PROCESS_TOKEN"] == "shell-launch-token"
     output = capsys.readouterr().out
     assert "Workflow running in background" in output
     assert "43210" in output
@@ -647,6 +667,25 @@ def test_workflow_leaf_help_never_launches_runtime(monkeypatch, tmp_path, capsys
     assert "--clean-room" in output
     assert "--clean-room-label VALUE" in output
     assert "--no-parallel" in output
+
+
+@pytest.mark.parametrize("kind", ["draft", "review", "refactor", "golf", "unknown"])
+def test_removed_workflow_help_rejects_before_resolution(monkeypatch, tmp_path, capsys, kind):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "leanflow_cli.main.resolve_workflow_request",
+        lambda *args, **kwargs: pytest.fail("Removed workflow resolved a launch"),
+    )
+    monkeypatch.setattr(
+        "leanflow_cli.main.run_workflow",
+        lambda *args, **kwargs: pytest.fail("Removed workflow launched a runtime"),
+    )
+    assert main(["workflow", kind, "--help"]) == 2
+    output = capsys.readouterr()
+    assert "Choose prove or formalize" in output.err
+    assert "usage:" not in output.out
+    assert not (tmp_path / ".leanflow").exists()
 
 
 def test_combined_status_skips_expensive_sandbox_probe_unless_verbose(

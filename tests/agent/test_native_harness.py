@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import signal
@@ -319,7 +320,7 @@ def test_group_cleanup_accepts_eperm_only_for_exited_or_zombie_group(monkeypatch
     from agent.runtime.harness import processes
 
     def denied(*args):
-        raise PermissionError("macOS group has no signalable processes")
+        raise PermissionError(errno.EPERM, "macOS group has no signalable processes")
 
     monkeypatch.setattr(processes.os, "killpg", denied)
     monkeypatch.setattr(
@@ -327,7 +328,7 @@ def test_group_cleanup_accepts_eperm_only_for_exited_or_zombie_group(monkeypatch
         "run",
         lambda *args, **kwargs: SimpleNamespace(stdout=members),
     )
-    processes.signal_group(SimpleNamespace(pid=412, poll=lambda: -15), signal.SIGKILL)
+    processes.signal_group(SimpleNamespace(pid=412, returncode=-15), signal.SIGKILL)
 
 
 @pytest.mark.parametrize("members", ["412 S\n", "412 T\n", "unrecognized process table\n"])
@@ -337,7 +338,7 @@ def test_group_cleanup_does_not_hide_permission_failure_with_live_or_unknown_mem
     from agent.runtime.harness import processes
 
     def denied(*args):
-        raise PermissionError("real permission failure")
+        raise PermissionError(errno.EPERM, "real permission failure")
 
     monkeypatch.setattr(processes.os, "killpg", denied)
     monkeypatch.setattr(
@@ -346,14 +347,14 @@ def test_group_cleanup_does_not_hide_permission_failure_with_live_or_unknown_mem
         lambda *args, **kwargs: SimpleNamespace(stdout=members),
     )
     with pytest.raises(PermissionError, match="real permission failure"):
-        processes.signal_group(SimpleNamespace(pid=412, poll=lambda: -15), signal.SIGKILL)
+        processes.signal_group(SimpleNamespace(pid=412, returncode=-15), signal.SIGKILL)
 
 
 def test_group_cleanup_does_not_hide_permission_failure_for_running_leader(monkeypatch):
     from agent.runtime.harness import processes
 
     def denied(*args):
-        raise PermissionError("running native process")
+        raise PermissionError(errno.EPERM, "running native process")
 
     monkeypatch.setattr(processes.os, "killpg", denied)
     monkeypatch.setattr(
@@ -361,15 +362,16 @@ def test_group_cleanup_does_not_hide_permission_failure_for_running_leader(monke
         "_group_has_live_processes",
         lambda *args: pytest.fail("A live leader already establishes unfinished cleanup"),
     )
+    monkeypatch.setattr(processes, "process_exited", lambda process: False)
     with pytest.raises(PermissionError, match="running native process"):
-        processes.signal_group(SimpleNamespace(pid=412, poll=lambda: None), signal.SIGKILL)
+        processes.signal_group(SimpleNamespace(pid=412, returncode=None), signal.SIGKILL)
 
 
 def test_group_cleanup_fails_closed_when_empty_group_cannot_be_verified(monkeypatch):
     from agent.runtime.harness import processes
 
     def denied(*args):
-        raise PermissionError("unverified native process group")
+        raise PermissionError(errno.EPERM, "unverified native process group")
 
     def unavailable(*args, **kwargs):
         raise subprocess.TimeoutExpired("ps", 2)
@@ -377,7 +379,7 @@ def test_group_cleanup_fails_closed_when_empty_group_cannot_be_verified(monkeypa
     monkeypatch.setattr(processes.os, "killpg", denied)
     monkeypatch.setattr(processes.subprocess, "run", unavailable)
     with pytest.raises(subprocess.TimeoutExpired):
-        processes.signal_group(SimpleNamespace(pid=412, poll=lambda: -15), signal.SIGKILL)
+        processes.signal_group(SimpleNamespace(pid=412, returncode=-15), signal.SIGKILL)
 
 
 def test_process_inspection_failure_still_stops_native_group(monkeypatch: pytest.MonkeyPatch):
@@ -400,12 +402,16 @@ def test_process_inspection_failure_still_stops_native_group(monkeypatch: pytest
             process.wait()
 
 
-def test_missing_executable_is_explicit(tmp_path: Path):
+@pytest.mark.parametrize("session_id", ["", "preserved-native-resume"])
+def test_missing_executable_is_explicit(tmp_path: Path, session_id: str):
     result = run_harness(
-        HarnessRequest("lemex", "hello", tmp_path, executable="/no/such/native/backend")
+        HarnessRequest(
+            "lemex", "hello", tmp_path, executable="/no/such/native/backend", session_id=session_id
+        )
     )
     assert result.status == "startup_error"
-    assert result.returncode is None
+    assert result.returncode is None and result.cleanup_verified is True
+    assert result.session_id == session_id
 
 
 def test_resume_usage_requires_baseline():

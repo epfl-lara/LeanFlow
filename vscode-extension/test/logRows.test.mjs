@@ -62,6 +62,18 @@ test("native activity identifies its tool, exposed reasoning kind, and observed 
   assert.equal(activityEventState(event("submission_checked", "prover", { accepted: true })), "", "activity does not invent a proof verdict");
 });
 
+test("native checker receipt rows show the controller summary and failure state", () => {
+  const receipt = event("tool-result", "prover", {
+    tool: "start_lean_check", operation_id: "check-1", success: false,
+    error_code: "check_timeout", failure_summary: "The Lean check exceeded its time limit.",
+  });
+  assert.equal(activityEventPreview(receipt), "The Lean check exceeded its time limit.");
+  assert.equal(activityEventState(receipt), "Failed");
+  assert.equal(activityEventPreview({ ...receipt, details: { ...receipt.details, failure_summary: "The Lean check failed; details remain in the private tool log." } }), "The Lean check failed; details remain in the private tool log.");
+  assert.equal(activityEventPreview({ ...receipt, details: { tool: "start_lean_check", success: true } }), "tool-result");
+  assert.equal(activityEventPreview({ ...receipt, type: "tool-call" }), "tool-result", "the receipt summary is not used as tool-call output");
+});
+
 test("live item keys survive updates and tool completion while separating invocations", () => {
   const partial = event("agent-tool-progress", "prover", { item_id: "tool-1", invocation_id: "call-1", partial: true });
   assert.equal(activityEventKey(partial), activityEventKey({ ...partial, event_id: "final", type: "agent-tool-end", details: { ...partial.details, partial: false } }));

@@ -1,13 +1,13 @@
 ---
 name: lean-diagnostics
-description: Native diagnostics/review/doctor entry. Use structured capability, inspection, and verification state instead of ad hoc summaries.
+description: Diagnostic helper for proving, source review, and doctor. Use structured capability, inspection, and verification state instead of ad hoc summaries.
 ---
 
 # Native Lean Diagnostics
 
 Primary specs:
 
-- `leanflow_specs/workflows/review.md`
+- `leanflow_specs/phases/review.md`
 - `leanflow_specs/workflows/doctor.md`
 - `leanflow_specs/workflows/search.md`
 

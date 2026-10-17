@@ -37,7 +37,7 @@ export function ProvidersView() {
           {row.savedKey && <button className="btn ghost" onClick={() => action("removeKey")}>Remove saved key</button>}
           {row.id === "lemex" && <button className="btn" onClick={() => action("endpoint")}>Set endpoint</button>}
           <button className="btn ghost" onClick={() => action("config")}>Open native config</button>
-          <button className="btn ghost" onClick={() => { setForm(changeNativeSelection(view.form, { provider: row.id }, setup, app?.profiles?.profiles.find(profile => profile.name === view.form.profile)?.overrides)); setView({ tab: "launch" }); }}>Use for next run</button>
+          <button className="btn ghost" onClick={() => { setForm(changeNativeSelection(view.form, { provider: row.id }, setup, app?.profiles?.profiles.find(profile => profile.name === view.form.profile)?.overrides)); setView({ tab: view.form.kind === "formalize" ? "formalization" : "launch" }); }}>Use for next run</button>
         </div>
         {row.id === "lemex" && <p className="muted">Endpoint: <span className="mono">{row.endpoint || "Lemex native default"}</span> {row.savedEndpoint ? "· saved in VS Code" : "· inherited"}. Leave the endpoint blank to restore native settings.</p>}
         {!row.installed && <p className="muted">{row.id === "lemex" ? "Run the LeanFlow installer on this host to install its managed Lemex runtime." : `Install ${NAMES[row.id]} on this host and make its CLI available on PATH.`} <button className="link" onClick={() => post({ type: "openExternalDoc", topic: "install" })}>Installation guide</button></p>}

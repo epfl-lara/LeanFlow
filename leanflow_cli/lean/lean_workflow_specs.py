@@ -3,7 +3,7 @@
 These markdown-backed specs replace the old plugin-shaped split between short
 skill descriptions and an external command bundle. Skills remain the routing
 surface, but the workflow/worker specs below are the canonical contract used by
-the doctor, prompt builder, router, and Lean tool wrappers.
+the doctor, prover phase consumers, and Lean tool wrappers.
 """
 
 from __future__ import annotations

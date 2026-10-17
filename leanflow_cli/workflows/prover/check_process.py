@@ -19,8 +19,22 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from agent.runtime.harness.processes import ProcessTree
+from agent.runtime.harness.models import NativeCleanupUnverified
+from agent.runtime.harness.processes import (
+    ProcessTree,
+    group_has_owned_member,
+    process_exited,
+    require_output_eof,
+    signal_group,
+    verify_owned_stopped,
+)
 from core.deadlines import deadline_after, operation_cancelled, remaining_seconds, wait_slice
+from leanflow_cli.workflows.prover.check_capture_failure import (
+    CaptureInterruption,
+    capture_failure,
+    interrupted_capture_note,
+)
+from leanflow_cli.workflows.prover.check_command_cleanup import CommandOwnership, close_commands
 from leanflow_cli.workflows.prover.check_sandbox import (
     IsolationUnavailable,
     _environment,
@@ -36,25 +50,66 @@ _WORKSPACE_LOCKS: dict[tuple[Path, Path], threading.Lock] = {}
 _LOCK = threading.RLock()
 
 
+def owned_checker_identities(workspace_root: Path) -> dict[int, str]:
+    """Snapshot cached identities of this run's existing warm workers without reaping them."""
+    root = workspace_root.resolve()
+    identities: dict[int, str] = {}
+    with _LOCK:
+        for (_, workspace), worker in _WORKERS.items():
+            if not workspace.is_relative_to(root) or worker.closed or worker.process is None:
+                continue
+            tree = worker.tree
+            if tree is None or tree.process is not worker.process or tree.root_identity is None:
+                raise NativeCleanupUnverified("Warm checker identity is unknown; retain its inputs")
+            if worker.process.returncode is None:
+                identities[worker.process.pid] = tree.root_identity
+            identities.update(tree.descendants)
+    return identities
+
+
 def _kill(process: subprocess.Popen[bytes], tree: ProcessTree | None = None) -> None:
-    """Kill the owned group and tracked detached descendants, then reap the leader."""
-    if tree is not None:
-        tree.refresh()
-        tree.signal(signal.SIGKILL)
+    """Stop owned identities without adopting descendants from an already reaped PID."""
+    failures: list[Exception] = []
     try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except PermissionError:
-        # macOS can report EPERM for the empty group during child exit before
-        # waitpid reaps it. A live owned leader still needs an explicit kill.
-        if process.poll() is None:
-            process.kill()
+        # An unreaped child reserves its PID. After wait/poll, only a matching
+        # tracked member can establish ownership of the former group.
+        if process.returncode is None or group_has_owned_member(process, tree):
+            signal_group(process, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        failures.append(error)
+    if tree is not None:
+        actions = [lambda: tree.signal(signal.SIGKILL)]
+        if process.returncode is None:
+            actions.insert(0, tree.refresh)
+        for action in actions:
+            try:
+                action()
+            except (OSError, subprocess.SubprocessError, ValueError) as error:
+                failures.append(error)
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         process.kill()
-        process.wait(timeout=5)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            raise NativeCleanupUnverified(
+                "Lean checker leader remains live; retain its inputs"
+            ) from error
+    if failures:
+        raise NativeCleanupUnverified(
+            "Lean checker descendant cleanup is unverified; retain its inputs: " + str(failures[0])
+        ) from failures[0]
+    try:
+        verified = verify_owned_stopped(tree, group=process.pid)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        raise NativeCleanupUnverified(
+            "Lean checker closure evidence is unavailable; retain its inputs"
+        ) from error
+    if not verified:
+        raise NativeCleanupUnverified(
+            "Lean checker group or tracked descendants remain live; retain its inputs"
+        )
 
 
 def _failure(code: str, error: str, *, timed_out: bool = False) -> dict[str, Any]:
@@ -65,6 +120,11 @@ def _failure(code: str, error: str, *, timed_out: bool = False) -> dict[str, Any
         "error": error[:_MAX_ERROR],
         "timed_out": timed_out,
     }
+
+
+def _require_output_eof(process: subprocess.Popen[bytes]) -> None:
+    """Require physical pipe closure rather than hiding an unobserved writer locally."""
+    require_output_eof(process, description="Lean checker")
 
 
 class _CheckWorker:
@@ -80,6 +140,10 @@ class _CheckWorker:
         self.buffer = bytearray()
         self.errors = bytearray()
         self.closed = False
+        self._close_lock = threading.Lock()
+        self._closing = False
+        self._processes_verified = False
+        self._output_eof_verified = False
         self.has_checked = False
         try:
             script = Path(__file__).with_name("check_worker.py").resolve()
@@ -109,7 +173,7 @@ class _CheckWorker:
                 stderr=subprocess.PIPE,
                 start_new_session=True,
             )
-            self.tree = ProcessTree(self.process.pid)
+            self.tree = ProcessTree(self.process.pid, process=self.process)
             assert self.process.stdout is not None and self.process.stderr is not None
             os.set_blocking(self.process.stdout.fileno(), False)
             os.set_blocking(self.process.stderr.fileno(), False)
@@ -118,16 +182,36 @@ class _CheckWorker:
             raise
 
     def close(self) -> None:
-        """Stop checker descendants and remove only private checker caches."""
-        if self.closed:
-            return
-        self.closed = True
-        if self.process is not None:
-            _kill(self.process, self.tree)
-            for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
-                if stream is not None:
-                    stream.close()
-        shutil.rmtree(self.private, ignore_errors=True)
+        """Keep ownership retryable until every checker process has verifiably stopped."""
+        with self._close_lock:
+            if self.closed:
+                return
+            self._closing = True
+            if self.process is not None:
+                if not self._processes_verified:
+                    _kill(self.process, self.tree)
+                    self._processes_verified = True
+                if not self._output_eof_verified:
+                    _require_output_eof(self.process)
+                    self._output_eof_verified = True
+                for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+                    if stream is not None:
+                        stream.close()
+            shutil.rmtree(self.private, ignore_errors=True)
+            self.closed = True
+            self._closing = False
+
+    def _require_open(self, *, refresh: bool = False) -> None:
+        """Serialize root sampling with close and refuse retired or uncertain workers."""
+        with self._close_lock:
+            assert self.process is not None
+            if self.closed or self._closing or self.process.returncode is not None:
+                self._closing = not self.closed
+                raise NativeCleanupUnverified(
+                    "Lean checker is closing or already reaped; complete its cleanup before reuse"
+                )
+            if refresh and self.tree is not None:
+                self.tree.refresh()
 
     def request(
         self,
@@ -140,6 +224,7 @@ class _CheckWorker:
         assert self.process is not None and self.process.stdin is not None
         process = self.process
         assert process.stdin is not None
+        self._require_open()
         payload = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
         if len(payload) > _MAX_MESSAGE:
             return _failure("check_request_too_large", "Lean checker request exceeds 4 MiB.")
@@ -154,8 +239,7 @@ class _CheckWorker:
                 selector.register(process.stdout, selectors.EVENT_READ, "output")
                 selector.register(process.stderr, selectors.EVENT_READ, "error")
                 while True:
-                    if self.tree is not None:
-                        self.tree.refresh()
+                    self._require_open(refresh=True)
                     if operation_cancelled() or (cancelled is not None and cancelled()):
                         self.close()
                         return _failure(
@@ -213,6 +297,8 @@ class _CheckWorker:
                                 self.buffer.extend(chunk)
                                 if len(self.buffer) > _MAX_MESSAGE:
                                     raise ValueError("Lean checker response exceeds 4 MiB.")
+        except NativeCleanupUnverified:
+            raise
         except TimeoutError as exc:
             self.close()
             return _failure("check_timeout", str(exc), timed_out=True)
@@ -273,7 +359,10 @@ def check_scratch(
                 )
             with _LOCK:
                 worker = _WORKERS.get(key)
-                if worker is not None and worker.environment_generation != generation:
+                if worker is not None and (
+                    worker.environment_generation != generation
+                    or getattr(worker, "_closing", False)
+                ):
                     worker.close()
                 if worker is None or worker.closed:
                     worker = _CheckWorker(project, work)
@@ -324,12 +413,37 @@ def check_scratch(
         return _failure("check_setup_failed", str(exc))
 
 
-def close_check_workers(workspace: Path) -> None:
-    """Release every checker belonging to this exact workspace."""
-    work = workspace.resolve()
+def _close_owned_workers(workspace: Path | None) -> None:
+    """Attempt every matching owner before surfacing any unresolved cleanup boundary."""
+    failures: list[Exception] = []
+    try:
+        close_commands(workspace)
+    except Exception as error:
+        failures.append(error)
     with _LOCK:
-        for key in [key for key in _WORKERS if key[1] == work]:
-            _WORKERS.pop(key).close()
+        workers = [
+            (key, worker)
+            for key, worker in _WORKERS.items()
+            if workspace is None or key[1] == workspace
+        ]
+    for key, worker in workers:
+        try:
+            worker.close()
+        except Exception as error:
+            failures.append(error)
+        else:
+            with _LOCK:
+                if _WORKERS.get(key) is worker:
+                    _WORKERS.pop(key)
+    if failures:
+        raise NativeCleanupUnverified(
+            f"Checker cleanup remains unverified for {len(failures)} owner(s): {failures[0]}"
+        ) from failures[0]
+
+
+def close_check_workers(workspace: Path) -> None:
+    """Release every matching checker and retain each owner whose closure is uncertain."""
+    _close_owned_workers(workspace.resolve())
 
 
 def preflight_check(
@@ -386,6 +500,8 @@ def isolated_command(
     private: Path | None = None
     process: subprocess.Popen[bytes] | None = None
     tree: ProcessTree | None = None
+    ownership: CommandOwnership | None = None
+    interrupted: dict[str, Any] | None = None
     try:
         if timeout_s is not None and timeout_s <= 0:
             return _failure(
@@ -413,7 +529,16 @@ def isolated_command(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        tree = ProcessTree(process.pid)
+        tree = ProcessTree(process.pid, process=process)
+        ownership = CommandOwnership(
+            work,
+            private,
+            process,
+            tree,
+            _kill,
+            _require_output_eof,
+            input_roots=(project, *extra_writable_roots, *extra_readable_roots),
+        )
         stdout, stderr, truncated = _capture_command(
             process, timeout_s, cancelled=cancelled, tree=tree
         )
@@ -434,9 +559,20 @@ def isolated_command(
             "stderr_truncated": truncated["stderr"],
             "timed_out": False,
         }
+    except NativeCleanupUnverified as error:
+        # A final ownership.close() below may verify a transient failed stop.
+        # Capture remains unsuccessful, but only that final close may claim retention.
+        interrupted = {
+            **_failure(
+                "check_capture_failed", "Isolated command capture was interrupted; retry the check."
+            ),
+            "returncode": None,
+            "stdout": "",
+            "stderr": "",
+            "capture_failure": capture_failure(error),
+        }
+        return interrupted
     except subprocess.TimeoutExpired:
-        if process is not None:
-            _kill(process, tree)
         return {
             **_failure(
                 "check_timeout",
@@ -469,13 +605,37 @@ def isolated_command(
             "stderr": "",
         }
     finally:
-        if process is not None:
-            _kill(process, tree)
-            for stream in (process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
-        if private is not None:
+        if ownership is not None:
+            try:
+                ownership.close()
+            except NativeCleanupUnverified as error:
+                if interrupted is not None:
+                    error.add_note(interrupted_capture_note(interrupted["capture_failure"]))
+                raise
+            if (
+                interrupted is not None
+                and ownership.closed
+                and ownership.processes_verified
+                and ownership.output_eof_verified
+            ):
+                interrupted["capture_cleanup"] = {
+                    "processes_verified": True,
+                    "output_eof_verified": True,
+                    "closed": True,
+                }
+                if interrupted["capture_failure"]["leader_exited_before_cleanup"]:
+                    assert process is not None
+                    interrupted["capture_failure"]["leader_returncode"] = process.returncode
+        elif private is not None:
             shutil.rmtree(private, ignore_errors=True)
+
+
+def _stop_capture(process: subprocess.Popen[bytes], tree: ProcessTree) -> None:
+    """Mark only cleanup failures originating at the command capture boundary."""
+    try:
+        _kill(process, tree)
+    except NativeCleanupUnverified as error:
+        raise CaptureInterruption("owned_stop", "Owned stop interrupted command capture") from error
 
 
 def _capture_command(
@@ -496,23 +656,30 @@ def _capture_command(
     deadline = deadline_after(timeout_s)
     tails: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
     truncated: dict[str, bool] = {"stdout": False, "stderr": False}
+    drain_deadline: float | None = None
     with selectors.DefaultSelector() as selector:
         for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
             os.set_blocking(stream.fileno(), False)
             selector.register(stream, selectors.EVENT_READ, name)
-        while selector.get_map():
+        while selector.get_map() or not process_exited(process):
             if tree is not None:
-                tree.refresh()
-                if process.poll() is not None:
+                if process.returncode is None:
+                    tree.refresh()
+                if process_exited(process) and drain_deadline is None:
                     # A background child may retain our pipes after the compiler
                     # exits. End its authority before trusting produced artifacts.
-                    _kill(process, tree)
+                    _stop_capture(process, tree)
+                    drain_deadline = time.monotonic() + 2.0
             if operation_cancelled() or (cancelled is not None and cancelled()):
                 raise InterruptedError("The controller cancelled this operation")
             remaining = remaining_seconds(deadline)
             if remaining is not None and remaining <= 0:
                 assert timeout_s is not None
                 raise subprocess.TimeoutExpired(process.args, timeout_s)
+            if drain_deadline is not None and time.monotonic() >= drain_deadline:
+                raise CaptureInterruption(
+                    "output_eof", "Lean checker output pipes remain open after leader exit"
+                )
             for key, _ in selector.select(wait_slice(deadline)):
                 chunk = os.read(key.fd, 65536)
                 if not chunk:
@@ -524,17 +691,18 @@ def _capture_command(
                 if len(tail) > limit:
                     truncated[key.data] = True
                     del tail[:-limit]
+    if tree is not None and drain_deadline is None:
+        # Both channels can reach EOF in the same observation that notices exit.
+        # Stop the still-reserved group before wait() releases the original PID.
+        _stop_capture(process, tree)
     remaining = remaining_seconds(deadline)
     process.wait(timeout=remaining)
     return bytes(tails["stdout"]), bytes(tails["stderr"]), truncated
 
 
 def _close_all() -> None:
-    """Reap warm subprocesses when the controller exits normally."""
-    with _LOCK:
-        for worker in _WORKERS.values():
-            worker.close()
-        _WORKERS.clear()
+    """Retry retained commands and reap warm subprocesses when the controller exits normally."""
+    _close_owned_workers(None)
 
 
 atexit.register(_close_all)

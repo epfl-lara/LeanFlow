@@ -226,9 +226,6 @@ start a new native run instead of resuming a direct-provider conversation.
 | --- | --- |
 | `prove` | Independently accepted replacements for existing proof holes |
 | `formalize` | A buildable statement draft reviewed against its TeX/PDF source |
-| `draft` | Lean declarations and proof skeletons |
-| `review` | Findings about diagnostics, goals, and remaining holes |
-| `refactor` / `golf` | Verified Lean proof simplification |
 
 `autoprove` and `autoformalize` are aliases of `prove` and `formalize`.
 
@@ -236,7 +233,6 @@ start a new native run instead of resuming a direct-provider conversation.
 leanflow workflow prove Main.lean
 leanflow workflow prove Main.lean --research-workers 3
 leanflow workflow formalize docs/paper.tex
-leanflow workflow review Main.lean --provider claude
 leanflow workflow --dry-run --json prove Main.lean
 ```
 
@@ -257,18 +253,19 @@ controller integrates independently accepted changes. Completion requires no
 The [prover reference](prover-workflow.md) details these boundaries.
 
 `formalize` accepts a project-local `.tex`, `.pdf`, or TeX-project directory.
-Preflight extracts available source text and prepares a source-linked blueprint
-and guidance. The native agent drafts definitions and statements; definitions
-must be complete, while theorem proof holes may remain. An independent source
-review and Lean build determine whether the draft is ready for handoff:
+Intake freezes complete source regions and allocates an evaluated Lake module tree
+without editing canonical Lean files. The author submits exact translation units;
+independent per-item and whole-document reviews follow compiled declaration checks.
+Publication preserves sources, mappings, verdicts and an exact proof-slot handoff:
 
 ```bash
 leanflow workflow formalize docs/paper.tex
-leanflow workflow prove Generated/Main.lean
+leanflow workflow prove --from-formalization <document-id> --formalization-revision <revision-id>
 ```
 
-Formalization completion does not certify the proofs. Missing PDF tools or source
-assets are recorded as extraction limitations. `review` publishes findings;
+Formalization completion does not certify pending proofs. Missing PDF text or source
+assets block review until repaired. See [formalization](formalization.md) for inventory
+repairs, parser policy, reviewer settings and publication recovery. `review` publishes findings;
 `refactor` and `golf` require independent build, axiom, and statement checks before
 source promotion.
 

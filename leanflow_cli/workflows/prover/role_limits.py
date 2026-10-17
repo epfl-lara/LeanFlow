@@ -120,7 +120,11 @@ def recovery_actions(runtime: ProverRuntime) -> dict[str, dict[str, Any]]:
         action: {
             "role": role,
             "remaining_sessions": allowances[role]["remaining"],
-            "can_start": allowances[role]["remaining"] != 0,
+            "can_start": allowances[role]["remaining"] != 0
+            and not (
+                action == "decompose"
+                and getattr(runtime, "formalization_handoff", None) is not None
+            ),
             "minimum_sessions_for_fresh_action": 3 if action == "decompose" else 1,
         }
         for action, role in roles.items()

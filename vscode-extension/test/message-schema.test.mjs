@@ -28,6 +28,15 @@ test("the CLI settings action is an explicit message", () => {
   });
 });
 
+test("formalization baseline setup accepts only fixed actions and drops untrusted client paths", () => {
+  for (const action of ["inspect", "start", "retry", "repair", "cancel", "log"]) {
+    assert.deepEqual(parseWebviewMessage({ type: "formalizationProjectSetup", action, root: "/client/path" }), {
+      ok: true, message: { type: "formalizationProjectSetup", action },
+    });
+  }
+  for (const action of [undefined, "launch", {}, ["start"]]) assert.equal(parseWebviewMessage({ type: "formalizationProjectSetup", action }).ok, false);
+});
+
 function launchRequest(overrides = {}) {
   return {
     kind: "prove",
@@ -62,6 +71,16 @@ function matrix(overrides = {}) {
     createdAt: "2026-08-11T00:00:00Z",
     ...overrides,
   };
+}
+
+for (const kind of ["draft", "review", "refactor", "golf"]) {
+  test(`retired ${kind} intent is rejected at every workflow selection boundary`, () => {
+    assert.equal(parseWebviewMessage({ type: "launch", request: launchRequest({ kind }) }).ok, false);
+    assert.equal(parseWebviewMessage({ type: "preview", requestId: "preview-1", request: launchRequest({ kind }) }).ok, false);
+    assert.equal(parseWebviewMessage({ type: "pickTarget", kind }).ok, false);
+    assert.equal(parseWebviewMessage({ type: "openDashboard", workflow: kind }).ok, false);
+    assert.equal(parseWebviewMessage({ type: "createExperiment", matrix: matrix({ kind, base: launchRequest({ kind }) }) }).ok, false);
+  });
 }
 
 test("an experiment matrix may contain at most 1000 cells", () => {

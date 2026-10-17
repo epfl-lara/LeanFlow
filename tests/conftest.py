@@ -2,9 +2,12 @@
 
 import asyncio
 import os
+import shutil
 import signal
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -36,6 +39,16 @@ def _isolate_leanflow_home(tmp_path, monkeypatch):
     (fake_leanflow_home / "local-models").mkdir()
     monkeypatch.setenv("LEANFLOW_HOME", str(fake_leanflow_home))
     monkeypatch.setenv("LEANFLOW_QUEUE_INVARIANT_CHECKS", "1")
+    # A launched workflow's project path overrides LEANFLOW_HOME for run state.
+    # Clear it and its routing context before every test, including after a test
+    # that invokes an observer which writes os.environ directly.
+    for key in (
+        "LEANFLOW_PROJECT_ROOT",
+        "LEANFLOW_NATIVE_WORKFLOW_KIND",
+        "LEANFLOW_FORMALIZATION_HANDOFF",
+        "LEANFLOW_FORMALIZATION_REVISION",
+    ):
+        monkeypatch.delenv(key, raising=False)
     # Tests should not inherit the agent's current gateway/messaging surface.
     # Individual tests that need gateway behavior set these explicitly.
     monkeypatch.delenv("LEANFLOW_SESSION_PLATFORM", raising=False)
@@ -49,9 +62,9 @@ def _isolate_leanflow_home(tmp_path, monkeypatch):
     monkeypatch.delenv("LEANFLOW_RCP_PREFIX_CACHE", raising=False)
     # Native runner construction enables its contextual queue guard by setting
     # this process-global escape hatch directly.  Pytest workers reuse the
-    # process, so register the key with monkeypatch for every test; teardown
-    # then removes a value written by _build_agent instead of leaking it into
-    # unrelated file-tool statement-guard tests.
+    # process, so clear the key before every test. If it was initially absent,
+    # delenv has no teardown entry; the next test's deletion removes a direct
+    # write by _build_agent before file-tool statement guards can observe it.
     monkeypatch.delenv("LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS", raising=False)
     # workflow_state._workflow_run_id() mints a run id and writes it straight to
     # os.environ when the variable is unset. Same process-reuse hazard: a test that
@@ -90,6 +103,42 @@ def _isolate_leanflow_home(tmp_path, monkeypatch):
             or _key.endswith("_BASE_URL")
         ):
             monkeypatch.delenv(_key, raising=False)
+
+
+def _require_fake_native_command(
+    command: list[str], environment: Mapping[str, str], fake_root: Path
+) -> None:
+    """Reject installed model executables before native discovery or process admission."""
+    executable = shutil.which(command[0], path=environment.get("PATH"))
+    if executable is not None and not Path(executable).resolve().is_relative_to(
+        fake_root.resolve()
+    ):
+        pytest.fail(
+            "Real native inference is disabled in pytest. Mock the harness or use a "
+            "fake executable inside the pytest temporary directory. Run authorized "
+            "live-provider checks separately from the unit suite."
+        )
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_native_inference(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_leanflow_home: None,
+) -> None:
+    """Make a missed native mock fail before an authenticated CLI can run."""
+    from agent.runtime.harness import runner
+
+    original = runner.build_command
+    fake_root = tmp_path_factory.getbasetemp()
+
+    def guarded(request: Any, **kwargs: Any) -> list[str]:
+        command = original(request, **kwargs)
+        environment = {**os.environ, **(request.env or {})}
+        _require_fake_native_command(command, environment, fake_root)
+        return command
+
+    monkeypatch.setattr(runner, "build_command", guarded)
 
 
 @pytest.fixture()

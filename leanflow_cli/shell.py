@@ -734,6 +734,7 @@ class InteractiveShell:
             active_cwd=self.cwd,
             active_skill=self.active_skill or None,
             interactive=False,
+            prepared_plan=plan,
         )
         status_payload.update(
             {

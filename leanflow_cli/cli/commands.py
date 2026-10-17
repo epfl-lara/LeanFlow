@@ -32,22 +32,18 @@ class WorkflowCommandSpec:
 # workflow.WORKFLOW_ALIAS_MAP, workflow.FORGIVING_WORKFLOW_ALIAS_MAP) is DERIVED from
 # this single structure so the command surface stays consistent in one place.
 COMMAND_REGISTRY: tuple[WorkflowCommandSpec, ...] = (
-    WorkflowCommandSpec("/draft", "draft", "/draft", "Run the Lean draft workflow"),
-    WorkflowCommandSpec("/review", "review", "/review", "Run the Lean review workflow"),
-    WorkflowCommandSpec("/refactor", "refactor", "/refactor", "Run the Lean refactor workflow"),
-    WorkflowCommandSpec("/golf", "golf", "/golf", "Run the Lean proof golfing workflow"),
     WorkflowCommandSpec(
         "/prove",
         "prove",
         "/prove",
-        "Run the autonomous Lean proving workflow; add --agents N for explicit swarm mode",
+        "Run the autonomous Lean proving workflow; add --agents N for research workers",
         aliases=("/autoprove",),
     ),
     WorkflowCommandSpec(
         "/formalize",
         "formalize",
         "/formalize",
-        "Formalize a project-local .tex/.pdf document; add --agents N for explicit swarm mode",
+        "Formalize TeX/PDF sources with audited coverage and an independent source reviewer",
         aliases=("/autoformalize",),
     ),
 )

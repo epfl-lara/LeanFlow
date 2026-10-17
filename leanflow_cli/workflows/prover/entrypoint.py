@@ -16,7 +16,12 @@ from core.utils import atomic_json_write
 from leanflow_cli.runtime.project_operations import ProjectBusyError, project_activity
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.observer import RunObserver, exit_code
-from leanflow_cli.workflows.prover.source import import_only_source, project_path, project_sources
+from leanflow_cli.workflows.prover.source import (
+    SourceConflictError,
+    import_only_source,
+    project_path,
+    project_sources,
+)
 from leanflow_cli.workflows.prover.store import now
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")
@@ -89,14 +94,30 @@ def _startup_failure(
     publish_live: bool,
 ) -> int:
     """Record a failed execution without resnapshotting source or rewriting prior runs."""
+    from leanflow_cli.workflows.prover.runtime import BudgetExhausted
+
     message = redact_sensitive_text(str(error))[:16000]
-    conflict = "protected source changed" in message
-    status = "source_conflict" if conflict else "environment_error" if not publish_live else "error"
-    guidance = (
-        "Compare current source with this run's saved baselines and resolve the conflict before resuming. "
-        "The original snapshot was preserved; no source was automatically reaccepted."
+    conflict = isinstance(error, SourceConflictError) or "protected source changed" in message
+    timed_out = isinstance(error, BudgetExhausted) and error.code == "campaign_wall_time"
+    status = (
+        "source_conflict"
         if conflict
-        else "Correct the reported startup problem, then resume the saved run or launch again."
+        else "timeout" if timed_out else "environment_error" if not publish_live else "error"
+    )
+    guidance = (
+        "Compare canonical source with this run's saved baselines and the retained version paths in the error. "
+        "The original snapshot was preserved; no source was automatically reaccepted. "
+        "A conflicted prover source journal cannot be cleared by restoring canonical bytes for same-run resume. "
+        "Preserve its original, candidate, rollback and journal files; reconcile ordinary source versions and start a fresh run. "
+        "A pending library configuration promotion also blocks fresh runs until its transaction can recover. "
+        "There is currently no automatic prover journal reconciliation command."
+        if conflict
+        else (
+            "The resumed campaign has exhausted its total active-time budget; its prior checkpoint and source are preserved. "
+            "Review the saved progress and budget settings before another launch."
+            if timed_out
+            else "Correct the reported startup problem, then resume the saved run or launch again."
+        )
     )
     try:
         directory = project_path(root, f".leanflow/workflow-state/prover/{run_id}")
@@ -130,6 +151,15 @@ def _startup_failure(
         state.setdefault("metrics", {"api_calls": 0, "cost_usd": None})
         if previous:
             state.update(resumed_from=previous, parent_run_id=previous)
+        if timed_out:
+            state["stop_reason"] = {
+                "code": "campaign_wall_time",
+                "scope": "campaign",
+                "message": message,
+                "used": state.get("metrics", {}).get("elapsed_s"),
+                "limit": config.wall_time_s if config else None,
+                "next_step": guidance,
+            }
         if config and "config" not in state:
             state["config"] = config.to_mapping()
         atomic_json_write(state_file, state)
@@ -168,6 +198,13 @@ def _run_project(root: Path) -> int:
     config: ProverConfig | None = None
     publish_live = True
     try:
+        from leanflow_cli.formalization.publication import (
+            assert_no_pending_publication,
+            recover_pending_publication,
+        )
+
+        recover_pending_publication(root)
+        assert_no_pending_publication(root)
         if requested_id and not _IDENTIFIER.fullmatch(requested_id):
             raise ValueError("invalid execution run ID")
         existing = project_path(root, f".leanflow/workflow-state/prover/{run_id}")
@@ -177,6 +214,63 @@ def _run_project(root: Path) -> int:
         config = ProverConfig.from_env()
         active = os.environ.get("LEANFLOW_NATIVE_ACTIVE_FILE", "").strip()
         targets = [root / active] if active else project_sources(root)
+        handoff: dict[str, Any] | None = None
+        handoff_path = os.environ.get("LEANFLOW_FORMALIZATION_HANDOFF", "").strip()
+        handoff_revision = os.environ.get("LEANFLOW_FORMALIZATION_REVISION", "").strip()
+        if bool(handoff_path) != bool(handoff_revision):
+            raise ValueError("Formalization proving requires both a handoff and its exact revision")
+        if handoff_path:
+            from leanflow_cli.formalization.handoff import authorized_holes, validate_handoff
+
+            path = Path(handoff_path)
+            handoff = validate_handoff(
+                root,
+                path if path.is_absolute() else root / path,
+                handoff_revision,
+                check_sources=not bool(previous),
+            )
+            reviewed_axioms = handoff.get("acceptance_policy", {}).get("allowed_axioms")
+            if not isinstance(reviewed_axioms, list) or set(reviewed_axioms) != set(
+                config.allowed_axioms
+            ):
+                raise ValueError(
+                    "Prover axiom policy differs from the reviewed formalization policy"
+                )
+            targets = [project_path(root, relative) for relative in authorized_holes(handoff)]
+            if active and {root / active} != set(targets):
+                raise ValueError(
+                    "An active file cannot override the exact formalization proof scope"
+                )
+            if not targets:
+                state = {
+                    "version": 2,
+                    "run_id": run_id,
+                    "mode": config.mode,
+                    "status": "no_proof_obligations",
+                    "phase": "no_proof_obligations",
+                    "terminal": True,
+                    "started_at": now(),
+                    "finished_at": now(),
+                    "formalization_handoff": handoff,
+                    "targets": [],
+                    "dag": {"nodes": [], "roots": [], "revision": 0},
+                    "metrics": {"api_calls": 0, "cost_usd": None},
+                    "config": config.to_mapping(),
+                }
+                atomic_json_write(existing / "state.json", state)
+                observer = RunObserver(root, run_id)
+                observer.start(state)
+                observer.finish(state)
+                print(
+                    json.dumps(
+                        {
+                            "run_id": run_id,
+                            "status": "no_proof_obligations",
+                            "metrics": state["metrics"],
+                        }
+                    )
+                )
+                return 0
         lock_path = project_path(root, ".leanflow/workflow-state/prover/controller.lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a") as handle:
@@ -190,21 +284,39 @@ def _run_project(root: Path) -> int:
                 snapshot = json.loads(
                     (root / f".leanflow/workflow-state/prover/{run_id}/state.json").read_text()
                 )
+                saved_handoff = snapshot.get("formalization_handoff")
+                if saved_handoff and handoff is None:
+                    from leanflow_cli.formalization.handoff import validate_handoff
+                    from leanflow_cli.formalization.records import document_directory
+
+                    handoff = validate_handoff(
+                        root,
+                        document_directory(root, saved_handoff["document_id"], published=True)
+                        / "handoff.json",
+                        saved_handoff["revision_id"],
+                        check_sources=False,
+                    )
+                if saved_handoff != handoff:
+                    raise ValueError("Resume formalization handoff differs from the saved run")
                 saved_targets = [project_path(root, path) for path in snapshot["targets"]]
                 if active and {path.resolve() for path in targets} != set(saved_targets):
                     raise ValueError(
                         "resume target scope differs from the saved run; launch a new run to change targets"
                     )
                 targets = saved_targets
-            runtime = ProverRuntime(
-                root=root,
-                targets=targets,
-                config=config,
-                run_id=run_id,
-                resume=bool(previous),
-                goal=os.environ.get("LEANFLOW_NATIVE_EXPLICIT_GOAL", ""),
-                observer=RunObserver(root, run_id),
-            )
+            from leanflow_cli.formalization.publication import publication_guard
+
+            with publication_guard(root):
+                runtime = ProverRuntime(
+                    root=root,
+                    targets=targets,
+                    config=config,
+                    run_id=run_id,
+                    resume=bool(previous),
+                    goal=os.environ.get("LEANFLOW_NATIVE_EXPLICIT_GOAL", ""),
+                    observer=RunObserver(root, run_id),
+                    formalization_handoff=handoff,
+                )
             if (
                 active
                 and not runtime.dag.roots

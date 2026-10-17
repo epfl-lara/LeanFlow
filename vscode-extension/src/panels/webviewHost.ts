@@ -5,10 +5,13 @@
  * bundle and speak the same message protocol, so the handling lives once here
  * and each surface only supplies its own `vscode.Webview`.
  */
+import type { FormalizationOperation } from "./formalizationOperation";
+
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { assertWorkflowProjectReady } from "../core/projectSetupTypes";
 
 import {
   CliError,
@@ -39,6 +42,7 @@ import {
   writeProjectStorageFile,
 } from "../core/storageSecurity";
 import { parseWebviewMessage } from "./messageSchema";
+import { FormalizationHost } from "./formalizationHost";
 import type { FlagProfile, HostMessage, WebviewMessage } from "../core/types";
 
 export type WebviewMode = "panel" | "sidebar";
@@ -74,13 +78,17 @@ export function buildWebviewHtml(
   const styleUri = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, "dist", "webview.css"),
   );
+  const pdfAsset = (name: string) => webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "dist", "pdfjs", name)).toString();
+  const pdfResources = { worker: pdfAsset("pdf.worker.mjs"), fonts: `${pdfAsset("standard_fonts")}/`, cmaps: `${pdfAsset("cmaps")}/`, iccs: `${pdfAsset("iccs")}/` };
   // Strict CSP: no remote loads, and only the nonce'd bundle may execute.
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data:`,
     `style-src ${webview.cspSource} 'unsafe-inline'`,
     `script-src 'nonce-${nonce}'`,
-    `font-src ${webview.cspSource}`,
+    `font-src ${webview.cspSource} data: blob:`,
+    `connect-src ${webview.cspSource}`,
+    "worker-src blob:",
   ].join("; ");
 
   return `<!DOCTYPE html>
@@ -94,7 +102,7 @@ export function buildWebviewHtml(
   </head>
   <body data-mode="${mode}">
     <div id="root"></div>
-    <script nonce="${nonce}">window.__LEANFLOW_MODE__ = ${JSON.stringify(mode)};</script>
+    <script nonce="${nonce}">window.__LEANFLOW_MODE__ = ${JSON.stringify(mode)}; window.__LEANFLOW_PDF__ = ${JSON.stringify(pdfResources)};</script>
     <script nonce="${nonce}" src="${scriptUri}"></script>
   </body>
 </html>`;
@@ -104,11 +112,13 @@ export class WebviewHost implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private ready = false;
   private readonly proverLoads = new Set<string>();
+  private readonly formalizations: FormalizationHost;
 
   constructor(
     private readonly webview: vscode.Webview,
     private readonly services: LeanFlowServices,
   ) {
+    this.formalizations = new FormalizationHost(services, message => this.post(message), (request, operation) => this.dispatch({ type: "launch", request }, operation));
     this.disposables.push(
       webview.onDidReceiveMessage((raw: unknown) => {
         // The webview is a separate document; nothing it posts is trusted until
@@ -139,6 +149,7 @@ export class WebviewHost implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.formalizations.dispose();
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -168,7 +179,8 @@ export class WebviewHost implements vscode.Disposable {
     }
   }
 
-  private async dispatch(message: WebviewMessage): Promise<void> {
+  private async dispatch(message: WebviewMessage, operation?: FormalizationOperation): Promise<void> {
+    if (await this.formalizations.handle(message)) return;
     const { services } = this;
     switch (message.type) {
       case "configureProvider": {
@@ -228,9 +240,18 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "launch": {
-        services.setup.assertLaunchReady(services.project.root);
+        operation?.assertCurrent();
+        if (message.request.kind === "formalize" && !operation?.sourceDocumentId) {
+          this.notify("error", "Choose a source in the Formalization tab before launching its translation.");
+          return;
+        }
+        const launchRoot = operation?.services.project.root ?? services.project.root;
+        assertWorkflowProjectReady(services.setup, launchRoot, message.request.kind);
         const profile = services.profiles?.profiles.find(row => row.name === message.request.profile);
-        const problems = [...validateLaunch(message.request), ...launchModelProblems(message.request, services.providers.state(), profile?.overrides)];
+        // Resume uses its original trusted native selection. The CLI decides
+        // whether paid continuation needs authentication; local draft recovery
+        // must remain available after today's catalog or login changes.
+        const problems = [...validateLaunch(message.request), ...(operation?.resumeTrackedId ? [] : launchModelProblems(message.request, services.providers.state(), profile?.overrides))];
         if (problems.length > 0) {
           this.notify("error", problems.join(" "));
           return;
@@ -242,7 +263,9 @@ export class WebviewHost implements vscode.Disposable {
           message.request,
           services.profiles,
           services.catalog,
+          operation ? { projectRoot: launchRoot, assertCurrent: operation.assertCurrent, sourceDocumentId: operation.sourceDocumentId, resumeTrackedId: operation.resumeTrackedId } : {},
         );
+        operation?.assertCurrent();
         services.selectRun(run.id);
         // The run id is minted at launch, so this is the first place it exists.
         this.notify(run.status === "failed" ? "error" : "info", run.status === "failed" ? run.error || "The workflow could not start." : `Started ${run.label}. ${run.launchNotice || ""}`);
@@ -458,6 +481,7 @@ export class WebviewHost implements vscode.Disposable {
         return;
       }
       case "openDashboard": {
+        if (message.workflow) services.openWorkflow(message.workflow);
         await vscode.commands.executeCommand("leanflow.openDashboard");
         return;
       }
@@ -546,7 +570,7 @@ export class WebviewHost implements vscode.Disposable {
     }
   }
 
-  private async pickTarget(kind: string): Promise<void> {
+  private async pickTarget(kind: import("../core/types").WorkflowKind): Promise<void> {
     const { services } = this;
     if (!services.project.found) {
       this.notify("error", "No LeanFlow project is open.");
@@ -558,6 +582,8 @@ export class WebviewHost implements vscode.Disposable {
         : { "Lean files": ["lean"] };
     const picked = await vscode.window.showOpenDialog({
       canSelectMany: false,
+      canSelectFolders: kind === "formalize",
+      canSelectFiles: true,
       defaultUri: vscode.Uri.file(services.project.root),
       filters,
       openLabel: "Use as target",
@@ -574,7 +600,7 @@ export class WebviewHost implements vscode.Disposable {
       return;
     }
     const realRoot = await fs.promises.realpath(services.project.root);
-    this.post({ type: "targetPicked", path: path.relative(realRoot, realTarget) });
+    this.post({ type: "targetPicked", path: path.relative(realRoot, realTarget), kind });
   }
 
   private async saveProfile(profile: FlagProfile): Promise<void> {

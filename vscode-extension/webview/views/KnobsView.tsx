@@ -111,7 +111,7 @@ export function KnobsView() {
       .map((group) => ({
         name: group.name,
         flags: group.flags.filter((flag) => {
-          if (view.form.kind === "prove" && flag.name === "LEANFLOW_HUMAN_REVIEW_ENABLED") return false;
+          if (flag.name === "LEANFLOW_HUMAN_REVIEW_ENABLED") return false;
           if (!showInternal && flag.kind === "internal") {
             return false;
           }

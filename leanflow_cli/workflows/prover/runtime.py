@@ -11,12 +11,15 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from agent.runtime.harness.models import NativeCleanupUnverified
+from core.deadlines import deadline_after
 from leanflow_cli.runtime.storage import StoragePressure
+from leanflow_cli.runtime.workflow_resources import WorkflowResourceFailure, WorkflowResourceWindow
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.config import ProverConfig
 from leanflow_cli.workflows.prover.live_progress import LiveProgress
@@ -97,11 +100,22 @@ class ProverRuntime:
         goal: str = "",
         resume: bool = False,
         observer: Any = None,
+        formalization_handoff: dict[str, Any] | None = None,
     ) -> None:
         self.root = root.resolve()
         project_path(self.root, ".leanflow")
         self.targets = [path.resolve() for path in targets]
         config = restrict_config(config)
+        if formalization_handoff is not None:
+            reviewed_axioms = formalization_handoff.get("acceptance_policy", {}).get(
+                "allowed_axioms"
+            )
+            if not isinstance(reviewed_axioms, list) or set(reviewed_axioms) != set(
+                config.allowed_axioms
+            ):
+                raise ValueError(
+                    "Prover axiom policy differs from the reviewed formalization policy"
+                )
         self.config = config
         self.run_id = run_id or uuid.uuid4().hex[:16]
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", self.run_id):
@@ -125,6 +139,7 @@ class ProverRuntime:
         self.pending: dict[Future[dict[str, Any]], dict[str, Any]] = {}
         self.completions: queue.SimpleQueue[Future[dict[str, Any]]] = queue.SimpleQueue()
         self.cancelled = threading.Event()
+        self.workflow_resources: WorkflowResourceWindow | None = None
         self.native_bridges: dict[str, Any] = {}
         self.stopping = False
         self.scratch_before: dict[str, str] = {}
@@ -133,7 +148,25 @@ class ProverRuntime:
         self.resume_role_jobs: dict[tuple[str, str], dict[str, Any]] = {}
         self.goal = goal
         self.observer = observer
+        self.formalization_handoff = copy.deepcopy(formalization_handoff)
         self.store.on_event = observer.event if observer is not None else None
+        from leanflow_cli.workflows.prover.library_transaction import (
+            pending_path,
+            recover_pending,
+        )
+
+        recovered_libraries: list[str] = []
+        if pending_path(self.root).exists() or pending_path(self.root).is_symlink():
+            from leanflow_cli.formalization.publication import publication_guard
+
+            with publication_guard(
+                self.root,
+                cancelled=self.cancelled.is_set,
+                deadline=(
+                    self.started + config.wall_time_s if config.wall_time_s is not None else None
+                ),
+            ):
+                recovered_libraries = recover_pending(self.root)
         if resume:
             self._restore()
             if verifier is None:
@@ -143,9 +176,25 @@ class ProverRuntime:
         else:
             if (self.store.directory / "state.json").exists():
                 raise ValueError("run ID already exists; explicitly request resume")
-            self.dag, self.documents = discover(
-                self.root, self.targets, fill_definitions=config.fill_definitions
-            )
+            if self.formalization_handoff is not None:
+                from leanflow_cli.formalization.handoff import authorized_holes
+
+                self.dag, self.documents = discover(
+                    self.root,
+                    self.targets,
+                    fill_definitions=False,
+                    authorized_holes=authorized_holes(self.formalization_handoff),
+                )
+                by_name = {node.name: node for node in self.dag.nodes}
+                for item in self.formalization_handoff["obligations"]:
+                    node = by_name[item["declaration"]]
+                    node.module = item["module"]
+                    node.dependencies = [by_name[name].id for name in item["depends_on"]]
+                    node.notes = "Source items: " + ", ".join(item["source_ids"])
+            else:
+                self.dag, self.documents = discover(
+                    self.root, self.targets, fill_definitions=config.fill_definitions
+                )
             self.dag.validate(config.max_nodes)
             scheme = os.getenv("LEANFLOW_PROVER_SIGNATURE_SCHEME", "").strip() or "module"
             if scheme not in SIGNATURE_SCHEMES:
@@ -168,6 +217,7 @@ class ProverRuntime:
                 "jobs": [],
                 "changes": [],
                 "targets": [str(path.relative_to(self.root)) for path in self.targets],
+                "formalization_handoff": self.formalization_handoff,
                 "plan_markdown": self._initial_plan(),
                 # Written on rejection, unlike plan_markdown which is only
                 # rewritten on acceptance; see plan_journal for why.
@@ -185,6 +235,10 @@ class ProverRuntime:
             }
             self._persist()
 
+        if recovered_libraries:
+            self.state.setdefault("retained_source_mutations", []).extend(recovered_libraries)
+            self._persist()
+
         if isinstance(self.verifier, LeanVerifier):
             self.verifier.remaining_time = self._remaining_verification_time
             self.verifier.cancelled = self.cancelled.is_set
@@ -194,6 +248,10 @@ class ProverRuntime:
                 raise ValueError(f"unknown signature scheme: {scheme}")
             self.verifier.signature_scheme = scheme
             self.verifier.artifact_root = self.store.directory / "artifacts"
+            if self.formalization_handoff is not None:
+                self.verifier.scoped_modules = {
+                    file: module for module, file in self.formalization_handoff["modules"].items()
+                }
 
     def _remaining_verification_time(self) -> float | None:
         """Enforce the global deadline before starting another deterministic check."""
@@ -237,6 +295,8 @@ class ProverRuntime:
             raise ValueError(
                 "This run used the retired API engine. Its artifacts are preserved; start a new native-backend run."
             )
+        if self.state.get("formalization_handoff") != self.formalization_handoff:
+            raise ValueError("resume formalization handoff differs from the saved proof scope")
         self.config = restore_research_config(self.config, self.state)
         self.state["config"] = self.config.to_mapping()
         self.state["research_policy"] = (
@@ -267,6 +327,20 @@ class ProverRuntime:
         else:
             documents = json.loads((self.store.directory / "source.json").read_text())
         self.documents = {key: SourceDocument(**value) for key, value in documents.items()}
+        if self.formalization_handoff is not None:
+            if any(
+                document.imports or document.proof_imports or document.generated
+                for document in self.documents.values()
+            ):
+                raise ValueError("Retained formalization proof setup exceeds reviewed scope")
+            transaction = self.store.directory / "source-transaction.json"
+            if (
+                transaction.is_file()
+                and json.loads(transaction.read_text()).get("kind") == "materialization"
+            ):
+                raise ValueError(
+                    "Retained helper materialization exceeds reviewed formalization scope"
+                )
         from leanflow_cli.workflows.prover.source_transaction import recover_proof
 
         recover_proof(self)
@@ -301,10 +375,16 @@ class ProverRuntime:
                 "context_limit",
             }:
                 workspace = Path(job["workspace"])
+                fresh_workspace_required = job.get("fresh_workspace_required") is True
                 ledger_path = workspace.parent / ".runtime" / workspace.name / "request-count.json"
                 if ledger_path.is_file():
                     ledger = json.loads(ledger_path.read_text())
-                    job["api_calls"] = int(ledger["used"])
+                    used = int(ledger["used"])
+                    job["api_calls"] = (
+                        max(int(job.get("api_calls", 0)), used)
+                        if fresh_workspace_required
+                        else used
+                    )
                     for field in (
                         "input_tokens",
                         "output_tokens",
@@ -314,8 +394,11 @@ class ProverRuntime:
                     ):
                         if field in ledger.get("usage", {}):
                             job[field] = ledger["usage"][field]
-                elif job.get("status") != "context_limit":
+                elif job.get("status") != "context_limit" and not fresh_workspace_required:
                     job["api_calls"] = int(job["api_budget"])
+                if fresh_workspace_required:
+                    job.update(status="stale", phase="finished", result_processed=True)
+                    continue
                 node = self.dag.by_id().get(job.get("node_id", ""))
                 if job.get("role") == "prover" and node is not None and node.status == "proved":
                     job.update(status="interrupted", phase="finished")
@@ -471,12 +554,39 @@ class ProverRuntime:
         return self.elapsed_before + time.monotonic() - self.started
 
     def _assert_sources(self) -> None:
-        for document in self.documents.values():
-            document.assert_current(self.root)
+        from leanflow_cli.workflows.prover.source_transaction import audit_retained_sources
+
+        with self._publication_guard():
+            audit_retained_sources(self)
+            for document in self.documents.values():
+                document.assert_current(self.root)
+
+    def _final_verification(self, targets: list[Path]) -> dict[str, Any]:
+        """Keep a stable publication generation through the final build and proof receipt."""
+        with self._publication_guard():
+            self._assert_sources()
+            result = self.verifier.final(targets)
+            if result.get("accepted") and self.formalization_handoff:
+                from leanflow_cli.formalization.handoff import proof_preservation_certificate
+
+                certificate = proof_preservation_certificate(
+                    self.root,
+                    self.formalization_handoff,
+                    self.documents,
+                    self.store.directory / "formalization-checks",
+                    self.config.allowed_axioms,
+                    deadline=deadline_after(self._remaining_verification_time()),
+                    cancelled=self.cancelled.is_set,
+                )
+                self.state["formalization_proof_revision"] = certificate
+            self._assert_sources()
+            return dict(result)
 
     def _reserve(self, requested: int) -> int:
         with self.lock:
             self._ensure_active()
+            if self.workflow_resources is not None:
+                self.workflow_resources.check(force=True)
             self._check_storage(force=True)
             remaining = (
                 None
@@ -513,6 +623,8 @@ class ProverRuntime:
 
     def _ensure_active(self) -> None:
         """Stop new controller work immediately after cancellation or the campaign deadline."""
+        if self.workflow_resources is not None:
+            self.workflow_resources.check()
         if self.cancelled.is_set() or self.stopping:
             self.stopping = True
             raise InfrastructureFailure(
@@ -529,6 +641,33 @@ class ProverRuntime:
             self.state["stop_status"] = "timeout"
             raise BudgetExhausted("campaign wall-clock budget exhausted", code="campaign_wall_time")
         self._check_storage()
+
+    @contextlib.contextmanager
+    def _publication_guard(self) -> Iterator[None]:
+        """Cancel queued ownership so stopped worker threads can drain before holder release."""
+        from leanflow_cli.formalization.publication import (
+            PublicationCancelled,
+            publication_guard,
+        )
+
+        deadline = (
+            self.started + self.config.wall_time_s - self.elapsed_before
+            if self.config.wall_time_s is not None
+            else None
+        )
+        try:
+            with publication_guard(
+                self.root,
+                cancelled=lambda: self.cancelled.is_set() or self.stopping,
+                deadline=deadline,
+            ):
+                if self.workflow_resources is not None:
+                    self.workflow_resources.check(force=True)
+                self._ensure_active()
+                yield
+        except PublicationCancelled as error:
+            self._ensure_active()
+            raise InfrastructureFailure(str(error), status="interrupted") from error
 
     def _check_storage(self, *, force: bool = False) -> None:
         """Stop with resumable state when cleanup cannot restore the free-space reserve."""
@@ -566,6 +705,27 @@ class ProverRuntime:
             ],
             "notes": node.notes if node else "",
             "goal": self.goal,
+            "formalization_guidance": (
+                self.formalization_handoff.get("guidance", "") if self.formalization_handoff else ""
+            ),
+            "formalization_guidance_refs": copy.deepcopy(
+                (self.formalization_handoff or {}).get("guidance_refs", [])
+            ),
+            "formalization_definition_refs": copy.deepcopy(
+                (self.formalization_handoff or {}).get("definition_refs", [])
+            ),
+            "formalization_proof_scope": (
+                "Replace only the assigned literal proof slots using the existing setup. "
+                "New imports, libraries, and helper declarations require a new formalization revision and source review; decomposition is unavailable."
+                if self.formalization_handoff is not None
+                else ""
+            ),
+            "formalization_build_dir": (
+                self.verifier.scoped_build_dir
+                if self.formalization_handoff is not None
+                and isinstance(self.verifier, LeanVerifier)
+                else None
+            ),
             "permitted_dependencies": list(node.dependencies) if node else [],
             "resources": resource_inventory(
                 self.state["jobs"], project_root=self.root, run_directory=self.store.directory
@@ -718,6 +878,8 @@ class ProverRuntime:
 
     def _retain_candidate(self, job: dict[str, Any], result: dict[str, Any]) -> None:
         """Preserve a completed current-revision proof for independent zero-model resume."""
+        if job.get("fresh_workspace_required") is True:
+            return
         node = self.dag.by_id().get(job.get("node_id", ""))
         if (
             job.get("role") != "prover"
@@ -743,7 +905,7 @@ class ProverRuntime:
 
     def _accept(self, node: Node, candidate: list[str], job_id: str) -> bool:
         """Serialize independent source verification and its canonical installation."""
-        with self.lock:
+        with self.lock, self._publication_guard():
             return self._accept_locked(node, candidate, job_id)
 
     def _accept_locked(self, node: Node, candidate: list[str], job_id: str) -> bool:
@@ -820,8 +982,9 @@ class ProverRuntime:
         path = self.root / node.file
         from leanflow_cli.workflows.prover.source_transaction import (
             begin_proof,
+            finish_proof,
+            install_proof,
             recover_proof,
-            replace_source,
         )
 
         transaction = begin_proof(self, node, candidate, previous_document, document.render())
@@ -832,7 +995,7 @@ class ProverRuntime:
                     f"protected source changed before proof installation: {node.file}",
                     status="source_conflict",
                 )
-            replace_source(path, document.render().encode("utf-8"))
+            install_proof(self, transaction, document.render().encode("utf-8"))
             self._change(document, job_id)
             staged_change = next(
                 item for item in self.state["changes"] if item["path"] == str(path)
@@ -858,6 +1021,7 @@ class ProverRuntime:
                     status="environment_error",
                 )
             self._assert_sources()
+            finish_proof(self, transaction)
         except Exception as error:
             document.replacements = previous
             try:
@@ -1183,6 +1347,13 @@ class ProverRuntime:
                     rec["charged"] = True
                     self._persist()
                 decision = recovery.recovery_decision(self, node, dict(rec.get("report") or {}))
+                if self.formalization_handoff is not None and decision["action"] == "decompose":
+                    decision = {
+                        "action": "invalid",
+                        "rejected_action": "decompose",
+                        "fallback": True,
+                        "rationale": "Reviewed formalization proof scope permits only existing proof slots. Choose retry, continue, or negate; adding helpers requires a new formalization revision and source review.",
+                    }
                 if node.status == "false" and decision["action"] != "decompose":
                     decision = {
                         "action": "invalid",
@@ -1228,7 +1399,13 @@ class ProverRuntime:
                             "rejected_action": decision.get("rejected_action", decision["action"]),
                             "message": decision.get("rationale", "Choose an actionable recovery."),
                             "allowed_actions": (
-                                ["decompose"] if node.status == "false" else list(recovery.ACTIONS)
+                                ["decompose"]
+                                if node.status == "false"
+                                else [
+                                    action
+                                    for action in recovery.ACTIONS
+                                    if action != "decompose" or self.formalization_handoff is None
+                                ]
                             ),
                         },
                     }
@@ -1499,6 +1676,14 @@ class ProverRuntime:
             self.observer.start(self.state, resumed=self.state["phase"] == "resume")
         self.progress.start()
         try:
+            from leanflow_cli.workflows.prover.check_process import owned_checker_identities
+
+            self.workflow_resources = WorkflowResourceWindow(
+                os.environ,
+                self.cancelled,
+                already_owned=owned_checker_identities(self.store.directory),
+            )
+            self.workflow_resources.start()
             if hasattr(self.verifier, "preflight"):
                 self.state["phase"] = "preflight"
                 self._persist()
@@ -1509,14 +1694,29 @@ class ProverRuntime:
                     timeout_s=self.config.timeout_s,
                 )
                 self.state["preflight"] = preflight
+                self._ensure_active()
                 if preflight.get("accepted") is not True:
                     self._ensure_active()
                     raise InfrastructureFailure(
                         str(preflight.get("error", preflight)), status="environment_error"
                     )
-            if hasattr(self.verifier, "capture_signatures") and any(
+            needs_signatures = any(
                 node.original and not node.signature_sha256 for node in self.dag.nodes
+            )
+            if (
+                isinstance(self.verifier, LeanVerifier)
+                and self.verifier.scoped_modules is not None
+                and not needs_signatures
             ):
+                readiness = self.verifier.prepare_imports(
+                    self.dag, self.documents, self.store.directory / "checks" / "imports"
+                )
+                if readiness.get("accepted") is not True:
+                    self._ensure_active()
+                    raise InfrastructureFailure(
+                        str(readiness.get("error", readiness)), status="environment_error"
+                    )
+            if hasattr(self.verifier, "capture_signatures") and needs_signatures:
                 if any(
                     document.imports
                     or document.proof_imports
@@ -1712,8 +1912,10 @@ class ProverRuntime:
                 final = self.progress.call(
                     "final_build",
                     "Verifying the complete project",
-                    lambda: self.verifier.final(
-                        list(
+                    lambda: self._final_verification(
+                        []
+                        if self.formalization_handoff
+                        else list(
                             dict.fromkeys(
                                 [
                                     *self.targets,
@@ -1728,6 +1930,8 @@ class ProverRuntime:
                     ),
                 )
                 self.state["verification"] = final
+                self.workflow_resources.check(force=True)
+                self._ensure_active()
                 if not final.get("accepted"):
                     self._ensure_active()
                 status = "completed" if final.get("accepted") else "verification_failed"
@@ -1739,6 +1943,9 @@ class ProverRuntime:
                 )
             elif self.config.agent_calls is not None and self.consumed >= self.config.agent_calls:
                 status = "budget_exhausted"
+        except WorkflowResourceFailure as error:
+            status = "resource_error"
+            self.state.update(error=str(error), stop_code=error.code)
         except BudgetExhausted as error:
             status = error.status
             self.state["error"] = str(error)
@@ -1757,6 +1964,19 @@ class ProverRuntime:
         finally:
             self.stopping = True
             self.cancelled.set()
+            if self.workflow_resources is not None:
+                try:
+                    self.workflow_resources.close()
+                except NativeCleanupUnverified as error:
+                    status = "error"
+                    self.state.update(native_cleanup_unverified=True, error=str(error))
+                if self.workflow_resources.failure is not None:
+                    status = "resource_error"
+                    self.state.update(
+                        error=str(self.workflow_resources.failure),
+                        stop_code=self.workflow_resources.failure.code,
+                    )
+                self.state["workflow_resources"] = self.workflow_resources.evidence()
             for future, job in list(self.pending.items()):
                 try:
                     completed_result = future.result()
@@ -1791,9 +2011,12 @@ class ProverRuntime:
                 self.verifier.close(self.store.directory / "checks")
             if status == "source_conflict":
                 self.state["next_step"] = (
-                    "Compare current source with this run's saved baselines and resolve the conflict before resuming. "
-                    "No external source edits were overwritten. Preserve source-transaction.json "
-                    "and source checkpoints; resume needs them to recover the interrupted transaction."
+                    "Compare canonical source with this run's saved baselines and the retained paths in the source-conflict error. "
+                    "Keep source-transaction.json and every original, candidate and rollback inode. "
+                    "A conflicted source-mutation journal permanently blocks this run, even if canonical bytes are restored; "
+                    "after reconciling the preserved versions, start a fresh run for new verification. "
+                    "A pending conflicted library promotion also blocks fresh runs; its journal must become safely recoverable before any proving can restart. "
+                    "There is currently no command to reconcile a conflicted prover journal for same-run resume."
                 )
             elif status == "context_limit":
                 self.state["next_step"] = (

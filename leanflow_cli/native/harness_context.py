@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.regular_files import read_regular_bytes
+from leanflow_cli.formalization.evidence import contained, digest, identity
 from leanflow_cli.runtime.skill_core import load_skill
 from leanflow_cli.workflows.prover.native_snapshot import remap_project_text
 
@@ -21,12 +23,49 @@ their own behavior. Call submit_files with a short JSON report once your changes
 ready, and poll_operation for acceptance or actionable rejection. Continue in this
 conversation after rejection. Stop after acceptance or an honest external blocker.
 For a blocker, return exactly {\"status\":\"blocked\",\"reason\":\"concrete blocker\"}.
-For review, return your findings without modifying project sources. For draft and
-formalize, create elaborating statement skeletons with sorry only in theorem proofs.
-Implement definitions and constructions fully. Preserve the supplied mathematical
-scope and source mappings in Blueprint.md. An independent fresh reviewer checks
-source fidelity before promotion. Proving is a separate user-started workflow.
+Implement definitions and constructions fully. Named Prop theorem proofs
+may remain pending; completed proofs and exact library reuse are valid. Do not edit
+canonical files or write approval prose as evidence. Proving is a separate action.
 """
+
+_FORMALIZATION_CONTRACT = """Formalization uses the complete frozen source inventory and
+structured proposal specified in the assignment. Follow the checked preparation
+plan and representative-slice receipt before full expansion. Independent item and
+document reviews gate publication.
+"""
+
+
+def _copy_source_partition(root: Path, snapshot: Path, scratch: Path, manifest: str) -> str:
+    """Authenticate and copy the lossless audit partition before exposing its private path."""
+    value = json.loads(manifest)
+    reference = value.get("source_region_partition")
+    if reference is None:
+        return manifest
+    if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
+        raise ValueError("Formalization source partition reference is invalid")
+    selected = Path(reference["path"])
+    selected = root / selected if not selected.is_absolute() else selected
+    selected = contained(root, selected.relative_to(root).as_posix())
+    raw = read_regular_bytes(selected, limit=128 * 1024**2)
+    partition = json.loads(raw)
+    if (
+        not isinstance(partition, dict)
+        or identity(partition) != reference.get("sha256")
+        or len(partition.get("canonical_inventory", {}).get("regions", []))
+        != reference.get("canonical_region_count")
+        or len(partition.get("groups", [])) != reference.get("group_count")
+    ):
+        raise ValueError("Formalization source partition differs from frozen intake evidence")
+    target = contained(
+        snapshot, (scratch / "formalization-source-partition.json").relative_to(snapshot).as_posix()
+    )
+    target.write_bytes(raw)
+    value["source_region_partition"] = {
+        **reference,
+        "path": str(target),
+        "bytes_sha256": digest(raw),
+    }
+    return json.dumps(value, ensure_ascii=False)
 
 
 def prepare_context(
@@ -36,9 +75,11 @@ def prepare_context(
     scratch: Path,
     environment: dict[str, str],
     allowed: tuple[str, ...],
-) -> tuple[dict[str, Any], str, str]:
+) -> tuple[dict[str, Any], str]:
     """Load selected guidance and expose only copied source inputs to the native job."""
-    kind = environment.get("LEANFLOW_NATIVE_WORKFLOW_KIND", "review")
+    kind = environment.get("LEANFLOW_NATIVE_WORKFLOW_KIND", "")
+    if kind != "formalize":
+        raise ValueError("Native formalization context requires the formalize workflow")
     context = {
         "workflow": kind,
         "active_file": environment.get("LEANFLOW_NATIVE_ACTIVE_FILE", ""),
@@ -48,6 +89,7 @@ def prepare_context(
         "allowed_axioms": list(allowed),
     }
     prompt = _CONTRACT.replace("{workflow}", kind) + "\n" + json.dumps(context, ensure_ascii=False)
+    prompt += "\n" + _FORMALIZATION_CONTRACT
     selected = [environment.get("LEANFLOW_NATIVE_ACTIVE_SKILL", "")]
     selected.extend(environment.get("LEANFLOW_NATIVE_ADDITIONAL_SKILLS", "").split(os.pathsep))
     for name in dict.fromkeys(selected):
@@ -69,6 +111,8 @@ def prepare_context(
         target = scratch / ("formalization-" + field.lower() + ".txt")
         replacements[value] = str(target)
         texts[field] = content
+    if "MANIFEST" in texts:
+        texts["MANIFEST"] = _copy_source_partition(root, snapshot, scratch, texts["MANIFEST"])
     for field, content in texts.items():
         for before, after in replacements.items():
             content = content.replace(before, after)
@@ -76,11 +120,12 @@ def prepare_context(
             remap_project_text(content, root, snapshot)
         )
     if texts:
+        if "MANIFEST" in texts:
+            context["formalization_manifest"] = str(scratch / "formalization-manifest.txt")
         prompt += "\nSource formalization context:\n" + texts.get("CONTEXT", "")
         prompt += "\nRead the complete extracted source at " + str(
             scratch / "formalization-extracted_text.txt"
         )
     for before, after in replacements.items():
         prompt = prompt.replace(before, after)
-    source_context = "\n\n".join(f"{name}:\n{text}" for name, text in texts.items())
-    return context, remap_project_text(prompt, root, snapshot), source_context
+    return context, remap_project_text(prompt, root, snapshot)

@@ -24,9 +24,8 @@ def test_leanflow_native_contains_exactly_core_tools():
 
 def test_leanflow_toolsets_exclude_removed_in_process_delegation():
     native = set(resolve_toolset("leanflow-native"))
-    swarm = set(resolve_toolset("leanflow-native-swarm"))
-    assert "delegate_task" not in native | swarm
-    assert swarm == native
+    assert "delegate_task" not in native
+    assert not validate_toolset("leanflow-native-swarm")
     assert not validate_toolset("delegation")
 
 
@@ -119,7 +118,6 @@ def test_autoformalize_is_composite_and_includes_core_groups():
 def test_resolved_toolsets_contain_no_duplicates():
     for name in (
         "leanflow-native",
-        "leanflow-native-swarm",
         "leanflow-prove-worker",
         "lean-research",
         "web-research",
@@ -158,7 +156,6 @@ def test_prove_worker_toolset_drops_session_and_document_noise():
 def test_validate_toolset_accepts_known_names_and_wildcards():
     for name in (
         "leanflow-native",
-        "leanflow-native-swarm",
         "autoformalize",
         "coordination",
         "document",

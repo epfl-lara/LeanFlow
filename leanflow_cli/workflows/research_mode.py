@@ -73,22 +73,6 @@ def prover_research_profile_env(workers: int = 2) -> dict[str, str]:
     }
 
 
-def research_local_loogle_enabled(*, research: bool | None = None) -> bool:
-    """Return whether this profile may start the private local Loogle index.
-
-    Non-research workflows retain the established local-Loogle default. A
-    research workflow requires ``LEANFLOW_RESEARCH_LOCAL_LOOGLE=1`` so the
-    foreground Lean language server remains available without its additional
-    resident index. ``research`` lets CLI resolution apply the policy before
-    the child process receives ``LEANFLOW_RESEARCH_MODE=1``.
-    """
-    active = research_mode_enabled() if research is None else bool(research)
-    if not active:
-        return True
-    raw = str(os.getenv("LEANFLOW_RESEARCH_LOCAL_LOOGLE", "") or "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
-
-
 @dataclass(frozen=True)
 class Multipliers:
     """Independent job budget raises for research runs."""

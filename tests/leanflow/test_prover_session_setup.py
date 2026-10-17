@@ -208,7 +208,7 @@ def test_real_private_workspace_setup_and_warm_leanprobe(
         checks.append(verdict)
         request.on_admitting()
         request.on_started()
-        return HarnessResult("completed", "{}")
+        return HarnessResult("completed", "{}", cleanup_verified=True)
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", harness)
     result = run_session(

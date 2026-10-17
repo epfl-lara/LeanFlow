@@ -32,6 +32,11 @@ python -m pytest -q
 Black formats Python; Ruff lints and sorts imports. New behavior requires tests.
 Write characterization tests before refactoring coupled code, add extracted
 modules to the mypy gate, and update documentation with behavior changes.
+Unit tests must mock native inference or use fake executables inside pytest's
+temporary directory. The shared harness guard rejects installed model CLIs before
+discovery or process admission, so a missed mock cannot charge a provider account.
+Run explicitly authorized live-provider checks separately, with finite limits and
+owned-process cleanup evidence. Installation checks must not make inference calls.
 Extension changes also require its typecheck, tests, and package build:
 
 ```bash

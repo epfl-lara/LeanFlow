@@ -36,6 +36,7 @@ def check_session_setup(
         deadline=toolset.deadline,
         cancelled=toolset.cancelled,
         cache_fresh_snapshot=cache_fresh_snapshot,
+        static_bound=bool(toolset.context.get("formalization_proof_scope")),
     )
     result = prerequisites
     if prerequisites.get("success") is True:

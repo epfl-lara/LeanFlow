@@ -80,7 +80,7 @@ def test_native_planning_repairs_format_and_graph_inside_one_invocation(
         for response in responses:
             receipt = call_tool(request, "submit_report", {"response": response})
             accepted.append(finish_operation(request, receipt)["accepted"])
-        return HarnessResult("completed", responses[-1], returncode=0)
+        return HarnessResult("completed", responses[-1], returncode=0, cleanup_verified=True)
 
     monkeypatch.setattr("agent.runtime.harness.run_harness", harness)
     monkeypatch.setattr(planning_controller, "materialize", lambda *args: None)

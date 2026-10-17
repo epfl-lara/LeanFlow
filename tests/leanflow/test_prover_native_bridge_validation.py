@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
+import threading
 from pathlib import Path
 
 import pytest
@@ -53,6 +55,63 @@ def test_native_bridge_name_and_schema_order_survive_restart_and_resume_copy(bri
         finally:
             other.close()
     assert str(tmp_path) not in original_name
+
+
+@pytest.mark.parametrize("drip", [False, True])
+def test_bridge_shutdown_is_bounded_when_an_authenticated_client_stalls_mid_body(
+    bridge, monkeypatch, drip
+):
+    instance, _ = bridge
+    entered = threading.Event()
+    handler_finished = threading.Event()
+    finished = threading.Event()
+    stop_drip = threading.Event()
+    original = instance.server.RequestHandlerClass.do_POST
+
+    def observe(handler):
+        entered.set()
+        try:
+            original(handler)
+        finally:
+            handler_finished.set()
+
+    monkeypatch.setattr(instance.server.RequestHandlerClass, "do_POST", observe)
+    instance.__enter__()
+    client = socket.create_connection(instance.server.server_address, timeout=1)
+    worker = threading.Thread(target=lambda: (instance.close(), finished.set()), daemon=True)
+
+    def feed() -> None:
+        while not stop_drip.wait(0.1):
+            try:
+                client.sendall(b" ")
+            except OSError:
+                return
+
+    feeder = threading.Thread(target=feed, daemon=True)
+    try:
+        client.sendall(
+            (
+                f"POST / HTTP/1.0\r\nAuthorization: Bearer {instance.token}\r\nContent-Length: 64\r\n\r\n"
+                + "{"
+            ).encode()
+        )
+        assert entered.wait(1)
+        if drip:
+            feeder.start()
+        worker.start()
+        assert finished.wait(3), "A partial HTTP body must not deadlock bridge shutdown"
+        assert handler_finished.is_set(), "Closed bridge must not leave an HTTP reader alive"
+        assert instance.closed and instance.operations == {}
+        assert instance._connections == set()
+    finally:
+        stop_drip.set()
+        client.close()
+        if feeder.ident is not None:
+            feeder.join(timeout=1)
+        assert not feeder.is_alive()
+        if worker.ident is not None:
+            worker.join(timeout=3)
+        assert not worker.is_alive()
 
 
 @pytest.mark.parametrize(
@@ -126,6 +185,28 @@ def test_advertised_valid_callback_and_poll_are_dispatched_exactly_once(bridge):
     polled = instance.call("poll_operation", {"operation_id": receipt["operation_id"]})
     assert polled["status"] == "completed" and polled["result"]["accepted"]
     assert calls == ['{"proof":"trivial"}']
+
+
+@pytest.mark.parametrize("message", ["", "PRIVATE checker exception"])
+def test_failed_check_exception_emits_an_explicit_failure_receipt(bridge, monkeypatch, message):
+    instance, _ = bridge
+    instance.toolset.role = "prover"
+    events = []
+    instance.on_event = lambda kind, detail: events.append((kind, detail))
+
+    def fail(name, arguments):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(instance.toolset, "invoke", fail)
+    receipt = instance.call("start_lean_check", {})
+    instance.drain()
+    operation = instance.call("poll_operation", {"operation_id": receipt["operation_id"]})
+    assert operation["status"] == "failed" and operation["error"] == message
+    assert "result" not in operation
+    assert [kind for kind, _ in events] == ["tool-start", "tool-result"]
+    detail = events[-1][1]
+    assert detail["operation_id"] == receipt["operation_id"]
+    assert detail["result"] == {"success": False, "error": message}
 
 
 @pytest.mark.parametrize(

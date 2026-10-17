@@ -11,9 +11,7 @@ import pytest
 
 from leanflow_cli.workflows.prover import libraries
 from leanflow_cli.workflows.prover.config import ProverConfig
-
-PIN = "a" * 40
-REQUEST = {"name": "physlib", "git": "https://github.com/example/physlib", "rev": PIN}
+from tests.leanflow.library_checkout_fixture import PIN, REQUEST, create_checkout
 
 
 def test_configuration_preserves_scoped_multiline_lake_dependencies(tmp_path):
@@ -48,6 +46,7 @@ def project(tmp_path, monkeypatch):
 
 
 def _success(root, paths, names, timeout_s):
+    create_checkout(root / ".lake/packages/physlib")
     manifest = root / "lake-manifest.json"
     payload = json.loads(manifest.read_text())
     payload["packages"].append(
@@ -138,6 +137,20 @@ def test_invalid_installer_timeout_is_a_configuration_error(project, monkeypatch
     assert not result["accepted"]
     assert result.get("status") == "configuration_error"
     assert result.get("error_code") == "invalid_timeout"
+
+
+@pytest.mark.parametrize("name", ["lake-manifest.json", "lean-toolchain"])
+def test_oversized_library_configuration_fails_before_effects(project, monkeypatch, name):
+    """Bound configuration snapshots before JSON parsing or private Lake admission."""
+    path = project / name
+    with path.open("wb") as handle:
+        handle.truncate(8 * 1024 * 1024 + 1)
+    inode = path.stat().st_ino
+    monkeypatch.setattr(libraries, "_run_update", lambda *_: pytest.fail("effectful Lake started"))
+    result = libraries.install_libraries(project, [REQUEST])
+    assert result["accepted"] is False and "bounded" in result["error"]
+    assert path.stat().st_size == 8 * 1024 * 1024 + 1 and path.stat().st_ino == inode
+    assert not (project / ".lake").exists()
 
 
 def test_same_pinned_install_is_idempotent(project, monkeypatch):
@@ -281,9 +294,10 @@ def test_failed_update_restores_all_configuration_bytes(project, monkeypatch, fa
         if failure == "config":
             (root / "lakefile.toml").write_text("wrong configuration")
         if failure in {"wrong_pin", "existing_lock"}:
-            document = json.loads(manifest.read_text())
+            private_manifest = root / "lake-manifest.json"
+            document = json.loads(private_manifest.read_text())
             document["packages"][-1 if failure == "wrong_pin" else 0]["rev"] = "d" * 40
-            manifest.write_text(json.dumps(document))
+            private_manifest.write_text(json.dumps(document))
         return {
             "success": failure not in {"nonzero", "timeout"},
             "returncode": 1 if failure == "nonzero" else 0,
@@ -293,7 +307,7 @@ def test_failed_update_restores_all_configuration_bytes(project, monkeypatch, fa
     monkeypatch.setattr(libraries, "_run_update", update)
     result = libraries.install_libraries(project, [REQUEST])
     assert not result["accepted"] and result["status"] == "rolled_back"
-    assert result["dependency_cache_may_have_changed"]
+    assert result["dependency_cache_may_have_changed"] is False
     assert {path: path.read_bytes() for path in paths} == originals
 
 
@@ -327,14 +341,14 @@ def test_dependency_hook_cannot_leave_an_external_package_link(
     def update(root, paths, names, timeout_s):
         result = _success(root, paths, names, timeout_s)
         packages = root / ".lake/packages"
-        packages.mkdir(parents=True)
+        packages.mkdir(parents=True, exist_ok=True)
         (packages / "escaped").symlink_to(external)
         return result
 
     monkeypatch.setattr(libraries, "_run_update", update)
     result = libraries.install_libraries(project, [REQUEST])
     assert not result["accepted"] and result["status"] == "rolled_back"
-    assert result["dependency_cache_may_have_changed"]
+    assert result["dependency_cache_may_have_changed"] is False
     assert (project / "lakefile.toml").read_bytes() == original
 
 
@@ -345,9 +359,10 @@ def test_dependency_hook_cannot_redirect_manifest(project, monkeypatch, tmp_path
 
     def update(root, paths, names, timeout_s):
         result = _success(root, paths, names, timeout_s)
-        external.write_bytes(manifest.read_bytes())
-        manifest.unlink()
-        manifest.symlink_to(external)
+        private_manifest = root / "lake-manifest.json"
+        external.write_bytes(private_manifest.read_bytes())
+        private_manifest.unlink()
+        private_manifest.symlink_to(external)
         return result
 
     monkeypatch.setattr(libraries, "_run_update", update)
@@ -374,10 +389,12 @@ def test_installer_requires_real_isolation_and_constrains_update_arguments(proje
     assert captured["network_allowed"] is True
     assert captured["argv"][-4:] == ["lake", "--keep-toolchain", "update", "physlib"]
     assert "GIT_ALLOW_PROTOCOL=https" in captured["argv"]
+    private_root = captured["project_root"]
+    assert private_root != project and private_root.is_relative_to(project / ".leanflow")
     assert set(captured["extra_writable_roots"]) == {
-        project / "lakefile.toml",
-        project / "lake-manifest.json",
-        project / "lean-toolchain",
-        project / ".lake",
+        private_root / "lakefile.toml",
+        private_root / "lake-manifest.json",
+        private_root / "lean-toolchain",
+        private_root / ".lake",
     }
     assert (project / "lakefile.toml").read_bytes() == original

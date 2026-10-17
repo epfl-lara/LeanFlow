@@ -107,6 +107,13 @@ function validValues(overrides = {}) {
   };
 }
 
+test("new contracts do not invent an unused swarm approval field", () => {
+  const contract = freezeExperimentLaunchContract(preview({ env_effective: {} }), { set: {}, unset: [] });
+  assert.equal(Object.hasOwn(contract.set, "LEANFLOW_NATIVE_USER_APPROVED_SWARM"), false);
+  const legacy = freezeExperimentLaunchContract(preview(), { set: {}, unset: [] });
+  assert.equal(Object.hasOwn(legacy.set, "LEANFLOW_NATIVE_USER_APPROVED_SWARM"), true);
+});
+
 test("requested target binds the source target even when formalize changes active file", () => {
   const values = {
     LEANFLOW_NATIVE_REQUESTED_TARGET: "docs/paper.tex",

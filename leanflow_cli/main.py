@@ -30,6 +30,10 @@ from leanflow_cli.cli.cli_handlers import (
 from leanflow_cli.cli.commands import build_workflow_command_set
 from leanflow_cli.cli.doctor import run_doctor
 from leanflow_cli.cli.flags_command import handle_flags, register_flags_parser
+from leanflow_cli.cli.formalization_command import (
+    handle_formalization,
+    register_formalization_parser,
+)
 from leanflow_cli.cli.mcp_bootstrap import bootstrap_lean_mcp, repair_managed_mcp_patches
 from leanflow_cli.cli.project_command import handle_project, register_project_parser
 from leanflow_cli.cli.runs_command import handle_runs, register_runs_parser
@@ -154,6 +158,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_repair.add_argument("--json", action="store_true", dest="json_output")
 
     register_project_parser(subparsers)
+    register_formalization_parser(subparsers)
     register_storage_parser(subparsers)
 
     workflow_parser = subparsers.add_parser(
@@ -340,6 +345,8 @@ def _main(argv: list[str] | None = None) -> int:
         return 0 if not issues else 1
     if args.command == "project":
         return _handle_project(args)
+    if args.command == "formalization":
+        return handle_formalization(args)
     if args.command == "storage":
         return handle_storage(args)
     if args.command == "sandbox":
@@ -347,7 +354,12 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "workflow":
         _hoist_preview_options(args)
         if any(token in {"-h", "--help"} for token in args.args):
-            print(workflow_run_help_text(args.workflow))
+            try:
+                help_text = workflow_run_help_text(args.workflow)
+            except ValueError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            print(help_text)
             return 0
         if (
             args.workflow not in _INFORMATIONAL_WORKFLOWS
@@ -375,7 +387,7 @@ def _main(argv: list[str] | None = None) -> int:
                             "type": str(entry.get("success_state", "") or "in-progress"),
                             "message": str(entry.get("label", "") or "[none]"),
                         }
-                        for entry in reversed(load_workflow_checkpoints())[:12]
+                        for entry in reversed(load_workflow_checkpoints()[-12:])
                     ],
                 )
                 return 0
@@ -407,6 +419,15 @@ def _main(argv: list[str] | None = None) -> int:
             # multiword label, prompt, or command template remains one value.
             text = f"{text} {shlex.join(args.args)}"
         try:
+            if argv is None and not getattr(args, "dry_run", False):
+                from leanflow_cli.workflow import parse_workflow_command
+
+                if parse_workflow_command(text).workflow_kind == "formalize":
+                    from leanflow_cli.formalization.preflight_owner import (
+                        ensure_cli_preflight_token,
+                    )
+
+                    ensure_cli_preflight_token()
             plan = resolve_workflow_request(
                 text,
                 active_cwd=Path.cwd(),
@@ -432,7 +453,12 @@ def _main(argv: list[str] | None = None) -> int:
                 render_workflow_launch(Console(), launch_summary=describe_launch_plan(plan))
             return 0
         render_workflow_launch(Console(), launch_summary=describe_launch_plan(plan))
-        return run_workflow(text, active_cwd=Path.cwd(), requested_provider=args.provider)
+        return run_workflow(
+            text,
+            active_cwd=Path.cwd(),
+            requested_provider=args.provider,
+            prepared_plan=plan,
+        )
     if args.command == "flags":
         return handle_flags(args)
     if args.command == "runs":

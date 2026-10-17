@@ -7,7 +7,9 @@
  */
 import * as vscode from "vscode";
 
-import { checkCli, cliPath, fetchFlagCatalog, fetchProfiles } from "./cli";
+import { checkCli, cliPath, fetchFlagCatalog, fetchProfiles, runCli } from "./cli";
+import { FormalizationWorkspaceSelection } from "./formalizationWorkspace";
+import { FormalizationService } from "./formalizationService";
 import { CliHealth } from "./cliHealth";
 import { ExperimentEngine } from "./experiments";
 import {
@@ -17,6 +19,7 @@ import {
   NO_PROJECT,
 } from "./project";
 import { ProjectSetup } from "./projectSetup";
+import { assertWorkflowProjectReady } from "./projectSetupTypes";
 import { ProviderSetup } from "./providerSetup";
 import { StorageService } from "./storage";
 import { ProverService } from "./proverService";
@@ -37,7 +40,7 @@ export class LeanFlowServices implements vscode.Disposable {
   leanFiles: string[] = [];
   selectedRunId: string | null = null;
   busy = false;
-  private runNavigation: { sequence: number; tab: "live" | "logs" } | undefined;
+  private runNavigation: { sequence: number; tab: "live" | "logs" | "launch" | "formalization" } | undefined;
 
   readonly setup: ProjectSetup;
   readonly providers: ProviderSetup;
@@ -46,6 +49,7 @@ export class LeanFlowServices implements vscode.Disposable {
   readonly experiments: ExperimentEngine;
   /** Cached, change-gated reads of exact-run prover state. */
   readonly prover: ProverService;
+  readonly formalizations: FormalizationService;
 
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changed.event;
@@ -56,18 +60,21 @@ export class LeanFlowServices implements vscode.Disposable {
 
   private readonly disposables: vscode.Disposable[] = [];
   private preparedProjectRoot = "";
+  private readonly formalizationSelection = new FormalizationWorkspaceSelection();
 
   constructor(context: vscode.ExtensionContext) {
     this.project = discoverProject();
     this.providers = new ProviderSetup(context, () => this.project.root || undefined);
     this.storage = new StorageService();
-    this.runs = new RunManager(context, this.project, () => this.providers.credentials.environment(), root => this.setup.assertLaunchReady(root));
+    this.runs = new RunManager(context, this.project, () => this.providers.credentials.environment(), (root, kind) => assertWorkflowProjectReady(this.setup, root, kind));
     this.prover = new ProverService(this.runs);
+    this.formalizations = new FormalizationService(() => this.formalizationSelection.scopeRoot(this.project.root,
+      this.formalizations?.previewRoot(vscode.window.activeTextEditor?.document.uri.toString())), runCli);
     this.setup = new ProjectSetup({
       projectRoot: () => this.project.root,
       activeRun: (root) => this.runs.launchBlocker(root) !== null,
       completed: (root, ready) => {
-        if (ready) this.preparedProjectRoot = root;
+        if (ready) { this.preparedProjectRoot = root; this.formalizationSelection.select(root); }
         return this.reload();
       },
     });
@@ -87,11 +94,16 @@ export class LeanFlowServices implements vscode.Disposable {
       this.experiments.onDidChange(() => this.changed.fire()),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration("leanflow")) {
+          if (event.affectsConfiguration("leanflow.projectRoot")) {
+            this.formalizationSelection.invalidate();
+            this.formalizations.invalidateWorkspace();
+            this.changed.fire();
+          }
           void this.reload();
         }
       }),
       vscode.window.onDidChangeActiveTextEditor(() => void this.rediscoverProject()),
-      vscode.workspace.onDidChangeWorkspaceFolders(() => void this.rediscoverProject()),
+      vscode.workspace.onDidChangeWorkspaceFolders(() => { this.formalizationSelection.invalidate(); this.formalizations.invalidateWorkspace(); void this.rediscoverProject(); }),
     );
     void this.reload();
   }
@@ -134,6 +146,7 @@ export class LeanFlowServices implements vscode.Disposable {
       eventTypes: snapshot.eventTypes,
       experiments: this.experiments.list(),
       leanFiles: this.leanFiles,
+      formalizationWorkspace: this.formalizations.workspaceScope(),
       busy: this.busy,
     };
   }
@@ -154,8 +167,17 @@ export class LeanFlowServices implements vscode.Disposable {
     this.changed.fire();
   }
 
+  /** Navigate to one explicit workflow without reinterpreting a saved retired intent. */
+  openWorkflow(kind: import("./types").WorkflowKind): void {
+    this.runNavigation = { sequence: (this.runNavigation?.sequence ?? 0) + 1, tab: kind === "prove" ? "launch" : "formalization" };
+    this.changed.fire();
+  }
+
   private async rediscoverProject(): Promise<void> {
-    const next = await discoverProjectIncludingNested(this.preparedProjectRoot);
+    this.formalizations.workspaceScope();
+    this.changed.fire();
+    const next = await discoverProjectIncludingNested(this.preparedProjectRoot, this.formalizationSelection.discoveryRoot(
+      this.formalizations.previewRoot(vscode.window.activeTextEditor?.document.uri.toString())));
     if (next.root === this.project.root) {
       if (this.cli.ok || this.cli.health === "unavailable") await this.setup.refresh(this.cli.ok);
       return;
@@ -191,7 +213,8 @@ export class LeanFlowServices implements vscode.Disposable {
     // is unchanged; that is the user's escape hatch from any cache.
     this.prover.invalidate();
     try {
-      this.project = await discoverProjectIncludingNested(this.preparedProjectRoot);
+      this.project = await discoverProjectIncludingNested(this.preparedProjectRoot, this.formalizationSelection.discoveryRoot(
+        this.formalizations.previewRoot(vscode.window.activeTextEditor?.document.uri.toString())));
       this.runs.setProject(this.project);
       await vscode.commands.executeCommand(
         "setContext",

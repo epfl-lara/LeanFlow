@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tempfile
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from core.deadlines import deadline_after, remaining_seconds
+from leanflow_cli.workflows.prover.check_command_cleanup import command_workspace
 from leanflow_cli.workflows.prover.models import digest
 
 _MODULE = "LeanFlowTypeProfileInput"
@@ -86,7 +86,9 @@ def module_name(relative: str) -> str:
     return Path(relative).with_suffix("").as_posix().replace("/", ".")
 
 
-def _shadow_package_root(shadow: Path, published: Path) -> None:
+def _shadow_package_root(
+    shadow: Path, published: Path, *, excluded: frozenset[Path] = frozenset()
+) -> None:
     """Expose already published sibling artifacts beside a freshly compiled module.
 
     Lean resolves every module of one package root from the first search path
@@ -98,11 +100,13 @@ def _shadow_package_root(shadow: Path, published: Path) -> None:
     shadow.mkdir(parents=True, exist_ok=True)
     for entry in published.iterdir():
         destination = shadow / entry.name
+        if destination in excluded:
+            continue
         if destination.is_symlink():
             continue
         if destination.exists():
             if entry.is_dir() and not entry.is_symlink() and destination.is_dir():
-                _shadow_package_root(destination, entry)
+                _shadow_package_root(destination, entry, excluded=excluded)
             continue
         os.symlink(entry, destination, target_is_directory=entry.is_dir())
 
@@ -117,6 +121,8 @@ def compiled_type_profiles(
     mutable_names: list[str] | None = None,
     module: str | None = None,
     artifact: Path | None = None,
+    published_library: Path | None = None,
+    freeze_artifact_parts: bool = False,
     cancelled: Callable[[], bool] | None = None,
     on_stage: Callable[[str, Callable[[], dict[str, Any]]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -152,7 +158,7 @@ def compiled_type_profiles(
     # cannot run cleanup, and resume deliberately refuses symlinked evidence.
     with ExitStack() as cleanup:
         directory = Path(
-            cleanup.enter_context(tempfile.TemporaryDirectory(prefix="leanflow-profile-compile-"))
+            cleanup.enter_context(command_workspace(prefix="leanflow-profile-compile-"))
         ).resolve()
         input_file = directory.joinpath(*compiled_module.split(".")).with_suffix(".lean")
         input_file.parent.mkdir(parents=True, exist_ok=True)
@@ -167,6 +173,7 @@ def compiled_type_profiles(
                     "lake",
                     "env",
                     "lean",
+                    *(["-j1"] if freeze_artifact_parts else []),
                     "-R",
                     str(directory),
                     "-o",
@@ -184,34 +191,50 @@ def compiled_type_profiles(
                 "compile": compiled,
                 "timing": timing,
             }
-        content = compiled_artifact.read_bytes()
+        part_suffixes = (".olean", ".olean.server", ".olean.private", ".ir.sig", ".ir")
+        frozen_parts = {}
+        for suffix in part_suffixes if freeze_artifact_parts else (".olean",):
+            part = compiled_artifact.with_suffix(suffix)
+            if part.is_symlink():
+                raise ValueError("Fresh compiled artifact part is aliased")
+            if part.is_file():
+                frozen_parts[suffix] = part.read_bytes()
+        content = frozen_parts[".olean"]
         # A compiler child can outlive an ancestry scan on some operating
         # systems. Give trusted inspection a fresh write domain that no source
         # compiler ever held, and freeze only the completed artifact across it.
         directory = Path(
-            cleanup.enter_context(tempfile.TemporaryDirectory(prefix="leanflow-profile-inspect-"))
+            cleanup.enter_context(command_workspace(prefix="leanflow-profile-inspect-"))
         ).resolve()
         compiled_artifact = directory.joinpath(*compiled_module.split(".")).with_suffix(".olean")
         compiled_artifact.parent.mkdir(parents=True, exist_ok=True)
         retained: dict[str, Any] = {}
+        retained_parts = []
+        for suffix, part_content in frozen_parts.items():
+            destination = compiled_artifact.with_suffix(suffix)
+            if artifact is not None:
+                retained_part = artifact.with_suffix(suffix)
+                retained_part.parent.mkdir(parents=True, exist_ok=True)
+                retained_part.write_bytes(part_content)
+                os.symlink(retained_part, destination)
+                retained_parts.append(retained_part)
+            else:
+                destination.write_bytes(part_content)
         if artifact is not None:
-            artifact.parent.mkdir(parents=True, exist_ok=True)
-            artifact.write_bytes(content)
-            os.symlink(artifact, compiled_artifact)
             retained = {
                 "artifact": str(artifact),
                 "artifact_sha256": hashlib.sha256(content).hexdigest(),
             }
-        else:
-            compiled_artifact.write_bytes(content)
         if module is not None:
             package = compiled_module.split(".")[0]
-            _shadow_package_root(
-                directory / package, root / ".lake" / "build" / "lib" / "lean" / package
+            library = published_library or root / ".lake" / "build" / "lib" / "lean"
+            excluded = (
+                frozenset(compiled_artifact.with_suffix(suffix) for suffix in part_suffixes)
+                if freeze_artifact_parts
+                else frozenset()
             )
-            published_root = (root / ".lake" / "build" / "lib" / "lean" / package).with_suffix(
-                ".olean"
-            )
+            _shadow_package_root(directory / package, library / package, excluded=excluded)
+            published_root = (library / package).with_suffix(".olean")
             if published_root.is_file() and not (directory / f"{package}.olean").exists():
                 os.symlink(published_root, directory / f"{package}.olean")
         inspector = directory / "Inspect.lean"
@@ -235,7 +258,7 @@ def compiled_type_profiles(
                 ],
                 timeout_s=remaining_seconds(deadline),
                 cancelled=cancelled,
-                extra_readable_roots=(artifact,) if artifact is not None else (),
+                extra_readable_roots=tuple(retained_parts),
             ),
         )
         if not inspected.get("success"):

@@ -11,7 +11,7 @@ phases: [phase-search]
 
 # Native Search Spec
 
-Search before proving, formalizing, refactoring, or golfing.
+Search before proving or formalizing.
 
 ## When To Use
 

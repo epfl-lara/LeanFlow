@@ -4,9 +4,8 @@ LeanFlow automates Lean 4 proof repair and mathematical formalization. It works
 inside a Lean project, checks proof candidates independently, and records the
 plan, progress, logs, and usage so you can inspect or resume a run.
 
-- **Prove** fills existing `sorry` holes while preserving supplied statements.
-- **Research** develops a mathematical plan and coordinates concurrent provers
-  through a theorem dependency graph.
+- **Prove** fills existing `sorry` holes while preserving supplied statements;
+  its research mode plans and coordinates concurrent provers through a dependency graph.
 - **Formalize** turns LaTeX or PDF sources into a buildable Lean statement draft
   for review and subsequent proving.
 - **Observe** runs from the terminal or the [VS Code extension](vscode-extension/README.md).
@@ -77,12 +76,23 @@ leanflow workflow prove Main.lean
 `project setup` creates a Mathlib project in an empty folder, prepares a folder
 containing Lean files, or checks an existing Lake project while preserving its
 source, toolchain, and dependency pins. It checks the Lean verification protocol
-before reporting readiness. Use `--preset lean` for a minimal project or
+before reporting readiness. `project init` is an alias for this same setup.
+Use `--preset lean` for a minimal project or
 `--repair` to recheck dependencies and rebuild verification tools.
 
 The VS Code sidebar provides the same flow through **Set up project**, with
 progress, logs, retry, and cancellation. Provider login is separate from Lean
 project readiness.
+
+Formalization starts with that checked project baseline. Use **Set up project**
+in its tab before starting translation. The native planner then inspects the
+existing environment and can add missing approved dependencies through a checked
+transaction. Source inspection remains available before setup and makes no model
+calls; setup readiness does not approve mathematical statements.
+Saved source inventories open without rescanning the Mathlib environment. The
+editor labels them historical until an explicit currentness check; proof admission
+always rechecks the exact accepted revision. Large source inventories and advanced
+controls are grouped into collapsible, paginated sections.
 
 Choose the scope and workflow:
 
@@ -147,10 +157,39 @@ search, and excludes prior native session context. Native model connections
 remain available. Clean-room checkpoints can resume; online or legacy runs
 cannot be converted into clean-room tests.
 
-`formalize` has a separate completion gate: a buildable statement draft reviewed
-against its source, with intentional theorem proof holes. Review the draft, then
-run `prove` to complete it. `autoprove` and `autoformalize` are compatibility
+`formalize` freezes a complete source inventory, estimates and prepares pinned
+dependencies, and requires a reviewed representative slice before translating the
+whole document. Automatic preparation uses the shared project setup service and
+reports its phases and log paths in the workflow terminal. It checks the resulting
+Lean project and requires independent item and document reviews. Definitions must be complete;
+named theorem proofs may remain pending. The editor links source/PDF and Lean
+locations and shows coverage, review and proof status separately. Launch proving
+from the exact published handoff. Formalization supports pinned Mathlib through
+independent kernel replay of compiled library declarations and keeps REPL tooling
+separate from mathematical imports. See the [supported input boundary](docs/formalization.md#supported-input-boundary);
+ordinary proving is unchanged. `autoprove` and `autoformalize` are compatibility
 aliases of `prove` and `formalize`.
+
+Unresolved paper ambiguities do not stop generation. The workflow finishes a
+checked best-effort draft with explicit assumptions and review findings, and the
+editor can open its complete Lean project. Human revision is optional; that draft
+does not grant source acceptance or a Prove handoff.
+
+Paper errors can be recorded as [documented corrections](docs/formalization.md#documented-source-corrections)
+without editing the original source. A scoped user policy permits bounded repairs;
+substantive interpretations need an explicit recorded decision. Any required local
+justification must be checked, and the adopted statement still needs independent
+source review. Its theorem proof may remain a named `sorry` obligation.
+
+TeX package or macro effects can block source acceptance. With an explicitly paired
+PDF, `leanflow workflow formalize docs/paper.tex --source-draft-only` prepares dependencies and retains
+one clearly unaccepted draft for inspection. It grants no review, publication or
+proving authority; see the [source draft boundary](docs/formalization.md).
+
+Conditional layout wrappers remain separate extraction alternatives. Recovered
+candidate statements still require source review, and uncertain nesting stays
+visible in unaccepted drafts. Intake also preserves supplied job-name `.bbl`
+bibliographies without claiming that a missing BibTeX database can be rebuilt.
 
 See the [prover workflow](docs/prover-workflow.md) for settings, verification,
 limits, outcomes, and resume behavior.
@@ -239,7 +278,8 @@ cache mounts, and update options.
 - [Architecture](ARCHITECTURE.md) — module ownership and runtime invariants.
 - [Agent guide](AGENTS.md) — repository coding standards.
 
-LeanFlow also includes `draft`, `review`, `refactor`, and `golf` workflows.
+LeanFlow exposes two workflows: `prove` and `formalize`. Statement drafting,
+project setup and independent source review are stages within these workflows.
 Its curated guidance lives in `leanflow_skills/`; workflow specifications live in
 `leanflow_specs/`. Built-in examples and evaluation fixtures are described in
 [testdata/workflow_projects](testdata/workflow_projects/README.md).

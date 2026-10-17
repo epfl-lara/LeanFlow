@@ -1,6 +1,7 @@
 """Verify explicit-runtime provenance and private concurrent packaging inputs."""
 
 import json
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -161,6 +162,61 @@ def test_wheel_inputs_are_independent_and_source_mutations_are_rejected(inputs):
     module.write_text("changed = True\n")
     with pytest.raises(RuntimeError, match="changed before packaging"):
         materialize_leanflow_input(third.venv_dir)
+
+
+def test_real_wheel_excludes_retired_formalization_modules_from_stale_build(inputs, tmp_path):
+    """Build actual shipped package inputs with retired modules deliberately left in build/lib."""
+    source, companion = inputs
+    repository = Path(__file__).resolve().parents[2]
+    removed = {
+        "leanflow_cli/formalization/document_extraction.py",
+        "leanflow_cli/formalization/formalization_generated_lean.py",
+        "leanflow_cli/formalization/formalization_markdown.py",
+        "leanflow_cli/formalization/formalization_document_runner.py",
+        "leanflow_cli/native/harness_formalization.py",
+        "leanflow_cli/native/support_module_materialization.py",
+        "leanflow_cli/native/harness_draft.py",
+    }
+    assert not any((repository / name).exists() for name in removed)
+    for original in source_package_files(repository):
+        destination = source / original.relative_to(repository)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(original, destination)
+    for name in removed:
+        stale = source / "build/lib" / name
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("raise RuntimeError('retired formalization module shipped')\n")
+    plan = runtime_install.prepare_install(source, mode="wheel", lean_probe_source=companion)
+
+    def wheel_files(root: Path, label: str) -> set[str]:
+        destination = tmp_path / label
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys;from setuptools.build_meta import build_wheel;build_wheel(sys.argv[1])",
+                str(destination),
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        with zipfile.ZipFile(next(destination.glob("*.whl"))) as wheel:
+            return set(wheel.namelist())
+
+    assert removed <= wheel_files(source, "contaminated-formalization-wheel")
+    clean = wheel_files(materialize_leanflow_input(plan.venv_dir), "clean-formalization-wheel")
+    assert not removed & clean
+    assert {
+        "leanflow_cli/formalization/source_display.py",
+        "leanflow_cli/formalization/source_inventory.py",
+        "leanflow_cli/formalization/review.py",
+        "leanflow_cli/formalization/publication.py",
+        "leanflow_skills/lean-formalization/SKILL.md",
+    } <= clean
 
 
 def test_editable_inputs_keep_original_source_path(inputs):

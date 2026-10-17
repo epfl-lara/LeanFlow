@@ -591,6 +591,7 @@ export function eventOutputSections(
       ),
     );
     if (type === "tool-result") {
+      add(section("failure-summary", "Check failure", details.failure_summary, { tone: "err" }));
       add(
         section(
           "result",
@@ -699,6 +700,8 @@ export function eventFacts(
   }
   add("finish", str(details.finish_reason) || str(assistant.finish_reason));
   add("tool", str(details.tool));
+  add("operation", str(details.operation_id));
+  add("error code", str(details.error_code));
   add("status", str(details.status));
   if (details.partial === true) add("output", "streaming preview");
   if (typeof details.accepted === "boolean") {
@@ -727,7 +730,7 @@ export function eventSearchText(event: ActivityEvent): string {
   }
   const details = record(event.details);
   const parts = [event.type, event.message, event.agent_id];
-  for (const key of ["tool", "description", "reasoning_kind", "node_id", "model", "status", "error", "content", ...PREVIEW_KEYS]) {
+  for (const key of ["tool", "description", "reasoning_kind", "node_id", "model", "status", "error", "error_code", "failure_summary", "operation_id", "content", ...PREVIEW_KEYS]) {
     parts.push(str(details[key]));
   }
   if (Array.isArray(details.tool_calls)) {

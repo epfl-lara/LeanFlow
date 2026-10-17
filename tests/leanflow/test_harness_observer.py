@@ -59,6 +59,17 @@ def test_native_observer_claims_same_run_before_activity(observer):
     assert "PRIVATE" not in json.dumps([live, events, metadata])
 
 
+def test_completed_ambiguous_draft_exits_successfully_without_claiming_source_acceptance(observer):
+    observer.start({"status": "running"})
+    observer.finish({"status": "completed_with_ambiguities", "accepted": False})
+    live = load_workflow_live_status()
+    assert live["terminal"] is True and live["phase"] == "completed"
+    assert live["status"] == "completed_with_ambiguities"
+    event = _events(observer)[-1]
+    assert event["details"]["exit_code"] == 0
+    assert event["details"]["status"] == "completed_with_ambiguities"
+
+
 def test_native_observer_budget_keeps_unknown_usage_and_ignores_refunded_calls(observer):
     observer.start({"status": "running"})
     budget = CampaignLimits(observer.root / "limits.json", {"agent_calls": 4})
@@ -125,6 +136,171 @@ def test_native_observer_publishes_model_metadata_without_private_config(observe
     assert event["details"]["model"] == "actual-model"
     assert event["details"]["reasoning_effort"] == "high"
     assert "configuration" not in event["details"]
+
+
+@pytest.mark.parametrize(
+    "code,summary",
+    [
+        ("check_busy", "Another Lean check still owns this workspace."),
+        ("check_cancelled", "This Lean check was cancelled."),
+        ("check_capture_failed", "Lean check output capture was interrupted."),
+        ("check_environment_changed", "The Lean environment changed during this check."),
+        ("check_request_too_large", "The Lean check request exceeded its size limit."),
+        ("check_response_too_large", "Lean check feedback exceeded its size limit."),
+        ("check_setup_failed", "The Lean checker could not complete this request."),
+        ("check_timeout", "The Lean check exceeded its time limit."),
+        ("isolated_lean_check_failed", "The isolated Lean checker could not complete this check."),
+        ("isolation_unavailable", "The required Lean check isolation is unavailable."),
+    ],
+)
+def test_native_observer_exposes_only_allowlisted_check_failure_summaries(observer, code, summary):
+    observer.start({"status": "running"})
+    observer.event(
+        "tool-result",
+        {
+            "tool": "start_lean_check",
+            "operation_id": "check-1",
+            "arguments": {"file": "/PRIVATE/source.lean"},
+            "failure_summary": "PRIVATE caller-written summary",
+            "result": {
+                "success": False,
+                "ok": False,
+                "error_code": code,
+                "error": "/PRIVATE/path arbitrary-opaque-secret-value",
+                "stdout": "PRIVATE output",
+            },
+        },
+    )
+    details = _events(observer)[-1]["details"]
+    assert details["success"] is False
+    assert details["error_code"] == code
+    assert details["failure_summary"] == summary
+    assert details["operation_id"] == "check-1"
+    assert not {"arguments", "error", "result", "stdout", "ok"} & details.keys()
+    assert "PRIVATE" not in json.dumps(_events(observer))
+    assert "arbitrary-opaque-secret-value" not in json.dumps(_events(observer))
+
+
+@pytest.mark.parametrize("envelope", [None, "completed", "successful_transport"])
+def test_native_observer_prioritizes_failed_check_over_successful_transport(observer, envelope):
+    observer.start({"status": "running"})
+    result = {
+        "success": False,
+        "error_code": "check_timeout",
+        "error": "PRIVATE checker output",
+    }
+    if envelope == "completed":
+        result = {"status": "completed", "success": True, "result": result}
+    elif envelope == "successful_transport":
+        result = {"success": True, "result": result}
+    observer.event(
+        "tool-result",
+        {"tool": "start_lean_check", "operation_id": "nested-1", "success": True, "result": result},
+    )
+    details = _events(observer)[-1]["details"]
+    assert details["success"] is False
+    assert details["error_code"] == "check_timeout"
+    assert details["failure_summary"] == "The Lean check exceeded its time limit."
+    assert details["operation_id"] == "nested-1"
+    assert "PRIVATE" not in json.dumps(details)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"success": False, "error_code": "PRIVATE_" + "x" * 10000},
+        {"success": False, "error": "PRIVATE exception arbitrary-opaque-secret-value"},
+        {"success": False, "error": ""},
+        {"status": "failed", "error": ""},
+        {"success": False, "error_code": {"PRIVATE": "unhashable"}},
+    ],
+)
+def test_native_observer_unknown_check_failures_keep_generic_receipt_only(observer, result):
+    observer.start({"status": "running"})
+    observer.event(
+        "tool-result",
+        {"tool": "start_lean_check", "operation_id": "unknown-1", "result": result},
+    )
+    details = _events(observer)[-1]["details"]
+    assert details["success"] is False
+    assert details["operation_id"] == "unknown-1"
+    assert (
+        details["failure_summary"]
+        == "The Lean check failed; details remain in the private tool log."
+    )
+    assert "error_code" not in details and "error" not in details
+    assert "PRIVATE" not in json.dumps(details)
+    assert "arbitrary-opaque-secret-value" not in json.dumps(details)
+
+
+def test_native_observer_does_not_promote_codes_from_other_tools_or_successes(observer):
+    observer.start({"status": "running"})
+    for kind, tool, success in [
+        ("tool-start", "start_lean_check", False),
+        ("tool-result", "start_command", False),
+        ("tool-result", "start_lean_check", True),
+    ]:
+        observer.event(
+            kind,
+            {
+                "tool": tool,
+                "operation_id": "other-1",
+                "result": {"success": success, "error_code": "check_timeout"},
+            },
+        )
+        details = _events(observer)[-1]["details"]
+        assert "error_code" not in details and "failure_summary" not in details
+
+
+@pytest.mark.parametrize("error", ["", None, "PRIVATE rejected-candidate diagnostic"])
+def test_native_observer_successful_check_execution_is_not_a_transport_failure(observer, error):
+    observer.start({"status": "running"})
+    observer.event(
+        "tool-result",
+        {
+            "tool": "start_lean_check",
+            "operation_id": "checked-1",
+            "result": {"success": True, "ok": False, "error": error},
+        },
+    )
+    details = _events(observer)[-1]["details"]
+    assert details["success"] is True
+    assert "failure_summary" not in details and "error_code" not in details
+    assert "PRIVATE" not in json.dumps(details)
+
+
+@pytest.mark.parametrize("error", ["", "PRIVATE exception without a failure flag"])
+def test_native_observer_does_not_infer_failure_from_raw_error_text(observer, error):
+    observer.start({"status": "running"})
+    observer.event(
+        "tool-result",
+        {
+            "tool": "start_lean_check",
+            "operation_id": "unclassified-1",
+            "result": {"error": error, "error_code": "check_timeout"},
+        },
+    )
+    details = _events(observer)[-1]["details"]
+    assert not {"success", "failure_summary", "error_code", "error"} & details.keys()
+    assert details["operation_id"] == "unclassified-1"
+
+
+def test_native_observer_failure_metadata_is_bounded_and_forcibly_redacted(observer):
+    observer._secrets += ("Lean check",)
+    observer.start({"status": "running"})
+    observer.event(
+        "tool-result",
+        {
+            "tool": "start_lean_check",
+            "operation_id": "arbitrary-opaque-secret-value" + "x" * 1000,
+            "result": {"success": False, "error_code": "check_timeout"},
+        },
+    )
+    details = _events(observer)[-1]["details"]
+    assert len(details["operation_id"]) == 200
+    assert "arbitrary-opaque-secret-value" not in details["operation_id"]
+    assert details["failure_summary"] == "The [REDACTED] exceeded its time limit."
+    assert len(details["failure_summary"]) <= 200
 
 
 @pytest.mark.parametrize(

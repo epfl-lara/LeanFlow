@@ -191,9 +191,6 @@ def test_formalization_intake_shares_project_ownership(
     monkeypatch.setattr(
         workflow, "resolve_runtime_provider", lambda **kwargs: {"provider": "codex"}
     )
-    monkeypatch.setattr(
-        "leanflow_cli.workflows.research_mode.research_local_loogle_enabled", lambda **kwargs: False
-    )
 
     def intake(**kwargs):
         assert not setup_already_running, "Formalization wrote into a setup-owned project"
@@ -203,6 +200,14 @@ def test_formalization_intake_shares_project_ownership(
         raise ValueError("intake reached safely")
 
     monkeypatch.setattr(workflow, "prepare_formalization_document_context", intake)
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.preparation_launch.prepare_formalization_launch",
+        lambda *args, **kwargs: {
+            "root": root,
+            "budget_path": root / ".leanflow/formalization-campaigns/fixture/budget.json",
+            "run_id": "fixture-run",
+        },
+    )
     if setup_already_running:
         with operations.project_setup(root):
             with pytest.raises(operations.ProjectBusyError):

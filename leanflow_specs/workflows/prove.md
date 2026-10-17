@@ -37,7 +37,7 @@ Do not use this workflow for:
 - declaration drafting with no proving intent
 - post-compilation simplification where the theorem already compiles cleanly
 
-Use `review`, `draft`, `refactor`, or `golf` for those cases.
+Use diagnostic helpers for inspection and the `formalize` workflow for source-backed translation. Proof simplification can be requested within `prove`.
 
 ## Tool Order
 

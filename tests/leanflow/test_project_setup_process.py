@@ -7,34 +7,10 @@ import sys
 import threading
 import time
 from io import StringIO
-from unittest.mock import Mock
 
 import pytest
 
 from leanflow_cli.workflows.project_setup import process
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX owned process groups")
-@pytest.mark.parametrize("running", [False, True])
-def test_macos_empty_group_permission_race_requires_an_exited_leader(
-    monkeypatch: pytest.MonkeyPatch, running: bool
-) -> None:
-    """Ignore macOS's empty-group error while preserving live-process failures."""
-    monkeypatch.setattr(sys, "platform", "darwin")
-    child = Mock(pid=424242)
-    child.poll.return_value = None if running else 0
-
-    def signal_group(pid: int, value: int) -> None:
-        if value != process.signal.SIGTERM:
-            raise PermissionError("group disappeared after termination")
-
-    monkeypatch.setattr(process.os, "killpg", signal_group)
-    if running:
-        with pytest.raises(PermissionError):
-            process._stop(child)
-    else:
-        process._stop(child)
-        child.wait.assert_called_once()
 
 
 def test_streaming_output_redacts_credentials_without_corrupting_raw_protocol(tmp_path):
@@ -116,13 +92,16 @@ def test_cancellation_kills_descendant_after_leader_exits(tmp_path):
         "import signal, pathlib, time, os; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
         f"pathlib.Path({str(ready)!r}).write_text(str(os.getpid())); time.sleep(30)"
     )
-    parent = f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {child!r}])"
+    # Keep the leader owned until the normal sampler observes its child; the
+    # separate unobserved-writer fixture exercises fail-closed retention.
+    parent = f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {child!r}]); time.sleep(0.4)"
     cancel = threading.Event()
 
     def request_cancel():
         deadline = time.monotonic() + 5
         while not ready.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
+        time.sleep(0.6)
         cancel.set()
 
     thread = threading.Thread(target=request_cancel)

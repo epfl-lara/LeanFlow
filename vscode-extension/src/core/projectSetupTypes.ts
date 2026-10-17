@@ -51,3 +51,9 @@ export type ProjectSetupEvent = ProjectSetupResult | {
 export function projectSetupBlocksLaunch(state: ProjectSetupState | undefined, root: string): boolean {
   return Boolean(state && state.root === root && ["running", "failed", "cancelled"].includes(state.status));
 }
+
+/** Keep Prove's legacy readiness gate while Formalization revalidates its stronger controller receipt. */
+export function assertWorkflowProjectReady(setup: { assertLaunchReady(root: string): void; stateForRoot(root: string): ProjectSetupState }, root: string, kind?: "prove" | "formalize"): void {
+  if (kind !== "formalize") setup.assertLaunchReady(root);
+  else if (setup.stateForRoot(root).status === "running") throw new Error("Project setup is still running. Wait for project tools before starting formalization.");
+}

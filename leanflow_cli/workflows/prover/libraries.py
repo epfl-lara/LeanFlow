@@ -7,25 +7,29 @@ import hashlib
 import json
 import math
 import re
-import tempfile
 import time
-import tomllib
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from agent.runtime.harness.models import NativeCleanupUnverified
 from core.deadlines import deadline_after, remaining_seconds
+from leanflow_cli.workflows.prover.check_command_cleanup import command_workspace
+from leanflow_cli.workflows.prover.library_configuration import (
+    _append_requirements,
+    _configuration,
+    _configuration_bytes,
+    _lock_packages,
+    _validate_layout,
+)
+from leanflow_cli.workflows.prover.library_configuration import (
+    ensure_helper_library as ensure_helper_library,
+)
 from leanflow_cli.workflows.prover.session_research import _public_connection
-from leanflow_cli.workflows.prover.source import lean_code_mask
 from tools.utilities.repository_research_policy import repository_research_disabled
 
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,79}\Z")
 _REV = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
-_LEAN_REQUIRE = re.compile(
-    r'require\s+(?:"(?:[^"\\]|\\.)*"\s*/\s*)?'
-    r'(?P<name>[A-Za-z][A-Za-z0-9_]*|«[^»]+»|"(?:[^"\\]|\\.)*")(?:\s+from\s+git\s+'
-    r'(?P<git>"(?:[^"\\]|\\.)*")\s*@\s*(?P<rev>"(?:[^"\\]|\\.)*"))?'
-)
 
 
 def _entries(
@@ -77,182 +81,6 @@ def _entries(
     return list(normalized.values())
 
 
-def _confined(root: Path, path: Path) -> None:
-    """Reject links that could let Lake mutate files beyond the project boundary."""
-    if not path.resolve().is_relative_to(root):
-        raise ValueError(f"Library path escapes the project: {path.name}")
-
-
-def _validate_layout(root: Path) -> None:
-    """Reject package-location escapes before and after dependency hooks execute."""
-    for path in (root / ".leanflow", root / ".lake", root / ".lake/packages"):
-        _confined(root, path)
-    packages = root / ".lake/packages"
-    if packages.is_dir():
-        for package in packages.iterdir():
-            _confined(root, package)
-    if (root / ".lake/package-overrides.json").exists():
-        raise ValueError("Lake package overrides require manual library installation")
-
-
-def _configuration(root: Path) -> tuple[Path, bytes, dict[str, dict[str, Any]]]:
-    """Read dependency names while preserving the complete original configuration."""
-    candidates = [
-        root / name for name in ("lakefile.toml", "lakefile.lean") if (root / name).exists()
-    ]
-    if len(candidates) != 1 or candidates[0].is_symlink():
-        raise ValueError("Expected exactly one regular lakefile.toml or lakefile.lean")
-    path = candidates[0]
-    original = path.read_bytes()
-    if len(original) > 1024 * 1024:
-        raise ValueError("Lake configuration exceeds the supported size")
-    text = original.decode("utf-8")
-    known: dict[str, dict[str, Any]] = {}
-    if path.suffix == ".toml":
-        configuration = tomllib.loads(text)
-        if (
-            configuration.get("manifestFile", "lake-manifest.json") != "lake-manifest.json"
-            or configuration.get("packagesDir", ".lake/packages") != ".lake/packages"
-        ):
-            raise ValueError("Custom Lake manifest/package directories require manual installation")
-        declared = configuration.get("require", [])
-        if not isinstance(declared, list):
-            raise ValueError("Invalid Lake dependency declarations")
-        for item in declared:
-            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
-                raise ValueError("Lake dependency declarations require names")
-            if item["name"] in known:
-                raise ValueError("Duplicate existing Lake dependency names")
-            known[item["name"]] = item
-    else:
-        mask = lean_code_mask(text)
-        if re.search(r"\b(?:manifestFile|packagesDir)\s*:=", mask):
-            raise ValueError("Custom Lake manifest/package directories require manual installation")
-        for occurrence in re.finditer(r"(?m)^[ \t]*require\b", mask):
-            match = _LEAN_REQUIRE.match(
-                text, occurrence.start() + len(occurrence.group()) - len("require")
-            )
-            if match is None:
-                raise ValueError("Unsupported existing Lean require syntax; install manually")
-            name = (
-                json.loads(match["name"])
-                if match["name"].startswith('"')
-                else match["name"].strip("«»")
-            )
-            if name in known:
-                raise ValueError("Duplicate existing Lake dependency names")
-            known[name] = {
-                "name": name,
-                "git": json.loads(match["git"]) if match["git"] else "",
-                "rev": json.loads(match["rev"]) if match["rev"] else "",
-            }
-    return path, original, known
-
-
-def _lock_packages(content: bytes | None) -> dict[str, dict[str, Any]]:
-    """Parse manifest identities without accepting ambiguous duplicate package names."""
-    if content is None:
-        return {}
-    document = json.loads(content)
-    packages = document.get("packages") if isinstance(document, dict) else None
-    if not isinstance(packages, list):
-        raise ValueError("Invalid Lake manifest package list")
-    result: dict[str, dict[str, Any]] = {}
-    for package in packages:
-        if not isinstance(package, dict) or not isinstance(package.get("name"), str):
-            raise ValueError("Invalid Lake manifest package entry")
-        if package["name"] in result:
-            raise ValueError("Duplicate Lake manifest package names")
-        result[package["name"]] = package
-    return result
-
-
-def _append_requirements(path: Path, original: bytes, entries: list[dict[str, str]]) -> bytes:
-    """Append only safely encoded dependency declarations to the original bytes."""
-    newline = "\r\n" if b"\r\n" in original else "\n"
-    lines: list[str] = ["", ""]
-    for entry in entries:
-        if path.suffix == ".toml":
-            lines += [
-                "[[require]]",
-                *(f"{key} = {json.dumps(entry[key])}" for key in ("name", "git", "rev")),
-                "",
-            ]
-        else:
-            lines += [
-                f'require «{entry["name"]}» from git {json.dumps(entry["git"])} @ {json.dumps(entry["rev"])}',
-                "",
-            ]
-    return original + newline.join(lines).encode("utf-8")
-
-
-def ensure_helper_library(root: Path) -> dict[str, Any]:
-    """Register generated helper modules additively without running Lake or networking.
-
-    The controller owns transaction rollback if later skeleton validation fails.
-    Nonstandard source directories require manual configuration.
-    """
-    try:
-        root = root.resolve()
-        lakefile, original, _ = _configuration(root)
-        text = original.decode("utf-8")
-        if lakefile.suffix == ".toml":
-            configuration = tomllib.loads(text)
-            if configuration.get("srcDir", ".") != ".":
-                raise ValueError("Generated helpers require the standard package source directory")
-            existing: list[Any] = [
-                item
-                for item in configuration.get("lean_lib", [])
-                if isinstance(item, dict) and item.get("name") == "LeanFlowProofs"
-            ]
-            if len(existing) > 1:
-                raise ValueError("Duplicate LeanFlowProofs library targets")
-            if existing and (
-                existing[0].get("srcDir", ".") != "."
-                or "LeanFlowProofs" not in existing[0].get("roots", ["LeanFlowProofs"])
-            ):
-                raise ValueError("Existing LeanFlowProofs library has incompatible source roots")
-            addition = '[[lean_lib]]\nname = "LeanFlowProofs"\n'
-        else:
-            mask = lean_code_mask(text)
-            if re.search(r"\b(?:srcDir|roots)\s*:=", mask):
-                raise ValueError("Custom Lean source roots require manual helper registration")
-            existing = [
-                occurrence
-                for occurrence in re.finditer(r"(?m)^\s*lean_lib\b", mask)
-                if re.match(
-                    r"\s*lean_lib\s+(?:LeanFlowProofs\b|«LeanFlowProofs»)",
-                    text[occurrence.start() :],
-                )
-            ]
-            if len(existing) > 1:
-                raise ValueError("Duplicate LeanFlowProofs library targets")
-            addition = "lean_lib LeanFlowProofs\n"
-        if existing:
-            return {"accepted": True, "status": "already_registered", "changes": []}
-        newline = "\r\n" if b"\r\n" in original else "\n"
-        added = ("\n\n" + addition).replace("\n", newline)
-        updated = original + added.encode("utf-8")
-        # Recheck immediately before mutation so an intervening user edit is not lost.
-        if lakefile.read_bytes() != original:
-            raise ValueError("Lake configuration changed during helper registration")
-        lakefile.write_bytes(updated)
-        return {
-            "accepted": True,
-            "status": "registered",
-            "changes": [
-                {
-                    "path": str(lakefile),
-                    "before_sha256": hashlib.sha256(original).hexdigest(),
-                    "after_sha256": hashlib.sha256(updated).hexdigest(),
-                    "added_text": added,
-                }
-            ],
-        }
-    except (OSError, ValueError, TypeError) as exc:
-        return {"accepted": False, "status": "rejected", "changes": [], "error": str(exc)}
-
-
 def _run_update(
     root: Path, paths: list[Path], names: list[str], timeout_s: float | None
 ) -> dict[str, Any]:
@@ -273,10 +101,10 @@ def _run_update(
         "update",
         *names,
     ]
-    with tempfile.TemporaryDirectory(prefix="leanflow-library-install-") as temporary:
+    with command_workspace(prefix="leanflow-library-install-") as workspace:
         return isolated_command(
             project_root=root,
-            workspace=Path(temporary),
+            workspace=workspace,
             argv=argv,
             timeout_s=timeout_s,
             extra_writable_roots=paths,
@@ -287,7 +115,7 @@ def _run_update(
 def _install_locked(
     root: Path, entries: list[dict[str, str]], deadline: float | None
 ) -> dict[str, Any]:
-    """Apply one serialized update and restore exact protected inputs on failure."""
+    """Resolve privately, then promote validated config without overwriting editor versions."""
     lakefile, original, known = _configuration(root)
     manifest, toolchain = root / "lake-manifest.json", root / "lean-toolchain"
     for path in (manifest, toolchain):
@@ -297,10 +125,19 @@ def _install_locked(
         raise ValueError("Pinned project lean-toolchain is required")
     snapshots = {
         lakefile: original,
-        manifest: manifest.read_bytes() if manifest.exists() else None,
-        toolchain: toolchain.read_bytes(),
+        manifest: _configuration_bytes(manifest) if manifest.exists() else None,
+        toolchain: _configuration_bytes(toolchain),
     }
     previous = _lock_packages(snapshots[manifest])
+    packages_directory = root / ".lake/packages"
+    existing_packages = (
+        {
+            path.name: (path.stat().st_dev, path.stat().st_ino)
+            for path in packages_directory.iterdir()
+        }
+        if packages_directory.is_dir()
+        else {}
+    )
     additions: list[dict[str, str]] = []
     for entry in entries:
         old = known.get(entry["name"])
@@ -314,105 +151,164 @@ def _install_locked(
         and previous.get(entry["name"], {}).get("url") == entry["git"]
         for entry in entries
     ):
-        return {
-            "accepted": True,
-            "status": "already_installed",
-            "changes": [],
-            "libraries": [previous[entry["name"]] for entry in entries],
-        }
+        from leanflow_cli.workflows.prover.library_checkout import require_checkout
+
+        missing = False
+        for entry in entries:
+            checkout = packages_directory / entry["name"]
+            if not checkout.exists() and not checkout.is_symlink():
+                missing = True
+            else:
+                require_checkout(checkout, entry["rev"], deadline=deadline)
+        if not missing:
+            return {
+                "accepted": True,
+                "status": "already_installed",
+                "changes": [],
+                "libraries": [previous[entry["name"]] for entry in entries],
+            }
     updated = _append_requirements(lakefile, original, additions) if additions else original
+    from leanflow_cli.workflows.prover import library_transaction
+
     result: dict[str, Any] = {}
-    update_attempted = False
-    try:
+    promoted = False
+
+    def check() -> None:
         if deadline is not None and deadline <= time.monotonic():
             raise TimeoutError("Library installation deadline exceeded")
-        lakefile.write_bytes(updated)
-        if snapshots[manifest] is None:
-            manifest.write_text(
-                json.dumps({"version": "1.1.0", "packagesDir": ".lake/packages", "packages": []}),
-                encoding="utf-8",
+
+    try:
+        with command_workspace(prefix="library-stage-", directory=root / ".leanflow") as temporary:
+            stage = temporary / "project"
+            library_transaction.copy_inputs(root, stage, previous, check=check)
+            private_lakefile = stage / lakefile.name
+            private_manifest, private_toolchain = stage / manifest.name, stage / toolchain.name
+            private_lakefile.write_bytes(updated)
+            if snapshots[manifest] is None:
+                private_manifest.write_text(
+                    json.dumps(
+                        {"version": "1.1.0", "packagesDir": ".lake/packages", "packages": []}
+                    ),
+                    encoding="utf-8",
+                )
+            check()
+            result = _run_update(
+                stage,
+                [private_lakefile, private_manifest, private_toolchain, stage / ".lake"],
+                [entry["name"] for entry in entries],
+                remaining_seconds(deadline),
             )
-        lake_dir = root / ".lake"
-        lake_dir.mkdir(exist_ok=True)
-        update_attempted = True
-        result = _run_update(
-            root,
-            [lakefile, manifest, toolchain, lake_dir],
-            [entry["name"] for entry in entries],
-            remaining_seconds(deadline),
-        )
-        if not result.get("success") or result.get("returncode", 0) != 0:
-            raise ValueError(
-                str(
-                    result.get("stderr")
-                    or result.get("error_code")
-                    or "Lake dependency update failed"
-                )[:3000]
-            )
-        _validate_layout(root)
-        if any(path.is_symlink() for path in snapshots):
-            raise ValueError("Lake replaced a configuration file with a symlink")
-        if lakefile.read_bytes() != updated or toolchain.read_bytes() != snapshots[toolchain]:
-            raise ValueError("Lake changed protected configuration or the project's Lean toolchain")
-        current_manifest = manifest.read_bytes()
-        current = _lock_packages(current_manifest)
-        for name, package in previous.items():
-            if any(
-                current.get(name, {}).get(key) != package.get(key)
-                for key in ("type", "url", "rev", "dir", "subDir")
-            ):
-                raise ValueError(f"Lake changed the existing locked dependency {name}")
-        for entry in entries:
-            package = current.get(entry["name"], {})
+            if not result.get("success") or result.get("returncode", 0) != 0:
+                raise ValueError(
+                    str(
+                        result.get("stderr")
+                        or result.get("error_code")
+                        or "Lake dependency update failed"
+                    )[:3000]
+                )
+            _validate_layout(stage)
+            library_transaction.validate_private_links(stage, check=check)
+            if any((stage / path.name).is_symlink() for path in snapshots):
+                raise ValueError("Lake replaced a configuration file with a symlink")
             if (
-                package.get("type") != "git"
-                or package.get("rev") != entry["rev"]
-                or package.get("url") != entry["git"]
+                _configuration_bytes(private_lakefile) != updated
+                or _configuration_bytes(private_toolchain) != snapshots[toolchain]
             ):
                 raise ValueError(
-                    f"Lake did not resolve the requested pinned library {entry['name']}"
+                    "Lake changed protected configuration or the project's Lean toolchain"
                 )
-        changes = []
-        for path, before in snapshots.items():
-            after = path.read_bytes()
-            if after != before:
-                changes.append(
-                    {
-                        "path": str(path),
-                        "before_sha256": (
-                            hashlib.sha256(before).hexdigest() if before is not None else None
-                        ),
-                        "after_sha256": hashlib.sha256(after).hexdigest(),
-                        "added_text": (
-                            updated[len(original) :].decode("utf-8") if path == lakefile else ""
-                        ),
-                    }
+            current_manifest = _configuration_bytes(private_manifest)
+            current = _lock_packages(current_manifest)
+            for name, package in previous.items():
+                if any(
+                    current.get(name, {}).get(key) != package.get(key)
+                    for key in ("type", "url", "rev", "dir", "subDir")
+                ):
+                    raise ValueError(f"Lake changed the existing locked dependency {name}")
+            for entry in entries:
+                package = current.get(entry["name"], {})
+                if (
+                    package.get("type") != "git"
+                    or package.get("rev") != entry["rev"]
+                    or package.get("url") != entry["git"]
+                ):
+                    raise ValueError(
+                        f"Lake did not resolve the requested pinned library {entry['name']}"
+                    )
+                from leanflow_cli.workflows.prover.library_checkout import require_checkout
+
+                require_checkout(
+                    stage / ".lake/packages" / entry["name"], entry["rev"], deadline=deadline
                 )
-        return {
-            "accepted": True,
-            "status": "installed",
-            "changes": changes,
-            "libraries": [current[entry["name"]] for entry in entries],
-            "manifest_sha256": hashlib.sha256(current_manifest).hexdigest(),
-            "stdout": str(result.get("stdout", ""))[:16000],
-        }
+            promoted = True
+            retained = library_transaction.promote(
+                root, stage, snapshots, current, existing_packages, check=check, deadline=deadline
+            )
+            changes = []
+            for path, before in snapshots.items():
+                after = _configuration_bytes(stage / path.name)
+                if after != before:
+                    changes.append(
+                        {
+                            "path": str(path),
+                            "before_sha256": (
+                                hashlib.sha256(before).hexdigest() if before is not None else None
+                            ),
+                            "after_sha256": hashlib.sha256(after).hexdigest(),
+                            "added_text": (
+                                updated[len(original) :].decode("utf-8") if path == lakefile else ""
+                            ),
+                        }
+                    )
+            return {
+                "accepted": True,
+                "status": "installed",
+                "changes": changes,
+                "libraries": [current[entry["name"]] for entry in entries],
+                "manifest_sha256": hashlib.sha256(current_manifest).hexdigest(),
+                "stdout": str(result.get("stdout", ""))[:16000],
+                "retained_source_mutations": retained,
+            }
+    except NativeCleanupUnverified:
+        # A still-authorized updater may use the private stage; neither recovery
+        # nor enclosing scratch disposal is safe until its owner verifies closure.
+        raise
     except Exception as exc:
-        for path, content in snapshots.items():
-            if path.is_symlink():
-                path.unlink()
-            if content is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.write_bytes(content)
+        from leanflow_cli.workflows.prover.source import SourceConflictError
+
+        recovery_error = None
+        retained = []
+        try:
+            retained = library_transaction.recover_pending(root)
+        except (OSError, ValueError, RuntimeError) as error:
+            recovery_error = str(error)
+        conflicted = isinstance(exc, SourceConflictError) or recovery_error is not None
         return {
             "accepted": False,
-            "status": "rolled_back",
+            "status": "source_conflict" if conflicted else "rolled_back",
             "error": str(exc)[:3000],
+            "recovery_error": recovery_error,
             "changes": [],
             "libraries": [],
-            "dependency_cache_may_have_changed": update_attempted,
+            "dependency_cache_may_have_changed": promoted
+            and _package_cache_changed(packages_directory, existing_packages),
+            "retained_source_mutations": retained,
             "timed_out": bool(result.get("timed_out")),
         }
+
+
+def _package_cache_changed(directory: Path, before: dict[str, tuple[int, int]]) -> bool:
+    """Distinguish actual canonical checkout promotion from an interrupted pre-effect attempt."""
+    try:
+        after = (
+            {path.name: (path.lstat().st_dev, path.lstat().st_ino) for path in directory.iterdir()}
+            if directory.is_dir()
+            else {}
+        )
+    except OSError:
+        # An unreadable cache cannot establish that no promotion occurred.
+        return True
+    return after != before
 
 
 def install_libraries(
@@ -420,9 +316,9 @@ def install_libraries(
 ) -> dict[str, Any]:
     """Install requested immutable libraries or return a bounded, explicit rejection.
 
-    Original lakefile bytes are preserved as a prefix. Resolution runs with an OS
-    write boundary; failure restores lakefile, manifest, and toolchain exactly.
-    Downloaded package/build caches may remain and are reported as such.
+    Preserve original lakefile bytes as a prefix. Resolve and run dependency hooks
+    in private inputs; journal configuration promotion with no-clobber recovery.
+    Added package directories may remain as cache after a failed promotion.
     """
     if timeout_s is not None and (
         isinstance(timeout_s, bool)
@@ -454,7 +350,11 @@ def install_libraries(
         lock_path = lock_directory / "library-install.lock"
         if lock_path.is_symlink():
             raise ValueError("Library install lock cannot be a symlink")
-        with lock_path.open("a") as handle:
+        from leanflow_cli.formalization.publication import publication_guard
+        from leanflow_cli.workflows.prover.library_transaction import recover_pending
+
+        # Keep the same ownership order as ordinary prover materialization: P -> L.
+        with publication_guard(root, deadline=deadline), lock_path.open("a") as handle:
             while True:
                 try:
                     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -463,7 +363,10 @@ def install_libraries(
                     if deadline is not None and time.monotonic() >= deadline:
                         raise TimeoutError("Library installation lock deadline exceeded")
                     time.sleep(0.05)
+            recover_pending(root)
             return _install_locked(root, validated, deadline)
+    except NativeCleanupUnverified:
+        raise
     except Exception as exc:
         return {
             "accepted": False,

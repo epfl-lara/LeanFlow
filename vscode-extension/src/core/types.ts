@@ -6,7 +6,12 @@
  */
 
 // ---------------------------------------------------------------- CLI shapes
+import type { FormalizationWorkspaceScope, FormalizationRequestScope } from "./formalizationScope";
 import type { ProverSnapshot } from "./prover";
+import type { FormalizationAction, FormalizationPdf, FormalizationSnapshot } from "./formalization";
+import type { FormalizationConflictsSnapshot } from "./formalizationConflicts";
+import type { FormalizationPreparationPreset, FormalizationPreparationState } from "./formalizationPreparation";
+import type { FormalizationPreparationRecoverySnapshot } from "./formalizationPreparationRecovery";
 // These mirror the JSON emitted by `leanflow flags`, `leanflow runs`, and
 // `leanflow workflow --dry-run --json`. Keep them in step with
 // leanflow_cli/flags/spec.py and leanflow_cli/cli/runs_command.py.
@@ -192,12 +197,16 @@ export interface LiveStatus {
   goals?: string;
   last_activity_type?: string;
   last_activity_message?: string;
+  last_activity_at?: string;
   latest_checkpoint_label?: string;
   checkpoint_count?: number;
   updated_at?: string;
   runtime_heartbeat_at?: string;
   process_id?: number;
   stale_snapshot?: boolean;
+  /** Preparation retains the preceding mathematical snapshot until handoff. */
+  startup_reconciliation_pending?: boolean;
+  preflight_error?: string;
   agent_capacity?: Record<string, number>;
   [key: string]: unknown;
 }
@@ -406,6 +415,7 @@ export interface LaunchPlanPreview {
     clean_room: boolean;
     clean_room_labels: string[];
     human_review: boolean;
+    source_draft_only?: boolean;
     allowed_axioms: string;
     explicit_goal: string;
   };
@@ -420,15 +430,11 @@ export interface LaunchPlanPreview {
 
 // ------------------------------------------------------------- launch inputs
 
-export type WorkflowKind = "prove" | "formalize" | "review" | "refactor" | "golf" | "draft";
+export type WorkflowKind = "prove" | "formalize";
 
 export const WORKFLOW_KINDS: { id: WorkflowKind; label: string; hint: string }[] = [
-  { id: "prove", label: "prove", hint: "Repair proofs until Lean agrees. No file means whole project." },
-  { id: "formalize", label: "formalize", hint: "Turn a .tex or .pdf source into a buildable Lean draft." },
-  { id: "review", label: "review", hint: "Read-only review of Lean proofs." },
-  { id: "refactor", label: "refactor", hint: "Leverage mathlib, extract helpers, simplify strategies." },
-  { id: "golf", label: "golf", hint: "Shorten proofs without changing semantics." },
-  { id: "draft", label: "draft", hint: "Draft declaration skeletons from informal claims." },
+  { id: "prove", label: "Prove", hint: "Repair Lean proofs with independent controller verification. No target means the whole project." },
+  { id: "formalize", label: "Formalization", hint: "Prepare dependencies, translate frozen sources, and review every statement before proving." },
 ];
 
 /**
@@ -466,6 +472,8 @@ export interface LaunchRequest {
   noParallel: boolean;
   cleanRoom: boolean;
   humanReview: boolean;
+  /** Generate one unaccepted source draft while retaining extraction blockers. */
+  sourceDraftOnly?: boolean;
   axioms: string;
   prompt: string;
   additionalSkills: string[];
@@ -473,6 +481,8 @@ export interface LaunchRequest {
   profile: string;
   /** One-off knob overrides layered over the profile. */
   overrides: Record<string, string>;
+  /** Explicit accepted-revision handoff; the controller validates exact named obligations. */
+  formalization?: { documentId: string; revisionId: string };
 }
 
 export function emptyLaunchRequest(): LaunchRequest {
@@ -487,6 +497,7 @@ export function emptyLaunchRequest(): LaunchRequest {
     noParallel: false,
     cleanRoom: false,
     humanReview: false,
+    sourceDraftOnly: false,
     axioms: "",
     prompt: "",
     additionalSkills: [],
@@ -500,6 +511,14 @@ export function emptyLaunchRequest(): LaunchRequest {
 export type TrackedRunStatus = "starting" | "running" | "finished" | "failed" | "stopped";
 
 export interface RunConnection { kind: "tmux" | "terminal" }
+
+/** Credential-free original native selection, pinned before a formalization starts. */
+export interface FormalizationRuntimeIdentity {
+  provider: "codex" | "claude" | "lemex";
+  /** Empty means the CLI delegated model selection; it cannot authorize editor resume. */
+  model: string;
+  sourceDraftOnly: boolean;
+}
 
 export interface TrackedRun {
   /** Stable id assigned by the extension, independent of the runtime's run_id. */
@@ -515,6 +534,9 @@ export interface TrackedRun {
   request: LaunchRequest;
   command: string;
   projectRoot: string;
+  /** Host-bound source identity, required for editor formalization resume. */
+  formalizationSource?: { documentId: string; path: string };
+  formalizationRuntime?: FormalizationRuntimeIdentity;
   /**
    * Knob environment actually applied, after profile resolution.
    *
@@ -772,17 +794,28 @@ export interface AppState {
   selectedRunId: string | null;
   projectLiveStatus?: LiveStatus | null;
   runDiscoveryError?: string;
-  runNavigation?: { sequence: number; tab: "live" | "logs" };
+  runNavigation?: { sequence: number; tab: "live" | "logs" | "launch" | "formalization" };
   liveStatus: LiveStatus | null;
   eventTypes: { type: string; count: number }[];
   experiments: ExperimentRun[];
   leanFiles: string[];
+  formalizationWorkspace?: FormalizationWorkspaceScope;
   busy: boolean;
 }
 
 // ---------------------------------------------------------- message protocol
 
-export type HostMessage =
+export type HostMessage = (
+  | { type: "formalizationProjectSetupState"; state: import("./projectSetupTypes").ProjectSetupState; error: string }
+  | { type: "formalizationPreparationRecovery"; snapshot: FormalizationPreparationRecoverySnapshot | null; error: string; message?: string; busy?: boolean; cancellable?: boolean; cancelling?: boolean; refreshed?: boolean }
+  | FormalizationPreparationState
+  | { type: "formalizationConflicts"; snapshot: FormalizationConflictsSnapshot | null; error: string; resolvedTransactionId?: string }
+  | { type: "formalizationList"; documents: FormalizationSnapshot[]; error: string }
+  | { type: "formalizationState"; documentId: string; snapshot: FormalizationSnapshot | null; error: string }
+  | { type: "formalizationActionCommitted"; documentId: string; previousRevisionId: string; revisionId: string }
+  | { type: "formalizationPdf"; pdf: FormalizationPdf }
+  | { type: "formalizationConflictPdf"; transactionId: string; observationId: string; versionId: string; pdf: FormalizationPdf }
+  | { type: "formalizationSourceSelection"; documentId: string; revisionId: string; artifactId: string; lineStart: number; lineEnd: number }
   | { type: "state"; state: AppState }
   | { type: "events"; runId: string; events: ActivityEvent[]; reset: boolean }
   | { type: "preview"; requestId: string; plan: LaunchPlanPreview | null; error: string }
@@ -797,10 +830,29 @@ export type HostMessage =
     }
   | { type: "proverState"; runId: string; snapshot: ProverSnapshot | null; error: string }
   | { type: "proverMessageResult"; runId: string; requestId: string; success: boolean; error: string }
-  | { type: "targetPicked"; path: string }
-  | { type: "notify"; level: "info" | "warn" | "error"; message: string };
+  | { type: "targetPicked"; path: string; kind?: WorkflowKind }
+  | { type: "notify"; level: "info" | "warn" | "error"; message: string }) & { formalizationWorkspace?: FormalizationWorkspaceScope; formalizationRequest?: FormalizationRequestScope };
 
-export type WebviewMessage =
+export type WebviewMessage = (
+  | { type: "formalizationProjectSetup"; action: "inspect" | "start" | "retry" | "repair" | "cancel" | "log" }
+  | { type: "listFormalizationPreparationRecovery" }
+  | { type: "recoverFormalizationPreparation" }
+  | { type: "cancelFormalizationRecovery" }
+  | { type: "resolveFormalizationPreparation"; transactionId: string; observationId: string; reason: string }
+  | { type: "planFormalizationPreparation" | "prepareFormalization"; documentId: string; revisionId: string; preset: FormalizationPreparationPreset; overrides?: Record<string, unknown> }
+  | { type: "cancelFormalizationPreparation"; documentId: string; revisionId: string }
+  | { type: "listFormalizationConflicts" }
+  | { type: "openFormalizationConflictVersion"; transactionId: string; observationId: string; versionId: string }
+  | { type: "resolveFormalizationConflict"; transactionId: string; observationId: string; reason: string }
+  | { type: "listFormalizations" }
+  | { type: "inspectFormalization"; sourceKind: "file" | "folder" }
+  | { type: "showFormalization"; documentId: string }
+  | { type: "checkFormalization"; documentId: string; revisionId: string }
+  | { type: "formalizationAction"; documentId: string; revisionId: string; action: FormalizationAction }
+  | { type: "openFormalizationArtifact"; documentId: string; revisionId: string; artifactId: string; itemId?: string; pageIndex?: number; line?: number }
+  | { type: "launchFormalization"; documentId: string; revisionId: string; request: LaunchRequest }
+  | { type: "resumeFormalization"; documentId: string; revisionId: string; trackedRunId: string; request: LaunchRequest }
+  | { type: "proveFormalization"; documentId: string; revisionId: string; request: LaunchRequest }
   | { type: "refreshStorage" }
   | { type: "cleanStorage" }
   | { type: "configureProvider" }
@@ -835,7 +887,7 @@ export type WebviewMessage =
   | { type: "deleteExperiment"; matrixId: string }
   | { type: "exportExperiment"; matrixId: string }
   | { type: "pickTarget"; kind: WorkflowKind }
-  | { type: "openDashboard" }
+  | { type: "openDashboard"; workflow?: WorkflowKind }
   | { type: "openCliSettings" }
   | { type: "openPath"; path: string }
-  | { type: "openExternalDoc"; topic: string };
+  | { type: "openExternalDoc"; topic: string }) & { formalizationWorkspace?: FormalizationWorkspaceScope; formalizationRequest?: FormalizationRequestScope };

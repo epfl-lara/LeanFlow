@@ -138,6 +138,9 @@ function compactToolPreview(value: string, depth = 0): string {
 /** Prefer the provider's description or content to runtime framing in compact rows. */
 export function activityEventPreview(event: ActivityEvent): string {
   const details = record(event.details);
+  if (event.type === "tool-result" && str(details.failure_summary)) {
+    return str(details.failure_summary).replace(/\s+/g, " ").trim();
+  }
   const text = event.type === "agent-tool-start"
     ? str(details.description) || str(details.content_preview) || str(details.arguments_preview)
     : event.type === "agent-tool-end" || event.type === "agent-tool-progress"

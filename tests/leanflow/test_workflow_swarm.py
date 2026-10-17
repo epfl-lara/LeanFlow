@@ -7,6 +7,7 @@ import pytest
 from leanflow_cli import workflow as workflow_mod
 from leanflow_cli.cli import loogle_local
 from leanflow_cli.config import save_config
+from leanflow_cli.formalization.evidence import identity
 from leanflow_cli.formalization.formalization_documents import FormalizationDocumentError
 from leanflow_cli.workflow import (
     WORKFLOW_ALIAS_MAP,
@@ -15,6 +16,64 @@ from leanflow_cli.workflow import (
     resolve_workflow_request,
     rewrite_forgiving_workflow_command,
 )
+
+
+@pytest.fixture
+def evaluated_formalization_layout(monkeypatch):
+    """Separate launcher behavior from the pinned Lake integration fixture."""
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.intake.lean_build.validate_build_inputs", lambda *a, **kw: {}
+    )
+
+    def prepared_launch(root, workflow_args, runtime, *, user_goal=""):
+        from leanflow_cli.formalization.formalization_documents import (
+            resolve_formalization_document,
+        )
+        from leanflow_cli.formalization.records import create_document
+
+        source, _, _ = resolve_formalization_document(root, root, workflow_args)
+        record = create_document(root, source)
+        receipt = {
+            "source_bundle": record["source_bundle"],
+            "preparation_id": "prepared-fixture",
+            "preparation_plan_id": "plan-fixture",
+            "environment_id": "environment-fixture",
+            "plan": {
+                "plan_id": "plan-fixture",
+                "slice_source_ids": [item["id"] for item in record["inventory"]["items"]],
+            },
+        }
+        monkeypatch.setattr(
+            "leanflow_cli.formalization.preparation.assert_preparation_current",
+            lambda root: receipt,
+        )
+        monkeypatch.setattr(
+            "leanflow_cli.formalization.preparation.load_preparation_receipt",
+            lambda root: receipt,
+        )
+        return {
+            "root": root,
+            "receipt": receipt,
+            "budget_path": root / ".leanflow/formalization-campaigns/fixture/budget.json",
+            "run_id": "fixture-run",
+        }
+
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.preparation_launch.prepare_formalization_launch",
+        prepared_launch,
+    )
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.intake.resolve_layout",
+        lambda root, document_id: {
+            "accepted": True,
+            "library": "Main",
+            "owned_prefix": "Main/Formalization/Document",
+            "aggregator": "Main/Formalization/Document.lean",
+            "module_prefix": "Main.Formalization.Document",
+            "root_file": "Main.lean",
+            "src_dir": ".",
+        },
+    )
 
 
 def _write_formalization_source(project: Path, relative: str = "docs/paper.tex") -> Path:
@@ -90,12 +149,11 @@ def test_parse_workflow_command_extracts_research_profile():
     assert sequential.research_workers == 0
 
 
-def test_parse_workflow_command_human_review_is_explicit():
+def test_parse_workflow_command_refuses_retired_human_review_pauses():
     assert parse_workflow_command("/prove Main.lean").human_review is False
-    assert parse_workflow_command("/prove Main.lean --human-review").human_review is True
-
-    with pytest.raises(ValueError, match="only for prove"):
-        parse_workflow_command("/formalize notes.tex --human-review")
+    for kind in ("prove", "autoprove", "formalize", "autoformalize"):
+        with pytest.raises(ValueError, match="pauses are no longer supported"):
+            parse_workflow_command(f"/{kind} source --human-review")
 
 
 def test_parse_research_workers_implies_research_and_validates():
@@ -167,7 +225,7 @@ def test_resolve_prover_agents_select_research_without_legacy_swarm(monkeypatch,
     assert swarm.child_env["LEANFLOW_PROVER_MODE"] == "research"
     assert swarm.child_env["LEANFLOW_PROVER_PARALLELISM"] == "3"
     assert swarm.active_skill == "lean-bounded-prover"
-    with pytest.raises(ValueError, match="DAG review is automatic"):
+    with pytest.raises(ValueError, match="pauses are no longer supported"):
         resolve_workflow_request("/autoprove Main.lean --human-review", active_cwd=tmp_path)
 
 
@@ -424,13 +482,14 @@ def test_inherited_research_identity_does_not_leak_into_non_prove_workflow(monke
         lambda project_root: builds.append(Path(project_root)),
     )
 
-    plan = resolve_workflow_request("/review Main.lean", active_cwd=tmp_path)
+    (tmp_path / "paper.tex").write_text(r"\begin{theorem}True.\end{theorem}")
+    plan = resolve_workflow_request("/formalize paper.tex", active_cwd=tmp_path, preview=True)
 
-    assert plan.workflow.workflow_kind == "review"
+    assert plan.workflow.workflow_kind == "formalize"
     assert plan.workflow.research_mode is False
     assert plan.child_env["LEANFLOW_RESEARCH_MODE"] == "0"
     assert plan.child_env["LEANFLOW_PLAN_STATE"] == "1"
-    assert builds == [Path(tmp_path)]
+    assert builds == []
 
 
 def test_explicit_research_workers_override_stale_inherited_capacity(monkeypatch, tmp_path):
@@ -692,14 +751,6 @@ def test_file_scoped_prover_accepts_explicit_research_parallelism(monkeypatch, t
         ('/autoformalize "theorem"', "formalize"),
         ('autoformalize "theorem"', "formalize"),
         ('formalize "theorem"', "formalize"),
-        ("/draft Main.lean", "draft"),
-        ("draft Main.lean", "draft"),
-        ("/review Main.lean", "review"),
-        ("review Main.lean", "review"),
-        ("/refactor Main.lean", "refactor"),
-        ("refactor Main.lean", "refactor"),
-        ("/golf Main.lean", "golf"),
-        ("golf Main.lean", "golf"),
     ],
 )
 def test_parse_workflow_command_maps_all_aliases_to_correct_kind(command, expected_kind):
@@ -716,10 +767,6 @@ def test_parse_workflow_command_maps_all_aliases_to_correct_kind(command, expect
         ("/autoprove", "/prove"),
         ("/formalize", "/formalize"),
         ("/autoformalize", "/formalize"),
-        ("/draft", "/draft"),
-        ("/review", "/review"),
-        ("/refactor", "/refactor"),
-        ("/golf", "/golf"),
     ],
 )
 def test_parse_workflow_command_sets_correct_backend_command(command, expected_backend):
@@ -737,10 +784,6 @@ def test_parse_workflow_command_sets_correct_backend_command(command, expected_b
         ("prove Main.lean", "/prove Main.lean"),
         ('autoformalize "x"', '/formalize "x"'),
         ('formalize "x"', '/formalize "x"'),
-        ("draft Main.lean", "/draft Main.lean"),
-        ("review Main.lean", "/review Main.lean"),
-        ("refactor Main.lean", "/refactor Main.lean"),
-        ("golf Main.lean", "/golf Main.lean"),
     ],
 )
 def test_rewrite_forgiving_workflow_command_maps_bare_aliases(raw, expected_start):
@@ -840,7 +883,7 @@ def test_parse_workflow_command_no_workflow_args_when_only_command():
 
 
 def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, evaluated_formalization_layout
 ):
     _write_formalization_source(tmp_path)
     monkeypatch.setattr(
@@ -852,7 +895,7 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "local",
+            "provider": "codex",
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
@@ -867,7 +910,10 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(
     assert plan.formalization_document is not None
     assert plan.child_env["LEANFLOW_FORMALIZATION_DOCUMENT_RELATIVE"] == "docs/paper.tex"
     assert plan.child_env["LEANFLOW_NATIVE_REQUESTED_TARGET"] == "docs/paper.tex"
-    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == "Demo/Paper/Main.lean"
+    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == (
+        "Main/Formalization/Document/Run_" + identity("prepared-fixture")[:12] + ".lean"
+    )
+    assert not plan.formalization_document.target_lean_path.exists()
     assert plan.formalization_document.blueprint_skill_path.is_file()
     assert str(plan.formalization_document.blueprint_skill_path) in plan.additional_skills
     assert plan.child_env["LEANFLOW_NATIVE_ADDITIONAL_SKILLS"] == str(
@@ -908,6 +954,11 @@ def test_prover_does_not_inject_stale_formalization_blueprint(monkeypatch, tmp_p
 
 
 def test_resolve_workflow_request_requires_document_for_formalize(monkeypatch, tmp_path):
+    # Isolate source selection after the manual project-tools prerequisite.
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.preparation_launch.inspect_project",
+        lambda root: {"root": str(root), "ready": True, "configured": True},
+    )
     monkeypatch.setattr(
         workflow_mod,
         "discover_leanflow_project",
@@ -952,7 +1003,9 @@ def test_resolve_workflow_request_rejects_retired_formalization_swarm(monkeypatc
         resolve_workflow_request("/autoformalize docs/paper.tex --agents 3", active_cwd=tmp_path)
 
 
-def test_resolve_workflow_request_accepts_directory_for_autoformalize(monkeypatch, tmp_path):
+def test_resolve_workflow_request_accepts_directory_for_autoformalize(
+    monkeypatch, tmp_path, evaluated_formalization_layout
+):
     project = tmp_path / "Demo"
     _write_formalization_source(project, "docs/paper/main.tex")
     monkeypatch.setattr(
@@ -964,7 +1017,7 @@ def test_resolve_workflow_request_accepts_directory_for_autoformalize(monkeypatc
         workflow_mod,
         "resolve_runtime_provider",
         lambda requested=None: {
-            "provider": "local",
+            "provider": "codex",
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
@@ -983,14 +1036,16 @@ def test_resolve_workflow_request_accepts_directory_for_autoformalize(monkeypatc
     assert plan.child_env["LEANFLOW_FORMALIZATION_REQUEST_KIND"] == "directory"
     assert plan.child_env["LEANFLOW_FORMALIZATION_REQUEST_RELATIVE"] == "docs/paper"
     assert plan.child_env["LEANFLOW_FORMALIZATION_SELECTED_SOURCE"] == "docs/paper/main.tex"
-    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == "Demo/Main/Main.lean"
+    assert plan.child_env["LEANFLOW_NATIVE_ACTIVE_FILE"] == (
+        "Main/Formalization/Document/Run_" + identity("prepared-fixture")[:12] + ".lean"
+    )
     summary = describe_launch_plan(plan)
     assert summary["input"] == "docs/paper (directory)"
     assert summary["document"] == "docs/paper/main.tex"
 
 
 def test_all_workflow_aliases_are_covered_by_alias_map():
-    forgiving_kinds = {"prove", "formalize", "draft", "review", "refactor", "golf"}
+    forgiving_kinds = {"prove", "formalize"}
     mapped_kinds = {v[0] for v in WORKFLOW_ALIAS_MAP.values()}
     assert forgiving_kinds == mapped_kinds
 
@@ -1008,4 +1063,11 @@ def test_all_workflow_aliases_are_covered_by_alias_map():
 )
 def test_retired_model_lanes_require_native_backend_selection(option):
     with pytest.raises(ValueError, match="was removed.*codex, claude, or lemex"):
-        parse_workflow_command(f"/review Main.lean {option} old-route")
+        parse_workflow_command(f"/prove Main.lean {option} old-route")
+
+
+@pytest.mark.parametrize("kind", ["draft", "review", "refactor", "golf"])
+@pytest.mark.parametrize("prefix", ["", "/"])
+def test_retired_top_level_workflows_are_rejected(kind, prefix):
+    with pytest.raises(ValueError, match="unsupported workflow command"):
+        parse_workflow_command(f"{prefix}{kind} Main.lean")

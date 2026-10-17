@@ -10,6 +10,7 @@ import type {
   ActivityEvent,
   ActivityEventDetail,
   FlagCatalog,
+  FormalizationRuntimeIdentity,
   LaunchPlanPreview,
   LaunchRequest,
   LiveStatus,
@@ -339,6 +340,17 @@ export function launchRequestForPersistence(request: LaunchRequest): LaunchReque
   };
 }
 
+/** Retain only canonical native identity fields, without prompts, endpoints, or credentials. */
+export function formalizationRuntimeForPersistence(value: unknown): FormalizationRuntimeIdentity | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const identity = value as Partial<FormalizationRuntimeIdentity>;
+  if (!["codex", "claude", "lemex"].includes(identity.provider ?? "") ||
+      typeof identity.model !== "string" || typeof identity.sourceDraftOnly !== "boolean" ||
+      (identity.model !== "" && !/^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,255}$/.test(identity.model)) ||
+      redactSensitiveText(identity.model) !== identity.model) return undefined;
+  return { provider: identity.provider as FormalizationRuntimeIdentity["provider"], model: identity.model, sourceDraftOnly: identity.sourceDraftOnly };
+}
+
 /** Return a bounded tracked-run clone safe for workspace state and webviews. */
 export function trackedRunForPersistence(run: TrackedRun): TrackedRun {
   const rawPrompt = run.request.prompt;
@@ -346,11 +358,14 @@ export function trackedRunForPersistence(run: TrackedRun): TrackedRun {
   const appliedOverrides = safeOverrideEnvironment(run.appliedOverrides);
   return {
     ...run,
+    formalizationRuntime: formalizationRuntimeForPersistence(run.formalizationRuntime),
     connection: run.connection?.kind === "tmux" || run.connection?.kind === "terminal" ? { kind: run.connection.kind } : undefined,
     launchNotice: run.launchNotice ? redactSensitiveText(run.launchNotice, [rawPrompt]) : undefined,
     label: bounded(redactSensitiveText(run.label, [rawPrompt]), 512),
     request,
-    command: boundedCommand(describeCommand(request, appliedOverrides.set)),
+    command: request.kind === "prove" || request.kind === "formalize"
+      ? boundedCommand(describeCommand(request, appliedOverrides.set))
+      : "Retired workflow; choose Prove or Formalization for a new run.",
     appliedOverrides,
     error:
       run.error === null ? null : redactSensitiveText(run.error, [rawPrompt]),

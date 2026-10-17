@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Any
 
+from leanflow_cli.flags.formalization_catalog import FORMALIZATION_FLAGS
 from leanflow_cli.flags.prover_catalog import PROVER_FLAGS
 from leanflow_cli.flags.spec import FlagSpec
 
@@ -32,6 +33,7 @@ _PLUMBING = "Launcher plumbing"
 
 FLAG_CATALOG: tuple[FlagSpec, ...] = (
     *PROVER_FLAGS,
+    *FORMALIZATION_FLAGS,
     # ---------------------------------------------------------------- research
     FlagSpec(
         name="LEANFLOW_RESEARCH_MODE",
@@ -73,7 +75,7 @@ FLAG_CATALOG: tuple[FlagSpec, ...] = (
             "default in research mode because the index costs multiple gigabytes on top of "
             "the foreground Lean language server; non-research runs use local Loogle anyway."
         ),
-        read_in=("leanflow_cli/workflows/research_mode.py",),
+        read_in=("tools/mcp/mcp_transport.py",),
         ablatable=True,
     ),
     FlagSpec(
@@ -432,18 +434,6 @@ FLAG_CATALOG: tuple[FlagSpec, ...] = (
         ),
         read_in=("leanflow_cli/native/diagnostic_loop_guard.py",),
         minimum=0,
-    ),
-    FlagSpec(
-        name="LEANFLOW_HUMAN_REVIEW_ENABLED",
-        kind="feature",
-        value_type="bool",
-        default="0",
-        group=_QUEUE,
-        summary=(
-            "Pause at review points for a human verdict instead of routing autonomously. "
-            "Set by the --human-review launch flag."
-        ),
-        read_in=("leanflow_cli/workflows/orchestrator.py",),
     ),
     # ------------------------------------------------------------ lean backend
     FlagSpec(

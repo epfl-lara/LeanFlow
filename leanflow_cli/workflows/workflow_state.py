@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import signal
 import threading
@@ -50,6 +51,7 @@ from leanflow_cli.workflows.workflow_activity_retention import (
     retained_source_names,
 )
 from leanflow_cli.workflows.workflow_json_io import (  # noqa: F401
+    WorkflowStateLockTimeout,
     read_json_file,
     update_json_file,
     update_json_file_if_changed,
@@ -143,13 +145,16 @@ def _record_slow_append(
         pass
 
 
-def _locked_append(path: Path, text: str) -> None:
+def _locked_append(path: Path, text: str, *, lock_timeout_s: float | None = None) -> None:
     """Append ``text`` and trace slow local, process, and write phases."""
     started = time.monotonic()
     local_lock_wait_s = 0.0
     cross_process_lock_wait_s = 0.0
     write_s = 0.0
     ensure_directory(path.parent)
+    if lock_timeout_s is not None:
+        _bounded_append(path, text, lock_timeout_s)
+        return
     local_lock_started = time.monotonic()
     with _APPEND_LOCK:
         local_lock_wait_s = max(0.0, time.monotonic() - local_lock_started)
@@ -179,6 +184,38 @@ def _locked_append(path: Path, text: str) -> None:
             cross_process_lock_wait_s=cross_process_lock_wait_s,
             write_s=write_s,
         )
+
+
+def _bounded_append(path: Path, text: str, timeout_s: float) -> None:
+    """Skip progress under contention without holding the local lock while waiting."""
+    if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or timeout_s < 0:
+        raise ValueError("Workflow activity lock timeout must be finite and nonnegative")
+    deadline = time.monotonic() + timeout_s
+    with path.open("a", encoding="utf-8") as handle:
+        while True:
+            if _APPEND_LOCK.acquire(blocking=False):
+                locked = False
+                try:
+                    if fcntl is not None:
+                        try:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            locked = True
+                        except BlockingIOError:
+                            pass
+                    if fcntl is None or locked:
+                        handle.write(text)
+                        handle.flush()
+                        return
+                finally:
+                    try:
+                        if locked and fcntl is not None:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    finally:
+                        _APPEND_LOCK.release()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise WorkflowStateLockTimeout(f"Workflow activity remains busy at {path}")
+            time.sleep(min(0.025, remaining))
 
 
 @contextlib.contextmanager
@@ -502,7 +539,9 @@ def load_workflow_live_status() -> dict[str, Any]:
     return update_json_file_if_changed(path, normalize_current)
 
 
-def save_workflow_live_status(payload: Mapping[str, Any]) -> None:
+def save_workflow_live_status(
+    payload: Mapping[str, Any], *, lock_timeout_s: float | None = None
+) -> None:
     """Replace live status without stealing a verified foreign ownership lease."""
     replacement = dict(payload)
     _attach_current_process_identity(replacement)
@@ -524,10 +563,12 @@ def save_workflow_live_status(payload: Mapping[str, Any]) -> None:
         current.clear()
         current.update(replacement)
 
-    update_json_file(workflow_live_status_path(), mutate)
+    update_json_file(workflow_live_status_path(), mutate, lock_timeout_s=lock_timeout_s)
 
 
-_WORKFLOW_STARTUP_PHASES = frozenset({"starting", "reconciling"})
+_WORKFLOW_STARTUP_PHASES = frozenset(
+    {"starting", "reconciling", "dependency_plan", "project_setup"}
+)
 
 
 def _identity_is_current_process_owner(
@@ -559,7 +600,10 @@ def _startup_previous_owner_metadata(
 
 
 def mark_workflow_live_status_startup(
-    *, phase: str, metadata: Mapping[str, Any] | None = None
+    *,
+    phase: str,
+    metadata: Mapping[str, Any] | None = None,
+    lock_timeout_s: float | None = None,
 ) -> None:
     """Claim the live-status pointer before expensive startup reconciliation.
 
@@ -628,7 +672,133 @@ def mark_workflow_live_status_startup(
         elif not same_owner:
             payload.pop("startup_previous_owner", None)
 
-    update_json_file(workflow_live_status_path(), mutate)
+    update_json_file(workflow_live_status_path(), mutate, lock_timeout_s=lock_timeout_s)
+
+
+def release_workflow_startup_owner(
+    run_id: str,
+    *,
+    outcome: str,
+    metadata: Mapping[str, Any] | None = None,
+    lock_timeout_s: float | None = None,
+) -> bool:
+    """Release only this exact preflight lease without erasing math or a later native owner."""
+    if outcome not in {"prepared", "cancelled", "failed"}:
+        raise ValueError("Invalid workflow startup release outcome")
+    writer = current_process_identity()
+
+    def mutate(payload: dict[str, Any]) -> tuple[bool, bool]:
+        current = process_identity_from_mapping(payload)
+        if (
+            payload.get("run_id") != run_id
+            or payload.get("owner_role") != "formalization-preflight"
+            or not _identity_is_current_process_owner(current, writer)
+        ):
+            return False, False
+        payload["preflight_release"] = {
+            "outcome": outcome,
+            "run_id": run_id,
+            **process_identity_details(writer),
+            **dict(metadata or {}),
+        }
+        payload.update(
+            process_id=0,
+            process_group_id=0,
+            process_session_id=0,
+            process_token_sha256="",
+            phase=(
+                "starting"
+                if outcome == "prepared"
+                else "interrupted" if outcome == "cancelled" else "failed"
+            ),
+            status="prepared" if outcome == "prepared" else outcome,
+            terminal=outcome != "prepared",
+            owner_role="",
+        )
+        return True, True
+
+    return bool(
+        update_json_file_if_changed(
+            workflow_live_status_path(), mutate, lock_timeout_s=lock_timeout_s
+        )
+    )
+
+
+def publish_workflow_preflight_progress(
+    run_id: str,
+    owner: ProcessIdentity,
+    snapshot: Mapping[str, Any],
+    *,
+    status_path: Path,
+    activity_path: Path,
+    activity: Mapping[str, Any] | None = None,
+) -> bool:
+    """Update only the captured preflight owner and append metadata without touching later owners."""
+    if snapshot.get("phase") not in _WORKFLOW_STARTUP_PHASES:
+        raise ValueError("Invalid formalization preflight progress phase")
+    timestamp = datetime.now(UTC).isoformat()
+    fields = {
+        key: snapshot[key]
+        for key in (
+            "phase",
+            "native_metrics",
+            "preflight_resources",
+            "status",
+            "preflight_error",
+            "preflight_error_code",
+        )
+        if key in snapshot
+    }
+
+    def mutate(payload: dict[str, Any]) -> tuple[bool, bool]:
+        if (
+            payload.get("run_id") != run_id
+            or payload.get("owner_role") != "formalization-preflight"
+            or not _identity_is_current_process_owner(process_identity_from_mapping(payload), owner)
+            or not _identity_is_current_process_owner(owner, current_process_identity())
+        ):
+            return False, False
+        payload.update(fields, updated_at=timestamp, runtime_heartbeat_at=timestamp)
+        if activity is not None:
+            payload.update(
+                last_activity_type=activity["type"],
+                last_activity_message=activity["message"],
+                last_activity_at=timestamp,
+            )
+        return True, True
+
+    changed = bool(update_json_file_if_changed(status_path, mutate, lock_timeout_s=0.0))
+    if changed and activity is not None:
+        # This historical append does not update run-owner sidecars or touch
+        # live status again: a replacement between these writes stays intact.
+        with contextlib.suppress(WorkflowStateLockTimeout):
+            _locked_append(
+                activity_path,
+                json.dumps(
+                    {
+                        "event_id": uuid.uuid4().hex[:12],
+                        "timestamp": timestamp,
+                        "type": activity["type"],
+                        "run_id": run_id,
+                        "agent_id": "",
+                        "task_label": "formalize",
+                        "run_scope": "top-level",
+                        "message": activity["message"],
+                        "details": {
+                            **dict(activity.get("details", {})),
+                            **process_identity_details(owner),
+                            "workflow_kind": "formalize",
+                            "workflow_command": "/formalize",
+                            "effective_prompt": "",
+                            "active_skill": "",
+                        },
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                lock_timeout_s=0.0,
+            )
+    return changed
 
 
 def _refresh_workflow_live_queue_source(
@@ -748,7 +918,7 @@ def touch_workflow_runtime_heartbeat(
 
 
 def _touch_workflow_live_status_from_activity(
-    *, timestamp: str, event_type: str, message: str
+    *, timestamp: str, event_type: str, message: str, lock_timeout_s: float | None = None
 ) -> None:
     """Refresh the owner runner's snapshot after durable live activity.
 
@@ -774,7 +944,7 @@ def _touch_workflow_live_status_from_activity(
         payload["last_activity_type"] = str(event_type or "")
         payload["last_activity_message"] = str(message or "")[:500]
 
-    update_json_file(path, mutate)
+    update_json_file(path, mutate, lock_timeout_s=lock_timeout_s)
 
 
 def append_workflow_activity(event_type: str, message: str, **details: Any) -> None:
@@ -782,6 +952,8 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
 
     Enriches event details with environment variables for workflow kind, skill, prompt, and project root; persists run metadata. Events are locked and appended to both run-scoped and agent-scoped JSONL files.
     """
+    # Preserve the open metadata API used by callers forwarding typed dictionaries.
+    lock_timeout_s: float | None = details.pop("lock_timeout_s", None)
     ensure_workflow_state_root()
     normalized_details = dict(details)
     env_workflow_kind = str(os.getenv("LEANFLOW_NATIVE_WORKFLOW_KIND", ""))
@@ -856,11 +1028,15 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
     if agent_id:
         paths.append(workflow_agent_activity_path(agent_id, task_label))
     for path in paths:
-        _locked_append(path, serialized + "\n")
+        if lock_timeout_s is None:
+            _locked_append(path, serialized + "\n")
+        else:
+            _locked_append(path, serialized + "\n", lock_timeout_s=lock_timeout_s)
     _touch_workflow_live_status_from_activity(
         timestamp=timestamp,
         event_type=event_type,
         message=message,
+        lock_timeout_s=lock_timeout_s,
     )
 
 
@@ -1438,9 +1614,9 @@ def _reduce_workflow_agent_event(
                 "process_session_id",
                 "process_token_sha256",
             ):
-                value = details.get(key)
-                if value not in (None, ""):
-                    summary[key] = value
+                identity_value = details.get(key)
+                if identity_value not in (None, ""):
+                    summary[key] = identity_value
     except Exception:
         pass
     timestamp = str(event.get("timestamp", "") or "")
@@ -1615,9 +1791,9 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
                     "process_session_id",
                     "process_token_sha256",
                 ):
-                    value = details.get(key)
-                    if value not in (None, ""):
-                        summary[key] = value
+                    identity_value = details.get(key)
+                    if identity_value not in (None, ""):
+                        summary[key] = identity_value
         except Exception:
             pass
         timestamp = str(event.get("timestamp", "") or "")

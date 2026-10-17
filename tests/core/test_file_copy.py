@@ -146,3 +146,75 @@ def test_filtered_tree_preserves_explicit_reserve_on_copy_fallback(tmp_path, mon
     )
     assert (result / "proof.txt").read_text() == "proof"
     assert not (result / "cache.bin").exists()
+
+
+def test_ordinary_copy_polls_controller_between_bounded_chunks_and_cleans_cancelled_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original, copied = tmp_path / "original", tmp_path / "copied"
+    content = b"p" * (4 * 1024**2)
+    original.write_bytes(content)
+    monkeypatch.setattr(file_copy, "_clone_file", lambda *_: False)
+    observed = []
+
+    def stop_after_first_chunk() -> None:
+        size = copied.stat().st_size if copied.exists() else 0
+        observed.append(size)
+        if size >= 1024**2:
+            raise InterruptedError("Copy cancelled")
+
+    with pytest.raises(InterruptedError, match="Copy cancelled"):
+        file_copy.copy_file(original, copied, check=stop_after_first_chunk)
+    assert 1024**2 in observed
+    assert not copied.exists()
+    assert original.read_bytes() == content
+
+
+def test_tree_copy_polls_directories_and_cancels_without_publishing_partial_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original, copied = tmp_path / "source", tmp_path / "copied"
+    (original / "nested").mkdir(parents=True)
+    content = b"p" * (4 * 1024**2)
+    (original / "nested/large").write_bytes(content)
+    monkeypatch.setattr(file_copy, "_clone_file", lambda *_: False)
+    visited = []
+
+    def ignore(path: str, names: list[str]) -> set[str]:
+        visited.append(Path(path).name)
+        return set()
+
+    def stop_after_first_chunk() -> None:
+        for partial_tree in tmp_path.glob(".copy-*/tree"):
+            partial = partial_tree / "nested/large"
+            if partial.exists() and partial.stat().st_size >= 1024**2:
+                raise InterruptedError("Tree copy cancelled")
+
+    with pytest.raises(InterruptedError, match="Tree copy cancelled"):
+        file_copy.copy_tree(original, copied, ignore=ignore, check=stop_after_first_chunk)
+    assert visited == ["source", "nested"]
+    assert not copied.exists() and not list(tmp_path.glob(".copy-*"))
+    assert (original / "nested/large").read_bytes() == content
+
+
+def test_atomic_tree_publication_preserves_concurrent_empty_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, destination = tmp_path / "source", tmp_path / "destination"
+    source.mkdir()
+    (source / "Main.lean").write_text("saved proof")
+    publish = file_copy._rename_tree_no_replace
+    created = []
+
+    def create_then_publish(incoming: Path, target: Path) -> None:
+        target.mkdir()
+        created.append(target.stat().st_ino)
+        publish(incoming, target)
+
+    monkeypatch.setattr(file_copy, "_rename_tree_no_replace", create_then_publish)
+    with pytest.raises(FileExistsError):
+        file_copy.copy_tree(source, destination)
+    assert destination.is_dir() and list(destination.iterdir()) == []
+    assert destination.stat().st_ino == created[0]
+    assert not list(tmp_path.glob(".copy-*"))
+    assert (source / "Main.lean").read_text() == "saved proof"

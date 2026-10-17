@@ -4,201 +4,59 @@ kind: workflow
 title: Formalize
 summary: Autonomous Lean formalization that drafts source-backed declarations and proof plans, verifies source fidelity, and hands the result to proving.
 aliases: [autoformalize]
-skills: [lean-formalization, lean-proof-loop, lean-theorem-queue-worker]
+skills: [lean-formalization, lean-proof-loop]
 tools: [formalization_document_inspect, lean_capabilities, lean_inspect, lean_search, lean_verify, lean_sorries, lean_axioms]
 workers: []
-review_actions: [continue, decompose, plan, negate, re-state, park]
-stop_conditions: [verified, blocked, interrupted, stalled]
-route_actions: [queue-worker, final-sweep]
+review_actions: [item-review, coherence-review, correct-translation]
+stop_conditions: [published, accepted_staged, blocked, interrupted]
+route_actions: [prepare, representative-slice, complete-translation, publish, prover-handoff]
 ---
 
-# Native Formalize Spec
+# Source-backed formalization
 
-Use `/formalize` or `/autoformalize` for the same autonomous workflow.
+Inspect a TeX file, TeX project directory or PDF without model calls. Before `/formalize docs/paper.tex`, check the project baseline with `leanflow project setup` or **Set up project** in the VS Code Formalization tab. A current formalization preparation is also sufficient infrastructure. Proving is a separate explicit action after source review.
 
-## When To Use
+## Source and project setup
 
-Use this workflow when the input is a project-local mathematical source document that must be turned into source-backed Lean declarations, theorem skeletons, and prover-ready proof notes.
+Intake freezes original files, include occurrences, macro context, source items, and a complete region inventory. A checked project baseline precedes native planning. A fresh read-only session estimates the required imports, existing declarations, missing dependencies, representation and representative slice. The controller validates this bounded preparation plan, expands approved dependencies privately and independently checks the project before recording its preparation receipt. Existing projects retain their source files and package pins. The controller allocates a document subtree under the checked library root, including `Main` when that is the actual library. Unsupported dynamic configuration is a visible blocker.
 
-Typical inputs:
+Read the complete manifest and source bundle. The inventory includes prose outside recognized environments; extraction is a starting point for audit, not evidence that nothing was missed. Unknown macros, missing includes and unreadable PDF pages stay visible. Request inventory repair for missing items or uncertain boundaries. Only the user may narrow mathematical scope. Preserved inactive source branches remain explicitly classified.
 
-- a LaTeX source document inside the project, for example `docs/paper.tex`
-- a TeX project directory inside the project, for example `docs/paper`
-- a PDF source document inside the project, for example `docs/paper.pdf`
-- a partially drafted document-backed Lean file that still needs formalization and proof completion
+Ordinary intake can request an exact lexical interpretation for eligible frozen TeX diagnostics. Submit every entry in `source_reconciliation_requirements`; the proposal leaves original diagnostics unchanged and grants no source approval. Unknown execution effects, missing inputs and unsupported expansion remain blockers. Bounded contiguous review groups retain their complete ordered canonical members in `source_region_partition`. Cover all groups or all canonical regions exactly once, never a mixture. Grouping changes the review presentation, not the source denominator.
 
-## What Not To Use This Workflow For
+An explicit `--source-draft-only` assignment with a frozen paired PDF permits one preparatory author turn despite structured TeX execution uncertainty. Follow its narrower instructions and save only assigned draft files and allowlisted notes. Report source and mathematical blockers explicitly. It cannot submit accepted mappings, pass review, expand to the complete document or authorize publication and proving. Even a compiling draft remains unaccepted; the controller retains frozen preview artifacts after native process cleanup and does not reroll a completed campaign on resume.
 
-Do not use this workflow for:
+## Drafting and submission
 
-- one-off informal theorem strings with no source document
-- proof-only repair where the statement shape is already stable
-- read-only review
-- save-point work (persisted checkpoints are automatic in managed runs)
-- pure tactic shortening after the declarations already compile
+Plan shared definitions and imports before translating statements. Work one declaration at a time, then review the representation as a whole. Search the pinned libraries before duplicating existing declarations. Use LeanProbe for focused feedback and the controller for authoritative acceptance.
 
-Use `prove`, `review`, or `golf` for those cases. Use `draft` when the task is limited to declaration skeletons or signatures with no expectation of completing the proving loop.
+The first assignment admits only the representative source slice selected by the preparation plan: a shared definition, a dependent statement, a pinned library reuse or bridge, and a named proof obligation when applicable. Submit its structured proposal and representation choices. The controller compiles the slice and obtains fresh independent source review before authorizing a full-document assignment. The slice stays private. Follow the assigned phase and source IDs; full expansion cannot precede its passing receipt. Revise the setup when later translations expose a better representation; an early choice is not permanent approval.
 
-## Document Input Contract
+Create only Lean files in the allocated document module tree, plus the assigned structured proposal file. Its aggregator must import every generated module and contain only imports, comments and whitespace. Record explanations in the proposal fields. The controller generates the portable blueprint and source artifacts after acceptance and owns the bounded root-import edit. Never edit the toolchain or dependency configuration as part of translation.
 
-`/formalize` and `/autoformalize` require a project-local `.tex` source, `.pdf` source, or directory containing a TeX project.
+Finish polling an asynchronous Lean check before editing any project Lean file or building modules. The check binds the whole project environment, so even an unrelated source edit or build artifact invalidates its feedback. Repair the files after the check finishes, then check the revised version.
 
-The workflow resolver prepares:
+Definitions, instances, structures and constructions must be complete. Pending holes are allowed only in named propositional theorem proof slots; types and computational data must contain no holes. A construction may depend explicitly on a named pending existence theorem. Completed proofs, complete opaque definitions and exact library reuse are valid. Source conjectures retain their claim status independently of the LaTeX environment name.
 
-- a source-document preflight manifest
-- a Markdown planner blueprint next to the generated Lean files
-- a bounded extracted-text cache
-- an active Lean target file for the generated declarations
-- startup context that points to all of the above
+Kernel replay rejects project unsafe/partial constants, including executable recursion helpers generated for a safe recursive definition. Use a complete `noncomputable def` for the mathematical function, or a suitable existing fold, when that helper would otherwise be emitted. This does not establish computability or efficiency: preserve those source claims as named Prop obligations tied to the actual algorithm and input-size/cost model. Do not infer helper safety from its name or weaken the replay policy.
 
-For directory inputs, the resolver deterministically selects the main `.tex` entrypoint, records included `.tex` files, bibliography files, and local assets, and fails ambiguous roots with a clear error before launch.
+Write `.leanflow-job/formalization-proposal.json` according to the assignment schema. Each translation unit records required source IDs, exact Lean declaration references, a representation rationale and unit dependencies. Splits, merges and justified helpers are supported. Coverage accounts for every selected document region, with a reason for each disposition. The controller checks mappings against the complete compiled declaration registry, including auxiliaries, and explicitly builds all generated modules plus the project.
 
-The active Lean target file is only the entry point. By default a document gets its own project-local workspace such as `ProjectName/PaperName/Main.lean` plus `ProjectName/PaperName/Blueprint.md`, and the planner may split work into additional Lean files in that same directory when the blueprint justifies it. Keep imports and blueprint references coherent.
+Source repairs can register a known clause with `record_obligation`, exact frozen `source_refs`, an `item_id`, `description` and `reason`. Registration grants no approval or narrower scope. Every unit using that source item must include `clause_dispositions` for all its known obligations, naming the obligation ID, disposition, exact mapped declaration names and rationale. `represented` and `pending_proof` require explicit Lean representations; the latter must identify a real named Prop theorem proof slot with complete types and computational definitions. `omitted`, `specialized` and `unresolved` remain full-item blockers even when a representation note explains them. A statistical core cannot discharge a runtime requirement, a more general domain, or an ambiguous parenthetical by itself. The checklist records identified requirements; it does not claim to discover every mathematical clause automatically.
 
-## Tool Order
+## Independent review and publication
 
-1. `formalization_document_inspect`
-   - inspect the required project-local source document
-   - for LaTeX, use extracted theorem-like environments, labels, references, citations, and sections as the starting inventory
-   - for PDF, use the extracted text and PDF metadata; if extraction is degraded, record that explicitly before planning
-2. `lean_capabilities`
-   - read the actual available diagnostics, search, and worker surface first
-3. `lean_inspect`
-   - inspect the target file, existing declarations, queue items, and blocker kind
-   - use this before inserting more declarations into a broken file
-4. `lean_search`
-   - search local project facts, imports, and Mathlib before inventing names or structures
-   - use it both for statement design and proof search
-5. create or update the planner blueprint
-   - list source statements, dependencies, planned Lean names, split lemmas, statement-fidelity checks, and proof notes
-   - include natural-language source proof strategy useful to the prover: relevant paper paragraphs, induction variables, reductions, important intermediate facts, and likely Mathlib dependencies
-   - rely on the generated supplemental blueprint skill to keep the `Blueprint.md` path available across prover turns and compaction
-   - if a `blueprint/` directory or `leanblueprint` setup exists, keep a compatible TeX blueprint in sync where practical
-   - replace the preflight `_pending_` entries before drafting Lean; the initial blueprint is only an inventory placeholder
-6. draft or revise declarations in small verifiable steps
-   - prefer one declaration or one local helper at a time
-   - keep imports and dependencies minimal and explicit
-   - in the planner draft, theorem/lemma/example proofs must remain `by sorry`; do not start proof repair inside `/formalize`
-   - every generated Lean file must start with all `import` commands before any module doc comment, file overview, namespace, or declaration
-7. `lean_verify`
-   - use the narrowest truthful verification gate for the current step
-8. `lean_sorries` / `lean_axioms`
-   - use when remaining `sorry` inventory or axiom profile is the real blocker
+Each coherent batch is reviewed in a fresh native session with unabridged required statements/proofs and read-only access to all frozen evidence. Every required source ID needs a verdict. A final coherence review checks every region and the complete setup. Reviewer backend/model/effort can differ from the author. Reviews share the run budget; the default is two correction rounds. Identical rejected evidence is not rerolled. Author-written approval prose has no authority.
 
-## Formalization Policy
+For an explicitly paired TeX companion PDF, reviewers must retrieve every assigned physical page through `read_source_image` and compare it with the frozen source. Text metadata and a proposed correspondence are insufficient. The controller records delivered image hashes with verdicts and rejects acceptance when any required image is unavailable or unread. PDF-only sources still require their separate verified transcription gate.
 
-Formalization is not complete when the declaration header merely parses. The formalizer should move from informal intent to:
+The independent reviewer must assess each known clause against its exact `obligation:<id>` evidence and mapped Lean declarations. An omitted efficiency condition, narrowed domain or unresolved qualifier blocks the item. A named pending proof is acceptable only when its proposition faithfully represents that clause; data and type holes remain forbidden. Discovering another missing clause requires correction, even if every registered checklist entry passed.
+Preserve asymptotic quantifiers and the source's input-size measure: a fixed-size predicate or an unlinked family helper does not represent a stated uniform efficiency requirement.
 
-- declarations with stable names and signatures
-- compilable Lean code
-- source locators and proof/prover notes that tell the prover exactly what to read
-- theorem/lemma/example skeletons with `sorry`
-- a statement/source verification request before proving begins
+Every source, scope, mapping, layout or code edit invalidates the selected revision's acceptance. Historical receipts remain immutable. A passing review is published with exact files, source evidence, blueprint and handoff under `formalization/<document-id>/`. Publication uses a durable transaction and refuses concurrent edits. Unsupported publication primitives leave the result accepted and staged, with a visible reason.
 
-Prefer:
+## Prover handoff
 
-- explicit intermediate lemmas over brittle monolithic tactics
-- local project naming and import patterns over fresh ad hoc style
-- small draft-and-verify increments over large speculative file rewrites
-- stable source pointers: section, label, page, equation, or bibliography reference
-- a blueprint dependency plan before deep proof work
-- natural-language proof/prover notes in the blueprint plus compact source-aware comments above declarations
-- imports first in every generated Lean file; do not put `/-! ... -/` module docs above imports
+Launch `/prove --from-formalization <document-id> --formalization-revision <revision-id>` only from a published, current handoff. It selects exact files, named declarations and proof slots, never every project hole or only an aggregator. Zero obligations require no model call. Source proof notes remain available across prover turns. An independently checked proof-only preservation certificate can inherit source review; a changed statement, definition, import or environment requires review again.
 
-Avoid:
-
-- drifting into unrelated helper files unless the workflow explicitly widened scope
-- repeated header rewrites when the blocker is actually proof search or compilation
-- declaring victory after only drafting statements without requesting statement/source verification
-- silent theorem weakening or strengthening relative to the source document
-- doing proof repair during the formalization planner draft; leave `sorry` and let the prover queue work one declaration at a time after review approval
-
-## Statement Fidelity
-
-The planner blueprint should record:
-
-- the natural-language mathematical statement or definition from the document
-- the source pointer, such as theorem label, section, page, or equation number
-- relevant dependency/proof notes from the source document or reconstructed proof plan
-- any intentional scope change, generalization, specialization, or assumption added for Lean
-- a statement-fidelity review comparing the planned Lean type to the source claim
-- `Source qualifiers`: mathematical object class, quantifier order, parameter domain, output codomain, equality/image condition, side conditions, and follow-on claims that are part of the source statement
-- `Lean coverage`: the Lean declarations or theorem clauses that cover each source qualifier
-- `Scope changes`: `none`, or an explicit list of intentional weakenings, strengthenings, omissions, or representation changes
-
-Draft readiness is checked with `lean_inspect`, `lean_verify`, and the document formalization handoff verifier. Do not use terminal Lake commands as the normal way to decide whether the formalization draft is ready.
-
-Before moving from planning to proving, the runner starts a fresh independent statement/source verification pass when the draft is otherwise ready and only approval statuses are missing. The review must check that each Lean statement matches the source claim, correct the blueprint or Lean draft when it does not, and record `Statement verification status: approved` for each source theorem/lemma entry before the prover queue starts. Each source theorem/lemma doc comment should include compact proof notes; the generated supplemental blueprint skill carries the durable `Blueprint.md` reference for prover turns after compaction. If the document statement is ambiguous, record the ambiguity in the blueprint rather than hiding it in the Lean signature. The prover phase may and should reread both `Blueprint.md` and the source `.tex`/`.pdf` when the proof needs the paper's argument.
-
-The verifier must treat source qualifiers as theorem-statement content, not proof commentary. Every explicit qualifier must be covered in Lean, covered by a companion declaration, or recorded as an intentional scope change. If the source includes a parameter-domain conversion, representation bridge, or follow-on equivalence, either formalize that bridge as its own declaration or leave the entry unapproved with the omission recorded.
-
-Object-class qualifiers need particular care. A theorem about a richer source representation is not fully covered by a simpler Lean encoding with matching output values unless the bridge is explicit. Either add a definition or companion declaration that witnesses the representation bridge, or mark `Lean coverage` as partial and list the representation change under `Scope changes`.
-
-The preflight blueprint is not a completed plan. Update it with planned Lean declaration names, dependencies, split lemmas, statement-fidelity reviews, and proof/prover notes before writing the main Lean draft.
-
-Do not place generated module-level documentation before imports. It is acceptable, and usually preferred, to omit generated Lean documentation entirely and keep planning prose in the blueprint.
-
-## Header Stability And Redraft
-
-Headers should stay stable once they are good enough to support focused proving work.
-
-Redraft is justified when:
-
-- the statement is ill-typed
-- the dependencies are wrong
-- the generated shape clearly blocks the proof
-- the workflow or a `re-state` route decision explicitly calls for a redraft
-
-Redraft is not the default answer to an ordinary proof blocker. If the statement already expresses the intended theorem, prefer proof repair over header churn.
-
-## Verification Ladder
-
-Formalization uses the same verification ladder as proving:
-
-1. `lean_inspect` for per-edit diagnostics and goals
-2. `lean_verify(mode=file_exact)` for file-scoped theorem acceptance
-3. `lean_verify(mode=module)` for focused milestone checks
-4. `lean_verify(mode=project)` before declaring project-scoped formalization complete
-
-Formalizer completion requires:
-
-- the formalized declarations compile
-- source locators and proof notes are recorded in the blueprint
-- theorem/lemma/example proofs remain as `sorry`
-- the statement/source verification gate has been requested or completed
-
-Proving completion is handled by `/prove` after the review-approved handoff.
-
-## Blocker Taxonomy
-
-- statement-design blocker
-  - wrong dependencies, malformed signature, or missing imports
-  - route: `re-state` — redraft in small steps, then re-inspect
-- compiler-style blocker
-  - route: direct local fix, then richer local feedback if repeated
-- search blocker
-  - route: `lean_search` before changing the theorem shape again
-- axiom-risk blocker
-  - route: `lean_axioms`, then direct proof cleanup if necessary
-- stuck formalization queue item
-  - route: document the blocker and hand off to the proving loop with source-backed notes
-
-## Stop Conditions
-
-Stop only when:
-
-- the requested formalization scope is verified
-- a concrete blocker has been recorded and the next action is a handoff or redraft, not another speculative proof attempt
-- the workflow was interrupted
-- progress is stalled and the route decision already identifies the correct next step
-
-## Handoff Format
-
-When handing off unfinished formalization work, include:
-
-- declarations added or revised
-- declaration still blocked
-- current blocker kind
-- verification gate most recently passed
-- search already attempted
-- whether a redraft or worker escalation is recommended
+The editor displays source coverage, elaboration, translation review and proof completion separately. Use its source/Lean links and local PDF viewer to repair the inventory and inspect each mapping. An extraction count alone never proves complete coverage.

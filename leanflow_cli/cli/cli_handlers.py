@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.cli.commands import build_forgiving_workflow_alias_map
 from leanflow_cli.config import (
     get_config_value,
     load_config,
@@ -42,6 +43,10 @@ __all__ = [
 def workflow_run_help_text(workflow: str) -> str:
     """Return safe leaf-command help without launching a native workflow."""
     name = str(workflow or "workflow").strip().lstrip("/") or "workflow"
+    if name in {"status", "history", "activity", "log"}:
+        return f"usage: leanflow workflow {name}\n\nInspect saved workflow {name} without starting model work."
+    if name not in build_forgiving_workflow_alias_map():
+        raise ValueError(f"Unsupported workflow: {name}. Choose prove or formalize.")
     lines = [
         f"usage: leanflow workflow {name} FILE [options]",
         "",
@@ -59,7 +64,18 @@ def workflow_run_help_text(workflow: str) -> str:
                 "  --research-workers N      Set background workers (implies --research)",
                 "  --clean-room              Block benchmark solution research and sibling tasks",
                 "  --clean-room-label VALUE  Add a protected task spelling (repeatable)",
-                "  --human-review            Allow explicit human-review pauses",
+                "  --from-formalization ID   Prove only the accepted document obligations",
+                "  --formalization-revision REV  Exact reviewed revision (required with ID)",
+            ]
+        )
+    if name in {"formalize", "autoformalize"}:
+        lines.extend(
+            [
+                "  --review-provider PROVIDER  Independent source reviewer backend",
+                "  --review-model MODEL      Reviewer model override",
+                "  --review-effort EFFORT    Reviewer effort; auto uses its native default",
+                "  --correction-rounds N    Correction rounds within budget (0..8, default 2)",
+                "  --source-draft-only     Retain one unaccepted draft for paired-PDF source uncertainty",
             ]
         )
     lines.append("  -h, --help                Show this help and exit")

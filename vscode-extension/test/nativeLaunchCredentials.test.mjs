@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
+import { assertWorkflowProjectReady, EMPTY_PROJECT_SETUP } from "../dist/test/projectSetupTypes.mjs";
 
 const bundle = await build({
   stdin: { contents: 'export { RunManager } from "./src/core/runManager"; export { emptyLaunchRequest } from "./src/core/types";', resolveDir: process.cwd(), loader: "ts" },
@@ -12,7 +13,7 @@ const bundle = await build({
       export class EventEmitter { event = () => ({ dispose() {} }); fire() {} dispose() {} }
       export const workspace = { getConfiguration: () => ({ get: (_, fallback) => fallback }) };
     ` }));
-    builder.onLoad({ filter: /src\/core\/workflowTerminal\.ts$/ }, () => ({ contents: `export async function inspectWorkflowTerminal() { return globalThis.launchCredentialFixture.pane ?? {state:"unknown"}; } export async function releaseWorkflowTerminal(id) { (globalThis.launchCredentialFixture.released ??= []).push(id); return true; } export async function showWorkflowTerminal() {}` }));
+    builder.onLoad({ filter: /src\/core\/workflowTerminal\.ts$/ }, () => ({ contents: `export async function inspectWorkflowTerminal() { return globalThis.launchCredentialFixture.pane ?? {state:"unknown"}; } export async function releaseWorkflowTerminal(id) { (globalThis.launchCredentialFixture.released ??= []).push(id); return globalThis.launchCredentialFixture.releasePending ?? globalThis.launchCredentialFixture.releaseOutcome ?? true; } export async function showWorkflowTerminal() {}` }));
     builder.onLoad({ filter: /src\/core\/launchPaths\.ts$/ }, () => ({ contents: `export async function validateLaunchProjectInputs() {}` }));
     builder.onLoad({ filter: /src\/core\/cli\.ts$/ }, () => ({ contents: `
       export async function fetchLiveStatus() { if (globalThis.launchCredentialFixture.unreadable) throw new Error("temporarily unavailable"); return globalThis.launchCredentialFixture.status ?? null; }
@@ -20,11 +21,24 @@ const bundle = await build({
       export async function fetchEventTypes() { return []; }
       export async function fetchEvents(root, runId) { (globalThis.launchCredentialFixture.followed ??= []).push(runId); return { events: [], cursor: "", runId }; }
       export async function fetchRunLog() { return ""; }
+      export async function fetchRunMetrics(root, runId) {
+        (globalThis.launchCredentialFixture.metricsReads ??= []).push([root, runId]);
+        return globalThis.launchCredentialFixture.metrics ?? null;
+      }
+      export async function previewLaunch(root, argv) {
+        const f = globalThis.launchCredentialFixture;
+        (f.previews ??= []).push(argv);
+        const option = name => { const index = argv.indexOf(name); return index < 0 ? "" : argv[index + 1]; };
+        return f.preview ?? { version: 1, project: { root }, workflow: { kind: argv[0], source_draft_only: argv.includes("--source-draft-only") },
+          runtime: { provider: option("--provider") || "codex", model: option("--model") || "gpt-6.1-sol" } };
+      }
       export async function stopWorkflow(root, runId) {
         (globalThis.launchCredentialFixture.stopped ??= []).push([root, runId]);
         return globalThis.launchCredentialFixture.stopOutcome ?? { stopped: true };
       }
-      export function spawnWorkflow(project, argv, env, nativeEnv) {
+      export async function spawnWorkflow(project, argv, env, nativeEnv, prepared) {
+        globalThis.launchCredentialFixture.beforePrepared?.();
+        await prepared?.(undefined);
         globalThis.launchCredentialFixture.spawned.push({ project, argv, env, nativeEnv });
         return { pid: 1234, kill: () => true, onExit: new Promise(() => {}) };
       }
@@ -72,6 +86,27 @@ test("all launch callers share the setup readiness admission check", async () =>
     await manager.launch(emptyLaunchRequest(), null, null);
     assert.equal(fixture.spawned.length, 1);
     assert.deepEqual(roots, [project.root, project.root, project.root]);
+  } finally { manager.dispose(); }
+});
+
+test("actual RunManager preserves workflow kind through stronger formalization readiness admission", async () => {
+  const fixture = globalThis.launchCredentialFixture = { spawned: [], saved: [] };
+  const project = { found: true, root: "/tmp/leanflow-stronger-preparation", stateRoot: "/tmp/leanflow-stronger-preparation/.leanflow/workflow-state", label: "test" };
+  const context = { workspaceState: { get: (_key, fallback) => fallback, update: async () => {} } };
+  let status = "failed";
+  const kinds = [];
+  const setup = { assertLaunchReady() { throw new Error("Generic setup receipt is stale"); }, stateForRoot: root => ({ ...EMPTY_PROJECT_SETUP, root, status }) };
+  const manager = new RunManager(context, project, async () => ({}), (root, kind) => { kinds.push(kind); assertWorkflowProjectReady(setup, root, kind); });
+  manager.startPolling = () => {};
+  try {
+    await assert.rejects(manager.launch(emptyLaunchRequest(), null, null), /Generic setup receipt is stale/);
+    const request = { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex", provider: "codex", model: "gpt-6.1-sol" };
+    await manager.launch(request, null, null, { sourceDocumentId: "paper", projectRoot: project.root });
+    assert.equal(fixture.spawned.length, 1);
+    assert.deepEqual(kinds, ["prove", "formalize", "formalize"]);
+    status = "running";
+    await assert.rejects(manager.launch(request, null, null, { sourceDocumentId: "paper", projectRoot: project.root }), /setup is still running/);
+    assert.equal(fixture.spawned.length, 1);
   } finally { manager.dispose(); }
 });
 
@@ -180,3 +215,246 @@ test("early terminal output never reintroduces a private launch prompt into save
     assert.equal(run.connection,undefined);
   } finally {manager.dispose();}
 });
+
+
+test("workspace-bound proving cannot spawn after a switch during native environment preparation", async () => {
+  const fixture = globalThis.launchCredentialFixture = { spawned: [], saved: [] };
+  const context = { workspaceState: { get: (_key, fallback) => fallback, update: async (_key, value) => fixture.saved.push(value) } };
+  let current = true;
+  const project = { found: true, root: "/tmp/scope-A", stateRoot: "/tmp/scope-A/.leanflow/workflow-state", label: "A" };
+  const manager = new RunManager(context, project, async () => { current = false; return {}; });
+  manager.startPolling = () => {};
+  try {
+    const run = await manager.launch({ ...emptyLaunchRequest(), provider: "codex" }, null, null,
+      { projectRoot: project.root, assertCurrent() { if (!current) throw new Error("Formalization workspace changed"); } });
+    assert.equal(fixture.spawned.length, 0);
+    assert.equal(run.status, "failed");
+    assert.match(run.error, /workspace changed/);
+    assert.equal(run.projectRoot, project.root);
+  } finally { manager.dispose(); }
+});
+
+
+for (const boundary of ["terminal preparation", "connection persistence"]) {
+  test(`workspace-bound proving cannot spawn after a switch during ${boundary}`, async () => {
+    const fixture = globalThis.launchCredentialFixture = { spawned: [], saved: [] };
+    let current = true, saves = 0;
+    const context = { workspaceState: { get: (_key, fallback) => fallback, update: async (_key, value) => {
+      fixture.saved.push(value); saves += 1;
+      if (boundary === "connection persistence" && saves === 2) current = false;
+    } } };
+    if (boundary === "terminal preparation") fixture.beforePrepared = () => { current = false; };
+    const project = { found: true, root: "/tmp/scope-A", stateRoot: "/tmp/scope-A/.leanflow/workflow-state", label: "A" };
+    const manager = new RunManager(context, project, async () => ({}));
+    manager.startPolling = () => {};
+    try {
+      const run = await manager.launch({ ...emptyLaunchRequest(), provider: "codex" }, null, null,
+        { projectRoot: project.root, assertCurrent() { if (!current) throw new Error("Formalization workspace changed"); } });
+      assert.equal(fixture.spawned.length, 0);
+      assert.equal(run.status, "failed");
+      assert.match(run.error, /workspace changed/);
+    } finally { manager.dispose(); }
+  });
+}
+
+
+test("tracked source resume reuses exact native identity and retains separate transport tracking", async () => {
+  const {f, manager} = observedManager();
+  try {
+    const request = { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex", provider: "codex", model: "gpt-6.1-sol" };
+    const run = await manager.launch(request, null, null, { sourceDocumentId: "paper-1" });
+    run.status = "stopped";
+    const resumed = await manager.launch(request, null, null, { sourceDocumentId: "paper-1", resumeTrackedId: run.id });
+    assert.notEqual(resumed.id, run.id);
+    assert.equal(resumed.runId, run.runId);
+    assert.deepEqual(resumed.formalizationSource, { documentId: "paper-1", path: "paper.tex" });
+    const env = f.spawned.at(-1).env.set;
+    assert.equal(env.LEANFLOW_WORKFLOW_RUN_ID, run.runId);
+    assert.equal(env.LEANFLOW_NATIVE_RESUME_RUN_ID, run.runId);
+    assert.equal(f.spawned.at(-1).argv[0], "formalize");
+    assert.equal(f.spawned.at(-1).argv.includes("--from-formalization"), false);
+  } finally { manager.dispose(); }
+});
+
+test("formalization resume restores preview-pinned identity and draft intent despite changed form", async () => {
+  const {f, manager} = observedManager();
+  try {
+    const original = { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex", sourceDraftOnly: true };
+    const run = await manager.launch(original, null, null, { sourceDocumentId: "paper-1" });
+    run.status = "stopped";
+    assert.deepEqual(run.formalizationRuntime, { provider: "codex", model: "gpt-6.1-sol", sourceDraftOnly: true });
+    assert.equal(original.provider, "");
+    assert.equal(original.model, "");
+    const changed = { ...original, provider: "claude", model: "claude-new-model", sourceDraftOnly: false,
+      profile: "current-budget", overrides: { LEANFLOW_PROVER_AGENT_CALLS: "15" } };
+    const bound = await manager.bindFormalizationResumeRequest(run.id, changed, run.projectRoot, "paper-1");
+    assert.deepEqual({ provider: bound.provider, model: bound.model, sourceDraftOnly: bound.sourceDraftOnly }, run.formalizationRuntime);
+    assert.equal(bound.profile, changed.profile);
+    assert.deepEqual(bound.overrides, changed.overrides);
+    const resumed = await manager.launch({ ...changed, profile: "", overrides: {} }, null, null,
+      { sourceDocumentId: "paper-1", resumeTrackedId: run.id });
+    const argv = f.spawned.at(-1).argv;
+    assert.equal(argv[argv.indexOf("--provider") + 1], "codex");
+    assert.equal(argv[argv.indexOf("--model") + 1], "gpt-6.1-sol");
+    assert.equal(argv.includes("--source-draft-only"), true);
+    assert.deepEqual(resumed.formalizationRuntime, run.formalizationRuntime);
+    assert.equal(f.previews.length, 1);
+    assert.equal(f.metricsReads, undefined);
+  } finally { manager.dispose(); }
+});
+
+test("legacy blank launch identity cannot be reconstructed from today's explicit form", async () => {
+  const {f, manager} = observedManager();
+  try {
+    const request = { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex" };
+    const run = await manager.launch(request, null, null, { sourceDocumentId: "paper-1" });
+    run.status = "stopped";
+    delete run.formalizationRuntime;
+    run.request.provider = ""; run.request.model = "";
+    await assert.rejects(manager.launch({ ...request, provider: "claude", model: "new-default" }, null, null,
+      { sourceDocumentId: "paper-1", resumeTrackedId: run.id }), /no verified original provider and model.*CLI/);
+    assert.equal(f.spawned.length, 1);
+    assert.equal(f.previews.length, 1);
+  } finally { manager.dispose(); }
+});
+
+test("new launch retains a known provider with unknown native-default model without guessing resume", async () => {
+  const {f, manager} = observedManager();
+  try {
+    f.preview = { version: 1, project: { root: manager.projectRoot() }, workflow: { kind: "formalize", source_draft_only: false }, runtime: { provider: "claude", model: "" } };
+    const request = { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex" };
+    const run = await manager.launch(request, null, null, { sourceDocumentId: "paper-1" });
+    assert.deepEqual(run.formalizationRuntime, { provider: "claude", model: "", sourceDraftOnly: false });
+    assert.equal(f.spawned[0].argv[f.spawned[0].argv.indexOf("--provider") + 1], "claude");
+    assert.equal(f.spawned[0].argv.includes("--model"), false);
+    run.status = "stopped";
+    await assert.rejects(manager.bindFormalizationResumeRequest(run.id, { ...request, model: "today-default" }, run.projectRoot, "paper-1"), /no verified original provider and model/);
+  } finally { manager.dispose(); }
+});
+
+for (const invalid of ["", "scope", "run", "root", "document", "source", "draft", "model"]) {
+  test(`legacy identity recovery requires exact durable launch binding (${invalid || "valid"})`, async () => {
+    const {f, manager} = observedManager();
+    try {
+      const request = { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex" };
+      const run = await manager.launch(request, null, null, { sourceDocumentId: "paper-1" });
+      run.status = "stopped";
+      delete run.formalizationRuntime;
+      run.request.provider = ""; run.request.model = "";
+      const values = { LEANFLOW_WORKFLOW_RUN_ID: run.runId, LEANFLOW_PROJECT_ROOT: run.projectRoot,
+        LEANFLOW_NATIVE_WORKFLOW_KIND: "formalize", LEANFLOW_FORMALIZATION_DOCUMENT_ID: "paper-1",
+        LEANFLOW_NATIVE_REQUESTED_TARGET: "paper.tex", LEANFLOW_FORMALIZATION_SOURCE_DRAFT_ONLY: "true" };
+      f.metrics = { scope: { exact: true, requested_run_id: run.runId, resolved_run_id: run.runId },
+        run: { run_id: run.runId, workflow_kind: "formalize" },
+        launch: { environment: { values, runtime: { provider: "lemex", model: "original-model", api_key: "opaque-private-key" } } } };
+      if (invalid === "scope") f.metrics.scope.exact = false;
+      if (invalid === "run") f.metrics.scope.resolved_run_id = "another-run";
+      if (invalid === "root") values.LEANFLOW_PROJECT_ROOT = "/another/root";
+      if (invalid === "document") values.LEANFLOW_FORMALIZATION_DOCUMENT_ID = "another-paper";
+      if (invalid === "source") values.LEANFLOW_NATIVE_REQUESTED_TARGET = "another.tex";
+      if (invalid === "draft") delete values.LEANFLOW_FORMALIZATION_SOURCE_DRAFT_ONLY;
+      if (invalid === "model") f.metrics.launch.environment.runtime.model = "";
+      const changed = { ...request, provider: "claude", model: "new-model", sourceDraftOnly: false };
+      if (invalid) {
+        await assert.rejects(manager.bindFormalizationResumeRequest(run.id, changed, run.projectRoot, "paper-1"), /no verified original provider and model/);
+        assert.equal(run.formalizationRuntime, undefined);
+      } else {
+        const bound = await manager.bindFormalizationResumeRequest(run.id, changed, run.projectRoot, "paper-1");
+        assert.equal(bound.provider, "lemex"); assert.equal(bound.model, "original-model");
+        assert.equal(bound.sourceDraftOnly, true);
+        assert.deepEqual(run.formalizationRuntime, { provider: "lemex", model: "original-model", sourceDraftOnly: true });
+        assert.equal(JSON.stringify(manager.snapshot()).includes("opaque-private-key"), false);
+        assert.equal(JSON.stringify(f.saved).includes("opaque-private-key"), false);
+      }
+      assert.equal(f.spawned.length, 1);
+    } finally { manager.dispose(); }
+  });
+}
+
+for (const mismatch of ["untracked", "active", "workspace", "document", "source", "retired", "legacy", "runId"]) {
+  test(`source resume rejects ${mismatch} identity before process admission`, async () => {
+    const {f, manager} = observedManager();
+    try {
+      const request = { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex" };
+      const run = await manager.launch(request, null, null, { sourceDocumentId: "paper-1" });
+      run.status = "stopped";
+      let tracked = run.id;
+      if (mismatch === "untracked") tracked = "external-history";
+      if (mismatch === "active") run.status = "running";
+      if (mismatch === "workspace") run.projectRoot = "/other/project";
+      if (mismatch === "document") run.formalizationSource.documentId = "other-paper";
+      if (mismatch === "source") run.request.target = "other.tex";
+      if (mismatch === "retired") run.request.kind = "draft";
+      if (mismatch === "legacy") delete run.formalizationSource;
+      if (mismatch === "runId") run.runId = "../../unsafe";
+      await assert.rejects(manager.launch(request, null, null, { sourceDocumentId: "paper-1", resumeTrackedId: tracked }), /stopped extension-tracked/);
+      assert.equal(f.spawned.length, 1);
+    } finally { manager.dispose(); }
+  });
+}
+
+
+test("resume awaits one shared old-pane retirement before spawning the exact campaign", async () => {
+  const {f, manager} = observedManager();
+  try {
+    const request = { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex" };
+    const run = await manager.launch(request, null, null, { sourceDocumentId: "paper-1" });
+    run.status = "stopped";
+    run.connection = { kind: "tmux" };
+    let release;
+    f.releasePending = new Promise(resolve => { release = resolve; });
+    // Simulate a window-restoration cleanup already in flight when Resume is clicked.
+    const cleanup = manager.releaseTerminal(run);
+    const resumed = manager.launch(request, null, null, { sourceDocumentId: "paper-1", resumeTrackedId: run.id });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.spawned.length, 1);
+    assert.deepEqual(f.released, [run.runId]);
+    release(true);
+    await cleanup;
+    const result = await resumed;
+    assert.equal(f.spawned.length, 2);
+    assert.equal(result.runId, run.runId);
+    assert.equal(run.connection, undefined);
+    await manager.releaseTerminal(run);
+    assert.equal(f.released.length, 1);
+  } finally { manager.dispose(); }
+});
+
+test("resume refuses an old pane whose physical terminal closure is unconfirmed", async () => {
+  const {f, manager} = observedManager();
+  try {
+    const request = { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex" };
+    const run = await manager.launch(request, null, null, { sourceDocumentId: "paper-1" });
+    run.status = "stopped";
+    run.connection = { kind: "tmux" };
+    f.releaseOutcome = false;
+    await assert.rejects(manager.launch(request, null, null, { sourceDocumentId: "paper-1", resumeTrackedId: run.id }), /closure cannot be confirmed/);
+    assert.equal(f.spawned.length, 1);
+    assert.deepEqual(run.connection, { kind: "tmux" });
+  } finally { manager.dispose(); }
+});
+
+for (const identity of [
+  { provider: "claude", model: "claude-model[1m]" },
+  { provider: "claude", model: "publishers/anthropic/models/claude-model@20260101" },
+  { provider: "lemex", model: "org/model@release" },
+]) {
+  test(`formalization launch and resume retain native model syntax ${identity.model}`, async () => {
+    const { f, manager } = observedManager();
+    try {
+      const request = { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex", ...identity };
+      const run = await manager.launch(request, null, null, { sourceDocumentId: "paper-1" });
+      assert.equal(run.status, "running");
+      assert.deepEqual(run.formalizationRuntime, { ...identity, sourceDraftOnly: false });
+      run.status = "stopped";
+      const changed = { ...request, provider: "codex", model: "changed-model" };
+      const resumed = await manager.launch(changed, null, null, { sourceDocumentId: "paper-1", resumeTrackedId: run.id });
+      assert.equal(resumed.status, "running");
+      const argv = f.spawned.at(-1).argv;
+      assert.equal(argv[argv.indexOf("--provider") + 1], identity.provider);
+      assert.equal(argv[argv.indexOf("--model") + 1], identity.model);
+      assert.deepEqual(resumed.formalizationRuntime, run.formalizationRuntime);
+      assert.equal(f.previews.length, 1);
+    } finally { manager.dispose(); }
+  });
+}

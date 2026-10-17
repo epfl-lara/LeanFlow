@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import tempfile
 import threading
 import time
 import uuid
@@ -18,6 +17,7 @@ from core.deadlines import (
     remaining_seconds,
     wait_slice,
 )
+from leanflow_cli.workflows.prover.check_command_cleanup import command_workspace
 from leanflow_cli.workflows.prover.models import Dag, Node, digest, safe_relative_file
 from leanflow_cli.workflows.prover.source import (
     SourceDocument,
@@ -57,12 +57,34 @@ class LeanVerifier:
         # Controller-private directory for checked artifacts. It must never be
         # a writable root of any sandboxed Lean process.
         self.artifact_root: Path | None = None
+        self.scoped_modules: dict[str, str] | None = None
+        self.scoped_library: str | None = None
+        self.scoped_build_dir: str | None = None
+        self.scoped_workspace: Path | None = None
+        self._scoped_checked_sources: dict[Path, str] = {}
 
     def profile_module(self, relative: str) -> str | None:
         """Name the module a kernel profile compiles under, if the scheme fixes it."""
         from leanflow_cli.workflows.prover.type_profile import module_name
 
-        return module_name(relative) if self.signature_scheme == "module" else None
+        if self.signature_scheme != "module":
+            return None
+        if self.scoped_modules is not None:
+            if relative not in self.scoped_modules:
+                raise ValueError("Source file has no authenticated scoped module membership")
+            return self.scoped_modules[relative]
+        return module_name(relative)
+
+    def _module_output(self, relative: str) -> Path:
+        """Resolve scoped artifacts through real library membership, preserving legacy paths."""
+        if self.scoped_modules is not None:
+            if self.scoped_library is None or relative not in self.scoped_modules:
+                raise ValueError("Prepare authenticated local imports before artifact installation")
+            module = self.scoped_modules[relative]
+            path = Path(self.scoped_library).joinpath(*module.split(".")).with_suffix(".olean")
+        else:
+            path = Path(".lake/build/lib/lean") / Path(relative).with_suffix(".olean")
+        return project_path(self.root, path.as_posix())
 
     @property
     def timeout_s(self) -> float | None:
@@ -111,6 +133,76 @@ class LeanVerifier:
 
         close_check_workers(workspace)
 
+    def prepare_imports(
+        self,
+        dag: Dag,
+        documents: dict[str, SourceDocument],
+        workspace: Path,
+    ) -> dict[str, Any]:
+        """Restore exact static import readiness, including checkpointed signature resumes."""
+        if self.scoped_modules is None:
+            return {"accepted": True, "skipped": True}
+        from leanflow_cli.formalization.publication import publication_guard
+        from leanflow_cli.workflows.prover.scoped_imports import prepare_scoped_imports
+
+        with publication_guard(self.root), self.lock:
+            self.scoped_workspace = workspace.resolve() / "scoped-integration"
+            prepared = self._operation(
+                "verification_stage",
+                "Preparing authenticated local module imports",
+                lambda: prepare_scoped_imports(
+                    project_root=self.root,
+                    workspace=workspace,
+                    files=list(dict.fromkeys(node.file for node in dag.nodes)),
+                    expected_modules=self.scoped_modules,
+                    expected_sources={
+                        file: digest(document.render()) for file, document in documents.items()
+                    },
+                    deadline=deadline_after(self.timeout_s),
+                    cancelled=self.cancelled,
+                ),
+            )
+            if prepared.get("success"):
+                self.scoped_library = str(prepared["layout"]["lean_lib_dir"])
+                self.scoped_build_dir = str(prepared["layout"]["build_dir"])
+                self._invalidate_workers()
+            return {**prepared, "accepted": prepared.get("success") is True}
+
+    def _scoped_compile(self, relative: str, source_sha256: str | None = None) -> dict[str, Any]:
+        """Publish complete derived parts from exact installed source through guarded writes."""
+        from leanflow_cli.formalization.publication import publication_guard
+        from leanflow_cli.workflows.prover.scoped_imports import prepare_scoped_imports
+
+        with publication_guard(self.root), self.lock:
+            # Keep private inputs if subprocess closure is uncertain. The ordinary
+            # run-state workspace remains available for inspection and recovery.
+            if self.scoped_workspace is None:
+                self.scoped_workspace = (
+                    self.artifact_root.parent / "checks" / "scoped-integration"
+                    if self.artifact_root is not None
+                    else project_path(
+                        self.root, ".leanflow/scoped-import-workspaces/" + uuid.uuid4().hex
+                    )
+                )
+            workspace = self.scoped_workspace
+            result = prepare_scoped_imports(
+                project_root=self.root,
+                workspace=workspace,
+                files=[relative],
+                expected_modules=self.scoped_modules,
+                expected_sources={
+                    relative: source_sha256
+                    or digest(read_source(project_path(self.root, relative)))
+                },
+                deadline=deadline_after(self.timeout_s),
+                cancelled=self.cancelled,
+            )
+            if result.get("success"):
+                self.scoped_library = str(result["layout"]["lean_lib_dir"])
+                self.scoped_build_dir = str(result["layout"]["build_dir"])
+                self._invalidate_workers()
+            return {**result, "accepted": result.get("success") is True}
+
     def capture_signatures(
         self,
         dag: Dag,
@@ -130,6 +222,10 @@ class LeanVerifier:
         pending: dict[str, str] = {}
         mutable_by_id: dict[str, list[str]] = {}
         files = list(dict.fromkeys(node.file for node in dag.nodes))
+        if self.scoped_modules is not None:
+            prepared = self.prepare_imports(dag, documents, workspace)
+            if not prepared.get("accepted"):
+                return prepared
         for completed, relative in enumerate(files):
             nodes = [node for node in dag.nodes if node.file == relative]
             mutable_names = list(
@@ -152,6 +248,10 @@ class LeanVerifier:
                         cancelled=self.cancelled,
                         mutable_names=mutable_names,
                         module=self.profile_module(relative),
+                        freeze_artifact_parts=self.scoped_modules is not None,
+                        published_library=(
+                            (self.root / self.scoped_library) if self.scoped_library else None
+                        ),
                     ),
                     file=relative,
                     completed=completed,
@@ -241,6 +341,13 @@ class LeanVerifier:
         """Check the exact declaration and kernel type while owning the verifier slot."""
         from leanflow_cli.workflows.prover.check_process import check_scratch
 
+        if self.scoped_modules is not None:
+            from leanflow_cli.workflows.prover.scoped_cache import assert_cache_ready
+
+            try:
+                assert_cache_ready(self.root)
+            except (OSError, ValueError) as error:
+                return {"accepted": False, "error_code": "check_setup_failed", "error": str(error)}
         deadline = deadline_after(self.timeout_s)
 
         def elaborate(remaining: float | None) -> dict[str, Any]:
@@ -310,6 +417,10 @@ class LeanVerifier:
                 mutable_names=node.signature_mutable_names or [node.name],
                 module=module,
                 artifact=artifact,
+                freeze_artifact_parts=self.scoped_modules is not None,
+                published_library=(
+                    (self.root / self.scoped_library) if self.scoped_library else None
+                ),
                 on_stage=lambda stage, action: self._operation(
                     "verification_stage",
                     (
@@ -352,6 +463,8 @@ class LeanVerifier:
             if accepted and profile.get("artifact") and profile.get("artifact_sha256")
             else {}
         )
+        if accepted and artifact is not None and self.scoped_modules is not None:
+            self._scoped_checked_sources[artifact.resolve()] = digest(checked_source)
         return {
             **result,
             "success": True,
@@ -395,13 +508,11 @@ class LeanVerifier:
         from leanflow_cli.workflows.prover.check_process import isolated_command
 
         relative = safe_relative_file(relative)
-        output = project_path(
-            self.root,
-            str(Path(".lake/build/lib/lean") / Path(relative).with_suffix(".olean")),
-        )
+        if self.scoped_modules is not None:
+            return self._scoped_compile(relative)
+        output = self._module_output(relative)
         output.parent.mkdir(parents=True, exist_ok=True)
-        with self.lock, tempfile.TemporaryDirectory(prefix="leanflow-helper-check-") as temporary:
-            workspace = Path(temporary)
+        with self.lock, command_workspace(prefix="leanflow-helper-check-") as workspace:
             artifact = workspace / "checked.olean"
             result = isolated_command(
                 project_root=self.root,
@@ -428,10 +539,6 @@ class LeanVerifier:
         root; anything else is refused so the caller recompiles instead.
         """
         relative = safe_relative_file(relative)
-        output = project_path(
-            self.root,
-            str(Path(".lake/build/lib/lean") / Path(relative).with_suffix(".olean")),
-        )
         with self.lock:
             if self.artifact_root is None:
                 return {
@@ -459,16 +566,36 @@ class LeanVerifier:
                     "error_code": "artifact_mismatch",
                     "error": "checked artifact bytes no longer match their recorded digest",
                 }
-            output.parent.mkdir(parents=True, exist_ok=True)
-            self._publish(output, content)
+            if self.scoped_modules is None:
+                output = self._module_output(relative)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                self._publish(output, content)
+                resolved.unlink(missing_ok=True)
+                return {"accepted": True, "artifact": str(artifact), "sha256": actual}
+            source_sha256 = self._scoped_checked_sources.get(resolved)
+            if source_sha256 is None:
+                return {
+                    "accepted": False,
+                    "error_code": "artifact_unavailable",
+                    "error": "no exact checked source is bound to the scoped artifact",
+                }
+        # Runtime committed the byte-identical independently checked source. Rebuild
+        # its closure to publish compatible sidecars through observed-version guards.
+        result = self._scoped_compile(relative, source_sha256)
+        if result.get("accepted"):
             resolved.unlink(missing_ok=True)
-            return {"accepted": True, "artifact": str(artifact), "sha256": actual}
+            self._scoped_checked_sources.pop(resolved, None)
+        return result
 
     def _publish(self, output: Path, content: bytes) -> None:
         """Replace one importable artifact and drop warm environments that imported it."""
+        output.write_bytes(content)
+        self._invalidate_workers()
+
+    def _invalidate_workers(self) -> None:
+        """Drop retained environments after controlled import artifact refresh."""
         from leanflow_cli.workflows.prover.check_process import close_check_workers
 
-        output.write_bytes(content)
         # Drop our loaded environments immediately. Per-request generation
         # checks also catch external rebuilds and refresh independent scratch
         # workers, whose feedback never establishes controller acceptance.
@@ -493,12 +620,21 @@ class LeanVerifier:
         ]
         if unresolved:
             return {"accepted": False, "error": "remaining sorry", "files": unresolved}
-        build_root = project_path(self.root, ".lake/build")
+        if self.scoped_modules is not None and self.scoped_build_dir is None:
+            raise ValueError("Prepare authenticated scoped layout before the final build")
+        if self.scoped_modules is not None:
+            from leanflow_cli.workflows.prover.scoped_cache import assert_cache_ready
+
+            try:
+                assert_cache_ready(self.root)
+            except (OSError, ValueError) as error:
+                return {"accepted": False, "error_code": "check_setup_failed", "error": str(error)}
+        build_root = project_path(self.root, self.scoped_build_dir or ".lake/build")
         build_root.mkdir(parents=True, exist_ok=True)
-        with self.lock, tempfile.TemporaryDirectory(prefix="leanflow-final-check-") as temporary:
+        with self.lock, command_workspace(prefix="leanflow-final-check-") as workspace:
             result = isolated_command(
                 project_root=self.root,
-                workspace=Path(temporary),
+                workspace=workspace,
                 argv=["lake", "build"],
                 timeout_s=self.timeout_s,
                 cancelled=self.cancelled,

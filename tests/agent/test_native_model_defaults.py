@@ -75,3 +75,36 @@ def test_cancelled_or_expired_campaign_never_starts_metadata(monkeypatch, tmp_pa
             )
             == ""
         )
+
+
+def test_unverified_metadata_cleanup_cannot_be_treated_as_optional_data(monkeypatch, tmp_path):
+    """Retained live helper ownership must stop the caller instead of starting more native work."""
+    from agent.runtime.harness.models import NativeCleanupUnverified
+
+    class UnclosedSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def send(self, value):
+            pass
+
+        def receive(self):
+            return rpc(1, {})
+
+        def __exit__(self, *args):
+            raise NativeCleanupUnverified("fixture metadata owner remains live")
+
+    monkeypatch.setattr(model_defaults, "MetadataSession", UnclosedSession)
+    monkeypatch.setattr(model_defaults, "sandbox_command", lambda args, *a, **kw: args)
+    request = HarnessRequest("codex", "proof", tmp_path)
+    # Force a bounded normal RPC failure so __exit__ is reached without another turn.
+    monkeypatch.setattr(
+        UnclosedSession,
+        "receive",
+        lambda self: (_ for _ in ()).throw(ValueError("metadata unavailable")),
+    )
+    with pytest.raises(NativeCleanupUnverified, match="owner remains live"):
+        model_defaults.reasoning_default(request, "codex", {}, IsolationPolicy(tmp_path), "actual")

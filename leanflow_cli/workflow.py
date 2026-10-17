@@ -80,6 +80,13 @@ class NativeWorkflowSpec:
     research_workers: int = 0
     no_parallel: bool = False
     human_review: bool = False
+    formalization_document_id: str = ""
+    formalization_revision: str = ""
+    review_provider: str = ""
+    review_model: str = ""
+    review_effort: str = ""
+    correction_rounds: int | None = None
+    source_draft_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -215,6 +222,18 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
     }
     if plan.runtime.get("reasoning_effort"):
         summary["reasoning_effort"] = str(plan.runtime.get("reasoning_effort", "") or "")
+    if plan.workflow.formalization_document_id:
+        summary["formalization_document_id"] = plan.workflow.formalization_document_id
+        summary["formalization_revision"] = plan.workflow.formalization_revision
+    if plan.workflow.workflow_kind == "formalize":
+        summary["source_draft_only"] = str(plan.workflow.source_draft_only).lower()
+        for field in ("PROVIDER", "MODEL", "EFFORT"):
+            summary[f"review_{field.lower()}"] = plan.child_env.get(
+                f"LEANFLOW_FORMALIZATION_REVIEW_{field}", ""
+            )
+        summary["correction_rounds"] = plan.child_env.get(
+            "LEANFLOW_FORMALIZATION_CORRECTION_ROUNDS", "2"
+        )
     if plan.formalization_document is not None:
         request_relative = str(
             plan.formalization_document.metadata.get(
@@ -512,6 +531,7 @@ def launch_plan_payload(plan: NativeLaunchPlan) -> dict[str, Any]:
             "clean_room": workflow.clean_room,
             "clean_room_labels": list(workflow.clean_room_labels),
             "human_review": workflow.human_review,
+            "source_draft_only": workflow.source_draft_only,
             "allowed_axioms": workflow.allowed_axioms,
             "explicit_goal": _redacted_env_value(
                 "LEANFLOW_NATIVE_EXPLICIT_GOAL", workflow.explicit_goal
@@ -574,11 +594,39 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     allowed_axioms = ""
     research_mode = False
     research_workers: int | None = None
-    human_review = False
+    source_draft_only = False
+    formalization_options: dict[str, str] = {}
+    option_fields = {
+        "--from-formalization": "formalization_document_id",
+        "--formalization-revision": "formalization_revision",
+        "--review-provider": "review_provider",
+        "--review-model": "review_model",
+        "--review-effort": "review_effort",
+        "--correction-rounds": "correction_rounds",
+    }
     workflow_tokens: list[str] = []
     idx = 0
     while idx < len(remaining):
         token = remaining[idx]
+        if token == "--source-draft-only":
+            if source_draft_only:
+                raise ValueError("--source-draft-only was specified more than once")
+            source_draft_only = True
+            idx += 1
+            continue
+        if token in option_fields:
+            if (
+                idx + 1 >= len(remaining)
+                or remaining[idx + 1].startswith("--")
+                or not remaining[idx + 1].strip()
+            ):
+                raise ValueError(f"{token} requires a value")
+            field = option_fields[token]
+            if field in formalization_options:
+                raise ValueError(f"{token} was specified more than once")
+            formalization_options[field] = remaining[idx + 1].strip()
+            idx += 2
+            continue
         if token in PREVIEW_OPTION_TOKENS:
             # A misplaced preview option used to be folded into the target path and
             # the run started anyway; fail before any plan or run exists.
@@ -596,9 +644,9 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             idx += 1
             continue
         if token == "--human-review":
-            human_review = True
-            idx += 1
-            continue
+            raise ValueError(
+                "Human-review launch pauses are no longer supported; inspect translation reviews in Formalization."
+            )
         if token == "--research-workers":
             if idx + 1 >= len(remaining):
                 raise ValueError("--research-workers requires a value")
@@ -678,6 +726,39 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         parallel_agents = 1
     workflow_args = " ".join(workflow_tokens).strip()
     workflow_kind, canonical_command, backend_command = WORKFLOW_ALIAS_MAP[command_name]
+    if source_draft_only and workflow_kind != "formalize":
+        raise ValueError("--source-draft-only applies only to formalize")
+    handoff_document = formalization_options.get("formalization_document_id", "")
+    handoff_revision = formalization_options.get("formalization_revision", "")
+    if bool(handoff_document) != bool(handoff_revision):
+        raise ValueError(
+            "--from-formalization and --formalization-revision must be supplied together"
+        )
+    if handoff_document:
+        from leanflow_cli.formalization.evidence import identifier
+
+        identifier(handoff_document)
+        identifier(handoff_revision)
+        if workflow_kind != "prove" or workflow_args:
+            raise ValueError(
+                "A formalization handoff requires prove with no additional target file"
+            )
+    review_fields = {"review_provider", "review_model", "review_effort", "correction_rounds"}
+    if formalization_options.keys() & review_fields and workflow_kind != "formalize":
+        raise ValueError("Reviewer settings and correction rounds apply only to formalize")
+    correction_rounds = None
+    if "correction_rounds" in formalization_options:
+        try:
+            correction_rounds = int(formalization_options["correction_rounds"])
+        except ValueError as exc:
+            raise ValueError("--correction-rounds must be an integer") from exc
+        if not 0 <= correction_rounds <= 8:
+            raise ValueError("--correction-rounds must be between 0 and 8")
+    if "review_effort" in formalization_options:
+        from leanflow_cli.formalization.launch_options import REVIEW_EFFORTS
+
+        if formalization_options["review_effort"] not in REVIEW_EFFORTS:
+            raise ValueError("Unsupported --review-effort")
     if research_mode and workflow_kind != "prove":
         raise ValueError("--research is supported only for prove/autoprove workflows")
     if clean_room and workflow_kind != "prove":
@@ -686,8 +767,6 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         raise ValueError(
             "--agents is supported only for prove/autoprove; other native workflows use one agent and an independent source reviewer when required"
         )
-    if human_review and workflow_kind != "prove":
-        raise ValueError("--human-review is supported only for prove/autoprove workflows")
     effective_research_workers = 0
     if research_mode:
         effective_research_workers = (
@@ -718,7 +797,13 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         allowed_axioms=allowed_axioms,
         research_mode=research_mode,
         research_workers=effective_research_workers,
-        human_review=human_review,
+        formalization_document_id=handoff_document,
+        formalization_revision=handoff_revision,
+        review_provider=formalization_options.get("review_provider", ""),
+        review_model=formalization_options.get("review_model", ""),
+        review_effort=formalization_options.get("review_effort", ""),
+        correction_rounds=correction_rounds,
+        source_draft_only=source_draft_only,
     )
 
 
@@ -763,21 +848,13 @@ def resolve_workflow_request(
 ) -> NativeLaunchPlan:
     """Resolve a raw workflow command into a complete NativeLaunchPlan by discovering the project, resolving runtime, normalizing file paths, preparing formalization context if needed, selecting skills, and populating the environment for the native runner subprocess.
 
-    ``preview`` resolves the same plan without the resource-provisioning side
-    effects a real launch performs. A caller that only wants to show or diff the
-    plan — ``--dry-run``, an editor form — must not start a background local
-    Loogle build every time the user changes a field.
+    ``preview`` resolves the same plan without resource-provisioning side effects.
     """
     workflow = parse_workflow_command(command)
-    if workflow.workflow_kind == "prove" and workflow.human_review:
-        raise ValueError(
-            "--human-review is not supported by the bounded prover; its DAG review is automatic"
-        )
     if workflow.workflow_kind == "prove" and workflow.parallel_agents > 1:
         workflow = replace(workflow, research_mode=True, research_workers=workflow.parallel_agents)
     from leanflow_cli.workflows.research_mode import (
         prover_research_mode_enabled,
-        research_local_loogle_enabled,
         research_worker_count,
     )
 
@@ -792,25 +869,45 @@ def resolve_workflow_request(
             research_workers=(0 if workflow.no_parallel else research_worker_count()),
         )
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
-    project = discover_leanflow_project(cwd)
-    # Make local Loogle work by default outside research mode: lean-lsp-mcp
-    # otherwise builds it with a pinned toolchain that may not match the
-    # project. Full research campaigns retain foreground lean-lsp but skip the
-    # additional resident index unless explicitly memory-provisioned.
-    if (
-        not preview
-        and workflow.workflow_kind != "prove"
-        and research_local_loogle_enabled(research=workflow.research_mode)
-    ):
-        try:
-            from leanflow_cli.cli.loogle_local import ensure_local_loogle_for_project_async
-
-            ensure_local_loogle_for_project_async(project.root)
-        except Exception:
-            pass
     effective_provider = str(requested_provider or workflow.provider_override or "").strip()
-    runtime = resolve_runtime_provider(requested=effective_provider or None)
-    if workflow.model_override:
+    preparation_launch: dict[str, Any] | None = None
+    if workflow.workflow_kind == "formalize":
+        runtime = resolve_runtime_provider(requested=effective_provider or None)
+        if workflow.model_override:
+            runtime = apply_runtime_model_override(
+                runtime,
+                requested_provider=effective_provider
+                or str(runtime.get("requested_provider", "") or ""),
+                model=workflow.model_override,
+            )
+        from leanflow_cli.formalization.preparation_launch import (
+            prepare_formalization_launch,
+            preview_source_project,
+        )
+
+        if preview:
+            project = preview_source_project(cwd)
+        else:
+            draft_launch_options: dict[str, Any] = (
+                {"source_draft_only": True} if workflow.source_draft_only else {}
+            )
+            preparation_launch = prepare_formalization_launch(
+                cwd,
+                workflow.workflow_args,
+                runtime,
+                user_goal=workflow.explicit_goal,
+                **draft_launch_options,
+            )
+            project = (
+                preview_source_project(preparation_launch["root"], historical=True)
+                if preparation_launch.get("completed_source_draft") is not None
+                else discover_leanflow_project(preparation_launch["root"])
+            )
+    else:
+        project = discover_leanflow_project(cwd)
+    if workflow.workflow_kind != "formalize":
+        runtime = resolve_runtime_provider(requested=effective_provider or None)
+    if workflow.model_override and workflow.workflow_kind != "formalize":
         runtime = apply_runtime_model_override(
             runtime,
             requested_provider=(
@@ -820,17 +917,18 @@ def resolve_workflow_request(
         )
     formalization_document: FormalizationDocumentContext | None = None
     normalized_workflow_args = _normalize_workflow_args(project.root, cwd, workflow.workflow_args)
-    if workflow.workflow_kind == "formalize" and not preview:
-        # Document intake scaffolds the state directory, writes manifests, and
-        # initializes the target Lean file. A preview must not create any of
-        # that, so it reports the plan without the intake and leaves the
+    completed_source_draft = (preparation_launch or {}).get("completed_source_draft")
+    if workflow.workflow_kind == "formalize" and not preview and completed_source_draft is None:
+        # Document intake freezes private inventory and layout records. A
+        # preview must not create any of that, so it reports the plan and leaves the
         # document fields unresolved until the real launch.
         with project_activity(project.root):
             formalization_document = prepare_formalization_document_context(
                 project_root=project.root,
                 cwd=cwd,
                 workflow_args=workflow.workflow_args,
-                project_label=project.label,
+                require_preparation=True,
+                **({"source_draft_only": True} if workflow.source_draft_only else {}),
             )
         normalized_workflow_args = formalization_document.source_relative
     # Preserve the normalized source/target scope independently of the active
@@ -856,29 +954,32 @@ def resolve_workflow_request(
     )
     if formalization_document is not None:
         normalized_active_file = formalization_document.target_lean_relative
+    if workflow.formalization_document_id:
+        normalized_active_file = ""
     selected_skill = (active_skill or "").strip() or default_workflow_skill(workflow.workflow_kind)
     if workflow.workflow_kind == "prove" and not active_skill:
         selected_skill = "lean-bounded-prover"
-    if workflow.parallel_agents > 1 and not active_skill and workflow.workflow_kind != "prove":
-        selected_skill = "lean-autonomous-swarm"
     additional_skills = list(workflow.additional_skills)
     if formalization_document is not None:
         additional_skills.append(str(formalization_document.blueprint_skill_path))
     additional_skills_tuple = _dedupe_skills(additional_skills)
     if workflow.workflow_kind == "prove":
         toolset_name = "leanflow-prover-session"
-    elif workflow.parallel_agents > 1:
-        toolset_name = "leanflow-native-swarm"
-    elif workflow.workflow_kind in {"prove", "autoprove"}:
-        # The inner single-agent /prove worker uses a focused toolset (no session/document noise).
-        toolset_name = "leanflow-prove-worker"
     else:
         toolset_name = "leanflow-native"
 
     child_env = dict(os.environ)
+    child_env["LEANFLOW_FORMALIZATION_SOURCE_DRAFT_ONLY"] = (
+        "true" if workflow.source_draft_only else "false"
+    )
+    if preparation_launch is not None and "budget_path" in preparation_launch:
+        child_env["LEANFLOW_FORMALIZATION_BUDGET_PATH"] = str(preparation_launch["budget_path"])
+        child_env["LEANFLOW_WORKFLOW_RUN_ID"] = preparation_launch["run_id"]
+    for key in ("LEANFLOW_FORMALIZATION_HANDOFF", "LEANFLOW_FORMALIZATION_REVISION"):
+        child_env.pop(key, None)
     from leanflow_cli.config import DEFAULT_CONFIG, load_config
 
-    limits = load_config().get("limits", {})
+    limits = {} if completed_source_draft is not None else load_config().get("limits", {})
     for name in ("agent_calls", "tokens", "wall_time_s"):
         value = limits.get(name) if isinstance(limits, Mapping) else None
         if (
@@ -895,7 +996,7 @@ def resolve_workflow_request(
         # The environment-compatible research profile has the same prove-only
         # boundary as ``--research``. Keep independently configured feature
         # flags intact, but do not let the profile identity activate research
-        # runtime semantics inside review/formalization workflows.
+        # runtime semantics inside formalization workflows.
         child_env["LEANFLOW_RESEARCH_MODE"] = "0"
     child_env.update(
         {
@@ -908,14 +1009,14 @@ def resolve_workflow_request(
             "LEANFLOW_NATIVE_ACTIVE_SKILL": selected_skill,
             "LEANFLOW_NATIVE_ADDITIONAL_SKILLS": os.pathsep.join(additional_skills_tuple),
             "LEANFLOW_NATIVE_PARALLEL_AGENTS": str(workflow.parallel_agents),
-            "LEANFLOW_NATIVE_USER_APPROVED_SWARM": "1" if workflow.parallel_agents > 1 else "0",
             "LEANFLOW_NATIVE_EXPLICIT_GOAL": workflow.explicit_goal,
             "LEANFLOW_NATIVE_USER_PROMPT": workflow.explicit_goal,
             "LEANFLOW_NATIVE_EFFECTIVE_PROMPT": workflow.explicit_goal,
             "LEANFLOW_NATIVE_TOOLSET": toolset_name,
             "LEANFLOW_NATIVE_REQUESTED_TARGET": requested_target,
             "LEANFLOW_NATIVE_ACTIVE_FILE": normalized_active_file,
-            "LEANFLOW_HUMAN_REVIEW_ENABLED": "1" if workflow.human_review else "0",
+            # Prevent inherited legacy settings from creating human-pause routes.
+            "LEANFLOW_HUMAN_REVIEW_ENABLED": "0",
         }
     )
     if workflow.clean_room:
@@ -946,6 +1047,26 @@ def resolve_workflow_request(
                 )
     if workflow.allowed_axioms:
         child_env["LEANFLOW_NATIVE_ALLOWED_AXIOMS"] = workflow.allowed_axioms
+    if workflow.formalization_document_id:
+        from leanflow_cli.formalization.records import document_directory
+
+        child_env["LEANFLOW_FORMALIZATION_HANDOFF"] = str(
+            document_directory(project.root, workflow.formalization_document_id, published=True)
+            / "handoff.json"
+        )
+        child_env["LEANFLOW_FORMALIZATION_REVISION"] = workflow.formalization_revision
+    if workflow.workflow_kind == "formalize" and completed_source_draft is None:
+        from leanflow_cli.formalization.launch_options import reviewer_settings
+
+        child_env.update(
+            reviewer_settings(
+                runtime,
+                provider=workflow.review_provider,
+                model=workflow.review_model,
+                effort=workflow.review_effort,
+                correction_rounds=workflow.correction_rounds,
+            )
+        )
     if workflow.workflow_kind != "prove" and (workflow.research_mode or plan_state_enabled()):
         # Every deployed agent can discover live plan artifacts through the
         # environment, independent of prompt injection. Paths are
@@ -960,6 +1081,11 @@ def resolve_workflow_request(
         )
     if formalization_document is not None:
         child_env.update(formalization_document.to_env())
+    if completed_source_draft is not None:
+        child_env.update(
+            LEANFLOW_FORMALIZATION_DOCUMENT_ID=completed_source_draft["formalization_document_id"],
+            LEANFLOW_FORMALIZATION_REVISION=completed_source_draft["formalization_base_revision"],
+        )
     runner_module = (
         "leanflow_cli.workflows.prover.runtime"
         if workflow.workflow_kind == "prove"
@@ -999,8 +1125,10 @@ def spawn_workflow(
     active_skill: str | None = None,
     interactive: bool = False,
     extra_env: Mapping[str, str] | None = None,
+    prepared_plan: NativeLaunchPlan | None = None,
 ) -> tuple[NativeLaunchPlan, subprocess.Popen[bytes]]:
-    plan = resolve_workflow_request(
+    """Spawn one resolved launch, reusing an actual prepared plan without repeating setup."""
+    plan = prepared_plan or resolve_workflow_request(
         command,
         active_cwd=active_cwd,
         requested_provider=requested_provider,
@@ -1039,6 +1167,7 @@ def run_workflow(
     active_cwd: str | os.PathLike[str] | None = None,
     requested_provider: str | None = None,
     active_skill: str | None = None,
+    prepared_plan: NativeLaunchPlan | None = None,
 ) -> int:
     """Execute an interactive workflow and return the native runner's exit code.
 
@@ -1047,6 +1176,9 @@ def run_workflow(
     wrapper must keep waiting while the user chooses ``/exit`` or resumes.
     Killing the child on a parent-side ``KeyboardInterrupt`` bypasses campaign
     checkpoints and background-worker cleanup.
+
+    Pass an actual prepared plan when displaying its launch summary first. Resolving
+    formalization again would repeat discovery and allocate a different campaign budget.
     """
     plan, process = spawn_workflow(
         command,
@@ -1054,6 +1186,7 @@ def run_workflow(
         requested_provider=requested_provider,
         active_skill=active_skill,
         interactive=True,
+        prepared_plan=prepared_plan,
     )
     while True:
         try:

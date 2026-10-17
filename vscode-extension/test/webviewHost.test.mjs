@@ -14,6 +14,8 @@ const bundle = await build({
     builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: `
       const f = () => globalThis.hostFixture;
       export const Uri = { file: fsPath => ({ fsPath }), parse: value => value };
+      export const ViewColumn = { Beside: 2 };
+      export const workspace = { openTextDocument: async value => value };
       export class Range { constructor(...args) { this.args = args; } }
       export const commands = { executeCommand: async (...args) => f().calls.push(['command', ...args]) };
       export const env = { clipboard: { writeText: async text => { if (f().clipboardError) throw new Error('Clipboard unavailable'); f().calls.push(['clipboard', text]); } } };
@@ -26,6 +28,7 @@ const bundle = await build({
     builder.onLoad({ filter: /src\/core\/cli\.ts$/ }, () => ({ contents: `
       const record = (name, args) => globalThis.hostFixture.calls.push([name, ...args]);
       export class CliError extends Error {}
+      export function cliPath() { return 'leanflow-test-fixture'; }
       export async function fetchEventDetail(...args) { record('detail', args); return { event: {}, evidence: {} }; }
       export async function fetchProfileDiff(...args) { record('diff', args); return []; }
       export async function previewLaunch(...args) { record('preview', args); return { workflow: 'prove', provider: 'lemex' }; }
@@ -91,6 +94,20 @@ test("navigation, clipboard and provider actions reach native editor services", 
   } finally { await ui.dispose(); }
 });
 
+test("unscoped formalization launch is refused before project or native admission", async () => {
+  const ui = await fixture();
+  try {
+    let admissions = 0;
+    ui.services.setup.assertLaunchReady = () => { admissions++; };
+    for (const sourceDraftOnly of [false, true]) {
+      await ui.send({ type: "launch", request: { ...emptyLaunchRequest(), kind: "formalize", target: "paper.tex", sourceDraftOnly } });
+      assert.match(ui.last("notify").message, /Choose a source in the Formalization tab/);
+    }
+    assert.equal(admissions, 0);
+    assert.equal(ui.calls.some(row => row[0] === "launch"), false);
+  } finally { await ui.dispose(); }
+});
+
 test("launch, preview, stop, events, transcripts and guidance bind to the requested run", async () => {
   const ui = await fixture();
   try {
@@ -128,9 +145,8 @@ test("launch permits clean-room proof runs and refuses unsupported efforts or wo
   const ui = await fixture();
   try {
     const request = { ...emptyLaunchRequest(), provider: "lemex", model: "fixture-model", cleanRoom: true };
-    await ui.send({ type: "launch", request: { ...request, kind: "golf" } });
+    assert.equal(parseWebviewMessage({ type: "launch", request: { ...request, kind: "golf" } }).ok, false);
     assert.equal(ui.calls.filter(row => row[0] === "launch").length, 0);
-    assert.match(ui.last("notify").message, /only supported for prove/);
     ui.f.providerState = { selected: "lemex", error: "", backends: [{ id: "lemex", model_catalog: { status: "ready", default_model: "fixture-model", models: [{ id: "fixture-model", reasoning_known: true, reasoning_efforts: ["low"] }] } }] };
     await ui.send({ type: "launch", request: { ...request, overrides: { LEANFLOW_PROVER_REASONING_EFFORT: "ultra" } } });
     assert.equal(ui.calls.filter(row => row[0] === "launch").length, 0);

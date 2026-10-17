@@ -91,6 +91,83 @@ def test_job_reconciliation_is_idempotent(tmp_path: Path) -> None:
     assert runtime.reserved == 0
 
 
+@pytest.mark.parametrize("provenance", ["missing", "corrupt", "foreign"])
+@pytest.mark.parametrize("previous_calls", [0, 1])
+@pytest.mark.parametrize("stop_timing", ["normal", "cancelled", "shutdown"])
+def test_unverifiable_scoped_snapshot_retires_job_and_uses_fresh_workspace(
+    tmp_path: Path, provenance: str, previous_calls: int, stop_timing: str
+) -> None:
+    from leanflow_cli.workflows.prover import native_snapshot
+    from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
+
+    model_workspaces: list[Path] = []
+
+    def session(**options: Any) -> dict[str, Any]:
+        workspace = options["workspace"]
+        snapshot = native_snapshot.prepare_snapshot(
+            tmp_path, workspace / "project", excluded_build_dir="artifacts"
+        )
+        assert not (snapshot / "artifacts").exists()
+        model_workspaces.append(workspace)
+        return {"status": "candidate", "api_calls": 1, "final_response": ""}
+
+    runtime = runtime_at(tmp_path, session=session)
+    node = runtime.dag.nodes[0]
+    job, context = runtime._new_job("prover", node=node)
+    job["api_calls"] = previous_calls
+    old_workspace = Path(job["workspace"])
+    snapshot = native_snapshot.create_snapshot(tmp_path, old_workspace / "project")
+    progress = snapshot / "Main.lean"
+    progress.write_bytes(progress.read_bytes() + b"-- retained private progress\n")
+    retained = progress.read_bytes()
+    retained_inode = progress.stat().st_ino
+    stale_cache = snapshot / "artifacts/Old.olean"
+    stale_cache.parent.mkdir()
+    stale_cache.write_bytes(b"old private cache")
+    record = native_snapshot._exclusion_record(snapshot)
+    if provenance == "corrupt":
+        record.write_bytes(b"unfinished record")
+    elif provenance == "foreign":
+        record.write_text(json.dumps(native_snapshot._exclusion_identity(snapshot, "other")))
+    record_before = record.read_bytes() if record.exists() else None
+    candidate_file = old_workspace / "candidate.txt"
+    candidate_file.write_text("trivial")
+    candidate_inode = candidate_file.stat().st_ino
+
+    result = runtime._invoke(job, context, "check exact snapshot before any provider work")
+    assert result["status"] == "environment_error"
+    assert result["fresh_workspace_required"] is True
+    assert result["error_code"] == "snapshot_provenance_changed"
+    assert result["api_calls"] == previous_calls and not model_workspaces
+    if stop_timing == "cancelled":
+        runtime.cancelled.set()
+    with pytest.raises(InfrastructureFailure):
+        if stop_timing == "shutdown":
+            runtime._finish_job(job, result)
+        else:
+            runtime._handle_result(job, result)
+    if stop_timing == "shutdown":
+        runtime._retain_candidate(job, result)
+    assert not node.candidate
+    assert job["fresh_workspace_required"] is True
+    assert job["result_processed"] is True
+    assert runtime.consumed == previous_calls
+
+    resumed = runtime_at(tmp_path, session=session, run_id=runtime.run_id, resume=True)
+    assert resumed.state["jobs"][0]["status"] == "stale"
+    assert not resumed.resume_jobs and resumed.consumed == previous_calls
+    fresh, fresh_context = resumed._new_job("prover", node=resumed.dag.nodes[0])
+    assert fresh["workspace"] != job["workspace"] and not fresh.get("resumed")
+    assert resumed._invoke(fresh, fresh_context, "fresh attempt")["status"] == "candidate"
+    assert model_workspaces == [Path(fresh["workspace"])]
+    assert progress.read_bytes() == retained and progress.stat().st_ino == retained_inode
+    assert stale_cache.read_bytes() == b"old private cache"
+    assert (
+        candidate_file.read_text() == "trivial" and candidate_file.stat().st_ino == candidate_inode
+    )
+    assert (record.read_bytes() if record.exists() else None) == record_before
+
+
 def _proposal(runtime: ProverRuntime) -> tuple[Any, Any]:
     node = runtime.dag.nodes[0]
     return apply_proposal(

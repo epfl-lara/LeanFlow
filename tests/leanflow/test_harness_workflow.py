@@ -1,58 +1,70 @@
-"""Keep native workflow publication tied to verified, unchanged source snapshots."""
+"""Pin formalization controller lifecycle, source preservation and native isolation."""
 
-import hashlib
 import json
 
 import pytest
 
 from agent.runtime.harness import HarnessResult
-from leanflow_cli.native import harness_artifacts as artifacts
+from agent.runtime.harness.events import usage_delta
+from agent.runtime.harness.models import NativeLaunchFailure
+from core.campaign_limits import AccountingError, CampaignLimits
+from leanflow_cli.formalization.preparation_campaign import (
+    admit_author,
+    campaign_budget,
+    campaign_lock,
+    select_campaign,
+)
+from leanflow_cli.formalization.records import (
+    create_document,
+    current_selection_token,
+    load_document,
+)
 from leanflow_cli.native import harness_workflow as runner
+from leanflow_cli.native.harness_artifacts import source_files
 from leanflow_cli.runtime.project_operations import ProjectBusyError, project_setup
 
 
 @pytest.fixture(autouse=True)
-def local_dependency_fingerprints(monkeypatch):
+def local_dependency_fingerprints(monkeypatch, tmp_path):
     """Keep unit-test generations independent of the host's installed toolchain."""
     monkeypatch.setattr(
         "leanflow_cli.workflows.prover.lean_environment._toolchain_roots", lambda project: []
     )
     monkeypatch.delenv("LEAN_PATH", raising=False)
+    paper = tmp_path / "paper.tex"
+    paper.write_text(r"\begin{theorem}True holds.\end{theorem}")
+    record = create_document(tmp_path, paper)
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("LEANFLOW_FORMALIZATION_DOCUMENT_ID", record["document_id"])
+    monkeypatch.setenv("LEANFLOW_FORMALIZATION_REVISION", record["revision_id"])
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.intake.preflight_dependencies", lambda *args: {}
+    )
+    monkeypatch.setattr(
+        "leanflow_cli.formalization.proposal.check_proposal",
+        lambda **kwargs: {"accepted": False, "error": "Invalid source translation"},
+    )
 
 
-def test_publication_rejects_canonical_concurrent_changes(tmp_path):
-    source = tmp_path / "Main.lean"
-    source.write_text("theorem p : True := by trivial\n")
-    baseline = artifacts.source_files(tmp_path)
-    proposal = "theorem p : True := by exact True.intro\n"
-    receipt = {
-        "accepted": True,
-        "environment_generation": artifacts.lean_environment_generation(tmp_path),
-        "files": {"Main.lean": proposal},
-        "sha256": {"Main.lean": hashlib.sha256(proposal.encode()).hexdigest()},
+def _environment(root, **overrides):
+    """Select the actual frozen fixture without rerunning intake during resume."""
+    import os
+
+    return {
+        "LEANFLOW_PROJECT_ROOT": str(root),
+        **{
+            name: os.environ[name]
+            for name in (
+                "LEANFLOW_NATIVE_WORKFLOW_KIND",
+                "LEANFLOW_FORMALIZATION_DOCUMENT_ID",
+                "LEANFLOW_FORMALIZATION_REVISION",
+            )
+        },
+        **overrides,
     }
-    source.write_text("-- user edit\n" + source.read_text())
-    with pytest.raises(ValueError, match="changed"):
-        artifacts.promote(tmp_path, baseline, receipt)
-    assert source.read_text().startswith("-- user edit")
 
 
-def test_publication_uses_verified_bytes_and_rejects_changed_receipt(tmp_path):
-    source = tmp_path / "Main.lean"
-    source.write_text("theorem p : True := by trivial\n")
-    baseline = artifacts.source_files(tmp_path)
-    receipt = {
-        "accepted": True,
-        "environment_generation": artifacts.lean_environment_generation(tmp_path),
-        "files": {"Main.lean": "malicious"},
-        "sha256": {"Main.lean": "bad"},
-    }
-    with pytest.raises(ValueError, match="digest"):
-        artifacts.promote(tmp_path, baseline, receipt)
-    assert source.read_bytes() == baseline["Main.lean"]
-
-
-def test_review_uses_selected_native_runtime_with_unlimited_defaults(tmp_path, monkeypatch):
+def test_formalization_uses_selected_native_runtime_with_unlimited_defaults(tmp_path, monkeypatch):
     (tmp_path / "Main.lean").write_text("theorem p : True := by trivial\n")
     seen = []
 
@@ -60,7 +72,10 @@ def test_review_uses_selected_native_runtime_with_unlimited_defaults(tmp_path, m
         seen.append(request)
         request.on_started()
         return HarnessResult(
-            status="completed", final_response="Reviewed.", session_id="native-session"
+            status="completed",
+            final_response='{"status":"blocked","reason":"Missing source theorem"}',
+            session_id="native-session",
+            cleanup_verified=True,
         )
 
     monkeypatch.setattr(runner, "run_harness", invoke)
@@ -68,16 +83,95 @@ def test_review_uses_selected_native_runtime_with_unlimited_defaults(tmp_path, m
     monkeypatch.setattr("leanflow_cli.native.harness_context.load_skill", lambda *a, **kw: None)
     result = runner.run_workflow(
         {
+            **_environment(tmp_path),
             "LEANFLOW_PROJECT_ROOT": str(tmp_path),
-            "LEANFLOW_NATIVE_WORKFLOW_KIND": "review",
+            "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
             "LEANFLOW_NATIVE_PROVIDER": "claude",
         }
     )
-    assert result["status"] == "completed"
+    assert result["status"] == "blocked"
     assert len(seen) == 1 and seen[0].backend == "claude"
     assert not seen[0].restricted_tools
     assert seen[0].deadline is None and seen[0].model == seen[0].effort == ""
     assert seen[0].cwd != tmp_path
+
+
+def test_preflight_only_retry_admits_first_author_without_resetting_usage(tmp_path, monkeypatch):
+    """Resume a bound failed preflight without inventing an earlier author checkpoint."""
+    record = load_document(tmp_path, _environment(tmp_path)["LEANFLOW_FORMALIZATION_DOCUMENT_ID"])
+    run_id = "preflight-only"
+    directory = tmp_path / ".leanflow/native-workflows" / run_id
+    with campaign_lock(tmp_path, run_id):
+        binding = select_campaign(
+            tmp_path,
+            record,
+            run_id=run_id,
+            limits={"agent_calls": 3},
+            backend="codex",
+            selection_token=current_selection_token(tmp_path, record["document_id"]),
+            source_draft_only=False,
+            effective_draft=False,
+            resume=False,
+        )
+        budget_path = campaign_budget(tmp_path, binding)
+        budget = CampaignLimits(budget_path, binding["limits"])
+        call = budget.reserve()
+        budget.started_call(call)
+        budget.finish(call, {"input_tokens": 11, "output_tokens": 7}, started=True)
+    assert not (directory / "state.json").exists()
+    seen = []
+
+    def invoke(request, on_event=None):
+        seen.append(request)
+        request.on_started()
+        return HarnessResult(
+            status="completed",
+            final_response='{"status":"blocked","reason":"Fixture"}',
+            session_id="first-author",
+            usage={"input_tokens": 2, "output_tokens": 1},
+            cleanup_verified=True,
+        )
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "leanflow_cli.native.harness_context.load_skill", lambda *args, **kwargs: None
+    )
+    result = runner.run_workflow(
+        {**_environment(tmp_path), "LEANFLOW_NATIVE_RESUME_RUN_ID": run_id}
+    )
+    assert result["status"] == "blocked" and len(seen) == 1
+    assert not seen[0].session_id
+    state = json.loads((directory / "state.json").read_text())
+    assert state["campaign_binding_id"] == binding["binding_id"]
+    ledger = json.loads(budget_path.read_text())
+    assert len(ledger["invocations"]) == 2
+    assert ledger["invocations"][call]["usage"] == {"input_tokens": 11, "output_tokens": 7}
+    assert not (directory / "limits.json").exists()
+
+
+def test_missing_genuine_author_state_cannot_become_first_author_retry(tmp_path, monkeypatch):
+    record = load_document(tmp_path, _environment(tmp_path)["LEANFLOW_FORMALIZATION_DOCUMENT_ID"])
+    directory = tmp_path / ".leanflow/native-workflows/lost-author"
+    with campaign_lock(tmp_path, "lost-author"):
+        binding = select_campaign(
+            tmp_path,
+            record,
+            run_id="lost-author",
+            limits={},
+            backend="codex",
+            selection_token=current_selection_token(tmp_path, record["document_id"]),
+            source_draft_only=False,
+            effective_draft=False,
+            resume=False,
+        )
+        admit_author(tmp_path, binding, resume=False, state_path=directory / "state.json")
+    monkeypatch.setattr(runner, "run_harness", lambda *args, **kwargs: pytest.fail("New author"))
+    with pytest.raises(ValueError, match="author state is missing"):
+        runner.run_workflow(
+            {**_environment(tmp_path), "LEANFLOW_NATIVE_RESUME_RUN_ID": "lost-author"}
+        )
+    assert not (directory / "state.json").exists()
 
 
 def test_setup_ownership_rejects_native_workflow_before_project_writes(tmp_path, monkeypatch):
@@ -88,7 +182,7 @@ def test_setup_ownership_rejects_native_workflow_before_project_writes(tmp_path,
     )
     with project_setup(root):
         with pytest.raises(ProjectBusyError, match="setup"):
-            runner.run_workflow({"LEANFLOW_PROJECT_ROOT": str(root)})
+            runner.run_workflow({**_environment(tmp_path), "LEANFLOW_PROJECT_ROOT": str(root)})
     assert not (root / ".leanflow").exists()
 
 
@@ -103,7 +197,9 @@ def test_native_workflow_excludes_setup_for_entire_controller(tmp_path, monkeypa
         return {"status": "completed"}
 
     monkeypatch.setattr(runner, "_run_controller", controller)
-    assert runner.run_workflow({"LEANFLOW_PROJECT_ROOT": str(root)}) == {"status": "completed"}
+    assert runner.run_workflow({**_environment(tmp_path), "LEANFLOW_PROJECT_ROOT": str(root)}) == {
+        "status": "completed"
+    }
     with project_setup(root):
         pass
 
@@ -118,128 +214,24 @@ def test_failed_proposal_never_touches_canonical_source_and_obeys_global_calls(
     def invoke(request, on_event=None):
         request.on_started()
         (request.cwd / "Main.lean").write_text("theorem p : True := by sorry\n")
-        return HarnessResult(status="completed", final_response="done", session_id="s")
+        return HarnessResult(
+            status="completed", final_response="done", session_id="s", cleanup_verified=True
+        )
 
     monkeypatch.setattr(runner, "run_harness", invoke)
     monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
     monkeypatch.setattr("leanflow_cli.native.harness_context.load_skill", lambda *a, **kw: None)
     result = runner.run_workflow(
         {
+            **_environment(tmp_path),
             "LEANFLOW_PROJECT_ROOT": str(tmp_path),
-            "LEANFLOW_NATIVE_WORKFLOW_KIND": "refactor",
+            "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
             "LEANFLOW_NATIVE_PROVIDER": "codex",
             "LEANFLOW_PROVER_AGENT_CALLS": "1",
         }
     )
     assert result["status"] == "limit_reached"
     assert source.read_bytes() == before
-
-
-@pytest.mark.parametrize("dependency_changes", [False, True])
-def test_verification_never_imports_agent_dependency_artifacts(
-    tmp_path, monkeypatch, dependency_changes
-):
-    root = tmp_path / "canonical"
-    root.mkdir()
-    (root / "Main.lean").write_text("theorem p : True := by sorry\n")
-    dependency = root / ".lake" / "packages" / "dep" / "Lib.olean"
-    dependency.parent.mkdir(parents=True)
-    dependency.write_bytes(b"canonical dependency")
-    baseline = artifacts.source_files(root)
-    snapshot = artifacts.create_snapshot(root, tmp_path / "agent")
-    (snapshot / "Main.lean").write_text("theorem p : True := by trivial\n")
-    (snapshot / ".lake/packages/dep/Lib.olean").write_bytes(b"agent forged dependency")
-    observed = []
-
-    def build(**kwargs):
-        observed.append((kwargs["project_root"] / ".lake/packages/dep/Lib.olean").read_bytes())
-        assert kwargs["timeout_s"] is None
-        if dependency_changes:
-            dependency.write_bytes(b"externally updated dependency")
-        return {"success": True}
-
-    monkeypatch.setattr("leanflow_cli.workflows.prover.check_process.isolated_command", build)
-    monkeypatch.setattr(
-        artifacts,
-        "compiled_type_profiles",
-        lambda **kwargs: {
-            "accepted": True,
-            "profiles": {"p": {"sha256": "same statement", "axioms": []}},
-        },
-    )
-    result = artifacts.verify_proposal(
-        root=root,
-        snapshot=snapshot,
-        baseline=baseline,
-        directory=tmp_path / "checks",
-        workflow="refactor",
-        active_file="Main.lean",
-        allowed_axioms=(),
-        deadline=None,
-    )
-    assert result["accepted"] is not dependency_changes, result
-    if dependency_changes:
-        assert "dependencies changed" in result["error"]
-    assert observed == [b"canonical dependency"]
-    assert (root / "Main.lean").read_bytes() == baseline["Main.lean"]
-
-
-def test_changed_dependency_invalidates_an_accepted_publication_receipt(tmp_path):
-    source = tmp_path / "Main.lean"
-    source.write_text("theorem p : True := by sorry\n")
-    dependency = tmp_path / ".lake/packages/dep/Lib.olean"
-    dependency.parent.mkdir(parents=True)
-    dependency.write_bytes(b"accepted library")
-    baseline = artifacts.source_files(tmp_path)
-    proposed = "theorem p : True := by trivial\n"
-    receipt = {
-        "accepted": True,
-        "environment_generation": artifacts.lean_environment_generation(tmp_path),
-        "files": {"Main.lean": proposed},
-        "sha256": {"Main.lean": hashlib.sha256(proposed.encode()).hexdigest()},
-    }
-    dependency.write_bytes(b"modified library")
-    with pytest.raises(ValueError, match="dependencies changed"):
-        artifacts.promote(tmp_path, baseline, receipt)
-    assert source.read_bytes() == baseline["Main.lean"]
-
-
-def test_original_definition_value_cannot_change_behind_equal_statement_type(tmp_path):
-    root = tmp_path / "root"
-    root.mkdir()
-    source = "def limit : Nat := 5\ntheorem p : limit = limit := by rfl\n"
-    (root / "Main.lean").write_text(source)
-    baseline = artifacts.source_files(root)
-    snapshot = artifacts.create_snapshot(root, tmp_path / "agent")
-    (snapshot / "Main.lean").write_text(source.replace(":= 5", ":= 6"))
-    result = artifacts.verify_proposal(
-        root=root,
-        snapshot=snapshot,
-        baseline=baseline,
-        directory=tmp_path / "checks",
-        workflow="refactor",
-        active_file="Main.lean",
-        allowed_axioms=(),
-        deadline=None,
-    )
-    assert not result["accepted"] and "non-proof definition" in result["error"]
-
-
-@pytest.mark.parametrize("deadline,cancelled", [(0.0, None), (None, lambda: True)])
-def test_global_stop_prevents_otherwise_accepted_promotion(tmp_path, deadline, cancelled):
-    source = tmp_path / "Main.lean"
-    source.write_text("theorem p : True := by sorry\n")
-    baseline = artifacts.source_files(tmp_path)
-    text = "theorem p : True := by trivial\n"
-    receipt = {
-        "accepted": True,
-        "environment_generation": artifacts.lean_environment_generation(tmp_path),
-        "files": {"Main.lean": text},
-        "sha256": {"Main.lean": hashlib.sha256(text.encode()).hexdigest()},
-    }
-    with pytest.raises(InterruptedError):
-        artifacts.promote(tmp_path, baseline, receipt, deadline=deadline, cancelled=cancelled)
-    assert source.read_bytes() == baseline["Main.lean"]
 
 
 def test_honest_blocker_ends_unlimited_workflow(tmp_path, monkeypatch):
@@ -252,43 +244,20 @@ def test_honest_blocker_ends_unlimited_workflow(tmp_path, monkeypatch):
         return HarnessResult(
             status="completed",
             final_response='{"status":"blocked","reason":"Missing source theorem"}',
+            cleanup_verified=True,
         )
 
     monkeypatch.setattr(runner, "run_harness", invoke)
     monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
     result = runner.run_workflow(
-        {"LEANFLOW_PROJECT_ROOT": str(tmp_path), "LEANFLOW_NATIVE_WORKFLOW_KIND": "draft"}
+        {
+            **_environment(tmp_path),
+            "LEANFLOW_PROJECT_ROOT": str(tmp_path),
+            "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
+        }
     )
     assert result["status"] == "blocked"
     assert result["error"] == "Missing source theorem" and len(calls) == 1
-
-
-def test_publication_conflict_never_rolls_back_a_concurrent_user_edit(tmp_path, monkeypatch):
-    first, second = tmp_path / "A.lean", tmp_path / "B.lean"
-    first.write_text("original A")
-    second.write_text("original B")
-    baseline = artifacts.source_files(tmp_path)
-    proposed = {"A.lean": "accepted A", "B.lean": "accepted B"}
-    receipt = {
-        "accepted": True,
-        "environment_generation": artifacts.lean_environment_generation(tmp_path),
-        "files": proposed,
-        "sha256": {
-            name: hashlib.sha256(text.encode()).hexdigest() for name, text in proposed.items()
-        },
-    }
-    replace = artifacts.os.replace
-
-    def concurrent_replace(before, after):
-        replace(before, after)
-        if after == first:
-            first.write_text("user A")
-            second.write_text("user B")
-
-    monkeypatch.setattr(artifacts.os, "replace", concurrent_replace)
-    with pytest.raises(ValueError, match="changed before publication"):
-        artifacts.promote(tmp_path, baseline, receipt)
-    assert first.read_text() == "user A" and second.read_text() == "user B"
 
 
 def test_native_session_is_persisted_before_the_invocation_returns(tmp_path, monkeypatch):
@@ -300,12 +269,20 @@ def test_native_session_is_persisted_before_the_invocation_returns(tmp_path, mon
         path = next((tmp_path / ".leanflow/native-workflows").glob("*/state.json"))
         assert json.loads(path.read_text())["session_id"] == "recoverable-session"
         return HarnessResult(
-            status="completed", final_response="Reviewed", session_id="recoverable-session"
+            status="completed",
+            final_response='{"status":"blocked","reason":"Missing source theorem"}',
+            session_id="recoverable-session",
+            cleanup_verified=True,
         )
 
     monkeypatch.setattr(runner, "run_harness", invoke)
     monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
-    assert runner.run_workflow({"LEANFLOW_PROJECT_ROOT": str(tmp_path)})["status"] == "completed"
+    assert (
+        runner.run_workflow({**_environment(tmp_path), "LEANFLOW_PROJECT_ROOT": str(tmp_path)})[
+            "status"
+        ]
+        == "blocked"
+    )
 
 
 @pytest.mark.parametrize(
@@ -333,7 +310,11 @@ def test_restrictions_route_native_workflows_through_local_tools(
     def invoke(request, on_event=None):
         seen.append(request)
         request.on_started()
-        return HarnessResult(status="completed", final_response="Reviewed.")
+        return HarnessResult(
+            status="completed",
+            final_response='{"status":"blocked","reason":"Missing source theorem"}',
+            cleanup_verified=True,
+        )
 
     monkeypatch.setattr(runner, "run_harness", invoke)
     monkeypatch.setattr(runner, "SessionTools", tools)
@@ -345,13 +326,14 @@ def test_restrictions_route_native_workflows_through_local_tools(
     )
     result = runner.run_workflow(
         {
+            **_environment(tmp_path),
             "LEANFLOW_PROJECT_ROOT": str(tmp_path),
-            "LEANFLOW_NATIVE_WORKFLOW_KIND": "review",
+            "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
             "LEANFLOW_NATIVE_PROVIDER": backend,
             setting: value,
         }
     )
-    assert result["status"] == "completed"
+    assert result["status"] == "blocked"
     assert result["research_policy"] == "restricted-v1"
     assert len(seen) == 1 and seen[0].backend == backend
     assert seen[0].restricted_tools
@@ -369,7 +351,30 @@ def test_clean_room_rejects_online_or_unclassified_checkpoints_before_launch(
 ):
     directory = tmp_path / ".leanflow/native-workflows/old-run"
     directory.mkdir(parents=True)
-    state = {"version": 2, "backend": "codex", "workflow": "review", "baseline": {}}
+    record = load_document(tmp_path, _environment(tmp_path)["LEANFLOW_FORMALIZATION_DOCUMENT_ID"])
+    with campaign_lock(tmp_path, "old-run"):
+        binding = select_campaign(
+            tmp_path,
+            record,
+            run_id="old-run",
+            limits={},
+            backend="codex",
+            selection_token=current_selection_token(tmp_path, record["document_id"]),
+            source_draft_only=False,
+            effective_draft=False,
+            resume=False,
+            budget_path=directory / "limits.json",
+        )
+        admit_author(tmp_path, binding, resume=False, state_path=directory / "state.json")
+    state = {
+        "version": 2,
+        "run_id": "old-run",
+        "campaign_binding_id": binding["binding_id"],
+        "backend": "codex",
+        "workflow": "formalize",
+        "baseline": {name: data.hex() for name, data in source_files(tmp_path).items()},
+        "formalization_selection_token": binding["selection_token"],
+    }
     if saved_policy is not None:
         state["research_policy"] = saved_policy
     path = directory / "state.json"
@@ -379,6 +384,7 @@ def test_clean_room_rejects_online_or_unclassified_checkpoints_before_launch(
     with pytest.raises(ValueError, match="earlier online or unclassified context"):
         runner.run_workflow(
             {
+                **_environment(tmp_path),
                 "LEANFLOW_PROJECT_ROOT": str(tmp_path),
                 "LEANFLOW_NATIVE_RESUME_RUN_ID": "old-run",
                 "LEANFLOW_DISABLE_SOLUTION_RESEARCH": "1",
@@ -397,7 +403,11 @@ def test_clean_room_checkpoint_resume_preserves_local_tools(
     def invoke(request, on_event=None):
         calls.append(request)
         request.on_started()
-        return HarnessResult(status="completed", final_response="Reviewed.")
+        return HarnessResult(
+            status="completed",
+            final_response='{"status":"blocked","reason":"Missing source theorem"}',
+            cleanup_verified=True,
+        )
 
     monkeypatch.setattr(runner, "run_harness", invoke)
     monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
@@ -405,14 +415,17 @@ def test_clean_room_checkpoint_resume_preserves_local_tools(
     environment = {
         "LEANFLOW_PROJECT_ROOT": str(tmp_path),
         "LEANFLOW_WORKFLOW_RUN_ID": "clean-run",
+        **_environment(tmp_path),
         "LEANFLOW_DISABLE_SOLUTION_RESEARCH": "1",
     }
     first = runner.run_workflow(environment)
-    assert first["status"] == "completed"
+    assert first["status"] == "blocked"
     if not repeat_restriction:
         environment.pop("LEANFLOW_DISABLE_SOLUTION_RESEARCH")
-    resumed = runner.run_workflow({**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "clean-run"})
-    assert resumed["status"] == "completed"
+    resumed = runner.run_workflow(
+        {**_environment(tmp_path), **environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "clean-run"}
+    )
+    assert resumed["status"] == "blocked"
     assert resumed["research_policy"] == "restricted-v1"
     assert len(calls) == 2 and all(call.restricted_tools for call in calls)
     limits = json.loads((tmp_path / ".leanflow/native-workflows/clean-run/limits.json").read_text())
@@ -429,13 +442,14 @@ def test_concurrent_resume_cannot_double_spend_one_campaign(tmp_path):
         with pytest.raises(ValueError, match="active controller"):
             runner.run_workflow(
                 {
+                    **_environment(tmp_path),
                     "LEANFLOW_PROJECT_ROOT": str(tmp_path),
                     "LEANFLOW_NATIVE_RESUME_RUN_ID": "resume-me",
                 }
             )
 
 
-def test_generic_prompt_keeps_nested_snapshot_paths_exact(tmp_path):
+def test_formalization_prompt_keeps_nested_snapshot_paths_exact(tmp_path):
     from leanflow_cli.native.harness_context import prepare_context
 
     snapshot = tmp_path / ".leanflow/native-workflows/run/project"
@@ -445,11 +459,12 @@ def test_generic_prompt_keeps_nested_snapshot_paths_exact(tmp_path):
     extracted.write_text("A mathematical statement.")
     context_file = tmp_path / ".leanflow/context.md"
     context_file.write_text(f"Read {extracted}")
-    context, prompt, _ = prepare_context(
+    context, prompt = prepare_context(
         root=tmp_path,
         snapshot=snapshot,
         scratch=scratch,
         environment={
+            "LEANFLOW_NATIVE_WORKFLOW_KIND": "formalize",
             "LEANFLOW_FORMALIZATION_CONTEXT": str(context_file),
             "LEANFLOW_FORMALIZATION_EXTRACTED_TEXT": str(extracted),
         },
@@ -489,16 +504,401 @@ def test_terminal_status_failure_restores_process_signal_handlers(tmp_path, monk
 
     def invoke(request, on_event=None):
         request.on_started()
-        return HarnessResult(status="completed", final_response="Reviewed")
+        return HarnessResult(
+            status="completed",
+            final_response='{"status":"blocked","reason":"Missing source theorem"}',
+            cleanup_verified=True,
+        )
 
     monkeypatch.setattr(runner.signal, "signal", set_handler)
     monkeypatch.setattr(runner, "NativeObserver", FailingObserver)
     monkeypatch.setattr(runner, "run_harness", invoke)
     monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "review")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "formalize")
     monkeypatch.delenv("LEANFLOW_NATIVE_RESUME_RUN_ID", raising=False)
     monkeypatch.delenv("LEANFLOW_WORKFLOW_RUN_ID", raising=False)
     with pytest.raises(OSError, match="Status storage unavailable"):
         runner.run_workflow()
     assert handlers == original_handlers
+
+
+@pytest.mark.parametrize("kind", ["", "prove", "draft", "review", "refactor", "golf", "unknown"])
+def test_retired_native_workflows_are_rejected_before_any_controller_effect(
+    tmp_path, monkeypatch, kind
+):
+    root = tmp_path / "untouched"
+    root.mkdir()
+    monkeypatch.setattr(
+        runner, "project_activity", lambda *args: pytest.fail("Project authority was acquired")
+    )
+    monkeypatch.setattr(
+        runner, "run_harness", lambda *args, **kwargs: pytest.fail("Native agent started")
+    )
+    with pytest.raises(ValueError, match="accepts only formalize"):
+        runner.run_workflow(
+            {"LEANFLOW_PROJECT_ROOT": str(root), "LEANFLOW_NATIVE_WORKFLOW_KIND": kind}
+        )
+    assert list(root.iterdir()) == []
+
+
+def test_formalization_source_capture_retains_math_and_configuration_only(tmp_path):
+    root = tmp_path / "canonical"
+    root.mkdir()
+    expected = {
+        "Main.lean": b"import Init\n",
+        "lakefile.toml": b'name = "example"\n',
+        "lean-toolchain": b"leanprover/lean4:v4.33.1",
+        "lake-manifest.json": b"{}",
+        "Blueprint.md": b"# Source notes\n",
+    }
+    for name, data in expected.items():
+        (root / name).write_bytes(data)
+    for skipped in (".lake", ".git", ".leanflow", ".leanflow-job", ".venv", "node_modules"):
+        (root / skipped).mkdir()
+        (root / skipped / "Unowned.lean").write_text("axiom forged : False")
+    (root / "paper.tex").write_text("Frozen separately as source evidence.")
+    assert source_files(root) == expected
+
+
+def test_formalization_source_capture_refuses_a_source_alias(tmp_path):
+    original = tmp_path / "original.lean"
+    original.write_text("theorem p : True := by trivial")
+    root = tmp_path / "canonical"
+    root.mkdir()
+    (root / "Main.lean").symlink_to(original)
+    with pytest.raises(ValueError, match="file symlinks"):
+        source_files(root)
+    assert original.read_text() == "theorem p : True := by trivial"
+
+
+def test_hard_kill_during_independent_check_does_not_leave_a_false_native_live_marker(
+    tmp_path, monkeypatch
+):
+    """Persist verified author/tool closure before a crash in later controller-only checks."""
+    import multiprocessing
+    import os
+
+    (tmp_path / "Main.lean").write_text("theorem p : True := by trivial\n")
+    (tmp_path / "lake-manifest.json").write_text('{"packages":[]}')
+    (tmp_path / ".lake/packages").mkdir(parents=True)
+    environment = _environment(tmp_path, LEANFLOW_WORKFLOW_RUN_ID="post-author-crash")
+    state_path = tmp_path / ".leanflow/native-workflows/post-author-crash/state.json"
+    observed = tmp_path / "check-entry.json"
+
+    def invoke(request, on_event=None):
+        assert json.loads(state_path.read_text())["native_cleanup_unverified"] is True
+        request.on_started()
+        return HarnessResult("completed", "{}", "verified-closed", cleanup_verified=True)
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
+    monkeypatch.setattr("leanflow_cli.native.harness_context.load_skill", lambda *a, **kw: None)
+
+    def killed_controller():
+        def check_then_kill(**kwargs):
+            observed.write_bytes(state_path.read_bytes())
+            os._exit(91)
+
+        from leanflow_cli.formalization import proposal
+
+        proposal.check_proposal = check_then_kill
+        runner.run_workflow(environment)
+
+    child = multiprocessing.get_context("fork").Process(target=killed_controller)
+    child.start()
+    child.join(10)
+    if child.is_alive():
+        child.kill()
+        child.join(2)
+        pytest.fail("Controller failed to reach bounded post-author check")
+    assert child.exitcode == 91
+    checkpoint = json.loads(observed.read_text())
+    assert checkpoint["native_process_cleanup_verified"] is True
+    assert checkpoint["native_cleanup_unverified"] is False
+
+    # Native closure and elapsed-time accounting are independent: the actor is
+    # closed, but this hard kill did not let its checkpoint worker close cleanly.
+    ledger = state_path.with_name("limits.json")
+    before = ledger.read_bytes()
+    assert json.loads(before)["checkpoint_worker_active"] is True
+    monkeypatch.setattr(
+        runner, "run_harness", lambda *a, **k: pytest.fail("Uncertain accounting resumed")
+    )
+    with pytest.raises(AccountingError, match="accounting is unresolved"):
+        runner.run_workflow({**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "post-author-crash"})
+    assert ledger.read_bytes() == before
+    assert not json.loads(state_path.read_text())["native_cleanup_unverified"]
+
+
+def test_author_checkpoint_failure_cancels_silent_actor_and_retains_accounting(
+    tmp_path, monkeypatch
+):
+    """Drive the real controller through a checkpoint failure after actor admission."""
+    import threading
+    import time
+
+    from leanflow_cli.native.harness_heartbeat import AuthorHeartbeat
+
+    entered, checkpoint_failed = threading.Event(), threading.Event()
+    actor_cancellation = []
+    original_persist = CampaignLimits.persist
+
+    def persist(budget):
+        if threading.current_thread() is not threading.main_thread() and entered.is_set():
+            checkpoint_failed.set()
+            raise OSError("Fixture disk quota exhausted")
+        return original_persist(budget)
+
+    monkeypatch.setattr(CampaignLimits, "persist", persist)
+    monkeypatch.setattr(
+        runner,
+        "AuthorHeartbeat",
+        lambda *a, **k: AuthorHeartbeat(*a, **k, interval_s=0.02),
+    )
+    environment = _environment(tmp_path, LEANFLOW_WORKFLOW_RUN_ID="checkpoint-failure")
+    directory = tmp_path / ".leanflow/native-workflows/checkpoint-failure"
+
+    def invoke(request, on_event=None):
+        request.on_started()
+        entered.set()
+        deadline = time.monotonic() + 3
+        while not request.cancelled() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        actor_cancellation.append(request.cancelled())
+        assert request.cancelled() and checkpoint_failed.is_set()
+        durable = json.loads((directory / "limits.json").read_text())
+        assert durable["checkpoint_worker_active"] is True
+        assert len(durable["invocations"]) == 1
+        # Even a reopen before the main thread's final persist cannot silently
+        # restore the missing interval, including a wall-time-only campaign.
+        with pytest.raises(AccountingError, match="accounting is unresolved"):
+            CampaignLimits(directory / "limits.json", {"wall_time_s": 60})
+        return HarnessResult("cancelled", "", cleanup_verified=True)
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
+    monkeypatch.setattr("leanflow_cli.native.harness_context.load_skill", lambda *a, **kw: None)
+    for target in (
+        "leanflow_cli.formalization.proposal.check_proposal",
+        "leanflow_cli.formalization.review.review_revision",
+        "leanflow_cli.formalization.publish.publish_checked",
+    ):
+        monkeypatch.setattr(
+            target, lambda *a, **k: pytest.fail("Authority after checkpoint failure")
+        )
+    started = time.monotonic()
+    result = runner.run_workflow({**environment, "LEANFLOW_PROVER_WALL_TIME_S": "60"})
+    assert time.monotonic() - started < 5
+    assert actor_cancellation == [True]
+    assert result["status"] == "accounting_error" and result["accounting_unresolved"]
+    durable = json.loads((directory / "limits.json").read_text())
+    assert durable["checkpoint_worker_active"] and durable["accounting_error"]
+    assert len(durable["invocations"]) == 1
+    assert next(iter(durable["invocations"].values()))["status"] == "finished"
+    before = (directory / "limits.json").read_bytes()
+    with pytest.raises(AccountingError, match="accounting is unresolved"):
+        CampaignLimits(directory / "limits.json", {"wall_time_s": 60})
+    assert (directory / "limits.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("held", ["status", "activity"])
+def test_real_author_controller_stop_is_bounded_under_suspended_display_writer(
+    tmp_path, monkeypatch, held
+):
+    """Close the author/controller while another process retains a display lock."""
+    import time
+
+    from leanflow_cli.native.harness_heartbeat import AuthorHeartbeat
+    from leanflow_cli.workflows import workflow_state
+    from tests.leanflow.test_formalization_preflight_progress import _held_status_lock
+
+    created = []
+
+    def heartbeat(*args, **kwargs):
+        value = AuthorHeartbeat(*args, **kwargs, interval_s=0.02)
+        created.append(value)
+        return value
+
+    monkeypatch.setattr(runner, "AuthorHeartbeat", heartbeat)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
+    monkeypatch.setattr("leanflow_cli.native.harness_context.load_skill", lambda *a, **kw: None)
+    for name, value in _environment(
+        tmp_path, LEANFLOW_WORKFLOW_RUN_ID="display-contention"
+    ).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_PROCESS_TOKEN", "author-controller-fixture")
+    stopped_at = []
+    directory = tmp_path / ".leanflow/native-workflows/display-contention"
+    path = (
+        workflow_state.workflow_live_status_path()
+        if held == "status"
+        else workflow_state.workflow_run_activity_path("display-contention")
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # This is an unrelated writer, so establish it before the controller's
+    # process monitor captures its preexisting exclusions.
+    holder = _held_status_lock(path, sidecar=held == "status")
+    holder_process = holder.__enter__()
+
+    def invoke(request, on_event=None):
+        request.on_started()
+        deadline = time.monotonic() + 3
+        before = json.loads((directory / "limits.json").read_text())["elapsed_s"]
+        while json.loads((directory / "limits.json").read_text())["elapsed_s"] < before + 0.08:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        stopped_at.append(time.monotonic())
+        created[0].cancelled.set()
+        assert request.cancelled()
+        return HarnessResult("cancelled", "", cleanup_verified=True)
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    try:
+        result = runner.run_workflow()
+        assert result["status"] == "cancelled", result.get("error")
+        assert time.monotonic() - stopped_at[0] < 1
+        assert created[0]._thread is not None and not created[0]._thread.is_alive()
+        durable = json.loads((directory / "limits.json").read_text())
+        assert not durable.get("checkpoint_worker_active")
+        assert len(durable["invocations"]) == 1
+        assert next(iter(durable["invocations"].values()))["status"] == "finished"
+        assert holder_process.poll() is None
+    finally:
+        holder.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("verified_no_launch", [False, True])
+def test_prelaunch_failure_only_releases_resume_guard_with_explicit_closure_evidence(
+    tmp_path, monkeypatch, verified_no_launch
+):
+    """Distinguish proven no-launch failures from exceptions that may hide live helpers."""
+    from agent.runtime.harness.models import BackendError, NativeLaunchFailure
+
+    (tmp_path / "Main.lean").write_text("theorem p : True := by trivial\n")
+    (tmp_path / "lake-manifest.json").write_text('{"packages":[]}')
+    (tmp_path / ".lake/packages").mkdir(parents=True)
+    environment = _environment(tmp_path, LEANFLOW_WORKFLOW_RUN_ID="prelaunch-failure")
+    directory = tmp_path / ".leanflow/native-workflows/prelaunch-failure"
+    calls = []
+
+    def invoke(request, on_event=None):
+        calls.append(request)
+        assert json.loads((directory / "state.json").read_text())["native_cleanup_unverified"]
+        (request.cwd / "retained.txt").write_text("Private invocation input")
+        if len(calls) == 1:
+            if verified_no_launch:
+                raise NativeLaunchFailure("Executable failed before author launch")
+            raise BackendError("Preflight helper closure could not be established")
+        request.on_started()
+        return HarnessResult(
+            "completed",
+            '{"status":"blocked","reason":"Source repair needed"}',
+            cleanup_verified=True,
+        )
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *a, **kw: object())
+    monkeypatch.setattr("leanflow_cli.native.harness_context.load_skill", lambda *a, **kw: None)
+    result = runner.run_workflow(environment)
+    assert result["native_cleanup_unverified"] is not verified_no_launch
+    assert result["status"] == ("startup_error" if verified_no_launch else "error")
+    invocations = json.loads((directory / "limits.json").read_text())["invocations"]
+    assert len(invocations) == 1
+    assert next(iter(invocations.values()))["status"] == "not_started"
+    resume = {**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "prelaunch-failure"}
+    if verified_no_launch:
+        retried = runner.run_workflow(resume)
+        assert retried["status"] == "blocked" and len(calls) == 2
+    else:
+        with pytest.raises(ValueError, match="closure is unverified"):
+            runner.run_workflow(resume)
+        assert len(calls) == 1
+    assert (directory / "project/retained.txt").read_text() == "Private invocation input"
+
+
+@pytest.mark.parametrize("failure", ["exception", "exception_with_session", "returned"])
+def test_verified_continuation_launch_failure_preserves_native_identity_and_capped_usage(
+    tmp_path, monkeypatch, failure
+):
+    """Keep a known cumulative baseline through a no-launch attempt and charge only paid deltas."""
+    (tmp_path / "Main.lean").write_text("theorem p : True := by trivial\n")
+    source_before = source_files(tmp_path)
+    paper_before = (tmp_path / "paper.tex").read_bytes()
+    environment = _environment(
+        tmp_path,
+        LEANFLOW_WORKFLOW_RUN_ID="continuation-launch-failure",
+        LEANFLOW_NATIVE_PROVIDER="codex",
+        LEANFLOW_PROVER_AGENT_CALLS="3",
+        LEANFLOW_PROVER_TOKENS="20",
+    )
+    directory = tmp_path / ".leanflow/native-workflows/continuation-launch-failure"
+    calls = []
+    first_total = {"input_tokens": 2, "output_tokens": 1}
+    final_total = {"input_tokens": 5, "output_tokens": 3}
+
+    def invoke(request, on_event=None):
+        calls.append(request)
+        assert request.session_id == ("" if len(calls) == 1 else "known-native-session")
+        assert request.previous_usage == (None if len(calls) == 1 else first_total)
+        if len(calls) == 2:
+            if failure.startswith("exception"):
+                raise NativeLaunchFailure(
+                    "Verified helper failure before author launch",
+                    session_id=request.session_id if failure == "exception_with_session" else "",
+                )
+            return HarnessResult(
+                "startup_error", error="Native executable is missing", cleanup_verified=True
+            )
+        request.on_started()
+        total = first_total if len(calls) == 1 else final_total
+        usage = usage_delta(
+            total, request.previous_usage, resumed=bool(request.session_id), cumulative=True
+        )
+        return HarnessResult(
+            "completed",
+            '{"status":"blocked","reason":"The source interpretation requires clarification"}',
+            session_id="known-native-session",
+            usage=usage,
+            usage_total=total,
+            cleanup_verified=True,
+        )
+
+    monkeypatch.setattr(runner, "run_harness", invoke)
+    monkeypatch.setattr(runner, "build_runtime_isolation", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "leanflow_cli.native.harness_context.load_skill", lambda *args, **kwargs: None
+    )
+    initial = runner.run_workflow(environment)
+    assert initial["status"] == "blocked" and initial["usage_total"] == first_total
+    resume = {**environment, "LEANFLOW_NATIVE_RESUME_RUN_ID": "continuation-launch-failure"}
+    failed = runner.run_workflow(resume)
+    assert failed["status"] == "startup_error" and not failed["native_cleanup_unverified"]
+    assert failed["session_id"] == "known-native-session" and failed["usage_total"] == first_total
+    saved = json.loads((directory / "state.json").read_text())
+    assert saved["session_id"] == "known-native-session" and saved["usage_total"] == first_total
+    invocations = list(json.loads((directory / "limits.json").read_text())["invocations"].values())
+    assert len(invocations) == 2
+    assert [row["usage"] for row in invocations if row["status"] == "finished"] == [first_total]
+    assert [row["usage"] for row in invocations if row["status"] == "not_started"] == [None]
+    completed = runner.run_workflow(resume)
+    assert completed["status"] == "blocked" and len(calls) == 3
+    assert (
+        completed["session_id"] == "known-native-session"
+        and completed["usage_total"] == final_total
+    )
+    invocations = list(json.loads((directory / "limits.json").read_text())["invocations"].values())
+    charged = [row for row in invocations if row["status"] == "finished"]
+    assert len(invocations) == 3 and len(charged) == 2
+    assert all(row["usage"] is not None for row in charged)
+    assert sum(row["usage"]["input_tokens"] for row in charged) == 5
+    assert sum(row["usage"]["output_tokens"] for row in charged) == 3
+    assert {"input_tokens": 3, "output_tokens": 2} in [row["usage"] for row in charged]
+    budget = CampaignLimits(directory / "limits.json", {"agent_calls": 3, "tokens": 20})
+    next_invocation = budget.reserve()
+    budget.finish(next_invocation, None, started=False)
+    assert (
+        source_files(tmp_path) == source_before
+        and (tmp_path / "paper.tex").read_bytes() == paper_before
+    )

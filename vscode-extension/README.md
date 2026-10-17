@@ -4,6 +4,124 @@ Launch and inspect LeanFlow workflows without leaving the editor. The extension
 uses the `leanflow` CLI, so the editor and terminal share project setup, launch
 settings, proof verification, and recorded run evidence.
 
+## Inspect and formalize a paper
+
+Open the source folder and choose **Formalization** in the LeanFlow sidebar. This is available before creating a Lean project. Start with **1. Project setup → Set up project** to prepare Lean, Mathlib and the REPL in that tab's selected workspace. Existing projects keep their configuration and toolchain. Setup is a separate, reusable tools checkpoint and does not call a model or approve the paper's statements.
+
+You can inspect sources before setup finishes. Choose a TeX
+file, TeX project folder, or PDF inside the active workspace. Inspection freezes the source inventory without
+launching a model. Review included items, explicit exclusions, and unresolved
+source regions before using **Configure formalization** to select the native
+model and budget in the same Formalization tab. Configuring does not launch work;
+review the settings and choose **Start formalization** after project tools are ready. Native planning inspects that baseline and can add missing pinned dependencies through the checked private preparation transaction. A current formalization preparation receipt also satisfies the tools prerequisite when an older general setup checkpoint has become stale.
+
+To inspect a TeX source with a rendered companion, select both the `.tex` and
+`.pdf` files together. The PDF is frozen explicitly; text matching provides
+approximate page candidates or a visible missing match. Pairing does not certify
+that the two files have identical content, and PDF pages remain part of coverage review.
+
+Source and draft text links open named, read-only frozen documents beside the
+dashboard, preserving the selected source line. They do not open editable Untitled
+buffers or the canonical project file. The PDF rerenders to fit the available
+pane width; its text selection layer uses the same page scale. Opening a PDF
+reveals and focuses its viewer; refreshing saved status preserves your focus.
+Frozen source and Lean previews remain available while verification runs; a
+changed selected revision asks you to refresh its links.
+
+The inventory displays source review, Lean elaboration, and proof state separately.
+The overview shows the next action, while setup, issues, preparation, revisions,
+draft artifacts and handoff details can be collapsed. Item and region tables are
+paged, with full totals and search. Saved status opens quickly as **historical**;
+**Check currentness** checks the current environment separately without blocking
+source navigation. Repairs display a saved-revision acknowledgment before refreshing.
+If that refresh fails, the UI keeps the saved acknowledgment and asks for a refresh
+without resubmitting the edit.
+
+A completed draft with unresolved review notes shows **Delivered draft project**
+and one **Open draft project** button. This opens the controller-verified Lean
+project folder in another window of the installed VS Code, retaining the owning
+Remote SSH/WSL host when applicable. Source/PDF links remain frozen previews.
+Full source totals, explicit exclusions, coverage gaps and review notes stay
+visible. Saved compilation checks are distinguished from unverified incomplete
+projects; revising notes is optional for draft
+delivery. This draft has no translation acceptance or accepted prover handoff,
+and theorem proofs may remain `sorry`.
+
+Select **Unaccepted draft declarations** on an item, or expand the paged
+**Unaccepted draft blueprint**, to follow frozen source/PDF and draft Lean links.
+These mappings come from the saved draft checks and remain separate from accepted
+translation links. Missing navigation evidence stays visible.
+
+Select an item to compare **Original reading**, **Adopted reading**, and its
+**Lean statement** under **Source corrections and interpretations**. Frozen
+source excerpts and PDF/TeX links preserve the original wording. Lean links show
+the saved compiled type and its type, body and definition-context identities.
+Local evidence, scoped user decisions, independent review, and affected units
+are collapsed separately. A saved **PASS** remains saved evidence until the
+existing whole-revision currentness and acceptance gates succeed; theorem proof
+completion remains a separate state. Encoding repairs are labelled separately
+from mathematical source corrections.
+
+Under **Optional correction choices**, **Enable bounded correction policy for this
+paper** records permission once for every currently included item in the exact
+frozen source bundle. Mathematical repairs seeking acceptance need closed local
+evidence and fresh independent source review. Encoding repairs preserve the
+source meaning and do not require a local mathematical proof. For a nonunique
+reading, expand **Record a specific reading or convention**, enter the reading
+and reason, and choose **Record interpretation** or **Record convention**. These
+actions create versioned user decisions; they do not approve a statement or prove the paper. The same controls
+allow revocation. These decisions are optional for draft delivery; unresolved
+readings can stay explicitly flagged for later revision. Choices are disabled while the source is stale, setup or a
+workflow is active, or another change is waiting to save. A missing exact source
+binding offers no decision actions; an oversized paper policy scope is never
+silently shortened.
+
+Open or unclassified claims also show **Proof attempt permission**. Select the item,
+enter a reason, and choose **Allow proof attempt for this open claim** to opt in;
+the same control lets you revoke permission. Each change creates a new working
+revision for review. Source claim status and proof completion remain independent.
+Use **Repair inventory or mapping** to add a missed item, correct its source range
+or Lean declaration mapping, or change scope with a reason. Region dispositions
+remain auditable; neither an exclusion nor an extraction warning counts as an
+independently reviewed mathematical statement. PDF-only sources also support
+manual full-page transcription, which still needs item accounting and review.
+
+Unknown TeX commands list every frozen occurrence under **Extraction diagnostics**.
+Open those source links, record the command's meaning and supporting evidence, and
+confirm each rendered occurrence before submitting an interpretation. This creates
+a new revision for coverage and translation review. Missing includes and other
+source errors require repairing the source and inspecting it again.
+
+Unresolved conditional predicates support the same checked interpretation form.
+Both original branches and all candidate items remain visible; recording an
+interpretation selects no branch or proof permission. Loader and inherited-source
+uncertainty retain separate gates. The checkbox resets when the revision changes.
+
+Source links open hash-checked frozen text beside the dashboard. Selecting lines
+in that source or Lean view shows candidate source items back in the inventory.
+The packaged PDF.js viewer works without LaTeX Workshop or an external website:
+select an item to open its physical page, or select PDF text to find linked items.
+PDF-only sources can prefill a source-boundary repair; paired sources keep their
+statement boundaries in TeX. Approximate, absent, and stale mappings stay
+visible. The editor limits a single artifact preview to 64 MiB and reports larger
+files explicitly. Source access and the CLI stay on the owning Remote SSH/WSL host.
+
+**Start proving accepted statements** shows and hands over only the exact named
+obligations of the selected accepted revision. The backend revalidates the
+revision, environment, and files before launching the existing prover. A handoff
+with no pending obligations launches no model. Refresh the inventory after
+external changes; stale snapshots disable repair and proving actions.
+Completed proofs show the controller's checked proof certificate revision
+separately from source review.
+If checking cannot run, the editor reports the operational error and offers a
+retry through workflow configuration; a rejected Lean draft instead needs correction.
+If local work and a newer published revision disagree, choose the intended
+revision explicitly before repairing or launching another workflow.
+
+Formalization supports the pinned compiler, standard library and fully pinned
+Mathlib dependencies through the [compiled-library adapter](../docs/formalization.md#supported-input-boundary).
+Source fidelity, dependency availability and checked proofs remain separate gates.
+
 ## Install and prepare a project
 
 Install [LeanFlow](../README.md#install) on the workspace host, then install the
@@ -57,11 +175,28 @@ Prover and orchestrator can select separate backends and models. Leave overrides
 empty to preserve native defaults. **Refresh models** reloads metadata after
 native configuration changes. Unknown metadata stays visibly unknown.
 
-## Launch a workflow
+## Prove and Formalization
 
-**Launch** provides workflow, target, backend, model, prompt, skills, and axiom
-settings. **Preview plan** resolves the command and effective settings without
-starting work.
+**Prove** and **Formalization** are separate workflow tabs. Each keeps its own
+source or Lean target, backend, model, prompt, limits and knob profile. **Prove**
+repairs existing Lean proofs; **Preview plan** resolves its command without
+starting work. **Formalization** selects TeX/PDF evidence, estimates and prepares
+required dependencies, translates statements, and exposes the source and Lean
+review gates before an accepted handoff can start proving.
+
+In **Formalization**, inspect a source and choose **Configure formalization**.
+The model and limits appear beside its inventory, PDF, setup and review evidence.
+Complete the manual **Project setup** step before native planning. Starting the run then checks and expands required project dependencies before translation; setup
+readiness alone does not approve coverage or mathematical fidelity. The scoped setup card keeps its progress, Retry, Cancel and log bound to the selected workspace. Switching workspaces cannot reuse another folder's ready status, retry target or log, and a late completion does not change the selected folder. A stopped
+run launched by this extension can resume from the same source configuration.
+The host checks its recorded document, source, workspace and exact runtime ID.
+Resume restores that run's trusted original provider, resolved model and draft
+intent, even if the current form has changed. Runs discovered only from CLI history,
+or legacy runs without sufficient trusted launch identity, must resume through the
+CLI with that ID; the editor does not substitute current settings.
+
+Saved configurations for retired workflows require explicitly selecting Prove or
+Formalization. Their old target and prompt are not reused as a new proof run.
 
 New proof runs default to **Research**, **bottom-up**, and two concurrent prover
 jobs. Research adds planning and review around a theorem dependency graph.
@@ -107,6 +242,11 @@ Every live job exposes **Stop** in the dashboard, sidebar, and Runs tree,
 including jobs started from a terminal. Stopping goes through
 `leanflow runs stop RUN_ID`, which revalidates the exact run's process identity
 before signalling. Incomplete history is marked unknown.
+With the updated backend, Formalization publishes this verified ownership during
+dependency planning and preparation too; Stop does not have to wait for translation.
+Live reports preparation activity while dependencies are inspected. Until preparation
+finishes, retained mathematical results and blockers are labelled as belonging to
+the previous run.
 
 The proof workspace shows the theorem graph or tree, statements, dependencies,
 plan, jobs, usage, controller checks, stop reasons, and recorded source changes.
@@ -119,6 +259,10 @@ controller or a selected job at its next decision boundary.
 current tools, elapsed time, plans, and reported reasoning. **Follow live** keeps
 new activity in view. Streamed text updates in place, and expanding a row shows
 readable arguments and results with the recorded JSON available below.
+Native workflow tool events retain compact receipts instead of raw arguments and
+results. Known check failures show a short explanation, such as source changes
+during a check; unknown failures retain the operation ID for diagnosis. These
+summaries describe an attempted check and do not grant Lean acceptance.
 
 Use **Show reported reasoning** or the Logs view’s **Reasoning** filter to follow
 public summaries and traces. Availability depends on the native runtime and its
@@ -193,3 +337,42 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the repository quality gate.
 Keep `@types/vscode` aligned with the minimum version in `engines.vscode`.
 Major React and TypeScript upgrades require a separate migration and must pass
 the full button audit and extension packaging checks.
+
+Formalization can inspect a TeX/PDF source in an empty workspace. First use **Set up project** at the top of the tab for the baseline Lean and REPL check; source extraction diagnostics do not disable this action. The subsequent **Prepare dependencies and project** action checks planned imports, pinned dependencies and Lake
+layout with cancellable progress. Native planning can expand this setup when translation needs additional dependencies. The view shows
+representative-slice review separately from complete translation and proof status.
+Cancellation waits for the controller's safe stopping point and then refreshes
+actual readiness, including when the preparation committed before cancellation.
+Verified transcription replacement reopens affected PDF boundaries and mappings;
+**Retry extraction** preserves original source bytes and prior revisions. Recovery
+cards expose preserved publication and setup versions even when normal launches
+are blocked. Missing historical evidence can be acknowledged against the exact
+current observation; affected mathematical acceptance still needs a new review.
+A stale checker or dependency environment requires a new formalization
+review before proving.
+
+Formalization requests are bound to a host-issued workspace generation and a request
+identity. Switching projects discards stale inventories and stops subsequent steps
+of an older picker, repair, preparation or prover-launch operation. Identical
+document/revision IDs in copied projects do not allow actions to cross workspaces.
+Publication-registry loss is shown in recovery and requires explicit acknowledgment
+and fresh mathematical acceptance. Preparation estimates are labeled unreviewed;
+checked infrastructure does not establish source fidelity.
+Opening an external toolchain or dependency reference retains the selected project
+and its active preparation. Selecting another project's editor or an explicit
+source TeX/PDF file still changes the owner.
+
+After explicitly pairing a TeX source with its PDF and preparing prerequisites,
+**Configure unaccepted source draft** sets the launch option for one author turn.
+This secondary action configures the form; **Create unaccepted source draft**
+starts the run separately.
+Frozen preview files and the author report appear beside source navigation, with
+source uncertainty still blocking publication and proving. The option stays in
+the Formalization configuration and never applies to Prove. It does not mark items reviewed or mapped;
+resuming the completed campaign makes no new author call.
+
+The backend preserves alternative conditional layout wrappers when recovering
+candidate statements. Ambiguous nesting remains visible and blocks acceptance;
+the explicit paired-PDF draft option grants no source approval. Supplied root
+job-name `.bbl` files are frozen as bibliography evidence, with missing database
+and ambiguous support diagnostics kept separate.

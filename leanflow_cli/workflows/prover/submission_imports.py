@@ -37,6 +37,13 @@ def remember_imports(
         raise ValueError("Imports must be a list of at most 16 Lean module names.")
     if node.module in modules:
         raise ValueError("A proof cannot import its own module.")
+    if getattr(runtime, "formalization_handoff", None) is not None:
+        existing = set(imported_modules(runtime.documents[node.file].baseline))
+        if set(modules) - existing:
+            raise ValueError(
+                "This reviewed formalization permits only its named proof-slot replacements. "
+                "Use the existing imports, or revise and review the formalization before adding imports."
+            )
     job["candidate_imports"] = list(dict.fromkeys(modules))
     node.candidate_imports = list(job["candidate_imports"])
 
@@ -58,6 +65,13 @@ def check_import_types(
     runtime: ProverRuntime, node: Node, document: SourceDocument, workspace: Path
 ) -> dict[str, Any]:
     """Require new imports to preserve every managed declaration's kernel type."""
+    if getattr(runtime, "formalization_handoff", None) is not None and (
+        document.imports or document.proof_imports or document.generated
+    ):
+        return {
+            "accepted": False,
+            "error": "Reviewed formalization proof scope forbids new imports and generated helper files; revise the formalization before changing its setup.",
+        }
     if document.proof_imports == runtime.documents[node.file].proof_imports:
         return {"accepted": True}
     if not hasattr(runtime.verifier, "capture_signatures"):

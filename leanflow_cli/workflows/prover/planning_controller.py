@@ -7,11 +7,11 @@ import itertools
 import json
 import queue
 import re
-import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from leanflow_cli.workflows.prover.check_command_cleanup import command_workspace
 from leanflow_cli.workflows.prover.check_failures import infrastructure_code
 from leanflow_cli.workflows.prover.models import Dag
 from leanflow_cli.workflows.prover.planning import apply_proposal, json_report, planning_prompt
@@ -81,6 +81,18 @@ def research_plan(
     refinement: bool = False,
 ) -> bool:
     """Run fresh planning and critique contexts, then materialize only reviewed proposals."""
+    if getattr(runtime, "formalization_handoff", None) is not None:
+        # The published source review authorizes literal proof slots, so graph
+        # setup changes need a new formalization revision before planning runs.
+        runtime.state.pop("planning_request", None)
+        runtime.state.update(
+            phase="proving",
+            design_plan_complete=True,
+            proposal_status="scope_restricted",
+            proposal_critique="Reviewed formalization proof scope permits existing proof slots only. New helpers, imports, and libraries require a revised formalization and source review.",
+        )
+        runtime._persist()
+        return False
     checkpoint = runtime.state.get("planning_request")
     if not isinstance(checkpoint, dict):
         checkpoint = {
@@ -355,20 +367,28 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
     """Apply only reviewed, immutable library requests and record exact configuration diffs."""
     if not entries:
         return
+    if getattr(runtime, "formalization_handoff", None) is not None:
+        raise ValueError("Reviewed formalization proof scope forbids library installation")
     if not runtime.config.allow_internet:
         from leanflow_cli.workflows.prover.installed_libraries import require_installed_libraries
 
         require_installed_libraries(runtime.root, entries)
         return
+    with runtime.lock, runtime._publication_guard():
+        _install_planned_libraries_locked(runtime, entries)
+
+
+def _install_planned_libraries_locked(runtime: ProverRuntime, entries: Any) -> None:
+    """Keep dependency publication and its source checkpoint under the owning generation."""
     if not isinstance(entries, list):
         raise ValueError("planning libraries must be a list")
     from leanflow_cli.workflows.prover.installed_libraries import libraries_already_installed
-    from leanflow_cli.workflows.prover.libraries import install_libraries
+    from leanflow_cli.workflows.prover.libraries import _configuration_bytes, install_libraries
 
     if libraries_already_installed(runtime.root, entries):
         return
     before = {
-        name: (runtime.root / name).read_bytes()
+        name: _configuration_bytes(runtime.root / name)
         for name in ("lakefile.toml", "lakefile.lean", "lake-manifest.json", "lean-toolchain")
         if (runtime.root / name).is_file()
     }
@@ -376,7 +396,19 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
         runtime.root, entries, timeout_s=runtime._remaining_verification_time()
     )
     runtime.store.event("libraries_installed", result)
+    retained = runtime.state.setdefault("retained_source_mutations", [])
+    for identifier in result.get("retained_source_mutations", []):
+        if identifier not in retained:
+            retained.append(identifier)
     if result.get("accepted") is not True:
+        if result.get("status") == "source_conflict":
+            from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
+
+            raise InfrastructureFailure(
+                str(result.get("recovery_error") or result.get("error", result)),
+                status="source_conflict",
+                error_details=result,
+            )
         if result.get("status") == "configuration_error":
             from leanflow_cli.workflows.prover.runtime import InfrastructureFailure
 
@@ -396,7 +428,7 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
         raise RuntimeError(f"library installation rejected: {result}")
     for name, original in before.items():
         path = runtime.root / name
-        if path.read_bytes() == original:
+        if _configuration_bytes(path) == original:
             continue
         baseline = runtime.store.directory / "baselines" / name
         baseline.parent.mkdir(parents=True, exist_ok=True)
@@ -422,6 +454,8 @@ def install_planned_libraries(runtime: ProverRuntime, entries: Any) -> None:
 
 def materialize(runtime: ProverRuntime, dag: Dag, skeletons: dict[str, str]) -> None:
     """Serialize the controller's helper and import source mutations."""
+    if getattr(runtime, "formalization_handoff", None) is not None:
+        raise ValueError("Reviewed formalization proof scope forbids helper materialization")
     with runtime.lock:
         previous_changes = copy.deepcopy(runtime.state["changes"])
         runtime.progress.call(
@@ -440,6 +474,19 @@ def _materialize(
     previous_changes: list[dict[str, Any]],
 ) -> None:
     """Compile reviewed helper skeletons before making them dependencies of user goals."""
+    with runtime._publication_guard():
+        _materialize_locked(runtime, dag, skeletons, previous_changes)
+
+
+def _materialize_locked(
+    runtime: ProverRuntime,
+    dag: Dag,
+    skeletons: dict[str, str],
+    previous_changes: list[dict[str, Any]],
+) -> None:
+    """Keep one coherent project generation throughout helper installation and rollback."""
+    if getattr(runtime, "formalization_handoff", None) is not None:
+        raise ValueError("Reviewed formalization proof scope forbids helper materialization")
     runtime._assert_sources()
     index = dag.by_id()
     documents = copy.deepcopy(runtime.documents)
@@ -475,8 +522,8 @@ def _materialize(
                 path = runtime.root / name
                 if path.is_file():
                     rewritten[path] = path.read_bytes()
-            with tempfile.TemporaryDirectory(prefix="leanflow-helper-config-") as temporary:
-                preview = Path(temporary)
+            with command_workspace(prefix="leanflow-helper-config-") as temporary:
+                preview = temporary
                 for path, content in rewritten.items():
                     (preview / path.name).write_bytes(content)
                 registered = ensure_helper_library(preview)

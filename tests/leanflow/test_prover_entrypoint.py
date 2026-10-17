@@ -170,6 +170,69 @@ def test_resume_source_conflict_preserves_old_snapshot_and_user_edits(launch, mo
     assert {name: (old / name).read_bytes() for name in before} == before
 
 
+def test_resume_exhausted_ownership_deadline_reports_campaign_timeout(launch, monkeypatch):
+    """Do not relabel a cumulative wall budget as a generic startup or environment failure."""
+    root, _ = launch
+    runtime.ProverRuntime(
+        root=root,
+        targets=[root / "Main.lean"],
+        config=ProverConfig(wall_time_s=10),
+        run_id="execution-old",
+    )
+    old = root / ".leanflow/workflow-state/prover/execution-old/state.json"
+    saved = json.loads(old.read_text())
+    saved["metrics"]["elapsed_s"] = 20
+    old.write_text(json.dumps(saved))
+    original = old.read_bytes()
+    source = (root / "Main.lean").read_bytes()
+    monkeypatch.setenv("LEANFLOW_PROVER_RESUME_RUN_ID", "execution-old")
+    monkeypatch.setattr(runtime.ProverRuntime, "run", lambda *_: pytest.fail("started expired run"))
+    assert entrypoint.main() == 1
+    state = _state(root)
+    assert state["status"] == "timeout"
+    assert state["stop_reason"]["code"] == "campaign_wall_time"
+    assert "active-time budget" in state["next_step"]
+    assert old.read_bytes() == original and (root / "Main.lean").read_bytes() == source
+
+
+def test_sticky_source_conflict_guidance_distinguishes_fresh_run(launch, monkeypatch):
+    """Explain why restoring bytes cannot reconcile a conflicted owning journal."""
+    from leanflow_cli.workflows.prover import source_mutation
+    from leanflow_cli.workflows.prover.source import SourceConflictError
+
+    root, _ = launch
+    source = root / "Main.lean"
+    before = source.read_bytes()
+    after = before.replace(b"sorry", b"trivial")
+    owner = runtime.ProverRuntime(
+        root=root, targets=[source], config=ProverConfig(), run_id="execution-old"
+    )
+    identifier = source_mutation.create(root, source.name, before, after)
+    source_mutation.install(root, identifier)
+    source.write_bytes(b"-- late editor version\n" + after)
+    with pytest.raises(SourceConflictError):
+        source_mutation.commit(root, identifier)
+    owner.state["retained_source_mutations"] = [identifier]
+    owner._persist()
+    restored = root / "restored.lean"
+    restored.write_bytes(before)
+    restored.replace(source)
+    monkeypatch.setenv("LEANFLOW_PROVER_RESUME_RUN_ID", "execution-old")
+    assert entrypoint.main() == 2
+    state = _state(root)
+    assert state["status"] == "source_conflict"
+    assert "same-run resume" in state["next_step"] and "fresh run" in state["next_step"]
+    assert "pending library" in state["next_step"]
+    record = source_mutation.load(root, identifier)
+    assert record["conflict_paths"]["canonical"] == str(source)
+    assert Path(record["conflict_paths"]["candidate"]).read_bytes().startswith(b"-- late editor")
+    fresh = runtime.ProverRuntime(
+        root=root, targets=[source], config=ProverConfig(), run_id="execution-fresh"
+    )
+    fresh._assert_sources()
+    assert source.read_bytes() == before and record["state"] == "conflicted"
+
+
 def test_clone_relocates_paths_without_rewriting_proof_or_source_text(launch):
     root, _ = launch
     old = root / ".leanflow/workflow-state/prover/old"
@@ -203,7 +266,7 @@ def test_lock_conflict_does_not_steal_existing_live_observer(launch, monkeypatch
     original_flock = entrypoint.fcntl.flock
 
     def busy(handle, flags):
-        if Path(handle.name).name == "controller.lock":
+        if not isinstance(handle, int) and Path(handle.name).name == "controller.lock":
             raise BlockingIOError("owned")
         return original_flock(handle, flags)
 

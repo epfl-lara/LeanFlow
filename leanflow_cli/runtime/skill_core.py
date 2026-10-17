@@ -10,7 +10,6 @@ from typing import Any
 import yaml
 
 from core.home import leanflow_home
-from leanflow_cli.lean.lean_workflow_specs import phase_fragment_text, specs_for_skill
 
 CURATED_BUILTIN_SKILLS = {
     "lean-bounded-prover",
@@ -18,8 +17,6 @@ CURATED_BUILTIN_SKILLS = {
     "lean-proof-loop",
     "lean-diagnostics",
     "lean-formalization",
-    "lean-refactor-golf",
-    "lean-autonomous-swarm",
     "lean-search",
     "lean-reasoning-help",
     "lean-theorem-queue-worker",
@@ -256,57 +253,4 @@ def default_workflow_skill(workflow_kind: str) -> str:
         return "lean-proof-loop"
     if normalized in {"formalize", "autoformalize"}:
         return "lean-formalization"
-    if normalized == "review":
-        return "lean-diagnostics"
-    if normalized in {"refactor", "golf"}:
-        return "lean-refactor-golf"
-    if normalized == "draft":
-        return "lean-formalization"
-    return "lean-proof-loop"
-
-
-def build_skill_prompt(name: str, cwd: str | os.PathLike[str] | None = None) -> str:
-    """Build a formatted prompt string from a skill, including its content, linked workflow specs from lean_workflow_specs, and supporting file references. Returns empty string if skill not found."""
-    payload = load_skill(name, cwd)
-    if not payload:
-        return ""
-    parts = [
-        f"[LEANFLOW SKILL: {payload['name']} ({payload['source']})]",
-        "",
-        str(payload.get("content", "") or "").strip(),
-    ]
-    spec_records = specs_for_skill(str(payload.get("name", "") or name))
-    if spec_records:
-        parts.append("")
-        parts.append(
-            "[Linked workflow specs follow. Treat them as the policy manuals for this skill.]"
-        )
-        embedded_phases: set[str] = set()
-        for record in spec_records:
-            spec_content = str(record.content or "").strip()
-            if not spec_content:
-                continue
-            parts.extend(
-                [
-                    "",
-                    f"[{record.kind.upper()} SPEC: {record.spec_id}]",
-                    spec_content,
-                ]
-            )
-            # Phase fragments the spec defers to ride along (deduped) —
-            # a spec must never point the model at a contract it cannot see.
-            for phase_id in record.phases:
-                if phase_id in embedded_phases:
-                    continue
-                fragment = phase_fragment_text(phase_id)
-                if fragment:
-                    embedded_phases.add(phase_id)
-                    parts.extend(["", fragment])
-    linked_files = payload.get("linked_files") or {}
-    if linked_files:
-        parts.append("")
-        parts.append("[Supporting files available through the skill system:]")
-        for category, files in linked_files.items():
-            for item in files:
-                parts.append(f"- {category}: {item}")
-    return "\n".join(parts).strip()
+    raise ValueError("Supported workflows are prove and formalize")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,7 +22,19 @@ def fake_tools(monkeypatch, tmp_path):
     calls = []
     failure = {"command": None, "protocol": None}
 
-    def run(command, *, cwd, log, cancel, progress, phase, input_text=None, stdout_only=False):
+    def run(
+        command,
+        *,
+        cwd,
+        log,
+        cancel,
+        progress,
+        phase,
+        input_text=None,
+        stdout_only=False,
+        stdout_limit_bytes=None,
+        execution_policy=None,
+    ):
         calls.append(command)
         if command == failure["command"]:
             return 1, "network unavailable"
@@ -68,6 +81,121 @@ def existing_project(path: Path, *, lean_file=False):
     else:
         (path / "lakefile.toml").write_text('name = "demo"\n')
     return path
+
+
+@pytest.mark.parametrize("has_manifest", [False, True])
+def test_private_setup_never_restores_shared_dependencies(
+    tmp_path, fake_tools, monkeypatch, has_manifest
+):
+    """Keep private dependency setup isolated before and after adding its REPL pin."""
+    root = existing_project(tmp_path / "private-stage")
+    if has_manifest:
+        (root / "lake-manifest.json").write_text(
+            json.dumps({"packages": [{"name": "repl", "rev": "repl-pin"}]})
+        )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Private setup attempted shared dependency or public baseline effects")
+
+    monkeypatch.setattr(service, "_restore_dependencies", forbidden)
+    monkeypatch.setattr(service, "_share_dependencies", forbidden)
+    monkeypatch.setattr(service, "prepare_configuration", forbidden)
+    policy = SimpleNamespace(
+        isolation=SimpleNamespace(snapshot_root=root),
+        check=lambda cancel: None,
+        evidence=lambda: {"private_fixture": True},
+    )
+    result = prepare_project(root, preset="lean", execution_policy=policy)
+    assert result["status"] == "ready"
+    assert result["execution"] == {"private_fixture": True}
+    assert ["lake", "build", "repl"] in fake_tools[0]
+
+
+@pytest.mark.parametrize("configuration", [False, True])
+def test_readiness_fingerprint_distinguishes_absent_from_empty_config(tmp_path, configuration):
+    """An empty newly created config is a different input from an absent entry."""
+    from leanflow_cli.workflows.project_setup.state import fingerprint
+
+    before = (
+        fingerprint(tmp_path, configuration={"lakefile.lean": None})
+        if configuration
+        else fingerprint(tmp_path)
+    )
+    (tmp_path / "lakefile.lean").write_bytes(b"")
+    after = (
+        fingerprint(tmp_path, configuration={"lakefile.lean": b""})
+        if configuration
+        else fingerprint(tmp_path)
+    )
+    assert before != after
+
+
+def test_empty_new_config_revokes_saved_environment_readiness(tmp_path, monkeypatch):
+    """An additional empty Lake configuration cannot inherit the old setup receipt."""
+    from leanflow_cli.workflows.project_setup import state
+
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(state, "installed_environment", lambda root: True)
+    (tmp_path / "lakefile.toml").write_text('name = "demo"\n')
+    state.state_directory(tmp_path).mkdir(parents=True)
+    state.save_result(tmp_path, {"status": "ready", "fingerprint": state.fingerprint(tmp_path)})
+    assert state.inspect_project(tmp_path)["ready"] is True
+    (tmp_path / "lakefile.lean").write_bytes(b"")
+    result = state.inspect_project(tmp_path)
+    assert result["ready"] is False
+    assert result["code"] == "readiness_stale"
+
+
+@pytest.mark.parametrize("relative", ["deps/local", "../sibling", "/external/local"])
+def test_public_setup_rejects_relocated_path_dependency_before_commands(
+    tmp_path, fake_tools, relative
+):
+    """Never reinterpret a local dependency relative to the private setup stage."""
+    root = existing_project(tmp_path / "local")
+    with (root / "lakefile.toml").open("a") as handle:
+        handle.write(f'\n[[require]]\nname = "local"\npath = {json.dumps(relative)}\n')
+    child = root / "deps/local"
+    child.mkdir(parents=True)
+    (child / "lakefile.toml").write_text('name = "local"\n')
+    (child / "lean-toolchain").write_text("leanprover/lean4:v4.33.1\n")
+    (child / "Local.lean").write_text("def localValue := 1\n")
+    original = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    result = prepare_project(root)
+    assert result["status"] == "failed"
+    assert result["code"] == "local_dependency_setup_unsupported"
+    assert "local" in result["remediation"].lower()
+    assert not fake_tools[0]
+    assert all(path.read_bytes() == content for path, content in original.items())
+    assert not (root / ".leanflow/baseline-setup").exists()
+
+
+@pytest.mark.parametrize(
+    "kind", ["lean_local", "lean_git", "toml_git", "manifest_path", "manifest_git"]
+)
+def test_other_explicit_local_dependency_forms_fail_before_effects(tmp_path, fake_tools, kind):
+    """Preserve local inputs rather than execute their relocated or external configuration."""
+    root = existing_project(tmp_path / "local-other", lean_file=kind.startswith("lean"))
+    if kind == "lean_local":
+        with (root / "lakefile.lean").open("a") as handle:
+            handle.write('require local from "../local"\n')
+    elif kind == "lean_git":
+        with (root / "lakefile.lean").open("a") as handle:
+            handle.write('require local from git "../local" @ "pin"\n')
+    elif kind == "toml_git":
+        with (root / "lakefile.toml").open("a") as handle:
+            handle.write('\n[[require]]\nname = "local"\ngit = "file:///local"\n')
+    else:
+        package = (
+            {"name": "local", "type": "path", "dir": "../local"}
+            if kind == "manifest_path"
+            else {"name": "local", "type": "git", "url": "../local", "rev": "pin"}
+        )
+        (root / "lake-manifest.json").write_text(json.dumps({"packages": [package]}))
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    result = prepare_project(root)
+    assert result["code"] == "local_dependency_setup_unsupported"
+    assert not fake_tools[0]
+    assert all(path.read_bytes() == content for path, content in before.items())
 
 
 def test_empty_folder_defaults_to_pinned_mathlib_and_real_protocol(tmp_path, fake_tools):
@@ -156,6 +284,25 @@ def test_retry_reuses_scaffold_and_does_not_duplicate_repl(tmp_path, fake_tools)
     assert (root / "Main.lean").read_bytes() == source
     assert (root / "lakefile.toml").read_bytes() == config
     assert fake_tools[0].count(["lake", "update", "repl"]) == 1
+
+
+def test_ready_receipt_does_not_bless_edit_after_final_validation(
+    tmp_path, fake_tools, monkeypatch
+):
+    """Bind readiness to checked config even when the editor saves during receipt creation."""
+    root = tmp_path / "ready-race"
+    fingerprint = service.fingerprint
+
+    def save_then_fingerprint(path, **kwargs):
+        if (path / ".leanflow/project.yaml").exists():
+            (path / "lean-toolchain").write_bytes(b"editor-after-validation")
+        return fingerprint(path, **kwargs)
+
+    monkeypatch.setattr(service, "fingerprint", save_then_fingerprint)
+    result = prepare_project(root)
+    assert result["status"] == "ready"
+    assert (root / "lean-toolchain").read_bytes() == b"editor-after-validation"
+    assert inspect_project(root)["ready"] is False
 
 
 def test_existing_nested_path_uses_actual_root(tmp_path, fake_tools):
@@ -295,7 +442,7 @@ def test_dependency_pin_conflict_restores_original_manifest(tmp_path, fake_tools
     def change_pin(command, **kwargs):
         result = original(command, **kwargs)
         if command == ["lake", "update", "repl"]:
-            (root / "lake-manifest.json").write_text(
+            (kwargs["cwd"] / "lake-manifest.json").write_text(
                 '{"packages": [{"name": "custom", "rev": "changed"}]}'
             )
         return result
@@ -321,7 +468,9 @@ def test_cancellation_after_download_keeps_files_for_retry(tmp_path, fake_tools,
     monkeypatch.setattr(service, "run_command", cancel_download)
     result = prepare_project(root, cancel=cancel)
     assert result["status"] == "cancelled"
-    assert (root / "lake-manifest.json").exists()
+    # Downloaded pins remain private until conflict-preserving promotion.
+    assert list((root / ".leanflow/baseline-setup/stages").glob("*/lake-manifest.json"))
+    assert not (root / "lake-manifest.json").exists()
     assert not (root / ".leanflow/project.yaml").exists()
     assert ["lake", "build", "repl"] not in fake_tools[0]
 
@@ -362,9 +511,9 @@ def test_update_failure_restores_original_authority(tmp_path, fake_tools, monkey
 
     def fail_update(command, **kwargs):
         if command == ["lake", "update", "repl"]:
-            (root / "lean-toolchain").write_text("new-version")
+            (kwargs["cwd"] / "lean-toolchain").write_text("new-version")
             if failure != "toolchain":
-                (root / "lake-manifest.json").write_text('{"packages": []}')
+                (kwargs["cwd"] / "lake-manifest.json").write_text('{"packages": []}')
             if failure == "cancel":
                 raise service.SetupCancelled()
             return (1 if failure == "command" else 0), "update failed"

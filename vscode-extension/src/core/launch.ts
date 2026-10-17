@@ -20,11 +20,16 @@ export function buildWorkflowArgs(
   request: LaunchRequest,
   environment: Readonly<Record<string, string>> = {},
 ): string[] {
+  if (!["prove", "formalize"].includes(request.kind)) throw new Error("Choose Prove or Formalization; this workflow is no longer available.");
   const args: string[] = [request.kind];
   const mode = environment.LEANFLOW_PROVER_MODE ?? request.overrides.LEANFLOW_PROVER_MODE;
   const boundedMode = request.kind === "prove" && ["", "standard", "research"].includes(mode);
 
   const target = request.target.trim();
+  if (request.formalization) {
+    if (request.kind !== "prove" || target) throw new Error("A formalization handoff requires prove with its exact accepted scope.");
+    args.push("--from-formalization", request.formalization.documentId, "--formalization-revision", request.formalization.revisionId);
+  }
   if (target) {
     // A target beginning with `-` would be parsed as a workflow option rather
     // than a file, silently changing what the run does.
@@ -55,8 +60,10 @@ export function buildWorkflowArgs(
   if (request.cleanRoom) {
     args.push("--clean-room");
   }
-  if (request.humanReview && request.kind !== "prove") {
-    args.push("--human-review");
+  if (request.humanReview) throw new Error("Human-review launch pauses are no longer supported.");
+  if (request.sourceDraftOnly) {
+    if (request.kind !== "formalize") throw new Error("Source draft mode requires formalize.");
+    args.push("--source-draft-only");
   }
   if (request.axioms.trim()) {
     args.push("--axioms", request.axioms.trim());
@@ -355,7 +362,7 @@ export function launchRequestForViewState(request: LaunchRequest): LaunchRequest
   return {
     ...request,
     target: safeText(request.target),
-    humanReview: request.kind === "prove" ? false : request.humanReview,
+    humanReview: false,
     provider: safeText(request.provider),
     model: safeText(request.model),
     axioms: safeText(request.axioms),
@@ -478,11 +485,18 @@ function overlongFieldProblems(request: LaunchRequest): string[] {
 /** Validation the form can show before the user commits to a run. */
 export function validateLaunch(request: LaunchRequest): string[] {
   const problems: string[] = overlongFieldProblems(request);
+  if (!["prove", "formalize"].includes(request.kind)) problems.push("Choose Prove or Formalization; this workflow is no longer available.");
+  if (request.sourceDraftOnly && request.kind !== "formalize") {
+    problems.push("Source draft mode is only supported for formalize.");
+  }
+  if (request.formalization && (request.kind !== "prove" || request.target.trim())) {
+    problems.push("A formalization handoff requires prove with its exact accepted scope.");
+  }
   if (request.target.trim().startsWith("-")) {
     problems.push('A target may not begin with "-" because the CLI would parse it as an option.');
   }
   if (request.kind === "formalize" && !request.target.trim()) {
-    problems.push("formalize needs a source document (.tex or .pdf) as its target.");
+    problems.push("formalize needs a source document (.tex or .pdf) or TeX project folder as its target.");
   }
   if (request.research && request.kind !== "prove") {
     problems.push("--research is only supported for prove.");
@@ -490,9 +504,7 @@ export function validateLaunch(request: LaunchRequest): string[] {
   if (request.cleanRoom && request.kind !== "prove") {
     problems.push("--clean-room is only supported for prove.");
   }
-  if (request.humanReview && request.kind !== "prove") {
-    problems.push("--human-review is only supported for prove.");
-  }
+  if (request.humanReview) problems.push("Human-review launch pauses are no longer supported.");
   if (request.researchWorkers !== null && request.researchWorkers < 0) {
     problems.push("Research workers cannot be negative.");
   }

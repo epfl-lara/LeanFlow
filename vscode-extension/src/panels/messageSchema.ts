@@ -14,6 +14,7 @@ import {
   MAX_EXPERIMENT_CELLS,
 } from "../core/experimentMatrix";
 import { LAUNCH_FIELD_LIMITS, WORKFLOW_KINDS } from "../core/types";
+import { formalizationId, parseFormalizationAction } from "./formalizationMessages";
 
 const MAX_STRING = 8192;
 const MAX_LIST = LAUNCH_FIELD_LIMITS.additionalSkillCount;
@@ -100,6 +101,12 @@ function launchRequest(value: unknown): LaunchRequestResult {
     return { ok: false, field: "request" };
   }
   const raw = value as Record<string, unknown>;
+  let formalization: LaunchRequest["formalization"];
+  if (raw.formalization !== undefined) {
+    const bound = raw.formalization as Record<string, unknown> | null;
+    if (!bound || !formalizationId(bound.documentId) || !formalizationId(bound.revisionId)) return { ok: false, field: "formalization" };
+    formalization = { documentId: bound.documentId, revisionId: bound.revisionId };
+  }
   const kind = str(raw.kind, 32);
   if (kind === null || !KINDS.has(kind)) {
     return { ok: false, field: "kind" };
@@ -115,6 +122,7 @@ function launchRequest(value: unknown): LaunchRequestResult {
     noParallel: strictBool(raw.noParallel),
     cleanRoom: strictBool(raw.cleanRoom),
     humanReview: strictBool(raw.humanReview),
+    sourceDraftOnly: raw.sourceDraftOnly === undefined ? false : strictBool(raw.sourceDraftOnly),
     axioms: str(raw.axioms, LAUNCH_FIELD_LIMITS.axioms),
     prompt: str(raw.prompt, LAUNCH_FIELD_LIMITS.prompt),
     profile: str(raw.profile, LAUNCH_FIELD_LIMITS.profile),
@@ -134,6 +142,7 @@ function launchRequest(value: unknown): LaunchRequestResult {
     noParallel,
     cleanRoom,
     humanReview,
+    sourceDraftOnly,
     axioms,
     prompt,
     profile,
@@ -149,6 +158,7 @@ function launchRequest(value: unknown): LaunchRequestResult {
     noParallel === null ||
     cleanRoom === null ||
     humanReview === null ||
+    sourceDraftOnly === null ||
     axioms === null ||
     prompt === null ||
     profile === null ||
@@ -160,6 +170,7 @@ function launchRequest(value: unknown): LaunchRequestResult {
       field: Object.entries(fields).find(([, entry]) => entry === null)?.[0] ?? "request",
     };
   }
+  if (sourceDraftOnly && kind !== "formalize") return { ok: false, field: "sourceDraftOnly" };
   const workers = raw.researchWorkers;
   const researchWorkers = workers === null ? null : strictInt(workers, 0, 64);
   if (researchWorkers === null && workers !== null) {
@@ -178,11 +189,13 @@ function launchRequest(value: unknown): LaunchRequestResult {
       noParallel,
       cleanRoom,
       humanReview,
+      ...(raw.sourceDraftOnly !== undefined ? { sourceDraftOnly } : {}),
       axioms,
       prompt,
       additionalSkills,
       profile,
       overrides,
+      ...(formalization ? { formalization } : {}),
     },
   };
 }
@@ -192,7 +205,7 @@ function launchRequest(value: unknown): LaunchRequestResult {
  *
  * Returns the normalized message, or a reason it was rejected.
  */
-export function parseWebviewMessage(
+function parseWebviewMessageBody(
   value: unknown,
 ): { ok: true; message: WebviewMessage } | { ok: false; reason: string } {
   if (typeof value !== "object" || value === null) {
@@ -207,9 +220,81 @@ export function parseWebviewMessage(
   const reject = (field: string) => ({ ok: false as const, reason: `${type}: bad ${field}` });
 
   switch (type) {
+    case "listFormalizationPreparationRecovery":
+    case "recoverFormalizationPreparation":
+    case "cancelFormalizationRecovery":
+      return { ok: true, message: { type } };
+    case "resolveFormalizationPreparation": {
+      const reason = str(raw.reason, 16000);
+      return formalizationId(raw.transactionId) && formalizationId(raw.observationId) && reason !== null && reason.trim()
+        ? { ok: true, message: { type, transactionId: raw.transactionId, observationId: raw.observationId, reason } } : reject("preparation recovery observation");
+    }
+    case "planFormalizationPreparation":
+    case "prepareFormalization": {
+      if (!formalizationId(raw.documentId) || !formalizationId(raw.revisionId) || !["mathlib", "lean"].includes(String(raw.preset))) return reject("preparation identity");
+      if (raw.overrides !== undefined) {
+        if (!raw.overrides || typeof raw.overrides !== "object" || Array.isArray(raw.overrides)) return reject("preparation overrides");
+        try { if (Buffer.byteLength(JSON.stringify(raw.overrides), "utf8") > 64 * 1024) return reject("preparation overrides"); } catch { return reject("preparation overrides"); }
+      }
+      return { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId, preset: raw.preset as "mathlib" | "lean", ...(raw.overrides !== undefined ? { overrides: raw.overrides as Record<string, unknown> } : {}) } };
+    }
+    case "cancelFormalizationPreparation":
+      return formalizationId(raw.documentId) && formalizationId(raw.revisionId)
+        ? { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId } } : reject("preparation identity");
+    case "listFormalizationConflicts":
+      return { ok: true, message: { type } };
+    case "openFormalizationConflictVersion":
+      return formalizationId(raw.transactionId) && formalizationId(raw.observationId) && formalizationId(raw.versionId)
+        ? { ok: true, message: { type, transactionId: raw.transactionId, observationId: raw.observationId, versionId: raw.versionId } } : reject("conflict version identity");
+    case "resolveFormalizationConflict": {
+      const reason = str(raw.reason, 16000);
+      return formalizationId(raw.transactionId) && formalizationId(raw.observationId) && reason !== null && reason.trim()
+        ? { ok: true, message: { type, transactionId: raw.transactionId, observationId: raw.observationId, reason } } : reject("conflict resolution");
+    }
+    case "listFormalizations":
+      return { ok: true, message: { type } };
+    case "inspectFormalization":
+      return raw.sourceKind === "file" || raw.sourceKind === "folder"
+        ? { ok: true, message: { type, sourceKind: raw.sourceKind } } : reject("sourceKind");
+    case "showFormalization":
+      return formalizationId(raw.documentId) ? { ok: true, message: { type, documentId: raw.documentId } } : reject("documentId");
+    case "checkFormalization":
+      return formalizationId(raw.documentId) && formalizationId(raw.revisionId)
+        ? { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId } } : reject("current revision");
+    case "formalizationAction": {
+      const action = parseFormalizationAction(raw.action);
+      return formalizationId(raw.documentId) && formalizationId(raw.revisionId) && action
+        ? { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId, action } } : reject("repair");
+    }
+    case "openFormalizationArtifact": {
+      if (!formalizationId(raw.documentId) || !formalizationId(raw.revisionId) || !formalizationId(raw.artifactId) ||
+          (raw.itemId !== undefined && !formalizationId(raw.itemId)) ||
+          (raw.line !== undefined && strictInt(raw.line, 1, 10_000_000) === null) ||
+          (raw.pageIndex !== undefined && strictInt(raw.pageIndex, 0, 1_000_000) === null)) return reject("artifact reference");
+      return { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId, artifactId: raw.artifactId,
+        itemId: raw.itemId as string | undefined, line: raw.line as number | undefined, pageIndex: raw.pageIndex as number | undefined } };
+    }
+    case "launchFormalization":
+    case "resumeFormalization":
+    case "proveFormalization": {
+      const parsed = launchRequest(raw.request);
+      if (!formalizationId(raw.documentId) || !formalizationId(raw.revisionId) || !parsed.ok) return reject("workflow source");
+      if (type === "resumeFormalization") return identifier(raw.trackedRunId)
+        ? { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId, trackedRunId: raw.trackedRunId as string, request: parsed.request } } : reject("tracked run");
+      return { ok: true, message: { type, documentId: raw.documentId, revisionId: raw.revisionId, request: parsed.request } };
+    }
+    case "openDashboard":
+      return raw.workflow === undefined || KINDS.has(raw.workflow as string)
+        ? { ok: true, message: { type, workflow: raw.workflow as WorkflowKind | undefined } } : reject("workflow");
     case "copyText": {
       const text = str(raw.text, 4 * 1024 * 1024);
       return text === null ? reject("text") : { ok: true, message: { type, text } };
+    }
+    case "formalizationProjectSetup": {
+      const action = raw.action;
+      return ["inspect", "start", "retry", "repair", "cancel", "log"].includes(String(action)) && typeof action === "string"
+        ? { ok: true, message: { type, action: action as Extract<WebviewMessage, { type: "formalizationProjectSetup" }>["action"] } }
+        : reject("project setup action");
     }
     case "configureProvider":
     case "setupProject":
@@ -219,7 +304,6 @@ export function parseWebviewMessage(
     case "showProjectSetupLog":
     case "ready":
     case "refresh":
-    case "openDashboard":
     case "openCliSettings":
     case "refreshProviders":
     case "refreshStorage":
@@ -444,4 +528,24 @@ export function parseWebviewMessage(
     default:
       return { ok: false, reason: `unknown message type "${type}"` };
   }
+}
+
+
+/** Preserve only bounded correlation metadata; the host validates its issued identity. */
+export function parseWebviewMessage(value: unknown): { ok: true; message: WebviewMessage } | { ok: false; reason: string } {
+  const parsed = parseWebviewMessageBody(value);
+  if (!parsed.ok || !/Formalization|formalization/.test(parsed.message.type)) return parsed;
+  const raw = value as Record<string, unknown>;
+  const scope = raw.formalizationWorkspace as Record<string, unknown> | undefined;
+  const request = raw.formalizationRequest as Record<string, unknown> | undefined;
+  if (scope !== undefined && (!scope || Array.isArray(scope) || str(scope.id, 256) === null || !scope.id ||
+      strictInt(scope.generation, 0, Number.MAX_SAFE_INTEGER) === null || str(scope.root) === null)) return { ok: false, reason: "Invalid formalization workspace identity" };
+  if (request !== undefined && (!request || Array.isArray(request) || str(request.channel, 32) === null || !request.channel ||
+      strictInt(request.id, 1, Number.MAX_SAFE_INTEGER) === null ||
+      request.documentRequestId !== undefined && strictInt(request.documentRequestId, 0, Number.MAX_SAFE_INTEGER) === null)) return { ok: false, reason: "Invalid formalization request identity" };
+  return { ok: true, message: { ...parsed.message,
+    ...(scope ? { formalizationWorkspace: { id: scope.id as string, generation: scope.generation as number, root: scope.root as string } } : {}),
+    ...(request ? { formalizationRequest: { channel: request.channel as string, id: request.id as number,
+      ...(request.documentRequestId !== undefined ? { documentRequestId: request.documentRequestId as number } : {}) } } : {}),
+  } };
 }
