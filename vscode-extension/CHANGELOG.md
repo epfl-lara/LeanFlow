@@ -5,6 +5,8 @@ include features and settings from the former direct-provider runtime.
 
 ## Unreleased
 
+- Bring opened PDFs into view with keyboard focus; preserve focus during saved
+  status refreshes and item navigation.
 - Open delivered full-paper draft projects from one **Open draft project** button
   in the owning VS Code host. Keep unresolved review notes visible, human revision
   optional for delivery, and acceptance/prover handoff separate.

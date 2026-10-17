@@ -28,6 +28,7 @@ export function FormalizationView() {
   const [selectedId, setSelectedId] = useState("");
   const [error, setError] = useState("");
   const [pdf, setPdf] = useState<FormalizationPdf | null>(null);
+  const pdfViewer = useRef<HTMLDivElement>(null);
   const [pdfSelection, setPdfSelection] = useState<FormalizationSourceRef | null>(null);
   const [obligationPage, setObligationPage] = useState(0);
   const [feedback, dispatchFeedback] = useReducer(reduceFormalizationFeedback, NO_FORMALIZATION_FEEDBACK);
@@ -121,6 +122,12 @@ export function FormalizationView() {
     preparationBusy, workflowBusy, configuring: configure, resumable: resumable.length > 0 }) : null;
   const obligationView = snapshot?.handoff ? formalizationPage(snapshot.handoff.obligations, obligationPage) : null;
   const pdfShown = !!snapshot && pdf?.documentId === snapshot.document_id && pdf.revisionId === snapshot.revision_id;
+  useEffect(() => {
+    if (!pdfShown || !pdfViewer.current) return;
+    revealFormalizationSection("formalization-inventory");
+    pdfViewer.current.focus({ preventScroll: true });
+    pdfViewer.current.scrollIntoView({ block: "start", behavior: "auto" });
+  }, [pdf, pdfShown]);
   const setupStatus: SectionStatus = setupRunning ? { label: "running", tone: "running" } : baselineReady ? { label: "tools ready", tone: "ok" }
     : !setupKnown ? { label: "checking…" } : setup.canRetry ? { label: setup.status === "cancelled" ? "cancelled" : "failed", tone: "bad" } : { label: "required before formalizing", tone: "warn" };
   const currentness: SectionStatus | null = !snapshot ? null : feedback.checking ? { label: "checking currentness…", tone: "running" }
@@ -238,7 +245,9 @@ export function FormalizationView() {
         <FormalizationInventory key={snapshot.document_id} items={snapshot.items} selectedId={selectedId} selectItem={setSelectedId} candidates={sourceSelection ? sourceCandidates : null} historical={progress.historical} />
         {selected && <FormalizationItemDetail item={selected} revisionId={snapshot.revision_id} historical={progress.historical} disabled={actionBlocked} correctionsDisabled={sourceStale || workflowBusy || setupRunning} linksDisabled={!!error} submit={repair} openArtifact={openArtifact} />}
         <div className="toolbar">{snapshot.artifacts.filter(artifact => artifact.kind === "pdf" || artifact.path.endsWith(".pdf")).map(artifact => <button className="btn secondary" key={artifact.id} disabled={!!error} onClick={() => openArtifact(artifact.id)}>Open PDF: {artifact.title ?? artifact.path}</button>)}</div>
-        {pdf && pdfShown && <FormalizationPdfView pdf={pdf} items={snapshot.items} selectedId={selectedId} selectItem={setSelectedId} companion={snapshot.source.kind === "latex"} onSelection={snapshot.source.kind === "pdf" ? setPdfSelection : undefined} />}
+        {pdf && pdfShown && <div ref={pdfViewer} role="region" aria-label="PDF source viewer" tabIndex={-1}>
+          <FormalizationPdfView pdf={pdf} items={snapshot.items} selectedId={selectedId} selectItem={setSelectedId} companion={snapshot.source.kind === "latex"} onSelection={snapshot.source.kind === "pdf" ? setPdfSelection : undefined} />
+        </div>}
         <FormalizationRepair key={`${snapshot.document_id}:${selectedId}`} snapshot={snapshot} item={selected} disabled={actionBlocked} submit={repair} pdfSelection={pdfSelection} />
       </FormalizationSection>
       <FormalizationRegions key={`regions:${snapshot.document_id}`} regions={snapshot.regions} disabled={actionBlocked} submit={repair} />

@@ -24,6 +24,44 @@ function section(ui, id) { return ui.root().find(node => node.type === "details"
 function summary(ui, id) { return textOf(section(ui, id).findAllByType("summary")[0]); }
 function regionForms(ui) { return ui.root().findAll(node => node.type === "select" && String(node.props["aria-label"] ?? "").startsWith("Disposition for ")); }
 
+test("opening a current PDF reveals and focuses its viewer without stealing focus on refresh", async () => {
+  const ui = mount("formalization");
+  const target = document.getElementById("formalization-inventory");
+  const revealed = [];
+  target.tagName = "DETAILS";
+  Object.defineProperty(target, "open", { configurable: true, set: value => revealed.push(value) });
+  try {
+    const snapshot = formalizationFixture();
+    showState(snapshot);
+    act(() => section(ui, "formalization-inventory").props.onToggle({ currentTarget: { open: false } }));
+    assert.equal(section(ui, "formalization-inventory").props.open, false);
+    assert.deepEqual(ui.effects, []);
+    ui.click("Open PDF: paper.pdf");
+    assert.equal(message(ui, "openFormalizationArtifact").artifactId, "source-pdf");
+    const pdf = { documentId: snapshot.document_id, revisionId: snapshot.revision_id, artifactId: "source-pdf", pageIndex: 0, base64: "JVBERg==" };
+    await act(async () => hostMessage({ type: "formalizationPdf", pdf }));
+    const viewer = ui.root().find(node => node.type === "div" && node.props["aria-label"] === "PDF source viewer");
+    assert.equal(viewer.props.role, "region");
+    assert.equal(viewer.props.tabIndex, -1);
+    assert.equal(section(ui, "formalization-inventory").props.open, true);
+    assert.deepEqual(revealed, [true]);
+    assert.deepEqual(ui.effects, [["domFocus", { preventScroll: true }], ["focus"]]);
+
+    // Saved-state refreshes and item navigation must not pull the user back to the PDF.
+    ui.effects.length = 0;
+    showState(structuredClone(snapshot));
+    ui.click("Chosen halves");
+    assert.deepEqual(ui.effects, []);
+    await act(async () => hostMessage({ type: "formalizationPdf", pdf: { ...pdf, pageIndex: 1 } }));
+    assert.deepEqual(ui.effects, [["domFocus", { preventScroll: true }], ["focus"]]);
+
+    ui.effects.length = 0;
+    await act(async () => hostMessage({ type: "formalizationPdf", pdf: { ...pdf, revisionId: "older-revision" } }));
+    assert.deepEqual(ui.effects, []);
+    assert.equal(ui.root().findAll(node => node.props["aria-label"] === "PDF source viewer").length, 0);
+  } finally { ui.dispose(); }
+});
+
 test("source selection and repeated refreshes preserve one copy of every formalization panel", () => {
   const warnings = [];
   const originalError = console.error;

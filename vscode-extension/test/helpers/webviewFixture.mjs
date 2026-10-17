@@ -57,7 +57,7 @@ export function mount(tab = "launch", patch = {}, component = App) {
   listener.innerWidth = 800;
   listener.innerHeight = 600;
   const effects = [];
-  const node = { style: { setProperty() {} }, replaceChildren() {}, getContext: () => ({}), getBoundingClientRect: () => ({ left: 30, top: 40, bottom: 60, height: 120 }), contains: () => false, querySelector: () => ({ focus() {} }), clientWidth: 800, scrollHeight: 900, scrollTop: 0, scrollTo: (...args) => effects.push(["scroll", ...args]), scrollIntoView: () => effects.push(["focus"]) };
+  const node = { style: { setProperty() {} }, replaceChildren() {}, getContext: () => ({}), getBoundingClientRect: () => ({ left: 30, top: 40, bottom: 60, height: 120 }), contains: () => false, querySelector: () => ({ focus() {} }), focus: (...args) => effects.push(["domFocus", ...args]), clientWidth: 800, scrollHeight: 900, scrollTop: 0, scrollTo: (...args) => effects.push(["scroll", ...args]), scrollIntoView: () => effects.push(["focus"]) };
   globalThis.document = { getElementById: () => node };
   globalThis.ResizeObserver = class { constructor(callback) { this.callback = callback; this.targets = []; (globalThis.webviewFixture.resizeObservers ??= []).push(this); } observe(target) { this.targets.push(target); } disconnect() { this.disconnected = true; } };
   const now = new Date().toISOString();

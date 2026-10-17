@@ -14,9 +14,9 @@ function LeanLink({ reference, itemId, disabled, openArtifact, label = "Lean" }:
   return <div>
     <button className="btn secondary" disabled={disabled || !reference.artifact_id} onClick={() => reference.artifact_id && openArtifact(reference.artifact_id, itemId, undefined, reference.line_start)}>{label}: {reference.name}</button>
     {!reference.artifact_id && <p className="muted">No frozen Lean source link recorded.</p>}
-    {(reference.type || reference.type_hash) && <details><summary>Compiled type and saved binding</summary>
+    {(reference.type || reference.type_hash) && <details><summary>Lean type and saved binding</summary>
       {reference.type && <pre>{reference.type}</pre>}
-      <p className="muted">These identities describe the saved compiled evidence. Currentness and source acceptance are checked separately.</p>
+      <p className="muted">Available saved identities appear below. A displayed type alone does not establish compilation; currentness and source acceptance are checked separately.</p>
       {reference.type_hash && <p>Type: <code>{reference.type_hash}</code></p>}
       {reference.body_hash && <p>Body: <code>{reference.body_hash}</code></p>}
       {reference.definition_context_hash && <p>Definition context: <code>{reference.definition_context_hash}</code></p>}

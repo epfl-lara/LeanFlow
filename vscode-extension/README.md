@@ -23,7 +23,8 @@ that the two files have identical content, and PDF pages remain part of coverage
 Source and draft text links open named, read-only frozen documents beside the
 dashboard, preserving the selected source line. They do not open editable Untitled
 buffers or the canonical project file. The PDF rerenders to fit the available
-pane width; its text selection layer uses the same page scale.
+pane width; its text selection layer uses the same page scale. Opening a PDF
+reveals and focuses its viewer; refreshing saved status preserves your focus.
 
 The inventory displays source review, Lean elaboration, and proof state separately.
 The overview shows the next action, while setup, issues, preparation, revisions,
@@ -56,11 +57,12 @@ from mathematical source corrections.
 
 Under **Optional correction choices**, **Enable bounded correction policy for this
 paper** records permission once for every currently included item in the exact
-frozen source bundle. Each proposal still needs closed local evidence and fresh
-independent source review. For a nonunique reading, expand **Record a specific
-reading or convention**, enter the reading and reason, and choose **Record
-interpretation** or **Record convention**. These actions create versioned user
-decisions; they do not approve a statement or prove the paper. The same controls
+frozen source bundle. Mathematical repairs seeking acceptance need closed local
+evidence and fresh independent source review. Encoding repairs preserve the
+source meaning and do not require a local mathematical proof. For a nonunique
+reading, expand **Record a specific reading or convention**, enter the reading
+and reason, and choose **Record interpretation** or **Record convention**. These
+actions create versioned user decisions; they do not approve a statement or prove the paper. The same controls
 allow revocation. These decisions are optional for draft delivery; unresolved
 readings can stay explicitly flagged for later revision. Choices are disabled while the source is stale, setup or a
 workflow is active, or another change is waiting to save. A missing exact source
